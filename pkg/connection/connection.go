@@ -34,6 +34,7 @@ package connection
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -210,6 +211,22 @@ func (c Connection) Validate() error {
 	if strings.TrimSpace(c.SchemeID) == "" {
 		return fmt.Errorf("connection %q: names no auth scheme; placement differs between a package's schemes, so guessing one is a 401 that reads like a bad credential", c.ID)
 	}
+	// The ORIGIN, checked in the domain layer rather than only where an
+	// operator types it.
+	//
+	// `connections add` refuses a malformed one with a friendlier message and
+	// before anything is written, which is the right place for the CLI. But it
+	// is not the only writer: a studio PATCH, the Mongo twin and any migration
+	// reach the store through Create/Update, and this is what they all call.
+	// An invariant that lives in one caller is a convention; here it is the
+	// contract.
+	//
+	// Required, not optional: what a credential may be sent to is decided when
+	// it is entrusted, and a record that leaves it open means "whatever the
+	// package says at call time" — the vector the pinning closes.
+	if err := validateBaseURL(c.ID, c.BaseURL); err != nil {
+		return err
+	}
 	if len(c.Capabilities) == 0 {
 		return fmt.Errorf("connection %q: declares no capability, so nothing may use it — say `action`, `agent`, or both", c.ID)
 	}
@@ -233,6 +250,31 @@ func (c Connection) Validate() error {
 		// The pair has to stay coherent, or the ambiguity it exists to
 		// resolve comes back through the record itself.
 		return fmt.Errorf("connection %q: lists granted scopes but says they are unknown", c.ID)
+	}
+	return nil
+}
+
+// validateBaseURL holds every writer of a Connection to the same origin rules
+// the CLI applies: present, absolute, and addressable.
+//
+// A scheme-less value is the one that slips through unaided — `url.Parse`
+// accepts "git.example.com" without error and returns an empty Host, so the
+// failure surfaces much later as `unsupported protocol scheme ""` from the
+// transport, a message naming neither the connection nor the field.
+func validateBaseURL(id, baseURL string) error {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return fmt.Errorf("connection %q: names no instance URL — it is what this credential may be sent to, and it is pinned when the connection is created rather than re-derived from the package at call time", id)
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("connection %q: instance URL %q does not parse: %w", id, trimmed, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("connection %q: instance URL %q needs an http or https scheme", id, trimmed)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("connection %q: instance URL %q names no host", id, trimmed)
 	}
 	return nil
 }

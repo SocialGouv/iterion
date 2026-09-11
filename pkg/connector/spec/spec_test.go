@@ -50,6 +50,19 @@ func TestValidPackagePasses(t *testing.T) {
 
 // TestAWellFormedPaginationPasses is the other half of the refusals below: a
 // guard that only ever says no would be satisfied by refusing everything.
+// declareQuery adds the query parameters a pagination block names.
+//
+// A package's position parameter must be one the operation DECLARES — the
+// request builder writes it into the map it validates strictly — so a fixture
+// that names one without declaring it is a shape no real package can have, and
+// exercises the validator against a double. Five fixtures here drifted that way
+// while nothing cross-checked the field.
+func declareQuery(op *spec.Operation, names ...string) {
+	for _, n := range names {
+		op.Params = append(op.Params, spec.Param{Key: n, Name: n, In: spec.InQuery, Type: "string"})
+	}
+}
+
 func TestAWellFormedPaginationPasses(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -57,11 +70,13 @@ func TestAWellFormedPaginationPasses(t *testing.T) {
 	}{
 		{"a bare array needs no items_field", func(p *spec.Package) {
 			p.Ops[0].Operations[0].Results[0].Array = true
+			declareQuery(&p.Ops[0].Operations[0], "page", "limit")
 			p.Ops[0].Operations[0].Pagination = &spec.Pagination{
 				Style: spec.PageNumber, PageParam: "page", SizeParam: "limit", DefaultSize: 50,
 			}
 		}},
 		{"an envelope named by items_field", func(p *spec.Package) {
+			declareQuery(&p.Ops[0].Operations[0], "page", "limit")
 			p.Ops[0].Operations[0].Pagination = &spec.Pagination{
 				Style: spec.PageNumber, PageParam: "page", SizeParam: "limit",
 				ItemsField: "data", DefaultSize: 50,
@@ -69,6 +84,7 @@ func TestAWellFormedPaginationPasses(t *testing.T) {
 		}},
 		{"a cursor walk that names its cursor", func(p *spec.Package) {
 			p.Ops[0].Operations[0].Results[0].Array = true
+			declareQuery(&p.Ops[0].Operations[0], "after")
 			p.Ops[0].Operations[0].Pagination = &spec.Pagination{
 				Style: spec.PageCursor, CursorParam: "after", CursorField: "next",
 			}
@@ -242,6 +258,7 @@ func TestValidateRefusals(t *testing.T) {
 			// repository.search shape.
 			name: "paginated over a non-array response with no items_field",
 			mutate: func(p *spec.Package) {
+				declareQuery(&p.Ops[0].Operations[0], "page", "limit")
 				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
 					Style: spec.PageNumber, PageParam: "page", SizeParam: "limit", DefaultSize: 50,
 				}
@@ -249,11 +266,52 @@ func TestValidateRefusals(t *testing.T) {
 			wantMsg: "is not an array and no items_field",
 		},
 		{
+			// Prevents the defect this rule was written for, found in the
+			// SHIPPED Forgejo package: `CallPaged` writes the position into
+			// the same map the request builder validates strictly, so a name
+			// the operation does not declare made every paginated call fail
+			// with "operation X does not declare page" — blaming the caller
+			// for a key the package wrote and the caller cannot see.
+			name: "page_param naming no parameter",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageNumber, PageParam: "page", DefaultSize: 50,
+				}
+			},
+			wantMsg: `page_param "page" names no parameter`,
+		},
+		{
+			name: "cursor_param naming no parameter",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageCursor, CursorParam: "after", CursorField: "next",
+				}
+			},
+			wantMsg: `cursor_param "after" names no parameter`,
+		},
+		{
+			// The size parameter is written by the same walk and validated by
+			// the same builder, so it is checked on the same line rather than
+			// left as the one the next reader has to remember.
+			name: "size_param naming no parameter",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				declareQuery(&p.Ops[0].Operations[0], "page")
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageNumber, PageParam: "page", SizeParam: "limit", DefaultSize: 50,
+				}
+			},
+			wantMsg: `size_param "limit" names no parameter`,
+		},
+		{
 			// Prevents: a cursor walk that can never advance, silently
 			// returning page one as the whole collection.
 			name: "cursor pagination with no cursor_field",
 			mutate: func(p *spec.Package) {
 				p.Ops[0].Operations[0].Results[0].Array = true
+				declareQuery(&p.Ops[0].Operations[0], "after")
 				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
 					Style: spec.PageCursor, CursorParam: "after",
 				}

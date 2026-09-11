@@ -409,17 +409,8 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	}
 	// An idempotency key that names no parameter is worse than none: it would
 	// license a retry the operation cannot actually make safe.
-	if op.IdempotencyKeyParam != "" {
-		found := false
-		for _, prm := range op.Params {
-			if prm.Name == op.IdempotencyKeyParam || prm.Key == op.IdempotencyKeyParam {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("operation %q: idempotency_key_param %q names no parameter", op.ID, op.IdempotencyKeyParam)
-		}
+	if op.IdempotencyKeyParam != "" && !declaresParam(op, op.IdempotencyKeyParam) {
+		return fmt.Errorf("operation %q: idempotency_key_param %q names no parameter", op.ID, op.IdempotencyKeyParam)
 	}
 	// A request body is ONE shape or the other: a value, or a set of members.
 	// A mixture has no encoding — the builder would have to pick, and either
@@ -501,15 +492,31 @@ func (op Operation) validatePagination() error {
 	// requests, page one's items appended that many times, `complete=false`.
 	// A node that acts once per item then acts twenty times on each, and
 	// twenty of the vendor's slots are spent per execution.
+	//
+	// And it must name a parameter the operation DECLARES, by the same
+	// argument that cross-checks idempotency_key_param above: CallPaged writes
+	// the position into the very map checkParams validates strictly, so a name
+	// that is not declared makes every paginated call fail with "operation X
+	// does not declare Y" — a refusal that blames the caller for a key the
+	// package wrote and the caller cannot see.
 	switch p.Style {
 	case PageCursor:
 		if p.CursorParam == "" {
 			return fmt.Errorf("operation %q: cursor pagination declares no cursor_param, so every page of the walk would re-send an identical request", op.ID)
 		}
+		if !declaresParam(op, p.CursorParam) {
+			return fmt.Errorf("operation %q: cursor_param %q names no parameter, so every paginated call would be refused for a key the caller never wrote", op.ID, p.CursorParam)
+		}
 	case PageNumber, PageOffset:
 		if p.PageParam == "" {
 			return fmt.Errorf("operation %q: %s pagination declares no page_param, so every page of the walk would re-send an identical request", op.ID, p.Style)
 		}
+		if !declaresParam(op, p.PageParam) {
+			return fmt.Errorf("operation %q: page_param %q names no parameter, so every paginated call would be refused for a key the caller never wrote", op.ID, p.PageParam)
+		}
+	}
+	if p.SizeParam != "" && !declaresParam(op, p.SizeParam) {
+		return fmt.Errorf("operation %q: size_param %q names no parameter, so every paginated call would be refused for a key the caller never wrote", op.ID, p.SizeParam)
 	}
 	if p.Style == PageCursor && p.CursorField == "" {
 		return fmt.Errorf("operation %q: cursor pagination declares no cursor_field, so the walk could never advance past page one", op.ID)
@@ -556,4 +563,23 @@ func pathPlaceholders(path string) []string {
 		i += end
 	}
 	return out
+}
+
+// declaresParam reports whether op declares a parameter under this name.
+//
+// Shared rather than repeated: three block-level fields (idempotency_key_param,
+// and pagination's position and size parameters) name a parameter the request
+// builder will write, and each one that is not cross-checked here becomes a
+// refusal at call time blaming the caller for a key the package wrote. A
+// second copy of this loop is where the fourth such field would drift.
+//
+// Both spellings count: a package may name the KEY (the DSL-facing name) or the
+// wire NAME, and the executor resolves either.
+func declaresParam(op Operation, name string) bool {
+	for _, prm := range op.Params {
+		if prm.Name == name || prm.Key == name {
+			return true
+		}
+	}
+	return false
 }

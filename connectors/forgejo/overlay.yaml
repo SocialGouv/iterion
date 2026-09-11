@@ -99,12 +99,18 @@ operations:
   forgejo.issue.get_comments:
     id: forgejo.issue.list_comments
     mcp: true
-    pagination:
-      style: page_number
-      page_param: page
-      size_param: limit
-      default_size: 50
-      max_pages: 20
+    # No pagination block: the upstream description declares only `before` and
+    # `since` on this endpoint, and the four other paginated operations here
+    # DO carry `page` and `limit` — so their absence is the vendor's answer,
+    # not a gap in the generator. The block that used to sit here named both,
+    # and `CallPaged` writes a position parameter into the very map the request
+    # builder validates, so every paginated call was refused with "operation
+    # does not declare page, limit" — blaming the caller for keys the package
+    # wrote.
+    #
+    # If a live instance does accept them, the fix is to declare the two
+    # parameters here and restore the block; that has to be verified against a
+    # running Forgejo, which is why it is not done blind.
 
   forgejo.issue.add_label:
     id: forgejo.issue.add_labels

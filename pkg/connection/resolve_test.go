@@ -102,22 +102,54 @@ func TestResolveHandsTheExecutorWhatItNeeds(t *testing.T) {
 		t.Errorf("baseURL = %q, want the CONNECTION's instance, not the package default", baseURL)
 	}
 
-	// A connection with NO origin is refused, not completed from the package.
-	//
-	// This assertion said the opposite until the third review: falling back
-	// meant "whatever the package says when the call happens", so replacing
-	// the package — or shadowing it with a project-tier one — sent an existing
-	// credential to a different host, with nothing in the run saying so.
-	// `connections add` resolves and pins the origin at creation; a record
-	// without one was hand-written, and guessing on its behalf IS the vector.
-	c2 := conn("c2", "tenant-a", "saas")
-	c2.BaseURL = ""
-	c2.GrantedScopes, c2.ScopesKnown = []string{"read:issue"}, true
-	seed(t, r, store, c2)
-	if _, _, _, _, err = r.ResolveAction(context.Background(), "probe.issue.get", "saas"); err == nil {
-		t.Error("a connection that names no instance must be refused — nothing says where its credential may be sent")
+}
+
+// TestAnOriginlessRecordIsRefusedRatherThanCompleted. Falling back to the
+// package meant "whatever it says when the call happens", so replacing the
+// package — or shadowing it with a project-tier one — sent an existing
+// credential to a different host with nothing in the run saying so.
+//
+// The record is handed over by a STUB rather than created, and that is the
+// point: `Connection.Validate` now refuses an originless record, so no store
+// will make one. What can still produce one is a file written by hand or by an
+// older build — `FileStore.reload` does not validate what it loads — and this
+// refusal is the last thing standing between such a record and a credential on
+// the wire. Seeding through `Create` would test the guard one layer up and
+// leave this one unexercised.
+func TestAnOriginlessRecordIsRefusedRatherThanCompleted(t *testing.T) {
+	c := conn("c2", "tenant-a", "saas")
+	c.BaseURL = ""
+	c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+
+	r := resolver(t, originlessStore{conn: c})
+	sealed, err := connection.SealToken(r.Sealer, c.ID, "the-token", time.Time{})
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	c.SealedPayload = sealed
+	r.Store = originlessStore{conn: c}
+
+	if _, _, _, _, err := r.ResolveAction(context.Background(), "probe.issue.get", "saas"); err == nil {
+		t.Error("a record that names no instance must be refused — nothing says where its credential may be sent")
 	}
 }
+
+// originlessStore hands back one record verbatim, without the validation every
+// real store applies on the way in.
+type originlessStore struct{ conn connection.Connection }
+
+func (s originlessStore) Create(context.Context, connection.Connection) error { return nil }
+func (s originlessStore) Get(_ context.Context, _, _ string) (connection.Connection, error) {
+	return s.conn, nil
+}
+func (s originlessStore) ByAlias(_ context.Context, _, _, _ string) (connection.Connection, error) {
+	return s.conn, nil
+}
+func (s originlessStore) List(_ context.Context, _, _ string) ([]connection.Connection, error) {
+	return []connection.Connection{s.conn}, nil
+}
+func (s originlessStore) Update(context.Context, connection.Connection) error { return nil }
+func (s originlessStore) Delete(_ context.Context, _, _ string) error         { return nil }
 
 // TestUnknownScopesAreNeitherGrantedNorRefused is F7's distinction, made
 // operational.

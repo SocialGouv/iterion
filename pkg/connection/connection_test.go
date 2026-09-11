@@ -122,6 +122,28 @@ func TestValidateRefusesAnIncoherentConnection(t *testing.T) {
 			wantMsg: "names no auth scheme",
 		},
 		{
+			// Prevents: a record meaning "whatever the package says at call
+			// time", which lets a replaced or shadowed package redirect an
+			// existing credential to another host.
+			name:    "no instance URL",
+			mutate:  func(c *connection.Connection) { c.BaseURL = "" },
+			wantMsg: "names no instance URL",
+		},
+		{
+			// Prevents the value that slips through unaided: `url.Parse`
+			// accepts it without error and returns an empty Host, so the
+			// failure surfaces at the transport as `unsupported protocol
+			// scheme ""` — naming neither the connection nor the field.
+			name:    "instance URL with no scheme",
+			mutate:  func(c *connection.Connection) { c.BaseURL = "git.example.com" },
+			wantMsg: "needs an http or https scheme",
+		},
+		{
+			name:    "instance URL with no host",
+			mutate:  func(c *connection.Connection) { c.BaseURL = "https://" },
+			wantMsg: "names no host",
+		},
+		{
 			// Prevents: a connection usable for everything by saying nothing.
 			name:    "no capability",
 			mutate:  func(c *connection.Connection) { c.Capabilities = nil },

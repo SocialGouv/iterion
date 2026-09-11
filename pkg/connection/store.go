@@ -56,10 +56,33 @@ func (s *MemoryStore) WithClock(now func() time.Time) *MemoryStore {
 	return s
 }
 
+// detach returns a copy whose slice fields share no backing array with c.
+//
+// MemoryStore hands out and takes in Connection VALUES, and a value carries
+// slice headers: without this, a caller's `Capabilities` becomes the store's
+// backing array on Create, and the store's becomes the caller's on every read.
+// Either side mutating its own copy then rewrites the other's record with no
+// Update and no lock — a capability grant changing underneath the check that
+// reads it.
+//
+// FileStore is immune for a reason that is an accident of its implementation
+// rather than a shared rule: it re-decodes the file on every access, so every
+// value it returns is freshly allocated. Stating the rule here is what keeps
+// the two twins answering identically, which is the axis the conformance suite
+// exists for — and what the Mongo twin (also decoding per read) must not
+// quietly diverge from either.
+func detach(c Connection) Connection {
+	c.Capabilities = append([]Capability(nil), c.Capabilities...)
+	c.GrantedScopes = append([]string(nil), c.GrantedScopes...)
+	c.SealedPayload = append([]byte(nil), c.SealedPayload...)
+	return c
+}
+
 func (s *MemoryStore) Create(_ context.Context, c Connection) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	c = detach(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.byID[c.ID]; exists {
@@ -83,7 +106,7 @@ func (s *MemoryStore) Get(_ context.Context, tenantID, id string) (Connection, e
 	if !ok || c.TenantID != tenantID {
 		return Connection{}, ErrNotFound
 	}
-	return c, nil
+	return detach(c), nil
 }
 
 func (s *MemoryStore) ByAlias(_ context.Context, tenantID, connector, alias string) (Connection, error) {
@@ -91,7 +114,7 @@ func (s *MemoryStore) ByAlias(_ context.Context, tenantID, connector, alias stri
 	defer s.mu.RUnlock()
 	for _, c := range s.byID {
 		if c.TenantID == tenantID && c.Connector == connector && aliasEq(c.Alias, alias) {
-			return c, nil
+			return detach(c), nil
 		}
 	}
 	return Connection{}, ErrNotFound
@@ -108,7 +131,7 @@ func (s *MemoryStore) List(_ context.Context, tenantID, connector string) ([]Con
 		if connector != "" && c.Connector != connector {
 			continue
 		}
-		out = append(out, c)
+		out = append(out, detach(c))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -123,6 +146,7 @@ func (s *MemoryStore) Update(_ context.Context, c Connection) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	c = detach(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev, ok := s.byID[c.ID]

@@ -58,6 +58,64 @@ func TestStoreConformance(t *testing.T) {
 				}
 			})
 
+			// A store hands out COPIES, in both directions.
+			//
+			// FileStore is immune by construction — it re-decodes the file on
+			// every access — so this row exists for the twins that do not:
+			// MemoryStore held the caller's arrays, and the Mongo twin will
+			// have its own answer. Left untested, the divergence is invisible
+			// until a caller mutates a capability list and rewrites a grant
+			// with no Update, no lock, and nothing in the audit.
+			t.Run("a record shares no backing array with its caller", func(t *testing.T) {
+				s := build()
+				c := conn("c1", "tenant-a", "main")
+				c.Capabilities = []connection.Capability{connection.CapAction, connection.CapAgent}
+				c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+				c.SealedPayload = []byte("sealed")
+				if err := s.Create(ctx, c); err != nil {
+					t.Fatalf("create: %v", err)
+				}
+
+				// The WRITE direction: the caller still holds the slices it
+				// passed in.
+				c.Capabilities[0] = "root"
+				c.GrantedScopes[0] = "admin"
+				c.SealedPayload[0] = 'X'
+
+				got, err := s.Get(ctx, "tenant-a", "c1")
+				if err != nil {
+					t.Fatalf("get: %v", err)
+				}
+				if got.Capabilities[0] != connection.CapAction {
+					t.Errorf("the caller's mutation reached the store: capability = %q", got.Capabilities[0])
+				}
+				if got.GrantedScopes[0] != "read:issue" {
+					t.Errorf("the caller's mutation reached the store: scope = %q", got.GrantedScopes[0])
+				}
+				if string(got.SealedPayload) != "sealed" {
+					t.Errorf("the caller's mutation reached the stored credential: %q", got.SealedPayload)
+				}
+
+				// The READ direction: mutating what a read returned.
+				got.Capabilities[0] = "root"
+				got.GrantedScopes[0] = "admin"
+				got.SealedPayload[0] = 'X'
+
+				again, err := s.Get(ctx, "tenant-a", "c1")
+				if err != nil {
+					t.Fatalf("get again: %v", err)
+				}
+				if again.Capabilities[0] != connection.CapAction {
+					t.Errorf("a reader's mutation reached the store: capability = %q", again.Capabilities[0])
+				}
+				if again.GrantedScopes[0] != "read:issue" {
+					t.Errorf("a reader's mutation reached the store: scope = %q", again.GrantedScopes[0])
+				}
+				if string(again.SealedPayload) != "sealed" {
+					t.Errorf("a reader's mutation reached the stored credential: %q", again.SealedPayload)
+				}
+			})
+
 			t.Run("another tenant's connection is invisible on every method", func(t *testing.T) {
 				s := build()
 				if err := s.Create(ctx, conn("c1", "tenant-a", "main")); err != nil {
