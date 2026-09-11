@@ -856,3 +856,58 @@ func TestRetriesDoNotHammerAVendorThatNamedNoDelay(t *testing.T) {
 		}
 	}
 }
+
+// TestARetriedNodeReportsWhatTheVendorACTUALLYServed.
+//
+// `requests` exists because a paginated action can spend twenty of a vendor's
+// rate-limit slots behind what looks like one call, and nothing said so — "the
+// operator found out on the vendor's dashboard". It was read off the LAST
+// attempt's result, which the retry loop replaces on every pass: a node that
+// failed twice before succeeding reported nothing at all, which is the same
+// invisibility one level up.
+//
+// A READ, deliberately: a retried mutation is refused by Retryable, and the
+// point here is the accounting, not the safety rule.
+func TestARetriedNodeReportsWhatTheVendorActuallyServed(t *testing.T) {
+	var served int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		served++
+		if served < 3 {
+			// No Retry-After, so the node takes its own small backoff.
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"slow down"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	pkg, op := mutatingPackage(srv.URL)
+	op.HTTP.Method, op.HTTP.RequestBody, op.Effect = "GET", "", spec.EffectRead
+	op.Params, op.Results = nil, []spec.ResultCase{{Status: 200}}
+	pkg.Ops[0].Operations[0] = op
+
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "list"},
+		Action:      "probe.issue.comment",
+		Connection:  "main",
+		RetryPolicy: "3",
+	}
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+
+	out, err := e.Execute(context.Background(), node, nil)
+	if err != nil {
+		t.Fatalf("a retryable 429 that then succeeds must not fail the node: %v", err)
+	}
+	if served != 3 {
+		t.Fatalf("the vendor served %d requests, want 3", served)
+	}
+	got, ok := out["requests"]
+	if !ok {
+		t.Fatal("a node that cost the vendor three requests must say so — reading the last attempt alone reported nothing")
+	}
+	if n, _ := got.(int); n != 3 {
+		t.Errorf("requests = %v, want 3 — every attempt the vendor actually served", got)
+	}
+}
