@@ -264,6 +264,7 @@ class InstanceManagerTests(unittest.TestCase):
              mock.patch.object(manager, "freeze_runtime", return_value={"binary": str(old), "sha256": instances.sha256_file(old), "environment_file": str(env_file)}), \
              mock.patch.object(manager, "stop_pid"), \
              mock.patch.object(manager, "spawn", return_value=456), \
+             mock.patch.object(manager, "process_binary_hash", return_value=digest), \
              mock.patch.object(manager, "wait_ready", return_value={"work_dir": str(self.fixture.project), "recovery_passive": False, "commit": "a" * 12}), \
              mock.patch.object(manager, "capability", return_value={"state": "present", "http_status": 200}):
             result = manager.deploy(str(self.fixture.project), "artifact-1", "token", "goal-1", "run-1")
@@ -312,6 +313,7 @@ class InstanceManagerTests(unittest.TestCase):
              mock.patch.object(manager, "stop_pid"), \
              mock.patch.object(manager, "pid", return_value=456), \
              mock.patch.object(manager, "spawn", side_effect=[456, 789]), \
+             mock.patch.object(manager, "process_binary_hash", return_value=instances.sha256_file(old)), \
              mock.patch.object(manager, "wait_ready", side_effect=ready):
             with self.assertRaises(instances.ManagerError) as caught:
                 manager.deploy(str(self.fixture.project), "artifact-2", "token", "goal-1", "run-1")
@@ -319,6 +321,55 @@ class InstanceManagerTests(unittest.TestCase):
         journals = list((self.fixture.state / "deployments/project/transactions").glob("*/journal.json"))
         self.assertEqual(len(journals), 1)
         self.assertEqual(json.loads(journals[0].read_text())["phase"], "rolled-back")
+
+    def test_failed_rollback_leaves_recovery_required_journal(self) -> None:
+        manager = self.manager()
+        artifact_dir = self.fixture.state / "artifacts" / "artifact-3"
+        artifact_dir.mkdir(parents=True)
+        artifact = artifact_dir / "iterion"
+        artifact.write_bytes(b"candidate")
+        artifact.chmod(0o555)
+        digest = instances.sha256_file(artifact)
+        instances.atomic_json(artifact_dir / "metadata.json", {
+            "binary": str(artifact), "sha256": digest, "commit": "c" * 40,
+            "preflight": {"recovery_passive": True},
+        })
+        old = self.fixture.root / "old" / "iterion"
+        old.parent.mkdir()
+        old.write_bytes(b"old")
+        old.chmod(0o555)
+        env_file = self.fixture.root / "old" / "env.json"
+        instances.atomic_json(env_file, {
+            "schema_version": 1,
+            "format": "nul-base64-v1",
+            "data": base64.b64encode(f"PATH={os.environ.get('PATH', '')}\0".encode()).decode(),
+        })
+        context = {
+            "context_token": "token", "instance": {"state": "up", "pid": 123},
+            "server": {"reachable": True, "work_dir_matches": True},
+            "assistant_missions": {"state": "absent-recoverable"},
+            "run": {"data": {"id": "run-1", "status": "failed"}},
+        }
+        ready_calls = [instances.ManagerError("LIVE_VERIFICATION_FAILED", "candidate failed"), {"work_dir": str(self.fixture.project)}]
+        def ready(*_args: object, **_kwargs: object) -> dict[str, object]:
+            value = ready_calls.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        with mock.patch.object(manager, "context", return_value=context), \
+             mock.patch.object(manager, "active_runs", return_value=[]), \
+             mock.patch.object(manager, "verify_adoption"), \
+             mock.patch.object(manager, "freeze_runtime", return_value={"binary": str(old), "sha256": instances.sha256_file(old), "environment_file": str(env_file)}), \
+             mock.patch.object(manager, "stop_pid"), \
+             mock.patch.object(manager, "pid", return_value=456), \
+             mock.patch.object(manager, "spawn", side_effect=[456, 789]), \
+             mock.patch.object(manager, "process_binary_hash", return_value="wrong"), \
+             mock.patch.object(manager, "wait_ready", side_effect=ready):
+            with self.assertRaises(instances.ManagerError) as caught:
+                manager.deploy(str(self.fixture.project), "artifact-3", "token", "goal-1", "run-1")
+        self.assertEqual(caught.exception.code, "ROLLBACK_FAILED")
+        journals = list((self.fixture.state / "deployments/project/transactions").glob("*/journal.json"))
+        self.assertEqual(json.loads(journals[0].read_text())["phase"], "recovery-required")
 
 
 if __name__ == "__main__":

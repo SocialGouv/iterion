@@ -317,6 +317,13 @@ class Manager:
             env[key.decode(errors="surrogateescape")] = value.decode(errors="surrogateescape")
         return env
 
+    @staticmethod
+    def process_binary_hash(pid: int) -> str:
+        try:
+            return sha256_file(Path(f"/proc/{pid}/exe"))
+        except OSError as exc:
+            fail("PROCESS_INSPECTION_FAILED", f"binaire du pid {pid} illisible", cause=str(exc))
+
     def store(self, root: Path, instance: Instance, pid: int | None) -> dict[str, Any]:
         explicit = self._flag_value(instance.extra, "--store-dir")
         if explicit is not None:
@@ -469,15 +476,18 @@ class Manager:
         launch_env["ITERION_BIN"] = str(binary)
         with log_path.open("ab", buffering=0) as log:
             log.write(f"\n===== {instance.name} | {instance.project_dir} | start {time.strftime('%Y-%m-%dT%H:%M:%S%z')} | binary {binary} =====\n".encode())
-            process = subprocess.Popen(
-                self.launch_args(instance, binary),
-                cwd=instance.project_dir,
-                env=launch_env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    self.launch_args(instance, binary),
+                    cwd=instance.project_dir,
+                    env=launch_env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                fail("INSTANCE_START_FAILED", f"impossible de lancer {instance.name}", cause=str(exc))
         self.pid_path(instance).write_text(str(process.pid))
         return process.pid
 
@@ -922,35 +932,57 @@ class Manager:
             previous = self.freeze_runtime(instance, pid, transaction_dir)
             self.journal(journal_path, transaction, "previous-runtime-frozen", previous=previous)
             old_env = self.load_frozen_env(Path(previous["environment_file"]))
+            selector_path = self.state_dir / "deployments" / instance.name / "current.json"
+            previous_selector = read_json(selector_path, "BINARY_SELECTOR_INVALID") if selector_path.is_file() else None
             try:
                 self.stop_pid(instance, pid, timeout=90, allow_kill=False)
                 self.journal(journal_path, transaction, "old-stopped")
                 candidate_pid = self.spawn(instance, artifact, env={str(k): str(v) for k, v in old_env.items()})
                 self.journal(journal_path, transaction, "candidate-starting", candidate_pid=candidate_pid)
                 info = self.wait_ready(instance, candidate_pid)
-                if Path(info.get("work_dir", "")).resolve(strict=True) != root or info.get("recovery_passive") is not False:
+                if canonical(info.get("work_dir", "")) != root or info.get("recovery_passive") is not False:
                     fail("LIVE_VERIFICATION_FAILED", "server/info ne confirme pas work_dir et recovery_passive=false", server_info=info)
                 embedded = str(info.get("commit", ""))
-                if not metadata["commit"].startswith(embedded):
+                if not embedded or not metadata["commit"].startswith(embedded):
                     fail("LIVE_VERIFICATION_FAILED", "le commit live ne correspond pas à l'artefact", expected=metadata["commit"], actual=embedded)
+                if self.process_binary_hash(candidate_pid) != metadata["sha256"]:
+                    fail("LIVE_VERIFICATION_FAILED", "les octets du processus live ne correspondent pas à l'artefact scellé")
                 capability = self.capability(instance, run_id)
                 if capability["state"] != "present":
                     fail("LIVE_VERIFICATION_FAILED", "assistant-missions n'est pas disponible après le switch", capability=capability)
                 selector = {"schema_version": SCHEMA_VERSION, "artifact_id": artifact_id, "binary": str(artifact), "sha256": metadata["sha256"], "commit": metadata["commit"]}
-                atomic_json(self.state_dir / "deployments" / instance.name / "current.json", selector)
                 self.record_runtime_binary(instance, artifact, "bootstrap-deployment")
+                atomic_json(selector_path, selector)
                 self.journal(journal_path, transaction, "committed", server_info=info, capability=capability)
                 return {"deployed": True, "rolled_back": False, "transaction": transaction, "journal": str(journal_path)}
-            except ManagerError as deployment_error:
+            except Exception as raw_deployment_error:
+                deployment_error = raw_deployment_error if isinstance(raw_deployment_error, ManagerError) else ManagerError("DEPLOYMENT_INTERNAL_ERROR", str(raw_deployment_error))
+                if deployment_error.code == "GRACEFUL_SHUTDOWN_TIMEOUT" and self.pid(instance) == pid and self.process_alive(pid):
+                    self.journal(journal_path, transaction, "aborted-old-still-running", deployment_error={"code": deployment_error.code, "message": deployment_error.message})
+                    fail("DEPLOYMENT_ABORTED", "SIGTERM n'a pas arrêté l'ancien Studio; il est resté en place sans SIGKILL", journal=str(journal_path))
                 self.journal(journal_path, transaction, "rollback-starting", deployment_error={"code": deployment_error.code, "message": deployment_error.message})
-                candidate_pid = self.pid(instance)
-                if candidate_pid is not None:
-                    self.stop_pid(instance, candidate_pid, timeout=45, allow_kill=False)
-                previous_binary = canonical(previous["binary"])
-                rollback_pid = self.spawn(instance, previous_binary, env={str(k): str(v) for k, v in old_env.items()})
-                rollback_info = self.wait_ready(instance, rollback_pid)
-                self.record_runtime_binary(instance, previous_binary, "deployment-rollback")
-                self.journal(journal_path, transaction, "rolled-back", rollback_pid=rollback_pid, rollback_server_info=rollback_info)
+                try:
+                    candidate_pid = self.pid(instance)
+                    if candidate_pid is not None:
+                        self.stop_pid(instance, candidate_pid, timeout=45, allow_kill=False)
+                    previous_binary = canonical(previous["binary"])
+                    rollback_pid = self.spawn(instance, previous_binary, env={str(k): str(v) for k, v in old_env.items()})
+                    rollback_info = self.wait_ready(instance, rollback_pid)
+                    if canonical(rollback_info.get("work_dir", "")) != root or self.process_binary_hash(rollback_pid) != previous["sha256"]:
+                        fail("ROLLBACK_POSTCONDITION_FAILED", "le processus restauré ne correspond pas au runtime figé")
+                    self.record_runtime_binary(instance, previous_binary, "deployment-rollback")
+                    if previous_selector is None:
+                        selector_path.unlink(missing_ok=True)
+                    else:
+                        atomic_json(selector_path, previous_selector)
+                    self.journal(journal_path, transaction, "rolled-back", rollback_pid=rollback_pid, rollback_server_info=rollback_info)
+                except Exception as raw_rollback_error:
+                    rollback_error = raw_rollback_error if isinstance(raw_rollback_error, ManagerError) else ManagerError("ROLLBACK_INTERNAL_ERROR", str(raw_rollback_error))
+                    try:
+                        self.journal(journal_path, transaction, "recovery-required", rollback_error={"code": rollback_error.code, "message": rollback_error.message})
+                    except Exception:
+                        pass
+                    fail("ROLLBACK_FAILED", "le candidat a échoué et le rollback n'a pas satisfait ses postconditions", journal=str(journal_path), deployment_error=deployment_error.code, rollback_error=rollback_error.code)
                 fail("DEPLOYMENT_ROLLED_BACK", "le candidat a échoué; l'ancien binaire exact a été relancé", journal=str(journal_path), deployment_error=deployment_error.code)
 
     def deployment_status(self, project: str | None) -> dict[str, Any]:
