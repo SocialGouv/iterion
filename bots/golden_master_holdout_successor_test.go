@@ -151,19 +151,24 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"out from under git as uncommitted deletions.\n  Clause as parsed: %q", clause)
 	}
 
-	// 5. THE ESCAPE, or the criterion above becomes a trap. On a net where an
-	//    earlier cycle already left a COMMITTED successor, `git ls-files --
-	//    mutants/holdout` is non-empty before this rite writes anything, so the
-	//    seal declines for everything, nothing reaches the pile and
-	//    `holdout_total` is 0 while `holdout_awaiting_gate` is true —
-	//    reproduced against the harness's own functions. The conjunction is
-	//    then unsatisfiable by any act the rite is allowed to take (it may not
-	//    write the opt-in, and must not delete a set it did not draw), so the
-	//    paragraph has to say how that state ENDS: by reporting it.
+	// 5. THE ESCAPE, or the criterion above becomes a trap. Two INHERITED
+	//    states make it unreachable by any act the rite is allowed to take —
+	//    it may not write the opt-in, and must not delete a set it did not
+	//    draw — so the paragraph has to say how each ENDS: by reporting it.
+	//      - a committed successor an earlier cycle left: `git ls-files --
+	//        mutants/holdout` is non-empty before this rite writes anything, so
+	//        the seal declines for everything, nothing reaches the pile, and
+	//        `holdout_total` is 0 while `holdout_awaiting_gate` is true
+	//        (reproduced against the harness's own functions);
+	//      - the judged config already carrying `"seal_committed": true`:
+	//        `awaiting` is `committed_in_tree AND NOT opted_in`, so it never
+	//        turns true, and every successor the rite commits is sealed and
+	//        spent by this same run — an agent chasing the criterion re-commits
+	//        a set each pass and watches the next seal strip it back out.
 	//    (Not keyed on "zero holdout_total": the criterion above already reads
 	//    "a non-zero holdout_total", which contains that substring, so the
 	//    assertion would pass with the escape deleted.)
-	for _, want := range []string{"already tracked", "work_remaining"} {
+	for _, want := range []string{"already tracked", "carries the opt-in", "work_remaining"} {
 		if !strings.Contains(clause, want) {
 			t.Errorf("the successor instruction does not name %q, so it no longer "+
 				"gives the completion criterion an exit on a net that arrived with a "+
