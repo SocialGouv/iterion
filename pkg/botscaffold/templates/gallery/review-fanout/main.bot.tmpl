@@ -4,12 +4,17 @@
 ## in parallel, each with its own lens on the same diff; a compute
 ## (`await: wait_all`) folds their verdicts without an LLM; typed
 ## failures carry a blocked verdict and an empty scope.
-## The reviewers are read-only in FACT, not only by declaration
-## (`readonly: true` is the assertion workspace safety trusts to run
-## them side by side): neither writes the index — a `git add -N .` in a
-## parallel branch takes .git/index.lock and is FATAL when the sibling
-## holds it, and the loser's empty report would read as an approve.
-## Untracked files are read with `git diff --no-index`.
+## `readonly: true` is a SCHEDULING assertion — it is what lets workspace
+## safety run the two side by side — and NOT a tool gate: only codex (a
+## read-only sandbox) and pi (a read-only tool list) turn it into
+## enforcement, and no `tools:` list can, since reading a diff needs
+## `bash`. So the PROMPTS carry it, and in place (below) they are all that
+## stands between a reviewer and your checkout; the gate that would
+## enforce it is `permission: deny` with rules for the commands your own
+## lenses run (docs/permissions.md). They do not write the index either —
+## a `git add -N .` in a parallel branch takes .git/index.lock and is
+## FATAL when the sibling holds it, and the loser's empty report would
+## read as an approve. Untracked files are read with `git diff --no-index`.
 ## The run reviews the checkout IN PLACE (`worktree: none`) unless the
 ## worktree dial is on: a `worktree: auto` run starts from the anchor
 ## COMMIT, without the uncommitted work — set `base` then, or the scope
