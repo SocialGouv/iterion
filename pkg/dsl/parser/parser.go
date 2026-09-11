@@ -1,6 +1,9 @@
 package parser
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
@@ -161,7 +164,7 @@ func isTopLevelKeyword(tt TokenType) bool {
 		TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor, TokenSupervisor,
 		TokenAgent, TokenJudge, TokenRouter, TokenHuman,
 		TokenTool, TokenCompute, TokenEmit, TokenWait, TokenAwaitAnswers, TokenFail,
-		TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
+		TokenGroup, TokenUse, TokenSubbot, TokenWorkflow, TokenDSL:
 		return true
 	}
 	return false
@@ -283,6 +286,9 @@ func (p *parser) isReservedName(tok Token, name, kind string) bool {
 func (p *parser) parseFile() *ast.File {
 	f := &ast.File{}
 	startTok := p.peek()
+	// declared is set once a declaration has been parsed: the `dsl:`
+	// header may only open the file (parseDSLHeader).
+	declared := false
 
 	for {
 		// Skip newlines but capture top-level comments
@@ -308,6 +314,10 @@ func (p *parser) parseFile() *ast.File {
 		case TokenEOF:
 			f.Span = ast.Span{Start: p.pos(startTok), End: p.pos(t)}
 			return f
+
+		case TokenDSL:
+			p.parseDSLHeader(f, declared)
+			continue
 
 		case TokenVars:
 			vb := p.parseVarsBlock()
@@ -475,7 +485,49 @@ func (p *parser) parseFile() *ast.File {
 			p.next()
 			p.skipToNextTopLevel()
 		}
+		declared = true
 	}
+}
+
+// parseDSLHeader reads the `dsl: N` header — the syntax profile of the file
+// (ADR-098) — which may only be its FIRST declaration. The lexer took the
+// profile off the file's first significant line before tokenising, so a
+// header anywhere else was not applied (the strings above it were read as
+// profile 1), and saying so (E041) beats a line that claims a reading the
+// file did not get. A profile this build does not read is refused by name
+// (E040): a newer engine may read it, and `requires.iterion` is what keeps
+// such a file off an older build.
+func (p *parser) parseDSLHeader(f *ast.File, declared bool) {
+	t := p.next() // dsl
+	if _, ok := p.expect(TokenColon); !ok {
+		p.skipToNewline()
+		return
+	}
+	v := p.peek()
+	if v.Type == TokenNewline || v.Type == TokenEOF {
+		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got nothing")
+		return
+	}
+	p.next()
+	profile := -1
+	if v.Type == TokenInt {
+		if n, err := strconv.Atoi(v.Value); err == nil && n >= 1 {
+			profile = n
+		}
+	}
+	switch {
+	case profile < 1:
+		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+v.Value+"'")
+	case profile > MaxProfile:
+		p.addError(DiagUnknownProfile, v, fmt.Sprintf("unknown dsl profile %d — this build reads profiles 1 to %d", profile, MaxProfile))
+	case declared:
+		p.addError(DiagMisplacedHeader, t, "dsl: must be the first declaration of the file — everything above it was read as profile 1")
+	case f.Profile != 0:
+		p.addError(DiagMisplacedHeader, t, "duplicate dsl: header — keeping the first")
+	default:
+		f.Profile = profile
+	}
+	p.skipToNewline()
 }
 
 // parseDeclHeader consumes the leading `<keyword> <name>:` + indent that

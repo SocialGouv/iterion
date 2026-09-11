@@ -114,6 +114,7 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
+	Profile      int                     `json:"profile,omitempty"`
 	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
 	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
 	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
@@ -928,6 +929,7 @@ func toJSON(f *File) *jsonFile {
 	for _, c := range f.Comments {
 		jf.Comments = append(jf.Comments, &jsonComment{Text: c.Text})
 	}
+	jf.Profile = f.Profile
 
 	return jf
 }
@@ -1809,6 +1811,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	for _, jc := range jf.Comments {
 		f.Comments = append(f.Comments, &Comment{Text: jc.Text})
 	}
+	f.Profile = jf.Profile
 
 	return f, nil
 }

@@ -55,6 +55,7 @@ const (
 	TokenHuman
 	TokenTool
 	TokenWorkflow
+	TokenDSL // `dsl`: the syntax-profile header that may open a file
 	TokenCompute
 	TokenEmit
 	TokenWait
@@ -242,6 +243,7 @@ var tokenNames = map[TokenType]string{
 	TokenHuman:              "human",
 	TokenTool:               "tool",
 	TokenWorkflow:           "workflow",
+	TokenDSL:                "dsl",
 	TokenCompute:            "compute",
 	TokenEmit:               "emit",
 	TokenWait:               "wait",
@@ -389,6 +391,7 @@ var keywords = map[string]TokenType{
 	"human":                 TokenHuman,
 	"tool":                  TokenTool,
 	"workflow":              TokenWorkflow,
+	"dsl":                   TokenDSL,
 	"compute":               TokenCompute,
 	"emit":                  TokenEmit,
 	"wait":                  TokenWait,

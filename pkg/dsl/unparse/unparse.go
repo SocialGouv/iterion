@@ -13,33 +13,34 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
-// Unparse renders an ast.File back to .bot DSL source text.
+// Unparse renders an ast.File back to .bot DSL source text, in the syntax
+// profile the file declares (ast.File.EffectiveProfile): from profile 2 the
+// text opens with the `dsl: N` header and every string has a quoted form
+// (standard escapes, no directive); in profile 1 a value no v1 form can
+// hold switches the whole file to the strict-escape directive.
 func Unparse(f *ast.File) string {
+	profile := f.EffectiveProfile()
+	if profile > ast.DefaultProfile {
+		text, _ := render(f, true, profile)
+		return text
+	}
 	strict := hasStrictEscapeDirective(f.Comments)
-	text, needsStrict := render(f, strict)
+	text, needsStrict := render(f, strict, profile)
 	if needsStrict && !strict {
 		// A value no v1 form can hold (a backtick together with a quote,
 		// a backslash, a newline, or any carriage return): the whole file
 		// switches to strict-escape mode, where every value has a quoted
 		// form.
-		strict = true
-		text, _ = render(f, true)
-	}
-	if strict {
-		// The lexer reads the directive from the file's first 32 lines,
-		// before the first line of code. It goes on line 1 whatever
-		// comment it came from — render skipped its copies in the comment
-		// list — or a directive at comment #35 would be written strict and
-		// read v1.
-		text = "## " + strictEscapeDirective + "\n" + text
+		text, _ = render(f, true, profile)
 	}
 	return text
 }
 
-// strictEscapeDirective is the leading comment that opts a file into
-// standard escape interpretation (pkg/dsl/parser detectStrictEscape).
+// strictEscapeDirective is the leading comment that opts a profile-1 file
+// into standard escape interpretation (parser.ReadPreamble).
 const strictEscapeDirective = "strict-escape: on"
 
 // hasStrictEscapeDirective mirrors the lexer's recognition of the directive
@@ -48,33 +49,30 @@ const strictEscapeDirective = "strict-escape: on"
 // the OUTPUT is read in is what the quoting has to match.
 func hasStrictEscapeDirective(comments []*ast.Comment) bool {
 	for _, c := range comments {
-		if isStrictEscapeDirective(c.Text) {
+		if parser.IsStrictEscapeDirective(c.Text) {
 			return true
 		}
 	}
 	return false
 }
 
-// isStrictEscapeDirective accepts the forms the lexer accepts.
-func isStrictEscapeDirective(text string) bool {
-	switch strings.TrimSpace(text) {
-	case "strict-escape: on", "strict-escape:on", "strict-escape = on":
-		return true
-	}
-	return false
-}
-
 // render writes f in one quoting mode and reports whether a value needed the
-// strict one. In strict mode the directive's own comment lines are skipped:
-// Unparse writes the directive on line 1.
-func render(f *ast.File, strict bool) (string, bool) {
-	w := &fileWriter{b: buf{strict: strict}, skipDirective: strict}
+// strict one. The directive's own comment lines are never copied: in
+// profile 1 the writer places the directive itself (writeHead), and from
+// profile 2 the header replaces it.
+func render(f *ast.File, strict bool, profile int) (string, bool) {
+	w := &fileWriter{
+		b:              buf{strict: strict},
+		profile:        profile,
+		skipDirective:  true,
+		writeDirective: strict && profile <= ast.DefaultProfile,
+	}
 	w.writeFile(f)
 	return w.b.String(), w.b.needsStrict
 }
 
 func (w *fileWriter) writeFile(f *ast.File) {
-	w.writeComments(f.Comments)
+	w.writeHead(f.Comments)
 	w.writeVars(f.Vars)
 	w.writePresets(f.Presets)
 	w.writeAttachments(f.Attachments)
@@ -226,9 +224,15 @@ func indentBlock(text, indent string) string {
 type fileWriter struct {
 	b         buf
 	needBlank bool
+	// profile is the syntax profile the text is written in; from 2 the
+	// head carries the `dsl: N` header.
+	profile int
 	// skipDirective drops the strict-escape directive from the comment
-	// list: Unparse writes it on line 1 itself.
+	// list: writeHead places it itself, or the header replaces it.
 	skipDirective bool
+	// writeDirective writes the strict-escape directive in the head — a
+	// profile-1 file written strict.
+	writeDirective bool
 }
 
 // ensureBody writes a no-op property under a declaration header that got
@@ -266,17 +270,58 @@ func (w *fileWriter) blankLine() {
 	w.needBlank = true
 }
 
+// writeHead writes the file's head in the order its readers expect: the
+// frontmatter block first (bundle.ParseFrontmatter wants the fence on the
+// first non-blank line), then — a profile-1 file written strict — the
+// escape directive, which the lexer reads among the first 32 lines before
+// the first line of code, then the other comments, then, from profile 2,
+// the `dsl: N` header on the first significant line (parser.ReadPreamble).
+func (w *fileWriter) writeHead(comments []*ast.Comment) {
+	fm := frontmatterLen(comments)
+	w.writeComments(comments[:fm])
+	if w.writeDirective {
+		w.writeComment(strictEscapeDirective)
+	}
+	w.writeComments(comments[fm:])
+	if w.profile > ast.DefaultProfile {
+		if w.b.Len() > 0 {
+			w.b.WriteByte('\n')
+		}
+		fmt.Fprintf(&w.b, "dsl: %d\n", w.profile)
+		w.needBlank = true
+	}
+}
+
+// frontmatterLen is the number of leading comments that form the
+// frontmatter block — the opening `---` fence through the closing one — or
+// 0 when the comments do not open with one.
+func frontmatterLen(comments []*ast.Comment) int {
+	if len(comments) == 0 || strings.TrimSpace(comments[0].Text) != workflowfile.FrontmatterFence {
+		return 0
+	}
+	for i := 1; i < len(comments); i++ {
+		if strings.TrimSpace(comments[i].Text) == workflowfile.FrontmatterFence {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 func (w *fileWriter) writeComments(comments []*ast.Comment) {
 	for _, c := range comments {
-		if w.skipDirective && isStrictEscapeDirective(c.Text) {
+		if w.skipDirective && parser.IsStrictEscapeDirective(c.Text) {
 			continue
 		}
-		w.blankLine()
-		w.needBlank = false // comments don't need blank line between them
-		w.b.WriteString("## ")
-		w.b.WriteString(c.Text)
-		w.b.WriteByte('\n')
+		w.writeComment(c.Text)
 	}
+}
+
+func (w *fileWriter) writeComment(text string) {
+	w.blankLine()
+	w.needBlank = false // comments don't need blank line between them
+	w.b.WriteString("## ")
+	w.b.WriteString(text)
+	w.b.WriteByte('\n')
 }
 
 func (w *fileWriter) writeVars(vars *ast.VarsBlock) {

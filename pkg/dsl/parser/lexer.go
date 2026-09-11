@@ -39,6 +39,12 @@ type Lexer struct {
 	// every \X is preserved verbatim for downstream layers to handle).
 	strictEscape bool
 
+	// profile is the syntax profile the file declares in its `dsl: N`
+	// header (parser.Preamble), 1 when it declares none. Read before
+	// tokenising, as the escape mode is: profile 2 reads standard escapes
+	// with no directive.
+	profile int
+
 	// blockScalarMode: when true, lines are accumulated into blockScalarBuf
 	// until we see a line less indented than blockScalarBaseLevel. Triggered
 	// by `|` immediately following a colon, YAML-style.
@@ -66,6 +72,13 @@ func NewLexer(filename, src string) *Lexer {
 	//    legitimate-as-content scenario in heredocs.
 	src = strings.TrimPrefix(src, "\ufeff")
 	src = strings.ReplaceAll(src, "\r\n", "\n")
+	// The head of the file decides how the rest is read (ReadPreamble): a
+	// header the parser will refuse (E040) reads as profile 1 meanwhile.
+	pre := ReadPreamble(src)
+	profile := pre.Profile
+	if profile < 1 {
+		profile = 1
+	}
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,
@@ -73,7 +86,8 @@ func NewLexer(filename, src string) *Lexer {
 		col:          1,
 		indentStack:  []int{0},
 		atLineStart:  true,
-		strictEscape: detectStrictEscape(src),
+		strictEscape: pre.StrictEscape || profile >= 2,
+		profile:      profile,
 	}
 	l.tokenize()
 	return l

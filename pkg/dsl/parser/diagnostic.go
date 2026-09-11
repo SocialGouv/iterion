@@ -27,6 +27,10 @@ const (
 	// Edge clause errors
 	DiagDuplicateEdgeClause DiagCode = "E030" // duplicate when/as/with clause on an edge
 	DiagElseWithWhen        DiagCode = "E031" // an edge cannot carry both when and else
+
+	// Header errors (the `dsl: N` syntax profile, ADR-098)
+	DiagUnknownProfile  DiagCode = "E040" // the header names a profile this build does not read, or is not a positive integer
+	DiagMisplacedHeader DiagCode = "E041" // the header is not the first declaration, or appears twice
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -47,6 +51,8 @@ var hints = map[DiagCode]string{
 	DiagInvalidType:         "Types are `string`, `bool`, `int`, `float`, `json` and `string[]` (a schema field may also be `file`).",
 	DiagDuplicateEdgeClause: "Each of `when`/`else`, `as` and `with` may appear once per edge.",
 	DiagElseWithWhen:        "An edge is either guarded (`when`) or the fallback (`else`), never both.",
+	DiagUnknownProfile:      "Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: \">= <version>\" }` in the bundle manifest.",
+	DiagMisplacedHeader:     "Move the `dsl:` line above every declaration — after the leading comments, before the first block or node — and keep a single one.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is

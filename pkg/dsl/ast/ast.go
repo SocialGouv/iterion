@@ -6,8 +6,17 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 // File — root of the AST
 // ---------------------------------------------------------------------------
 
+// DefaultProfile is the syntax profile a file declares by declaring none:
+// today's grammar, frozen (ADR-098).
+const DefaultProfile = 1
+
 // File is the root AST node representing an entire .bot source file.
 type File struct {
+	// Profile is the syntax profile of the file's `dsl: N` header, its
+	// first declaration; 0 when it has none. Read it through
+	// EffectiveProfile: a document built in memory — the studio's, a
+	// test's — has no header and is profile 1, as a file without one is.
+	Profile      int
 	Vars         *VarsBlock          // top-level vars (optional, at most one)
 	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
 	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
@@ -33,6 +42,15 @@ type File struct {
 	Workflows    []*WorkflowDecl     // workflow declarations
 	Comments     []*Comment          // top-level comments (## ...)
 	Span         Span
+}
+
+// EffectiveProfile is the syntax profile the file is read in: its header's,
+// or DefaultProfile when it declares none.
+func (f *File) EffectiveProfile() int {
+	if f.Profile < DefaultProfile {
+		return DefaultProfile
+	}
+	return f.Profile
 }
 
 // GroupDecl is a reusable cluster of nodes + internal edges, parameterised by

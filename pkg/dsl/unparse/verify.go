@@ -76,6 +76,12 @@ func Verify(f *ast.File, text string) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("the serialised source does not parse: %s", strings.Join(errs, "; "))
 	}
+	// The profile is not program — the same AST compiles the same in
+	// either — so SameProgram cannot see it lost: a document saved in the
+	// wrong profile would read its strings and its prompts otherwise.
+	if got, want := pr.File.EffectiveProfile(), f.EffectiveProfile(); got != want {
+		return fmt.Errorf("the serialised source reads as dsl profile %d, the document is profile %d", got, want)
+	}
 	ca, cb := ir.Compile(f), ir.Compile(pr.File)
 	if why := ir.SameProgram(ca, cb); why != "" {
 		return fmt.Errorf("the serialised source is not the same program: %s", why)
