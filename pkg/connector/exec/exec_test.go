@@ -1630,3 +1630,66 @@ func readAll(r *http.Request) ([]byte, error) {
 		}
 	}
 }
+
+// TestAPathParameterCannotBecomePathSTRUCTURE.
+//
+// `a/b` is escaped into one segment, which is the case the escaping was added
+// for. `.` and `..` are UNRESERVED, so `url.PathEscape` returns them
+// unchanged, and Go sends `EscapedPath()` verbatim — no client-side
+// dot-segment cleaning. Measured before the refusal: `repo: ".."` sent
+// `/api/v1/repos/acme/../issues/1`, resolved by the vendor (or any proxy) to
+// `/api/v1/repos/issues/1`, and `repo: ""` sent `//`.
+//
+// A path argument comes from `{{...}}` — an issue title, a branch name, a
+// model's output. Addressing a resource the workflow never named, and
+// checkpointing that answer as the declared call's, is the failure this whole
+// package is built to refuse; on a mutation it is a write to the wrong place.
+func TestAPathParameterCannotBecomePathStructure(t *testing.T) {
+	for _, seg := range []string{"..", ".", ""} {
+		reached := false
+		e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+			reached = true
+			_, _ = w.Write([]byte(`{}`))
+		})
+		res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+			map[string]any{"owner": "acme", "repo": seg, "index": 1}, creds())
+		done()
+		if err != nil {
+			t.Fatalf("repo=%q: call: %v", seg, err)
+		}
+		if reached {
+			t.Errorf("repo=%q: the call went out — a dot or empty segment must be refused locally", seg)
+		}
+		if res.Err == nil || res.Err.Class != spec.ErrBadRequest {
+			t.Errorf("repo=%q: want a bad_request refusal, got %v", seg, res.Err)
+			continue
+		}
+		// The refusal must name the parameter, or an author cannot act on it.
+		if !strings.Contains(res.Err.Message, "repo") {
+			t.Errorf("repo=%q: the refusal must name the parameter: %s", seg, res.Err.Message)
+		}
+	}
+}
+
+// The sibling case, kept next to it: a value that CONTAINS a separator is one
+// segment, escaped — never refused. Refusing it would break every vendor whose
+// ids carry a slash.
+func TestAPathParameterContainingASeparatorIsStillOneSegment(t *testing.T) {
+	var sent string
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		sent = r.URL.RequestURI()
+		_, _ = w.Write([]byte(`{}`))
+	})
+	defer done()
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		map[string]any{"owner": "acme", "repo": "a/../b", "index": 1}, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.OK() {
+		t.Fatalf("a separator in a value must be escaped, not refused: %v", res.Err)
+	}
+	if !strings.Contains(sent, "a%2F..%2Fb") {
+		t.Errorf("sent %q, want the whole value escaped into one segment", sent)
+	}
+}

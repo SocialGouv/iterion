@@ -275,7 +275,39 @@ func pathValue(op spec.Operation, p spec.Param) (string, error) {
 	}
 	// serializeValue may return several values for an exploded style; a path
 	// cannot express that, so it is joined the way `simple` does.
-	return strings.Join(values, ","), nil
+	seg := strings.Join(values, ",")
+	// A segment that is EMPTY or a dot-segment is not a resource name — it is
+	// path structure, and the escaping above cannot remove it: `.` and `..`
+	// are unreserved, so `url.PathEscape` returns them unchanged and Go sends
+	// `EscapedPath()` verbatim (no dot-segment cleaning on the client side).
+	// Measured before this refusal: `repo: ".."` sent
+	// `/api/v1/repos/acme/../issues/1`, which the vendor — or any proxy —
+	// resolves to `/api/v1/repos/issues/1`, and `repo: ""` sent `//`.
+	//
+	// So a path argument taken from an issue title, a branch name or a model's
+	// output addressed a resource the workflow never named, and whatever THAT
+	// resource answered was checkpointed as the answer to the declared call.
+	// On a mutation it is a write to the wrong place. This is the same defect
+	// class as a value containing `/`, which is already refused by escaping;
+	// here escaping is not available, so the call is.
+	switch seg {
+	case "", ".", "..":
+		return "", &Error{
+			Class: spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: path parameter %s is %q, which is path structure and not a resource name — the call would address %s",
+				op.ID, p.Key, seg, dotSegmentTarget(seg)),
+		}
+	}
+	return seg, nil
+}
+
+// dotSegmentTarget names what the vendor would have resolved, so the refusal
+// says what it prevented rather than only that it refused.
+func dotSegmentTarget(seg string) string {
+	if seg == ".." {
+		return "the parent collection"
+	}
+	return "a different path than the one declared"
 }
 
 // buildQuery places the query parameters, honouring each one's serialization.
