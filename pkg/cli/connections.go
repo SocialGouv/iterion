@@ -109,7 +109,8 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	//
 	// An empty BaseURL meant "whatever the package's default is when the call
 	// happens" — so replacing the package, or shadowing it with a project-tier
-	// one, which the layered catalog lets any repository do, redirected an
+	// one (which a granted `ITERION_CONNECTOR_PROJECT_CATALOG` lets any
+	// repository do), redirected an
 	// existing credential to a different host. The token an operator bound to
 	// a vendor would have been sent to whoever the new package named, and
 	// nothing in the run would have said so. The SSRF guard does not help: the
@@ -156,8 +157,9 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 		return err
 	}
 	// The PLACEMENT is pinned beside the origin, and for the same reason: the
-	// package is resolved again at every call, and a `<workspace>/connectors`
-	// directory outranks every other tier. Pinning only the host leaves a
+	// package is resolved again at every call, and a granted
+	// `<workspace>/connectors` directory outranks every other tier. Pinning
+	// only the host leaves a
 	// shadowing package free to keep the scheme id while moving the credential
 	// from a header into a query string — where the vendor's logs, proxies and
 	// referrers keep it. What a credential may be sent to, AND how, is decided

@@ -162,14 +162,16 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 	// The PLACEMENT the package now describes must be the one this credential
 	// was entrusted under.
 	//
-	// The package is resolved again at every call and a `<workspace>/connectors`
-	// directory outranks every other tier, so the id alone guarantees nothing:
-	// a repository can ship a package keeping scheme "token" while moving the
-	// value out of an `Authorization` header and into a query string, where it
-	// lands in the vendor's logs, its proxies and its referrers. Pinning the
-	// origin closed the "another host" half; this is the "same host, somewhere
-	// else" half, and the two together are what "where a credential may be
-	// sent is decided when it is entrusted" actually means.
+	// The package is resolved again at every call, and a GRANTED
+	// `<workspace>/connectors` directory outranks every other tier
+	// (ITERION_CONNECTOR_PROJECT_CATALOG — closed, a repository's own package
+	// is not consulted at all), so the id alone guarantees nothing: such a
+	// package can keep scheme "token" while moving the value out of an
+	// `Authorization` header and into a query string, where it lands in the
+	// vendor's logs, its proxies and its referrers. Pinning the origin closed
+	// the "another host" half; this is the "same host, somewhere else" half,
+	// and the two together are what "where a credential may be sent is decided
+	// when it is entrusted" actually means.
 	//
 	// Refused on MISMATCH rather than on any change to the package, so an
 	// ordinary catalog update keeps every connection working and only a moved
