@@ -13,10 +13,11 @@
 ## configured: a `verify_command` left empty would make every verdict
 ## green, and a campaign that "converges" on a check that checks nothing
 ## is the façade the shape exists to prevent. Fill in: the mission,
-## `verify_command`, `max_passes`. The verifier needs `jq` on the run's
-## PATH (every iterion sandbox image ships it; another image declares it
-## in the bot's devbox.json). Read docs/workflow_authoring_pitfalls.md
-## before pointing it at real code.
+## `verify_command`, `max_passes`. The checks run through `bash -c`, as
+## every tool command does. The verifier needs `jq`: the bundle pins it in
+## its devbox.json, which the engine installs on any image that ships
+## devbox (every iterion sandbox image does, and ships jq too). Read
+## docs/workflow_authoring_pitfalls.md before pointing it at real code.
 <%template "vars_block" .%>
 schema check_out:
   configured: bool
@@ -114,10 +115,11 @@ agent campaign:<%template "llm_fields" .%>
 ## fragment, which the runtime would wrap as `{"result": …}` in silence
 ## and the gate would read as nil forever. A line that could close the
 ## prompt's fence (``` or ~~~) is prefixed, so the checks' output is data
-## to the agent, never instructions. jq ships in every iterion sandbox
-## image; another image declares it in the bot's devbox.json.
+## to the agent, never instructions. jq is pinned in the bundle's
+## devbox.json (installed on any image that ships devbox) and ships in
+## every iterion sandbox image.
 tool verify:
-  command: `command -v jq >/dev/null || { echo "verify: jq is required to JSON-encode the checks' output" >&2; exit 1; }; out=$(sh -c {{vars.verify_command}} 2>&1 | tee /dev/stderr; exit ${PIPESTATUS[0]}); rc=$?; ok=false; [ "$rc" -eq 0 ] && ok=true; printf '%s' "$out" | jq -Rs --argjson ok "$ok" '{ok: $ok, detail: (.[-4000:] | split("\n") | map(if test("^\\s{0,3}(\\x60{3,}|~{3,})") then "| " + . else . end) | join("\n"))}' || { echo "verify: jq failed to encode the checks' output" >&2; exit 1; }`
+  command: `command -v jq >/dev/null || { echo "verify: jq is required to JSON-encode the checks' output" >&2; exit 1; }; out=$(bash -c {{vars.verify_command}} 2>&1 | tee /dev/stderr; exit ${PIPESTATUS[0]}); rc=$?; ok=false; [ "$rc" -eq 0 ] && ok=true; printf '%s' "$out" | jq -Rs --argjson ok "$ok" '{ok: $ok, detail: (.[-4000:] | split("\n") | map(if test("^\\s{0,3}(\\x60{3,}|~{3,})") then "| " + . else . end) | join("\n"))}' || { echo "verify: jq failed to encode the checks' output" >&2; exit 1; }`
   output: verify_out
 
 ## Deterministic convergence: the flag AND the verdict, no LLM in the loop.

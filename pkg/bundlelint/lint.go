@@ -64,6 +64,12 @@ const (
 	// the same state outright; the editor warns, since a manifest mid-edit is
 	// a normal state there and a refusal would freeze its diagnostics.
 	DiagBundleUnopenable Code = "C222"
+	// DiagManifestNotRead: a file named like a manifest sits beside the
+	// main.bot but was not read as this bundle's manifest — a typo in its
+	// only distinctive key, a file the parser cannot read, one over the size
+	// bound — so the file compiled ALONE, without the prompts, presets and
+	// skills beside it. The one outcome that would otherwise be silent.
+	DiagManifestNotRead Code = "C223"
 
 	// DiagBundleNameTripleMismatch: the bundle carries per-bot memory — a node
 	// with `memory: visibility: bot`, or `auto_memory: on` — but the manifest

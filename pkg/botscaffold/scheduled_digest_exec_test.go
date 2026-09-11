@@ -25,14 +25,7 @@ func TestScheduledDigestCollectHandsTheLogOverInline(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the shape's commands are POSIX shell")
 	}
-	bins := map[string]string{}
-	for _, bin := range []string{"bash", "git", "jq", "grep"} {
-		p, err := exec.LookPath(bin)
-		if err != nil {
-			t.Skipf("%s not on PATH", bin)
-		}
-		bins[bin] = p
-	}
+	bins := requireBins(t, "bash", "git", "jq", "grep")
 	tpl, ok := TemplateByID("scheduled-digest")
 	if !ok {
 		t.Fatal("no scheduled-digest template")

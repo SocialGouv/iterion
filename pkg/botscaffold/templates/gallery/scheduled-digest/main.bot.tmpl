@@ -39,9 +39,11 @@ prompt digest_user:
 ## No LLM: git's own log, handed to the next node INSIDE the JSON on
 ## stdout — the node's output is the hand-off, so no file has to be
 ## visible to both nodes (a sandboxed tool and a host-side agent do not
-## share a /tmp). `jq -Rs .` JSON-encodes the raw text; jq ships in every
-## sandbox image (python3 only from `-full` up), and its ABSENCE fails the node by
-## name: without the guard, `$(… | jq …)` would substitute nothing, the
+## share a /tmp). `jq -Rs .` JSON-encodes the raw text; jq is pinned in the
+## bundle's devbox.json (installed on any image that ships devbox) and
+## ships in every iterion sandbox image (python3 only from `-full` up), and its
+## ABSENCE fails the node by name: without the guard, `$(… | jq …)` would
+## substitute nothing, the
 ## stdout would not parse, and the agent would digest a literal
 ## placeholder into a green run. At most 500 commits reach the prompt
 ## (`--max-count`), and the count is what the prompt carries. A git

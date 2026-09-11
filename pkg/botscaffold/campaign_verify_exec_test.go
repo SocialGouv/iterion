@@ -29,14 +29,7 @@ func TestCampaignVerifyCarriesTheChecksOutputToTheNextPass(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the shape's commands are POSIX shell")
 	}
-	bins := map[string]string{}
-	for _, bin := range []string{"bash", "sh", "jq", "tee"} {
-		p, err := exec.LookPath(bin)
-		if err != nil {
-			t.Skipf("%s not on PATH", bin)
-		}
-		bins[bin] = p
-	}
+	bins := requireBins(t, "bash", "sh", "jq", "tee")
 	tpl, ok := TemplateByID("campaign-loop")
 	if !ok {
 		t.Fatal("no campaign-loop template")
@@ -90,6 +83,18 @@ func TestCampaignVerifyCarriesTheChecksOutputToTheNextPass(t *testing.T) {
 	if !green.OK || !strings.Contains(green.Detail, "all-fine") {
 		t.Errorf("passing checks: %+v, want ok=true and their output in detail", green)
 	}
+	// Checks that speak on stderr ONLY (a test runner's failure summary)
+	// still reach detail: the capture is of both streams.
+	quiet, _ := run("echo only-on-stderr >&2; exit 1")
+	if quiet.OK || !strings.Contains(quiet.Detail, "only-on-stderr") {
+		t.Errorf("stderr-only checks: %+v, want their stderr in detail", quiet)
+	}
+	// The operator's checks run through bash, as every tool command does:
+	// a bashism in verify_command is not a failed check.
+	bashism, _ := run("[[ 1 -eq 1 ]] && echo bash-ok")
+	if !bashism.OK || !strings.Contains(bashism.Detail, "bash-ok") {
+		t.Errorf("a bashism in verify_command: %+v, want ok=true (the checks must run under bash, not sh)", bashism)
+	}
 	// Bounded in bytes: one 9 000-character line keeps its last 4 000.
 	long, _ := run("i=0; while [ $i -lt 900 ]; do printf 0123456789; i=$((i+1)); done; echo; echo the-last-line; exit 1")
 	if long.OK || len(long.Detail) > 4000 || !strings.HasSuffix(strings.TrimRight(long.Detail, "\n"), "the-last-line") {
@@ -110,7 +115,7 @@ func TestCampaignVerifyCarriesTheChecksOutputToTheNextPass(t *testing.T) {
 	// leave a witness.
 	sentinel := filepath.Join(repo, "ran-anyway")
 	bin := t.TempDir()
-	for _, name := range []string{"sh", "tee"} {
+	for _, name := range []string{"bash", "sh", "tee"} {
 		if err := os.Symlink(bins[name], filepath.Join(bin, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +144,7 @@ func TestCampaignVerifyCarriesTheChecksOutputToTheNextPass(t *testing.T) {
 	// A jq that FAILS (an OOM-killed slurp on a memory-capped sandbox) must
 	// fail the node too — never a hand-assembled `{"ok":true,"detail":}`.
 	failing := t.TempDir()
-	for _, name := range []string{"sh", "tee"} {
+	for _, name := range []string{"bash", "sh", "tee"} {
 		if err := os.Symlink(bins[name], filepath.Join(failing, name)); err != nil {
 			t.Fatal(err)
 		}

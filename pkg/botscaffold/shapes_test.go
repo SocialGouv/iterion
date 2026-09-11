@@ -483,8 +483,11 @@ func singleQuote(s string) string {
 // placeholder default `true` prints nothing and hides the whole class.
 func TestCampaignLoopVerifyEmitsOnlyJSONOnStdout(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("the shape's command is POSIX sh")
+		t.Skip("the shape's command is a bash command")
 	}
+	// Named, and a failure under CI: a runner missing one is a runner to
+	// fix, and the message sends the reader there, not to the template.
+	requireBins(t, "bash", "jq")
 	tpl, ok := TemplateByID("campaign-loop")
 	if !ok {
 		t.Fatal("the campaign-loop template is gone")
@@ -510,7 +513,10 @@ func TestCampaignLoopVerifyEmitsOnlyJSONOnStdout(t *testing.T) {
 				t.Fatalf("a ref went unsubstituted, the test no longer runs what the runtime does: %q", command)
 			}
 			var stdout, stderr bytes.Buffer
-			sh := exec.Command("sh", "-c", command)
+			// bash, the shell the runtime pins for a tool node's command
+			// (executor_tool.go): /bin/sh is dash on Debian-derived images
+			// and cannot read the bashisms the command relies on.
+			sh := exec.Command("bash", "-c", command)
 			sh.Stdout, sh.Stderr = &stdout, &stderr
 			if err := sh.Run(); err != nil {
 				t.Fatalf("the node's own command must succeed whatever the checks say: %v (stderr %q)", err, stderr.String())

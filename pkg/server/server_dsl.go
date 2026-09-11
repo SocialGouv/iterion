@@ -158,6 +158,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var unopenable error
+	var notRead string
 	// A bundle's prompts/*.md reach the compiler the way they do at a
 	// launch when the editor says which file the document is. The path is
 	// a hint: one the server cannot place (no workdir on a cloud server, an
@@ -191,11 +192,30 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
 					return
 				}
+			default:
+				// A file named like a manifest beside the main.bot that did
+				// NOT mark it — a typo in its only distinctive key, a file the
+				// parser cannot read — leaves the document validated alone,
+				// and the response says why (C223): the one outcome that
+				// would otherwise be silent.
+				if m, why := bundle.ForeignManifestBeside(abs); m != "" {
+					notRead = filepath.Base(m) + " beside main.bot was not read as this bundle's manifest: it " + why
+				}
 			}
 		}
 	}
 
 	resp := validateResponse{Valid: true}
+	if notRead != "" {
+		msg := notRead + " — the document was validated alone, without the prompts, presets and skills beside it"
+		resp.Warnings = append(resp.Warnings, msg)
+		resp.Issues = append(resp.Issues, DiagnosticDTO{
+			Code:     string(bundlelint.DiagManifestNotRead),
+			Severity: "warning",
+			Message:  msg,
+			Hint:     "if it is this bot's manifest, fix it (the reason names the keys); a manifest of another tool beside a loose main.bot needs nothing",
+		})
+	}
 	if unopenable != nil {
 		msg := "bundle does not open: " + unopenable.Error() + " — the document was validated alone, without the bundle's prompts, presets and skills; a reference to a bundle prompt reads as C003 until it opens"
 		resp.Warnings = append(resp.Warnings, msg)

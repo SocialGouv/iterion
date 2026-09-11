@@ -199,11 +199,11 @@ func Templates() []Template {
 			Description: "One agent works in passes; the repo's own checks gate; a bounded loop with a typed failure.",
 			Spec: Spec{
 				Shape:        "campaign-loop",
-				Description:  "Carries a mission to completion in verified, committed passes. The verifier needs jq on the run's PATH (every iterion sandbox image ships it).",
+				Description:  "Carries a mission to completion in verified, committed passes. The verifier needs jq: the bundle pins it in devbox.json (installed on any image that ships devbox), and every iterion sandbox image ships it.",
 				WhenToUse:    "Use for work that must converge on a deterministic check (build, tests) rather than an opinion.",
 				Instructions: "Describe the campaign: what to change, where, and what \"done\" means.\nThe agent works in passes and commits each unit; after every pass the\nverifier runs {{vars.verify_command}} and its exit code is the verdict.",
 				Vars: []VarSpec{
-					{Name: "verify_command", Type: "string", Default: "", Description: "REQUIRED: the repository's own build+test, run by sh -c after every pass; its exit code is the verdict. Left empty, the run refuses at entry (CAMPAIGN_MISCONFIGURED) before any pass — a verifier that checks nothing would make every verdict green."},
+					{Name: "verify_command", Type: "string", Default: "", Description: "REQUIRED: the repository's own build+test, run by bash -c after every pass; its exit code is the verdict. Left empty, the run refuses at entry (CAMPAIGN_MISCONFIGURED) before any pass — a verifier that checks nothing would make every verdict green."},
 					{Name: "max_passes", Type: "int", Default: "4", Description: "Upper bound on passes before the run fails PASSES_EXHAUSTED (resumable: raise it and resume); under 1 the run refuses at entry."},
 				},
 				// The campaign commits in stride: isolated by default, and the
@@ -247,7 +247,7 @@ func Templates() []Template {
 			Description: "Collect with a tool, digest with an agent, verify the artifact — with the cron in the manifest.",
 			Spec: Spec{
 				Shape:        "scheduled-digest",
-				Description:  "Posts a periodic digest of repository activity.",
+				Description:  "Posts a periodic digest of repository activity. The collector needs jq: the bundle pins it in devbox.json (installed on any image that ships devbox), and every iterion sandbox image ships it.",
 				WhenToUse:    "Use for a recurring, read-only summary that a schedule launches.",
 				Instructions: "Produce a concise digest of what changed in this repository: read the\ncollected commit log, group by theme, lead with the most impactful\nchange, keep it under one screen.",
 				Vars: []VarSpec{

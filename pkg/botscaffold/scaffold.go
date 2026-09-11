@@ -42,7 +42,7 @@ var presetExample []byte
 // Every entry must be something the packer already excludes — asserted
 // by TestBundleGitignore_MatchesPackerSkips rather than by comment, so
 // the two cannot drift silently.
-const bundleGitignore = "*.botz\n.iterion/\n"
+const bundleGitignore = "*.botz\n.iterion/\n.devbox/\n"
 
 // SlugRe is the accepted shape for a new bot's directory/technical name.
 var SlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
