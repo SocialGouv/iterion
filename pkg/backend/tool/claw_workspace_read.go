@@ -3,6 +3,7 @@ package tool
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,12 @@ import (
 // agent providers. The continuation marker is part of the result, so a large
 // file can never look complete merely because a downstream clipped its tail.
 const workspaceReadMaxBytes = 240 * 1024
+
+// A regular file past this size is not something to page through 240 KiB
+// at a time, and counting its lines for the continuation marker would
+// stream it all through the agent's turn. Refuse it with an actionable
+// error — grep and glob still reach it.
+const workspaceReadMaxFileBytes = 64 * 1024 * 1024
 
 const (
 	workspaceGrepMaxResults     = 1000
@@ -35,7 +42,8 @@ var defaultWorkspaceGrepLimits = workspaceGrepLimits{
 
 func workspaceReadFileTool() api.Tool {
 	t := clawtools.ReadFileTool()
-	t.Description = "Read a workspace file. Large files are returned in explicit line chunks; " +
+	t.Description = "Read a file inside the active workspace. Credential files and internal run stores are excluded. " +
+		"Large files are returned in explicit line chunks; " +
 		"when the result is partial, call it again with the next start_line printed in the marker."
 	t.InputSchema.Properties["start_line"] = api.Property{
 		Type:        "integer",
@@ -74,13 +82,17 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 	if !ok || strings.TrimSpace(rawPath) == "" {
 		return "", fmt.Errorf("read_file: 'path' input is required and must be a string")
 	}
-	path := rawPath
-	if workspace != "" && !filepath.IsAbs(path) {
-		path = filepath.Join(workspace, path)
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	// Same boundary as workspace_grep and glob: the path is resolved and
+	// contained inside the active workspace, and a credential file is
+	// refused. Without this an absolute path skipped the join entirely and
+	// only got filepath.Clean, so the model could read ~/.ssh/id_rsa or
+	// ~/.iterion/secrets.json through the one read tool that had no guard.
+	path, err := resolveWorkspacePath(workspace, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
+	}
+	if sensitiveWorkspacePath(path) {
+		return "", fmt.Errorf("read_file: %q is excluded as a credential or secret file", rawPath)
 	}
 
 	start, err := positiveIntInput(input, "start_line", 1)
@@ -92,25 +104,24 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 
-	lines := strings.SplitAfter(string(data), "\n")
-	if len(lines) > 1 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	lines, total, err := workspaceFileWindow(path, start, workspaceReadMaxBytes)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
 	}
-	if len(lines) == 1 && lines[0] == "" {
+	if total == 0 {
 		return "", nil
 	}
-	if start > len(lines) {
-		return "", fmt.Errorf("start_line %d is past end of file (%d lines)", start, len(lines))
+	if start > total {
+		return "", fmt.Errorf("start_line %d is past end of file (%d lines)", start, total)
 	}
 
 	var out strings.Builder
 	end := start - 1
 	byteLimited := false
-	for i := start - 1; i < len(lines); i++ {
-		if lineCount > 0 && i-(start-1) >= lineCount {
+	for i, line := range lines {
+		if lineCount > 0 && i >= lineCount {
 			break
 		}
-		line := lines[i]
 		if out.Len()+len(line) > workspaceReadMaxBytes {
 			byteLimited = true
 			if out.Len() == 0 {
@@ -124,19 +135,93 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 			break
 		}
 		out.WriteString(line)
-		end = i + 1
+		end = start + i
 	}
 
-	partial := end < len(lines)
+	partial := end < total
 	if partial {
 		reason := "line_count reached"
 		if byteLimited {
 			reason = "byte cap reached"
 		}
 		fmt.Fprintf(&out, "\n\n[read_file partial: lines %d-%d of %d; %s; continue with path %q and start_line %d]",
-			start, end, len(lines), reason, rawPath, end+1)
+			start, end, total, reason, rawPath, end+1)
 	}
 	return out.String(), nil
+}
+
+// workspaceFileWindow streams path once and returns the lines from `start`
+// on — retaining at most maxBytes+1 bytes overall, and at most maxBytes+1
+// bytes of any single line — together with the file's total line count.
+// Lines keep their trailing newline.
+//
+// The retention rule is what makes the caller's chunk cap bound the READ
+// and not merely the output: os.ReadFile used to pull the whole file into
+// memory first, so a large file in the workspace cost the host process its
+// address space on a single model tool call. Retaining one line PAST the
+// cap is deliberate — it is what lets the caller distinguish "byte cap
+// reached" from "that was the whole file".
+func workspaceFileWindow(path string, start, maxBytes int) ([]string, int, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	// A FIFO blocks os.Open forever and a character device never ends;
+	// neither is a workspace file the agent has any business reading.
+	if !info.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%q is not a regular file", filepath.Base(path))
+	}
+	if info.Size() > workspaceReadMaxFileBytes {
+		return nil, 0, fmt.Errorf("%q is %d bytes, past the %d-byte read ceiling; search it with grep instead",
+			filepath.Base(path), info.Size(), int64(workspaceReadMaxFileBytes))
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var window []string
+	retained, total := 0, 0
+	for {
+		line, readErr := readLineCapped(reader, maxBytes+1)
+		if readErr != nil && readErr != io.EOF {
+			return nil, 0, readErr
+		}
+		if line != "" {
+			total++
+			if total >= start && retained <= maxBytes {
+				window = append(window, line)
+				retained += len(line)
+			}
+		}
+		if readErr == io.EOF {
+			return window, total, nil
+		}
+	}
+}
+
+// readLineCapped reads one '\n'-terminated line (delimiter included),
+// retaining at most limit bytes of it and discarding the rest — the
+// caller's own chunk cap would have cut an over-long line anyway, and
+// keeping it whole is how one pathological line grows the process.
+func readLineCapped(r *bufio.Reader, limit int) (string, error) {
+	var b strings.Builder
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if room := limit - b.Len(); room > 0 {
+			if room > len(chunk) {
+				room = len(chunk)
+			}
+			b.Write(chunk[:room])
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return b.String(), err
+	}
 }
 
 func executeWorkspaceGrep(input map[string]any, workspace string) (string, error) {
@@ -190,6 +275,16 @@ func executeWorkspaceGrepWithLimits(input map[string]any, workspace string, limi
 			if path != searchPath && ignoredSearchDir(info.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// filepath.Walk lstats, so a symlink is reported here as a plain
+		// non-dir entry — and os.Open below follows it. That re-opened both
+		// guards this tool advertises: a `notes.txt -> ~/.ssh/id_rsa` link
+		// escapes containment, and sensitiveWorkspacePath above judged the
+		// LINK's name rather than the target's. A FIFO in the tree is the
+		// other half: os.Open blocks on it until a writer appears, hanging
+		// the agent's turn. Only regular files are searchable.
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 		if globFilter != "" {
