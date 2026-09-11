@@ -1442,6 +1442,38 @@ a caller to read. The three fixtures that modelled an endless collection with a
 constant cursor were modelling an endless *collection* through a degenerate
 *protocol*; they advance it now, which is what a real vendor does.
 
+### Answered, not fixed: the two boundaries the reviewer marked as open
+
+Neither is a defect to close in this branch, and both are worth writing down
+because the next reader will ask again.
+
+**A cloud run cannot make a connector call at all, and learns it at the node.**
+`ExecutorSpec.Connectors` is left nil in the cloud runner — deliberately, since
+the cloud `connection.Store` does not exist yet — so `e.connectors == nil` and
+the node fails with *"declares `action:` … but this process has no connector
+catalog wired"*. The failure is explicit and names the reason, which is the
+right behaviour for the wiring that exists; what it is NOT is an admission
+check. Nothing at publish refuses a bot carrying an action node, so the run is
+queued, a pod is provisioned, and the refusal arrives at the node. That is the
+honest state of the P0 boundary: local-only, discovered late, and the fix is
+the cloud connection store rather than a second gate in front of it.
+
+**The no-duplicate-mutation guarantee is local.** `retrypolicy.AutoResumable`
+has exactly one consumer — the CLI's `--auto-resume` gate. The cloud re-drive
+paths do not consult it: `runner.classifyExecResult` carves out budget and
+`fail`-node deaths by name and has no arm for `AMBIGUOUS_EFFECT`, and neither
+NATS redelivery, the orphan sweeper's CAS flip, nor the outcome router's
+relaunch reads that table. So on a deployment the code is headed for, an
+undecided mutation would be re-driven.
+
+It is unreachable **today**, and only because of the row above: with no
+resolver on the runner, no action node runs on cloud, so nothing there can
+produce the classification. `runtime.AmbiguousEffect` is an open interface,
+though, and the day a second producer implements it — or the day the cloud
+connection store lands — the hole is live. **The carve-out belongs in the same
+change as the cloud store, not after it**; shipping the store first would make
+the guarantee false on the deployment that finally exercises it.
+
 ### And the shape `CheckConnectorID` refuses, on the DERIVED half
 
 `--id` is checked by the catalog's own rule precisely so that *"what can be
