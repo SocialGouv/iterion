@@ -559,7 +559,21 @@ func (w *walker) swaggerBodyEncoding(op map[string]any) spec.BodyEncoding {
 			return e
 		}
 	}
-	// A Swagger operation with body members and no `consumes` anywhere means
+	if len(consumes) > 0 {
+		// DECLARED, and not one of them is a media type iterion can build —
+		// `application/xml`, `text/plain`, `application/octet-stream`. That is
+		// not the format's default case, and reading it as JSON published an
+		// operation that sends the wrong bytes with the wrong header: a
+		// whole-body `type: string` goes out as `json.Marshal("# Hello")`,
+		// i.e. WITH the quotes, under `Content-Type: application/json`.
+		//
+		// The OpenAPI 3 arm refuses exactly this and names the media types it
+		// could not build, which validation then turns into a coverage gap.
+		// The Swagger 2 arm published instead, and `report.Skipped` said
+		// nothing — the same asymmetry, in the ingest both pilot specs use.
+		return spec.BodyEncoding(unsupportedBodyMarker(consumes))
+	}
+	// A Swagger operation with body members and NO `consumes` anywhere means
 	// JSON by the format's own default.
 	return spec.BodyJSON
 }
@@ -855,7 +869,7 @@ func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding
 	}
 	if encoding == "" {
 		// Every media type this body offers is one iterion cannot build.
-		return nil, spec.BodyEncoding(unsupportedBodyMarker(content)), ""
+		return nil, spec.BodyEncoding(unsupportedBodyMarker(sortedKeys(content))), ""
 	}
 	// The vendor's OWN media type is remembered when it is not the canonical
 	// one for the encoding. `application/json-patch+json` is JSON on the wire,
@@ -900,8 +914,13 @@ func canonicalMediaType(e spec.BodyEncoding) string {
 // reason says WHICH encoding was refused instead of "unsupported". The value
 // is never a valid BodyEncoding, so validation rejects it — which is the
 // mechanism that turns it into a coverage gap.
-func unsupportedBodyMarker(content map[string]any) string {
-	return "unsupported:" + strings.Join(sortedKeys(content), ",")
+//
+// Takes the list rather than the OpenAPI 3 content map because Swagger 2
+// states the same fact as an ordered `consumes`, and both ingests must produce
+// the same marker: one of them publishing where the other refuses is what let
+// a text/plain body ship as JSON.
+func unsupportedBodyMarker(mediaTypes []string) string {
+	return "unsupported:" + strings.Join(mediaTypes, ",")
 }
 
 // dedupParams keeps the first declaration of each (in, name). A path item's

@@ -854,3 +854,75 @@ func TestARequiredWholeBodyStaysRequiredInSwagger2(t *testing.T) {
 		t.Error("a body the vendor did not mark required must stay optional")
 	}
 }
+
+// TestASwaggerBodyItCannotBuildIsAGapNotJSON.
+//
+// `swaggerBodyEncoding` walked `consumes` for a media type it could build and
+// fell through to JSON — the format's default for an operation that declares
+// NO consumes at all, but also, wrongly, the answer when every declared type
+// is one iterion cannot build. The operation then shipped with `request_body:
+// json`, and a whole-body `type: string` went out as `json.Marshal("# Hello")`
+// — quotes included — under `Content-Type: application/json`.
+//
+// The OpenAPI 3 arm refuses exactly this and names the media types, which
+// validation turns into a coverage gap. Both pilot specs are Swagger 2.0, so
+// the asymmetry sat on the ingest actually in use.
+func TestASwaggerBodyItCannotBuildIsAGapNotJSON(t *testing.T) {
+	const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/markdown/raw": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingRenderRaw", "summary": "Render",
+        "consumes": ["text/plain"],
+        "parameters": [{"name": "body", "in": "body", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+	_, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+	if err == nil {
+		t.Fatal("a description whose only operation has an unbuildable body must fail rather than publish it")
+	}
+	if len(report.Skipped) != 1 {
+		t.Fatalf("report.Skipped = %+v, want the operation counted as a gap", report.Skipped)
+	}
+	// The reason must name WHICH encoding was refused, or the gap cannot be
+	// acted on — an overlay is how it gets fixed.
+	if !strings.Contains(report.Skipped[0].Reason, "text/plain") {
+		t.Errorf("the reason must name the media type it could not build: %q", report.Skipped[0].Reason)
+	}
+}
+
+// The falsifier: NO `consumes` anywhere is the format's own default, and that
+// really is JSON. Refusing it would turn most of a Swagger description into
+// coverage gaps.
+func TestASwaggerBodyWithNoConsumesIsStillJSON(t *testing.T) {
+	const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/things": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingCreate", "summary": "Create",
+        "parameters": [{"name": "body", "in": "body", "schema": {"type": "object", "properties": {"title": {"type": "string"}}}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+	pkg := generate(t, body)
+	op, ok := pkg.Operation("probe.thing.create")
+	if !ok {
+		t.Fatalf("create missing, got %v", opIDs(pkg))
+	}
+	if op.HTTP.RequestBody != spec.BodyJSON {
+		t.Errorf("request body = %q, want json — the format's default with no consumes declared", op.HTTP.RequestBody)
+	}
+}
