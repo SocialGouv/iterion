@@ -490,9 +490,19 @@ call) and `postcondition:` (C263 — a shell exit code would overrule the
 vendor's typed answer). A failure is a node failure carrying its error class
 (`not_found`, `rate_limited`, …); branch on it with a `when` edge.
 
-`unknown_outcome` is a first-class result: when a mutating call's answer is
-lost and the vendor offers no idempotency key, iterion says it cannot tell
-whether it happened, and never retries automatically.
+`unknown_outcome` is a first-class result: when a mutating call's request went
+out and its answer was lost, and the vendor offers no idempotency key, iterion
+says it cannot tell whether it happened, and never retries automatically. A
+call that never LEFT — a refused dial, a name that does not resolve, a header
+that cannot be sent — is an ordinary retryable transport failure instead:
+nothing reached the vendor, so there is nothing to reconcile.
+
+**Where packages come from.** The operator's `<iterion home>/connectors/<id>`
+by default. A project tier (`<workspace>/connectors/<id>`, where `iterion
+connectors gen` writes) outranks it and is read ONLY with
+`ITERION_CONNECTOR_PROJECT_CATALOG=1` — the workspace is the repo a run acts
+on, and nothing pins what an operation DOES, so an ungranted project package
+could redefine a call the operator's credential pays for.
 
 ### Verified Action — adaptive recovery for ACTION tool nodes (ADR-044)
 
