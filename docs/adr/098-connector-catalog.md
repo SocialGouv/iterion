@@ -801,3 +801,122 @@ lock is still owed).
 
 The single most dangerous thing the reviewer named — "the executor says
 reconcile before retrying; the engine retries two seconds later" — is fixed.
+
+## Adversarial review disposition, round three (codex `gpt-6-astra`, xhigh — 20 findings)
+
+Probe-driven again, against the worktree. Twenty findings, one critical,
+thirteen high. Its lesson is narrower and sharper than round two's: **most of
+what it found was a class I had left half-closed, or a regression one of my own
+fixes had created.** Round two's dispositions were not wrong; they were
+incomplete in a way only a second adversary noticed.
+
+### The two that mattered
+
+**F2 — the runtime never applied the authored half.** `spec.Load` reads ops/
+and knows nothing about overlays, so the catalog served EXECUTION the generated
+package while `iterion connectors validate` reported on the merged one. The
+shipped Forgejo connector validated with two auth schemes and ran with five —
+three of which are not credentials at all — answered to its pinned
+`forgejo.issue.comment` in validation and to nothing in a run, and lost every
+declared pagination. An operator's green validate described a package no run
+ever saw. One loader now does generated → overlay → complete check, and both
+surfaces call it.
+
+The end-to-end test could not have caught it: its fixture has no overlay, so
+the two loaders are indistinguishable there. That is worth remembering about
+end-to-end tests generally — this one proved the path worked for the shape it
+happened to use.
+
+**F1 — the engine still retried mutations the connector refuses to repeat.**
+Round two closed `unknown_outcome`, the answer that never arrived. The CLASS is
+wider: a POST answered 500 is `upstream` like any other 500, and the write may
+have committed before the server failed. A 201 whose body will not decode is
+worse — the mutation certainly happened and only its answer is lost. Both were
+retried two seconds later. Decided now where the facts are (status plus the
+operation's effect), and only for a mutation: a 4xx is a refusal, nothing
+happened, and parking those would be the opposite defect.
+
+This is the repository's own grep-la-classe rule, paid again: the first fix
+treated the site the report named.
+
+### Also fixed
+
+- **F9** — an alias was unique only at creation, so a rename left two
+  connections answering one name and `ByAlias` returned whichever the map
+  reached first: identical workflow input selecting a different credential
+  between two runs.
+- **F10** — two more pagination truncations. A cursor walk ended on an empty
+  page (Slack documents exactly that shape: no items, and a next cursor), and
+  `asPositiveInt` did not know `json.Number` — **the type my own coercion fix
+  had just introduced**, so a caller's `limit: 2` stopped being recognised as a
+  size at all.
+- **F12** — the vendor's own error text could carry the token. Redaction
+  covered the transport path and stopped there; a gateway answering 403
+  routinely echoes the credential it rejected. Scrubbed in place, so the typed
+  error's retry disposition survives.
+- **F13** — the file refusal knew one spelling of a file. Swagger 2 says `type:
+  file`, OpenAPI 3 says `type: string, format: binary`; every OpenAPI 3 upload
+  went through the refusal written to catch it.
+- **F15** — a tier that could not LOAD a package was treated as one that did
+  not have it, so a refused package was silently replaced by a different one.
+  Its falsifier then exposed that absence was never recognised at all:
+  `os.IsNotExist` does not unwrap, and the loader wraps with `%w`.
+- **F20** — authored text was read as JSON: a literal kept no whitespace, and a
+  literal `null` made the argument vanish.
+- **F6** — the resolver read only the operation's own security, so a
+  connector-wide requirement was never checked before a credential was handed
+  over.
+- The mid-flight probe that caught a required whole-body parameter left
+  optional — a defect introduced by the `WholeBody` marker two commits earlier.
+
+### Tracked, with what each needs
+
+- **F3** — the F16 contract this ADR states is not yet sufficient. Under the
+  docker driver with `host_state: auto`, the sandbox mounts the iterion data
+  directory, which holds the connection store AND (on a keyfile fallback) the
+  master key. Being a sibling container did not put the credential outside the
+  workload's reach. Eligibility must be judged from the RESOLVED mounts and
+  privileges, not from the driver's name — a correction to the contract, before
+  the cloud lot builds against it.
+- **F4** — a connection created without `--base-url` resolves the package's
+  default at call time, so replacing the package redirects an existing
+  credential to another origin. The authorized origin should be pinned at
+  creation.
+- **F5** — the "tenant-carrying grant" this ADR records as shipped is tenant
+  OWNERSHIP, not run AUTHORIZATION: a node may name any alias its tenant holds.
+  A run-scoped grant (connection id, operation allowlist, expiry) is still
+  owed, and the claim is corrected in the table below.
+- **F7** — `ResolveAction` returns plaintext once per node and the walk reuses
+  it, so a revocation mid-walk is not seen. An opaque handle re-resolved per
+  dispatch belongs in F21's lifecycle.
+- **F8** — whole-record updates have no expected revision, so a stale writer
+  can resurrect a revoked connection. Revision-based CAS must be defined before
+  Mongo, not after.
+- **F14** — the deterministic policy bypass works, but the classifier is
+  CONSTRUCTED eagerly and fails on a missing credential before any action runs.
+  The regression test injects an already-built classifier and so cannot see it.
+- **F16** — accounting drops failed and retried requests, and the record this
+  ADR specifies carries no run/attempt/node identity.
+- **F17/F18/F19** — the file store accepts a zero-byte file as an empty
+  database and does not validate what it loads; a lost sealing key is silently
+  replaced beside existing ciphertext; the memory store returns shared slices,
+  so a caller can mutate stored capabilities without an Update.
+
+### The honesty table, corrected again
+
+| Control | State |
+|---|---|
+| Tenant-scoped reads | **Shipped** — positional tenant, another tenant's record is ErrNotFound |
+| Run-scoped GRANT | **Not shipped** (F5). Tenant ownership is not run authorization, and this row previously claimed otherwise |
+| Execution-only credential | **Partial** — unexported opening, but plaintext once per node and no re-resolution mid-walk (F7) |
+| Zero-LLM action policy | **Shipped after construction**; eager classifier construction still fails an action-only run (F14) |
+| Guarded dialer | **Local path shipped**; the executor still accepts any non-nil client |
+| Effective package at runtime | **Shipped** (F2) — generated + overlay, one loader for validation and execution |
+| Fenced refresh claim / revision CAS | Not implemented (F8) |
+| A cloud (Mongo) `connection.Store` | Not implemented — connectors remain LOCAL-ONLY |
+
+**The single most dangerous thing**, in the reviewer's framing and accepted
+here: nothing yet binds a run to the connections it may use. The tenant check
+is real and the credential is sealed, but a node names an alias and gets it.
+That is tolerable while connectors are local-only and the operator is the
+tenant; it is the first thing the cloud lot must close.
