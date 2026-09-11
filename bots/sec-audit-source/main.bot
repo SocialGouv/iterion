@@ -2662,7 +2662,12 @@ unset _cb
 # would stall the whole node until the run timeout. 2400s is ~2x a legit
 # large-repo process; on timeout (124) the retry below re-runs it (network
 # back by then). This catches the hang case the exit-only retry cannot.
-_dsproc() { ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout 2400 deepsec process --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS ); }
+#
+# -k is not optional. Bare timeout sends SIGTERM ONLY, and the node process
+# deepsec runs under ignores it. Measured 2026-09-10 on this node: a 240s
+# bound returned after 27 minutes 39. Without the kill-after escalation the
+# bound is advisory — a limit that reads as enforced and is not.
+_dsproc() { ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout -k 60 2400 deepsec process --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS ); }
 # deepsec process drives its OWN claude LLM calls (outside iterion network
 # retry). A transient blip (rate-limit / quota / network) here drops the
 # whole deepsec contribution and silently thins the audit. Retry once after a
@@ -2694,7 +2699,49 @@ if [ -n "$ERRS" ] && [ "$FCNT" = "0" ]; then
   ERRS="$ERRS export_unusable"
 fi
 
-ERR_JSON=$(printf "%s" "$ERRS" | python3 -c "import json,sys; e=sys.stdin.read().strip().split(); print(json.dumps([\"step failed: \"+x for x in e]))")
+# The envelope carries the LOG, not just the name of the step that failed.
+# Every log this node writes lives under LOG_DIR inside the sandbox, and the
+# pod is destroyed when the run ends: an operator reading "step failed:
+# process" afterwards has no way to learn why. Measured 2026-09-10: four
+# consecutive launches reported a failed step and nothing else, and the cause
+# (an unauthenticated agent answering "Not logged in") was only found once the
+# tail travelled in the envelope.
+#
+# The file name is NOT derived from the token alone. A token may be more
+# specific than its log (a preflight_unreachable token against preflight.log),
+# so several names are tried; and when none answers, the message says which
+# ones were tried and what the directory actually holds. A diagnostic that
+# fails must name what it saw, never just "unreadable".
+ERR_JSON=$(printf "%s" "$ERRS" | LOG_DIR="$LOG_DIR" python3 -c "
+import json, os, sys
+e = sys.stdin.read().strip().split()
+out = [\"step failed: \" + x for x in e]
+log_dir = os.environ.get(\"LOG_DIR\", \"\")
+try:
+    present = sorted(os.listdir(log_dir))
+except OSError as ex:
+    present = [\"<listdir failed: \" + type(ex).__name__ + \">\"]
+for step in e:
+    names = [step + \".log\", step.split(\"_\")[0] + \".log\"]
+    for n in names:
+        try:
+            body = open(os.path.join(log_dir, n), errors=\"replace\").read()[-1500:]
+        except OSError:
+            continue
+        out.append(\"log tail \" + step + \" (\" + n + \"): \" + body)
+        break
+    else:
+        out.append(\"log tail \" + step + \": none of \" + \",\".join(names)
+                   + \" — \" + log_dir + \" holds: \" + \",\".join(present))
+# env.log carries the credential and transport verdicts this node writes at
+# startup. They are what tells a degraded pass from a broken one, and they die
+# with the pod unless they travel here.
+try:
+    out.append(\"env.log: \" + open(os.path.join(log_dir, \"env.log\"), errors=\"replace\").read()[-1500:])
+except OSError as ex:
+    out.append(\"env.log: unreadable (\" + type(ex).__name__ + \")\")
+print(json.dumps(out))
+")
 printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s,\"finding_count\":%s,\"errors\":%s}\n" "$PATHS_JSON" "$FCNT" "$ERR_JSON"
 '`
   output: scanner_output
