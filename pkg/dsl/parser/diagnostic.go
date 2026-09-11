@@ -80,10 +80,10 @@ func expectedTokenHint(want, got TokenType) string {
 		}
 		return "This property takes a bare name (letters, digits, `_`), such as a declared prompt, schema or node."
 	case TokenString:
-		if got == TokenIdent || got == TokenInt || got == TokenFloat {
-			return "Quote this value (`backend: \"claw\"`, `timeout: \"20m\"`) — an unquoted word is read as an identifier."
+		if got == TokenInt || got == TokenFloat {
+			return "Quote this value (`timeout: \"20m\"`, `model: \"gpt-5.5\"`) — a bare value is only read when it is one plain word."
 		}
-		return "This property takes a quoted string (or a backtick raw string, or a `|` block scalar)."
+		return "This property takes a string: quoted, a backtick raw string, a `|` block scalar, or one plain word (`backend: claw`)."
 	case TokenInt:
 		return "This property takes an unquoted integer literal."
 	case TokenIndent:

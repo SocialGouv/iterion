@@ -314,7 +314,8 @@ func (p *parser) expectStringOrIdent() string {
 		return p.expectString()
 	}
 	if t.Type == TokenIdent || isKeywordToken(t.Type) {
-		return p.expectIdent()
+		// A bare hostname is dotted (`github.com`): read the whole of it.
+		return p.continueDottedRef(p.expectIdent())
 	}
 	p.addError(DiagExpectedToken, t, "expected string or identifier")
 	p.next()

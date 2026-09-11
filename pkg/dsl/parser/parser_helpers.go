@@ -231,10 +231,19 @@ func (p *parser) parseToolRef() string {
 	return id
 }
 
+// expectString reads a string value: a quoted string, a raw string, a `|`
+// block scalar — or a bare word (`backend: claw`, `provider: anthropic`),
+// which is the string it spells. The one choke point every string-valued
+// property goes through, so the bare form holds for the whole class; a
+// value that is not one word (`20m`, `a/b`, `x.y`, `two words`) still
+// wants its quotes, and the hint says so.
 func (p *parser) expectString() string {
 	t := p.next()
 	if t.Type == TokenString {
 		return t.Value
+	}
+	if word := tokenAsIdent(t); word != "" {
+		return word
 	}
 	p.expectFailed(t, TokenString, "expected string literal, got "+t.Type.String())
 	if t.Type == TokenError {

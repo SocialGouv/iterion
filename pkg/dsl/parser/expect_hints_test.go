@@ -15,7 +15,7 @@ func TestExpectedTokenHintsNameTheWantedShape(t *testing.T) {
 		name, src, want string
 	}{
 		{"quoted string where a node name belongs", "workflow w:\n  entry: \"a\"\n", "bare name"},
-		{"bare word where a string belongs", "agent a:\n  backend: claw\n", "Quote this value"},
+		{"number where a string belongs", "agent a:\n  timeout: 20m\n", "Quote this value"},
 		{"header without its block", "agent a:\nworkflow w:\n  entry: a\n", "indented block"},
 		{"bare word where a list belongs", "agent a:\n  tools: bash\n", "inline list"},
 	}
