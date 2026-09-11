@@ -129,7 +129,12 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 		host = pkg.Connector.BaseURL.Default + " (the package default)"
 	}
 	fmt.Fprintf(out, "connected %s as %q → %s\n", opts.Connector, alias, host)
-	fmt.Fprintf(out, "  scheme: %s · capabilities: %s\n", scheme, strings.Join(opts.Capabilities, ", "))
+	// The RESOLVED capabilities, not the flag. An operator who named none gets
+	// `action` by default, and echoing the empty flag reported a grant that
+	// differs from the record just written — `connections list` then says
+	// `action` for the same connection, which is the shape of a bug report
+	// rather than of a default.
+	fmt.Fprintf(out, "  scheme: %s · capabilities: %s\n", scheme, capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
 	// A self-hosted instance is the common case for the connectors this
 	// catalog ships, and the guarded dialer refuses one by default. Said here
@@ -163,12 +168,8 @@ func ConnectionsList(storeDir string, out io.Writer) error {
 		if host == "" {
 			host = "(package default)"
 		}
-		caps := make([]string, 0, len(c.Capabilities))
-		for _, cap := range c.Capabilities {
-			caps = append(caps, string(cap))
-		}
 		fmt.Fprintf(out, "%-16s %-12s %-10s %s\n", c.Alias, c.Connector, c.Status, host)
-		fmt.Fprintf(out, "  %s · scheme %s · %s\n", c.ID, c.SchemeID, strings.Join(caps, "+"))
+		fmt.Fprintf(out, "  %s · scheme %s · %s\n", c.ID, c.SchemeID, capabilityNames(c.Capabilities))
 		if c.StatusReason != "" {
 			fmt.Fprintf(out, "  %s\n", c.StatusReason)
 		}
@@ -249,6 +250,21 @@ func resolveScheme(pkg *spec.Package, want string) (string, error) {
 
 // parseCapabilities turns the flag values into capabilities, defaulting to
 // `action` alone.
+// capabilityNames renders a grant for a human. One rendering shared by `add`
+// and `list`, so the two commands cannot describe the same record
+// differently — which is exactly what they did while `add` echoed the flag
+// the operator typed instead of the grant it stored.
+func capabilityNames(caps []connection.Capability) string {
+	if len(caps) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, string(c))
+	}
+	return strings.Join(out, "+")
+}
+
 func parseCapabilities(vals []string) ([]connection.Capability, error) {
 	if len(vals) == 0 {
 		return []connection.Capability{connection.CapAction}, nil
