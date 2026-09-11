@@ -21,6 +21,16 @@ the Iterion source ref plus the root under which session worktrees may be
 created. Project lookup is an exact canonical-path match; ports are never
 scanned to guess ownership.
 
+When migrating a pre-existing helper without restarting its Studios, preserve
+each managed process's exact executable in an immutable per-instance slot:
+
+```sh
+iterion-instances adopt-active town shorts --json
+```
+
+Future ordinary starts then keep the instance-specific binary until a verified
+bootstrap deployment supersedes it.
+
 ## Agent flow
 
 ```sh
@@ -66,5 +76,6 @@ python3 scripts/local-instance-manager/install.py
 Run the standard-library tests explicitly:
 
 ```sh
-python3 -m unittest discover -s scripts/local-instance-manager -p 'test_*.py'
+ITERION_TEST_TMPDIR=/var/tmp python3 -m unittest discover \
+  -s scripts/local-instance-manager -p 'test_*.py'
 ```

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import fcntl
 import hashlib
@@ -346,13 +347,17 @@ class Manager:
         return None
 
     def selected_binary(self, instance: Instance) -> Path:
-        selector = self.state_dir / "deployments" / instance.name / "current.json"
-        if selector.is_file():
-            data = read_json(selector, "BINARY_SELECTOR_INVALID")
-            path = canonical(data.get("binary", ""))
-            if path.name != "iterion" or sha256_file(path) != data.get("sha256"):
-                fail("BINARY_SELECTOR_INVALID", f"artefact sélectionné invalide pour {instance.name}")
-            return path
+        selectors = (
+            self.state_dir / "deployments" / instance.name / "current.json",
+            self.state_dir / "runtime" / instance.name / "current.json",
+        )
+        for selector in selectors:
+            if selector.is_file():
+                data = read_json(selector, "BINARY_SELECTOR_INVALID")
+                path = canonical(data.get("binary", ""))
+                if path.name != "iterion" or sha256_file(path) != data.get("sha256"):
+                    fail("BINARY_SELECTOR_INVALID", f"artefact sélectionné invalide pour {instance.name}")
+                return path
         candidate = self.configured_bin or shutil.which("iterion")
         if not candidate:
             fail("ITERION_BINARY_MISSING", "binaire iterion introuvable")
@@ -360,6 +365,46 @@ class Manager:
         if not os.access(path, os.X_OK):
             fail("ITERION_BINARY_MISSING", f"binaire non exécutable: {path}")
         return path
+
+    def record_runtime_binary(self, instance: Instance, binary: Path, source: str) -> dict[str, Any]:
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "instance": instance.name,
+            "binary": str(binary),
+            "sha256": sha256_file(binary),
+            "source": source,
+            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        atomic_json(self.state_dir / "runtime" / instance.name / "current.json", receipt)
+        return receipt
+
+    def adopt_active(self, names: list[str]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for instance in self.targets(names):
+            with self.lock(instance):
+                state, pid = self.state(instance)
+                if state != "up" or pid is None:
+                    fail("INSTANCE_NOT_MANAGED_UP", f"[{instance.name}] adoption impossible: état {state}")
+                self.verify_adoption(instance, pid, canonical(instance.project_dir))
+                adopted_root = self.state_dir / "adopted" / instance.name
+                adopted_root.mkdir(parents=True, exist_ok=True)
+                temporary = adopted_root / ".iterion.tmp"
+                try:
+                    with Path(f"/proc/{pid}/exe").open("rb") as source, temporary.open("wb") as target:
+                        shutil.copyfileobj(source, target)
+                    digest = sha256_file(temporary)
+                    artifact = adopted_root / digest / "iterion"
+                    artifact.parent.mkdir(parents=True, exist_ok=True)
+                    if artifact.exists() and sha256_file(artifact) != digest:
+                        fail("ARTIFACT_COLLISION", f"collision pendant l'adoption de {instance.name}")
+                    if not artifact.exists():
+                        os.chmod(temporary, 0o555)
+                        os.replace(temporary, artifact)
+                    receipt = self.record_runtime_binary(instance, artifact, "adopted-live-process")
+                    results.append({"name": instance.name, "pid": pid, **receipt})
+                finally:
+                    temporary.unlink(missing_ok=True)
+        return results
 
     def launch_args(self, instance: Instance, binary: Path, recovery_passive: bool = False, root: Path | None = None, store: Path | None = None, port: int | None = None) -> list[str]:
         project = root or instance.project_dir
@@ -428,8 +473,11 @@ class Manager:
     def process_alive(pid: int) -> bool:
         try:
             os.kill(pid, 0)
+            stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            if stat_fields and stat_fields[0] == "Z":
+                return False
             return True
-        except OSError:
+        except (OSError, IndexError):
             return False
 
     def stop_pid(self, instance: Instance, pid: int, timeout: float, allow_kill: bool) -> None:
@@ -502,6 +550,12 @@ class Manager:
             "extra": instance.extra,
             "selected_binary": str(self.selected_binary(instance)),
         }
+        live_binary = None
+        if pid is not None:
+            try:
+                live_binary = str(Path(f"/proc/{pid}/exe").resolve(strict=True))
+            except OSError:
+                live_binary = None
         token_body = {
             "instance": instance.name,
             "state": state,
@@ -516,7 +570,7 @@ class Manager:
         return {
             "schema_version": SCHEMA_VERSION,
             "project": {"root": str(root), **manifest},
-            "instance": {"name": instance.name, "state": state, "pid": pid, "url": self.url(instance), "launch": launch},
+            "instance": {"name": instance.name, "state": state, "pid": pid, "url": self.url(instance), "live_binary": live_binary, "launch": launch},
             "store": self.store(root, instance, pid),
             "engine": {
                 "source_repository": str(Path(profile["source_repository"]).expanduser().resolve()),
@@ -645,7 +699,9 @@ class Manager:
             return metadata
 
     def preflight(self, binary: Path) -> None:
-        with tempfile.TemporaryDirectory(prefix="iterion-preflight-") as temporary:
+        temporary_root = self.state_dir / "tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="iterion-preflight-", dir=temporary_root) as temporary:
             temp = Path(temporary)
             project = temp / "project"
             store = temp / "store"
@@ -710,16 +766,11 @@ class Manager:
             fail("LEGACY_ADOPTION_UNCERTAIN", "impossible d'inspecter le processus existant", cause=str(exc))
         if executable.name != "iterion" or "studio" not in args:
             fail("LEGACY_ADOPTION_UNCERTAIN", "le pid géré n'est pas un Studio iterion", argv=args[:12])
-        expected = {"--dir": str(root), "--port": str(instance.port), "--bind": self.bind}
-        for flag, value in expected.items():
-            actual = self._flag_value(args, flag)
-            if actual is None:
-                fail("LEGACY_ADOPTION_UNCERTAIN", f"la recette live diverge sur {flag}", expected=value, actual=actual)
-            if flag == "--dir":
-                if canonical(actual) != root:
-                    fail("LEGACY_ADOPTION_UNCERTAIN", f"la recette live diverge sur {flag}", expected=value, actual=actual)
-            elif actual != value:
-                fail("LEGACY_ADOPTION_UNCERTAIN", f"la recette live diverge sur {flag}", expected=value, actual=actual)
+        expected_args = self.launch_args(instance, executable)[1:]
+        if args[1:] != expected_args:
+            fail("LEGACY_ADOPTION_UNCERTAIN", "la ligne de commande live diverge de la recette hôte", expected=expected_args, actual=args[1:])
+        if canonical(self._flag_value(args, "--dir") or "") != root:
+            fail("LEGACY_ADOPTION_UNCERTAIN", "le chemin réel live diverge de la recette hôte")
 
     def freeze_runtime(self, instance: Instance, pid: int, transaction_dir: Path) -> dict[str, Any]:
         previous = transaction_dir / "previous" / "iterion"
@@ -730,10 +781,33 @@ class Manager:
             os.chmod(previous, 0o555)
         except OSError as exc:
             fail("LEGACY_ADOPTION_UNCERTAIN", "impossible de figer l'ancien binaire", cause=str(exc))
-        env = self.proc_env(pid)
         env_path = transaction_dir / "previous" / "environment.json"
-        atomic_json(env_path, env, mode=0o600)
+        try:
+            raw_env = Path(f"/proc/{pid}/environ").read_bytes()
+        except OSError as exc:
+            fail("PROCESS_INSPECTION_FAILED", f"environnement du pid {pid} illisible", cause=str(exc))
+        atomic_json(env_path, {
+            "schema_version": SCHEMA_VERSION,
+            "format": "nul-base64-v1",
+            "data": base64.b64encode(raw_env).decode("ascii"),
+        }, mode=0o600)
         return {"binary": str(previous), "sha256": sha256_file(previous), "environment_file": str(env_path)}
+
+    @staticmethod
+    def load_frozen_env(path: Path) -> dict[str, str]:
+        envelope = read_json(path, "ROLLBACK_STATE_INVALID")
+        if envelope.get("schema_version") != SCHEMA_VERSION or envelope.get("format") != "nul-base64-v1" or not isinstance(envelope.get("data"), str):
+            fail("ROLLBACK_STATE_INVALID", f"snapshot d'environnement invalide: {path}")
+        try:
+            raw = base64.b64decode(envelope["data"], validate=True)
+        except (ValueError, TypeError) as exc:
+            fail("ROLLBACK_STATE_INVALID", f"snapshot d'environnement corrompu: {path}", cause=str(exc))
+        env: dict[str, str] = {}
+        for entry in raw.split(b"\0"):
+            if b"=" in entry:
+                key, value = entry.split(b"=", 1)
+                env[key.decode(errors="surrogateescape")] = value.decode(errors="surrogateescape")
+        return env
 
     def journal(self, path: Path, transaction: dict[str, Any], phase: str, **updates: Any) -> None:
         transaction.update(updates)
@@ -794,7 +868,7 @@ class Manager:
             self.journal(journal_path, transaction, "adopting-live-runtime")
             previous = self.freeze_runtime(instance, pid, transaction_dir)
             self.journal(journal_path, transaction, "previous-runtime-frozen", previous=previous)
-            old_env = read_json(Path(previous["environment_file"]), "ROLLBACK_STATE_INVALID")
+            old_env = self.load_frozen_env(Path(previous["environment_file"]))
             try:
                 self.stop_pid(instance, pid, timeout=90, allow_kill=False)
                 self.journal(journal_path, transaction, "old-stopped")
@@ -811,6 +885,7 @@ class Manager:
                     fail("LIVE_VERIFICATION_FAILED", "assistant-missions n'est pas disponible après le switch", capability=capability)
                 selector = {"schema_version": SCHEMA_VERSION, "artifact_id": artifact_id, "binary": str(artifact), "sha256": metadata["sha256"], "commit": metadata["commit"]}
                 atomic_json(self.state_dir / "deployments" / instance.name / "current.json", selector)
+                self.record_runtime_binary(instance, artifact, "bootstrap-deployment")
                 self.journal(journal_path, transaction, "committed", server_info=info, capability=capability)
                 return {"deployed": True, "rolled_back": False, "transaction": transaction, "journal": str(journal_path)}
             except ManagerError as deployment_error:
@@ -821,6 +896,7 @@ class Manager:
                 previous_binary = canonical(previous["binary"])
                 rollback_pid = self.spawn(instance, previous_binary, env={str(k): str(v) for k, v in old_env.items()})
                 rollback_info = self.wait_ready(instance, rollback_pid)
+                self.record_runtime_binary(instance, previous_binary, "deployment-rollback")
                 self.journal(journal_path, transaction, "rolled-back", rollback_pid=rollback_pid, rollback_server_info=rollback_info)
                 fail("DEPLOYMENT_ROLLED_BACK", "le candidat a échoué; l'ancien binaire exact a été relancé", journal=str(journal_path), deployment_error=deployment_error.code)
 
@@ -848,6 +924,7 @@ class Manager:
                 binary = self.selected_binary(instance)
                 pid = self.spawn(instance, binary)
                 self.wait_ready(instance, pid)
+                self.record_runtime_binary(instance, binary, "manager-start")
                 results.append({"name": instance.name, "state": "up", "pid": pid, "url": self.url(instance), "changed": True, "binary": str(binary)})
         return results
 
@@ -890,6 +967,9 @@ def parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("names", nargs="*")
         add_json(command)
+    command = commands.add_parser("adopt-active")
+    command.add_argument("names", nargs="*")
+    add_json(command)
     add_json(commands.add_parser("status"))
     command = commands.add_parser("open")
     command.add_argument("names", nargs="+")
@@ -960,6 +1040,8 @@ def main(argv: list[str] | None = None) -> int:
             value = manager.stop(args.names)
         elif command == "restart":
             value = manager.restart(args.names)
+        elif command == "adopt-active":
+            value = manager.adopt_active(args.names)
         elif command == "open":
             value = manager.start(args.names)
             for item in value:

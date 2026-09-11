@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
@@ -67,7 +68,8 @@ class FakeStudio:
 class ManagerFixture:
     def __init__(self, test: unittest.TestCase, duplicate: bool = False):
         self.test = test
-        self.temp = tempfile.TemporaryDirectory(prefix="iterion-manager-test-")
+        test_tmp = Path(os.environ.get("ITERION_TEST_TMPDIR", "/var/tmp"))
+        self.temp = tempfile.TemporaryDirectory(prefix="iterion-manager-test-", dir=test_tmp)
         self.root = Path(self.temp.name)
         self.project = self.root / "project"
         self.project.mkdir()
@@ -78,6 +80,7 @@ class ManagerFixture:
         subprocess.run(["git", "init", "-q", "-b", "base", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.invalid"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "commit.gpgsign", "false"], check=True)
         (self.repo / "seed").write_text("seed\n")
         subprocess.run(["git", "-C", str(self.repo), "add", "seed"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-m", "seed"], check=True)
@@ -156,6 +159,15 @@ class InstanceManagerTests(unittest.TestCase):
         })
         self.assertEqual(summary, {"id": "run-1", "status": "failed", "diagnostic": {"recoverable": False}})
 
+    def test_runtime_selector_preserves_an_instance_specific_binary(self) -> None:
+        manager = self.manager()
+        binary = self.fixture.root / "slot" / "iterion"
+        binary.parent.mkdir()
+        binary.write_bytes(b"instance-specific")
+        binary.chmod(0o555)
+        manager.record_runtime_binary(manager.instances[0], binary, "test")
+        self.assertEqual(manager.selected_binary(manager.instances[0]), binary.resolve())
+
     def test_duplicate_canonical_project_is_rejected(self) -> None:
         self.fixture.close()
         self.fixture = ManagerFixture(self, duplicate=True)
@@ -215,7 +227,11 @@ class InstanceManagerTests(unittest.TestCase):
         old.write_bytes(b"old")
         old.chmod(0o555)
         env_file = self.fixture.root / "old" / "env.json"
-        instances.atomic_json(env_file, {"PATH": os.environ.get("PATH", "")})
+        instances.atomic_json(env_file, {
+            "schema_version": 1,
+            "format": "nul-base64-v1",
+            "data": base64.b64encode(f"PATH={os.environ.get('PATH', '')}\0".encode()).decode(),
+        })
         context = {
             "context_token": "token", "instance": {"state": "up", "pid": 123},
             "server": {"reachable": True, "work_dir_matches": True},
@@ -252,7 +268,11 @@ class InstanceManagerTests(unittest.TestCase):
         old.write_bytes(b"old")
         old.chmod(0o555)
         env_file = self.fixture.root / "old" / "env.json"
-        instances.atomic_json(env_file, {"PATH": os.environ.get("PATH", "")})
+        instances.atomic_json(env_file, {
+            "schema_version": 1,
+            "format": "nul-base64-v1",
+            "data": base64.b64encode(f"PATH={os.environ.get('PATH', '')}\0".encode()).decode(),
+        })
         context = {
             "context_token": "token", "instance": {"state": "up", "pid": 123},
             "server": {"reachable": True, "work_dir_matches": True},
