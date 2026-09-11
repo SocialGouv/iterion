@@ -715,3 +715,72 @@ func TestARequiredWholeBodyStaysRequired(t *testing.T) {
 		t.Error("a body the vendor did not declare required must stay optional")
 	}
 }
+
+// TestARequiredWholeBodyStaysRequiredInSWAGGER2.
+//
+// The sibling of the test above, on the other ingest. The OpenAPI 3 branch
+// propagated `required` onto a whole-body parameter and the Swagger 2 branch
+// did not — same function, one arm — so a Swagger 2 operation whose body IS
+// the payload published it as optional. `checkParams` then treats the unset
+// optional as absent and `buildBody` returns nil: the POST goes out with NO
+// body, no local refusal, and the vendor 400s for a reason the workflow cannot
+// read. Both of the specs this generator was measured on (Slack, Forgejo) are
+// Swagger 2.0, and `render_markdown_raw` — whose body is the document to
+// render — is exactly this shape in the shipped package.
+func TestARequiredWholeBodyStaysRequiredInSwagger2(t *testing.T) {
+	const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "basePath": "/api/v1",
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/markdown/raw": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingRenderRaw", "summary": "Render",
+        "consumes": ["application/json"],
+        "parameters": [
+          {"name": "body", "in": "body", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/optional": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingMaybe", "summary": "Maybe",
+        "consumes": ["application/json"],
+        "parameters": [
+          {"name": "body", "in": "body", "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+	pkg := generate(t, body)
+
+	op, ok := pkg.Operation("probe.thing.render_raw")
+	if !ok {
+		t.Fatalf("render_raw missing, got %v", opIDs(pkg))
+	}
+	p, ok := findParam(op, "body")
+	if !ok {
+		t.Fatalf("the whole-body param is missing: %v", paramNames(op))
+	}
+	if !p.WholeBody {
+		t.Error("a body schema with no properties IS the body")
+	}
+	if !p.Required {
+		t.Error("the vendor declared the body required, so the parameter that IS the body must be")
+	}
+
+	// The falsifier: an optional body stays optional.
+	opt, _ := pkg.Operation("probe.thing.maybe")
+	q, ok := findParam(opt, "body")
+	if !ok {
+		t.Fatalf("the optional whole-body param is missing: %v", paramNames(opt))
+	}
+	if q.Required {
+		t.Error("a body the vendor did not mark required must stay optional")
+	}
+}

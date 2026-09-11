@@ -572,7 +572,20 @@ func (w *walker) params(pm map[string]any) []spec.Param {
 	case "body":
 		// Swagger 2.0 only.
 		schema := mapAt(pm, "schema")
-		return w.bodyParams(schema)
+		params := w.bodyParams(schema)
+		// The same propagation the OpenAPI 3 branch does, and for the same
+		// reason: `required` on the body says the ENVELOPE must be sent, which
+		// is a fact about the parameter only when that parameter IS the
+		// envelope. Dropped here, a mandatory whole-body payload published as
+		// optional — `checkParams` treats an unset optional as absent and
+		// `buildBody` returns nil, so the POST goes out with NO BODY, no local
+		// refusal, and the vendor 400s for a reason the workflow cannot read.
+		// `render_markdown_raw`, whose body IS the document to render, is that
+		// shape in the shipped package.
+		if boolAt(pm, "required") && len(params) == 1 && params[0].WholeBody {
+			params[0].Required = true
+		}
+		return params
 	case "formdata":
 		// Swagger 2's formData is a BODY member: whether it goes on the wire
 		// as form-urlencoded or as multipart is the operation's `consumes`,
