@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -66,7 +67,10 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 
 	params, err := e.renderActionParams(ctx, node, op, input)
 	if err != nil {
-		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+		// Scrubbed: a coercion refusal PRINTS the value it refused, so a
+		// secret materialised into a parameter the operation declares
+		// `integer` left in the message that said it was not one.
+		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, e.scrubActionError(err))
 	}
 
 	callCtx := ctx
@@ -175,6 +179,12 @@ func checkOperationUsable(node *ir.ToolNode, pkg *spec.Package, op spec.Operatio
 // would let an unchecked output flow into the next node as if the call had
 // worked. Branching on a failure is what `fail`/`when` edges are for.
 func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res exec.Result, start time.Time, callErr error) error {
+	// Scrubbed FIRST, before anything is emitted or wrapped: this text reaches
+	// the run's events, the tool hooks and error tracking, and that is the last
+	// point where the secret bytes are still identifiable.
+	e.scrubTypedActionError(res.Err)
+	callErr = e.scrubActionError(callErr)
+
 	err := callErr
 	if err == nil && res.Err != nil {
 		err = res.Err
@@ -196,6 +206,56 @@ func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res ex
 	// typed error has to survive the node boundary for the no-retry guarantee
 	// to reach the one component that acts on it.
 	return fmt.Errorf("model: tool node %q: %s failed [%s]: %w", node.ID, op.ID, res.Err.Class, res.Err)
+}
+
+// scrubTypedActionError removes what the RUN materialised from a typed
+// connector failure, in place.
+//
+// exec redacts already, but its set is what the PACKAGE declared secret
+// (`spec.Param.Secret`, inherited from a vendor description that almost never
+// marks a parameter) plus the connection's own credential. renderActionParams
+// materialises a `{{secrets.X}}` placeholder into ANY parameter an author
+// writes, so a second credential passed as an argument — a webhook signing
+// key, a downstream API token, a `token` query parameter the description never
+// annotated — sits outside that set. A transport failure then copies the whole
+// request URL, query string and all, into the message
+// (`exec.transportError`), and a vendor 4xx routinely echoes what it rejected.
+//
+// The run's Guard is the right authority precisely because it follows what was
+// MATERIALISED rather than what the package happened to annotate, and it
+// replaces the value with its own placeholder — so an operator reads WHICH
+// secret travelled without reading the secret.
+//
+// IN PLACE, and that is load-bearing: finishAction wraps this error with `%w`
+// so `errors.As` reaches `*exec.Error` for the ambiguous-effect no-retry
+// guarantee. Rebuilding it as a flat error would trade a leak for a duplicate
+// mutation — the trap `exec.redactErrorText` already documents. Only Message
+// and Code are rendered by Error(), so scrubbing them scrubs the text.
+func (e *ClawExecutor) scrubTypedActionError(err *exec.Error) {
+	if err == nil || e.secretGuard == nil {
+		return
+	}
+	err.Message = e.secretGuard.Redact(err.Message)
+	err.Code = e.secretGuard.Redact(err.Code)
+}
+
+// scrubActionError does the same for an UNTYPED failure — a local refusal, a
+// coercion that printed the value it refused, a walk that could not read its
+// collection.
+//
+// Flattened only when the redaction actually changed something. An error that
+// carries no secret comes back exactly as it went in, so `errors.Is` still
+// recognises a context cancellation and `errors.As` still finds whatever the
+// layer below typed; the trade is made only where the alternative is leaking.
+func (e *ClawExecutor) scrubActionError(err error) error {
+	if err == nil || e.secretGuard == nil {
+		return err
+	}
+	msg := err.Error()
+	if red := e.secretGuard.Redact(msg); red != msg {
+		return errors.New(red)
+	}
+	return err
 }
 
 // actionOutput shapes a successful call into the node's output map.
