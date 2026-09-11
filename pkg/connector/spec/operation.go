@@ -534,7 +534,20 @@ const (
 
 // Mutating reports whether an effect changes remote state — the predicate the
 // retry policy reads, so "is this safe to repeat" is asked once.
+//
+// Anything that is not `read` counts, so a typo fails SAFE here (it reads as
+// mutating). Known() is what refuses it at validation, because failing safe on
+// one predicate is not the same as being right.
 func (e Effect) Mutating() bool { return e != EffectRead }
+
+// Known reports whether e is one of the four declared effects.
+func (e Effect) Known() bool {
+	switch e {
+	case EffectRead, EffectCreate, EffectUpdate, EffectDelete:
+		return true
+	}
+	return false
+}
 
 // PaginationStyle names how a vendor pages a collection.
 type PaginationStyle string

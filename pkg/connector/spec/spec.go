@@ -204,3 +204,19 @@ func (m Maturity) Attachable() bool {
 	}
 	return false
 }
+
+// Known reports whether m is one of the declared levels (the empty value is,
+// and reads as spotted).
+//
+// Checked at validation because the zero value of an UNKNOWN level is the
+// inert one: `maturity: qualifed` fell to rank 0, cleared the clamp, answered
+// false to Attachable, and made the operation — or, written at the package
+// level, the whole connector — silently unbindable while `iterion connectors
+// validate` reported it green. A typo in a closed enum must read as a typo.
+func (m Maturity) Known() bool {
+	switch m {
+	case "", MaturitySpotted, MaturityExperimental, MaturityQualified, MaturityDeprecated:
+		return true
+	}
+	return false
+}

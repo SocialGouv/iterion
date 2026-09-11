@@ -119,6 +119,37 @@ func TestValidateRefusals(t *testing.T) {
 			wantMsg: "must be required",
 		},
 		{
+			// Prevents: a hand-written overlay's typo landing on the INERT
+			// side of every predicate. `qualifed` ranks 0, so the clamp never
+			// trips and Attachable answers false: the operation is silently
+			// unbindable while `connectors validate` reports the package green.
+			name: "an operation's maturity is not a level",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Maturity = "qualifed"
+			},
+			wantMsg: "is not one of spotted",
+		},
+		{
+			// Same typo at the PACKAGE level, where it is worse:
+			// EffectiveMaturity falls back to it, so every operation that
+			// declares none goes inert at once.
+			name: "the package's maturity is not a level",
+			mutate: func(p *spec.Package) {
+				p.Connector.Maturity = "quallified"
+			},
+			wantMsg: "is not one of spotted",
+		},
+		{
+			// `effect: reed` fails safe on Mutating() — anything but `read`
+			// counts — but a value nobody declared is a mistake, not a level,
+			// and the next predicate added may not fail safe.
+			name: "an effect that is not one of the four",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Effect = "reed"
+			},
+			wantMsg: "is not one of read",
+		},
+		{
 			// Prevents: a result nothing can validate or type.
 			name: "result references an unknown schema",
 			mutate: func(p *spec.Package) {

@@ -843,6 +843,16 @@ func (w *walker) bodyParams(schema map[string]any) []spec.Param {
 // encoding must make the operation a COVERAGE GAP — an operation that looks
 // executable but would drop its payload is the failure this package refuses.
 func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding, string) {
+	// Cleared on the way IN, not only on the success path. The field is a
+	// hand-off to the caller one line later ("read exactly once, immediately
+	// before it is consumed"), but all four early returns below left the
+	// PREVIOUS operation's media type in place, and operation() reads it
+	// unconditionally — so a DELETE following a PATCH in the same path item
+	// was published carrying `application/merge-patch+json` as its content
+	// type. No wire effect today (a body with no members sends no header), but
+	// it is a false claim about the vendor's API in a committed file, and one
+	// that moves whenever a vendor reorders its paths.
+	w.lastBodyMediaType = ""
 	if len(rb) == 0 {
 		return nil, "", ""
 	}
@@ -888,7 +898,6 @@ func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding
 	// so the encoding is right, but it is not `application/json` — and a
 	// vendor that declares one refuses the other at the header, which made an
 	// operation iterion encodes perfectly fail before it was read.
-	w.lastBodyMediaType = ""
 	if chosen != canonicalMediaType(encoding) {
 		w.lastBodyMediaType = chosen
 	}

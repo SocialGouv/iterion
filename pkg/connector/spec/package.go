@@ -250,6 +250,12 @@ func (p *Package) ValidateGenerated() error {
 	if strings.TrimSpace(c.Version) == "" {
 		return fmt.Errorf("connector %q: missing version", c.ID)
 	}
+	// The package level matters more than an operation's: EffectiveMaturity
+	// falls back to it, so one typo here makes EVERY operation that declares
+	// none unbindable, in silence.
+	if !c.Maturity.Known() {
+		return fmt.Errorf("connector %q: maturity %q is not one of spotted|experimental|qualified|deprecated", c.ID, c.Maturity)
+	}
 
 	seen := map[string]string{}
 	for _, f := range p.Ops {
@@ -311,6 +317,20 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	}
 	if op.Effect == "" {
 		return fmt.Errorf("operation %q: missing effect (read|create|update|delete)", op.ID)
+	}
+	// CLOSED enums, checked like the auth scheme's `kind` a few functions
+	// over. An overlay is hand-written, and a typo there landed on the inert
+	// side of every predicate: `maturity: qualifed` ranks 0, so the clamp
+	// never trips and Attachable answers false — the operation is silently
+	// unbindable while `connectors validate` reports the package green.
+	// `effect: reed` fails safe (anything but `read` reads as mutating), but
+	// it is refused for the same reason: a value nobody declared is a mistake,
+	// not a level.
+	if !op.Effect.Known() {
+		return fmt.Errorf("operation %q: effect %q is not one of read|create|update|delete", op.ID, op.Effect)
+	}
+	if !op.Maturity.Known() {
+		return fmt.Errorf("operation %q: maturity %q is not one of spotted|experimental|qualified|deprecated", op.ID, op.Maturity)
 	}
 	// Every `{placeholder}` in the path must have a path param, and every
 	// path param must appear in the path. A mismatch is the failure that
