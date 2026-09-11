@@ -75,14 +75,14 @@ func (f *FileStore) load() (loadResult, error) {
 		}
 		return loadResult{}, fmt.Errorf("modelprefs: read %s: %w", f.path, err)
 	}
-	var doc fileDoc
-	if err := json.Unmarshal(data, &doc); err != nil {
+	doc, reason := decodeFileDoc(data)
+	if reason != "" {
 		// A hand-edited or truncated file must not brick the assistant: the
 		// worst honest outcome is that the operator re-picks their model. Say
 		// so, though — the next Set rewrites the file from what loaded, so
 		// silence here turns a corrupt file into vanished preferences.
 		if f.logger != nil {
-			f.logger.Warn("modelprefs: %s is unreadable (%v); ignoring the recorded preferences — the next write will preserve it as %s before repair", f.path, err, f.corruptBackupPath())
+			f.logger.Warn("modelprefs: %s is unreadable (%s); ignoring the recorded preferences — the next write will preserve it as %s before repair", f.path, reason, f.corruptBackupPath())
 		}
 		return loadResult{rows: map[string]Pref{}, corrupt: data}, nil
 	}
@@ -93,6 +93,51 @@ func (f *FileStore) load() (loadResult, error) {
 		out[rowKey(r.TenantID, r.UserID, p.Key)] = p
 	}
 	return loadResult{rows: out}, nil
+}
+
+// decodeFileDoc reads the on-disk document and reports, as a non-empty
+// reason, every shape that is NOT a document THIS build wrote — not merely
+// the bytes json.Unmarshal refuses.
+//
+// The check used to be "did Unmarshal return an error", and three shapes
+// walk past that one straight into a zero fileDoc with no rows: `null`,
+// `{}` (or any object whose top-level key was renamed), and a future
+// `{"version":2,…}`. With no rows and no error, the caller skipped
+// preserveCorrupt and the next Set rewrote the file containing only its own
+// row — every other preference gone, with no backup and no warning. That is
+// exactly the loss the backup exists to prevent, arriving through the door
+// the check did not watch, and it is what the version field was for:
+// fileVersion was written by save and read by nobody.
+func decodeFileDoc(data []byte) (fileDoc, string) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return fileDoc{}, err.Error()
+	}
+	if envelope == nil {
+		return fileDoc{}, "document is null"
+	}
+	rawVersion, ok := envelope["version"]
+	if !ok {
+		return fileDoc{}, `no "version" field`
+	}
+	var version int
+	if err := json.Unmarshal(rawVersion, &version); err != nil {
+		return fileDoc{}, fmt.Sprintf(`unreadable "version": %v`, err)
+	}
+	// A file from a NEWER build is not this build's to rewrite: refusing to
+	// read it is what makes the side-save happen before the repair.
+	if version < 1 || version > fileVersion {
+		return fileDoc{}, fmt.Sprintf("version %d, this build writes version %d", version, fileVersion)
+	}
+	rawPrefs, ok := envelope["prefs"]
+	if !ok {
+		return fileDoc{}, `no "prefs" field`
+	}
+	var prefs []fileRow
+	if err := json.Unmarshal(rawPrefs, &prefs); err != nil {
+		return fileDoc{}, fmt.Sprintf(`unreadable "prefs": %v`, err)
+	}
+	return fileDoc{Version: version, Prefs: prefs}, ""
 }
 
 func (f *FileStore) corruptBackupPath() string { return f.path + ".corrupt.bak" }
