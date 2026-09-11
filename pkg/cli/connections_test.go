@@ -85,6 +85,7 @@ func TestConnectionsAddReportsAnExplicitGrant(t *testing.T) {
 		Connector:    "forgejo",
 		Scheme:       "token",
 		Alias:        "both",
+		BaseURL:      "https://codeberg.org",
 		TokenEnv:     "FORGE_TEST_TOKEN",
 		Capabilities: []string{"action", "agent"},
 		StoreDir:     filepath.Join(ws, ".iterion"),
@@ -166,5 +167,52 @@ func TestConnectionsAddRequiresATokenEnv(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--token-env") {
 		t.Errorf("the refusal must name the flag, got: %v", err)
+	}
+}
+
+// A connection this command would write and no call could ever use must be
+// refused HERE, where the operator typed it.
+//
+// Every case below was accepted, listed and reported as connected, and then
+// failed at the first action node with a message a layer away from the
+// mistake. The first is not hypothetical: the shipped Forgejo package is
+// operator-supplied with NO default, so omitting --base-url was the ordinary
+// way to get one — and `add` printed "→  (the package default)", naming a
+// default the package does not have.
+func TestConnectionsAddRefusesAConnectionNoCallCouldUse(t *testing.T) {
+	for _, tc := range []struct {
+		name, scheme, baseURL, wantIn string
+	}{
+		{"self-hosted connector with no instance", "token", "", "--base-url"},
+		{"a URL with no scheme", "token", "git.example.com", "http or https"},
+		{"a URL with no host", "token", "https://", "no host"},
+		{"basic auth, which this command cannot seal", "basic", "https://git.example.com", "token only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := connectionsWorkspace(t)
+			var add bytes.Buffer
+			err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+				Connector: "forgejo",
+				Scheme:    tc.scheme,
+				BaseURL:   tc.baseURL,
+				TokenEnv:  "FORGE_TEST_TOKEN",
+				StoreDir:  filepath.Join(ws, ".iterion"),
+			}, &add)
+			if err == nil {
+				t.Fatalf("must be refused, got success:\n%s", add.String())
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("the refusal must say what to do — want %q in: %v", tc.wantIn, err)
+			}
+			// Nothing may be written: a refused `add` that left a record
+			// behind would be the same lie one layer down.
+			var list bytes.Buffer
+			if err := cli.ConnectionsList(filepath.Join(ws, ".iterion"), &list); err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if !strings.Contains(list.String(), "no connections") {
+				t.Errorf("a refused add must store nothing, got:\n%s", list.String())
+			}
+		})
 	}
 }

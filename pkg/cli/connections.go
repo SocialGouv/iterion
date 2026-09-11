@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -82,12 +83,26 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := checkSchemeIsWritable(pkg, scheme); err != nil {
+		return err
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
+	if err := checkBaseURL(pkg, baseURL); err != nil {
+		return err
+	}
 	caps, err := parseCapabilities(opts.Capabilities)
 	if err != nil {
 		return err
 	}
 
-	sealer, err := secrets.NewLocalSealer(store.GlobalIterionDataDir(), nil)
+	// The warning sink every other caller passes (`secret set`,
+	// `localConnectorsForRun`). Opening the sealer can MINT the master key and
+	// write it base64 to ~/.iterion/secrets.key when the OS keychain is
+	// unavailable — a headless host, a CI container, SSH with no D-Bus session
+	// — and LoadOrCreateMasterKey no-ops a nil logf. So the one command that
+	// first creates that key for an operator who only uses connectors was the
+	// one command that did not say where it landed.
+	sealer, err := secrets.NewLocalSealer(store.GlobalIterionDataDir(), warnTo(out))
 	if err != nil {
 		return err
 	}
@@ -108,7 +123,7 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	conn := connection.Connection{
 		ID: id, TenantID: connection.LocalTenant,
 		Connector: opts.Connector, Alias: alias,
-		DisplayName: opts.DisplayName, BaseURL: strings.TrimRight(opts.BaseURL, "/"),
+		DisplayName: opts.DisplayName, BaseURL: baseURL,
 		SchemeID: scheme, Capabilities: caps,
 		Status: connection.StatusActive, SealedPayload: sealed,
 		// Deliberately NOT claiming to know the grant. A provider that never
@@ -224,6 +239,72 @@ func localCatalog(storeDir string) (connection.Catalog, error) {
 // declares several: placement differs between them, so a wrong guess is a 401
 // that reads like a bad credential and sends an operator to rotate a token
 // that is fine.
+// checkBaseURL refuses an instance URL this command would store and no call
+// could ever use.
+//
+// Both cases are a connection that is written, listed and reported as
+// connected, and then fails at the first action node with a message a layer
+// away from the mistake:
+//
+//   - The package is OPERATOR-SUPPLIED and declares no default — the shipped
+//     Forgejo package is exactly this — so an omitted --base-url stored "" and
+//     `add` printed "→  (the package default)", naming a default that does not
+//     exist. `exec.resolveURL` then refuses every call with "connector
+//     %q is operator-supplied and the connection names no instance URL".
+//   - A URL with no scheme ("git.example.com") parses without error and has an
+//     empty Hostname, so `UnreachableBaseURL` says nothing about it either.
+//     The transport then fails with `unsupported protocol scheme ""`.
+//
+// Refused HERE because this is where the operator typed it, which is the same
+// reason `UnreachableBaseURL` gives its advice at this moment rather than at
+// call time.
+func checkBaseURL(pkg *spec.Package, baseURL string) error {
+	if baseURL == "" {
+		if pkg.Connector.BaseURL.OperatorSupplied && pkg.Connector.BaseURL.Default == "" {
+			return fmt.Errorf("connections add: connector %q is self-hosted and declares no default instance — pass --base-url (e.g. --base-url https://git.example.com)", pkg.Connector.ID)
+		}
+		return nil
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("connections add: --base-url %q does not parse: %w", baseURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("connections add: --base-url %q needs an http or https scheme (e.g. https://%s)", baseURL, strings.TrimPrefix(baseURL, "//"))
+	}
+	if u.Host == "" {
+		return fmt.Errorf("connections add: --base-url %q names no host", baseURL)
+	}
+	return nil
+}
+
+// checkSchemeIsWritable refuses a scheme this command cannot supply the
+// material for.
+//
+// `add` seals a TOKEN (there is no --username-env, and `connection.SealBasic`
+// has no caller), so choosing a basic scheme produced a record whose username
+// and password are empty: `connections list` showed it, `checkUsable` passed
+// it, and every call was refused locally with "basic auth needs a username" —
+// a message pointing nowhere near the command that created the record. Forgejo
+// makes this easy to hit: it declares several schemes, so --scheme is
+// mandatory, and the disambiguation error lists `basic` first.
+func checkSchemeIsWritable(pkg *spec.Package, schemeID string) error {
+	s, ok := pkg.Connector.AuthScheme(schemeID)
+	if !ok || s.Kind != spec.AuthBasic {
+		return nil
+	}
+	return fmt.Errorf("connections add: scheme %q of connector %q is HTTP basic, which needs a username and a password — this command seals a token only; name a token-shaped scheme with --scheme", schemeID, pkg.Connector.ID)
+}
+
+// warnTo sends the sealer's warnings where the command's own output goes, so a
+// master key written to disk is reported on the surface the operator is
+// reading.
+func warnTo(out io.Writer) func(string, ...any) {
+	return func(format string, args ...any) {
+		fmt.Fprintf(out, "warning: "+format+"\n", args...)
+	}
+}
+
 func resolveScheme(pkg *spec.Package, want string) (string, error) {
 	ids := make([]string, 0, len(pkg.Connector.Auth))
 	for _, a := range pkg.Connector.Auth {
