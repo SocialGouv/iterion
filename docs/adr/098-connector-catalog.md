@@ -1157,6 +1157,137 @@ dropped with no skip reported, because `required` was read off the `{"$ref":
 …}` wrapper, which carries nothing else — so the two cases that check names
 in its own comment were the two it could never see.
 
+## Adversarial review disposition, round six (the PR merge gate — 10 findings)
+
+Ten findings, two high, and both of the high ones were the same defect class
+the whole lot is built to prevent: **a promise wired on one path and not on
+its siblings**.
+
+### The two that held the gate
+
+**A 2xx whose outcome predicate could not be EVALUATED was not marked
+ambiguous.** `readResponse` asks `markAmbiguous` on every other undecided path
+— the 4xx/5xx, the redirect a mutation may already have performed, the 2xx
+whose body does not decode. The predicate branch did not, and it is the same
+case as the one ten lines above it: the vendor answered 2xx, so the mutation
+CERTAINLY landed and only the reading of its answer failed. Without the mark,
+`AmbiguousEffect()` stays false, the run is classified `EXECUTION_FAILED`
+rather than `AMBIGUOUS_EFFECT`, and the auto-resume path may re-issue the exact
+mutating call whose effect already happened. Reachable with nothing exotic:
+`validateOutcome` only checks that `success_when` PARSES, so any predicate
+yielding a non-boolean at eval time takes it.
+
+**A vendor's parameter name had no written form, in either direction.**
+`spec.Param.Key` is the VENDOR's wire name — the generator carries it through
+unchanged and `exec` looks the argument up by it — and the reader accepted only
+a Go identifier: `tokenAsIdent` returns `""` for a quoted string, and a dashed
+key does not lex as one token. The shipped Forgejo package has 22 such keys;
+`activity-id` and `user-id` are REQUIRED path parameters, so every
+`forgejo.activitypub.*` operation was uncallable from any workflow. The writer
+had the mirror defect on the same round trip (only the VALUE was quoted), which
+bites through the AST JSON transport whatever the parser accepts, so both sides
+moved together. `retry:`/`timeout:` were the third instance of the class,
+found beside it.
+
+### The promise, completed on its remaining paths
+
+The ambiguity fix above is the node's half. Two paths reach the run's failure
+code **without** passing through the classification at all, and both were found
+by tracing the guarantee rather than the diff:
+
+- **A branch.** `processConvergence` builds ONE error for the whole
+  convergence, and its untyped fallback flattens the chain to a string;
+  `commonBranchFailureCode` structurally cannot rescue an executor failure,
+  since it reads a `*RuntimeError`. So an undecided mutation under a
+  `fan_out_all` was failed `EXECUTION_FAILED` — on the auto-resume allow-list
+  — and the resume re-ran every branch. One action node in a fan-out, or a
+  `fan_out_each` over N items, is the whole recipe.
+- **A teardown.** The `ctx.Err()` short-circuit in `executeNode` precedes
+  recovery dispatch by design (a cancelled run must not retry), but every code
+  it can reach is one something re-drives: a drain's `interrupted` is
+  redelivered to a fresh pod, `--timeout`'s `TIMEOUT` is on the auto-resume
+  allow-list. A drain landing mid-call produced the ambiguity and then threw it
+  away.
+
+Both now keep the classification, and the e2e test for the first was verified
+failing against the previous code.
+
+### The same shape, one layer out: a capability wired on ONE surface
+
+`ExecutorSpec.Connectors` was populated at two of the nine construction sites.
+The studio, the launch API, a board card and a subbot built their executor
+without it, so the same `.bot`, on the same machine, with the same catalog and
+the same sealer, ran from the CLI and failed at its first action node
+everywhere else. Four surfaces gain it through one shared function; the cloud
+runner stays out (it needs a cloud connection store that does not exist yet)
+and so does the golden recorder, which must not reach a vendor at all.
+
+Found with it: the CLI returned a typed nil `*connection.Resolver` for
+"nothing wired", and a typed nil in an interface is not nil — so the
+executor's own "no connector catalog wired" diagnostic was unreachable and the
+run got a message pointing at the connector instead of at the install.
+
+### Found by reading the slices the review had not
+
+A second pass over the generator, the executor and the CLI, each against its
+own oracle rather than against the diff:
+
+- **A bodyless Swagger operation inherited the root's `consumes`.** The
+  encoding was asked for unconditionally, and an unsupported one is
+  deliberately not cleared — so a GET under a root `consumes:
+  [application/xml]` was published as `unsupported:application/xml` and refused
+  by validation. An API whose root advertises only a media type iterion cannot
+  build lost its ENTIRE read surface: measured at 0 operations derived, 3
+  skipped, with a diagnostic about a request body none of them has. This is the
+  over-correction of round five's own fix, on the arm where `consumes` is
+  inherited.
+- **A YAML key that is not a string was dropped.** "No API description has one"
+  is wrong about the only syntax that can produce one: YAML resolves an
+  unquoted `200:` as an int, so the ordinary hand-written responses block lost
+  every case — silently, with no skip — and with it `validatePagination`'s
+  array check. The JSON twin of the same document was read correctly. Its
+  sibling one function over: `enumStrings` switched on `float64` only, which is
+  what JSON gives; yaml.v2 gives `int`, so an int enum survived one syntax and
+  not the other.
+- **A secret was JSON-decoded on its way to the vendor.** A whole-value
+  reference renders as a JSON literal, and the secret was materialised INSIDE
+  that literal — after the encoder, before the coercion that decodes it. So the
+  credential's own bytes were read as syntax: measured, `back\slash` and
+  `has"quote` reached the vendor WITH their surrounding quotes and a literal
+  `\n` arrived as a newline. Four of five shapes corrupted; each is a 401 on a
+  valid credential, which is the symptom materialising was added to remove.
+- **`connectors gen` wrote a credential to disk.** The fetch URL went into the
+  provenance verbatim, and `spec.Write` puts that at 0644 in a directory whose
+  whole point is to be committed — on the lane that exists precisely for a
+  description an operator may not redistribute, i.e. the one behind auth. Go
+  redacts userinfo when it prints a URL in an error; only what iterion
+  persisted kept it in the clear.
+- **A paginated walk had no bound of its own.** `max_pages` is taken verbatim
+  from the package and nothing validates that number, while each page reads up
+  to the 32 MiB limit and every page's items are held until the call returns.
+  At the DEFAULT twenty pages that is already ~640 MiB. Clamped and given a
+  byte budget, both ending the walk the way running out of pages already does —
+  `complete=false`, which is what that flag means.
+- **An update wiped the sealed credential of the connection it edited**, since
+  `SealedPayload` is `json:"-"` and any caller rebuilding the record from the
+  transport shape carries none. BOTH store twins had the identical omission,
+  which is exactly why the conformance suite could not see it.
+- **A catalog root that cannot be read was treated as absent**, so the project
+  tier was dropped whole and the home tier served a different package for the
+  same connector id — the defect `layeredCatalog.Package` refuses by name one
+  file over, inverted at the site that decides which tiers exist at all.
+
+Also fixed, each named in its own commit: a second `params:` block replacing
+the first in silence; a templated `connection:` compiling clean and dying
+mid-run (refused, not rendered — an alias built from an output would let an
+upstream node choose which credential a call carries); `RawPath` built from the
+DECODED base path, and a substituted value re-read as syntax by the next
+replacement, which together sent a path argument as path STRUCTURE; an
+unbounded `Retry-After`; a request count that reported the last attempt only;
+`effect`/`maturity` typos landing on the inert side of every predicate; a
+media type outliving its operation; and `connections add` sealing a credential
+with a trailing newline.
+
 ### Open, with what each needs
 
 - **The generator resolves a `$ref` one hop.** A vendor definition that is
@@ -1176,6 +1307,15 @@ in its own comment were the two it could never see.
   wrong header) where the OpenAPI 3 arm makes it a coverage gap. The code is
   corrected and tested; `connectors/forgejo/**` shows the old output until it
   is regenerated, with the same caveat as above.
+- **The sealed credential's own expiry is decrypted and thrown away.**
+  `credentialBlob.ExpiresAt` exists for the stated reason — "a blob that
+  travelled without its record still knows when it dies" — and `SealToken`
+  writes it; nothing reads it. `checkUsable` consults the PLAINTEXT record
+  field instead, which the AAD does not cover, and it runs before
+  `openCredential`, so it structurally cannot consult the authenticated copy.
+  Inert today (no writer sets a non-zero expiry), which is why it would land
+  as a silent hole the day the OAuth tier ships. Needs the refusal moved after
+  `openCredential`, or the record field cross-checked against the blob.
 - **A response's integers are `float64`.** The REQUEST direction was fixed
   in this lot (`asPositiveInt`'s `json.Number` arm, "so a large id survives
   to the wire exactly"); `decodeJSON` still unmarshals into `any`, so an id
