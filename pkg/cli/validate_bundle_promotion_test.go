@@ -54,7 +54,9 @@ func TestRunValidate_BareMainBotOfABundleSeesItsPrompts(t *testing.T) {
 func TestRunValidate_BareMainBotKeepsTheBundleDirName(t *testing.T) {
 	inTempWorkspace(t)
 	p, _ := testPrinter()
-	if err := BotsCreate(BotsCreateOptions{Slug: "memo"}, p); err != nil {
+	// Pinned model and backend: `validate` does not waive C018, and a bare
+	// CI has no credential to detect — the test measures the lint's dir name.
+	if err := BotsCreate(BotsCreateOptions{Slug: "memo", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	// Arm checkBundleNameStability: it only speaks for a bot that actually

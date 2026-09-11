@@ -37,10 +37,28 @@ func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
 	}
 	files := make(map[string]string, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		// Only a .md becomes a prompt: skip everything else BEFORE any I/O,
+		// so a stray entry in prompts/ (a broken symlink `notes.txt`, a
+		// fifo, a .DS_Store on a mounted share) cannot fail a launch, nor
+		// blind the studio's live validation with a 422. MergePromptFiles
+		// keeps its own filter as the rule's; this one guards the I/O.
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(b.PromptsDir, entry.Name()))
+		// A .md IS a prompt the bundle promised, so one that cannot be read
+		// fails the merge by name — and one that is not a regular file is
+		// refused BEFORE the read rather than read: os.ReadFile on a fifo
+		// blocks until a writer shows up, an unbounded wait inside an HTTP
+		// handler. Stat follows a symlink, so a linked prompt file stays one.
+		p := filepath.Join(b.PromptsDir, entry.Name())
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("bundle: prompt %s is not a regular file (mode %s)", entry.Name(), info.Mode().Type())
+		}
+		body, err := os.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
 		}

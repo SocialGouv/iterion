@@ -23,7 +23,11 @@ func TestBotsCreate_EveryTemplateValidates(t *testing.T) {
 		t.Run(tpl.ID, func(t *testing.T) {
 			inTempWorkspace(t)
 			p, _ := testPrinter()
-			if err := BotsCreate(BotsCreateOptions{Slug: tpl.ID, Template: tpl.ID}, p); err != nil {
+			// The model and backend are pinned: `validate` does not waive
+			// C018 (no model and no credential the host can detect), a
+			// bare CI has no credential, and the test measures the scaffold
+			// and the bundle lint, not the host.
+			if err := BotsCreate(BotsCreateOptions{Slug: tpl.ID, Template: tpl.ID, Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 				t.Fatalf("bots create --template %s: %v", tpl.ID, err)
 			}
 			// Both forms, because they are one verdict: the bundle
@@ -43,6 +47,15 @@ func TestBotsCreate_EveryTemplateValidates(t *testing.T) {
 				if err != nil || !result.Valid {
 					t.Errorf("validate %s: %v — parse=%v compile=%v bundle=%v",
 						target, err, result.Parse, result.Compile, result.BundleDiags)
+				}
+				// Clean, not merely valid: compile_diagnostics carries the
+				// WARNINGS too, and a canonical shape whose first validate
+				// prints one teaches the pattern the warning exists to stamp
+				// out (a ref inside author-written quotes, C137, shipped
+				// that way once) while training operators to ignore it.
+				if len(result.Compile) != 0 || len(result.Parse) != 0 {
+					t.Errorf("validate %s: a template validates clean; got parse=%v compile=%v",
+						target, result.Parse, result.Compile)
 				}
 			}
 		})

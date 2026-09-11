@@ -147,6 +147,11 @@ var varRefRe = regexp.MustCompile(`\{\{\s*vars\.([a-z_][a-z0-9_]*)`)
 // error (C033) the operator would meet only after the form. Derived from
 // the templates themselves, so a shape gaining a reference cannot drift
 // from the check.
+// The scan is of the RAW templates, so a reference inside a `<% if %>`
+// branch would count for every Spec, taken or not: the shapes keep every
+// var reference unconditional (TestShapeVarRefsAreUnconditional holds them
+// to it), which is what lets a missing var be refused by name at the form
+// rather than met as C033 after it.
 func shapeVarRefs(shape string) []string {
 	dir := path.Join(galleryRoot, shape)
 	seen := map[string]bool{}

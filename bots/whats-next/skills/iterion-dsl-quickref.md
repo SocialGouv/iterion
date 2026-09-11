@@ -572,6 +572,13 @@ shipped bots, so they are written here:
 - **`jq` ships in the sandbox images; `python3` does not.** A tool that must
   turn text into the JSON its `output:` schema wants uses `jq -Rs`; a missing
   interpreter degrades the output to `{"result": …}` silently.
+- **A `fan_out_each` fan-in sees ONE output per node id.** At the collector
+  (`await: wait_all` / `best_effort`) the branches' outputs are merged
+  last-write-wins, so `{{outputs.<node>.<field>}}` after the fan-in is one
+  item's result, not a list, and a downstream `compute` cannot aggregate
+  the items from `outputs.*`. Give each item its own record instead (a
+  board card, a subbot child run's own artifacts) — the
+  `per-ticket-subbots` template shows it.
 
 ## Template references
 

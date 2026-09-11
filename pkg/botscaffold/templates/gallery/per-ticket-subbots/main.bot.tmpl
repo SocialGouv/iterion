@@ -38,6 +38,15 @@ subbot handle:
   output: ticket_result
   isolated: true
 
+## The fan-in fires once every branch has settled. What it can READ is one
+## branch's output per node id — at convergence the branches' outputs are
+## merged last-write-wins, so `outputs.handle.done` here is ONE ticket's,
+## not a list, and a per-ticket aggregate is not expressible in this
+## compute today. Per-item results travel through what each child leaves
+## behind — its own run's artifacts, a board card; never a file in this
+## workspace, which `isolated: true` forbids it — which is why this node
+## only marks the fan-in: make the children's work the record, not this
+## node's output.
 compute collect:
   await: wait_all
   output: collected
