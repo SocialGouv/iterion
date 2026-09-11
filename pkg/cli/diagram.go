@@ -35,7 +35,9 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 		return err
 	}
 
-	wf, err := runview.CompileWorkflow(opts.File)
+	// A bundle's main.bot is promoted to its bundle, as validate does: its
+	// prompts/*.md in scope, or the diagram of a multi-file bot fails C003.
+	wf, _, _, err := runview.CompileWorkflowPath(opts.File)
 	if err != nil {
 		return err
 	}

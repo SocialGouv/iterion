@@ -22,6 +22,7 @@ var runOpts struct {
 	backendFor          []string
 	fallback            string
 	background          bool
+	bundleDir           string
 	mergeInto           string
 	branchName          string
 	mergeStrategy       string
@@ -63,6 +64,7 @@ var runCmd = &cobra.Command{
 			NoInteractive:       runOpts.noInteractive,
 			SkipMCPHealth:       runOpts.skipMCPHealth,
 			Background:          runOpts.background,
+			BundleDir:           runOpts.bundleDir,
 			MergeInto:           runOpts.mergeInto,
 			BranchName:          runOpts.branchName,
 			MergeStrategy:       runOpts.mergeStrategy,
@@ -116,6 +118,8 @@ func init() {
 	f.BoolVar(&runOpts.skipMCPHealth, "skip-mcp-health", false, "Don't abort the run when an MCP server fails its startup health-check — log the failure as a warning and continue. Also enabled by ITERION_SKIP_MCP_HEALTH=1. Use when a declared MCP server (e.g. an HTTP-OAuth one) is unreachable/unauthorized in this environment but the run does not depend on it.")
 	f.BoolVar(&runOpts.background, "background", false, "Internal: managed-runner mode for the studio server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
+	f.StringVar(&runOpts.bundleDir, "bundle-dir", "", "Internal: the bundle the file belongs to when it is not at its main.bot path (the studio's detached runner hands over a materialised buffer and the bundle it was admitted against)")
+	_ = f.MarkHidden("bundle-dir")
 	f.StringVar(&runOpts.mergeInto, "merge-into", "", "For worktree:auto runs, branch to merge into after the run (\"\"/\"current\"=current branch, \"none\"=skip, or a branch name)")
 	f.StringVar(&runOpts.branchName, "branch-name", "", "For worktree:auto runs, override the storage branch name (default iterion/run/<friendly>)")
 	f.StringVar(&runOpts.mergeStrategy, "merge-strategy", "", "For worktree:auto runs, how to land commits when --auto-merge is on: \"squash\" (default) collapses all run commits into one, \"merge\" fast-forwards (preserves history)")

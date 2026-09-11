@@ -1,0 +1,130 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: fan-out reviewers + deterministic convergence.
+##
+## A deterministic scope gate, then a router runs two read-only reviewers
+## in parallel, each with its own lens on the same diff; a compute
+## (`await: wait_all`) folds their verdicts without an LLM; typed
+## failures carry a blocked verdict and an empty scope.
+## `readonly: true` is a SCHEDULING assertion — it is what lets workspace
+## safety run the two side by side — and NOT a tool gate: only codex (a
+## read-only sandbox) and pi (a read-only tool list) turn it into
+## enforcement, and no `tools:` list can, since reading a diff needs
+## `bash`. So the PROMPTS carry it, and the permission gate below enforces
+## it — `permission: deny` with an allow list of read-only tools
+## (docs/permissions.md), on by default since in place the reviewers work
+## in your checkout. They do not write the index either —
+## a `git add -N .` in a parallel branch takes .git/index.lock and is
+## FATAL when the sibling holds it, and the loser's empty report would
+## read as an approve. Untracked files are read with `git diff --no-index`.
+## The run reviews the checkout IN PLACE (`worktree: none`) unless the
+## worktree dial is on: a `worktree: auto` run starts from the anchor
+## COMMIT, without the uncommitted work — set `base` then, or the scope
+## gate refuses. Fill in: the lenses, the scope. A third reviewer is one
+## more node and two more edges. docs/routers.md
+<%template "vars_block" .%>
+schema scope_out:
+  files: int
+  empty: bool
+
+schema findings:
+  reviewed: bool
+  findings: string[]
+  blocking: bool
+
+schema verdict_out:
+  approved: bool
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt correctness_lens:
+  Lens: CORRECTNESS. Read the pending changes with `git diff HEAD` (or
+  diff against {{vars.base}} when it is set), and read the files git does
+  not track yet with `git ls-files --others --exclude-standard -z | xargs
+  -0 -I{} git diff --no-index -- /dev/null {}` (exit 1 per file and 123
+  for the batch mean "there is a diff", not a failure; an empty new file
+  shows a header and no hunk). Write NOTHING to the index
+  (no staging, no intent-to-add): the other reviewer branch races you on
+  it. Set reviewed=false with no findings if you could not read the diff.
+  Hunt for real bugs: logic errors, missed edge cases, races. Read enough
+  surrounding code to judge each finding. Report each confirmed finding as
+  file:line plus the failure scenario, and set blocking=true if any must
+  be fixed before merge. Do not edit any file.
+
+prompt security_lens:
+  Lens: SECURITY. Same diff, read the same way: look for injection, unsafe
+  deserialisation, secrets in code, missing authorisation checks, SSRF.
+  Same report shape, same rules on reviewed and blocking, no edits.
+
+## The scope gate, deterministic: an EMPTY scope is a typed refusal,
+## never an approve — an honest "nothing to report" on nothing is what a
+## clean tree, or a fresh worktree without a base ref, would otherwise
+## turn into a green verdict. Counts the changed and the untracked files
+## without writing the index; its stdout is the JSON the schema wants.
+tool scope:
+  command: `b={{vars.base}}; n=$({ if [ -n "$b" ]; then git diff --name-only "$b"; else git diff --name-only HEAD; fi; git ls-files --others --exclude-standard; } | wc -l | tr -d ' '); if [ "$n" -eq 0 ]; then printf '{"files":0,"empty":true}'; else printf '{"files":%s,"empty":false}' "$n"; fi`
+  output: scope_out
+
+router split:
+  mode: fan_out_all
+
+agent review_correctness:<%template "llm_fields" .%>
+  system: mission
+  user: correctness_lens
+  readonly: true
+  output: findings
+
+agent review_security:<%template "llm_fields" .%>
+  system: mission
+  user: security_lens
+  readonly: true
+  output: findings
+
+## Deterministic convergence: no LLM decides whether the reviews block.
+## `reviewed` is each reviewer's own account of having read the diff, so
+## one that reports it could not is a block, not an approve.
+compute verdict:
+  await: wait_all
+  output: verdict_out
+  expr:
+    approved: "outputs.review_correctness.reviewed && outputs.review_security.reviewed && !outputs.review_correctness.blocking && !outputs.review_security.blocking"
+
+fail nothing_to_review:
+  description: "the scope holds no change to review"
+  code: NOTHING_TO_REVIEW
+  message: "no changed or untracked file in the scope (base={{vars.base}}); a worktree: auto run holds committed work only — review pending work in place, or set base"
+
+fail review_blocked:
+  description: "a reviewer found a blocking issue, or could not review"
+  code: REVIEW_BLOCKED
+  message: "reviewed: correctness={{outputs.review_correctness.reviewed}} security={{outputs.review_security.reviewed}}; blocking: correctness={{outputs.review_correctness.blocking}} security={{outputs.review_security.blocking}}"
+
+workflow <%.WorkflowName%>:
+  entry: scope
+  budget:
+    max_parallel_branches: 2<%template "budget_lines" .%>
+  ## In place by default: the pending work IS the scope. With the dial on,
+  ## the run isolates in a fresh worktree and needs `base`.
+  worktree: <%if .Worktree%>auto<%else%>none<%end%>
+<%- if .Permission%>
+  ## The gate the header names, ON by default (the permission dial is
+  ## `deny` for this shape): a reviewer reads and never writes. Under
+  ## `deny` any tool call not on the allow list is hard-blocked, headless;
+  ## the deny list says what must never pass even under `ask`. A Bash rule
+  ## is a prefix on the WHOLE command line (`git diff > file` passes under
+  ## `Bash(git diff:*)`): a backstop, not a proof — the prompts still
+  ## carry the rule. Widen the allow list with the commands your own
+  ## lenses run. The lists go with the dial: cleared, they are not written
+  ## either, so the file never carries rule lists no gate reads.
+  allow: ["Read(**)", "Grep", "Glob", "LS", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git ls-files:*)", "Bash(git blame:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)"]
+  deny: ["Edit(**)", "Write(**)", "NotebookEdit(**)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)", "Bash(git checkout:*)", "Bash(git stash:*)", "Bash(git reset:*)", "Bash(rm:*)"]<%else%>
+  ## The permission dial is OFF: the prompts alone stand between a
+  ## reviewer and your checkout. `permission: deny` with an allow list of
+  ## read-only tools is the gate (docs/permissions.md).<%end%><%template "dials" .%>
+  scope -> nothing_to_review when empty
+  scope -> split when not empty
+  split -> review_correctness
+  split -> review_security
+  review_correctness -> verdict
+  review_security -> verdict
+  verdict -> done when approved
+  verdict -> review_blocked else

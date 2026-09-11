@@ -1,0 +1,111 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: a Verified Action (ADR-044).
+##
+## An agent prepares the work and commits; a tool then performs the one
+## brittle ACTION with the quad `goal` + recipe + `postcondition` +
+## `policy`, so it self-heals instead of hard-blocking: the postcondition
+## is the truth at every rung (already met → skip; recipe → check;
+## `recover` → an LLM proposes a corrected command from goal + stdout +
+## stderr, re-run deterministically; still unmet → the policy decides).
+## GATES stay deterministic: never attach recovery to a check whose
+## recipe IS its postcondition (C105). <%if .Worktree%>The commit lands in a per-run git
+## worktree — the TAG does not: git tags live in the repository's SHARED
+## ref store, so it stays in your repo even when the run is discarded or
+## its merge is skipped.<%else%>The commit lands on your checked-out branch (the
+## worktree dial is off) and the tag beside it, in the repository's
+## SHARED ref store, where it outlives every run.<%end%> Hence `tag` is REQUIRED and per run, and a name
+## that is already TAKEN is refused before the agent runs, deterministic
+## and typed: were it left to the recipe, `git tag -a` would fail on
+## "already exists" and the repair rung's only way to satisfy the goal
+## would be `git tag -f` — a force-move of a tag that may be pushed. A
+## recovery rung must never have a destructive gesture as its only exit.
+## Fill in: the mission, `tag`.
+## docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md
+<%template "vars_block" .%>
+schema check_out:
+  configured: bool
+
+schema tag_free_out:
+  free: bool
+
+schema prep_out:
+  summary: string
+
+schema tagged:
+  tag: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt prep_user:
+  Prepare the release: apply the mission, update the changelog for the
+  pending changes, and commit. Do NOT create the tag — the verified
+  action after you does that.
+
+## The entry gate, deterministic and before any LLM call: no tag name,
+## no run. `!!` is the expression language's truthiness, which trims: an
+## empty, blank or ABSENT tag is refused (so are the strings "false",
+## "no" and "0", which no release is named).
+compute check:
+  output: check_out
+  expr:
+    configured: "!!vars.tag"
+
+## The second gate, still before the agent: the name must be FREE. An
+## existing tag — on any commit — is a typed refusal here, never a case
+## for the action's recovery rung to "heal".
+tool tag_free:
+  command: `git rev-parse --git-dir >/dev/null 2>&1 || { echo "tag_free: not a git repository" >&2; exit 1; }; if git rev-parse -q --verify refs/tags/{{vars.tag}} >/dev/null; then printf '{"free":false}'; else printf '{"free":true}'; fi`
+  output: tag_free_out
+
+agent prepare:<%template "llm_fields" .%>
+  system: mission
+  user: prep_user
+  output: prep_out
+
+## The quad. The recipe may be brittle (the working tree is dirty, the
+## tagger identity is missing in a fresh sandbox); the postcondition
+## decides, and its JSON on stdout is the node's output on every rung,
+## the skip included. It asserts the GOAL, not a weaker consequence: the
+## object behind refs/tags/<tag> is a tag object (annotated — a
+## lightweight tag is a bare ref and satisfies `^{commit}` alone) AND it
+## points at HEAD — a tag that merely exists would let the idempotent-skip
+## rung accept a stale one as success. A {{ref}} in a command is
+## shell-escaped by the runtime, so it stays OUTSIDE quotes you write:
+## here in the `$(…)` assignments, never inside the `"…"` tests (C137).
+tool tag_release:
+  command: `git tag -a {{vars.tag}} -m {{vars.tag}}`
+  goal: "The annotated tag {{vars.tag}} exists on HEAD."
+  postcondition: `t=$(git cat-file -t refs/tags/{{vars.tag}} 2>/dev/null); c=$(git rev-parse -q --verify refs/tags/{{vars.tag}}^{commit}); [ "$t" = tag ] && [ "$c" = "$(git rev-parse HEAD)" ] && printf '{"tag":"%s"}' {{vars.tag}}`
+  output: tagged
+  policy: recover
+  recovery:
+    max_repair_attempts: 2
+    max_agent_attempts: 0
+
+fail tag_unset:
+  description: "no tag name was given"
+  code: TAG_UNSET
+  message: "tag is empty: name the annotated tag this run creates (a per-run name — the previous run's tag is still in the shared ref store)"
+
+fail tag_taken:
+  description: "the tag name already exists in the repository"
+  code: TAG_TAKEN
+  message: "refs/tags/{{vars.tag}} already exists: a tag lives in the repository's shared ref store and outlives runs — pick a fresh per-run name; this run will not force-move it"
+
+workflow <%.WorkflowName%>:
+  entry: check
+<%- if .Worktree%>
+  ## The commit lands in a per-run git worktree — the tag does not (see
+  ## the header): it is written to the shared ref store and outlives the
+  ## worktree.
+  worktree: auto<%else%>
+  ## The worktree dial is OFF: the commit lands directly on your
+  ## checked-out branch, in place, and the tag beside it in the shared
+  ## ref store.
+  worktree: none<%end%><%template "dials" .%><%template "budget_block" .%>
+  check -> tag_unset when not configured
+  check -> tag_free when configured
+  tag_free -> tag_taken when not free
+  tag_free -> prepare when free
+  prepare -> tag_release
+  tag_release -> done

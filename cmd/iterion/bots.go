@@ -80,9 +80,14 @@ bundle layout directories) under bots/<slug>, then refresh the generated bot
 catalog so orchestrators can route to it.
 
 This is the CLI half of the studio's "New bot" builder (/bots/new) — both
-render through the same engine, so a bot created either way is identical. The
-generated main.bot follows the house shape: ONE adaptive agent carrying the
-whole mission, with worktree/sandbox as opt-in workflow dials.
+render through the same engine, so a bot created either way is identical. By
+default the generated main.bot follows the house shape — ONE adaptive agent
+carrying the whole mission, isolated in a per-run git worktree unless
+--worktree=false opts out, with the sandbox as an opt-in dial;
+the gallery's shape templates (a campaign under a verify gate with a bounded
+loop, a reviewer fan-out, a plan under a human gate, a verified action, …)
+render a complete, commented workflow of that form instead, with the annex
+files the shape ships (a child worker.bot, prompts/*.md, skills/*.md).
 
 Start from a gallery template with --template (see "iterion bots templates");
 every field stays editable afterwards. The rendered workflow is parsed AND
@@ -190,7 +195,7 @@ func init() {
 	botsCreateCmd.Flags().String("instructions", "", "The agent's mission (its system prompt body)")
 	botsCreateCmd.Flags().String("model", "", "Pin a model instead of auto-detection")
 	botsCreateCmd.Flags().String("backend", "", "Pin a backend instead of auto-detection")
-	botsCreateCmd.Flags().Bool("worktree", false, "Run in a dedicated git worktree")
+	botsCreateCmd.Flags().Bool("worktree", false, "Run in a dedicated git worktree (on by default for the templates that commit — blank, docs-writer, the campaign, the plan gate, the verified action; --worktree=false opts out; every template honours it)")
 	botsCreateCmd.Flags().Bool("sandbox", false, "Run in a sandboxed container")
 	botsInstallCmd.Flags().String("ref", "", "Git ref (branch or tag) to clone")
 	botsInstallCmd.Flags().String("path", "", "Subdirectory or iterion-bots.yaml bot name to install when the repo holds several")

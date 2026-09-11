@@ -175,6 +175,16 @@ iterion resume --run-id RUN_ID --answer music=@./theme.mp3
 iterion resume --run-id RUN_ID --file workflow.bot --force
 ```
 
+One mismatch is accepted rather than refused: a run launched from a bundle's
+`main.bot` before the bundle's `prompts/*.md` and `presets/*.md` entered the
+workflow digest recorded the digest of the source bytes alone. A resume that
+finds that bare digest accepts it — and the artifacts the run published under
+that revision, as `--force` would — logs it, and goes on; nothing in the
+source changed, so no `--force` is asked for. The run keeps the digest it
+recorded (rewriting the document outside the engine's claim would race its
+other writers), so the acceptance is logged on every resume of such a run.
+Any other mismatch stays a refusal.
+
 `--answer` is repeatable and carries strings; the runtime coerces them to the
 paused node's output schema. `--answers-file` preserves JSON types. Explicit
 flags override keys loaded from the file. A `file`-typed field is answered

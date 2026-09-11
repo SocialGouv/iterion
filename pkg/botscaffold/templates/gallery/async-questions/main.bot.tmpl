@@ -1,0 +1,69 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: async questions (ADR-081).
+##
+## The drafting agent declares `interaction: async`: it posts the
+## questions only the operator can answer with `ask_user_async` and
+## KEEPS WORKING — answers arrive in its conversation whenever the
+## operator replies (studio question cards, or `iterion runs answer`).
+## The tools reach every backend: claude_code through iterion's ask-user
+## MCP server, claw in-process, pi through its extension (ADR-081).
+## The `await_answers` node is the DETERMINISTIC sync point: the run
+## parks there, and only there, until every posted question is answered
+## (mandatory timeout), then the finalizer resolves the placeholders.
+## Fill in: the mission. docs/async-interaction.md
+<%template "vars_block" .%>
+schema draft_out:
+  draft: string
+
+schema final_out:
+  result: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt draft_user:
+  FIRST, post every question only the operator can answer, one
+  ask_user_async call each. Then do everything that does not depend on
+  the answers, incorporating any answer that arrives while you work.
+  Return your draft with <PLACEHOLDER> marks where an unanswered detail
+  belongs; call await_answers only if you have literally nothing left to
+  do without the answers.
+
+prompt final_user:
+  ## Draft
+  {{outputs.draft.draft}}
+
+  ## Operator answers
+  ```
+  {{outputs.gate.answers}}
+  ```
+  Resolve every placeholder and return the final result.
+
+## The working set is DECLARED here because `interaction:` grants the
+## ask tools by adding them to this list — and on claw a non-empty list
+## is the node's whole toolset. Left empty, the grant turns "no
+## restriction" into exactly {ask_user, ask_user_async, await_answers,
+## todo_write}: the agent could ask, and nothing else. Widen it for what
+## your mission needs (`web_fetch`, an `mcp.<server>.*`).
+agent draft:<%template "llm_fields" .%>
+  interaction: async
+  tools: [bash, read_file, write_file, file_edit, glob, grep, todo_write, skill]
+  system: mission
+  user: draft_user
+  output: draft_out
+
+## Blocks HERE (and only here) until every question the draft agent
+## posted is answered. The timeout is mandatory: no silent infinity.
+await_answers gate:
+  from: draft
+  timeout: "30m"
+
+agent finalize:<%template "llm_fields" .%>
+  system: mission
+  user: final_user
+  output: final_out
+
+workflow <%.WorkflowName%>:
+  entry: draft<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>
+  draft -> gate
+  gate -> finalize
+  finalize -> done

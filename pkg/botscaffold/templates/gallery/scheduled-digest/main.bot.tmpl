@@ -1,0 +1,77 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: scheduled digest.
+##
+## Collect (a tool, git's own log) → digest (an agent) → verify the
+## artifact exists (a tool, deterministic) → done, or a typed failure
+## when nothing was written. The manifest carries a `schedule`
+## invocation with the suggested cron, so the bot home offers the
+## one-click schedule and `iterion schedule add` has its default. The
+## digest is an UNCOMMITTED file at `report_path`, so the run works in
+## place (`worktree: none` unless the dial is on): an isolated run's
+## uncommitted output is wip-banked on the storage branch and never
+## merged into the checkout — with the dial on, the digest lands on
+## `iterion/run/<name>`, not at `report_path`, after `verify_written`
+## read green inside the worktree. Fill in: the mission, `window`,
+## `report_path`. docs/scheduling.md
+<%template "vars_block" .%>
+schema collected:
+  log: string
+  commits: int
+
+schema digest_out:
+  summary: string
+
+schema written:
+  bytes: int
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt digest_user:
+  The commit log since {{vars.window}} ({{outputs.collect.commits}}
+  commits), one line per commit:
+  ```
+  {{outputs.collect.log}}
+  ```
+  Write the digest to {{vars.report_path}}: group by theme, lead with
+  the most impactful change, keep it under one screen. Put its first
+  paragraph in summary.
+
+## No LLM: git's own log, handed to the next node INSIDE the JSON on
+## stdout — the node's output is the hand-off, so no file has to be
+## visible to both nodes (a sandboxed tool and a host-side agent do not
+## share a /tmp). `jq -Rs .` JSON-encodes the raw text; jq is pinned in the
+## bundle's devbox.json (installed on any image that ships devbox) and
+## ships in every iterion sandbox image (python3 only from `-full` up), and its
+## ABSENCE fails the node by name: without the guard, `$(… | jq …)` would
+## substitute nothing, the
+## stdout would not parse, and the agent would digest a literal
+## placeholder into a green run. At most 500 commits reach the prompt
+## (`--max-count`), and the count is what the prompt carries. A git
+## failure (not a repository, a bad window) fails the node — never a
+## digest of nothing. A {{ref}} in a command is shell-escaped by the
+## runtime.
+tool collect:
+  command: `command -v jq >/dev/null || { echo "collect: jq is required to JSON-encode the log" >&2; exit 1; }; log=$(git log --since={{vars.window}} --max-count=500 --pretty=tformat:'%h %an %s') || exit 1; printf '{"log":%s,"commits":%s}' "$(printf '%s' "$log" | jq -Rs .)" "$(printf '%s' "$log" | grep -c .)"`
+  output: collected
+
+agent digest:<%template "llm_fields" .%>
+  system: mission
+  user: digest_user
+  output: digest_out
+
+## The deterministic check that the artifact exists and is not empty.
+tool verify_written:
+  command: `b=$( [ -f {{vars.report_path}} ] && wc -c < {{vars.report_path}} | tr -d ' ' || echo 0 ); printf '{"bytes":%s}' "$b"`
+  output: written
+
+fail nothing_written:
+  description: "the digest pass left no artifact"
+  code: DIGEST_EMPTY
+  message: "{{vars.report_path}} is empty or missing after the digest pass"
+
+workflow <%.WorkflowName%>:
+  entry: collect<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>
+  collect -> digest
+  digest -> verify_written
+  verify_written -> done when "bytes > 0"
+  verify_written -> nothing_written else

@@ -441,6 +441,16 @@ and oscillated forever. Same family of bug: `git diff HEAD` omits
 *untracked* files — new files must be `git add -N`/`git add -A`'d
 before diffing or a change that ADDS files reads as missing. The v2
 campaign contracts bake `git add -A` into the per-unit commit step.
+From ONE branch only: two parallel reviewers each running `git add -N .`
+contend for `.git/index.lock` — fatal for the loser, whose empty report
+then reads as an approve — so a read-only branch reads untracked files
+with `git ls-files --others --exclude-standard -z | xargs -0 -I{} git
+diff --no-index -- /dev/null {}` instead (exit 1 per file, 123 for the
+batch: a diff, not a failure). And a `worktree: auto` run starts from
+the anchor COMMIT, without the uncommitted work: a "pending changes"
+reviewer runs `worktree: none` or diffs a `base` ref, and gates an empty
+scope as a typed refusal rather than an approve (the `review-fanout`
+template's `scope` tool).
 **When a loop won't converge, first confirm the judge is diffing the
 same, correct artifact.**
 

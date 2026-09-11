@@ -1,0 +1,23 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: a multi-file bundle.
+##
+## main.bot keeps the graph only. The prompts live in prompts/*.md and
+## are merged into the workflow by their file stem at every launch
+## (prompts/mission.md → `system: mission`, prompts/kickoff.md →
+## `user: kickoff`); a prompt declared here would win over a file of
+## the same name. skills/house-style.md is mirrored into the run's
+## .claude/skills/ for the agent to read. Fill in: the mission (in
+## prompts/mission.md), the house style. docs/bundles.md
+<%template "vars_block" .%>
+schema report:
+  summary: string
+  mission_complete: bool
+
+agent campaign:<%template "llm_fields" .%>
+  ## Both prompts come from prompts/*.md — nothing declares them here.
+  system: mission
+  user: kickoff
+  output: report
+
+workflow <%.WorkflowName%>:
+  entry: campaign<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>
+  campaign -> done

@@ -1,0 +1,56 @@
+<%- /* Fragments shared by the gallery shapes. The delimiters are <% %> so
+the DSL's own {{refs}} stay literal in every shape. */ -%>
+<%define "vars_block"%><%if .Vars%>
+vars:
+<%- range .Vars%>
+<%- if .Description%>
+  ## <%.Description%>
+<%- end%>
+  <%.Name%>: <%.Type%> = <%varValue .%>
+<%- end%>
+<%end%><%end%>
+<%- /* llm_fields: the backend/model/skills/capabilities lines of an LLM
+node, each only when the spec sets it; starts with a newline so it is
+called right after the `agent x:` header. */ -%>
+<%define "llm_fields"%><%if .Backend%>
+  backend: <%quote .Backend%><%end%><%if .Model%>
+  model: <%quote .Model%><%end%><%if .Skills%>
+  skills: [<%range $i, $s := .Skills%><%if $i%>, <%end%><%quote $s%><%end%>]<%end%><%if .Capabilities%>
+  capabilities: [<%range $i, $c := .Capabilities%><%if $i%>, <%end%><%$c%><%end%>]<%end%><%end%>
+<%- /* dials: the optional workflow-level switches a spec may set. */ -%>
+<%define "dials"%><%if .Sandbox%>
+  ## Container isolation (devcontainer.json when present, else the
+  ## published iterion-sandbox image).
+  sandbox: auto<%end%><%if .Permission%>
+  ## Tool-permission gate (docs/permissions.md).
+  permission: <%.Permission%><%end%><%end%>
+<%- /* worktree_dial: for shapes that do not require a worktree of their
+own; the shapes that commit write the same ternary inline and default
+the dial ON in their Spec, so every template honours an explicit
+opt-out. BOTH branches write the property: an unset `worktree:` resolves
+to `auto` (ir.defaultWorktreeMode), so an off branch that emits nothing
+is not an opt-out — it is the same isolation, silently. An isolated run's
+uncommitted output never reaches
+the checkout: the finalizer banks a dirty tree as a wip commit on the
+storage branch and never merges a wip-banked head, so a deliverable
+written at a workspace path is on that branch, not where the shape
+promised it, after a check inside the worktree read green. */ -%>
+<%define "worktree_dial"%><%if .Worktree%>
+  ## Isolate the run in a git worktree; commits land on a persistent
+  ## branch and fast-forward your checked-out branch on success. Output
+  ## left UNCOMMITTED is wip-banked on that branch and NOT merged.
+  worktree: auto<%else%>
+  ## In place: this shape's deliverable is what it leaves in the
+  ## workspace, not a commit. An isolated run's worktree is removed when
+  ## the run ends, and whatever it did not commit is auto-banked onto the
+  ## storage branch instead — never merged into your checkout — so the
+  ## artifact would not be where the shape says it is. `worktree:` unset
+  ## means `auto`, so the opt-out has to be written.
+  worktree: none<%end%><%end%>
+<%- /* budget_lines: inside a `budget:` block a shape already opens. */ -%>
+<%define "budget_lines"%><%if .MaxCostUSD%>
+    max_cost_usd: <%.MaxCostUSD%><%end%><%if .MaxDuration%>
+    max_duration: <%quote .MaxDuration%><%end%><%end%>
+<%- /* budget_block: a whole `budget:` block, for shapes without one. */ -%>
+<%define "budget_block"%><%if or .MaxCostUSD .MaxDuration%>
+  budget:<%template "budget_lines" .%><%end%><%end%>

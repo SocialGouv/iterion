@@ -1,0 +1,27 @@
+## worker.bot — the per-ticket child run of <%.Slug%>. Its inputs arrive
+## through `vars` from the parent's `with { … }` mapping; its output
+## schema is what the parent reads back.
+vars:
+  ticket_id: string = ""
+  title: string = ""
+
+schema ticket_result:
+  done: bool
+  note: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt ticket_user:
+  Handle ticket {{vars.ticket_id}}: {{vars.title}}. Report done=true only
+  when it is genuinely handled, and say in `note` what you did or what
+  stopped you.
+
+agent work:<%template "llm_fields" .%>
+  system: mission
+  user: ticket_user
+  output: ticket_result
+
+workflow worker:
+  entry: work
+  work -> done

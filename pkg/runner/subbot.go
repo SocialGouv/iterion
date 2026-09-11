@@ -154,7 +154,9 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if err != nil {
 			return nil, err
 		}
-		childWf, hash, err := runview.CompileWorkflowWithHash(childPath)
+		// The child compiles the way every path does: a bundle's main.bot
+		// promoted to its bundle, prompts/*.md in scope, the bundle's hash.
+		childWf, hash, _, err := runview.CompileWorkflowPath(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}

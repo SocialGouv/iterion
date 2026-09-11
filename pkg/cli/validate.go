@@ -158,7 +158,12 @@ func RunValidate(path string, p *Printer) error {
 		// by the per-bot-memory stability check) is the archive's stem.
 		bundleDir = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	case bundle.KindBundleDir:
-		bundleDir = filepath.Base(path)
+		// The bundle's OWN root, never the path the operator typed: a bare
+		// main.bot promoted to its bundle by openBundleOrFile would else
+		// name the FILE, and the per-bot-memory name-stability check (C230)
+		// would refuse `validate bots/x/main.bot` on a bundle whose three
+		// names agree — while `validate bots/x` passes.
+		bundleDir = filepath.Base(bundleHandle.Dir)
 	}
 	path = iterPath
 
@@ -287,6 +292,23 @@ func RunValidate(path string, p *Printer) error {
 			if d.Severity == bundlelint.SeverityError {
 				result.Valid = false
 			}
+		}
+	}
+	// A file named like a manifest beside a loose main.bot that did NOT
+	// mark it — a typo in its only distinctive key, a file the parser
+	// cannot read — leaves the file validated alone, and the verdict says
+	// why (C223): the one outcome that would otherwise be silent.
+	if bundleHandle == nil {
+		if m, why := bundle.ForeignManifestBeside(path); m != "" {
+			msg := filepath.Base(m) + " beside main.bot was not read as this bundle's manifest: it " + why + " — the file was validated alone, without the prompts, presets and skills beside it"
+			result.BundleDiagnostics = append(result.BundleDiagnostics, "warning ["+string(bundlelint.DiagManifestNotRead)+"]: "+msg)
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "bundle",
+				Code:     string(bundlelint.DiagManifestNotRead),
+				Severity: "warning",
+				Message:  msg,
+				Hint:     "if it is this bot's manifest, fix it (the reason names the keys); a manifest of another tool beside a loose main.bot needs nothing",
+			})
 		}
 	}
 

@@ -68,6 +68,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | Required reading for code-mutating workflows: anti-façade and anti-Goodhart rules. |
 | [references/patterns.md](references/patterns.md) | Reusable graph patterns. |
+| [references/dsl-authoring-probe.md](references/dsl-authoring-probe.md) | The protocol that measures whether an agent writes a correct bot on the first draft (three specs, what to record, the baseline and the targets). |
 | [references/productive-session-patterns.md](references/productive-session-patterns.md) | Minimal-framing patterns learned from productive agent sessions. |
 | [references-bootstrap.md](references-bootstrap.md) | Building grounded reference packs for bot skills. |
 

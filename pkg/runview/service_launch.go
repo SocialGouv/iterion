@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -159,7 +161,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
 		// the runner applies them after loading the workflow, under its
 		// multitenant cloud ceiling.
-		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+		wf, hash, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 		if err != nil {
 			return nil, err
 		}
@@ -188,7 +190,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// …unless this workflow cannot call a model at all, in which case
 		// the cap guards nothing it could spend. The compile is paid ONLY
 		// on the blocked path, so the common case stays free.
-		if wf, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
+		if wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
 		}
 	}
@@ -237,7 +239,7 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // existing queued doc (the engine's runResolveDoc transitions it
 // queued→running), used when the concurrency gate deferred the launch.
 func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, hash, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}
@@ -311,9 +313,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// studio `--preset <name>` selection resolves a file-based sous-bot — not
 	// just an in-source presets: entry — and its var overrides apply below.
 	// The engine re-applies this as a backstop and also pushes the prompt
-	// bias + skill hints into every LLM node ("## Focus").
-	if b := ResolveBundleFromFilePath(spec.FilePath); b != nil {
-		runtime.MergeBundlePresets(wf, b, runLogger)
+	// bias + skill hints into every LLM node ("## Focus"). The bundle is
+	// the one the compile used — one open, one truth.
+	if launchBundle != nil {
+		runtime.MergeBundlePresets(wf, launchBundle, runLogger)
 	}
 
 	inputs := make(map[string]any, len(spec.Vars))
@@ -368,7 +371,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// (queued→running via runResolveDoc) instead of re-creating.
 		precreateInputs = nil
 	}
-	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
+	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
@@ -409,14 +412,22 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	spec.BundleDir = resumeBundleDir(r, spec)
+	wf, hash, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
+	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		return err
+		// The bare digest of a run launched before the promotion is accepted
+		// here, as the engine accepts it under its claim; anything else
+		// stays a refusal.
+		if pfBundle == nil || !runtime.LegacyBareDigestMatches(r, pfBundle.IterPath) {
+			return err
+		}
+		legacy = true
 	}
-	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force)
+	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
 	return err
 }
 
@@ -506,12 +517,22 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	//
 	// Engine.Resume repeats the same check after acquiring the run lock, so a
 	// source/status change between this point and execution still fails closed.
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	spec.BundleDir = resumeBundleDir(r, spec)
+	wf, hash, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}
+	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		return nil, err
+		// A run launched before its bundle's prompts entered the digest
+		// recorded the bare main.bot's: accepted here and by the engine
+		// under its claim (which never rewrites the run — a whole-document
+		// save outside the claim would race every other writer); any other
+		// mismatch stays a refusal.
+		if resumeBundle == nil || !runtime.LegacyBareDigestMatches(r, resumeBundle.IterPath) {
+			return nil, err
+		}
+		legacy = true
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
@@ -522,7 +543,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// Queued/detached engines repeat the emitting pass at their own boundary.
 		validateArtifacts = runtime.ValidateResumeArtifacts
 	}
-	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force)
+	// A legacy digest waives the revision the run's artifacts were published
+	// under, exactly as --force would: nothing else changed.
+	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
 	if err != nil {
 		return nil, err
 	}
@@ -647,7 +670,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// MergeInto/BranchName decisions on the run), so resume uses
 	// engine defaults. If we ever surface "edit finalization on
 	// resume" we'd plumb a ResumeSpec field here.
-	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
+	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
@@ -699,6 +722,7 @@ func (s *Service) spawnRun(
 	runID string,
 	wf *ir.Workflow,
 	hash, filePath, runName string,
+	launchBundle *bundle.Bundle,
 	fin finalizationOpts,
 	cb callbackOpts,
 	executor runtime.NodeExecutor,
@@ -775,7 +799,7 @@ func (s *Service) spawnRun(
 		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
 	}
 
-	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex)
+	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex, launchBundle)
 	opts = consumeArtifactResumePreflight(opts, &ex)
 	// Subbot nodes need a host-supplied runner (the bare engine can't compile
 	// a child .bot — import cycle with runview). Wired on BOTH the launch and
@@ -1001,7 +1025,7 @@ type launchExtras struct {
 // targets. The logger is always per-run (built by prepareRunLog) so
 // every iterion log line is captured into the run's log buffer for
 // streaming to the studio.
-func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts, ex launchExtras) []runtime.EngineOption {
+func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts, ex launchExtras, b *bundle.Bundle) []runtime.EngineOption {
 	if runLogger == nil {
 		runLogger = s.logger
 	}
@@ -1088,16 +1112,16 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if filePath != "" {
 		opts = append(opts, runtime.WithFilePath(filePath))
-		// F-NEW-4: studio + cloud launches bypass pkg/cli/run.go's
-		// bundle-detect path. When the operator points at
-		// <bundle-dir>/main.bot directly, ResolveBundleFromFilePath
-		// climbs to the parent and opens it as a bundle so the engine
-		// can mirror skills/ + recipes/ + attachments/ into the
-		// workspace before any node runs. Nil bundle → engine no-ops
-		// (existing behaviour for inline / standalone .bot files).
-		if b := ResolveBundleFromFilePath(filePath); b != nil {
-			opts = append(opts, runtime.WithBundle(b))
-		}
+	}
+	// The bundle the launch COMPILED against — a promoted main.bot, a
+	// stored bot's dir, a subbot child's bundle — so the engine mirrors
+	// its skills/ + recipes/ + attachments/ into the workspace before any
+	// node runs. One open, one truth: it is never re-resolved from
+	// filePath here, which for a studio launch is the store's materialised
+	// copy of the source, a name no promotion recognises. Nil → the engine
+	// no-ops (inline / standalone .bot files).
+	if b != nil {
+		opts = append(opts, runtime.WithBundle(b))
 	}
 	if runName != "" {
 		opts = append(opts, runtime.WithRunName(runName))
@@ -1215,4 +1239,23 @@ func (s *Service) logRunOutcome(runID string, err error) {
 	default:
 		s.logger.Warn("runview: run %s failed: %v", runID, err)
 	}
+}
+
+// resumeBundleDir is the bundle a resume compiles against when the caller
+// resolved none: the directory the run RECORDED at launch (Run.BundlePath,
+// set by the engine from the bundle it was handed). A run launched from
+// the studio's file picker has as FilePath the store's materialised copy of
+// its main.bot — a name no promotion recognises — so without this it
+// resumed bare: C003 on a bundle whose prompts live in prompts/, and a
+// hash unlike the one it recorded. Only a directory qualifies: a `.botz`
+// path stays a file compile, where the extracted main.bot promotes on its
+// own; so does a path this process cannot see (a cloud run's pod path).
+func resumeBundleDir(r *store.Run, spec ResumeSpec) string {
+	if spec.BundleDir != "" || spec.BotBundle != nil || r == nil || r.BundlePath == "" {
+		return spec.BundleDir
+	}
+	if st, err := os.Stat(r.BundlePath); err == nil && st.IsDir() {
+		return r.BundlePath
+	}
+	return ""
 }

@@ -128,7 +128,11 @@ func RunWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase, env
 	close(done)
 
 	if err == nil {
-		if phaseCtx.Err() != nil {
+		// The clock, not only the context: the deadline is delivered by the
+		// timer's own goroutine, which a starved scheduler can run AFTER a
+		// callee that slept past the budget has already returned — the
+		// overrun is then real and the context still reads nil.
+		if phaseCtx.Err() != nil || time.Since(start) >= timeout {
 			logger.Warn("sandbox: %s phase completed at or past its %s budget (elapsed %s) — raise %s or investigate the delay",
 				phase, timeout, time.Since(start).Round(time.Millisecond), envKey)
 		}

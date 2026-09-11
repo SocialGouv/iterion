@@ -55,7 +55,7 @@ iterion validate workflow.bot
 iterion validate bundle.botz --json
 ```
 
-Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C249, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. A bare `main.bot` whose parent is a bundle (an iterion `manifest.yaml`/`.yml` — one carrying iterion's own keys, `schema_version` first — or a `skills/` beside it; a `prompts/` alone marks nothing, and neither does a manifest of another tool, a common filename) is validated as that bundle — its `prompts/*.md` in scope, its manifest cross-checked — the same promotion `run` and `resume` apply, so `iterion validate bots/x/main.bot` and `iterion validate bots/x` give one verdict — including on a bundle that does not open (a `manifest.yaml` that does not decode), which both forms refuse by name rather than validating the bare file. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C249, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
 Every finding is printed with its source position when the stage could attribute one — `file:line:column: error [C019]: …`, the node's or edge's own line for a compile diagnostic — and a `fix:` line beneath it, the one-line remedy from the compiler's catalogue. `--json` carries the same findings as `diagnostics`, one object each: `source` (`parse` | `compile` | `bundle`), `code`, `severity`, `file` / `line` / `column`, `message`, `hint`, `node_id`, `edge_id`. The older `parse_diagnostics` / `compile_diagnostics` / `bundle_diagnostics` string lists remain. The MCP `local_validate` tool returns this same JSON, so an agent's write → validate → fix loop reads positions and fixes, not prose.
 
@@ -429,16 +429,16 @@ iterion bots regen-catalog
 
 `bots create` scaffolds a bot bundle under `bots/<slug>` — `main.bot`, `manifest.yaml`, `README.md`, `.gitignore`, and the `skills/ prompts/ attachments/ presets/` layout — then refreshes the generated catalogue. It is the CLI half of the studio builder at `/bots/new`: both render through `pkg/botscaffold`, so a bot created either way is identical. The generated workflow is parsed **and** compiled before anything is written.
 
-The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.botz/`), not merely under `--dest`: a duplicate name makes catalogue routing ambiguous. A collision exits 2 and names the conflicting bot's path.
+The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.botz/`), not merely under `--dest`: a duplicate name makes catalogue routing ambiguous. A collision exits 2 and names the conflicting bot's path. A slug is kebab-case (`^[a-z][a-z0-9-]{1,63}$`); the rendered `workflow` name is the slug with `-` turned into `_`, since a DSL identifier takes no hyphen — `bots create release-readiness` declares `workflow release_readiness:`.
 
 | Flag | Meaning |
 |---|---|
-| `--template <id>` | Start from a gallery template (default `blank`); `iterion bots templates` lists them. |
+| `--template <id>` | Start from a gallery template (default `blank`); `iterion bots templates` lists them. Five render the single-agent workflow with a different mission (`blank`, `daily-digest`, `code-reviewer`, `docs-writer`, `issue-triager`); eight render a complete, commented **shape** — `campaign-loop`, `review-fanout`, `plan-gate-implement`, `scheduled-digest`, `per-ticket-subbots`, `verified-action`, `async-questions`, `multi-file` — each held to its form by a test (the table in `SKILL.md` § Start from a template). A shape's annex files (a child `worker.bot`, `prompts/*.md`, `skills/*.md`) are written with the bundle. `campaign-loop` and `scheduled-digest` need `jq` and ship a `devbox.json` + `devbox.lock` pinning it, which the engine installs on any image that ships devbox (every iterion sandbox image does, and ships jq too). |
 | `--workdir <dir>` | Workspace root anchoring `--dest` and the catalogue refresh (default: cwd). |
 | `--dest <dir>` | Parent directory for the bundle, resolved against `--workdir` (default `bots`). |
 | `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
 | `--model`, `--backend` | Pin instead of auto-detection. |
-| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. |
+| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 

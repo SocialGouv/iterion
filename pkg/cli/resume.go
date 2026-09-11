@@ -227,7 +227,6 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return err
 	}
-
 	// `--answer field=@./file.mp3` attaches a local file to the gate, the
 	// CLI counterpart of the studio's upload widget. Done after the
 	// compile so the '@' convention can be scoped to the fields the

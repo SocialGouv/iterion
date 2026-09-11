@@ -57,6 +57,12 @@ workflow {{.WorkflowName}}:
   ## Isolate the run in a git worktree; commits land on a persistent
   ## branch and fast-forward your checked-out branch on success.
   worktree: auto
+{{- else}}
+  ## In place: the agent's work stays in the workspace as it is. An
+  ## isolated run's uncommitted edits are wip-banked on the storage
+  ## branch, never merged into the checkout — and `worktree:` unset
+  ## means `auto`, so the opt-out has to be written.
+  worktree: none
 {{- end}}
 {{- if .Sandbox}}
   ## Container isolation (devcontainer.json when present, else the

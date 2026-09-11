@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -145,15 +144,10 @@ func (b *pipelineProjectionBuilder) totalNodes(filePath string) int {
 	if n, ok := b.nodeCountCache[filePath]; ok {
 		return n
 	}
-	var (
-		wf  *ir.Workflow
-		err error
-	)
-	if bundle := runview.ResolveBundleFromFilePath(filePath); bundle != nil {
-		wf, _, err = runview.CompileBundleWorkflow(filePath, bundle)
-	} else {
-		wf, _, err = runview.CompileWorkflowWithHash(filePath)
-	}
+	// A bundle's main.bot is promoted to its bundle; one that does not
+	// open counts as a compile failure here, as it did — a node count of 0
+	// on a board card, never a refusal.
+	wf, _, _, err := runview.CompileWorkflowPath(filePath)
 	n := 0
 	if err == nil && wf != nil {
 		n = len(wf.Nodes)

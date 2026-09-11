@@ -1,0 +1,63 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: one subbot per ticket, in parallel.
+##
+## A tool lists the work items (JSON on stdout), a `fan_out_each` router
+## opens one branch per item, a `subbot` runs `worker.bot` on each as
+## its own child run — `isolated: true` asserts each child confines its
+## writes to its own run store, which is what makes the concurrent
+## fan-out legal — and a compute with `await: wait_all` closes the
+## fan-in. Fill in: the source of tickets, worker.bot's mission.
+## docs/groups-iteration-subbots.md#fanning-subbots-out-in-parallel
+<%template "vars_block" .%>
+schema tickets_out:
+  tickets: json
+
+schema ticket_result:
+  done: bool
+  note: string
+
+schema collected:
+  done: bool
+
+## Replace with your source of work items (a board query, a file, an
+## API call); every item needs an `id` and a `title`.
+tool list_tickets:
+  command: `printf '{"tickets":[{"id":"T-1","title":"first ticket"},{"id":"T-2","title":"second ticket"}]}'`
+  output: tickets_out
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.list_tickets.tickets}}"
+  as: ticket
+
+## One child run per ticket; its inputs travel through `with { … }` onto
+## the child's vars. Each child's output reads back as
+## {{outputs.handle.<field>}} on its own branch.
+subbot handle:
+  source: "worker.bot"
+  with { ticket_id: "{{outputs.dispatch.ticket.id}}", title: "{{outputs.dispatch.ticket.title}}" }
+  output: ticket_result
+  isolated: true
+
+## The fan-in fires once every branch has settled. What it can READ is one
+## branch's output per node id — at convergence the branches' outputs are
+## merged last-write-wins, so `outputs.handle.done` here is ONE ticket's,
+## not a list, and a per-ticket aggregate is not expressible in this
+## compute today. Per-item results travel through what each child leaves
+## behind — its own run's artifacts, a board card; never a file in this
+## workspace, which `isolated: true` forbids it — which is why this node
+## only marks the fan-in: make the children's work the record, not this
+## node's output.
+compute collect:
+  await: wait_all
+  output: collected
+  expr:
+    done: "true"
+
+workflow <%.WorkflowName%>:
+  entry: list_tickets
+  budget:
+    max_parallel_branches: 3<%template "budget_lines" .%><%template "worktree_dial" .%><%template "dials" .%>
+  list_tickets -> dispatch
+  dispatch -> handle
+  handle -> collect
+  collect -> done
