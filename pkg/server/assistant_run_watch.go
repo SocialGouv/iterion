@@ -1427,23 +1427,49 @@ func (c *assistantWatchCoordinator) armWatchesForTarget(ctx context.Context, tar
 	if target == nil || target.Source == nil || target.Source.IssueID == "" {
 		return
 	}
-	issueID := target.Source.IssueID
+	watchers, err := c.listIssueWatchers(ctx)
+	if err != nil {
+		c.server.logWarn("assistant run watch: arm for issue %s: list runs: %v", target.Source.IssueID, err)
+		return
+	}
+	c.armWatchesForTargetFrom(ctx, target, watchers)
+}
+
+// listIssueWatchers loads the runs that carry at least one watched card and
+// can still be delivered to. It is the ONLY full-store pass either arming
+// path needs: a sweep builds it once and hands it to every target, instead
+// of re-listing and re-loading every run in the store per target.
+func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*store.Run, error) {
 	rs := c.server.runs.RunStore()
 	ids, err := rs.ListRuns(ctx)
 	if err != nil {
-		c.server.logWarn("assistant run watch: arm for issue %s: list runs: %v", issueID, err)
-		return
+		return nil, err
 	}
-	now := time.Now().UTC()
+	watchers := make([]*store.Run, 0, 8)
 	for _, runID := range ids {
-		if runID == target.ID {
-			continue
-		}
 		watcher, err := rs.LoadRun(ctx, runID)
-		if err != nil || watcher == nil {
+		if err != nil || watcher == nil || len(watcher.WatchedIssueIDs) == 0 {
 			continue
 		}
 		if !watchDeliverable(watcher.Status) {
+			continue
+		}
+		watchers = append(watchers, watcher)
+	}
+	return watchers, nil
+}
+
+// armWatchesForTargetFrom is armWatchesForTarget over an already-loaded
+// candidate set. Splitting it is what takes the reconciliation sweep from
+// quadratic back to the single store pass its own comment claims.
+func (c *assistantWatchCoordinator) armWatchesForTargetFrom(ctx context.Context, target *store.Run, watchers []*store.Run) {
+	if target == nil || target.Source == nil || target.Source.IssueID == "" {
+		return
+	}
+	issueID := target.Source.IssueID
+	now := time.Now().UTC()
+	for _, watcher := range watchers {
+		if watcher == nil || watcher.ID == target.ID {
 			continue
 		}
 		if !slices.Contains(watcher.WatchedIssueIDs, issueID) {
@@ -1510,22 +1536,26 @@ func autoWatchKinds() []string {
 // already exist. So the sweep also walks the other way round: from each live
 // assistant veille to the terminal runs its watched cards produced.
 //
-// ListRunsBySourceIssue is indexed, so the cost is bounded by the number of
-// active veilles rather than by the size of the store.
+// Finding the veilles costs ONE store pass (listIssueWatchers); from there
+// ListRunsBySourceIssue is indexed, so the rest is bounded by the number of
+// active veilles rather than by the size of the store. That is what the
+// comment used to claim while the code did the opposite: the outer loop
+// listed and loaded every run, and each terminal target it found triggered
+// ANOTHER full list-and-load inside armWatchesForTarget — quadratic in the
+// store, every 20s, plus once per run-outcome event. A long-lived store
+// degraded the server continuously.
 func (c *assistantWatchCoordinator) reconcileArmedWatches(ctx context.Context) {
 	rs := c.server.runs.RunStore()
-	ids, err := rs.ListRuns(ctx)
+	watchers, err := c.listIssueWatchers(ctx)
 	if err != nil {
 		return
 	}
-	for _, runID := range ids {
-		watcher, err := rs.LoadRun(ctx, runID)
-		if err != nil || watcher == nil || len(watcher.WatchedIssueIDs) == 0 {
-			continue
-		}
-		if !watchDeliverable(watcher.Status) {
-			continue
-		}
+	// A target reached through two watchers, or through two cards of the
+	// same watcher, is the common shape — arming and observing it twice in
+	// one sweep is pure repeat work (both are idempotent, so it was only
+	// ever cost).
+	seen := make(map[string]struct{}, len(watchers))
+	for _, watcher := range watchers {
 		for _, issueID := range watcher.WatchedIssueIDs {
 			targets, err := rs.ListRunsBySourceIssue(ctx, issueID)
 			if err != nil {
@@ -1535,11 +1565,15 @@ func (c *assistantWatchCoordinator) reconcileArmedWatches(ctx context.Context) {
 				if targetID == watcher.ID {
 					continue
 				}
+				if _, done := seen[targetID]; done {
+					continue
+				}
+				seen[targetID] = struct{}{}
 				target, err := rs.LoadRun(ctx, targetID)
 				if err != nil || target == nil || !target.Status.IsTerminal() {
 					continue
 				}
-				c.armWatchesForTarget(ctx, target)
+				c.armWatchesForTargetFrom(ctx, target, watchers)
 				c.observeTerminalState(ctx, target)
 			}
 		}
