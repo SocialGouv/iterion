@@ -205,3 +205,157 @@ func TestParseActionParamHintKeepsPunctuatedValuesIntact(t *testing.T) {
 		}
 	}
 }
+
+// A trailing comment must never change whether a line parses.
+//
+// `scanComment` consumes the newline and emits TokenComment in its place, so
+// there is no TokenNewline behind `timeout: 30s # keep it short`. The scalar
+// reader did not know that: it read a valid line as a value that is not a
+// single bare word (an E020 error on correct source), and then consumed the
+// comment and kept going into the NEXT line — so `output:` was deleted from
+// the node too. Every property of this recipe reads through that path.
+func TestParseActionPropertiesAcceptATrailingComment(t *testing.T) {
+	res := parser.Parse("test.bot", `tool comment:
+  action: forgejo.issue.comment   # the operation
+  connection: forge_main  ## the connection
+  params:
+    owner: acme     # the org
+    index: 42       # the issue
+  retry: 3      # extra attempts
+  timeout: 30s   # keep the call short
+  output: comment_result
+`)
+	assertNoDiags(t, res)
+	if len(res.File.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
+	}
+	tn := res.File.Tools[0]
+	assertEq(t, "Action", tn.Action, "forgejo.issue.comment")
+	assertEq(t, "Connection", tn.Connection, "forge_main")
+	assertEq(t, "Retry", tn.Retry, "3")
+	assertEq(t, "Timeout", tn.Timeout, "30s")
+	// The property AFTER the commented one must survive: the reader used to
+	// run past the comment and swallow it.
+	assertEq(t, "Output", tn.Output, "comment_result")
+	if len(tn.Params) != 2 {
+		t.Fatalf("Params = %d, want 2: %+v", len(tn.Params), tn.Params)
+	}
+	for _, want := range []struct{ key, value string }{{"owner", "acme"}, {"index", "42"}} {
+		var got string
+		for _, p := range tn.Params {
+			if p.Key == want.key {
+				got = p.Value
+			}
+		}
+		if got != want.value {
+			t.Errorf("param %s = %q, want %q — the comment must not reach the value", want.key, got, want.value)
+		}
+	}
+}
+
+// The unit join is licensed by ADJACENCY, not by the head being a number.
+//
+// `30s` is one value the lexer split at a boundary with no space in it. The
+// first fix restricted the join to a numeric head, which left `body: 2
+// failures` joined into `2failures` — and silently, because after the join
+// the line IS ended, so the refusal below never fires. A vendor receiving a
+// value the author never wrote is this recipe's whole failure mode.
+func TestParseActionParamRefusesANumberFollowedByAWord(t *testing.T) {
+	res := parser.Parse("test.bot", `tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+    body: 2 failures
+`)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("a number followed by a word must be diagnosed, not joined")
+	}
+	if txt := diagText(res); !strings.Contains(txt, `"2 failures"`) {
+		t.Errorf("the hint must echo the value as written, got: %s", txt)
+	}
+	if len(res.File.Tools) == 1 {
+		for _, p := range res.File.Tools[0].Params {
+			if p.Value == "2failures" {
+				t.Error("the number and the word were concatenated into the value anyway")
+			}
+		}
+	}
+	var fatal bool
+	for _, d := range res.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			fatal = true
+		}
+	}
+	if !fatal {
+		t.Error("it must be an error: a warning would let the truncated value be sent")
+	}
+}
+
+// A `params:` body that is not an indented block is DIAGNOSED, never dropped.
+//
+// The hand-rolled reader consumed the rest of the line whenever it did not
+// find an INDENT, which covered two very different inputs with silence: a
+// bare `params:` followed by a sibling property swallowed that property's
+// line, and an inline `params: { owner: "acme" }` dropped every argument. An
+// action then called the vendor with no filters, or ran unbounded while the
+// source read as capped.
+func TestParseActionParamsBlockDiagnosesAMalformedBody(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"a sibling property at the same indent", `tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+  timeout: 30s
+`},
+		{"an inline body", `tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params: { owner: "acme" }
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := parser.Parse("test.bot", tc.src)
+			if len(res.Diagnostics) == 0 {
+				t.Fatal("a body that is not an indented block must be diagnosed")
+			}
+			// ONE diagnostic, at the mistake. The offending token is consumed
+			// by `expect`, so what follows must go with it — otherwise the
+			// property loop reads a `:` or an `owner` as a property name and
+			// the author is told about text they never wrote.
+			if len(res.Diagnostics) != 1 {
+				t.Errorf("want one diagnostic at the mistake, got %d: %s", len(res.Diagnostics), diagText(res))
+			}
+		})
+	}
+}
+
+// An EMPTY `params:` stays legal in the two shapes the language already uses
+// to write one — the studio saves a declaration the moment it is created.
+func TestParseActionParamsBlockAcceptsAnEmptyBody(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"last property of the node", `tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+`},
+		{"separated by a blank line", `tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+
+workflow w:
+  entry: comment
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := parser.Parse("test.bot", tc.src)
+			assertNoDiags(t, res)
+			if len(res.File.Tools) != 1 {
+				t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
+			}
+			if n := len(res.File.Tools[0].Params); n != 0 {
+				t.Errorf("Params = %d, want an empty block", n)
+			}
+		})
+	}
+}

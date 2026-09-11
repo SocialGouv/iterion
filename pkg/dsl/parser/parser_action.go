@@ -91,10 +91,19 @@ func (p *parser) expectScalarText(what string) string {
 	// read as the next parameter name. A value the author did not write is
 	// exactly what this recipe's refusals exist to prevent, arriving one layer
 	// earlier where nothing checks it.
+	//
+	// ADJACENT, too. `30s` is one value the lexer split at a boundary with no
+	// space in it, and that is the whole licence for rejoining: a unit token
+	// that starts exactly where the number ended. Joining on "numeric and
+	// something follows" left the corruption alive for `body: 2 failures`,
+	// which became `2failures` with no diagnostic at all — the two-token case
+	// slips past the refusal below, since after the join the line IS ended.
 	if numeric && !p.atLineEnd() {
-		if unit := tokenAsIdent(p.peek()); unit != "" {
-			head += unit
-			p.next()
+		if u := p.peek(); adjacent(t, u) {
+			if unit := tokenAsIdent(u); unit != "" {
+				head += unit
+				p.next()
+			}
 		}
 	}
 	if p.atLineEnd() {
@@ -112,6 +121,13 @@ func (p *parser) expectScalarText(what string) string {
 		"`"+what+"`: a value that is not a single bare word must be quoted",
 		"write it as a string: `"+what+": \""+p.restOfLineText(t, head)+"\"`")
 	return head
+}
+
+// adjacent reports whether b begins exactly where a ended, on the same line —
+// i.e. the author wrote them with nothing in between. Columns are 1-based and
+// counted in runes; a number token is ASCII, so its byte length is its width.
+func adjacent(a, b Token) bool {
+	return a.Line == b.Line && b.Column == a.Column+len(a.Value)
 }
 
 // restOfLineText consumes what remains of the line and returns the value as
@@ -172,9 +188,18 @@ func trimLineTail(s string) string {
 // atLineEnd reports whether the next token ends the current line, so a
 // two-token scalar (`30` `s`) is only joined when the unit really follows on
 // the same line.
+//
+// A COMMENT ends the line too, and that is not a nicety: `scanComment`
+// consumes the newline itself and emits TokenComment IN ITS PLACE, so there is
+// no TokenNewline behind a trailing comment — the reason `skipToNewline` and
+// `skipNewlinesFrom` both stop on one. Without this case `timeout: 30s # keep
+// it short` was read as a value that is not a single bare word: an E020 on a
+// valid line, and then `restOfLineText` consumed the comment and kept going
+// into the NEXT line, deleting that property from the node. A trailing comment
+// must never change whether a line parses, let alone what it declares.
 func (p *parser) atLineEnd() bool {
 	switch p.peek().Type {
-	case TokenNewline, TokenDedent, TokenEOF:
+	case TokenNewline, TokenComment, TokenDedent, TokenEOF:
 		return true
 	}
 	return false
@@ -185,23 +210,34 @@ func (p *parser) atLineEnd() bool {
 // would reshuffle an author's own arguments on every round trip through the
 // unparser.
 func (p *parser) parseActionParamsBlock() []ast.ActionParam {
-	p.expect(TokenColon)
-	p.skipNewlines()
+	colon, _ := p.expect(TokenColon)
 	// A bare `params:` declares an EMPTY block, like every other block since
 	// #1067: the studio saves a declaration the moment it is created, so a
 	// header with no body yet has a written form. What an empty one MEANS is
 	// the compiler's call — here it is an action with no arguments, which the
 	// executor refuses at call time if the operation requires any.
-	if p.peek().Type != TokenIndent {
-		// Whatever followed the colon is not an indented body. Consume the
-		// rest of the line rather than leaving it: an unconsumed token would
-		// be read by the property loop as the NEXT property name, and the
-		// author would get "unknown tool property '1'" — a diagnostic naming
-		// something they never wrote.
+	//
+	// Through the LANGUAGE's own reader, not a hand-rolled one. This block
+	// used to test for an INDENT and `skipToNewline()` otherwise, which reads
+	// as defensive and is the opposite: `params:` followed by a sibling
+	// property swallowed that property's whole line, and an inline `params: {
+	// owner: "acme" }` dropped every argument — both with NO diagnostic, on
+	// the one recipe whose promise is that the request is what was declared.
+	// blockBodyAfter tells an empty body (a dedent, or the blank line the
+	// language uses as the discriminant) from a malformed one, and reports the
+	// latter with the indentation hint every other block already gives.
+	switch p.blockBodyAfter(colon) {
+	case headerFailed:
+		// The offending token is already consumed (`expect` takes it either
+		// way), so what remains of the line has to go with it: left in place
+		// it is read by the property loop as the next property NAME, and the
+		// author gets a second diagnostic about a `:` or an `owner` they did
+		// not write as a property. One error, at the place the mistake is.
 		p.skipToNewline()
 		return nil
+	case headerEmpty:
+		return nil
 	}
-	p.next()
 
 	var out []ast.ActionParam
 	for {
