@@ -57,20 +57,25 @@ func (p *parser) expectActionID() string {
 // expectScalarText reads a bare scalar (`30s`, `3`) or a quoted string, and
 // renders it as text. Durations and counts are naturally written unquoted,
 // and requiring quotes for them would be a papercut in every action node.
-func (p *parser) expectScalarText() string {
+//
+// `what` names the property for the diagnostic, which is the only thing an
+// author can act on when a value is refused.
+func (p *parser) expectScalarText(what string) string {
 	t := p.peek()
 	if t.Type == TokenString {
 		return p.next().Value
 	}
 	// A duration is written `30s`, and the lexer splits it into the number and
-	// the unit — so whatever leads, a UNIT that follows on the same line is
-	// part of the same value. Without the join, `timeout: 30s` leaves a stray
-	// `s` that the property loop then reads as an unknown tool property, a
-	// diagnostic that names the wrong thing entirely.
+	// the unit — so a NUMBER followed by a unit on the same line is one value.
+	// Without the join, `timeout: 30s` leaves a stray `s` that the property
+	// loop then reads as an unknown tool property, a diagnostic that names the
+	// wrong thing entirely.
 	var head string
+	numeric := false
 	switch t.Type {
 	case TokenInt, TokenFloat:
 		head = p.next().Value
+		numeric = true
 	default:
 		head = tokenAsIdent(t)
 		if head == "" {
@@ -80,13 +85,46 @@ func (p *parser) expectScalarText() string {
 		}
 		p.next()
 	}
-	if !p.atLineEnd() {
+	// ONLY a number takes a unit. The join was unconditional, and every
+	// `params:` value comes through here: `body: hello world` was silently
+	// joined into `helloworld` and sent to the vendor, with a third word then
+	// read as the next parameter name. A value the author did not write is
+	// exactly what this recipe's refusals exist to prevent, arriving one layer
+	// earlier where nothing checks it.
+	if numeric && !p.atLineEnd() {
 		if unit := tokenAsIdent(p.peek()); unit != "" {
+			head += unit
 			p.next()
-			return head + unit
 		}
 	}
+	if p.atLineEnd() {
+		return head
+	}
+	// Whatever is left is a second word. Diagnosed here, naming the property
+	// and the remedy — leaving it for the property loop reproduces the very
+	// confusion the join was added to avoid.
+	p.addErrorHint(DiagInvalidValue, t,
+		"`"+what+"`: a value of more than one word must be quoted",
+		"write it as a string: `"+what+": \""+p.restOfLineText(head)+"\"`")
 	return head
+}
+
+// restOfLineText consumes what remains of the line and renders it back with
+// the head, so the diagnostic can show the author their own value written the
+// way it has to be written.
+func (p *parser) restOfLineText(head string) string {
+	words := []string{head}
+	for !p.atLineEnd() {
+		tok := p.next()
+		if w := tokenAsIdent(tok); w != "" {
+			words = append(words, w)
+			continue
+		}
+		if tok.Value != "" {
+			words = append(words, tok.Value)
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // atLineEnd reports whether the next token ends the current line, so a
@@ -143,7 +181,7 @@ func (p *parser) parseActionParamsBlock() []ast.ActionParam {
 		p.expect(TokenColon)
 		out = append(out, ast.ActionParam{
 			Key:   key,
-			Value: p.expectScalarText(),
+			Value: p.expectScalarText(key),
 			Span:  ast.Span{Start: p.pos(keyTok)},
 		})
 		p.skipNewlines()

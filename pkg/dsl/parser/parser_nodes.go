@@ -544,10 +544,10 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			td.Params = p.parseActionParamsBlock()
 		case "retry":
 			p.expect(TokenColon)
-			td.Retry = p.expectScalarText()
+			td.Retry = p.expectScalarText("retry")
 		case "timeout":
 			p.expect(TokenColon)
-			td.Timeout = p.expectScalarText()
+			td.Timeout = p.expectScalarText("timeout")
 		case "parallel_safe":
 			p.expect(TokenColon)
 			if v := p.parseBool(); v != nil {
