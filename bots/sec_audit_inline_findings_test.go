@@ -90,6 +90,11 @@ func capFixture(t *testing.T) func(budget string) capOut {
 	}
 	writeJSON(t, filepath.Join(scanDir, "semgrep.json"), map[string]any{"results": mk(12, "high")})
 	writeJSON(t, filepath.Join(scanDir, "trivy.json"), map[string]any{"Issues": mk(8, "medium")})
+	// deepsec exports a bare ARRAY (JSON.stringify of a findings array), not
+	// an object with a findings key. That shape has nothing to rewrite, so it
+	// never entered the capping path — and skipping it here by shape would
+	// drop the deepest scanner from the payload without a word.
+	writeJSON(t, filepath.Join(scanDir, "deepsec.json"), mk(5, "critical"))
 
 	return func(budget string) capOut {
 		t.Helper()
@@ -97,7 +102,7 @@ func capFixture(t *testing.T) func(budget string) capOut {
 		// from a fresh copy — otherwise the second run caps already-capped
 		// input and the counts drift for a reason the test does not control.
 		fresh := t.TempDir()
-		for _, name := range []string{"semgrep.json", "trivy.json"} {
+		for _, name := range []string{"semgrep.json", "trivy.json", "deepsec.json"} {
 			b, err := os.ReadFile(filepath.Join(scanDir, name))
 			if err != nil {
 				t.Fatal(err)
@@ -140,14 +145,14 @@ func TestInlineFindings_OffByDefault(t *testing.T) {
 // independent of the backend it runs on.
 func TestInlineFindings_CarryEverythingWhenTheBudgetAllows(t *testing.T) {
 	got := capFixture(t)("524288")
-	if got.InlineEmbedded != got.TotalKept {
-		t.Fatalf("a generous budget must carry every kept finding, got %d of %d", got.InlineEmbedded, got.TotalKept)
+	if got.InlineEmbedded != got.InlineTotal {
+		t.Fatalf("a generous budget must carry every available finding, got %d of %d", got.InlineEmbedded, got.InlineTotal)
 	}
 	if got.InlineTruncated {
 		t.Fatal("nothing was dropped, so truncated must be false")
 	}
-	if len(got.Inline) != 2 {
-		t.Fatalf("both scanner files must be represented, got %d", len(got.Inline))
+	if len(got.Inline) != 3 {
+		t.Fatalf("all three scanner files must be represented, got %d", len(got.Inline))
 	}
 	for _, grp := range got.Inline {
 		for _, f := range grp.Findings {
@@ -165,14 +170,14 @@ func TestInlineFindings_ACutDropsWholeFindingsAndSaysSo(t *testing.T) {
 	if got.InlineEmbedded == 0 {
 		t.Fatal("a small budget still carries what fits — an empty payload would read as a clean repository")
 	}
-	if got.InlineEmbedded >= got.TotalKept {
-		t.Fatalf("a 900-byte budget cannot hold %d findings of ~200 bytes each; got %d carried", got.TotalKept, got.InlineEmbedded)
+	if got.InlineEmbedded >= got.InlineTotal {
+		t.Fatalf("a 900-byte budget cannot hold %d findings of ~200 bytes each; got %d carried", got.InlineTotal, got.InlineEmbedded)
 	}
 	if !got.InlineTruncated {
 		t.Fatal("findings were dropped and the envelope did not say so — the signal loss is exactly what must stay visible")
 	}
-	if got.InlineTotal != got.TotalKept {
-		t.Fatalf("the gap must be a subtraction: inline_total %d should equal total_kept %d", got.InlineTotal, got.TotalKept)
+	if got.InlineTotal != 25 {
+		t.Fatalf("the gap must be a subtraction against everything available: want 12+8+5=25, got inline_total %d", got.InlineTotal)
 	}
 	// Whole objects only: every carried finding still has all its fields.
 	for _, grp := range got.Inline {
@@ -181,6 +186,34 @@ func TestInlineFindings_ACutDropsWholeFindingsAndSaysSo(t *testing.T) {
 				t.Fatalf("a finding was cut mid-object, so the payload no longer parses as findings: %v", f)
 			}
 		}
+	}
+}
+
+// The deepest scanner writes a bare array, which the capping path skips
+// because it has no findings key to rewrite. Carrying only the object-shaped
+// exports would hand triage a payload missing deepsec entirely, and nothing
+// in the envelope would say so — the same silent thinning this transport
+// exists to end.
+func TestInlineFindings_CarryTheArrayShapedExportToo(t *testing.T) {
+	got := capFixture(t)("524288")
+	var seen bool
+	for _, grp := range got.Inline {
+		if grp.File == "deepsec.json" {
+			seen = true
+			if len(grp.Findings) != 5 {
+				t.Fatalf("the array-shaped export must carry all 5 of its findings, got %d", len(grp.Findings))
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("deepsec.json was dropped from the payload because of its SHAPE: a triage that cannot open the file would lose the deep scanner with no signal")
+	}
+	// Its findings count toward the total, or a cut would under-report the gap.
+	if got.InlineTotal != got.InlineEmbedded {
+		t.Fatalf("nothing was dropped at this budget: inline_total %d must equal inline_embedded %d", got.InlineTotal, got.InlineEmbedded)
+	}
+	if got.InlineTotal != 25 {
+		t.Fatalf("the array-shaped export must be counted in inline_total: want 12+8+5=25, got %d", got.InlineTotal)
 	}
 }
 

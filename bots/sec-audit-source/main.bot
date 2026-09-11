@@ -3179,6 +3179,19 @@ for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
             data = json.load(fh)
     except (OSError, ValueError):
         continue
+    if isinstance(data, list):
+        # An ARRAY-shaped export -- deepsec writes one (JSON.stringify of a
+        # findings array) -- carries no findings KEY to rewrite, so it never
+        # enters the capping path below and reaches triage whole through
+        # json_paths. That is fine while triage can open the file. It is not
+        # fine for the inline transport: skipping a document by its SHAPE
+        # would drop the deepest scanner from the payload with no signal at
+        # all. Harvest it for the envelope; leave the file itself untouched.
+        if not data:
+            continue
+        ranked = sorted(data, key=sev_rank, reverse=True)[:cap]
+        harvest.append({'file': os.path.basename(jf), 'array': '', 'findings': [trim(x) for x in ranked]})
+        continue
     if not isinstance(data, dict):
         continue
     key = next((k for k in FINDING_KEYS if isinstance(data.get(k), list)), None)
@@ -3212,6 +3225,7 @@ for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
 # bank, for the same reason.
 inline = []
 inline_embedded = 0
+inline_total = sum(len(g['findings']) for g in harvest)
 if inline_max > 0:
     size = 0
     for grp in harvest:
@@ -3237,8 +3251,8 @@ print(json.dumps({
     'per_scanner': per_scanner,
     'inline': inline,
     'inline_embedded': inline_embedded,
-    'inline_total': total_kept,
-    'inline_truncated': inline_max > 0 and inline_embedded < total_kept,
+    'inline_total': inline_total,
+    'inline_truncated': inline_max > 0 and inline_embedded < inline_total,
 }))
 "`
   output: findings_budget_output
