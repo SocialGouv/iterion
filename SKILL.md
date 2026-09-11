@@ -257,9 +257,12 @@ shipped bots, so they are written here:
   an EMPTY scope as a typed refusal before the fan-out: an honest "nothing
   to report" on nothing is not an approve (the `review-fanout` template's
   `scope` tool).
-- **`jq` ships in the sandbox images; `python3` does not.** A tool that must
-  turn text into the JSON its `output:` schema wants uses `jq -Rs`; a missing
-  interpreter degrades the output to `{"result": …}` silently.
+- **`jq` ships in every sandbox image; `python3` only from `-full` up.** The
+  DEFAULT image is `iterion-sandbox-slim` (`sandbox/slim/Dockerfile`: jq, no
+  python3); `-full` and the `-sec` layered on it add python3. So a tool that
+  must turn text into the JSON its `output:` schema wants uses `jq -Rs`
+  unless the workflow PINS an image that has more; a missing interpreter
+  degrades the output to `{"result": …}` silently.
 - **A `fan_out_each` fan-in sees ONE output per node id.** At the collector
   (`await: wait_all` / `best_effort`) the branches' outputs are merged
   last-write-wins, so `{{outputs.<node>.<field>}}` after the fan-in is one
