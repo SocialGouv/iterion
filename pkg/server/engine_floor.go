@@ -119,6 +119,21 @@ func orderableBuild(v string) bool {
 func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Request, bs botsource.BotSource) (warning string, ok bool) {
 	m := bs.Manifest()
 	if m == nil || m.Requires == nil || strings.TrimSpace(m.Requires.Iterion) == "" {
+		// No floor declared. A bundle written in a syntax profile above 1
+		// needs one: the main workflow reaches a runner as an AST, but a
+		// subbot child is re-parsed as text by the runner's own binary, and
+		// a build older than the profile fails at that parse — after
+		// admission, on a pod. Refused here instead, unless forced.
+		if profile, by := bundle.MaxSyntaxProfile(bs.Files); profile >= 2 {
+			if forceRequested(r) {
+				return fmt.Sprintf("FORCED past the profile-floor guard: %q is written in dsl profile %d (%s) and declares no requires.iterion — a runner older than the profile will fail at its first parse of a child",
+					bs.Slug, profile, strings.Join(by, ", ")), true
+			}
+			s.httpErrorFor(w, r, http.StatusConflict,
+				"bot %q is written in dsl profile %d (%s) but its manifest declares no requires.iterion: declare `requires: { iterion: \">= <the release that reads the profile>\" }` (`iterion dsl migrate` writes it), or push anyway with --force",
+				bs.Slug, profile, strings.Join(by, ", "))
+			return "", false
+		}
 		return "", true
 	}
 	floor, sources := s.engineFloor(r.Context())

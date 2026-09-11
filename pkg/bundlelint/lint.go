@@ -18,6 +18,7 @@ package bundlelint
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -114,6 +115,13 @@ const (
 	// unchecked contract that reads as satisfied is the failure mode the
 	// declaration exists to close.
 	DiagEngineRequirementUnchecked Code = "C251"
+	// DiagProfileNeedsFloor: an executable source of the bundle (its main.bot
+	// or a subbot child) declares a syntax profile above 1, and the manifest
+	// declares no `requires.iterion`. A warning: the main workflow travels
+	// to a cloud runner as an AST, but a child is re-parsed as text by the
+	// runner's own binary, and a build older than the profile fails at that
+	// parse — which a declared floor refuses at admission instead.
+	DiagProfileNeedsFloor Code = "C252"
 )
 
 // minRoutableDescription is the shortest `description:` the skill lint treats
@@ -180,6 +188,12 @@ type Input struct {
 	// never reads its own binary's identity, so a caller that has no build to
 	// hold the bundle against simply does not ask the question.
 	EngineBuild string
+	// SyntaxProfile is the highest `dsl: N` profile the bundle's executable
+	// sources declare (bundle.MaxSyntaxProfile), with the files declaring
+	// it; 0 skips the profile-floor check (C252). Supplied by the caller,
+	// like Frontmatter: bundlelint stays I/O-free.
+	SyntaxProfile     int
+	ProfileDeclaredBy []string
 }
 
 // SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
@@ -208,6 +222,7 @@ func CheckConsistency(in Input) []Diag {
 	checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
 	checkSkills(&diags, in.Skills)
 	checkEngineRequirement(&diags, m, in.EngineBuild)
+	checkProfileFloor(&diags, m, in.SyntaxProfile, in.ProfileDeclaredBy, in.EngineBuild)
 
 	sort.SliceStable(diags, func(i, j int) bool {
 		if diags[i].Code != diags[j].Code {
@@ -498,6 +513,33 @@ func sameStringSet(a, b []string) bool {
 // (pkg/server) and at the launch (pkg/runner) — three surfaces, one predicate
 // in pkg/bundle, so an author, an operator and a pod cannot read the same
 // manifest three different ways.
+// checkProfileFloor asks a bundle written in a syntax profile above 1 to
+// declare the engine floor that keeps it off a build that cannot read the
+// profile (C252). The floor's VALUE is the author's — `iterion dsl migrate`
+// writes the migrating build's own version, the one that reads the profile —
+// so the check asks for its presence, and names this build as the value to
+// declare when it is an orderable one.
+func checkProfileFloor(diags *[]Diag, m *bundle.Manifest, profile int, declaredBy []string, build string) {
+	if profile < 2 {
+		return
+	}
+	if m.Requires != nil && strings.TrimSpace(m.Requires.Iterion) != "" {
+		return
+	}
+	floor := "<the release that reads profile " + strconv.Itoa(profile) + ">"
+	if v := strings.TrimPrefix(strings.SplitN(build, "+", 2)[0], "v"); v != "" {
+		if _, ok := bundle.CompareVersions(v, "0"); ok {
+			floor = v
+		}
+	}
+	*diags = append(*diags, Diag{
+		Code: DiagProfileNeedsFloor, Severity: SeverityWarning,
+		Field:   "requires.iterion",
+		Message: fmt.Sprintf("the bundle is written in dsl profile %d (%s) but declares no engine floor: a runner older than the profile re-parses a subbot child as text and fails at that parse", profile, strings.Join(declaredBy, ", ")),
+		Hint:    fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest — `iterion dsl migrate` writes it — so such a runner refuses the bundle at admission instead", floor),
+	})
+}
+
 func checkEngineRequirement(diags *[]Diag, m *bundle.Manifest, build string) {
 	if strings.TrimSpace(build) == "" {
 		return

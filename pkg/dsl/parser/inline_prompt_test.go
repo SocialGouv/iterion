@@ -1,10 +1,15 @@
-package parser
+package parser_test
+
+// An external test package: it compiles the parsed file through pkg/dsl/ir,
+// which reaches pkg/bundle, which reads the parser — a cycle for an
+// in-package test, not for this one.
 
 import (
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // `system: "Review the diff"` — the shape the language's own front page
@@ -13,7 +18,7 @@ import (
 // property refers to it. On every kind that carries a prompt reference.
 func TestAStringOnAPromptPropertyIsAnInlinePrompt(t *testing.T) {
 	src := "agent a:\n  system: \"Review the diff\"\n  user: |\n    First paragraph.\n\n    Second paragraph.\n\nhuman h:\n  instructions: `Decide.`\n\nrouter r:\n  mode: llm\n  system: \"Route it\"\n\nsupervisor s:\n  watches: [a]\n  system: \"Watch.\"\n\nworkflow w:\n  entry: a\n  a -> r\n  r -> h\n  r -> done\n  h -> done\n"
-	res := Parse("x.bot", src)
+	res := parser.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -33,7 +38,7 @@ func TestAStringOnAPromptPropertyIsAnInlinePrompt(t *testing.T) {
 	if byName[a.System] != "Review the diff" || byName[a.User] != "First paragraph.\n\nSecond paragraph.\n\n" {
 		t.Fatalf("agent refers to %q=%q and %q=%q", a.System, byName[a.System], a.User, byName[a.User])
 	}
-	if !strings.HasPrefix(a.System, "_inline_") || a.System != InlinePromptName("Review the diff") {
+	if !strings.HasPrefix(a.System, "_inline_") || a.System != parser.InlinePromptName("Review the diff") {
 		t.Fatalf("inline name %q is not derived from the body", a.System)
 	}
 	if byName[res.File.Humans[0].Instructions] != "Decide." || byName[res.File.Routers[0].System] != "Route it" || byName[res.File.Supervisors[0].System] != "Watch." {
@@ -60,7 +65,7 @@ func TestAStringOnAPromptPropertyIsAnInlinePrompt(t *testing.T) {
 // prompt.
 func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 	src := "group g:\n  agent worker:\n    system: \"Same text\"\n  worker -> done\n\ngroup h:\n  agent worker:\n    system: \"Same text\"\n  worker -> done\n\nagent b:\n  system: \"Same text\"\n\nprompt p:\n  Declared.\n\nagent c:\n  system: p\n\nworkflow w:\n  entry: b\n  b -> c\n  c -> done\n"
-	res := Parse("x.bot", src)
+	res := parser.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -75,7 +80,7 @@ func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 	if inline != 1 || declared != 1 {
 		t.Fatalf("want 1 inline (shared) + 1 declared prompt, got %d + %d", inline, declared)
 	}
-	want := InlinePromptName("Same text")
+	want := parser.InlinePromptName("Same text")
 	if res.File.Groups[0].Agents[0].System != want || res.File.Groups[1].Agents[0].System != want || res.File.Agents[0].System != want {
 		t.Fatalf("the three references do not share the prompt")
 	}
@@ -83,13 +88,13 @@ func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 		t.Fatalf("a bare name no longer refers to the declared prompt: %q", res.File.Agents[1].System)
 	}
 	// Renaming the node does not change the prompt's name.
-	renamed := Parse("y.bot", strings.ReplaceAll(src, "agent b:", "agent renamed:"))
+	renamed := parser.Parse("y.bot", strings.ReplaceAll(src, "agent b:", "agent renamed:"))
 	if renamed.File.Agents[0].System != want {
 		t.Fatalf("a rename changed the inline prompt's name to %q", renamed.File.Agents[0].System)
 	}
 	// And two different texts are two prompts, under two names — the name
 	// comes from the body, not from a counter or a constant.
-	two := Parse("z.bot", "agent a:\n  system: \"one\"\n\nagent b:\n  system: \"two\"\n")
+	two := parser.Parse("z.bot", "agent a:\n  system: \"one\"\n\nagent b:\n  system: \"two\"\n")
 	if len(two.Diagnostics) != 0 || len(two.File.Prompts) != 2 {
 		t.Fatalf("two texts: %v, %d prompts", two.Diagnostics, len(two.File.Prompts))
 	}
@@ -104,9 +109,9 @@ func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 // An author's own prompt declared under an inline name is the same
 // collision as any duplicate: refused by the compiler, never merged.
 func TestAnInlineNameCollidingWithADeclarationIsRefused(t *testing.T) {
-	name := InlinePromptName("x")
+	name := parser.InlinePromptName("x")
 	src := "prompt " + name + ":\n  Mine.\n\nagent a:\n  system: \"x\"\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	res := Parse("x.bot", src)
+	res := parser.Parse("x.bot", src)
 	c := ir.Compile(res.File)
 	var dup bool
 	for _, d := range c.Diagnostics {
