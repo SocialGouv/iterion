@@ -2,6 +2,7 @@ package exec_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1210,6 +1211,67 @@ func TestAVendorsOwnErrorTextCannotCarryTheToken(t *testing.T) {
 	// The TYPED error must survive the scrubbing: replacing it with a flat one
 	// would trade a leak for a lost retry disposition.
 	if res.Err.Status != http.StatusForbidden {
+		t.Errorf("status = %d, want the typed error intact", res.Err.Status)
+	}
+}
+
+// TestABasicCredentialIsRedactedInEveryShapeItTravelsIn.
+//
+// The sibling of the test above, for the ONE auth scheme the shipped Forgejo
+// package declares. `applyCredential` sends `Basic base64(user:pass)`, so a
+// vendor can echo the credential in three shapes: the header blob verbatim,
+// or either half once it decoded them. The redaction set held only
+// `cred.Value`, which is empty under basic auth — so the layer transmitted a
+// credential it could not recognise coming back.
+//
+// Both halves are asserted because a connector catalog accepts any vendor,
+// and the `<api key>:` convention makes the USERNAME the secret as often as
+// the password.
+func TestABasicCredentialIsRedactedInEveryShapeItTravelsIn(t *testing.T) {
+	const user = "sk-live-not-a-real-key-9f2c"
+	const pass = "p4ssw0rd-not-a-real-one"
+	blob := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+
+	var sent string
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		sent = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusUnauthorized)
+		// A vendor that echoes what it rejected: the header it received, and
+		// the halves it decoded out of it.
+		_, _ = w.Write([]byte(`{"message": "rejected ` + sent +
+			` for user ` + user + ` with password ` + pass + `"}`))
+	})
+	defer done()
+
+	pkg.Connector.Auth = []spec.AuthScheme{{ID: "basic", Kind: spec.AuthBasic}}
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"),
+		exec.Credential{SchemeID: "basic", Username: user, Password: pass})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	// The bytes really did travel — otherwise the test would pass by sending
+	// nothing, which is the assertion failing open.
+	if sent != "Basic "+blob {
+		t.Fatalf("Authorization = %q, want the basic blob — nothing was transmitted to redact", sent)
+	}
+	if res.Err == nil {
+		t.Fatal("a 401 must produce an error")
+	}
+	text := res.Err.Error()
+	for _, secret := range []struct{ what, value string }{
+		{"the password", pass},
+		{"the username, which a `<api key>:` vendor makes the secret", user},
+		{"the base64 header the vendor echoed", blob},
+	} {
+		if strings.Contains(text, secret.value) {
+			t.Errorf("%s reaches the run's events verbatim: %s", secret.what, text)
+		}
+	}
+	if !strings.Contains(text, "redacted") {
+		t.Errorf("the redaction must be visible, so a reader knows something was removed: %s", text)
+	}
+	if res.Err.Status != http.StatusUnauthorized {
 		t.Errorf("status = %d, want the typed error intact", res.Err.Status)
 	}
 }

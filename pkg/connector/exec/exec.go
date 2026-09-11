@@ -27,6 +27,7 @@ package exec
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -561,9 +562,32 @@ func redactSecrets(err error, op spec.Operation, params map[string]any, cred Cre
 }
 
 // secretValues lists every string in this call that must never appear in a
-// message: the credential, and each parameter the package marked secret.
+// message: the credential — in every shape it travels in — and each parameter
+// the package marked secret.
 func secretValues(op spec.Operation, params map[string]any, cred Credential) []string {
 	out := []string{cred.Value}
+	// BOTH halves of a basic credential, and the base64 blob they travel as.
+	//
+	// `applyCredential` sends `Basic base64(Username+":"+Password)` for
+	// `AuthBasic`, so this layer transmits bytes its redaction could not
+	// recognise — the exact failure mode already closed for token-style
+	// credentials, left open for the one scheme the shipped Forgejo package
+	// declares.
+	//
+	// The username is a user-id rather than a secret in RFC 7617's own terms,
+	// and redacting it costs a reader the owner segment of a URL when the two
+	// coincide. It is in the set anyway: a connector catalog accepts whatever
+	// vendor a package describes, and putting the KEY in the user-id half
+	// (`<api key>:` with an empty password) is a widespread convention. This
+	// layer cannot tell which half a given vendor made secret, and the cost of
+	// over-redacting is a marker in an error message, while the cost of
+	// under-redacting is a key in the run's events. The base64 form covers the
+	// vendor that echoes the header it rejected, the raw halves the vendor
+	// that decodes it first.
+	out = append(out, cred.Username, cred.Password)
+	if cred.Username != "" || cred.Password != "" {
+		out = append(out, base64.StdEncoding.EncodeToString([]byte(cred.Username+":"+cred.Password)))
+	}
 	for _, p := range op.Params {
 		if !p.Secret {
 			continue
