@@ -43,7 +43,7 @@ The manager never scans ports to infer that PID.
 ## Agent flow
 
 ```sh
-iterion-instances context --project "$PWD" --run "$RUN_ID" --json
+iterion-instances context --run "$RUN_ID" --json
 iterion-instances prepare --project "$PWD" --session "$SESSION_ID" --json
 # Work only in the returned worktree. Commit the repair there.
 iterion-instances build --project "$PWD" --session "$SESSION_ID" --commit "$FULL_SHA" --json
@@ -70,6 +70,11 @@ available through:
 ```sh
 iterion-instances deployment-status --project "$PWD" --json
 ```
+
+When `context` starts outside a configured project folder, `--run` discovers
+the target only among already-managed configured instances. A candidate must
+return that run and report a canonical `server.info.work_dir` equal to its
+configured project path; zero or multiple matches fail closed.
 
 Human-input gates, operator pauses, stopped instances, foreign processes and
 global CLI replacement are outside bootstrap authority.

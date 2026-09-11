@@ -142,6 +142,13 @@ class InstanceManagerTests(unittest.TestCase):
         self.assertTrue(value["server"]["work_dir_matches"])
         self.assertEqual(len(value["context_token"]), 64)
 
+    def test_context_discovers_project_from_run_across_managed_instances(self) -> None:
+        manager = self.manager()
+        with mock.patch.object(instances.os, "getcwd", return_value=str(self.fixture.root)):
+            value = manager.context(None, "run-1")
+        self.assertEqual(value["project"]["root"], str(self.fixture.project.resolve()))
+        self.assertEqual(value["run"]["data"]["id"], "run-1")
+
     def test_capability_requires_documented_list(self) -> None:
         manager = self.manager()
         self.fixture.server.mission_status = 200

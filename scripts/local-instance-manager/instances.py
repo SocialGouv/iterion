@@ -534,6 +534,36 @@ class Manager:
             return {"state": "unauthorized", "http_status": status}
         return {"state": "indeterminate", "http_status": status}
 
+    def context_project(self, project: str | None, run_id: str | None) -> str:
+        if project is not None:
+            return project
+        cwd = canonical(os.getcwd())
+        cwd_matches = [instance for instance in self.instances if canonical(instance.project_dir) == cwd]
+        if cwd_matches or not run_id:
+            return str(cwd)
+        candidates: list[Instance] = []
+        for instance in self.instances:
+            state, _pid = self.state(instance)
+            if state != "up":
+                continue
+            run_status, _run = self.http_json(self.url(instance), f"/api/runs/{run_id}")
+            info_status, info = self.http_json(self.url(instance), "/api/server/info")
+            if run_status != 200 or info_status != 200 or not isinstance(info, dict) or not info.get("work_dir"):
+                continue
+            try:
+                if canonical(info["work_dir"]) == canonical(instance.project_dir):
+                    candidates.append(instance)
+            except ManagerError:
+                continue
+        if len(candidates) != 1:
+            fail(
+                "RUN_PROJECT_NOT_UNIQUE",
+                "le run doit appartenir à une seule instance configurée, active et gérée",
+                run_id=run_id,
+                matches=[instance.name for instance in candidates],
+            )
+        return str(candidates[0].project_dir)
+
     @staticmethod
     def summarize_run(payload: Any) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
@@ -552,7 +582,7 @@ class Manager:
         return summary
 
     def context(self, project: str | None, run_id: str | None) -> dict[str, Any]:
-        root, instance, manifest, profile = self.resolve(project)
+        root, instance, manifest, profile = self.resolve(self.context_project(project, run_id))
         state, pid = self.state(instance)
         status, info = self.http_json(self.url(instance), "/api/server/info") if state in {"up", "foreign"} else (None, None)
         capability = self.capability(instance, run_id) if state == "up" else {"state": "not-probed", "http_status": None}
