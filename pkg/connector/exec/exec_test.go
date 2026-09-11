@@ -1746,3 +1746,67 @@ func TestARedirectOnAMutationIsUndecided(t *testing.T) {
 		t.Errorf("a redirected READ must not be undecided: %v", res.Err)
 	}
 }
+
+// TestADeclaredErrorClassSurvivesAnUnmappedVendorCode.
+//
+// httpError reads the package's declaration for this status first — "a vendor
+// that answers 423 for 'this repository is archived' means a conflict, which
+// only the declaration can say" — and then handed the answer to ClassifyCode,
+// which falls back to ClassifyStatus: the very status range the declaration
+// exists to override. So any vendor code the map did not know silently undid
+// it.
+//
+// The retry-bearing shape is the one that hurts: a package declaring `403 →
+// rate_limited` (GitHub's secondary limit is a 403 with a JSON body) was
+// downgraded to `forbidden`, which is not retryable, so the run failed for
+// good where it should have backed off.
+func TestADeclaredErrorClassSurvivesAnUnmappedVendorCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"ok": false, "error": "secondary_rate_limit"}`))
+	}))
+	defer srv.Close()
+
+	pkg := slackShaped(srv.URL)
+	op := opOf(t, pkg, "chat.chat.post_message")
+	// The package says what a 403 means for THIS operation, and the vendor's
+	// code is not in the connector's map.
+	op.Errors = append(op.Errors, spec.ErrorSpec{Status: http.StatusForbidden, Class: spec.ErrRateLimited})
+
+	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+	res, err := e.Call(context.Background(), pkg, op,
+		map[string]any{"channel": "C1", "text": "hi"},
+		exec.Credential{SchemeID: "bearer", Value: "s3cret"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatal("a 403 must produce an error")
+	}
+	if res.Err.Class != spec.ErrRateLimited {
+		t.Errorf("class = %q, want %q — the declaration must not be undone by the status fallback", res.Err.Class, spec.ErrRateLimited)
+	}
+	// The vendor's code is still carried: it is what an operator greps for.
+	if res.Err.Code != "secondary_rate_limit" {
+		t.Errorf("code = %q, want the vendor's own", res.Err.Code)
+	}
+	// A code the map DOES know still wins: it is the more specific answer.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"ok": false, "error": "channel_not_found"}`))
+	}))
+	defer srv2.Close()
+	pkg2 := slackShaped(srv2.URL)
+	op2 := opOf(t, pkg2, "chat.chat.post_message")
+	op2.Errors = append(op2.Errors, spec.ErrorSpec{Status: http.StatusForbidden, Class: spec.ErrRateLimited})
+	e2 := &exec.Executor{Client: srv2.Client(), UserAgent: "iterion-test"}
+	res2, err := e2.Call(context.Background(), pkg2, op2,
+		map[string]any{"channel": "C1", "text": "hi"},
+		exec.Credential{SchemeID: "bearer", Value: "s3cret"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res2.Err == nil || res2.Err.Class != spec.ErrNotFound {
+		t.Errorf("a code the map knows must win over the status declaration: %v", res2.Err)
+	}
+}

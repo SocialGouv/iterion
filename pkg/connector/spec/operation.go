@@ -390,15 +390,28 @@ func ClassifyStatus(status int) ErrorClass {
 // back to the status. It never returns "": a body-signalled failure with an
 // unrecognised code is a bad request, not a success.
 func (o *OutcomePolicy) ClassifyCode(code string, status int) ErrorClass {
-	if o != nil && len(o.ErrorCodeMap) > 0 {
-		if c, ok := o.ErrorCodeMap[code]; ok {
-			return c
-		}
+	if c, ok := o.ClassForCode(code); ok {
+		return c
 	}
 	if c := ClassifyStatus(status); c != "" {
 		return c
 	}
 	return ErrBadRequest
+}
+
+// ClassForCode is ClassifyCode without the fallback: it answers only when the
+// policy's map RECOGNISED the code the vendor sent.
+//
+// Separate because a caller holding a better answer than the status range has
+// to tell "the map said conflict" from "the map said nothing, here is the
+// range again" — ClassifyCode returns the same kind of value for both, so a
+// caller taking it unconditionally discards whatever it already knew.
+func (o *OutcomePolicy) ClassForCode(code string) (ErrorClass, bool) {
+	if o == nil || len(o.ErrorCodeMap) == 0 {
+		return "", false
+	}
+	c, ok := o.ErrorCodeMap[code]
+	return c, ok
 }
 
 // ErrorSpec is one documented failure of an operation.

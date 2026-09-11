@@ -122,7 +122,19 @@ func (e *Executor) httpError(pkg *spec.Package, op spec.Operation, resp *http.Re
 	if policy := pkg.EffectiveOutcome(op); policy != nil {
 		if code := stringField(data, policy.ErrorCodeField); code != "" {
 			out.Code = code
-			out.Class = policy.ClassifyCode(code, resp.StatusCode)
+			// Only when the map RECOGNISED it. ClassifyCode falls back to
+			// ClassifyStatus, which is the status range the loop above exists
+			// to override — so taking it unconditionally threw away the class
+			// the package declared for this status whenever the vendor sent a
+			// code nobody had mapped. A package declaring `403 →
+			// rate_limited` (GitHub's secondary limit is a 403 with a body)
+			// was downgraded to `forbidden`, which is not retryable: the run
+			// failed for good instead of backing off.
+			if mapped, ok := policy.ClassForCode(code); ok {
+				out.Class = mapped
+			} else if out.Class == "" {
+				out.Class = spec.ErrBadRequest
+			}
 		}
 		if msg := stringField(data, policy.ErrorMessageField); msg != "" {
 			out.Message = msg
