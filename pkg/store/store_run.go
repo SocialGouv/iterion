@@ -230,6 +230,27 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	return nil
 }
 
+// PatchRunBudgetOverrides atomically replaces only the raw replay source.
+func (s *FilesystemRunStore) PatchRunBudgetOverrides(_ context.Context, runID string, overrides *RunBudgetOverrides) error {
+	if err := s.guardNotDeleted(runID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if overrides == nil {
+		r.BudgetOverrides = nil
+	} else {
+		copy := *overrides
+		r.BudgetOverrides = &copy
+	}
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // loadRunRaw is the pure-read variant of LoadRun: it parses run.json
 // and returns the Run without firing the name backfill or
 // finished_at heal. Used by every method that holds s.mu around its
@@ -700,6 +721,10 @@ func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStat
 			// Mirror the Mongo twin: a running run carries no failure
 			// message, whatever the caller passed.
 			r.Error = ""
+			// A successful rewind requires a deliberate Resume while it is
+			// parked. Reaching running proves that happened, so old cloud
+			// deliveries must no longer be held back on later failures.
+			r.ResumeRequiresExplicit = false
 		}
 	}
 	// The pause pointer is a consumable: a transition into a status

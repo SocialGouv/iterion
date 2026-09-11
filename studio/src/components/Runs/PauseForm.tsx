@@ -7,6 +7,7 @@ import {
   askUserAllowsFreeText,
   askUserOptions,
   isReservedQuestionKey,
+  permissionMarker,
 } from "@/lib/askUserOptions";
 import { useDocumentStore } from "@/store/document";
 
@@ -27,29 +28,23 @@ interface Props {
   // editor buffer.
   sourceOverride?: string | null;
   onSubmitted?: () => void;
+  // A pipeline-board batch keeps answers as drafts until its final Send
+  // action. The run console leaves this unset and retains the normal
+  // immediate-resume behaviour.
+  onStage?: (submission: StagedPauseSubmission) => void;
 }
 
-// A permission-gate `ask` pause carries a structured marker under the
-// reserved `_permission` key (mirrors pkg/backend/permission.Marker). When
-// present we render a one-click approval card instead of free-text fields.
-const PERMISSION_MARKER_KEY = "_permission";
+export interface StagedPauseSubmission {
+  answers: Record<string, unknown>;
+  source?: string;
+  force?: boolean;
+}
+
 const ASK_USER_KEY = "ask_user_response";
-
-interface PermissionMarker {
-  tool?: string;
-  input?: Record<string, unknown>;
-  rule?: string;
-}
 
 type ForceRetry =
   | { kind: "form" }
   | { kind: "decision"; decision: string };
-
-function permissionMarker(questions: Record<string, unknown>): PermissionMarker | null {
-  const m = questions?.[PERMISSION_MARKER_KEY];
-  if (m && typeof m === "object" && !Array.isArray(m)) return m as PermissionMarker;
-  return null;
-}
 
 // The most identifying argument of a tool call, for compact display.
 function briefInput(input?: Record<string, unknown>): string {
@@ -71,6 +66,7 @@ export default function PauseForm({
   message,
   sourceOverride,
   onSubmitted,
+  onStage,
 }: Props) {
   const marker = useMemo(() => permissionMarker(questions ?? {}), [questions]);
   const options = useMemo(() => askUserOptions(questions ?? {}), [questions]);
@@ -118,6 +114,11 @@ export default function PauseForm({
 
   const onSubmit = async (answers?: Record<string, string>, force = false) => {
     const payload = answers ?? values;
+    if (onStage) {
+      onStage({ answers: payload, source: resolvedSource, ...(force ? { force: true } : {}) });
+      onSubmitted?.();
+      return;
+    }
     setBusy(true);
     setError(null);
     setForceRetry(null);
@@ -145,6 +146,15 @@ export default function PauseForm({
   // or refusal) and by the structured-options buttons (the picked
   // option's id, or typed free text).
   const decide = async (decision: string, force = false) => {
+    if (onStage) {
+      onStage({
+        answers: { [ASK_USER_KEY]: decision },
+        source: resolvedSource,
+        ...(force ? { force: true } : {}),
+      });
+      onSubmitted?.();
+      return;
+    }
     setBusy(true);
     setError(null);
     setForceRetry(null);
@@ -355,7 +365,7 @@ export default function PauseForm({
       {forceRetryButton}
       <div className="flex gap-2">
         <Button type="submit" variant="primary" size="sm" loading={busy}>
-          Submit &amp; Resume
+          {onStage ? "Prepare response" : "Submit & Resume"}
         </Button>
       </div>
     </form>

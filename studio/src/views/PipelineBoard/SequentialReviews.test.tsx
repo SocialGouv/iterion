@@ -10,7 +10,10 @@ import type {
   PipelineBoardPendingReview,
 } from "@/api/pipelineBoards";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 // The review panel fetches its change range, so this tree needs a query
 // client. retry:false settles the error path on the first rejection.
@@ -41,6 +44,12 @@ vi.mock("@/components/Runs/conversation/HumanPromptForm", () => ({
     questions: Record<string, unknown>;
     sourceOverride?: string | null;
     onResumed?: () => void;
+    onStage?: (submission: {
+      runId: string;
+      nodeId: string;
+      answers: Record<string, unknown>;
+      source?: string;
+    }) => void;
   }) => (
     <div
       data-testid="human-prompt"
@@ -50,12 +59,30 @@ vi.mock("@/components/Runs/conversation/HumanPromptForm", () => ({
       data-source-null={props.sourceOverride === null ? "yes" : "no"}
     >
       <input aria-label="Review draft" defaultValue="" />
-      <button type="button" onClick={props.onResumed}>
-        Resolve
+      <button
+        type="button"
+        onClick={() => {
+          if (props.onStage) {
+            props.onStage({
+              runId: props.runId,
+              nodeId: props.nodeId,
+              answers: { reply: "ready" },
+            });
+          } else {
+            props.onResumed?.();
+          }
+        }}
+      >
+        Prepare
       </button>
     </div>
   ),
 }));
+
+const { resumeRun } = vi.hoisted(() => ({
+  resumeRun: vi.fn(async () => ({ run_id: "ok", status: "running" })),
+}));
+vi.mock("@/api/runs", () => ({ resumeRun }));
 
 // Distinct from the form mock so the stepper test can count leftover
 // panels. data-scope-run-id (not data-run-id) keeps the static-markup
@@ -83,8 +110,9 @@ function cardWithReviews(count: number): PipelineBoardCard {
     node_id: `review_${i}`,
     interaction_id: `interaction-${i}`,
     updated_at: `2026-07-14T10:0${i}:00Z`,
-    depth: i,
-    questions: { q: `Q${i}?` },
+      depth: i,
+      batch_key: "root:review_epic#branch_fanout",
+      questions: { q: `Q${i}?` },
   }));
   return {
     id: "run:root",
@@ -131,7 +159,19 @@ describe("review queue helpers", () => {
 });
 
 describe("SequentialReviews", () => {
-  it("mounts the first review one at a time, resuming with no source override", () => {
+  it("keeps an unrelated single gate on the immediate, normal resume path", () => {
+    const onResolved = vi.fn();
+    render(
+      withClient(
+        <SequentialReviews card={cardWithReviews(1)} onResolved={onResolved} />,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    expect(resumeRun).not.toHaveBeenCalled();
+  });
+
+  it("mounts the first review page, keeping a fan-out batch together", () => {
     const html = renderToStaticMarkup(
       withClient(
       <SequentialReviews card={cardWithReviews(2)} onResolved={() => {}} />,
@@ -150,15 +190,19 @@ describe("SequentialReviews", () => {
     expect(html).toContain('data-source-null="yes"');
   });
 
-  it("wires a successful answer to onResolved (the board refetch)", () => {
+  it("sends all prepared answers together before refetching the board", async () => {
     const onResolved = vi.fn();
     render(
       withClient(
         <SequentialReviews card={cardWithReviews(2)} onResolved={onResolved} />,
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
-    expect(onResolved).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
+    expect(onResolved).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Send 2 responses" }));
+    await vi.waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+    expect(resumeRun).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the active form and draft mounted while a newer AI turn joins the back", () => {
@@ -184,7 +228,7 @@ describe("SequentialReviews", () => {
     // FIFO sorting starts on A; resolving it immediately pins the next turn B
     // even before the board refetch has returned.
     expect(screen.getByTestId("human-prompt").getAttribute("data-run-id")).toBe(a.run_id);
-    fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
     expect(screen.getByTestId("human-prompt").getAttribute("data-run-id")).toBe(b.run_id);
     fireEvent.change(screen.getByRole("textbox", { name: "Review draft" }), {
       target: { value: "draft for B" },

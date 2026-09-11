@@ -166,3 +166,37 @@ func TestValidateChatSurface_EditorProposalRequiresContext(t *testing.T) {
 		t.Fatalf("validateChatSurface() with context: %v", err)
 	}
 }
+
+func TestChatSurfaceBudgetPolicy(t *testing.T) {
+	chat := (&ChatSurface{
+		Nodes: map[string]ChatNode{
+			"compose": {Kind: ChatNodeSilent},
+			"chat":    {Kind: ChatNodeHuman, TextField: "message"},
+		},
+		Budget: &ChatBudgetSurface{UnlimitedWorkflowWhen: &ChatStateMatch{
+			LaunchVar: " mode ", StateNode: " compose ", StateField: " mode ",
+			Equals: []string{" debug ", "debug", ""},
+		}},
+	}).normalized()
+	if err := validateChatSurface(chat); err != nil {
+		t.Fatalf("validateChatSurface: %v", err)
+	}
+	p := chat.Budget.UnlimitedWorkflowWhen
+	if p.LaunchVar != "mode" || p.StateNode != "compose" || p.StateField != "mode" || len(p.Equals) != 1 || p.Equals[0] != "debug" {
+		t.Fatalf("normalized policy = %#v", p)
+	}
+	if !chat.UnlimitedWorkflowForLaunch(map[string]string{"mode": "debug"}) || chat.UnlimitedWorkflowForLaunch(map[string]string{"mode": "info"}) {
+		t.Fatal("launch policy did not distinguish debug from info")
+	}
+	if !chat.UnlimitedWorkflowForOutputs(map[string]map[string]any{"compose": {"mode": "debug"}}) {
+		t.Fatal("checkpoint policy did not match compose.mode=debug")
+	}
+	if chat.UnlimitedWorkflowForOutputs(map[string]map[string]any{"compose": {"mode": "design"}}) {
+		t.Fatal("checkpoint policy matched a non-debug mode")
+	}
+
+	chat.Budget.UnlimitedWorkflowWhen.StateNode = "missing"
+	if err := validateChatSurface(chat); err == nil || !strings.Contains(err.Error(), "not declared in chat.nodes") {
+		t.Fatalf("missing state node validation = %v", err)
+	}
+}

@@ -232,3 +232,65 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 		})
 	}
 }
+
+// TestFeatureDevKimiQuotaFallbacks pins the repair worker's escape hatch from
+// a closed Claude subscription window. This is intentionally feature-dev-only:
+// other campaign bots retain their own provider topology.
+func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
+	path := filepath.Join("feature-dev", "main.bot")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	cr := ir.Compile(parser.Parse(path, string(src)).File)
+	if cr.HasErrors() {
+		t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
+	}
+	wf := cr.Workflow
+
+	for _, nodeID := range []string{"plan", "plan_revise", "campaign", "verify_build", "review", "finalize_mr"} {
+		node, ok := wf.Nodes[nodeID]
+		if !ok {
+			t.Fatalf("feature-dev: node %q missing", nodeID)
+		}
+		llm, ok := node.(ir.LLMNode)
+		if !ok {
+			t.Fatalf("feature-dev: node %q is %T, want LLM node", nodeID, node)
+		}
+		if got := llm.GetLLMFields().Backend; got != "claude_code" {
+			t.Errorf("feature-dev: node %q primary backend = %q, want claude_code", nodeID, got)
+		}
+		var kimi *ir.Fallback
+		for i := range llm.GetFallbacks() {
+			if llm.GetFallbacks()[i].Name == "kimi_quota" {
+				kimi = &llm.GetFallbacks()[i]
+			}
+		}
+		if kimi == nil {
+			t.Errorf("feature-dev: node %q lacks the kimi_quota rescue route", nodeID)
+			continue
+		}
+		if kimi.Backend != "kimi" || kimi.Model != "kimi-code/kimi-for-coding" {
+			t.Errorf("feature-dev: node %q kimi_quota = backend %q model %q, want Kimi coding route", nodeID, kimi.Backend, kimi.Model)
+		}
+		if len(kimi.On) != 2 || kimi.On[0] != "usage_window" || kimi.On[1] != "unavailable" {
+			t.Errorf("feature-dev: node %q kimi_quota triggers = %v, want [usage_window unavailable]", nodeID, kimi.On)
+		}
+	}
+
+	revise, ok := wf.Nodes["plan_revise"].(*ir.AgentNode)
+	if !ok {
+		t.Fatalf("feature-dev: plan_revise is %T, want *ir.AgentNode", wf.Nodes["plan_revise"])
+	}
+	if revise.Session != ir.SessionFresh {
+		t.Errorf("feature-dev: plan_revise session = %q, want fresh so the Kimi route never inherits a Claude session", revise.Session)
+	}
+
+	peer, ok := wf.Nodes["plan_review"].(*ir.JudgeNode)
+	if !ok {
+		t.Fatalf("feature-dev: plan_review is %T, want *ir.JudgeNode", wf.Nodes["plan_review"])
+	}
+	if peer.GetLLMFields().Backend != "kimi" || peer.GetLLMFields().Model != "kimi-code/kimi-for-coding" {
+		t.Errorf("feature-dev: plan_review = backend %q model %q, want the permitted Kimi reviewer", peer.GetLLMFields().Backend, peer.GetLLMFields().Model)
+	}
+}

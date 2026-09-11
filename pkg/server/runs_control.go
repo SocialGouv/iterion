@@ -120,15 +120,17 @@ func (s *Server) mutateWatch(w http.ResponseWriter, r *http.Request, add bool) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or issue id")
 		return
 	}
-	rs := s.runs.RunStore()
+	// Through the service, not the raw store: the wrapper emits the
+	// observational veille event the assistant dock renders its standby
+	// banner from.
 	var (
 		watched []string
 		err     error
 	)
 	if add {
-		watched, err = rs.AddWatchedIssues(r.Context(), id, []string{issueID})
+		watched, err = s.runs.AddWatchedIssues(r.Context(), id, []string{issueID})
 	} else {
-		watched, err = rs.RemoveWatchedIssues(r.Context(), id, []string{issueID})
+		watched, err = s.runs.RemoveWatchedIssues(r.Context(), id, []string{issueID})
 	}
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "watch: %v", err)

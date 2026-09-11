@@ -149,6 +149,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		for _, dm := range edge.With {
 			e.warnMissingEdgeInput(edge, dm, effectiveInputs)
 			val := e.resolveMapping(dm, edgeScope)
+			if e.logger != nil && sc.rs != nil && sc.rs.runID == "01a082d8-bc94-77f5-afad-23ec349f7752" && nodeID == "turn_state" && dm.Key == "actionless_clarification_count" {
+				e.logger.Warn("diagnostic: run=%s node=%s edge=%s->%s key=%s raw=%q refs=%d resolved_type=%T resolved=%v", sc.rs.runID, nodeID, edge.From, edge.To, dm.Key, dm.Raw, len(dm.Refs), val, val)
+			}
 			// Include nil values too: a ref that resolves to nil
 			// (e.g. `{{outputs.fixer.pushback}}` before the fixer
 			// has run, `{{loop.X.previous_output}}` on iteration 1)
@@ -205,9 +208,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	// re-entry carry them too — a re-entry is a fresh Execute, not a
 	// re-invocation, and without this the operator re-authorizes the same
 	// tool every time a repair loop re-enters the node. Per node on
-	// purpose: Evaluate ranks allow rules above the mode default, so
-	// lending one node's grant to another would beat a `permission: deny`
-	// the other node declared for itself.
+	// purpose: an explicit operator grant overrides the normal ask/default
+	// path, so lending one node's grant to another would let a different node
+	// execute an action the node intended to require an approval for.
 	if sc.rs != nil && len(sc.rs.permissionGrants[nodeID]) > 0 {
 		result[permission.RunGrantsInputKey] = append([]string(nil), sc.rs.permissionGrants[nodeID]...)
 	}
@@ -776,7 +779,14 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	for name, v := range e.workflow.Vars {
 		if v.HasDefault {
 			if s, ok := v.Default.(string); ok {
-				vars[name] = os.Expand(s, expandFn)
+				// ExpandWithDefault, not os.Expand: the stdlib treats the
+				// whole `VAR:-fallback` as a variable name, so a default
+				// written `${VAR:-x}` — the idiom the DSL uses everywhere
+				// else, and which command:/model:/timeout: all honour —
+				// resolved to the EMPTY STRING here. Silently: the var just
+				// became empty and the failure surfaced much later, wherever
+				// it was consumed.
+				vars[name] = ir.ExpandWithDefault(s, expandFn)
 			} else {
 				vars[name] = v.Default
 			}

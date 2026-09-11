@@ -364,6 +364,26 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	return nil
 }
 
+// PatchRunBudgetOverrides atomically replaces only the raw resume replay
+// source, preserving concurrent status/checkpoint fields on the run document.
+func (s *Store) PatchRunBudgetOverrides(ctx context.Context, runID string, overrides *store.RunBudgetOverrides) error {
+	update := bson.M{
+		"$set": bson.M{
+			"budget_overrides": overrides,
+			"updated_at":       time.Now().UTC(),
+		},
+		"$inc": bson.M{"version": 1},
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": runID})), update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: patch run budget overrides %s: %w", runID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("store/mongo: patch run budget overrides %s: %w", runID, store.ErrRunNotFound)
+	}
+	return nil
+}
+
 // AddWatchedIssues merges issueIDs into the run's watched_issue_ids set
 // ($addToSet is atomic and dedups) and returns the resulting set.
 func (s *Store) AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error) {
@@ -1033,6 +1053,7 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		// Resume must clear FinishedAt or the elapsed-time ticker
 		// freezes mid-run; a running run carries no failure message.
 		set["error"] = bson.M{"$literal": ""}
+		set["resume_requires_explicit"] = "$$REMOVE"
 		set["finished_at"] = "$$REMOVE"
 	case status == store.RunStatusPausedWaitingHuman:
 		// A generic UpdateRunStatus crossing from a previously-terminal

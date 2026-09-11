@@ -257,6 +257,46 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}
 }
 
+func TestRemoteRunsMissionCommandsUseTargetScopedAPI(t *testing.T) {
+	var seen []string
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/api/runs/target/assistant-missions" && r.Method == http.MethodPost {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["invocation_key"] != "goal:stable" || body["watch_id"] != "watch-1" || body["ttl_seconds"] != float64(600) {
+				t.Errorf("mission start body = %#v", body)
+			}
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+	ctx := context.Background()
+	if err := cli.RemoteRunsMissionStart(ctx, c, p, "target", cli.RemoteRunsMissionStartOptions{InvocationKey: "goal:stable", WatchID: "watch-1", Actions: []string{"run.rewind"}, TTLSeconds: 600, MaxActions: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.RemoteRunsMissionList(ctx, c, p, "target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.RemoteRunsMissionGet(ctx, c, p, "target", "mission-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.RemoteRunsMissionStop(ctx, c, p, "target", "mission-1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"POST /api/runs/target/assistant-missions",
+		"GET /api/runs/target/assistant-missions",
+		"GET /api/runs/target/assistant-missions/mission-1",
+		"POST /api/runs/target/assistant-missions/mission-1/stop",
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("mission API calls = %v, want %v", seen, want)
+	}
+}
+
 func TestRemoteRunsFollow_CursorAndTerminal(t *testing.T) {
 	page := 0
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

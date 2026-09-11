@@ -14,10 +14,12 @@
 import { useCallback } from "react";
 
 import { queueMessage } from "@/api/queueMessages";
+import { isRunNotResumableError } from "@/api/runs";
 import {
   askUserAllowsFreeText,
   askUserOptions,
   ASK_USER_RESPONSE_KEY,
+  permissionMarker,
   type AskUserOption,
 } from "@/lib/askUserOptions";
 
@@ -87,10 +89,21 @@ export function useAssistantComposer({
   session: UseWhatsNextSession;
   decorate?: (text: string) => string | Promise<string>;
 }): AssistantComposer {
-  const pendingHumanQuestion = session.messages.find(
-    (m): m is PendingQuestion =>
-      m.kind === "human-question" && m.status === "pending",
-  );
+  // Keep this in lockstep with useSessionMessages: after a replay, an older
+  // pending card can remain in the folded transcript beside the live gate.
+  // The last pending question is the current gate; selecting the first one
+  // makes the shared composer answer stale context and exposes a second form.
+  let pendingHumanQuestion: PendingQuestion | undefined;
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const message = session.messages[i];
+    if (
+      message?.kind === "human-question" &&
+      message.status === "pending"
+    ) {
+      pendingHumanQuestion = message;
+      break;
+    }
+  }
 
   // A pending ask_user pause (mid-turn agent question) answers with a
   // single string under ask_user_response; the chat node's pause
@@ -98,6 +111,8 @@ export function useAssistantComposer({
   const pendingIsAskUser =
     !!pendingHumanQuestion?.questions &&
     ASK_USER_RESPONSE_KEY in pendingHumanQuestion.questions;
+  const pendingIsPermission =
+    pendingIsAskUser && permissionMarker(pendingHumanQuestion?.questions) !== null;
   const pendingNode = bot.nodeMap[pendingHumanQuestion?.nodeId ?? ""];
   const pendingApproval =
     !pendingIsAskUser && pendingNode?.approvedField
@@ -119,7 +134,7 @@ export function useAssistantComposer({
     ? askUserAllowsFreeText(pendingHumanQuestion?.questions)
     : true;
   const willDecorateMessage =
-    !!decorate && (!pendingIsAskUser || options.length === 0);
+    !!decorate && (!pendingIsAskUser || (!pendingIsPermission && options.length === 0));
   const quickReplies: AssistantQuickReply[] = !pendingIsAskUser
     ? readQuickReplies(pendingHumanQuestion?.questions)
     : [];
@@ -161,7 +176,18 @@ export function useAssistantComposer({
       const decorated =
         willDecorateMessage && decorate ? await decorate(trimmed) : trimmed;
       if (pendingHumanQuestion) {
-        await submitPending(decorated);
+        try {
+          await submitPending(decorated);
+        } catch (e) {
+          // A parked chat gate has two legitimate resumers: the operator, and
+          // the host delivering a watched run's outcome onto the node's
+          // host_event field. When the host wins that race by a hair, the
+          // operator did nothing wrong — the assistant is simply awake again,
+          // and its inbox is exactly where this message belongs. Surfacing
+          // the raw refusal would read as a failure of their own send.
+          if (!isRunNotResumableError(e) || !session.runId) throw e;
+          await queueMessage(session.runId, decorated, { skills: opts.skills });
+        }
         return;
       }
       // A paused run cannot consume its inbox. If the durable checkpoint says

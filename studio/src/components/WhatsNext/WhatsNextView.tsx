@@ -4,6 +4,7 @@ import {
 } from "@/components/ChatDock/AssistantProvider";
 import AssistantActionOffer from "@/components/ChatDock/AssistantActionOffer";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
+import { shouldRenderAssistantActionOffer } from "@/lib/chatDock/assistantActionVisibility";
 import {
   assistantHumanAnswer,
   useAssistantComposer,
@@ -80,6 +81,12 @@ function WhatsNextConversation({
     onComposerSend,
   } = useAssistantComposer({ bot, session });
 
+  const actionOfferVisible = shouldRenderAssistantActionOffer({
+    runStatus: session.runStatus,
+    hasPendingHumanQuestion: !!pendingHumanQuestion,
+    pendingIsAskUser,
+  });
+
   const inSession = session.status !== "idle";
 
   return (
@@ -116,12 +123,15 @@ function WhatsNextConversation({
                 // onHumanSubmit fallback only fires for a pending card
                 // the composer somehow doesn't own (defensive).
                 composerHandlesId={pendingHumanQuestion?.id}
+                // Both footer branches are nested under session.runId below;
+                // ResumeFooter also owns the gate when the run is terminal.
+                footerOwnsPendingInput={!!pendingHumanQuestion && !!session.runId}
                 // Same rule as the dock (see ChatDock's `turnParked`): an
                 // offer belongs to a reply, so it renders only once the turn
                 // is parked on its chat pause — never during the agent's
                 // turn, whose artifact already carries next turn's requests.
                 bubbleSlot={
-                  pendingHumanQuestion && !pendingIsAskUser ? (
+                  actionOfferVisible ? (
                     <AssistantActionOffer
                       runId={session.runId}
                       revision={session.messages.length}

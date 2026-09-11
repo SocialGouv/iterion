@@ -133,7 +133,7 @@ with run-read access.
 | `queued` | Cloud message accepted but not yet claimed by a runner. | Internal queue state. |
 | `running` | An engine owns or is expected to own the run. | Not normally resumable; stale local runs can be reconciled. |
 | `paused_waiting_human` | A durable interaction is waiting for answers. | Resume with answers. |
-| `paused_operator` | Soft operator or daily-spend-cap pause with no pending human form. | Runtime-restorable checkpoint; see [resume](resume.md). |
+| `paused_operator` | Soft operator or daily-spend-cap pause with no pending human form; also the successful post-rewind state. | Runtime-restorable checkpoint; a rewound run still requires an explicit resume. See [resume](resume.md). |
 | `finished` | Reached `done`. | Terminal. |
 | `failed` | Intentional `fail` or failure without resumable persisted state. | Terminal (no auto-resume), but the checkpoint is preserved so an explicit `rewind` can recover it; runs failed before that preservation have none and stay unrecoverable. |
 | `failed_resumable` | Failure with a restart checkpoint, or an entry restart marker. | Resume without answers. |
@@ -181,7 +181,7 @@ parent's).
   "backend_conversation": null,
   "backend_pending_tool_use_id": "",
   "node_sessions": {
-    "writer": {
+    "writer-or-named-session-slot": {
       "backend": "claude_code",
       "session_id": "sess-…",
       "fingerprint": "…",
@@ -199,6 +199,15 @@ parent's).
   "cost_usd_total": 1.25
 }
 ```
+
+`node_sessions` keys default to the node id. A `session: persist` node may
+declare `session_slot: <name>` so serial nodes share one durable conversation;
+the value shape and backend-session blob storage are unchanged. Historical
+claw envelopes are normalized when loaded: tool results without a preceding
+call, calls without a later result, and provider-specific reasoning blocks are
+removed block-by-block, with empty messages discarded. This compatibility
+repair does not rewrite the stored blob in place; the next successful session
+checkpoint persists the normalized conversation.
 
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
@@ -241,6 +250,73 @@ the same with-mappings (issue #484). Missing fields on historical
 checkpoints take their zero-value compatibility behavior — for
 `selected_incoming` that means the pre-#484 fallback of merging every
 incoming edge whose source has produced output.
+
+### Bot code provenance and delegated workers
+
+New runs may carry `bot_origin`, the host-stamped identity of the code that
+supplied their workflow. It is deliberately separate from `source` (the
+ticket/schedule that triggered execution) and `bot_source_tenant` (the stored
+bot resolution tier). The record can include a project/repository identity,
+commit, tree hash, package and repository-relative workflow path. Local runs
+may additionally retain the resolved repository root; assistant context never
+exposes that host path.
+
+A worker launched from a failed run carries `delegation` with
+`source_run_id`, `kind`, `episode_fingerprint` and `attempt`. The tuple is the
+auditable link and the admission key. Iterion chooses a deterministic run id
+per attempt, so concurrent replicas racing the same failure episode converge
+on the run store's unique-create operation; a terminal worker permits a later
+attempt, while a non-terminal worker blocks another.
+
+Installed bundles persist their origin beside, not inside, the copied bundle
+under `.botz/.origins/<name>.json`. Keeping the sidecar outside the bundle
+means provenance does not perturb its logical content hash.
+
+## Assistant run watches
+
+Assistant watches are deliberately outside `run.json`: they connect two runs
+and have their own lifecycle. Local mode atomically replaces
+`<store>/assistant-run-watches.json`, containing `watches` and `episodes` maps.
+Cloud mode uses the `assistant_run_watches` and
+`assistant_run_watch_episodes` Mongo collections.
+
+A watch is `active`, `resolved` or `stopped`. An episode is independently
+`pending`, `processing`, `done` or `blocked`; `processing` carries a bounded
+lease so a crashed claimant can be retried. `(watch_id, outcome_event_id)` is
+unique, as is one active `(tenant_id, owner_id, target_run_id)` watch. These
+separate enums are intentional: an assistant being temporarily busy must not
+turn its durable watch into a terminal state.
+The watch target is a tree root. `tree_tracking_started_at` is the one-time
+descendant replay floor, and `observations` stores a monotonic event cursor per
+root/descendant. Each episode keeps `target_run_id` for routing and
+`observed_run_id` for the concrete run that produced the outcome. Legacy
+watches retain `last_observed_event_seq` as the root cursor and migrate lazily.
+The default watched kind is `run.failed`; host-created delegation watches can
+also select `run.finished` and `run.cancelled` to deliver a worker's terminal
+result before resolving the watch.
+
+## Assistant missions
+
+Assistant missions are a separate durable authority ledger. Local mode stores
+`<store>/assistant-missions.json` behind an OS file lock and atomic rename;
+cloud mode uses the `assistant_missions` Mongo collection. Both enforce a
+permanent unique `(tenant_id, operator_id, invocation_key)` binding and at
+most one non-terminal mission per `(tenant_id, target_run_id)`.
+
+Each version-1 mission persists immutable target/watch/assistant/project
+bindings and a canonical policy (`actions`, original `ttl_seconds`, absolute
+`expires_at`, `max_actions`, `contract_version`). Mutable state uses a
+revision plus a leased owner/epoch fence. It also carries the artifact-version
+frontier and action receipts with `prepared`, `issued`, `succeeded`,
+`rejected`, or `uncertain` state. `issued` is written before target mutation
+and charged exactly once; an unknown outcome is reconciled from the target
+event journal and is never blindly retried.
+
+Queue schema v17 adds `ResumeSpec.expected_status` and `receipt_id`. The
+publisher consumes the exact expected status in its resumable→queued CAS; the
+runner retains the receipt and stamps it on `run_resumed`. `run_rewound`
+carries the corresponding receipt directly. Rolling deployments therefore
+reject an old runner instead of executing an untraceable mission action.
 
 ## `events.jsonl`
 

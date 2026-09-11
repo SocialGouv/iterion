@@ -188,6 +188,9 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 				Hint:    "check the compute node's expressions for type mismatches or unknown references",
 			}
 		}
+		if e.logger != nil && rs != nil && rs.runID == "01a082d8-bc94-77f5-afad-23ec349f7752" && nodeID == "turn_state" && ce.Key == "actionless_clarification_count" {
+			e.logger.Warn("diagnostic: run=%s node=%s expr=%s value_type=%T value=%v input_type=%T input=%v", rs.runID, nodeID, ce.Raw, v, v, nodeInput[ce.Key], nodeInput[ce.Key])
+		}
 		output[ce.Key] = v
 	}
 	// The output is typed by the declared schema HERE, on the body the

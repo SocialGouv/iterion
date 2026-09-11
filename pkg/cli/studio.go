@@ -36,12 +36,19 @@ type StudioOptions struct {
 	Dir       string // working directory (for examples)
 	StoreDir  string // explicit store override; empty uses store.ResolveStoreDir anchored at Dir
 	NoBrowser bool   // skip opening browser
+	Workspace bool   // host every pinned local project behind one listener
 	// NoBrowserPane disables every Browser-pane code path: the
 	// preview proxy, the CDP WS endpoint, and the Chromium runner.
 	// Useful for emergency lockdown (security incident) or for
 	// shaving startup latency when the operator never needs the
 	// pane. Defaults to false (pane enabled).
 	NoBrowserPane bool
+	// RecoveryPassive starts a deliberately inert local console for a
+	// supervised recovery. It keeps the assistant chat and explicit run
+	// controls available, but disables every autonomous studio worker. It is
+	// intentionally a CLI-only, loopback-only emergency mode: it must never
+	// become a quieter way to run a normal production studio.
+	RecoveryPassive bool
 
 	// OnReady, when non-nil, is invoked once the HTTP listener is up and
 	// the server has accepted its bind address. The argument is the actual
@@ -170,6 +177,12 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	if opts.Bind == "" {
 		opts.Bind = "127.0.0.1"
 	}
+	if opts.RecoveryPassive && !isLoopbackBindHost(opts.Bind) {
+		return fmt.Errorf("recovery-passive studio must bind a loopback address, got %q", opts.Bind)
+	}
+	if opts.Workspace && opts.Mode == "cloud" {
+		return fmt.Errorf("workspace studio is available only in local mode")
+	}
 
 	// Local mode trusts the TTY user over loopback. Binding to a non-loopback
 	// address (e.g. --bind 0.0.0.0) exposes the no-auth surface to the network:
@@ -185,6 +198,9 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			return fmt.Errorf("refusing to start an unauthenticated studio on non-loopback bind %q: any reachable host gets unauthenticated super-admin (launching a bot/tool node = host RCE). Bind 127.0.0.1 (default), or front it with auth and set ITERION_STUDIO_INSECURE_NONLOOPBACK=1 to accept the risk", opts.Bind)
 		}
 		p.Line("⚠️  studio: bound to non-loopback %q with auth disabled — unauthenticated network access is possible (ITERION_STUDIO_INSECURE_NONLOOPBACK=1)", opts.Bind)
+	}
+	if opts.Workspace {
+		return runWorkspaceStudio(ctx, opts, p)
 	}
 
 	dir := opts.Dir
@@ -251,9 +267,11 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		// its TTY user. CSRF protection still gates write endpoints
 		// via Origin allowlisting; cross-tenant isolation does not
 		// apply because there is exactly one local user.
-		DisableAuth: disableAuth,
-		Bots:        server.BotsConfig{Paths: botsPaths},
-		Alerts:      alertSettingsFromEnv(opts.Bind, opts.Port),
+		DisableAuth:             disableAuth,
+		Bots:                    server.BotsConfig{Paths: botsPaths},
+		Alerts:                  alertSettingsFromEnv(opts.Bind, opts.Port),
+		RecoveryPassive:         opts.RecoveryPassive,
+		SkipProjectRegistration: opts.RecoveryPassive,
 		// Team-authored bot store. Local editing goes through /api/files/*
 		// (real filesystem), so this in-memory store is here for parity and to
 		// keep the /api/teams/:id/bot-sources surface available; the durable
@@ -317,50 +335,54 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	if nsErr == nil {
 		ns.SetLogger(logger)
 		cfg.NativeTrackerStore = ns
-		// A Manager is wired alongside the native store so the SPA can
-		// configure + start + pause + stop the dispatcher entirely from
-		// the Board / Dispatcher views; no separate `iterion dispatch`
-		// process required.
-		//
-		// It does NOT necessarily sit idle, whatever this comment used to
-		// claim. NewManager replays the store's last-known intent, and on
-		// a store that has a persisted dispatcher.json but no recorded
-		// intent it defaults to RUNNING (resolveBootIntent +
-		// autoStartEnabled, which is on unless ITERION_DISPATCHER_AUTOSTART
-		// is falsey). So launching the studio on a store whose dispatcher
-		// was ever configured resumes polling — and launching runs — with
-		// no operator action, which is by design and worth knowing when
-		// runs appear that nobody asked for. Note also that nothing elects
-		// an owner for a LOCAL store: the flock in pkg/store is per-RUN, so
-		// two studios on one --store-dir each poll and each launch.
-		mgr, mgrErr := dispatcher.NewManager(dispatcher.ManagerOptions{
-			StoreDir:         resolvedStoreDir,
-			NativeStore:      ns,
-			Logger:           logger,
-			DefaultBotsPaths: botsPaths,
-			DefaultsFn: func() (*dispatcher.Config, error) {
-				// Pass the studio's working directory as the
-				// project seed. The auto-config installs an
-				// after_create hook that `git worktree add`s
-				// from this path so per-issue workspaces are
-				// populated with the host checkout instead of
-				// landing on the bot as empty dirs (causing
-				// scan_docs to see doc_count=0 and the
-				// downstream agentic loop to operate against
-				// nothing).
-				return BuildDefaultConfig(resolvedStoreDir, dir)
-			},
-		})
-		if mgrErr == nil {
-			cfg.Dispatcher = mgr
+		if opts.RecoveryPassive {
+			logger.Warn("studio: RECOVERY-PASSIVE mode — dispatcher, triggers, watches, reconciliation and background cleanup are disabled; use only explicit assistant or run actions")
 		} else {
-			logger.Warn("studio: dispatcher manager init: %v", mgrErr)
+			// A Manager is wired alongside the native store so the SPA can
+			// configure + start + pause + stop the dispatcher entirely from
+			// the Board / Dispatcher views; no separate `iterion dispatch`
+			// process required.
+			//
+			// It does NOT necessarily sit idle, whatever this comment used to
+			// claim. NewManager replays the store's last-known intent, and on
+			// a store that has a persisted dispatcher.json but no recorded
+			// intent it defaults to RUNNING (resolveBootIntent +
+			// autoStartEnabled, which is on unless ITERION_DISPATCHER_AUTOSTART
+			// is falsey). So launching the studio on a store whose dispatcher
+			// was ever configured resumes polling — and launching runs — with
+			// no operator action, which is by design and worth knowing when
+			// runs appear that nobody asked for. Note also that nothing elects
+			// an owner for a LOCAL store: the flock in pkg/store is per-RUN, so
+			// two studios on one --store-dir each poll and each launch.
+			mgr, mgrErr := dispatcher.NewManager(dispatcher.ManagerOptions{
+				StoreDir:         resolvedStoreDir,
+				NativeStore:      ns,
+				Logger:           logger,
+				DefaultBotsPaths: botsPaths,
+				DefaultsFn: func() (*dispatcher.Config, error) {
+					// Pass the studio's working directory as the
+					// project seed. The auto-config installs an
+					// after_create hook that `git worktree add`s
+					// from this path so per-issue workspaces are
+					// populated with the host checkout instead of
+					// landing on the bot as empty dirs (causing
+					// scan_docs to see doc_count=0 and the
+					// downstream agentic loop to operate against
+					// nothing).
+					return BuildDefaultConfig(resolvedStoreDir, dir)
+				},
+			})
+			if mgrErr == nil {
+				cfg.Dispatcher = mgr
+			} else {
+				logger.Warn("studio: dispatcher manager init: %v", mgrErr)
+			}
+			// Activate the event-driven trigger spine when any discovered bot
+			// declares a board: invocation. The server then promotes matching
+			// cards the moment they transition (the dispatcher claims them now,
+			// not at the next poll). nil = no board triggers → spine stays off.
+			cfg.TriggerStore = buildLocalTriggerStore(botsPaths, logger)
 		}
-		// Activate the event-driven trigger spine when any discovered bot
-		// declares a board: invocation. The server then promotes matching
-		// cards the moment they transition (the dispatcher claims them now,
-		// not at the next poll). nil = no board triggers → spine stays off.
-		cfg.TriggerStore = buildLocalTriggerStore(botsPaths, logger)
 	} else {
 		// Without the native store, cfg.NativeTrackerStore AND cfg.Dispatcher
 		// both stay nil, so the server silently mounts neither the /board nor
@@ -377,22 +399,24 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	// Marketplace view works without extra wiring. The store lives at
 	// <store-dir>/marketplace/marketplace.json; init failure is non-fatal
 	// (the view stays hidden via MarketplaceEnabled=false).
-	if mp, mpErr := marketplace.NewJSONStore(filepath.Join(resolvedStoreDir, "marketplace")); mpErr == nil {
-		cfg.Marketplace = mp
-		// Seed the registry from the workspace's own bot bundles so the
-		// Marketplace view isn't empty on first open. Idempotent + best
-		// effort; user-submitted entries are never clobbered. Path is
-		// configurable (ITERION_MARKETPLACE_SEED_PATHS, comma-separated,
-		// workspace-relative) so this stays repo-agnostic — it surfaces
-		// whatever bots the target repo ships, defaulting to bots/.
-		seedPaths := marketplaceSeedPaths()
-		if n, sErr := SeedMarketplace(context.Background(), mp, SeedOptions{Paths: seedPaths, Workdir: dir}); sErr != nil {
-			logger.Warn("studio: marketplace seed failed: %v", sErr)
-		} else if n > 0 {
-			logger.Info("studio: seeded %d built-in bot(s) into the marketplace", n)
+	if !opts.RecoveryPassive {
+		if mp, mpErr := marketplace.NewJSONStore(filepath.Join(resolvedStoreDir, "marketplace")); mpErr == nil {
+			cfg.Marketplace = mp
+			// Seed the registry from the workspace's own bot bundles so the
+			// Marketplace view isn't empty on first open. Idempotent + best
+			// effort; user-submitted entries are never clobbered. Path is
+			// configurable (ITERION_MARKETPLACE_SEED_PATHS, comma-separated,
+			// workspace-relative) so this stays repo-agnostic — it surfaces
+			// whatever bots the target repo ships, defaulting to bots/.
+			seedPaths := marketplaceSeedPaths()
+			if n, sErr := SeedMarketplace(context.Background(), mp, SeedOptions{Paths: seedPaths, Workdir: dir}); sErr != nil {
+				logger.Warn("studio: marketplace seed failed: %v", sErr)
+			} else if n > 0 {
+				logger.Info("studio: seeded %d built-in bot(s) into the marketplace", n)
+			}
+		} else {
+			logger.Warn("studio: marketplace store init failed: %v — Marketplace view disabled this session", mpErr)
 		}
-	} else {
-		logger.Warn("studio: marketplace store init failed: %v — Marketplace view disabled this session", mpErr)
 	}
 
 	srv := server.New(cfg, logger)

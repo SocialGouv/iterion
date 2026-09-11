@@ -7,7 +7,7 @@ import { useCallback, useRef } from "react";
 // Aliased: the orchestrating hook binds a local `errorMessage` field.
 import { errorMessage as toMessage } from "@/lib/errorHints";
 
-import { createRun, getRunWithRetry } from "@/api/runs";
+import { createRun, getRunWithRetry, type CreateRunRequest } from "@/api/runs";
 import type { ForgeTeamRepo } from "@/api/forgeConnections";
 import { modelPrefOverrides } from "@/api/modelPrefs";
 import type { SessionModelChoice } from "@/hooks/useSessionModelPref";
@@ -43,6 +43,10 @@ export function useSessionLifecycle(opts: {
   setStatus: (status: WhatsNextStatus) => void;
   setBusyMessageId: (id: string | null) => void;
   setErrorMessage: (msg: string | null) => void;
+  // Dock-only ownership. /whats-next omits both, so its standing Nexie
+  // session keeps manual provenance and bot-scoped discovery.
+  runSource?: CreateRunRequest["run_source"];
+  beforeLaunch?: () => void;
 }): SessionLifecycle {
   const {
     bot,
@@ -55,6 +59,8 @@ export function useSessionLifecycle(opts: {
     setStatus,
     setBusyMessageId,
     setErrorMessage,
+    runSource,
+    beforeLaunch,
   } = opts;
 
   // Remembers the vars of the most recent launch so a re-seed (typing
@@ -84,11 +90,16 @@ export function useSessionLifecycle(opts: {
       // have a previous run loaded.
       reset();
       try {
+        // Write the lazy tab before the server can create its run. Another
+        // window reconciling this browser profile must see the owner during
+        // the createRun → runId persistence gap.
+        beforeLaunch?.();
         const res = await createRun({
           file_path: bot.workflowPath,
           // Cloud: the server resolves the bundle (source + skills) off the
           // pod FS by id, so Nexie launches without uploading bytes.
           bot_id: bot.id,
+          run_source: runSource,
           vars,
           // Cloud repo scope: the runner clones the sidebar's active
           // repo so workspace_dir resolves to real code (and board
@@ -154,6 +165,8 @@ export function useSessionLifecycle(opts: {
       repoScopeEnabled,
       activeRepo,
       modelChoice,
+      runSource,
+      beforeLaunch,
       reset,
       applySnapshot,
       loadEventHistoryIfMissing,

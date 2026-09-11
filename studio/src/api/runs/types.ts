@@ -38,6 +38,7 @@ export type ExecStatus =
 // lack it entirely — callers must treat an empty value as "manual".
 export type RunSourceKind =
   | "manual"
+  | "studio_chat"
   | "webhook"
   | "schedule"
   | "dispatcher"
@@ -185,11 +186,13 @@ export interface RunSummary {
   // queued banner copy ("3rd in queue"). See cloud-ready plan §F (T-03,
   // T-31).
   queue_position?: number;
-  // Derived classifier (manual | webhook | dispatcher | fork | shard).
+  // Derived classifier (manual | studio_chat | webhook | schedule |
+  // dispatcher | fork | shard).
   // Server omits the field for legacy runs and for the default value
   // "manual"; the UI must treat empty as "manual" — see
   // runSourceMeta.normalizeSourceKind.
   source_kind?: RunSourceKind;
+  source?: RunSource;
   // Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
   // the shard coordinates mirrored from the queue message. parent_run_id
   // points at the run that spawned this shard/child; the shard_* fields
@@ -388,6 +391,8 @@ export interface RunHeader {
   // Typed for the budget-consumption + paused-node fields the UI reads;
   // the rest of the checkpoint stays opaque. See RunCheckpoint.
   checkpoint?: RunCheckpoint;
+  /** True when the checkpoint can be re-anchored even if bare resume is unavailable. */
+  rewindable?: boolean;
   // Filesystem path the run executed in (worktree or cwd). Empty for
   // pre-feature runs; the modified-files panel keys off this to decide
   // whether to render at all.
@@ -592,6 +597,11 @@ export interface RunSource {
   // differs. Mirror of store.RunSource.
   schedule_id?: string;
   schedule_name?: string;
+  // Studio chat provenance (kind === "studio_chat"). Opaque ownership keys
+  // used to recover tab/run links and reap only this browser profile's
+  // abandoned conversations.
+  client_id?: string;
+  conversation_id?: string;
 }
 
 // Mirror of runview.RunSnapshot.
@@ -733,6 +743,7 @@ export interface GlobalActiveRun {
   workflow_name: string;
   bundle_name?: string;
   bundle_display_name?: string;
+  source_kind?: RunSourceKind;
   input_path?: string;
   status: RunStatus;
   created_at: string;
@@ -865,6 +876,13 @@ export interface CreateRunRequest {
   // Inline workflow source — required in cloud mode (no shared FS),
   // ignored in local mode where file_path resolves on disk.
   source?: string;
+  // Typed launch provenance. The public API currently admits only
+  // studio_chat; `source` above remains the inline workflow DSL.
+  run_source?: {
+    kind: "studio_chat";
+    client_id: string;
+    conversation_id: string;
+  };
   // Catalog bundle id (e.g. "whats-next"). In cloud mode the server
   // resolves the bot's source + skills off the pod's own bots/ tree, so a
   // catalog bot launches without uploading its bytes. A catalog-shaped
@@ -872,6 +890,10 @@ export interface CreateRunRequest {
   bot_id?: string;
   run_id?: string;
   vars?: Record<string, string>;
+  // Host-owned cross-project delegation. The server resolves source-run bot
+  // provenance and injects the failure envelope; the browser supplies no path.
+  source_run_id?: string;
+  instructions?: string;
   // Name of an in-source preset (presets: block) to apply before vars.
   preset?: string;
   timeout?: string;
@@ -1042,6 +1064,26 @@ export interface ForkRunResponse {
   new_run_id: string;
   parent_run_id: string;
   fork_anchor?: ForkAnchor;
+}
+
+/** Safe subset of POST /runs/:id/rewind used by assistant host actions. */
+export interface RewindRunRequest {
+  node_id?: string;
+  auto?: boolean;
+  restore_scope?: "none" | "produced" | "full";
+}
+
+export interface RewindRunResponse {
+  run_id: string;
+  from_node?: string;
+  node_id: string;
+  dropped_nodes: string[];
+  tombstoned_artifacts?: string[];
+  orphaned_child_runs?: string[];
+  status: string;
+  auto_targeted?: boolean;
+  promoted_from?: string;
+  changes?: Array<Record<string, unknown>>;
 }
 
 export interface ResumeRunRequest {

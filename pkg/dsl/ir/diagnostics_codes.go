@@ -163,5 +163,6 @@ const (
 	DiagReservedFailCode DiagCode = "C248" // `code:` on a fail node collides with an engine failure code (error — the engine reads those as control flow: auto-resume, usage-window retry)
 	// C249 continues the C240 parallel-branch band: a branch-spawning router
 	// that names one target twice gives two goroutines one branch id.
-	DiagDuplicateFanOutTarget DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
+	DiagDuplicateFanOutTarget     DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
+	DiagSessionSlotWithoutPersist DiagCode = "C252" // session_slot requires session: persist
 )

@@ -46,7 +46,8 @@ type RoutingRunner struct {
 	// Empty disables the dynamic fallback (static map + default only).
 	BotsPaths []string
 
-	logger *iterlog.Logger
+	logger        *iterlog.Logger
+	engineOptions []EngineRunnerOption
 
 	// compile builds a Runner for a resolved workflow path. Injectable so
 	// tests can avoid real IR compilation; defaults to NewEngineRunner.
@@ -149,7 +150,7 @@ func (r *RoutingRunner) dynamicRunner(key, path string) (Runner, bool) {
 	}
 	mk := r.compile
 	if mk == nil {
-		mk = func(p string) (Runner, error) { return NewEngineRunner(p, r.logger) }
+		mk = func(p string) (Runner, error) { return NewEngineRunner(p, r.logger, r.engineOptions...) }
 	}
 	rn, err := mk(path)
 	if err != nil {
@@ -233,14 +234,14 @@ func (r *RoutingRunner) Close() error {
 // EngineRunner directly only when there are neither static routes NOR
 // dynamic discovery roots (no need to pay the wrapper cost). The caller
 // is responsible for calling Close on the returned ManagedRunner.
-func NewRoutingRunner(cfg *Config, logger *iterlog.Logger) (ManagedRunner, error) {
+func NewRoutingRunner(cfg *Config, logger *iterlog.Logger, opts ...EngineRunnerOption) (ManagedRunner, error) {
 	if cfg == nil {
 		return nil, errors.New("routing runner: config required")
 	}
 	if cfg.Workflow == "" {
 		return nil, errors.New("routing runner: cfg.Workflow is required (default fallback)")
 	}
-	defaultRunner, err := NewEngineRunner(cfg.Workflow, logger)
+	defaultRunner, err := NewEngineRunner(cfg.Workflow, logger, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("routing runner: default workflow %s: %w", cfg.Workflow, err)
 	}
@@ -248,16 +249,17 @@ func NewRoutingRunner(cfg *Config, logger *iterlog.Logger) (ManagedRunner, error
 		return defaultRunner, nil
 	}
 	r := &RoutingRunner{
-		Default:    defaultRunner,
-		ByAssignee: make(map[string]Runner, len(cfg.AssigneeWorkflows)),
-		BotsPaths:  cfg.Bots.Paths,
-		logger:     logger,
+		Default:       defaultRunner,
+		ByAssignee:    make(map[string]Runner, len(cfg.AssigneeWorkflows)),
+		BotsPaths:     cfg.Bots.Paths,
+		logger:        logger,
+		engineOptions: append([]EngineRunnerOption(nil), opts...),
 	}
 	for assignee, wfPath := range cfg.AssigneeWorkflows {
 		if assignee == "" {
 			return nil, errors.New("routing runner: assignee_workflows contains an empty key")
 		}
-		runner, err := NewEngineRunner(wfPath, logger)
+		runner, err := NewEngineRunner(wfPath, logger, opts...)
 		if err != nil {
 			_ = r.Close()
 			return nil, fmt.Errorf("routing runner: assignee %q workflow %s: %w", assignee, wfPath, err)

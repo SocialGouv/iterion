@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,12 @@ import {
   ASSISTANT_DOCK_WIDTH_KEY,
   DOCK_BREAKPOINT_PX,
 } from "@/lib/chatDock/dockState";
+import {
+  ACTIVE_CONVERSATION_KEY,
+  CONVERSATIONS_KEY,
+  readConversations,
+} from "@/lib/chatDock/conversations";
+import type { RunEvent } from "@/api/runs";
 import { getDefaultRunStore, useRunStoreInstance } from "@/store/run";
 
 import {
@@ -20,7 +26,17 @@ import {
 } from "./AssistantProvider";
 import { DOCKED_WIDTH_PX, FLOATING_FOOTPRINT_PX } from "./ChatDockShell";
 
-const { botLookup } = vi.hoisted(() => ({ botLookup: vi.fn() }));
+const { botLookup, registryLists } = vi.hoisted(() => ({
+  botLookup: vi.fn(),
+  registryLists: new WeakMap<object, object[]>(),
+}));
+
+const workspaceHandoffApi = vi.hoisted(() => ({
+  redeemWorkspaceHandoff: vi.fn(),
+  bindWorkspaceHandoff: vi.fn(),
+}));
+
+vi.mock("@/api/workspaceHandoff", () => workspaceHandoffApi);
 
 // The registry is a server fetch now (manifest-driven discovery, #333), so
 // what these tests need is the RESOLUTION, not the transport: mock the hook
@@ -29,10 +45,15 @@ const { botLookup } = vi.hoisted(() => ({ botLookup: vi.fn() }));
 vi.mock("@/hooks/useChatRegistry", () => ({
   useChatRegistry: () => {
     const bot = botLookup();
+    let bots: object[] = [];
+    if (bot) {
+      bots = registryLists.get(bot) ?? [bot];
+      registryLists.set(bot, bots);
+    }
     return {
       byId: bot ? { [bot.id]: bot } : {},
-      bots: bot ? [bot] : [],
-      dockBots: bot ? [bot] : [],
+      bots,
+      dockBots: bots,
       resolve: () => bot,
       resolveDock: () => bot,
       loading: false,
@@ -61,11 +82,21 @@ const idleSession = vi.hoisted(() => ({
   resume: async () => {},
 }));
 
+const sessionControl = vi.hoisted(() => ({
+  calls: [] as Array<{ discover?: boolean; attachRunId?: string | null }>,
+}));
+
 vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
   // The real hook returns a fresh facade on every render. Preserve that
   // behavior here so a parent/engine publication loop fails this suite
   // instead of surfacing as an endless Suspense fallback in production.
-  useWhatsNextSession: () => ({ ...idleSession }),
+  useWhatsNextSession: (
+    _bot: unknown,
+    options?: { discover?: boolean; attachRunId?: string | null },
+  ) => {
+    sessionControl.calls.push(options ?? {});
+    return { ...idleSession };
+  },
 }));
 
 const FAKE_BOT = {
@@ -79,7 +110,15 @@ const FAKE_BOT = {
 
 beforeEach(() => {
   botLookup.mockReturnValue(FAKE_BOT);
+  sessionControl.calls.length = 0;
   localStorage.clear();
+  window.history.replaceState(null, "", "/");
+  workspaceHandoffApi.redeemWorkspaceHandoff.mockReset();
+  workspaceHandoffApi.bindWorkspaceHandoff.mockReset();
+  workspaceHandoffApi.bindWorkspaceHandoff.mockResolvedValue({
+    handoff_id: "handoff-1",
+    bound: true,
+  });
 });
 
 afterEach(cleanup);
@@ -177,6 +216,164 @@ describe("the session key does not remount the app", () => {
     expect(screen.getByTestId("app-mounts").textContent).toBe("1");
     fireEvent.click(screen.getByTestId("open-convo"));
     expect(screen.getByTestId("app-mounts").textContent).toBe("1");
+  });
+});
+
+function ConversationStateProbe() {
+  const dock = useAssistantDock();
+  return (
+    <>
+      <span data-testid="waiting-conversations">
+        {Array.from(dock?.waitingConversationIds ?? []).sort().join(",")}
+      </span>
+      <span data-testid="unread-watch-conversations">
+        {Array.from(dock?.unreadWatchConversationIds ?? []).sort().join(",")}
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          dock?.store.setState({
+            runId: "assistant-run",
+            events: [
+              {
+                seq: 65,
+                timestamp: "2026-08-30T08:49:59Z",
+                run_id: "assistant-run",
+                node_id: "chat",
+                type: "human_answers_recorded",
+                data: {
+                  answers: {
+                    host_event: { kind: "assistant-watch-event" },
+                  },
+                },
+              },
+              {
+                seq: 120,
+                timestamp: "2026-08-30T08:50:59Z",
+                run_id: "assistant-run",
+                node_id: "chat",
+                type: "human_input_requested",
+                data: {},
+              },
+            ] satisfies RunEvent[],
+          });
+        }}
+      >
+        publish watch result
+      </button>
+      <button type="button" onClick={() => dock?.setDock("floating")}>
+        open dock
+      </button>
+    </>
+  );
+}
+
+describe("dock conversation runtime", () => {
+  it("redeems a handoff into its own persisted project conversation", async () => {
+    window.history.replaceState(null, "", "/?handoff=ticket-1");
+    workspaceHandoffApi.redeemWorkspaceHandoff.mockResolvedValue({
+      handoff_id: "handoff-1",
+      source_project_id: "source-project",
+      destination_project_id: "target-project",
+      summary: "Update the shared bot",
+      bot_id: "copilot",
+    });
+
+    render(
+      <AssistantProvider>
+        <ConversationStateProbe />
+      </AssistantProvider>,
+    );
+
+    await waitFor(() =>
+      expect(workspaceHandoffApi.redeemWorkspaceHandoff).toHaveBeenCalledTimes(1),
+    );
+    const [, clientId, conversationId] =
+      workspaceHandoffApi.redeemWorkspaceHandoff.mock.calls[0] as string[];
+    expect(clientId).toBeTruthy();
+    expect(readConversations()).toContainEqual(
+      expect.objectContaining({
+        id: conversationId,
+        workspaceHandoffId: "handoff-1",
+        botId: "copilot",
+      }),
+    );
+    expect(window.location.search).toBe("");
+  });
+
+  it("binds the target handoff only to the run owned by that conversation", async () => {
+    localStorage.setItem(
+      CONVERSATIONS_KEY,
+      JSON.stringify([
+        {
+          id: "target-conversation",
+          botId: "copilot",
+          runId: "target-run",
+          workspaceHandoffId: "handoff-1",
+        },
+      ]),
+    );
+    localStorage.setItem(ACTIVE_CONVERSATION_KEY, "target-conversation");
+
+    render(
+      <AssistantProvider>
+        <ConversationStateProbe />
+      </AssistantProvider>,
+    );
+
+    await waitFor(() =>
+      expect(workspaceHandoffApi.bindWorkspaceHandoff).toHaveBeenCalledWith(
+        "handoff-1",
+        "target-run",
+      ),
+    );
+  });
+
+  it("never performs bot-scoped discovery for a dock tab without a run id", () => {
+    localStorage.setItem(
+      CONVERSATIONS_KEY,
+      JSON.stringify([{ id: "legacy", botId: "copilot" }]),
+    );
+
+    render(
+      <AssistantProvider>
+        <ConversationStateProbe />
+      </AssistantProvider>,
+    );
+
+    expect(sessionControl.calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ discover: false, attachRunId: null }),
+      ]),
+    );
+    expect(sessionControl.calls.some((call) => call.discover === true)).toBe(false);
+  });
+
+  it("keeps a watch diagnosis unread across a closed dock until its conversation opens", () => {
+    localStorage.setItem(
+      CONVERSATIONS_KEY,
+      JSON.stringify([
+        { id: "copi", botId: "copilot", runId: "assistant-run" },
+      ]),
+    );
+    localStorage.setItem(ACTIVE_CONVERSATION_KEY, "copi");
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "closed");
+
+    render(
+      <AssistantProvider>
+        <ConversationStateProbe />
+      </AssistantProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "publish watch result" }));
+    expect(screen.getByTestId("unread-watch-conversations").textContent).toBe(
+      "copi",
+    );
+    expect(readConversations()[0]?.lastReadWatchResultSeq).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "open dock" }));
+    expect(screen.getByTestId("unread-watch-conversations").textContent).toBe("");
+    expect(readConversations()[0]?.lastReadWatchResultSeq).toBe(120);
   });
 });
 

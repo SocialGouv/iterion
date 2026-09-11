@@ -44,7 +44,7 @@ func TestAccumulatedGrantsSurviveAPolicyRebuild(t *testing.T) {
 			t.Fatalf("NewPolicy: %v", err)
 		}
 		for _, rule := range GrantsFrom(grants) {
-			p.AddAllowRule(rule)
+			p.AddGrantRule(rule)
 		}
 		return p
 	}
@@ -90,6 +90,7 @@ func TestParseAnswer_RefusalBeatsAlways(t *testing.T) {
 		{"refuse always", false, false},
 		{"deny", false, false},
 		{"allow", true, false},
+		{"allow once", true, false},
 		{"once", true, false},
 		{"oui", false, false},
 	} {

@@ -11,6 +11,7 @@ var studioOpts struct {
 	dir                    string
 	storeDir               string
 	noBrowser              bool
+	workspace              bool
 	noBrowserPane          bool
 	maxUploadSize          int64
 	maxTotalUploadSize     int64
@@ -18,6 +19,7 @@ var studioOpts struct {
 	allowUploadMime        []string
 	botsPaths              []string
 	maxConcurrentPipelines int
+	recoveryPassive        bool
 }
 
 var studioCmd = &cobra.Command{
@@ -31,6 +33,7 @@ var studioCmd = &cobra.Command{
 			Dir:                    studioOpts.dir,
 			StoreDir:               studioOpts.storeDir,
 			NoBrowser:              studioOpts.noBrowser,
+			Workspace:              studioOpts.workspace,
 			NoBrowserPane:          studioOpts.noBrowserPane,
 			MaxUploadSize:          studioOpts.maxUploadSize,
 			MaxTotalUploadSize:     studioOpts.maxTotalUploadSize,
@@ -38,6 +41,7 @@ var studioCmd = &cobra.Command{
 			AllowUploadMime:        studioOpts.allowUploadMime,
 			BotsPaths:              studioOpts.botsPaths,
 			MaxConcurrentPipelines: studioOpts.maxConcurrentPipelines,
+			RecoveryPassive:        studioOpts.recoveryPassive,
 		}, newPrinter())
 	},
 }
@@ -53,6 +57,7 @@ func init() {
 	f.StringVar(&studioOpts.dir, "dir", "", "Working directory")
 	f.StringVar(&studioOpts.storeDir, "store-dir", "", "Run store directory override (default: managed store for --dir)")
 	f.BoolVar(&studioOpts.noBrowser, "no-browser", false, "Don't open browser automatically")
+	f.BoolVar(&studioOpts.workspace, "workspace", false, "Host all registered local projects in one process and browser workspace")
 	f.BoolVar(&studioOpts.noBrowserPane, "no-browser-pane", false, "Disable the run console's Browser pane (no preview proxy, no CDP WS, no live Chromium)")
 	f.Int64Var(&studioOpts.maxUploadSize, "max-upload-size", 0, "Max bytes per attachment upload (0 = mode default: 50MB web, 1GB desktop)")
 	f.Int64Var(&studioOpts.maxTotalUploadSize, "max-total-upload-size", 0, "Max cumulative bytes per run across attachments (0 = 5x max-upload-size)")
@@ -60,5 +65,6 @@ func init() {
 	f.StringSliceVar(&studioOpts.allowUploadMime, "allow-upload-mime", nil, "Allowed upload MIME patterns (default: image/*, application/pdf, text/*, ...)")
 	f.StringSliceVar(&studioOpts.botsPaths, "bots-path", nil, "Directories or files to scan for bots (default: <dir>/bots, <dir>/examples, <dir>/.botz)")
 	f.IntVar(&studioOpts.maxConcurrentPipelines, "max-concurrent-pipelines", 3, "Max root pipelines running at once (0 = unlimited). Over the cap, launches wait in the pipeline board's Todo lane and start as slots free.")
+	f.BoolVar(&studioOpts.recoveryPassive, "recovery-passive", false, "Start a loopback-only recovery console: assistant chat and explicit run actions remain available, while every autonomous worker is disabled")
 	rootCmd.AddCommand(studioCmd)
 }

@@ -3,6 +3,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 
 import type { FirstClassBot } from "./firstClassBots";
@@ -47,11 +48,15 @@ function session(
   };
 }
 
-function pending(questions?: Record<string, unknown>): WhatsNextMessage {
+function pending(
+  questions?: Record<string, unknown>,
+  id = "question-1",
+  nodeId = "chat",
+): WhatsNextMessage {
   return {
     kind: "human-question",
-    id: "question-1",
-    nodeId: "chat",
+    id,
+    nodeId,
     prompt: "Reply",
     status: "pending",
     questions,
@@ -60,6 +65,40 @@ function pending(questions?: Record<string, unknown>): WhatsNextMessage {
 
 describe("useAssistantComposer routing", () => {
   beforeEach(() => vi.resetAllMocks());
+
+  it("re-routes to the inbox when the host resumed the gate first", async () => {
+    // A parked chat gate has two legitimate resumers: the operator, and the
+    // host delivering a watched run's outcome. Losing that race by a hair is
+    // not the operator's failure — their message belongs in the now-awake
+    // assistant's inbox, not in an error slot.
+    const s = session({ messages: [pending()] });
+    (s.submitHumanAnswer as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError(409, "resume: run cannot be resumed", "run_not_resumable"),
+    );
+    const { result } = renderHook(() =>
+      useAssistantComposer({ bot, session: s }),
+    );
+    await act(async () => {
+      await result.current.onComposerSend("still there?", { skills: [] });
+    });
+    expect(api.queueMessage).toHaveBeenCalledWith("run-1", "still there?", {
+      skills: [],
+    });
+  });
+
+  it("still surfaces an unrelated answer failure", async () => {
+    const s = session({ messages: [pending()] });
+    (s.submitHumanAnswer as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("boom"),
+    );
+    const { result } = renderHook(() =>
+      useAssistantComposer({ bot, session: s }),
+    );
+    await expect(
+      result.current.onComposerSend("still there?", { skills: [] }),
+    ).rejects.toThrow("boom");
+    expect(api.queueMessage).not.toHaveBeenCalled();
+  });
 
   it("answers a chat pause through the node's text field", async () => {
     const s = session({ messages: [pending()] });
@@ -127,6 +166,40 @@ describe("useAssistantComposer routing", () => {
         "<active-editor-document>{}</active-editor-document>\ncorrige le buffer",
     });
     expect(api.queueMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses the latest pending question after a replay leaves an older one", async () => {
+    const older = pending({ old_answer: "old" }, "z-old", "old-node");
+    const latest = pending({ new_answer: "new" }, "a-latest", "new-node");
+    const s = session({
+      messages: [
+        older,
+        {
+          kind: "assistant-text",
+          id: "narration",
+          nodeId: "agent",
+          iteration: 1,
+          text: "A later gate was replayed.",
+        },
+        latest,
+      ],
+    });
+    const customBot = { ...bot, nodeMap: {} } as FirstClassBot;
+    const { result, rerender } = renderHook(
+      ({ currentSession }: { currentSession: UseWhatsNextSession }) =>
+        useAssistantComposer({ bot: customBot, session: currentSession }),
+      { initialProps: { currentSession: s } },
+    );
+
+    expect(result.current.pendingHumanQuestion?.id).toBe("a-latest");
+    await act(() => result.current.onComposerSend("use the latest", { skills: [] }));
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("a-latest", {
+      new_answer: "use the latest",
+    });
+
+    const resumedSession = session({ messages: [older] });
+    rerender({ currentSession: resumedSession });
+    expect(result.current.pendingHumanQuestion?.id).toBe("z-old");
   });
 
   it("submits an approval-only turn as a boolean under the declared field", async () => {
@@ -197,6 +270,38 @@ describe("useAssistantComposer routing", () => {
     expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
       [ASK_USER_RESPONSE_KEY]: "approve",
     });
+    expect(result.current.willDecorateMessage).toBe(false);
+  });
+
+  it("sends a permission approval token without page or editor context", async () => {
+    const s = session({
+      messages: [
+        pending({
+          [ASK_USER_RESPONSE_KEY]: { type: "string" },
+          _permission: {
+            tool: "diagnostic_shell",
+            input: { command: "git diff -- bots/shared-planner/manifest.yaml" },
+            rule: "diagnostic_shell",
+          },
+        }),
+      ],
+    });
+    const { result } = renderHook(() =>
+      useAssistantComposer({
+        bot,
+        session: s,
+        decorate: (text) =>
+          `<active-editor-document>{}</active-editor-document>\n${text}`,
+      }),
+    );
+
+    await act(() => result.current.onComposerSend("allow", { skills: [] }));
+
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
+      [ASK_USER_RESPONSE_KEY]: "allow",
+    });
+    // Permission answers do not consume a page/editor attachment either:
+    // it belongs to the operator's next real message, not an auth token.
     expect(result.current.willDecorateMessage).toBe(false);
   });
 

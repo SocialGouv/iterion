@@ -86,6 +86,7 @@ type EngineRunner struct {
 	// ITERION_DISPATCH_VIA_SERVICE env — instead of building a private
 	// engine. nil keeps today's direct-engine path (the default).
 	launcher RunLauncher
+	runEnv   []string
 }
 
 // EngineRunnerOption configures an EngineRunner at construction time.
@@ -94,6 +95,11 @@ type EngineRunnerOption func(*EngineRunner)
 // WithRunLauncher wires the ADR-046 launch-authority seam. See RunLauncher.
 func WithRunLauncher(l RunLauncher) EngineRunnerOption {
 	return func(r *EngineRunner) { r.launcher = l }
+}
+
+// WithProjectRunEnv wires the owning project's child-process environment.
+func WithProjectRunEnv(env []string) EngineRunnerOption {
+	return func(r *EngineRunner) { r.runEnv = append([]string(nil), env...) }
 }
 
 // NewEngineRunner pre-compiles the workflow at workflowPath. The
@@ -291,6 +297,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		RunID:    spec.RunID,
 		Logger:   runLogger,
 		StoreDir: spec.StoreDir,
+		WorkDir:  spec.WorkspacePath,
 		// The dispatcher runs a bot per ticket, so it has a real identity to
 		// key bot-scoped memory on. Empty for a standalone `.bot`, where the
 		// executor falls back to the workflow name — the same rule every other
@@ -321,6 +328,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if err != nil {
 		return fmt.Errorf("engine runner: build executor: %w", err)
 	}
+	exec.SetRunExtraEnv(r.runEnv)
 	if c, ok := any(exec).(io.Closer); ok {
 		defer func() {
 			if cerr := c.Close(); cerr != nil {
@@ -354,6 +362,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		// tree. See subbotRunnerForDispatch.
 		runtime.WithSubbotRunner(subbotRunnerForDispatch(
 			r.workflowPath, spec.StoreDir, spec.WorkspacePath, s, r.sealer, spec.DailyCap, runLogger,
+			r.runEnv,
 		)),
 	}
 	// Stamp the issue back-reference so the studio's RunHeader can
@@ -401,6 +410,9 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: s},
 			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, runLogger), runLogger)
 		defer stopSup()
+	}
+	if len(r.runEnv) > 0 {
+		opts = append(opts, runtime.WithRunEnv(r.runEnv))
 	}
 	eng := runtime.New(r.workflow, s, exec, opts...)
 

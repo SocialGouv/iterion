@@ -1,9 +1,9 @@
 // The chips for what the operator DROPPED in, above the composer.
 //
-// Sibling of ContextChip, which shows the implicit page reference. They are
-// deliberately distinct surfaces: one says "you are here" and can be
-// dismissed for the session, the other says "you asked about these" and is
-// cleared when the message is sent. Same visible-context rule governs both —
+// Sibling of ContextChip, which shows the immutable opening anchor. They are
+// deliberately distinct surfaces: one says "this conversation started here",
+// the other says "this message asks about these" and is cleared when sent.
+// Same visible-context rule governs both —
 // whatever the assistant is handed, the operator can read.
 
 import { Cross2Icon } from "@radix-ui/react-icons";

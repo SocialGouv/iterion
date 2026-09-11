@@ -5,10 +5,9 @@
 // scrim, no focus trap, page stays live). Radix Dialog is modal by
 // design, so the hand-rolled shell here is intentional.
 //
-// Extracted verbatim from Runs/FloatingChatPanel so the same three
-// states serve both the shell-level assistant and the run console's
-// steering panel. Everything session-specific (transcript, composer,
-// unread count, attention state) is injected by the caller.
+// The shell-level assistant owns the closed/floating/docked state machine.
+// The run console's permanent SteeringPanel only reuses the docked panel
+// and header primitives below.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
@@ -104,8 +103,10 @@ export interface ChatDockShellProps {
   bubbleIcon?: ReactNode;
   bubbleLabel?: string;
   bubbleTitle?: string;
-  // Unread messages accumulated while closed (badge on the bubble).
-  unread?: number;
+  // Informational count rendered on the closed bubble. Its meaning belongs to
+  // the caller (the assistant uses conversations parked on a human gate).
+  badgeCount?: number;
+  badgeAccessibleLabel?: string;
   // Something needs the operator (a pause, a question) — pulses the
   // bubble and swaps its tooltip.
   attention?: boolean;
@@ -146,7 +147,8 @@ export function ChatDockShell({
   bubbleIcon,
   bubbleLabel,
   bubbleTitle,
-  unread = 0,
+  badgeCount = 0,
+  badgeAccessibleLabel,
   attention = false,
   attentionTitle,
   openOnReferenceDrag = false,
@@ -179,7 +181,8 @@ export function ChatDockShell({
         label={bubbleLabel ?? `Open ${title.toLowerCase()}`}
         title={bubbleTitle ?? title}
         icon={bubbleIcon}
-        unread={unread}
+        badgeCount={badgeCount}
+        badgeAccessibleLabel={badgeAccessibleLabel}
         attention={attention}
         attentionTitle={attentionTitle}
         lane={lane}
@@ -470,7 +473,8 @@ export function ChatDockBubble({
   label,
   title,
   icon,
-  unread = 0,
+  badgeCount = 0,
+  badgeAccessibleLabel,
   attention = false,
   attentionTitle,
   lane = 0,
@@ -481,7 +485,8 @@ export function ChatDockBubble({
   label: string;
   title: string;
   icon?: ReactNode;
-  unread?: number;
+  badgeCount?: number;
+  badgeAccessibleLabel?: string;
   attention?: boolean;
   attentionTitle?: string;
   lane?: DockLane;
@@ -496,16 +501,16 @@ export function ChatDockBubble({
       onDragEnter={onDragEnter}
       style={{ right: laneRightPx(BUBBLE_LANE_PX[lane], rightInset) }}
       className={`fixed bottom-4 z-[var(--z-dock)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${attention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
-      aria-label={`${label}${unread > 0 ? ` (${unread} new)` : ""}`}
+      aria-label={`${label}${badgeAccessibleLabel ? `. ${badgeAccessibleLabel}` : ""}`}
       title={attention ? attentionTitle ?? title : title}
     >
       {icon ?? <ChatBubbleIcon className="h-5 w-5" />}
-      {unread > 0 && (
+      {badgeCount > 0 && (
         <span
           className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-fg-onAccent text-caption font-semibold flex items-center justify-center"
           aria-hidden
         >
-          {unread > 99 ? "99+" : unread}
+          {badgeCount > 99 ? "99+" : badgeCount}
         </span>
       )}
     </button>
@@ -525,8 +530,8 @@ export function ChatDockPanel({
   title: string;
   titleHint?: string;
   headerSlot?: ReactNode;
-  onUndock: () => void;
-  onClose: () => void;
+  onUndock?: () => void;
+  onClose?: () => void;
   children: ReactNode;
 }) {
   return (
@@ -559,7 +564,7 @@ export function ChatDockChrome({
   headerSlot?: ReactNode;
   onDockRight?: () => void;
   onUndock?: () => void;
-  onClose: () => void;
+  onClose?: () => void;
 }) {
   return (
     <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-1 border-b border-border-default bg-surface-2">
@@ -598,15 +603,17 @@ export function ChatDockChrome({
             />
           </IconButton>
         )}
-        <IconButton
-          label={`Minimise ${title.toLowerCase()}`}
-          tooltip="Minimise"
-          size="sm"
-          variant="ghost"
-          onClick={onClose}
-        >
-          <MinusIcon className="h-3.5 w-3.5" />
-        </IconButton>
+        {onClose && (
+          <IconButton
+            label={`Minimise ${title.toLowerCase()}`}
+            tooltip="Minimise"
+            size="sm"
+            variant="ghost"
+            onClick={onClose}
+          >
+            <MinusIcon className="h-3.5 w-3.5" />
+          </IconButton>
+        )}
       </div>
     </div>
   );

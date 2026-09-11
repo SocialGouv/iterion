@@ -47,6 +47,25 @@ func (e *Engine) resolveWorkflowSource() string {
 	return string(b)
 }
 
+func (e *Engine) inferredBotOrigin() *store.BotOrigin {
+	if e.filePath == "" {
+		return nil
+	}
+	p, err := gitlib.Describe(e.filePath)
+	if err != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(p.RepoRoot, e.filePath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		rel = filepath.Base(e.filePath)
+	}
+	pkg := strings.Split(filepath.ToSlash(rel), "/")[0]
+	return &store.BotOrigin{
+		Kind: "git", RepoRoot: p.RepoRoot, Commit: p.Commit, TreeHash: p.TreeHash,
+		WorkflowPath: filepath.ToSlash(rel), Package: pkg, Dirty: p.Dirty,
+	}
+}
+
 // Run executes the workflow. It creates a run, walks the graph from the
 // entry node, and returns when a terminal node is reached, a human pause
 // is hit (ErrRunPaused), or an error occurs.
@@ -65,6 +84,9 @@ func (e *Engine) resolveWorkflowSource() string {
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
+	if e.botOrigin == nil {
+		e.botOrigin = e.inferredBotOrigin()
+	}
 	run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
 		return err
@@ -172,7 +194,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			// it grows. Best-effort and never fatal — see boundWorktreePool.
 			e.boundWorktreePool(ctx, e.store.Root())
 
-			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
+			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.worktreeBaseCommit, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
 				return e.setupErr(ctx, fmt.Errorf("runtime: worktree setup: %w", wtErr))
@@ -307,7 +329,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		run = created
 	}
 	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
-		e.routingPolicy != nil || e.budgetAsk != nil {
+		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -361,6 +383,10 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.routingPolicy != nil {
 			run.RoutingPolicy = e.routingPolicy
 		}
+		if e.budgetOverrides != nil {
+			copy := *e.budgetOverrides
+			run.BudgetOverrides = &copy
+		}
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
 		// before the engine runs) so the studio Overview draws budget meters
@@ -399,6 +425,14 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			// through the run record.
 			src := *e.source
 			run.Source = &src
+		}
+		if e.botOrigin != nil {
+			origin := *e.botOrigin
+			run.BotOrigin = &origin
+		}
+		if e.delegation != nil {
+			delegation := *e.delegation
+			run.Delegation = &delegation
 		}
 		if e.callbackURL != "" {
 			run.CallbackURL = e.callbackURL

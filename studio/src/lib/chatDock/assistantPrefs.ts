@@ -2,11 +2,10 @@
 //
 // Two settings, and they are deliberately separate:
 //
-//   reviewer      — should a second model, from another family, criticise each
-//                   answer before it is read. It is real money: a full extra
-//                   call per turn (measured at $2.46–2.57 per reviewed turn on
-//                   Copi), which is why it is off by default and why the choice
-//                   is offered at all rather than buried.
+//   reviewer      — should a second model, from another family, privately
+//                   criticise each draft before its author refines it. It can
+//                   add two calls per turn, which is why it is off by default
+//                   and why the choice is offered at all rather than buried.
 //   askBeforeStart— should the choice be offered each time. Turning it off is
 //                   not "forget my preference": it means "use the one I saved,
 //                   stop asking". So the value above must keep working when
@@ -24,7 +23,7 @@ import {
 export const ASSISTANT_REVIEWER_KEY = "iterion.assistant.reviewer";
 export const ASSISTANT_ASK_BEFORE_START_KEY = "iterion.assistant.askBeforeStart";
 
-/** Cross-review is OFF by default: it doubles the per-turn spend. */
+/** Review + refinement is OFF by default: it can add two calls per turn. */
 export function readReviewer(): boolean {
   return readBooleanFlag(ASSISTANT_REVIEWER_KEY, false);
 }
@@ -53,7 +52,8 @@ export function reviewerVars(on: boolean): Record<string, string> {
 
 /**
  * botDeclaresReviewer reports whether this bot's manifest says it understands
- * cross-review. The choice is only offered — and only sent — for bots that do.
+ * review + refinement. The choice is only offered — and only sent — for bots
+ * that do.
  */
 export function botDeclaresReviewer(bot: {
   launcherVars?: ReadonlyArray<{ name: string }>;

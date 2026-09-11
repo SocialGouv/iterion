@@ -242,8 +242,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// reject it rather than silently ignore the fence.
 	// v=14 carries the execution context; old consumers must not ignore it.
 	// v=15 carries reasoning effort and the run-level permission override.
-	if SchemaVersion != 15 {
-		t.Errorf("SchemaVersion = %d, want 15 (bump intentionally)", SchemaVersion)
+	// v=17 carries durable assistant-mission receipt identity.
+	if SchemaVersion != 17 {
+		t.Errorf("SchemaVersion = %d, want 17 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)

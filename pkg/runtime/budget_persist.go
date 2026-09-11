@@ -49,6 +49,7 @@ func BudgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
 		MaxDuration:         o.MaxDuration,
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
 	}
 }
 
@@ -65,6 +66,7 @@ func RunBudgetOverridesOf(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
 		MaxDuration:         o.MaxDuration,
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
 	}
 }
 
@@ -83,6 +85,7 @@ func BudgetOverridesFromWire(b *queue.BudgetOverrides) *ir.BudgetOverrides {
 		MaxDuration:         b.MaxDuration,
 		MaxIterations:       b.MaxIterations,
 		MaxParallelBranches: b.MaxParallelBranches,
+		UnlimitedWorkflow:   b.UnlimitedWorkflow,
 		CapImposed:          b.CapImposed,
 	}
 }
@@ -118,6 +121,9 @@ func MergeResumeBudgetAsk(fromSpec *ir.BudgetOverrides, fromDoc *store.RunBudget
 	}
 	if fromSpec.MaxParallelBranches > 0 {
 		base.MaxParallelBranches = fromSpec.MaxParallelBranches
+	}
+	if fromSpec.UnlimitedWorkflow {
+		base.UnlimitedWorkflow = true
 	}
 	if fromSpec.CapImposed {
 		base.CapImposed = true

@@ -79,7 +79,7 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 				refusals = append(refusals, fmt.Sprintf(
 					"agent %q: run-level fallback stage %d %s", nn.NodeID(), stage+1, reason))
 			}
-			if reason := UngatedCrossingReason(route.Backend, perm, len(w.PermissionAsk) > 0); reason != "" {
+			if reason := UngatedCrossingReasonForAskRules(route.Backend, perm, w.PermissionAsk); reason != "" {
 				refuse(reason)
 				continue
 			}

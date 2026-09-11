@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
@@ -107,7 +108,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		// fallbacks let `backend: grok` + `permission: deny` compile and run
 		// silently ungated — worse than a loud C176 refusal.
 		if nodeBackend != "" {
-			if reason := UngatedCrossingReason(nodeBackend, effectivePermission, len(w.PermissionAsk) > 0); reason != "" {
+			if reason := UngatedCrossingReasonForAskRules(nodeBackend, effectivePermission, w.PermissionAsk); reason != "" {
 				c.errorfAt(DiagFallbackUnsafeCross, id, "",
 					"%s %q: primary route %s", kind, id, reason)
 			}
@@ -132,7 +133,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
 			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, w.PermissionAsk)
 		}
 	}
 }
@@ -325,7 +326,7 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // node's capabilities, using the same predicates the launch-time
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, hasAskRules bool) {
+func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, askRules []string) {
 	// An env-ref backend is not knowable here; defer to the runtime.
 	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
 		return
@@ -337,7 +338,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := UngatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), hasAskRules); reason != "" {
+	if reason := UngatedCrossingReasonForAskRules(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -398,6 +399,32 @@ func UngatedCrossingReason(routeBackend, permission string, hasAskRules bool) st
 	return fmt.Sprintf(
 		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would be UNGATED",
 		routeBackend, permission)
+}
+
+// UngatedCrossingReasonForAskRules is the rules-aware variant used by every
+// workflow admission surface. Kimi and Grok can enforce permission: deny but
+// cannot pause for an ask. A Claw-only alias such as diagnostic_shell cannot
+// be invoked by either CLI at all, so treating that particular ask as
+// reachable would reject a safe route. Unknown, wildcard, MCP and native
+// rule names remain reachable by default: this relaxation is fail-closed.
+func UngatedCrossingReasonForAskRules(routeBackend, permission string, askRules []string) string {
+	return UngatedCrossingReason(routeBackend, permission, askRulesReachableByBackend(routeBackend, askRules))
+}
+
+func askRulesReachableByBackend(routeBackend string, askRules []string) bool {
+	if len(askRules) == 0 {
+		return false
+	}
+	if !externalHookGateBackends[strings.ToLower(strings.TrimSpace(routeBackend))] {
+		return true
+	}
+	for _, rule := range askRules {
+		name, _, _ := strings.Cut(strings.TrimSpace(rule), "(")
+		if !toolcatalog.IsClawOnlyAlias(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolsInversionReason returns why a route may not cross the claw⇄CLI

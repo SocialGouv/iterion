@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,24 @@ func TestRunExtraEnvReachesHostToolCommands(t *testing.T) {
 	script := e.toolNodeScriptCommand(context.Background(), "sh", "x.sh")
 	if !slices.Contains(script.Env, "PATH=/devbox/profile/bin:/usr/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the run-level PATH entry: %v", script.Env)
+	}
+}
+
+func TestSetRunExtraEnvMergesAndLetsTheNewestValueWin(t *testing.T) {
+	e := &ClawExecutor{}
+	e.SetRunExtraEnv([]string{"PROJECT_ONLY=one", "PATH=/project/bin"})
+	e.SetRunExtraEnv([]string{"PATH=/devbox/bin", "DEVBOX_ONLY=two"})
+	got := map[string]string{}
+	for _, entry := range e.runExtraEnv {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			got[key] = value
+		}
+	}
+	if got["PROJECT_ONLY"] != "one" || got["DEVBOX_ONLY"] != "two" {
+		t.Fatalf("merged environment = %#v", got)
+	}
+	if got["PATH"] != "/devbox/bin" {
+		t.Fatalf("PATH = %q, want newest value", got["PATH"])
 	}
 }

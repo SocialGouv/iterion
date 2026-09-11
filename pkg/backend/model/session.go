@@ -3,11 +3,28 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
+
+func clawSessionFingerprint(model string) string {
+	provider, _, err := ParseModelSpec(model)
+	if err != nil || strings.TrimSpace(provider) == "" {
+		return "claw:unknown"
+	}
+	return "claw:" + strings.ToLower(strings.TrimSpace(provider))
+}
+
+func taskSessionKey(task delegate.Task) string {
+	if task.SessionSlot != "" {
+		return task.SessionSlot
+	}
+	return task.NodeID
+}
 
 // nodeSessionStore stashes per-(runID, nodeID) message history so the
 // recovery dispatcher's CompactAndRetry action has something concrete
@@ -151,7 +168,7 @@ func (s *nodeSessionStore) compact(runID, nodeID string, cfg clawrt.CompactionCo
 	if !ok || len(sess.messages) == 0 {
 		return 0, false
 	}
-	res := clawrt.CompactMessages(sess.messages, cfg)
+	res := compactMessagesToolSafe(sess.messages, cfg, nil)
 	if res == nil {
 		return 0, false
 	}

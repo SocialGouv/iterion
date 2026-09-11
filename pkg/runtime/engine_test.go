@@ -1132,6 +1132,46 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 }
 
+func TestResumeWithHostInputs_InjectsProjectionWithoutRecordingItAsOperatorAnswer(t *testing.T) {
+	wf := humanWorkflow()
+	var captured map[string]any
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "needs review"}, nil
+	})
+	exec.on("integrate", func(input map[string]any) (map[string]any, error) {
+		captured = input
+		return map[string]any{"result": "ok"}, nil
+	})
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-host-input", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run: %v", err)
+	}
+	answers := map[string]any{"comment": "continue"}
+	history := []map[string]any{{"role": "operator", "text": "the missing details"}}
+	if err := eng.ResumeWithHostInputs(context.Background(), "run-host-input", answers, map[string]any{"conversation_history": history}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	decisions, _ := captured["decisions"].(map[string]any)
+	if _, ok := decisions["conversation_history"]; !ok {
+		t.Fatalf("downstream input missed host projection: %#v", decisions)
+	}
+	events, err := s.LoadEventsRange(context.Background(), "run-host-input", 0, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evt := range events {
+		if evt.Type != store.EventHumanAnswersRecorded {
+			continue
+		}
+		recorded, _ := evt.Data["answers"].(map[string]any)
+		if _, leaked := recorded["conversation_history"]; leaked {
+			t.Fatalf("host projection leaked into operator event: %#v", recorded)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: resume on non-paused run returns error
 // ---------------------------------------------------------------------------

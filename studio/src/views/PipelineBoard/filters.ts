@@ -282,6 +282,20 @@ export function filterPipelineCards(
   });
 }
 
+// The pipeline board predates the assistant dock and may still project a
+// legacy chat run whose persisted record has no studio_chat provenance. An
+// open dock tab is an equally authoritative owner: keep the run alive, but do
+// not present the same standing conversation as project work.
+export function excludeAssistantConversationCards(
+  cards: PipelineBoardCard[],
+  assistantRunIDs: ReadonlySet<string>,
+): PipelineBoardCard[] {
+  if (assistantRunIDs.size === 0) return cards;
+  return cards.filter(
+    (card) => !card.run_id || !assistantRunIDs.has(card.run_id),
+  );
+}
+
 /**
  * Newest first by updated_at (fallback created_at).
  *

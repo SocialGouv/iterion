@@ -36,6 +36,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   useRef,
 } from "react";
@@ -48,14 +49,29 @@ import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import {
   dockStandsDown,
   isAssistantOwnRoute,
-  referenceForRoute,
 } from "@/lib/chatDock/routeReference";
-import { cancelRun, type RunStatus } from "@/api/runs";
+import { errorMessage } from "@/lib/errorHints";
+import { useConfirm } from "@/hooks/useConfirm";
+import { cancelRun, listRuns, type RunSummary } from "@/api/runs";
+import {
+  bindWorkspaceHandoff,
+  redeemWorkspaceHandoff,
+} from "@/api/workspaceHandoff";
 import {
   MAX_CONVERSATIONS,
+  ACTIVE_CONVERSATION_KEY,
+  CONVERSATIONS_KEY,
   addConversation,
+  anchorConversation,
   claimRun,
+  collectUnreadWatchConversationIds,
+  collectWaitingConversationIds,
+  conversationStorageKey,
   closeConversation,
+  latestWatchResultSeq,
+  markConversationContextUnknown,
+  markConversationWatchResultRead,
+  setConversationContextEnabled,
   switchConversationBot,
   newConversationId,
   readActiveConversation,
@@ -63,8 +79,14 @@ import {
   resolveActive,
   writeActiveConversation,
   writeConversations,
+  type ConversationAnchor,
   type Conversation,
 } from "@/lib/chatDock/conversations";
+import {
+  cancelThenDispose,
+  runIdForDisposal,
+  shouldConfirmRunDisposal,
+} from "@/lib/chatDock/conversationDisposal";
 import {
   ASSISTANT_BOT_KEY,
   ASSISTANT_DOCK_KEY,
@@ -73,11 +95,17 @@ import {
   clampDockWidth,
   readDockState,
   readDockWidth,
+  openedDock,
   writeDockState,
   writeDockWidth,
   type DockState,
 } from "@/lib/chatDock/dockState";
 import { readStringFlag, writeStringFlag } from "@/lib/localStorageFlag";
+import {
+  STUDIO_CHAT_REAPABLE_STATUSES,
+  planStudioChatReconciliation,
+  readOrCreateStudioChatClientId,
+} from "@/lib/chatDock/studioChatOwnership";
 import { AssistantPageContextProvider } from "@/lib/chatDock/pageContext";
 import { useChatRegistry } from "@/hooks/useChatRegistry";
 import { DEFAULT_WHATS_NEXT_BOT_ID } from "@/lib/whats-next/firstClassBots";
@@ -87,6 +115,7 @@ import {
 import {
   useWhatsNextSession,
   type UseWhatsNextSession,
+  type WhatsNextSessionOptions,
 } from "@/lib/whats-next/useWhatsNextSession";
 import {
   createRunStore,
@@ -94,19 +123,16 @@ import {
   RunStoreProvider,
   type RunStore,
 } from "@/store/run";
+import { useUIStore } from "@/store/ui";
+import {
+  postWorkspaceUnreadCount,
+  useWorkspacePaneVisibility,
+} from "@/lib/workspacePaneVisibility";
 
 interface AssistantDockContextValue {
   store: RunStore;
   dock: DockState;
   setDock: (next: DockState) => void;
-  // The page reference the operator dismissed, if any. Lives here rather
-  // than in the dock because the dock UNMOUNTS on /whats-next (the route
-  // renders the session itself), and a dismissal that came back on the
-  // round trip would be a promise broken exactly where the operator
-  // stops watching for it. Like the session, it is per-user state the
-  // route tree only borrows.
-  dismissedRef: string | null;
-  setDismissedRef: (ref: string | null) => void;
   // Whether the dock has a bot to render at all. Duplicated out of the
   // session context on purpose: useAssistantReservedWidthPx must not
   // read that context (it changes on every websocket event, and would
@@ -124,9 +150,21 @@ interface AssistantDockContextValue {
   // its own run — see lib/chatDock/conversations.
   conversations: Conversation[];
   activeConversationId: string | null;
+  activeWorkspaceHandoffId: string | null;
+  anchorConversation: (id: string, anchor: ConversationAnchor) => void;
+  markContextUnknown: (id: string) => void;
+  setConversationContextEnabled: (id: string, enabled: boolean) => void;
   openConversation: () => void;
   selectConversation: (id: string) => void;
-  closeConversationById: (id: string) => void;
+  closeConversationById: (id: string) => Promise<void>;
+  closingConversationIds: ReadonlySet<string>;
+  // Conversation tabs whose attached run is parked on a human node. This is
+  // deliberately a SET, not a message count: Copi's normal resting state is
+  // paused_waiting_human, whether its last answer has been read or not.
+  waitingConversationIds: ReadonlySet<string>;
+  // Finalized automatic watch diagnoses that have not yet been visible in
+  // their active, open conversation. A normal chat pause is not unread news.
+  unreadWatchConversationIds: ReadonlySet<string>;
   atConversationLimit: boolean;
 }
 
@@ -145,6 +183,15 @@ interface AssistantSessionContextValue {
   selectBot: (id: string) => void;
 }
 
+// What the keyed session engine hands back to its parent: the session value
+// plus the key of the engine that produced it. The key never reaches
+// consumers — it exists so the parent can refuse a publication that belongs
+// to the conversation it just left.
+interface PublishedSession {
+  key: string;
+  value: AssistantSessionContextValue;
+}
+
 const AssistantDockContext = createContext<AssistantDockContextValue | null>(null);
 const AssistantSessionContext =
   createContext<AssistantSessionContextValue | null>(null);
@@ -160,8 +207,10 @@ const FALLBACK_BOT: FirstClassBot = {
   nodeMap: {},
 };
 
-// Used only until the keyed engine publishes its first session, so the
-// unkeyed app tree can render on the first paint without waiting.
+// Stands in whenever no session for the CURRENT key has been published: on
+// the first paint, and again for the commits between a conversation switch
+// and the new engine's first publication. An empty session is the honest
+// answer there — the alternative is serving the previous conversation's.
 const FALLBACK_SESSION = {
   status: "idle",
   runId: null,
@@ -232,6 +281,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 function AssistantSessionHost({ children }: { children: ReactNode }) {
   const registry = useChatRegistry();
   const [location] = useLocation();
+  const addToast = useUIStore((state) => state.addToast);
+  const { confirm: confirmDisposal, dialog: disposalDialog } = useConfirm();
 
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     readConversations(),
@@ -239,6 +290,37 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
   const [activeId, setActiveId] = useState<string>(() =>
     readActiveConversation(),
   );
+  // Local writes can land in the same tick (lazy-tab persistence, run claim,
+  // first-message anchor). React state is not synchronously readable there,
+  // so these refs are the serialized source for updater-style mutations.
+  const conversationsRef = useRef(conversations);
+  const activeIdRef = useRef(activeId);
+  const [studioChatClientId] = useState(readOrCreateStudioChatClientId);
+  const paneVisible = useWorkspacePaneVisibility();
+  const [handoffPrompt, setHandoffPrompt] = useState<{
+    conversationId: string;
+    message: string;
+  } | null>(null);
+  const handoffRedeemStartedRef = useRef(false);
+
+  // localStorage is shared by browser windows, React state is not. Mirror
+  // tab-strip changes from sibling windows before startup reconciliation can
+  // decide that one of their conversations is orphaned.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === conversationStorageKey(CONVERSATIONS_KEY)) {
+        const next = readConversations();
+        conversationsRef.current = next;
+        setConversations(next);
+      } else if (event.key === conversationStorageKey(ACTIVE_CONVERSATION_KEY)) {
+        const next = readActiveConversation();
+        activeIdRef.current = next;
+        setActiveId(next);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // One run store PER conversation, kept for the host's lifetime.
   //
@@ -247,6 +329,27 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
   // each other's run. Keeping them apart is also what lets a background
   // conversation still be there — transcript and all — when you come back.
   const storesRef = useRef<Map<string, RunStore>>(new Map());
+  // Synchronous guard + reactive mirror. The ref closes the double-click race
+  // before React commits the disabled button; state tells the strip what to
+  // render. Deliberately not persisted: after a refresh the idempotent cancel
+  // can be attempted again.
+  const disposingRef = useRef<Set<string>>(new Set());
+  const [closingConversationIds, setClosingConversationIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const beginDisposal = useCallback((id: string): boolean => {
+    // useConfirm owns one resolver. Serialize disposal across conversations
+    // so a second tab cannot replace the first confirmation and leave its
+    // promise (and closing state) stranded forever.
+    if (disposingRef.current.size > 0) return false;
+    disposingRef.current.add(id);
+    setClosingConversationIds(new Set(disposingRef.current));
+    return true;
+  }, []);
+  const endDisposal = useCallback((id: string) => {
+    disposingRef.current.delete(id);
+    setClosingConversationIds(new Set(disposingRef.current));
+  }, []);
   const storeFor = useCallback((id: string): RunStore => {
     const existing = storesRef.current.get(id);
     if (existing) return existing;
@@ -255,12 +358,99 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     return made;
   }, []);
 
-  const persist = useCallback((list: Conversation[], active: string | null) => {
-    setConversations(list);
-    writeConversations(list);
-    setActiveId(active ?? "");
-    writeActiveConversation(active ?? "");
-  }, []);
+  const persist = useCallback(
+    (
+      update:
+        | Conversation[]
+        | ((current: readonly Conversation[]) => Conversation[]),
+      active?: string | null,
+    ) => {
+      const current = conversationsRef.current;
+      const list = typeof update === "function" ? update(current) : update;
+      const nextActive = active === undefined ? activeIdRef.current : active ?? "";
+      conversationsRef.current = list;
+      activeIdRef.current = nextActive;
+      setConversations(list);
+      writeConversations(list);
+      setActiveId(nextActive);
+      writeActiveConversation(nextActive);
+    },
+    [],
+  );
+
+  const reconciliationStartedRef = useRef(false);
+  useEffect(() => {
+    if (registry.loading || reconciliationStartedRef.current) return;
+    reconciliationStartedRef.current = true;
+    let disposed = false;
+    let retryTimer: number | null = null;
+
+    const reconcile = async () => {
+      try {
+        const batches = await Promise.all([
+          // Recent terminal runs let a tab recover when the browser died
+          // after createRun but before persisting runId and the run then ended.
+          listRuns({ limit: 500 }),
+          ...STUDIO_CHAT_REAPABLE_STATUSES.map((status) =>
+            listRuns({ status, limit: 500 }),
+          ),
+        ]);
+        if (disposed) return;
+        const byId = new Map<string, RunSummary>();
+        for (const run of batches.flat()) byId.set(run.id, run);
+
+        // Read storage NOW, not the render closure: a sibling window may have
+        // created/closed a conversation while the network requests were in
+        // flight.
+        let current = readConversations();
+        const plan = planStudioChatReconciliation(
+          Array.from(byId.values()),
+          current,
+          studioChatClientId,
+          Date.now(),
+        );
+
+        if (plan.repairs.length > 0) {
+          for (const repair of plan.repairs) {
+            const claimed = claimRun(current, repair.conversationId, repair.runId);
+            if (claimed) current = claimed;
+          }
+          const storedActive = readActiveConversation();
+          persist(current, resolveActive(current, storedActive)?.id ?? null);
+        }
+
+        const cancelled = await Promise.allSettled(
+          plan.cancelRunIds.map((runId) => cancelRun(runId)),
+        );
+        const failures = cancelled.filter(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        const firstFailure = failures[0];
+        if (firstFailure) throw firstFailure.reason;
+
+        // A young candidate gets exactly one maturity-time recheck. Skipping
+        // it forever would turn the 60s race guard into a permanent leak.
+        if (!disposed && plan.retryAfterMs !== null) {
+          retryTimer = window.setTimeout(
+            () => void reconcile(),
+            Math.max(1, plan.retryAfterMs + 25),
+          );
+        }
+      } catch (error) {
+        if (disposed) return;
+        addToast(`Could not reconcile assistant conversations: ${errorMessage(error)}`, "error", {
+          persistent: true,
+          action: { label: "Retry", onClick: () => void reconcile() },
+        });
+      }
+    };
+
+    void reconcile();
+    return () => {
+      disposed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [registry.loading, studioChatClientId, persist, addToast]);
 
   // The dock always has at least one conversation to show. Created lazily, so
   // a browser that never opens the dock never persists one.
@@ -269,25 +459,86 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     const seed: Conversation = {
       id: newConversationId(),
       botId: readStringFlag(ASSISTANT_BOT_KEY, ""),
+      contextState: "pending",
     };
     return [seed];
   }, [conversations]);
 
   const active = resolveActive(ensured, activeId);
 
+  const persistActiveBeforeLaunch = useCallback(() => {
+    if (!active) return;
+    // The lazy first tab exists only in `ensured`. Persist it BEFORE
+    // createRun so another window cannot see a source-stamped run without
+    // its owning conversation during the runId write gap.
+    persist(
+      (current) =>
+        current.some((conversation) => conversation.id === active.id)
+          ? [...current]
+          : addConversation(current, active),
+      activeIdRef.current || active.id,
+    );
+  }, [active, persist]);
+
   const openConversation = useCallback(() => {
-    const next = addConversation(ensured, {
+    const opened: Conversation = {
       id: newConversationId(),
       botId: active?.botId ?? "",
       fresh: true,
-      ...currentOrigin(location),
-    });
-    if (next.length === ensured.length) return; // at the ceiling
-    persist(next, next[next.length - 1]!.id);
-  }, [ensured, active, location, persist]);
+      contextState: "pending",
+    };
+    const current = conversationsRef.current;
+    const base =
+      current.length > 0 || !active ? [...current] : addConversation(current, active);
+    const next = addConversation(base, opened);
+    if (next.length === base.length) return;
+    persist(next, opened.id);
+  }, [active, persist]);
 
   const selectConversation = useCallback(
-    (id: string) => persist(ensured, id),
+    (id: string) => persist((current) => [...current], id),
+    [persist],
+  );
+
+  const anchorConversationById = useCallback(
+    (id: string, anchor: ConversationAnchor) => {
+      const fallback = ensured.find((conversation) => conversation.id === id);
+      persist((current) => {
+        const base =
+          current.some((conversation) => conversation.id === id) || !fallback
+            ? [...current]
+            : addConversation(current, fallback);
+        return anchorConversation(base, id, anchor);
+      });
+    },
+    [ensured, persist],
+  );
+
+  const markContextUnknown = useCallback(
+    (id: string) => {
+      const fallback = ensured.find((conversation) => conversation.id === id);
+      persist((current) => {
+        const base =
+          current.some((conversation) => conversation.id === id) || !fallback
+            ? [...current]
+            : addConversation(current, fallback);
+        return markConversationContextUnknown(base, id);
+      });
+    },
+    [ensured, persist],
+  );
+
+  const setContextEnabled = useCallback(
+    (id: string, enabled: boolean) => {
+      const fallback = ensured.find((conversation) => conversation.id === id);
+      persist((current) => {
+        const base =
+          current.some((conversation) => conversation.id === id) || !fallback
+            ? [...current]
+            : addConversation(current, fallback);
+        return setConversationContextEnabled(base, id, enabled);
+      });
+    },
     [ensured, persist],
   );
 
@@ -302,35 +553,70 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
       // hook can still be handed a neighbour's run — a conversation with no id
       // of its own falls back to the bot-scoped lookup — and recording that is
       // what turned a transient mix-up into a persisted one.
-      const next = claimRun(ensured, active.id, runId);
-      if (!next) return; // already another conversation's run
-      persist(next, active.id);
+      persist((current) => {
+        const base = current.some((conversation) => conversation.id === active.id)
+          ? [...current]
+          : addConversation(current, active);
+        return claimRun(base, active.id, runId) ?? base;
+      });
     },
-    [active, ensured, persist],
+    [active, persist],
   );
 
+  const closeRetryRef = useRef<(id: string) => void>(() => {});
   const closeConversationById = useCallback(
-    (id: string) => {
-      // Closing a tab must CANCEL its run, not just forget it. A conversation
-      // is a live agent: dropped without cancelling, it keeps burning model
-      // spend until a stall watchdog or a process restart tears it down, and
-      // nothing on screen would ever mention it again. Same rule the
-      // new-session action follows.
+    async (id: string) => {
+      const conversation = conversationsRef.current.find(
+        (candidate) => candidate.id === id,
+      );
+      if (!conversation || !beginDisposal(id)) return;
       const snapshot = storesRef.current.get(id)?.getState().snapshot;
-      const runId = snapshot?.run.id;
-      const status = snapshot?.run.status;
-      if (runId && status && LIVE_RUN_STATUSES.has(status)) {
-        // Best effort: a cancel that races a run finishing on its own must not
-        // keep the tab open. The worst case is a quiescent run the existing
-        // sweep reconciles.
-        void cancelRun(runId).catch(() => {});
+      const runId = runIdForDisposal(conversation, snapshot);
+      try {
+        if (
+          shouldConfirmRunDisposal(runId, snapshot?.run.status) &&
+          !(await confirmDisposal({
+            title: "Close conversation and stop its run?",
+            message:
+              "Closing this conversation stops its Iterion run and any run watches it owns. Its transcript remains available in the run console, but the assistant cannot continue this thread.",
+            confirmLabel: "Close and stop run",
+            confirmVariant: "danger",
+          }))
+        ) {
+          return;
+        }
+        await cancelThenDispose({
+          runId,
+          dispose: () => {
+            storesRef.current.delete(id);
+            const current = conversationsRef.current;
+            const got = closeConversation(current, id, activeIdRef.current);
+            persist(got.list, got.activeId);
+          },
+        });
+      } catch (error) {
+        addToast(`Could not close the assistant conversation: ${errorMessage(error)}`, "error", {
+          persistent: true,
+          action: {
+            label: "Retry close",
+            onClick: () => closeRetryRef.current(id),
+          },
+        });
+      } finally {
+        endDisposal(id);
       }
-      storesRef.current.delete(id);
-      const got = closeConversation(ensured, id, active?.id ?? "");
-      persist(got.list, got.activeId);
     },
-    [ensured, active, persist, storesRef],
+    [
+      beginDisposal,
+      confirmDisposal,
+      persist,
+      addToast,
+      endDisposal,
+    ],
   );
+  useEffect(() => {
+    closeRetryRef.current = (id) => void closeConversationById(id);
+  }, [closeConversationById]);
 
   // Two lanes, still. Nexie owns /whats-next and answers there whatever the
   // dock's strip holds, so that route runs its OWN conversation rather than
@@ -338,14 +624,63 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
   const onNexieRoute = isAssistantOwnRoute(location);
   const nexieBot = registry.byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? null;
 
+  const switchRetryRef = useRef<(id: string) => void>(() => {});
   const selectBot = useCallback(
-    (id: string) => {
-      writeStringFlag(ASSISTANT_BOT_KEY, id);
-      if (!active) return;
-      persist(switchConversationBot(ensured, active.id, id), active.id);
+    async (id: string) => {
+      if (!active) {
+        writeStringFlag(ASSISTANT_BOT_KEY, id);
+        return;
+      }
+      if (id === active.botId || !beginDisposal(active.id)) return;
+      const snapshot = storesRef.current.get(active.id)?.getState().snapshot;
+      const runId = runIdForDisposal(active, snapshot);
+      try {
+        if (
+          shouldConfirmRunDisposal(runId, snapshot?.run.status) &&
+          !(await confirmDisposal({
+            title: "Switch assistant and stop the current run?",
+            message:
+              "Changing assistant ends the current conversation and stops its Iterion run. The transcript remains in the run console.",
+            confirmLabel: "Stop run and switch",
+            confirmVariant: "danger",
+          }))
+        ) {
+          return;
+        }
+        await cancelThenDispose({
+          runId,
+          dispose: () => {
+            storesRef.current.delete(active.id);
+            writeStringFlag(ASSISTANT_BOT_KEY, id);
+            persist(
+              (current) => switchConversationBot(current, active.id, id),
+            );
+          },
+        });
+      } catch (error) {
+        addToast(`Could not switch assistant: ${errorMessage(error)}`, "error", {
+          persistent: true,
+          action: {
+            label: "Retry switch",
+            onClick: () => switchRetryRef.current(id),
+          },
+        });
+      } finally {
+        endDisposal(active.id);
+      }
     },
-    [active, ensured, persist],
+    [
+      active,
+      beginDisposal,
+      confirmDisposal,
+      persist,
+      addToast,
+      endDisposal,
+    ],
   );
+  useEffect(() => {
+    switchRetryRef.current = (id) => void selectBot(id);
+  }, [selectBot]);
 
   const [dock, setDockState] = useState<DockState>(() =>
     readDockState(ASSISTANT_DOCK_KEY, "closed"),
@@ -354,6 +689,48 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     setDockState(next);
     writeDockState(ASSISTANT_DOCK_KEY, next);
   }, []);
+  const consumeHandoffPrompt = useCallback(() => setHandoffPrompt(null), []);
+
+  useEffect(() => {
+    const ticket = new URLSearchParams(window.location.search).get("handoff");
+    if (!ticket || handoffRedeemStartedRef.current) return;
+    if (conversationsRef.current.length >= MAX_CONVERSATIONS) {
+      addToast(
+        "Close an assistant conversation before continuing this project handoff.",
+        "error",
+        { persistent: true },
+      );
+      return;
+    }
+    handoffRedeemStartedRef.current = true;
+    const openedId = newConversationId();
+    void redeemWorkspaceHandoff(ticket, studioChatClientId, openedId)
+      .then((handoff) => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("handoff");
+        window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        const opened: Conversation = {
+          id: openedId,
+          botId: handoff.bot_id || "copilot",
+          fresh: true,
+          contextState: "pending",
+          workspaceHandoffId: handoff.handoff_id,
+        };
+        persist((current) => addConversation(current, opened), opened.id);
+        setHandoffPrompt({
+          conversationId: opened.id,
+          message: `Continue this cross-project task from project ${handoff.source_project_id}. Use this handoff summary as the starting context:\n\n${handoff.summary}`,
+        });
+        setDock(openedDock());
+      })
+      .catch((error) => {
+        handoffRedeemStartedRef.current = false;
+        addToast(`Could not continue the project handoff: ${errorMessage(error)}`, "error", {
+          persistent: true,
+          action: { label: "Retry", onClick: () => window.location.reload() },
+        });
+      });
+  }, [addToast, persist, setDock, studioChatClientId]);
 
   const [dockWidth, setDockWidthState] = useState<number>(() =>
     readDockWidth(DOCKED_WIDTH_DEFAULT_PX),
@@ -364,11 +741,20 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     writeDockWidth(next);
   }, []);
 
-  const [dismissedRef, setDismissedRef] = useState<string | null>(null);
-
   const activeBot = onNexieRoute
     ? nexieBot
     : registry.resolveDock(active?.botId ?? "");
+  const activeRunSource = useMemo(
+    () =>
+      !onNexieRoute && active
+        ? {
+            kind: "studio_chat" as const,
+            client_id: studioChatClientId,
+            conversation_id: active.id,
+          }
+        : undefined,
+    [onNexieRoute, active, studioChatClientId],
+  );
 
   // /whats-next runs Nexie's own conversation, so it gets its own store too
   // rather than borrowing whichever dock tab happens to be active.
@@ -376,36 +762,164 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     ? storeFor("__whats-next")
     : storeFor(active?.id ?? "__none");
 
+  // One subscription fans in every conversation-owned Zustand store. The
+  // background pumps already keep those stores current; subscribing here is
+  // enough to make their gate state visible without publishing their entire
+  // rapidly-changing session facade through React context.
+  const subscribeConversationStores = useCallback(
+    (onStoreChange: () => void) => {
+      const unsubscribers = ensured.map((conversation) =>
+        storeFor(conversation.id).subscribe(onStoreChange),
+      );
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    },
+    [ensured, storeFor],
+  );
+  const conversationRuntimeSnapshot = useCallback(
+    () =>
+      JSON.stringify(
+        ensured.map((conversation) => {
+          const state = storeFor(conversation.id).getState();
+          return [
+            conversation.id,
+            state.runId,
+            state.snapshot?.run.status ?? null,
+            latestWatchResultSeq(state.events),
+          ];
+        }),
+      ),
+    [ensured, storeFor],
+  );
+  const conversationRuntimeSignature = useSyncExternalStore(
+    subscribeConversationStores,
+    conversationRuntimeSnapshot,
+    conversationRuntimeSnapshot,
+  );
+
+  const conversationRuntime = useMemo(() => {
+    const entries = JSON.parse(conversationRuntimeSignature) as Array<
+      [string, string | null, string | null, number | null]
+    >;
+    return new Map(
+      entries.map(([id, runId, runStatus, latestResultSeq]) => [
+        id,
+        { runId, runStatus, latestWatchResultSeq: latestResultSeq },
+      ]),
+    );
+  }, [conversationRuntimeSignature]);
+
+  const waitingConversationIds = useMemo(
+    () =>
+      collectWaitingConversationIds(
+        ensured,
+        (conversationId) =>
+          conversationRuntime.get(conversationId) ?? {
+            runId: null,
+            runStatus: null,
+          },
+      ),
+    [ensured, conversationRuntime],
+  );
+
+  const unreadWatchConversationIds = useMemo(
+    () =>
+      collectUnreadWatchConversationIds(
+        ensured,
+        (conversationId) =>
+          conversationRuntime.get(conversationId) ?? {
+            runId: null,
+            runStatus: null,
+          },
+      ),
+    [ensured, conversationRuntime],
+  );
+
+  const boundHandoffsRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const conversation of ensured) {
+      if (!conversation.workspaceHandoffId || !conversation.runId) continue;
+      const key = `${conversation.workspaceHandoffId}:${conversation.runId}`;
+      if (boundHandoffsRef.current.has(key)) continue;
+      boundHandoffsRef.current.add(key);
+      void bindWorkspaceHandoff(
+        conversation.workspaceHandoffId,
+        conversation.runId,
+      ).catch((error) => {
+        boundHandoffsRef.current.delete(key);
+        addToast(`Could not bind the project handoff: ${errorMessage(error)}`, "error", {
+          persistent: true,
+        });
+      });
+    }
+  }, [addToast, ensured]);
+
+  useEffect(() => {
+    postWorkspaceUnreadCount(unreadWatchConversationIds.size);
+  }, [unreadWatchConversationIds]);
+
+  // A watch result is read only once its own conversation is on screen.
+  // Restoring a closed dock after a reboot must retain the proactive alert.
+  useEffect(() => {
+    if (!paneVisible || dock === "closed" || onNexieRoute || !active) return;
+    const state = storeFor(active.id).getState();
+    if (!active.runId || state.runId !== active.runId) return;
+    const seq = latestWatchResultSeq(state.events);
+    if (seq === null || seq <= (active.lastReadWatchResultSeq ?? -1)) return;
+    persist((current) =>
+      markConversationWatchResultRead(current, active.id, seq),
+    );
+  }, [
+    active,
+    conversationRuntimeSignature,
+    dock,
+    onNexieRoute,
+    paneVisible,
+    persist,
+    storeFor,
+  ]);
+
   const dockValue = useMemo<AssistantDockContextValue>(
     () => ({
       store: activeStore,
       dock,
       setDock,
-      dismissedRef,
-      setDismissedRef,
       hasSession: activeBot !== null,
       dockWidth,
       setDockWidth,
       conversations: ensured,
       activeConversationId: active?.id ?? null,
+      activeWorkspaceHandoffId: active?.workspaceHandoffId ?? null,
+      anchorConversation: anchorConversationById,
+      markContextUnknown,
+      setConversationContextEnabled: setContextEnabled,
       openConversation,
       selectConversation,
       closeConversationById,
+      closingConversationIds,
+      waitingConversationIds,
+      unreadWatchConversationIds,
       atConversationLimit: ensured.length >= MAX_CONVERSATIONS,
     }),
     [
       activeStore,
       dock,
       setDock,
-      dismissedRef,
       activeBot,
       dockWidth,
       setDockWidth,
       ensured,
       active,
+      anchorConversationById,
+      markContextUnknown,
+      setContextEnabled,
       openConversation,
       selectConversation,
       closeConversationById,
+      closingConversationIds,
+      waitingConversationIds,
+      unreadWatchConversationIds,
     ],
   );
 
@@ -415,12 +929,16 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
 
   return (
     <AssistantDockContext.Provider value={dockValue}>
+      {disposalDialog}
       {background.map((c) => (
         <BackgroundConversation
           key={c.id}
           bot={registry.resolveDock(c.botId)}
           store={storeFor(c.id)}
-          discover={!c.fresh && !c.runId}
+          // A dock tab owns exactly its persisted run. Bot-scoped discovery
+          // answers "latest run for this bot", which lets a legacy/seed tab
+          // steal a neighbouring conversation and strands the previous run.
+          discover={false}
           attachRunId={c.runId ?? null}
         />
       ))}
@@ -436,33 +954,22 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
         bots={registry.dockBots}
         selectBot={selectBot}
         store={activeStore}
-        discover={onNexieRoute ? true : !active?.fresh && !active?.runId}
+        discover={onNexieRoute}
         attachRunId={onNexieRoute ? null : active?.runId ?? null}
         onLaunched={onNexieRoute ? () => {} : markActiveLaunched}
+        runSource={activeRunSource}
+        beforeLaunch={onNexieRoute ? undefined : persistActiveBeforeLaunch}
+        handoffPrompt={
+          handoffPrompt && handoffPrompt.conversationId === active?.id
+            ? handoffPrompt.message
+            : null
+        }
+        onHandoffStarted={consumeHandoffPrompt}
       >
         {children}
       </ActiveConversation>
     </AssistantDockContext.Provider>
   );
-}
-
-// The statuses where a run is still consuming something. `paused_*` included:
-// a paused run holds its worktree and its place in the concurrency budget, and
-// the operator closing the tab is saying they are done with it.
-const LIVE_RUN_STATUSES = new Set<RunStatus>([
-  "queued",
-  "running",
-  "paused_waiting_human",
-  "paused_operator",
-]);
-
-// currentOrigin captures WHERE a conversation was opened from, so the operator
-// can get back to what they were talking about after switching tabs. The
-// reverse of the page context the dock already sends the bot.
-function currentOrigin(path: string): Pick<Conversation, "origin" | "originLabel"> {
-  const ref = referenceForRoute(path, "");
-  if (!ref) return {};
-  return { origin: ref.ref, originLabel: ref.label };
 }
 
 // A conversation that is not on screen. It runs; it renders nothing.
@@ -512,6 +1019,10 @@ function ActiveConversation({
   discover,
   attachRunId,
   onLaunched,
+  runSource,
+  beforeLaunch,
+  handoffPrompt,
+  onHandoffStarted,
   children,
 }: {
   sessionKey: string;
@@ -522,27 +1033,43 @@ function ActiveConversation({
   discover: boolean;
   attachRunId: string | null;
   onLaunched: (runId: string) => void;
+  runSource?: NonNullable<WhatsNextSessionOptions["runSource"]>;
+  beforeLaunch?: () => void;
+  handoffPrompt: string | null;
+  onHandoffStarted: () => void;
   children: ReactNode;
 }) {
-  const [sessionValue, setSessionValue] =
-    useState<AssistantSessionContextValue | null>(null);
+  const [published, setPublished] = useState<PublishedSession | null>(null);
   // Publishing a session updates this parent. Keep both the callback and the
   // engine stable so that update does not render the engine again solely
   // because its parent rendered: useWhatsNextSession returns a fresh facade,
   // which would otherwise publish again and form an infinite effect loop.
   // Internal engine updates still render it normally and publish the new
   // session value.
-  const handleSession = useCallback((value: AssistantSessionContextValue) => {
-    setSessionValue((prev) =>
-      prev &&
-      prev.bot === value.bot &&
-      prev.session === value.session &&
-      prev.bots === value.bots &&
-      prev.selectBot === value.selectBot
-        ? prev
-        : value,
-    );
-  }, []);
+  const handleSession = useCallback(
+    (key: string, value: AssistantSessionContextValue) => {
+      setPublished((prev) =>
+        prev &&
+        prev.key === key &&
+        prev.value.bot === value.bot &&
+        prev.value.session === value.session &&
+        prev.value.bots === value.bots &&
+        prev.value.selectBot === value.selectBot
+          ? prev
+          : { key, value },
+      );
+    },
+    [],
+  );
+  // The engine is remounted on a key change, but THIS state is not — and the
+  // engine republishes from an effect, so without the key test the previous
+  // conversation's transcript and run status stay on the context for at least
+  // one commit while `activeConversationId` already names the new one. That
+  // window is what let the migration effect read a foreign transcript and
+  // either mark a fresh conversation `unknown` or, worse, silently anchor it
+  // to the previous conversation's page. Derive rather than reset in an
+  // effect: a reset would leave exactly the contaminated commit it removes.
+  const sessionValue = published?.key === sessionKey ? published.value : null;
   return (
     <>
       <RunStoreProvider store={store}>
@@ -554,6 +1081,11 @@ function ActiveConversation({
           discover={discover}
           attachRunId={attachRunId}
           onLaunched={onLaunched}
+          runSource={runSource}
+          beforeLaunch={beforeLaunch}
+          handoffPrompt={handoffPrompt}
+          onHandoffStarted={onHandoffStarted}
+          sessionKey={sessionKey}
           onSession={handleSession}
         />
       </RunStoreProvider>
@@ -582,6 +1114,11 @@ const ActiveConversationEngine = memo(function ActiveConversationEngine({
   discover,
   attachRunId,
   onLaunched,
+  runSource,
+  beforeLaunch,
+  handoffPrompt,
+  onHandoffStarted,
+  sessionKey,
   onSession,
 }: {
   bot: FirstClassBot | null;
@@ -590,13 +1127,39 @@ const ActiveConversationEngine = memo(function ActiveConversationEngine({
   discover: boolean;
   attachRunId: string | null;
   onLaunched: (runId: string) => void;
-  onSession: (value: AssistantSessionContextValue) => void;
+  runSource?: NonNullable<WhatsNextSessionOptions["runSource"]>;
+  beforeLaunch?: () => void;
+  handoffPrompt: string | null;
+  onHandoffStarted: () => void;
+  // Stamped onto every publication so the parent can tell this engine's
+  // session from the one it replaced.
+  sessionKey: string;
+  onSession: (key: string, value: AssistantSessionContextValue) => void;
 }) {
   const session = useWhatsNextSession(bot ?? FALLBACK_BOT, {
     discover,
     attachRunId,
+    runSource,
+    beforeLaunch,
   });
   const recordedRef = useRef<string | null>(null);
+  const handoffStartedRef = useRef(false);
+  useEffect(() => {
+    if (
+      !handoffPrompt ||
+      handoffStartedRef.current ||
+      session.status !== "idle" ||
+      !bot?.id
+    ) {
+      return;
+    }
+    handoffStartedRef.current = true;
+    onHandoffStarted();
+    // The session surfaces launch failures in its own error state. Consume the
+    // rejected promise here so an unavailable backend does not become an
+    // unhandled browser rejection as well.
+    void session.launch({ initial_message: handoffPrompt }).catch(() => {});
+  }, [bot?.id, handoffPrompt, onHandoffStarted, session]);
   useEffect(() => {
     if (!session.runId || recordedRef.current === session.runId) return;
     recordedRef.current = session.runId;
@@ -607,8 +1170,8 @@ const ActiveConversationEngine = memo(function ActiveConversationEngine({
     [bot, session, bots, selectBot],
   );
   useEffect(() => {
-    onSession(sessionValue);
-  }, [sessionValue, onSession]);
+    onSession(sessionKey, sessionValue);
+  }, [sessionKey, sessionValue, onSession]);
   return null;
 });
 

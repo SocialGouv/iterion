@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/google/uuid"
 )
 
 // backendFields holds the common fields extracted from AgentNode or JudgeNode
@@ -35,6 +36,7 @@ type backendFields struct {
 	toolMaxSteps     int
 	maxTokens        int
 	session          ir.SessionMode
+	sessionSlot      string
 	interaction      ir.InteractionMode
 	activeMCPServers []string
 	compaction       *ir.Compaction
@@ -68,6 +70,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
 			maxTokens:        n.MaxTokens,
 			session:          n.Session,
+			sessionSlot:      n.SessionSlot,
 			interaction:      n.Interaction,
 			activeMCPServers: n.ActiveMCPServers,
 			compaction:       n.Compaction,
@@ -92,6 +95,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
 			maxTokens:        n.MaxTokens,
 			session:          n.Session,
+			sessionSlot:      n.SessionSlot,
 			interaction:      n.Interaction,
 			activeMCPServers: n.ActiveMCPServers,
 			compaction:       n.Compaction,
@@ -981,11 +985,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		UserPrompt:            userText,
 		UserContent:           userContent,
 		AllowedTools:          f.tools,
+		DiagnosticShell:       slices.Contains(f.tools, "diagnostic_shell"),
 		Readonly:              f.readonly,
 		FullAccess:            f.fullAccess,
 		Images:                resolvedImages,
 		Capabilities:          effectiveCaps,
 		StoreDir:              e.storeDir,
+		RunStoreDir:           e.runStoreDir,
 		OutputSchema:          outputSchema,
 		Model:                 resolvedModel,
 		HasTools:              len(f.tools) > 0,
@@ -1068,10 +1074,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// the operator answered) and the run's accumulated `allow always`
 		// set. Both are additive to the freshly built policy.
 		for _, rule := range permission.GrantsFrom(input[permission.GrantInputKey]) {
-			pol.AddAllowRule(rule)
+			pol.AddGrantRule(rule)
 		}
 		for _, rule := range permission.GrantsFrom(input[permission.RunGrantsInputKey]) {
-			pol.AddAllowRule(rule)
+			pol.AddGrantRule(rule)
 		}
 		task.Permission = pol
 	}
@@ -1088,6 +1094,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.HasTools = len(effectiveTools) > 0
 	}
 	e.applyBoardEndpoint(&task, effectiveCaps, sess)
+	e.applyRunsEndpoint(&task, effectiveCaps, sess)
 	e.applyAskUserEndpoint(&task)
 
 	// Mark the tools the runtime opened for its OWN interaction/capability
@@ -1097,6 +1104,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if task.Permission.Enabled() {
 		task.Permission.MarkExempt(askUserToolName, "send_user_message")
 		task.Permission.MarkExempt(delegate.BoardToolsFor(effectiveCaps)...)
+		task.Permission.MarkExempt(delegate.RunToolsFor(effectiveCaps)...)
 	}
 
 	// Resolve full tool definitions for backends that manage tool loops
@@ -1163,6 +1171,26 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	e.unpackInboundSession(ctx, input, backendName)
 	e.applySessionContinuity(&task, f, input)
+	if backendName == delegate.BackendClaw && f.session == ir.SessionPersist {
+		task.SessionSlot = f.sessionSlot
+		if task.SessionSlot == "" {
+			task.SessionSlot = f.id
+		}
+		currentFingerprint := clawSessionFingerprint(task.Model)
+		if task.SessionID != "" && task.SessionFingerprint != "" && task.SessionFingerprint != currentFingerprint {
+			if runID := RunIDFromContext(ctx); runID != "" && e.sessions != nil {
+				e.sessions.evict(runID, task.SessionSlot)
+			}
+			e.noteSessionDegrade(ctx, f.id, backendName, task.SessionID, delegate.FallbackUnclassified,
+				fmt.Errorf("session provider fingerprint changed from %s to %s", task.SessionFingerprint, currentFingerprint))
+			task.SessionID = ""
+			task.SessionFingerprint = ""
+		}
+		if task.SessionID == "" {
+			task.SessionID = uuid.NewString()
+		}
+		task.SessionFingerprint = currentFingerprint
+	}
 	applyResumeContinuity(&task, input)
 
 	return task, nil
@@ -1338,6 +1366,9 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if delegate.HasBoardCapability(effectiveCaps) && len(effectiveTools) > 0 {
 		effectiveTools = append(effectiveTools, delegate.BoardToolsFor(effectiveCaps)...)
 	}
+	if delegate.HasRunsReadCapability(effectiveCaps) && len(effectiveTools) > 0 {
+		effectiveTools = append(effectiveTools, delegate.RunToolsFor(effectiveCaps)...)
+	}
 	// Ultracode grants standing consent to orchestrate subagents AND
 	// workflows. On claw the orchestration surface is the `agent` subagent
 	// tool and the `workflow` tool (a deterministic fan-out script whose
@@ -1411,6 +1442,16 @@ func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []s
 	})
 }
 
+func (e *ClawExecutor) applyRunsEndpoint(task *delegate.Task, effectiveCaps []string, sess *nodeBuildSession) {
+	if !delegate.HasRunsReadCapability(effectiveCaps) || e.sandbox == nil || e.boardEndpoint == "" || e.boardRegister == nil {
+		return
+	}
+	task.RunsHTTPEndpoint = strings.TrimSuffix(e.boardEndpoint, "/api/v1/mcp/board") + "/api/v1/mcp/runs"
+	task.BoardRunToken = sess.boardTokenFor(func() string {
+		return e.boardRegister(effectiveCaps, e.sourceIssueID)
+	})
+}
+
 // applyAskUserEndpoint wires the per-run ask-user MCP HTTP transport
 // onto sandboxed interactive nodes (ADR-082 Phase 3): the gateway
 // listener the engine bound at sandbox start, plus the per-run bearer
@@ -1440,7 +1481,8 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 	if f.session != ir.SessionInherit && f.session != ir.SessionInheritIfAvailable && f.session != ir.SessionFork && f.session != ir.SessionPersist {
 		return
 	}
-	if sid, ok := input["_session_id"].(string); ok && sid != "" {
+	_, continuitySupplied := input[delegate.SessionIDKey]
+	if sid, ok := input[delegate.SessionIDKey].(string); ok && sid != "" {
 		task.SessionID = sid
 		if f.session == ir.SessionFork {
 			task.ForkSession = true
@@ -1471,12 +1513,26 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		if fp, ok := input["_session_fingerprint"].(string); ok && fp != "" {
 			task.SessionFingerprint = fp
 		}
-	} else if e.logger != nil {
+	} else {
 		switch f.session {
 		case ir.SessionInheritIfAvailable, ir.SessionPersist:
-			// persist visit-1 and inherit_if_available: running fresh is
-			// the documented outcome, so this is informational.
-			e.logger.Info("[%s/%s] no upstream _session_id; running fresh", f.id, f.session)
+			// No key on visit 1 is normal. A PRESENT but empty continuity key
+			// means an upstream/revisit promised a session and failed to
+			// produce one: make that amnesia a durable run fact.
+			if continuitySupplied {
+				info := SessionDegradedInfo{
+					BackendName: f.backend,
+					Reason:      "missing_session_id",
+					Err:         fmt.Errorf("upstream continuity key was present but empty"),
+				}
+				if e.hooks.OnSessionDegraded != nil {
+					e.hooks.OnSessionDegraded(f.id, info)
+				} else if e.logger != nil {
+					e.logger.Warn("[%s/%s] upstream _session_id is empty; running fresh", f.id, f.session)
+				}
+			} else if e.logger != nil {
+				e.logger.Info("[%s/%s] no upstream _session_id; running fresh", f.id, f.session)
+			}
 		default:
 			// Plain `inherit` (or `fork`) asked for continuity and did not get
 			// it. This used to be silent, which made a real misconfiguration
@@ -1488,10 +1544,12 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 			// carry it. Forward it explicitly:
 			//
 			//	a -> b with { _session_id: "{{outputs.a._session_id}}" }
-			e.logger.Warn("[%s/%s] no upstream _session_id: this node runs a FRESH session "+
-				"and will not see the previous node's conversation. `_session_id` travels on "+
-				"the upstream output map — forward it on the edge, e.g. "+
-				"`with { _session_id: \"{{outputs.<upstream>._session_id}}\" }`.", f.id, f.session)
+			if e.logger != nil {
+				e.logger.Warn("[%s/%s] no upstream _session_id: this node runs a FRESH session "+
+					"and will not see the previous node's conversation. `_session_id` travels on "+
+					"the upstream output map — forward it on the edge, e.g. "+
+					"`with { _session_id: \"{{outputs.<upstream>._session_id}}\" }`.", f.id, f.session)
+			}
 		}
 	}
 }

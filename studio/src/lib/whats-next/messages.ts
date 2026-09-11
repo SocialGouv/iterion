@@ -25,10 +25,12 @@ export type {
   UserMessage,
   UserMessageStatus,
   AssistantTextMessage,
+  HostEventMessage,
 } from "@/lib/runChat/types";
 
 import type {
   AssistantTextMessage as _AssistantTextMessage,
+  HostEventMessage as _HostEventMessage,
   BannerMessage as _BannerMessage,
   HumanQuestionMessage as _HumanQuestionMessage,
   SessionClosedMessage as _SessionClosedMessage,
@@ -40,4 +42,5 @@ export type WhatsNextMessage =
   | _HumanQuestionMessage
   | _SessionClosedMessage
   | _UserMessage
-  | _AssistantTextMessage;
+  | _AssistantTextMessage
+  | _HostEventMessage;

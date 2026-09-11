@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
+	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -63,6 +64,10 @@ type ExecutorSpec struct {
 	RunID    string
 	Logger   *iterlog.Logger
 	StoreDir string
+	// WorkDir is the effective workspace of this run. It is the root used by
+	// Claw's relative file tools. Empty preserves the historical os.Getwd()
+	// fallback for callers that execute in their intended workspace.
+	WorkDir string
 	// SourceIssueID is the ticket that owns this run (dispatcher / pipeline
 	// launch). Empty for ad-hoc runs. Used to auto-stamp parent_id when the
 	// bot creates child tickets via board.create.
@@ -131,7 +136,7 @@ type ExecutorSpec struct {
 	// path): it registers the node's board caps with the server's token
 	// registry and returns the token. nil (CLI) leaves sandboxed
 	// board-emit disabled.
-	BoardRegister func(caps []string, sourceIssueID string) string
+	BoardRegister func(caps []string, sourceIssueID, runID string) string
 	// Compress is the run-level command-output-compression override ("",
 	// "on", "ultra", "off"), forwarded to the executor as the highest-priority
 	// input to rewrite.Resolve (above node/workflow DSL and ITERION_COMPRESS).
@@ -344,9 +349,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 
 	toolReg := tool.NewRegistry()
 
-	workspace, err := os.Getwd()
+	workspace, err := resolveExecutorWorkspace(spec.WorkDir)
 	if err != nil {
-		return nil, fmt.Errorf("runview: resolve working dir for tool workspace: %w", err)
+		return nil, err
 	}
 
 	planActive := false
@@ -374,6 +379,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithLogger(spec.Logger),
 		model.WithLifecycleHooks(lifecycle),
 		model.WithStoreDir(dispatcherStoreDir),
+		model.WithRunStoreDir(spec.StoreDir),
 		model.WithSecretGuard(guard),
 		model.WithCompressOverride(spec.Compress),
 		model.WithAutoMemoryOverride(spec.AutoMemory),
@@ -397,7 +403,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithSourceIssueID(sid))
 	}
 	if spec.BoardRegister != nil {
-		opts = append(opts, model.WithBoardRegister(spec.BoardRegister))
+		opts = append(opts, model.WithBoardRegister(func(caps []string, sourceIssueID string) string {
+			return spec.BoardRegister(caps, sourceIssueID, spec.RunID)
+		}))
 	}
 	if spec.Inbox != nil {
 		opts = append(opts, model.WithExecutorInbox(spec.Inbox))
@@ -448,8 +456,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	clawDefaults := tool.ClawDefaults{
-		Workspace:        workspace,
-		IncludeWebSearch: tool.ResolveWebSearchEnabled(),
+		Workspace:                   workspace,
+		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
+		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
 	}
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
@@ -515,6 +524,13 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// degrades to a no-op for stores that don't implement watch (e.g. a
 	// bare event emitter).
 	if ws, ok := spec.Store.(tool.WatchStore); ok {
+		// Wrapped so a subscription the BOT makes mid-turn leaves the same
+		// observational trace as one the operator clicks. Without it the dock
+		// could never show a standby Copi armed on his own initiative — the
+		// only case where the client does not already know.
+		if rsStore, ok := spec.Store.(store.RunStore); ok {
+			ws = &emittingWatchStore{inner: ws, store: rsStore, runID: spec.RunID}
+		}
 		watchCfg := &tool.WatchConfig{
 			Store:        ws,
 			RunID:        spec.RunID,
@@ -522,6 +538,18 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		}
 		if err := tool.RegisterClawWatchTools(toolReg, watchCfg); err != nil {
 			spec.Logger.Warn("runview: RegisterClawWatchTools: %v", err)
+		}
+	}
+
+	// Run inspection is a capability-gated host tool over the already-bound
+	// RunStore. Register the whole read-only family once; per-node
+	// capabilities decide whether a node can resolve/call it.
+	if runStore, ok := spec.Store.(store.RunStore); ok {
+		if err := tool.RegisterClawRunTools(toolReg, &tool.RunConfig{
+			Store:        runStore,
+			Capabilities: []string{runops.CapRunsRead},
+		}); err != nil {
+			spec.Logger.Warn("runview: RegisterClawRunTools: %v", err)
 		}
 	}
 
@@ -536,6 +564,51 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	return executor, nil
+}
+
+// resolveExecutorWorkspace chooses the stable root captured for a run before
+// constructing Claw's file-tool registry. A registry closes over this path, so
+// using the server process cwd here makes a Studio run read the wrong project.
+// Empty keeps the CLI-compatible cwd fallback for older callers.
+func resolveExecutorWorkspace(workDir string) (string, error) {
+	workspace := strings.TrimSpace(workDir)
+	if workspace == "" {
+		var err error
+		workspace, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("runview: resolve working dir for tool workspace: %w", err)
+		}
+	}
+	abs, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("runview: resolve tool workspace %q: %w", workspace, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("runview: tool workspace %q: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("runview: tool workspace %q is not a directory", abs)
+	}
+	return abs, nil
+}
+
+func workflowUsesWorkspaceDiagnostics(wf *ir.Workflow) bool {
+	if wf == nil {
+		return false
+	}
+	for _, node := range wf.Nodes {
+		llm, ok := node.(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		for _, name := range llm.GetTools() {
+			if name == "workspace_grep" || name == "diagnostic_shell" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // MCPHealthCheck runs the executor's optional MCP health-check
@@ -698,4 +771,37 @@ func resolveSourceIssueID(spec ExecutorSpec) string {
 		return ""
 	}
 	return strings.TrimSpace(r.Source.IssueID)
+}
+
+// emittingWatchStore adds the veille event to the bot-facing watch tools.
+// Publish is nil on purpose: the tool runs mid-turn, inside a run the dock is
+// already streaming, so the appended event reaches the client on the ordinary
+// event tail. The broker fan-out matters only for writes made while the run
+// is parked and nothing else is flowing.
+type emittingWatchStore struct {
+	inner tool.WatchStore
+	store store.RunStore
+	runID string
+}
+
+func (e *emittingWatchStore) AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error) {
+	set, err := e.inner.AddWatchedIssues(ctx, runID, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range issueIDs {
+		store.PublishVeilleArmed(ctx, e.store, nil, runID, store.VeilleChannelIssue, id)
+	}
+	return set, nil
+}
+
+func (e *emittingWatchStore) RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error) {
+	set, err := e.inner.RemoveWatchedIssues(ctx, runID, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range issueIDs {
+		store.PublishVeilleStopped(ctx, e.store, nil, runID, store.VeilleChannelIssue, id, "bot")
+	}
+	return set, nil
 }

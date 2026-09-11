@@ -29,6 +29,51 @@ func expectNoDiag(t *testing.T, r *CompileResult, code DiagCode) {
 	}
 }
 
+func TestValidateSessionSlotRequiresPersist(t *testing.T) {
+	src := `
+schema s:
+  text: string
+prompt p:
+  hi
+agent a:
+  input: s
+  output: s
+  system: p
+  user: p
+  session: inherit_if_available
+  session_slot: conversation
+workflow w:
+  entry: a
+  a -> done
+`
+	expectDiag(t, compileFile(t, src), DiagSessionSlotWithoutPersist)
+}
+
+func TestCompileSessionSlotOnPersistNode(t *testing.T) {
+	src := `
+schema s:
+  text: string
+prompt p:
+  hi
+agent a:
+  input: s
+  output: s
+  system: p
+  user: p
+  session: persist
+  session_slot: conversation
+workflow w:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagSessionSlotWithoutPersist)
+	node := r.Workflow.Nodes["a"].(*AgentNode)
+	if node.SessionSlot != "conversation" {
+		t.Fatalf("session slot=%q", node.SessionSlot)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // C009 — session: inherit/fork at convergence point
 // ---------------------------------------------------------------------------

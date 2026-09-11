@@ -224,6 +224,23 @@ func TestExternalHookDenyWithAskRulesIsRefused(t *testing.T) {
 	}
 }
 
+// TestExternalHookDenyWithClawOnlyAskRulesIsAllowed closes the false
+// positive that blocked Copi's Kimi/Grok reviewer fallback: the workflow can
+// offer diagnostic_shell to Claw while its external-hook reviewer can never
+// invoke that Claw-only alias. A Bash or unknown ask remains covered above.
+func TestExternalHookDenyWithClawOnlyAskRulesIsAllowed(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := "agent x:\n  backend: \"" + tc.backend + "\"\n  model: \"" + tc.model + "\"\n  system: p\n  permission: deny\n" +
+				"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  ask: [\"diagnostic_shell\"]\n  x -> done\n"
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+				t.Fatalf("%s must permit a Claw-only ask rule it cannot receive: %+v", tc.backend, cr.Diagnostics)
+			}
+		})
+	}
+}
+
 // TestFallbackToolsInversionIsRefused: an empty `tools:` list means ZERO
 // tools on claw and the FULL native toolset on a CLI backend, so a
 // crossing route silently changes what the node can DO — a read-only

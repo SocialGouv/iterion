@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -47,6 +48,90 @@ func (s *Server) Addr() string {
 		return ""
 	}
 	return s.listener.Addr().String()
+}
+
+// Handler exposes the fully configured HTTP surface for an in-process host.
+// The returned handler keeps the server's auth, CSRF, route recording and
+// WebSocket behavior intact; callers only rewrite the URL prefix before
+// dispatching to it.
+func (s *Server) Handler() http.Handler {
+	return s.handler
+}
+
+// StartEmbedded starts the local background services without opening a
+// listener. WorkspaceHost uses this so one process can keep several complete
+// project runtimes alive behind a single public HTTP address.
+func (s *Server) StartEmbedded() error {
+	s.embeddedOnce.Do(func() {
+		if s.cfg.Mode == "cloud" {
+			s.embeddedErr = fmt.Errorf("server: cloud runtime cannot be embedded in a local workspace host")
+			return
+		}
+		if s.cfg.Superseded {
+			s.embeddedErr = fmt.Errorf("server: superseded runtime cannot start embedded workers")
+			return
+		}
+		if s.cfg.RecoveryPassive {
+			if s.runs != nil {
+				if s.cfg.EventsBus != nil {
+					s.runs.SetEventPublisher(s.cfg.EventsBus)
+				} else {
+					s.localEvents = eventbus.NewInProcBus(s.logger)
+					s.runs.SetEventPublisher(s.localEvents)
+				}
+			}
+			return
+		}
+		if s.runs != nil {
+			errtrack.Go("server.stagedUploadReaper", s.runStagedUploadReaper)
+		}
+		if s.pipelineAdmissionEnabled() {
+			errtrack.Go("server.pipelineAdmissionLoop", s.runPipelineAdmissionLoop)
+		}
+		s.wirePipelineReservations(s.runs)
+		if s.runs != nil && s.cfg.NativeTrackerStore != nil {
+			s.watchCoord = startWatchCoordinator(s.runs, s.cfg.NativeTrackerStore, s.logger)
+		}
+		if s.cfg.NativeTrackerStore != nil && s.cfg.TriggerStore != nil {
+			var nudger trigger.Nudger
+			if s.cfg.Dispatcher != nil {
+				nudger = s.cfg.Dispatcher
+			}
+			var launcher trigger.Launcher
+			if s.runs != nil {
+				launcher = s.triggerLauncher()
+			}
+			s.triggerCoord = StartTriggerCoordinator(
+				s.cfg.NativeTrackerStore,
+				s.cfg.TriggerStore,
+				nudger,
+				launcher,
+				s.scheduleGate(),
+				s.cfg.EventsBus,
+				s.logger,
+			)
+		}
+		if s.runs != nil {
+			if s.cfg.EventsBus != nil {
+				s.runs.SetEventPublisher(s.cfg.EventsBus)
+			} else if s.triggerCoord != nil {
+				s.runs.SetEventPublisher(s.triggerCoord.Bus())
+			} else {
+				s.localEvents = eventbus.NewInProcBus(s.logger)
+				s.runs.SetEventPublisher(s.localEvents)
+			}
+		}
+		s.startAssistantRunWatches()
+		s.startAssistantMissions()
+		s.startUserNotify()
+		s.startOperatorAlerts()
+		s.startGateReconciler()
+		s.startForgePublishGrantExpiry()
+		s.startBoardSync()
+		s.startGateAutofix()
+		s.startOutcomeRouter()
+	})
+	return s.embeddedErr
 }
 
 // ListenAndServe starts the HTTP server.
@@ -98,6 +183,28 @@ func (s *Server) ListenAndServe() error {
 				http.Error(w, "server generation superseded", http.StatusServiceUnavailable)
 			}
 		})
+		return s.server.Serve(ln)
+	}
+
+	if s.cfg.RecoveryPassive {
+		// The event publisher is part of an explicit run's normal persistence
+		// and streaming path. This local bus has no subscribers in passive
+		// mode, so it cannot wake a watch or reconciliation worker; retaining
+		// it lets a Copi turn resumed by the operator stream its own outcome.
+		if s.runs != nil {
+			if s.cfg.EventsBus != nil {
+				s.runs.SetEventPublisher(s.cfg.EventsBus)
+			} else {
+				s.localEvents = eventbus.NewInProcBus(s.logger)
+				s.runs.SetEventPublisher(s.localEvents)
+			}
+		}
+		s.logger.Warn("server: RECOVERY-PASSIVE mode active — no autonomous workers are running; assistant chat and explicit run controls remain available")
+		displayHost := s.cfg.Bind
+		if displayHost == "127.0.0.1" || displayHost == "::1" || displayHost == "" {
+			displayHost = "localhost"
+		}
+		s.logger.Info("Recovery-passive editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 		return s.server.Serve(ln)
 	}
 	// Sweep abandoned upload staging dirs in the background. Without
@@ -161,8 +268,13 @@ func (s *Server) ListenAndServe() error {
 			s.runs.SetEventPublisher(s.cfg.EventsBus)
 		} else if s.triggerCoord != nil {
 			s.runs.SetEventPublisher(s.triggerCoord.Bus())
+		} else {
+			s.localEvents = eventbus.NewInProcBus(s.logger)
+			s.runs.SetEventPublisher(s.localEvents)
 		}
 	}
+	s.startAssistantRunWatches()
+	s.startAssistantMissions()
 	s.startUserNotify()
 	s.startOperatorAlerts()
 	s.startGateReconciler()
@@ -542,6 +654,9 @@ func (s *Server) startUserNotify() {
 		Subscriber:      s.cfg.WebPushSubscriber,
 	}, s.logger)
 	s.userNotify = usernotify.NewDispatcher(rs, s.cfg.NotificationPrefs, s.cfg.NotificationSent, s.cfg.PublicURL, s.logger, s.pushSink)
+	// A conversational assistant parked on a standby is not waiting on the
+	// operator, so it must not push "your run is waiting on you".
+	s.userNotify.SetPauseSuppressor(s.hasActiveVeille)
 
 	bus := s.cfg.EventsBus
 	if bus == nil && s.triggerCoord != nil {
@@ -729,6 +844,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.userNotifyCancel != nil {
 		s.userNotifyCancel()
+	}
+	if s.assistantWatchCancel != nil {
+		s.assistantWatchCancel()
+		s.assistantWatchCancel = nil
+	}
+	if s.assistantMissionCancel != nil {
+		s.assistantMissionCancel()
+		s.assistantMissionCancel = nil
 	}
 	if s.gateAutofixCancel != nil {
 		s.gateAutofixCancel()

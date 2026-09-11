@@ -280,6 +280,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// studio launch reaches this same line through its `iterion run`
 	// subprocess, so one option covers both.
 	engineOpts = append(engineOpts, runtime.WithBudgetAsk(&opts.Budget))
+	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
+		engineOpts = append(engineOpts, runtime.WithBudgetOverrides(raw))
+	}
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)

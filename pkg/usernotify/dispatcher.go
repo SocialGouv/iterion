@@ -34,6 +34,23 @@ type Dispatcher struct {
 	baseURL string
 	logger  *iterlog.Logger
 	sinks   []Sink
+	// pauseSuppressor, when set, vetoes the "your run is waiting on you"
+	// notification for a run that is parked on a STANDBY rather than on the
+	// operator — a conversational assistant armed on a board card or on
+	// another run's outcome. See SetPauseSuppressor.
+	pauseSuppressor func(context.Context, string) bool
+}
+
+// SetPauseSuppressor installs the standby predicate. It is a setter rather
+// than a NewDispatcher parameter because the fact lives in a store this
+// package must not learn about, and because every existing caller (including
+// the tests) must keep working unchanged with no suppression at all.
+//
+// kindFor stays a pure function of the event: the veto is applied at the call
+// site, so "which events are notifiable" remains readable without knowing
+// what else the process has wired.
+func (d *Dispatcher) SetPauseSuppressor(fn func(context.Context, string) bool) {
+	d.pauseSuppressor = fn
 }
 
 // SubscriberName is the eventbus subscriber (and NATS queue group) name.
@@ -75,6 +92,12 @@ func (d *Dispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 	}
 	runID := ev.Subject.ID
 	if runID == "" {
+		return nil
+	}
+	// A standby pause is not a request for the operator's attention. Telling
+	// them their run "is waiting on a human form" when it is quietly watching
+	// a card teaches them to ignore the notification that will matter.
+	if kind == KindHumanInputRequested && d.pauseSuppressor != nil && d.pauseSuppressor(ctx, runID) {
 		return nil
 	}
 

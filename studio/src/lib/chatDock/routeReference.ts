@@ -7,12 +7,12 @@
 //
 // A reference is a POINTER, never inlined content: `run/019f…`, not the
 // run's events — so a big page costs the prompt one line and the
-// assistant reads only what it decides it needs. What "resolving" means
-// is per-bot and per-kind: Nexie reads a `card/` through its board
-// capabilities and a `run/` by reading the run store from its shell
-// (there is no run-inspection MCP surface). A bot that receives these
-// references owns that mapping; see the "Page context from the studio"
-// section of `prompt nexie_system:` in bots/whats-next/main.bot.
+// assistant reads only what it decides it needs. Immediately before send,
+// the host resolves run/node/card pointers into a bounded attested snapshot;
+// bots granted `runs.read` can then request the projected chronology without
+// learning a store path. Other kinds remain bot-specific pointers; see the
+// "Page context from the studio" section of `prompt nexie_system:` in
+// bots/whats-next/main.bot.
 //
 // The map below adds precise entity pointers for known routes. It is an
 // enrichment table, not a coverage table: every other route receives a safe
@@ -102,6 +102,30 @@ const REF_MAX_LENGTH = 200;
  */
 export function sanitizeReferenceText(value: string): string {
   return value.replace(REF_UNSAFE, "").slice(0, REF_MAX_LENGTH);
+}
+
+const STUDIO_HREF_UNSAFE =
+  // eslint-disable-next-line no-control-regex
+  /[\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+/** Accept only relative destinations that stay on the Studio origin. */
+export function isSafeStudioHref(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    STUDIO_HREF_UNSAFE.test(value)
+  ) {
+    return false;
+  }
+  try {
+    return (
+      new URL(value, "https://studio.invalid").origin ===
+      "https://studio.invalid"
+    );
+  } catch {
+    return false;
+  }
 }
 
 // Per-kind id SHAPES — the allowlist half, which stripping alone cannot
@@ -237,6 +261,63 @@ function ref(
 
 export { ref as mintReference };
 
+/**
+ * Rehydrate a stored/wire reference for an anchor chip or legacy migration.
+ * The same kind/id allowlists as freshly minted route references apply.
+ */
+export function referenceFromWire(
+  wire: string,
+  preferredLabel?: string,
+): TypedReference | null {
+  if (sanitizeReferenceText(wire) !== wire) return null;
+  const slash = wire.indexOf("/");
+  if (slash <= 0) return null;
+  const kind = wire.slice(0, slash);
+  const id = wire.slice(slash + 1);
+  if (!id) return null;
+  if (kind === "view") {
+    if (!/^[a-z0-9_-]{1,200}$/.test(id)) return null;
+    return viewRef(id, preferredLabel || viewLabel(id));
+  }
+  if (!REFERENCE_KINDS.has(kind)) return null;
+  const typedKind = kind as Exclude<ReferenceKind, "view">;
+  return ref(
+    typedKind,
+    id,
+    preferredLabel || defaultReferenceLabel(typedKind, id),
+  );
+}
+
+const REFERENCE_KINDS: ReadonlySet<string> = new Set<ReferenceKind>([
+  "run",
+  "node",
+  "card",
+  "bot",
+  "bot-file",
+  "repo",
+]);
+
+function defaultReferenceLabel(
+  kind: Exclude<ReferenceKind, "view">,
+  id: string,
+): string {
+  switch (kind) {
+    case "run":
+      return `Run ${shortId(id)}`;
+    case "card":
+      return `Card ${shortId(id)}`;
+    case "node":
+      return `Node ${basename(id)}`;
+    default:
+      return id;
+  }
+}
+
+function viewLabel(id: string): string {
+  const fallback = id.replace(/^route-/, "").replace(/-/g, " ");
+  return VIEW_LABELS[id] ?? (fallback || "Page");
+}
+
 // viewRef mints the "you are on this screen" reference. Its ids are
 // literals from the table below — never URL-derived — so it is total
 // where ref() is partial, which keeps the static rows non-null.
@@ -244,7 +325,7 @@ function viewRef(id: string, label: string): TypedReference {
   return { kind: "view", ref: `view/${id}`, label };
 }
 
-// Unknown and newly-added routes still need a distinct, dismissible context.
+// Unknown and newly-added routes still need a distinct anchor candidate.
 // Keep the pointer identifier deliberately lossy and path-shaped: the exact
 // pathname travels separately in the structured visible-page snapshot, while
 // this value only keys the context control and tells the assistant it is a
@@ -532,4 +613,30 @@ const VIEW_HREFS: Record<string, string> = {
   skills: "/skills",
   secrets: "/secrets",
   automations: "/triggers",
+};
+
+const VIEW_LABELS: Record<string, string> = {
+  home: "Home",
+  launch: "Launch",
+  board: "Board",
+  "board-labels": "Board labels",
+  "board-fields": "Board fields",
+  runs: "Runs",
+  bots: "Bots",
+  "bot-builder": "Bot builder",
+  editor: "Editor",
+  pipelines: "Pipelines",
+  dispatcher: "Dispatcher",
+  marketplace: "Marketplace",
+  plugins: "Plugins",
+  skills: "Skills",
+  secrets: "Secrets",
+  automations: "Automations",
+  integrations: "Integrations",
+  insights: "Insights",
+  "config-editor": "Config editor",
+  account: "Account",
+  teams: "Team",
+  orgs: "Organisation",
+  admin: "Admin",
 };

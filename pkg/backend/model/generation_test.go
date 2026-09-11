@@ -1073,6 +1073,9 @@ func TestGenerateTextDirect_Cancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want context.Canceled", err)
 	}
+	if isStreamIdleError(err) {
+		t.Errorf("parent cancellation must not become a stream-idle error: %v", err)
+	}
 }
 
 type cancellationClient struct {
@@ -1081,6 +1084,111 @@ type cancellationClient struct {
 
 func (c *cancellationClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	return c.ch, nil
+}
+
+type silentStreamClient struct{ ch <-chan api.StreamEvent }
+
+func (c silentStreamClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	return c.ch, nil
+}
+
+func TestGenerateTextDirect_ColdStreamSilenceTimesOutAndReportsOnce(t *testing.T) {
+	t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", "20ms")
+	t.Setenv("ITERION_CLAW_STREAM_IDLE_TIMEOUT", "40ms")
+	silent := make(chan api.StreamEvent)
+	var responses int
+	var responseErr error
+	_, err := GenerateTextDirect(context.Background(), silentStreamClient{ch: silent}, GenerationOptions{
+		Model:    "test-model",
+		Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}}},
+		OnResponse: func(info ResponseInfo) {
+			responses++
+			responseErr = info.Error
+		},
+	})
+	var idle *StreamIdleError
+	if !errors.As(err, &idle) {
+		t.Fatalf("error = %v, want StreamIdleError", err)
+	}
+	if idle.Phase != StreamIdleCold || idle.Idle != 20*time.Millisecond {
+		t.Errorf("idle = %+v, want cold 20ms", idle)
+	}
+	if responses != 1 || !errors.As(responseErr, &idle) {
+		t.Errorf("response hook = %d / %v, want one cold timeout", responses, responseErr)
+	}
+}
+
+type blockingStartupClient struct {
+	entered chan struct{}
+	release chan struct{}
+	done    chan struct{}
+}
+
+func (c *blockingStartupClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	close(c.entered)
+	<-c.release // deliberately ignores context; the test releases it after Iterion regains control.
+	close(c.done)
+	ch := make(chan api.StreamEvent)
+	close(ch)
+	return ch, nil
+}
+
+func TestGenerateTextDirect_ColdWatchdogBoundsBlockingStreamStartup(t *testing.T) {
+	t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", "20ms")
+	client := &blockingStartupClient{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+			Model:    "test-model",
+			Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}}},
+		})
+		done <- err
+	}()
+	select {
+	case <-client.entered:
+	case <-time.After(time.Second):
+		t.Fatal("StreamResponse did not start")
+	}
+	select {
+	case err := <-done:
+		var idle *StreamIdleError
+		if !errors.As(err, &idle) || idle.Phase != StreamIdleCold {
+			t.Fatalf("error = %v, want cold StreamIdleError", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cold watchdog did not return")
+	}
+	close(client.release)
+	select {
+	case <-client.done:
+	case <-time.After(time.Second):
+		t.Fatal("blocking startup goroutine was not released")
+	}
+}
+
+func TestAggregateStreamWithIdleWatchdog_EventsResetHotTimer(t *testing.T) {
+	ch := make(chan api.StreamEvent)
+	go func() {
+		defer close(ch)
+		for range 4 {
+			time.Sleep(15 * time.Millisecond)
+			ch <- api.StreamEvent{Type: api.EventPing}
+		}
+		for _, event := range textEvents("still healthy", 1, 1) {
+			ch <- event
+		}
+	}()
+	agg := aggregateStreamWithIdleWatchdog(context.Background(), ch, 30*time.Millisecond, 30*time.Millisecond)
+	if agg.err != nil {
+		t.Fatalf("aggregate error = %v, want active stream to remain healthy", agg.err)
+	}
+	if agg.text != "still healthy" {
+		t.Errorf("text = %q, want still healthy", agg.text)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -93,6 +93,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		case "description":
 			p.expect(TokenColon)
 			d.Description = p.expectString()
+		case "session_slot":
+			p.expect(TokenColon)
+			d.SessionSlot = p.expectIdent()
 		case "fallbacks":
 			d.Fallbacks = p.parseFallbacksBlock(propTok)
 		default:
@@ -439,8 +442,10 @@ func (p *parser) parseInteractionMode() ast.InteractionMode {
 		return ast.InteractionReview
 	case "async":
 		return ast.InteractionAsync
+	case "human_or_host":
+		return ast.InteractionHumanOrHost
 	default:
-		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async, human_or_host), got '"+t.Value+"'")
 		return ast.InteractionNone
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 func TestGrokMapModel(t *testing.T) {
@@ -47,6 +49,26 @@ func TestGrokMapEffort(t *testing.T) {
 	}
 }
 
+func TestGrokExtraArgsFor(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps int
+		want  []string
+	}{
+		{name: "default", steps: 0, want: nil},
+		{name: "negative", steps: -1, want: nil},
+		{name: "bounded", steps: 12, want: []string{"--max-turns", "12"}},
+		{name: "ceiling", steps: 201, want: []string{"--max-turns", "200"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := grokExtraArgsFor(Task{ToolMaxSteps: tc.steps}); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("grokExtraArgsFor(ToolMaxSteps=%d) = %v, want %v", tc.steps, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGrokBuildArgs(t *testing.T) {
 	b := &CLIAgentBackend{Protocol: grokProtocol, Logger: testLogger()}
 	task := Task{
@@ -55,6 +77,7 @@ func TestGrokBuildArgs(t *testing.T) {
 		UserPrompt:       "review this PR",
 		Model:            "xai/grok-4.5",
 		ReasoningEffort:  "high",
+		ToolMaxSteps:     12,
 	}
 	system := task.BuildSystemPrompt()
 	args, stdin := b.buildArgs(grokProtocol, task, task.UserPrompt, system)
@@ -69,6 +92,7 @@ func TestGrokBuildArgs(t *testing.T) {
 		"--reasoning-effort", "high",
 		"--permission-mode", "bypassPermissions",
 		"--always-approve",
+		"--max-turns", "12",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v\nwant %#v", args, want)
@@ -205,6 +229,64 @@ func TestWriteGrokPermissionHookPreservesOperatorHooks(t *testing.T) {
 	hook := pre[0].Hooks[0]
 	if hook.Type != "command" || hook.Timeout != 30 || !strings.Contains(hook.Command, "__permission-hook") {
 		t.Fatalf("hook = %+v", hook)
+	}
+}
+
+func TestGrokPermissionShadowExcludesOperatorConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX hook command fixture")
+	}
+	binDir := t.TempDir()
+	iterionBin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(iterionBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", iterionBin)
+
+	operatorHome := t.TempDir()
+	realHome := filepath.Join(operatorHome, ".grok")
+	if err := os.MkdirAll(realHome, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte("[mcp_servers.figma-dev]\nenabled = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realHome, "auth.json"), []byte("opaque-test-auth"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := permission.NewPolicy(permission.ModeDeny, []string{"Read(**)"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "review", StoreDir: t.TempDir(), Permission: policy, ExtraEnv: []string{"HOME=" + operatorHome}}
+	env, cleanup, err := (&CLIAgentBackend{Protocol: grokProtocol}).preparePermissionHook(context.Background(), task, grokProtocol, BackendGrok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	if len(env) != 1 || !strings.HasPrefix(env[0], "HOME=") {
+		t.Fatalf("hook env = %v", env)
+	}
+	shadowParent := strings.TrimPrefix(env[0], "HOME=")
+	if shadowParent == operatorHome {
+		t.Fatal("Grok permission shadow reused the operator HOME")
+	}
+	shadow := filepath.Join(shadowParent, ".grok")
+	if _, err := os.Lstat(filepath.Join(shadow, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("operator config.toml leaked into Grok shadow: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(shadow, "auth.json")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("authentication state was not linked into Grok shadow: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(shadow, "hooks", "iterion-permission.json")); err != nil {
+		t.Fatalf("Iterion permission hook missing from Grok shadow: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(shadowParent); !os.IsNotExist(err) {
+		t.Errorf("shadow parent survived cleanup: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(realHome, "auth.json")); err != nil || info.IsDir() {
+		t.Errorf("cleanup followed the auth symlink into the operator home: info=%v err=%v", info, err)
 	}
 }
 

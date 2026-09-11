@@ -32,12 +32,14 @@ function json(body: unknown, status = 200): Response {
 function stubApi(
   summaries: Array<{ node_id: string; version: number; written_at: string }>,
   artifacts: Record<string, unknown>,
+  events: unknown[] = [],
 ) {
   const seen: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (/\/events(?:\?|$)/.test(url)) return json({ events });
       if (/\/artifacts(\?|$)/.test(url)) return json({ artifacts: summaries });
       const m = url.match(/\/artifacts\/([^/?]+)\/(\d+)/);
       if (m) {
@@ -212,6 +214,55 @@ describe("lookupEditorProposal", () => {
     });
   });
 
+  it("returns a save-only request without accepting model content or a path", async () => {
+    stubApi(
+      [{ node_id: "assistant", version: 3, written_at: "2026-09-08T12:00:00Z" }],
+      {
+        "assistant/3": {
+          mode: "design",
+          draft_bot: "",
+          editor_session_id: "host-session",
+          editor_revision: 11,
+          editor_apply_intent: "explicit",
+          editor_save_intent: "explicit",
+          editor_path: "model/selected/path.bot",
+        },
+      },
+    );
+
+    await expect(lookupEditorProposal("run1")).resolves.toEqual({
+      source: null,
+      sessionId: "host-session",
+      revision: 11,
+      applyIntent: "none",
+      saveIntent: "explicit",
+    });
+  });
+
+  it("rejects an empty editor artifact without an actionable save intent", async () => {
+    stubApi(
+      [{ node_id: "assistant", version: 4, written_at: "2026-09-08T12:00:00Z" }],
+      {
+        "assistant/4": {
+          mode: "design",
+          draft_bot: "",
+          editor_session_id: "host-session",
+          editor_revision: 11,
+          editor_apply_intent: "explicit",
+          editor_save_intent: "none",
+        },
+      },
+    );
+
+    await expect(lookupEditorProposal("run1")).resolves.toEqual({
+      source: null,
+      sessionId: null,
+      revision: null,
+      applyIntent: "none",
+      saveIntent: "none",
+    });
+  });
+
   it("lets a newer ordinary turn retire an older editor proposal", async () => {
     stubApi(
       [
@@ -304,6 +355,89 @@ describe("lookupAssistantActions", () => {
       requests: [],
     });
   });
+
+  it("uses a reviewed action instead of Copi's older first-pass request", async () => {
+    stubApi(
+      [
+        { node_id: "copi", version: 1, written_at: "2026-08-28T10:00:00Z" },
+        { node_id: "revise", version: 1, written_at: "2026-08-28T12:00:00Z" },
+      ],
+      {
+        "copi/1": {
+          assistant_actions: [
+            { id: "run.resume", intent: "explicit", args: { run_id: "orphan" } },
+          ],
+        },
+        "revise/1": {
+          assistant_actions: [
+            { id: "run.resume", intent: "explicit", args: { run_id: "root" } },
+          ],
+        },
+      },
+    );
+    await expect(lookupAssistantActions("run1")).resolves.toMatchObject({
+      requests: [{ id: "run.resume", args: { run_id: "root" } }],
+    });
+  });
+
+  it("withholds the whole list and reports the exact rejected entries", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 4, written_at: "2026-09-08T13:00:00Z" }],
+      {
+        "copi/4": {
+          assistant_actions: [
+            { id: "run.resume", intent: "explicit", args: { run_id: "root" } },
+            { id: "resume-planner-r4-root", intent: "explicit", args: {} },
+            { id: "run.watch", intent: "explicit", args: { run_id: "root" } },
+          ],
+        },
+      },
+    );
+    await expect(lookupAssistantActions("run1")).resolves.toMatchObject({
+      requests: [],
+      invalid: {
+        attempt: 1,
+        rejected: [
+          {
+            index: 1,
+            id: "resume-planner-r4-root",
+            reason: "unknown_action_id",
+          },
+        ],
+        validIds: ["run.resume", "run.watch"],
+      },
+    });
+  });
+
+  it("bounds the repair attempt from durable host-event history", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 5, written_at: "2026-09-08T14:00:00Z" }],
+      {
+        "copi/5": {
+          assistant_actions: [
+            { id: "resume-planner-r4-root", intent: "explicit", args: {} },
+          ],
+        },
+      },
+      [
+        {
+          data: {
+            answers: {
+              host_event: {
+                kind: "assistant-action-invalid",
+                attempt: 1,
+                source: "run1:copi:5",
+              },
+            },
+          },
+        },
+      ],
+    );
+    await expect(lookupAssistantActions("run1")).resolves.toMatchObject({
+      requests: [],
+      invalid: { attempt: 2 },
+    });
+  });
 });
 
 describe("lookupFileChangeProposal", () => {
@@ -340,7 +474,35 @@ describe("lookupFileChangeProposal", () => {
     });
   });
 
-  it("fails closed on full-file/create and unbound proposals", async () => {
+  it("accepts a bounded declared-create shape bound to the editor turn", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 5, written_at: "2026-08-28T14:00:00Z" }],
+      {
+        "copi/5": {
+          editor_session_id: "session",
+          editor_revision: 10,
+          file_changes_intent: "explicit",
+          file_changes: [{
+            scope: "workspace",
+            path: "iterion/vertical/planner-input-r4.json",
+            create: { content: '{"run_id":"tabarria-v1-epics-r4"}\n' },
+          }],
+        },
+      },
+    );
+    await expect(lookupFileChangeProposal("run1")).resolves.toEqual({
+      changes: [{
+        scope: "workspace",
+        path: "iterion/vertical/planner-input-r4.json",
+        create: { content: '{"run_id":"tabarria-v1-epics-r4"}\n' },
+      }],
+      sessionId: "session",
+      revision: 10,
+      intent: "explicit",
+    });
+  });
+
+  it("fails closed on empty-before and unbound proposals", async () => {
     stubApi(
       [{ node_id: "copi", version: 4, written_at: "2026-08-28T13:00:00Z" }],
       {
@@ -364,6 +526,132 @@ describe("lookupFileChangeProposal", () => {
       sessionId: null,
       revision: null,
       intent: "none",
+    });
+  });
+
+  it("fails closed when a file change mixes create and replacements", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 6, written_at: "2026-08-28T15:00:00Z" }],
+      {
+        "copi/6": {
+          editor_session_id: "session",
+          editor_revision: 11,
+          file_changes_intent: "explicit",
+          file_changes: [{
+            scope: "workspace",
+            path: "new.json",
+            create: { content: "{}" },
+            replacements: [{ before: "old", after: "new" }],
+          }],
+        },
+      },
+    );
+    await expect(lookupFileChangeProposal("run1")).resolves.toEqual({
+      changes: [],
+      sessionId: null,
+      revision: null,
+      intent: "none",
+    });
+  });
+
+  it("uses reviewed replacements and lets an empty review retire the first pass", async () => {
+    const summaries = [
+      { node_id: "copi", version: 1, written_at: "2026-08-28T10:00:00Z" },
+      { node_id: "revise", version: 1, written_at: "2026-08-28T12:00:00Z" },
+    ];
+    const firstPass = {
+      mode: "debug",
+      editor_session_id: "session",
+      editor_revision: 4,
+      file_changes_intent: "explicit",
+      file_changes: [
+        {
+          scope: "workspace",
+          path: "workflow.bot",
+          replacements: [{ before: "old", after: "incomplete" }],
+        },
+      ],
+    };
+    stubApi(summaries, {
+      "copi/1": firstPass,
+      "revise/1": {
+        editor_session_id: "session",
+        editor_revision: 4,
+        file_changes_intent: "explicit",
+        file_changes: [
+          {
+            scope: "workspace",
+            path: "workflow.bot",
+            replacements: [{ before: "old", after: "reviewed" }],
+          },
+        ],
+      },
+    });
+    await expect(lookupFileChangeProposal("run1")).resolves.toEqual({
+      changes: [
+        {
+          scope: "workspace",
+          path: "workflow.bot",
+          replacements: [{ before: "old", after: "reviewed" }],
+        },
+      ],
+      sessionId: "session",
+      revision: 4,
+      intent: "explicit",
+    });
+
+    stubApi(summaries, {
+      "copi/1": firstPass,
+      "revise/1": {
+        editor_session_id: "",
+        editor_revision: 0,
+        file_changes_intent: "none",
+        file_changes: [],
+      },
+    });
+    await expect(lookupFileChangeProposal("run1")).resolves.toEqual({
+      changes: [],
+      sessionId: null,
+      revision: null,
+      intent: "none",
+    });
+  });
+
+  it("does not let a reviewed file-change artifact hide a validated draft/editor proposal", async () => {
+    stubApi(
+      [
+        { node_id: "copi", version: 1, written_at: "2026-08-28T10:00:00Z" },
+        { node_id: "revise", version: 1, written_at: "2026-08-28T12:00:00Z" },
+      ],
+      {
+        "copi/1": {
+          mode: "design",
+          draft_bot: "workflow reviewed-draft:\n  entry: start\n",
+          editor_session_id: "session",
+          editor_revision: 4,
+          editor_apply_intent: "explicit",
+          editor_save_intent: "suggested",
+          file_changes: [],
+        },
+        "revise/1": {
+          assistant_actions: [],
+          file_changes: [],
+          file_changes_intent: "none",
+          editor_session_id: "",
+          editor_revision: 0,
+        },
+      },
+    );
+    await expect(lookupDraft("run1")).resolves.toEqual({
+      source: null,
+      designing: true,
+    });
+    await expect(lookupEditorProposal("run1")).resolves.toEqual({
+      source: "workflow reviewed-draft:\n  entry: start\n",
+      sessionId: "session",
+      revision: 4,
+      applyIntent: "explicit",
+      saveIntent: "suggested",
     });
   });
 });

@@ -1360,6 +1360,26 @@ func testStatusTransitions(t *testing.T, s store.RunStore) {
 	if r.FinishedAt == nil {
 		t.Errorf("FinishedAt: expected set on terminal status")
 	}
+
+	// A rewound run is visibly paused but requires a real Resume before an
+	// old cloud delivery may continue it. Every store must preserve that flag
+	// through ordinary writes and consume it only on the running transition.
+	r.Status = store.RunStatusPausedOperator
+	r.FinishedAt = nil
+	r.ResumeRequiresExplicit = true
+	if err := s.SaveRun(testCtx(), r); err != nil {
+		t.Fatalf("seed rewound pause: %v", err)
+	}
+	if err := s.UpdateRunStatus(testCtx(), "run_2", store.RunStatusRunning, ""); err != nil {
+		t.Fatalf("resume rewound pause: %v", err)
+	}
+	r, err := s.LoadRun(testCtx(), "run_2")
+	if err != nil {
+		t.Fatalf("load resumed rewind: %v", err)
+	}
+	if r.ResumeRequiresExplicit {
+		t.Error("ResumeRequiresExplicit stayed true after transition to running")
+	}
 }
 
 // testFailureCodeLifecycle pins the ADR-095 persistence discipline on

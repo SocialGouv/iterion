@@ -362,7 +362,13 @@ interface BotSourceFilesResponse {
 
 export async function openFile(
   path: string,
-): Promise<{ source: string; document: IterDocument; diagnostics: string[]; path: string }> {
+): Promise<{
+  source: string;
+  document: IterDocument;
+  diagnostics: string[];
+  path: string;
+  confirmed_disk_path?: string;
+}> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
     const bundle = await apiRequest<BotSourceFilesResponse>(
@@ -381,9 +387,13 @@ export async function openFile(
 export async function saveFile(
   path: string,
   document: IterDocument,
+  options?: { createOnly?: boolean },
 ): Promise<SaveFileResponse> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
+    if (options?.createOnly) {
+      throw new Error("Save As is not available for a cloud bot source.");
+    }
     const source = await unparse(document);
     // Carry the botsource CAS token. The old per-file editor write omitted it,
     // so two tabs could silently overwrite one another even though the store
@@ -399,7 +409,11 @@ export async function saveFile(
   }
   return request("/files/save", {
     method: "POST",
-    body: JSON.stringify({ path, document }),
+    body: JSON.stringify({
+      path,
+      document,
+      ...(options?.createOnly ? { create_only: true } : {}),
+    }),
   });
 }
 

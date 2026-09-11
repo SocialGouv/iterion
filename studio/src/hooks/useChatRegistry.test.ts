@@ -91,6 +91,8 @@ describe("chatRegistryWithFloor", () => {
     expect(resolveDockBot(reg, dockBot ? [dockBot] : [], "", false)?.id).toBe(
       "copilot",
     );
+    expect(dockBot?.nodeMap.review).toEqual({ kind: "silent" });
+    expect(dockBot?.nodeMap.revise).toEqual({ kind: "silent" });
   });
 
   it("keeps the floor for a bot the listing reports as enabled", () => {

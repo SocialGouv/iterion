@@ -15,13 +15,14 @@ import (
 
 // healthResponse is the JSON envelope returned by /healthz and /readyz.
 type healthResponse struct {
-	Status         string            `json:"status"`            // "ok" or "degraded"
-	Mode           string            `json:"mode"`              // "local" or "cloud"
-	Version        string            `json:"version,omitempty"` // build version
-	Commit         string            `json:"commit,omitempty"`  // build commit
-	Epoch          uint64            `json:"epoch"`
-	HighWaterEpoch uint64            `json:"high_water_epoch"`
-	Checks         map[string]string `json:"checks,omitempty"` // per-dependency status (cloud only)
+	Status          string            `json:"status"`            // "ok" or "degraded"
+	Mode            string            `json:"mode"`              // "local" or "cloud"
+	Version         string            `json:"version,omitempty"` // build version
+	Commit          string            `json:"commit,omitempty"`  // build commit
+	Epoch           uint64            `json:"epoch"`
+	HighWaterEpoch  uint64            `json:"high_water_epoch"`
+	Checks          map[string]string `json:"checks,omitempty"` // per-dependency status (cloud only)
+	RecoveryPassive bool              `json:"recovery_passive,omitempty"`
 	// UsageCap echoes the EFFECTIVE usage-cap policy — the DB-backed
 	// runtime settings laid over the ITERION_USAGE_CAP_* env defaults
 	// (env-only when no settings store is wired). Config, not a secret —
@@ -93,14 +94,15 @@ const readinessWaitGrace = 200 * time.Millisecond
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	capPolicy, capSource := s.usageCapSummary()
 	writeHealthJSON(w, http.StatusOK, healthResponse{
-		Status:         "ok",
-		Mode:           s.deployMode(),
-		Version:        appinfo.Version,
-		Commit:         appinfo.Commit,
-		Epoch:          s.cfg.RunnerEpoch,
-		HighWaterEpoch: s.cfg.HighWaterEpoch,
-		UsageCap:       capPolicy,
-		UsageCapSource: capSource,
+		Status:          "ok",
+		Mode:            s.deployMode(),
+		Version:         appinfo.Version,
+		Commit:          appinfo.Commit,
+		Epoch:           s.cfg.RunnerEpoch,
+		HighWaterEpoch:  s.cfg.HighWaterEpoch,
+		UsageCap:        capPolicy,
+		UsageCapSource:  capSource,
+		RecoveryPassive: s.cfg.RecoveryPassive,
 	})
 }
 
@@ -116,14 +118,15 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	capPolicy, capSource := s.usageCapSummary()
 	resp := healthResponse{
-		Status:         "ok",
-		Mode:           s.deployMode(),
-		Version:        appinfo.Version,
-		Commit:         appinfo.Commit,
-		Epoch:          s.cfg.RunnerEpoch,
-		HighWaterEpoch: s.cfg.HighWaterEpoch,
-		UsageCap:       capPolicy,
-		UsageCapSource: capSource,
+		Status:          "ok",
+		Mode:            s.deployMode(),
+		Version:         appinfo.Version,
+		Commit:          appinfo.Commit,
+		Epoch:           s.cfg.RunnerEpoch,
+		HighWaterEpoch:  s.cfg.HighWaterEpoch,
+		UsageCap:        capPolicy,
+		UsageCapSource:  capSource,
+		RecoveryPassive: s.cfg.RecoveryPassive,
 	}
 
 	// A regressive generation must never re-enter the Service, even if all

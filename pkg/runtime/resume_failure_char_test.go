@@ -147,6 +147,46 @@ func TestResumeFromFailure_ResumableStatusTable(t *testing.T) {
 	}
 }
 
+func TestResumeFromFailure_MissionClaimUsesExactStatusAndStampsReceipt(t *testing.T) {
+	ctx := context.Background()
+	seed := func(t *testing.T, status store.RunStatus) (store.RunStore, string) {
+		t.Helper()
+		s := tmpStore(t)
+		runID := "run-mission-" + string(status)
+		if _, err := s.CreateRun(ctx, runID, "resume_char", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "step_b", Outputs: map[string]map[string]any{"step_a": {"result": "ok"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpdateRunStatus(ctx, runID, status, "parked"); err != nil {
+			t.Fatal(err)
+		}
+		return s, runID
+	}
+
+	s, runID := seed(t, store.RunStatusPausedOperator)
+	eng := New(charResumeWF(), s, newStubExecutor(), WithExpectedResumeStatus(store.RunStatusFailedResumable), WithResumeReceiptID("receipt-mismatch"))
+	if err := eng.Resume(ctx, runID, nil); err == nil {
+		t.Fatal("exact failed_resumable claim consumed paused_operator")
+	}
+	if got, _ := s.LoadRun(ctx, runID); got.Status != store.RunStatusPausedOperator {
+		t.Fatalf("mismatched claim changed status to %s", got.Status)
+	}
+
+	s, runID = seed(t, store.RunStatusFailedResumable)
+	exec := newStubExecutor()
+	exec.on("step_b", func(map[string]any) (map[string]any, error) { return map[string]any{"result": "ok"}, nil })
+	eng = New(charResumeWF(), s, exec, WithExpectedResumeStatus(store.RunStatusFailedResumable), WithResumeReceiptID("receipt-ok"))
+	if err := eng.Resume(ctx, runID, nil); err != nil {
+		t.Fatal(err)
+	}
+	event := charFindEvent(t, s, runID, store.EventRunResumed)
+	if event == nil || event.Data["receipt_id"] != "receipt-ok" {
+		t.Fatalf("run_resumed receipt = %#v", event)
+	}
+}
+
 // TestResumeFromFailure_NoCheckpointRestartsFromEntry pins the checkpoint-
 // less path (a run that failed before its first save_checkpoint): the resume
 // restarts from the workflow entry, re-running everything, and the

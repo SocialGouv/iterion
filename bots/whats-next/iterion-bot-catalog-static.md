@@ -193,8 +193,9 @@ before you walk the table on a new roadmap item.
 
 - `copilot` / Copi is the **engine assistant**. Its subject is iterion
   itself — the DSL, the Cxxx diagnostics, run/resume/sandbox/backends,
-  how to read a run store. It is read-only: it drafts a `.bot` and
-  hands the operator `iterion validate`, it never edits or commits.
+  how to read a run store. It has no direct write tool, but it owns repairs
+  exposed by Studio's authoring bridge: the host previews, validates and
+  applies its bounded proposals under the operator's policy.
 - `whats-next` / Nexie is the **tactical orchestrator** for the *target
   repo*: what to work on this week, which bot to stamp, the board.
 - `feature-dev` / Featurly is the **worker** that authors and lands a

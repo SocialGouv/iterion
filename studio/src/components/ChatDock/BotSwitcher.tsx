@@ -13,10 +13,12 @@ export default function BotSwitcher({
   bots,
   current,
   onSelect,
+  busy = false,
 }: {
   bots: readonly FirstClassBot[];
   current: FirstClassBot;
-  onSelect: (id: string) => void;
+  onSelect: (id: string) => void | Promise<void>;
+  busy?: boolean;
 }) {
   if (bots.length < 2) return null;
   return (
@@ -26,7 +28,8 @@ export default function BotSwitcher({
         fit
         size="sm"
         value={current.id}
-        onChange={(e) => onSelect(e.target.value)}
+        disabled={busy}
+        onChange={(e) => void onSelect(e.target.value)}
         // The description is the tooltip: the difference between a co-CTO for
         // your repo and an assistant that knows iterion itself is not
         // recoverable from a persona name.

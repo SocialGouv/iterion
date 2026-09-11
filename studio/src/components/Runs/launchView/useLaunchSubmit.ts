@@ -9,8 +9,9 @@ import { useLocation } from "wouter";
 
 import { createForgeRepo } from "@/api/forgeConnections";
 import { createRun } from "@/api/runs";
-import type { AttachmentField, IterDocument, VarField } from "@/api/types";
+import type { AttachmentField, IterDocument, ServerInfo, VarField } from "@/api/types";
 import { errorMessage } from "@/lib/errorHints";
+import { sourceForLaunch } from "@/lib/launchSource";
 import { isVarMissing } from "@/lib/varValidation";
 
 import { type AttachmentValue } from "../AttachmentFieldInput";
@@ -27,6 +28,8 @@ export interface UseLaunchSubmitArgs {
   filePath: string;
   doc: IterDocument | null;
   currentSource: string | null;
+  confirmedDiskPath: string | null;
+  serverInfo: ServerInfo | null;
   fields: VarField[];
   values: Record<string, string>;
   attachmentFields: AttachmentField[];
@@ -42,6 +45,8 @@ export function useLaunchSubmit({
   filePath,
   doc,
   currentSource,
+  confirmedDiskPath,
+  serverInfo,
   fields,
   values,
   attachmentFields,
@@ -170,7 +175,12 @@ export function useLaunchSubmit({
       }
       const res = await createRun({
         file_path: filePath,
-        source: currentSource || undefined,
+        source: sourceForLaunch({
+          filePath,
+          source: currentSource,
+          confirmedDiskPath,
+          serverInfo,
+        }),
         // Only touched values are sent: a var left at its declared
         // default (auto-managed or not) is omitted so the server applies
         // its own default + ${...} placeholder expansion. Keys the active

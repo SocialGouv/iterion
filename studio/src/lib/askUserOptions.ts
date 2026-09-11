@@ -14,6 +14,29 @@ export interface AskUserOption {
 export const ASK_USER_RESPONSE_KEY = "ask_user_response";
 const ASK_USER_OPTIONS_KEY = "_ask_user_options";
 const ASK_USER_ALLOW_FREE_TEXT_KEY = "_ask_user_allow_free_text";
+export const PERMISSION_MARKER_KEY = "_permission";
+
+/** Host-stamped details for an ask-mode permission pause. */
+export interface PermissionMarker {
+  tool?: string;
+  input?: Record<string, unknown>;
+  rule?: string;
+}
+
+/**
+ * A permission gate is distinct from an ordinary free-text ask_user turn:
+ * its answer is an exact authorization token, not operator prose. Keep this
+ * shared with the run-console approval form so the two Studio surfaces agree.
+ */
+export function permissionMarker(
+  questions: Record<string, unknown> | null | undefined,
+): PermissionMarker | null {
+  const marker = questions?.[PERMISSION_MARKER_KEY];
+  if (marker && typeof marker === "object" && !Array.isArray(marker)) {
+    return marker as PermissionMarker;
+  }
+  return null;
+}
 
 /** Parse the structured options off a pause's questions map ([] when absent/malformed). */
 export function askUserOptions(questions: Record<string, unknown> | null | undefined): AskUserOption[] {

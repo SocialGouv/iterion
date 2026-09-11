@@ -123,6 +123,40 @@ func TestLaunch_RejectsInvalidBudgetDuration(t *testing.T) {
 	}
 }
 
+func TestResume_ActivatesAndPersistsUnlimitedWorkflowBudget(t *testing.T) {
+	dir := t.TempDir()
+	botPath := writeBudgetBot(t, dir)
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	launched, err := svc.Launch(context.Background(), LaunchSpec{FilePath: botPath})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-launched.Done
+	resumed, err := svc.Resume(context.Background(), ResumeSpec{
+		RunID: launched.RunID, FilePath: botPath,
+		Answers: map[string]any{"approve": true},
+		Budget:  &ir.BudgetOverrides{UnlimitedWorkflow: true},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	<-resumed.Done
+	r, err := svc.store.LoadRun(context.Background(), launched.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.BudgetOverrides == nil || !r.BudgetOverrides.UnlimitedWorkflow {
+		t.Fatalf("run.BudgetOverrides = %+v, want durable unlimited activation", r.BudgetOverrides)
+	}
+	replayed := MergeBudgetOverrides(BudgetOverridesFromRun(r.BudgetOverrides), nil)
+	if replayed == nil || !replayed.UnlimitedWorkflow {
+		t.Fatalf("replayed override = %+v", replayed)
+	}
+}
+
 // stubLaunchPublisher satisfies LaunchPublisher so tests can force the
 // cloud-queue branch of Launch without a real NATS/Mongo backend. It
 // records the last LaunchSpec so tests can assert what was forwarded.

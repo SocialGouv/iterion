@@ -258,6 +258,7 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		BundleName:        resolveBundleName(r.BundleName, r.BundlePath),
 		BundleDisplayName: r.BundleDisplayName,
 		SourceKind:        deriveSourceKind(r),
+		Source:            cloneRunSource(r.Source),
 		Status:            r.Status,
 		FilePath:          r.FilePath,
 		CreatedAt:         r.CreatedAt,
@@ -286,6 +287,14 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		RetryAfter:        retryAfterOf(r),
 		RetryAttempts:     retryAttemptsOf(r),
 	}
+}
+
+func cloneRunSource(source *store.RunSource) *store.RunSource {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	return &cloned
 }
 
 // retryAfterOf / retryAttemptsOf project the run's retry bookkeeping,
@@ -453,4 +462,11 @@ func (s *Service) LoadEvents(runID string, from, to int64) ([]*store.Event, erro
 // LoadEventsCtx is the tenant-aware variant of LoadEvents.
 func (s *Service) LoadEventsCtx(ctx context.Context, runID string, from, to int64) ([]*store.Event, error) {
 	return s.store.LoadEventsRange(ctx, runID, from, to, MaxEventsPerPage())
+}
+
+// ScanEventsCtx streams a run's durable event journal under the caller's
+// tenant context. Server-side projections use this instead of materialising a
+// second transcript or loading an unbounded event slice.
+func (s *Service) ScanEventsCtx(ctx context.Context, runID string, visit func(*store.Event) bool) error {
+	return s.store.ScanEvents(ctx, runID, visit)
 }

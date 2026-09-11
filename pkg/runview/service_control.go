@@ -289,6 +289,13 @@ func (s *Service) ListQueuedMessages(ctx context.Context, runID string) ([]store
 
 // brokerPublish returns broker.Publish as a free function, or nil
 // when no broker is wired. Shape matches store.PublishInboxEvent.
+// BrokerPublish exposes the live-subscriber fan-out to callers OUTSIDE this
+// package that append events onto a run's log — the assistant-veille records,
+// which are written by pkg/server rather than by the engine. Without it those
+// events would land in events.jsonl and stay invisible until the next cold
+// read, which for a dock banner means "until the operator reloads".
+func (s *Service) BrokerPublish() func(store.Event) { return s.brokerPublish() }
+
 func (s *Service) brokerPublish() func(store.Event) {
 	if s.broker == nil {
 		return nil
@@ -1020,3 +1027,30 @@ var resolveAllConflictsWithAgentImpl func(ctx context.Context, s *Service, runID
 // generations of this code surface a stable "no creds" signal even
 // if the message changes.
 var ErrAgentResolverNotWired = errors.New("agent resolver unavailable: no LLM credential detected (sign in via `claude` or `codex` and retry)")
+
+// AddWatchedIssues / RemoveWatchedIssues wrap the store mutators with the
+// observational veille event. Going through the service rather than through
+// RunStore() directly is what lets the dock learn about a card veille COPI
+// ARMED HIMSELF — the case that matters, since the operator's own click
+// already knows what it did. The store mutators emit nothing on their own.
+func (s *Service) AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error) {
+	set, err := s.store.AddWatchedIssues(ctx, runID, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range issueIDs {
+		store.PublishVeilleArmed(ctx, s.store, s.brokerPublish(), runID, store.VeilleChannelIssue, id)
+	}
+	return set, nil
+}
+
+func (s *Service) RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error) {
+	set, err := s.store.RemoveWatchedIssues(ctx, runID, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range issueIDs {
+		store.PublishVeilleStopped(ctx, s.store, s.brokerPublish(), runID, store.VeilleChannelIssue, id, "operator")
+	}
+	return set, nil
+}

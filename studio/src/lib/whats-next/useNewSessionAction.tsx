@@ -11,11 +11,16 @@
 // second copy of this that forgot the cancel would be a spend leak nobody
 // sees.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { cancelRun } from "@/api/runs";
 import { useConfirm } from "@/hooks/useConfirm";
+import {
+  cancelThenDispose,
+  shouldConfirmRunDisposal,
+} from "@/lib/chatDock/conversationDisposal";
+import { errorMessage } from "@/lib/errorHints";
 import type { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
+import { useUIStore } from "@/store/ui";
 
 export interface NewSessionAction {
   /** Runs the confirm → cancel → reset sequence. */
@@ -36,37 +41,44 @@ export function useNewSessionAction({
   session: ReturnType<typeof useWhatsNextSession>;
 }): NewSessionAction {
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const retryRef = useRef<() => void>(() => {});
   const { confirm, dialog } = useConfirm();
-
-  // "Live" = an in-flight run that has not reached a terminal state.
-  const isLive =
-    session.runId !== null &&
-    session.status !== "ended" &&
-    session.status !== "idle";
+  const addToast = useUIStore((state) => state.addToast);
 
   const start = useCallback(async () => {
-    if (isLive) {
-      const ok = await confirm({
-        title: `Cancel running ${bot.label} session?`,
-        message: `Cancelling ends the conversation — ${bot.label} forgets everything you discussed. The transcript stays readable in the run console, but the next session starts with no memory of it.`,
-        confirmLabel: "Cancel and start new",
-        confirmVariant: "danger",
-      });
-      if (!ok) return;
-      setBusy(true);
-      try {
-        if (session.runId) await cancelRun(session.runId);
-      } catch {
-        // Surface but don't block: even if the cancel races (the run may
-        // have just finished), the reset below still lands the operator on a
-        // fresh launcher. Worst case is a quiescent orphan the stall sweep
-        // reconciles.
-      } finally {
-        setBusy(false);
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      if (
+        shouldConfirmRunDisposal(session.runId, session.runStatus) &&
+        !(await confirm({
+          title: `Cancel running ${bot.label} session?`,
+          message: `Cancelling ends the conversation — ${bot.label} forgets everything you discussed. The transcript stays readable in the run console, but the next session starts with no memory of it.`,
+          confirmLabel: "Cancel and start new",
+          confirmVariant: "danger",
+        }))
+      ) {
+        return;
       }
+      await cancelThenDispose({
+        runId: session.runId,
+        dispose: session.newSession,
+      });
+    } catch (error) {
+      addToast(`Could not start a new assistant session: ${errorMessage(error)}`, "error", {
+        persistent: true,
+        action: { label: "Retry", onClick: () => retryRef.current() },
+      });
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
     }
-    session.newSession();
-  }, [isLive, session, confirm, bot.label]);
+  }, [session, confirm, bot.label, addToast]);
+  useEffect(() => {
+    retryRef.current = () => void start();
+  }, [start]);
 
   // Available across every run state so the operator can always escape —
   // gating it on "ended" used to trap them inside paused or failed_resumable

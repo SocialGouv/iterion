@@ -1,98 +1,101 @@
-// The context strip — which now speaks only when it has something to say.
-//
-// It used to be pinned open whenever a reference was in effect, on the
-// reasoning that context must never be silent. That reasoning was half
-// right. What must never be silent is what the assistant was TOLD; on the
-// ordinary route those two are the same fact, and the operator is already
-// looking at it. "You are looking at the board", pinned above the board,
-// is a tautology occupying a permanent strip. The route table already
-// applied this rule in one place — /whats-next contributes no reference
-// because "you are looking at the conversation" is noise — and this is
-// that same rule applied consistently.
-//
-// So the strip renders in the two cases where it is NEWS:
-//
-//   dismissed — the absence of context is invisible by nature, and
-//               without a way back the only escape is a reload.
-//   degraded  — the route addressed an entity and the pointer fell back
-//               to the surrounding view. The screen still shows the run;
-//               only the assistant lost it. Nothing else would tell you.
-//
-// Everything else is the quiet control in the composer row: ContextEye,
-// which keeps "what am I sending" answerable on demand and costs no
-// vertical space to ask.
+// Persistent conversation-anchor banner below the assistant header.
+// The current page is only a candidate while the conversation is empty. Once
+// the first message is accepted, the stored anchor is immutable and doubles
+// as the way back to the page where the question started.
 
-import { Cross2Icon, EyeOpenIcon } from "@radix-ui/react-icons";
+import { Cross2Icon, EyeNoneIcon, EyeOpenIcon } from "@radix-ui/react-icons";
+import { Link } from "wouter";
 
 import type { TypedReference } from "@/lib/chatDock/routeReference";
+import type { ConversationContextState } from "@/lib/chatDock/conversations";
 
 interface Props {
+  state: ConversationContextState;
   reference: TypedReference | null;
-  dismissed: boolean;
-  onDismiss: () => void;
-  onRestore: () => void;
-}
-
-/**
- * stripSpeaks is the whole "is this news" rule, in one place.
- *
- * Exported because ContextEye is its exact complement: the strip and the
- * eye are two presentations of one control, and both showing at once
- * would give the operator two ways to dismiss the same reference. Sharing
- * the predicate is what keeps them from drifting into that.
- */
-export function stripSpeaks(
-  reference: TypedReference | null,
-  dismissed: boolean,
-): boolean {
-  if (!reference) return false;
-  return dismissed || reference.degraded === true;
+  backHref?: string | null;
+  onDismiss?: () => void;
+  onRestore?: () => void;
 }
 
 export default function ContextChip({
+  state,
   reference,
-  dismissed,
+  backHref,
   onDismiss,
   onRestore,
 }: Props) {
-  // Nothing to point at (home, the assistant's own route, an unmapped
-  // route) — render no strip at all rather than an empty one.
+  if (state === "disabled") {
+    return (
+      <Strip>
+        <EyeNoneIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />
+        <span className="text-micro text-fg-muted min-w-0">
+          Conversation without page context
+        </span>
+        {onRestore && reference ? (
+          <button
+            type="button"
+            onClick={onRestore}
+            className="ml-auto shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-micro font-medium text-accent-text hover:bg-accent-soft focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            title={`Let the first message use ${reference.label}`}
+          >
+            Use this page for the first message
+          </button>
+        ) : null}
+      </Strip>
+    );
+  }
+
+  if (state === "unknown") {
+    return (
+      <Strip>
+        <EyeNoneIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />
+        <span className="text-micro text-fg-muted">
+          Original context unavailable
+        </span>
+      </Strip>
+    );
+  }
+
   if (!reference) return null;
 
-  if (dismissed) {
+  if (state === "pending") {
     return (
       <Strip>
-        <button
-          type="button"
-          onClick={onRestore}
-          className="inline-flex items-center gap-1 text-micro text-fg-muted hover:text-fg-default focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
-          title={`Let the assistant look at ${reference.label} again`}
-        >
-          <EyeOpenIcon className="h-3 w-3" />
-          Use this page as context
-        </button>
-      </Strip>
-    );
-  }
-
-  if (reference.degraded) {
-    return (
-      <Strip>
-        {/* Said plainly: the pointer is coarser than the page. The
-            operator can act on it — name the run in their message — but
-            only if they know, and this is the only surface that knows. */}
-        <span className="text-micro text-fg-muted min-w-0">
-          Couldn&apos;t identify this page — the assistant only has
+        <EyeOpenIcon
+          className={`h-3.5 w-3.5 shrink-0 ${
+            reference.degraded ? "text-warning-fg" : "text-fg-subtle"
+          }`}
+        />
+        <span className="text-micro text-fg-muted shrink-0">
+          {reference.degraded
+            ? "Limited context for first message:"
+            : "Context for first message:"}
         </span>
         <ReferencePill reference={reference} />
-        <DismissButton reference={reference} onDismiss={onDismiss} />
+        {onDismiss ? (
+          <RemoveButton reference={reference} onDismiss={onDismiss} />
+        ) : null}
       </Strip>
     );
   }
 
-  // The ordinary case: the operator can see the page, so the strip says
-  // nothing. ContextEye holds the answer and the control.
-  return null;
+  return (
+    <Strip>
+      <EyeOpenIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />
+      <span className="text-micro text-fg-muted shrink-0">
+        Conversation context:
+      </span>
+      <ReferencePill reference={reference} />
+      {backHref ? (
+        <Link
+          href={backHref}
+          className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-micro font-medium text-accent-text hover:bg-accent-soft focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          Back to {reference.label}
+        </Link>
+      ) : null}
+    </Strip>
+  );
 }
 
 function Strip({ children }: { children: React.ReactNode }) {
@@ -117,7 +120,7 @@ export function ReferencePill({ reference }: { reference: TypedReference }) {
   );
 }
 
-function DismissButton({
+function RemoveButton({
   reference,
   onDismiss,
 }: {
@@ -128,11 +131,12 @@ function DismissButton({
     <button
       type="button"
       onClick={onDismiss}
-      aria-label={`Stop using ${reference.label} as context`}
-      title="Dismiss page context"
-      className="ml-auto shrink-0 text-fg-muted hover:text-fg-default focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+      aria-label={`Remove ${reference.label} from the first message context`}
+      title={`Remove ${reference.label} from the first message context`}
+      className="ml-auto shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-micro font-medium text-fg-muted hover:text-fg-default hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <Cross2Icon className="h-3 w-3" />
+      <span>Remove</span>
     </button>
   );
 }

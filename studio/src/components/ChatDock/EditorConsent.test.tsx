@@ -13,6 +13,9 @@ const router = vi.hoisted(() => ({
 const editor = vi.hoisted(() => ({
   capture: vi.fn(),
 }));
+const files = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
 const draft = vi.hoisted(() => ({
   state: { source: null as string | null, designing: true },
 }));
@@ -37,6 +40,11 @@ vi.mock("@/lib/chatDock/editorSession", () => ({
   captureActiveEditorDocument: editor.capture,
 }));
 
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/client")>()),
+  openFile: files.open,
+}));
+
 vi.mock("@/hooks/useDraftBot", () => ({
   useDraftState: () => draft.state,
 }));
@@ -47,6 +55,7 @@ import {
   navigationTargetForReply,
   useNavigationReply,
 } from "@/lib/chatDock/replyNavigation";
+import { ApiError } from "@/api/client";
 import { DraftBotOffer } from "./draftBotOffer";
 
 function NavigationHarness({
@@ -72,6 +81,13 @@ beforeEach(() => {
   router.route = "/pipelines";
   router.setLocation.mockReset();
   editor.capture.mockReset();
+  files.open.mockReset();
+  files.open.mockResolvedValue({
+    source: "workflow demo:\n",
+    document: {},
+    diagnostics: [],
+    path: "bots/demo/main.bot",
+  });
   submit.mockReset();
   submit.mockResolvedValue(undefined);
   draft.state = { source: null, designing: true };
@@ -133,8 +149,40 @@ describe("navigate then send", () => {
     router.route = "/editor";
     rerender(<NavigationHarness message="Crée le bot." />);
 
-    await waitFor(() => expect(submit).toHaveBeenCalledWith("Crée le bot."));
+    await waitFor(() =>
+      expect(submit).toHaveBeenCalledWith("Crée le bot.", "view/editor"),
+    );
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("preflights an existing bot before starting navigation", async () => {
+    let resolveOpen: ((value: unknown) => void) | undefined;
+    files.open.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveOpen = resolve;
+      }),
+    );
+    render(<NavigationHarness target="bot/bots/demo/main.bot" />);
+
+    act(() => screen.getByText("Continue").click());
+
+    expect(screen.getByText("Loading destination")).toBeTruthy();
+    expect(files.open).toHaveBeenCalledWith("bots/demo/main.bot");
+    expect(router.setLocation).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOpen?.({
+        source: "workflow demo:\n",
+        document: {},
+        diagnostics: [],
+        path: "bots/demo/main.bot",
+      });
+      await Promise.resolve();
+    });
+
+    expect(router.setLocation).toHaveBeenCalledWith(
+      "/editor?file=bots%2Fdemo%2Fmain.bot",
+    );
   });
 
   it("waits for the exact complete editor document before sending", async () => {
@@ -146,7 +194,10 @@ describe("navigate then send", () => {
         message="Modifie ce bot."
       />,
     );
-    act(() => screen.getByText("Continue").click());
+    await act(async () => {
+      screen.getByText("Continue").click();
+      await Promise.resolve();
+    });
 
     expect(router.setLocation).toHaveBeenCalledWith(
       "/editor?file=bots%2Fdemo%2Fmain.bot",
@@ -176,11 +227,14 @@ describe("navigate then send", () => {
       await Promise.resolve();
     });
 
-    expect(submit).toHaveBeenCalledWith("Modifie ce bot.");
+    expect(submit).toHaveBeenCalledWith(
+      "Modifie ce bot.",
+      "bot/bots/demo/main.bot",
+    );
     expect(submit).toHaveBeenCalledTimes(1);
   });
 
-  it("does not send a modification request with an incomplete document", async () => {
+  it("sends the withheld-document marker rather than dropping the request", async () => {
     editor.capture.mockResolvedValue({
       sessionId: "session-1",
       revision: 3,
@@ -192,12 +246,62 @@ describe("navigate then send", () => {
       <NavigationHarness target="bot/bots/demo/main.bot" />,
     );
     act(() => screen.getByText("Continue").click());
+    await waitFor(() =>
+      expect(router.setLocation).toHaveBeenCalledWith(
+        "/editor?file=bots%2Fdemo%2Fmain.bot",
+      ),
+    );
     router.route = "/editor";
     rerender(<NavigationHarness target="bot/bots/demo/main.bot" />);
 
+    // A document over MAX_ACTIVE_EDITOR_SOURCE is WITHHELD, not a failed
+    // send: the capture layer already drops `source` and leaves
+    // `complete: false` + `sourceLength` for the bot to read. Dropping the
+    // request instead gave the operator a dead click on the one path where
+    // they had already stated their intent — while the ordinary composer
+    // send, carrying the very same oversized document, went through.
+    //
+    // The bot can then answer usefully: name the file, say it is too large to
+    // read inline, ask which part. What must never happen is a PREFIX — half
+    // a workflow looks editable and cannot be validated honestly.
+    await waitFor(() =>
+      expect(submit).toHaveBeenCalledWith(
+        expect.any(String),
+        "bot/bots/demo/main.bot",
+      ),
+    );
     expect(
-      await screen.findByText(/too large to send completely/i),
+      screen.queryByText(/too large to send completely/i),
+    ).toBeNull();
+  });
+
+  it("does not navigate to a bot missing from the current workspace", async () => {
+    files.open.mockRejectedValueOnce(
+      new ApiError(404, "API error 404: file not found"),
+    );
+    render(<NavigationHarness target="bot/bots/missing/main.bot" />);
+
+    act(() => screen.getByText("Continue").click());
+
+    expect(
+      await screen.findByText(/does not exist in the current workspace/i),
     ).toBeTruthy();
+    expect(router.setLocation).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("does not navigate to a bot path rejected by the workspace boundary", async () => {
+    files.open.mockRejectedValueOnce(
+      new ApiError(400, "API error 400: invalid path"),
+    );
+    render(<NavigationHarness target="bot/bots/rejected/main.bot" />);
+
+    act(() => screen.getByText("Continue").click());
+
+    expect(
+      await screen.findByText(/not a valid file in the current workspace/i),
+    ).toBeTruthy();
+    expect(router.setLocation).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -212,6 +316,14 @@ describe("navigate then send", () => {
 
   it("refuses a typed reference that escapes the workspace", () => {
     expect(hrefForAssistantReplyTarget("bot/../../etc/passwd")).toBeNull();
+  });
+
+  it("refuses a source helper because only a workflow can attach authoring context", () => {
+    expect(
+      hrefForAssistantReplyTarget(
+        "bot/bots/demo/scripts/tools/pipeline_helper.py",
+      ),
+    ).toBeNull();
   });
 });
 

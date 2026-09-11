@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v2"
 
@@ -130,6 +131,12 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 	if err := copyTree(botDir, target); err != nil {
 		return nil, fmt.Errorf("install %s: %w", name, err)
 	}
+	if err := writeOrigin(target, Origin{
+		Source: opts.Source, Ref: ref, SourcePath: opts.Path, InstalledAt: time.Now().UTC(),
+	}); err != nil {
+		_ = os.RemoveAll(target)
+		return nil, err
+	}
 
 	// 6. Refresh Nexie's catalog so the new bot is advertised (best-effort).
 	_, _ = botregistry.RegenerateWhatsNextCatalog(workdir)
@@ -180,6 +187,10 @@ func InstallFromBotzBytes(ctx context.Context, r io.Reader, opts Options) (*Resu
 	// The temp extract dir is the "source"; report it as an upload so the
 	// caller doesn't surface a throwaway /tmp path.
 	res.Source = "upload"
+	if err := writeOrigin(res.InstalledPath, Origin{Source: "upload", InstalledAt: time.Now().UTC()}); err != nil {
+		_ = os.RemoveAll(res.InstalledPath)
+		return nil, err
+	}
 	return res, nil
 }
 
@@ -217,6 +228,7 @@ func Remove(_ context.Context, opts Options) error {
 	if err := os.RemoveAll(target); err != nil {
 		return fmt.Errorf("remove %s: %w", name, err)
 	}
+	_ = os.Remove(originPath(target))
 	_, _ = botregistry.RegenerateWhatsNextCatalog(workdir)
 	return nil
 }

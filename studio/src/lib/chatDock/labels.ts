@@ -8,10 +8,8 @@
 //   Steering  — you push. The text is queued into a LIVE agent's inbox
 //               and picked up at its next turn. Nothing replies to you.
 //
-// The lanes keep their bubbles/panels off each other in the bottom-right
-// corner. The assistant owns lane 0 (the canonical corner) because it is
-// present on every route: its position must never move under the
-// operator. Steering, which only exists on a run, sits one lane over.
+// The assistant owns the canonical floating lane. Steering only exists on
+// a run and is permanently rendered in that console's right dock.
 
 import type { DockLane } from "@/components/ChatDock/ChatDockShell";
 
@@ -23,4 +21,3 @@ export const ASSISTANT_LANE: DockLane = 0;
 export const STEERING_TITLE = "Steering";
 export const STEERING_HINT =
   "Messages here are queued into this run's live agent and picked up at its next turn — this is not an assistant, nothing replies.";
-export const STEERING_LANE: DockLane = 1;

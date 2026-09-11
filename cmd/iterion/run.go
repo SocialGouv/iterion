@@ -46,6 +46,7 @@ var runOpts struct {
 	maxDuration         string
 	maxIterations       int
 	maxParallelBranches int
+	unlimitedWorkflow   bool
 	autoResume          int
 }
 
@@ -94,6 +95,7 @@ var runCmd = &cobra.Command{
 				MaxDuration:         runOpts.maxDuration,
 				MaxIterations:       runOpts.maxIterations,
 				MaxParallelBranches: runOpts.maxParallelBranches,
+				UnlimitedWorkflow:   runOpts.unlimitedWorkflow,
 			},
 		}
 		if len(runOpts.varFlags) > 0 {
@@ -142,7 +144,7 @@ func init() {
 	f.StringVar(&runOpts.fallback, "fallback", "", "Run-level fallback route \"<backend>:<model>\" taken when an agent node's primary fails (e.g. --fallback 'claw:openai/gpt-5.5'). Applies only to agent nodes that declare no fallbacks: of their own, and never to judges. Uses the default trigger set (usage_window, unavailable); author a fallbacks: block for anything finer. See ADR-087.")
 	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code|codex|pi|kimi|grok). Same selector syntax as --model; wins over the node's DSL backend:.")
 	f.StringArrayVar(&runOpts.effortFor, "effort-for", nil, "Per-node/-group reasoning_effort override (repeatable): \"selector=effort\" or a bare \"effort\" for every LLM node (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model; wins over the node's DSL reasoning_effort: AND over a dynamic _reasoning_effort edge mapping.")
-	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches)
+	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches, &runOpts.unlimitedWorkflow)
 	registerAutoResumeFlag(f, &runOpts.autoResume)
 	rootCmd.AddCommand(runCmd)
 }
@@ -159,10 +161,12 @@ func registerAutoResumeFlag(f *pflag.FlagSet, n *int) {
 	f.IntVar(n, "auto-resume", 0, "Auto-resume a failed_resumable run with a retryable cause (transient backend error, budget/timeout with a raised --max-* cap, rate-limit) up to N times with capped exponential backoff (0 = off; env: ITERION_AUTO_RESUME). Respects the forfait usage cap (ITERION_FORFAIT_CAP_PCT).")
 }
 
-func registerBudgetFlags(f *pflag.FlagSet, cost *float64, tokens *int, duration *string, iterations, parallel *int) {
+func registerBudgetFlags(f *pflag.FlagSet, cost *float64, tokens *int, duration *string, iterations, parallel *int, unlimited *bool) {
 	f.Float64Var(cost, "max-cost-usd", 0, "Override the workflow budget's max_cost_usd (USD; 0 = inherit the bot's budget)")
 	f.IntVar(tokens, "max-tokens", 0, "Override the workflow budget's max_tokens (0 = inherit)")
 	f.StringVar(duration, "max-duration", "", "Override the workflow budget's max_duration, e.g. 30m, 2h (empty = inherit)")
 	f.IntVar(iterations, "max-iterations", 0, "Override the workflow budget's max_iterations (0 = inherit)")
 	f.IntVar(parallel, "max-parallel-branches", 0, "Override the workflow budget's max_parallel_branches (0 = inherit)")
+	f.BoolVar(unlimited, "unlimited-workflow-budget", false, "Internal: remove workflow-owned hard caps; host ceilings still apply")
+	_ = f.MarkHidden("unlimited-workflow-budget")
 }

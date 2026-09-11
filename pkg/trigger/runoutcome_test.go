@@ -134,3 +134,12 @@ func TestRunOutcomeEventIDRepeatEpisodes(t *testing.T) {
 		t.Fatalf("bare key = %q, want run:r", got)
 	}
 }
+
+func TestRunHealthEventIDIsWatchableAndStable(t *testing.T) {
+	if got := RunHealthEventID("run-1", 42); got != "run:run-1:health:42" {
+		t.Fatalf("ID = %q", got)
+	}
+	if RunHealthEventID("run-1", 42) == RunHealthEventID("run-1", 43) {
+		t.Fatal("distinct persisted health events must not collide")
+	}
+}

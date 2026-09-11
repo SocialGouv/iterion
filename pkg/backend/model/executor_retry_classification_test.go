@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
@@ -22,6 +23,7 @@ func TestIsDelegateRetryable_Classification(t *testing.T) {
 		// --- typed transient signals -------------------------------------
 		{"typed ErrTransient network", &delegate.ErrTransient{Provider: delegate.BackendClaudeCode, Reason: "network"}, true},
 		{"typed ErrRateLimited (session/forfait quota)", &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Detail: "hit your session limit"}, true},
+		{"typed Claw stream silence watchdog", &StreamIdleError{Phase: StreamIdleHot, Idle: 15 * time.Minute}, true},
 
 		// --- network / connectivity markers ------------------------------
 		{"dns flap", errors.New("dial tcp: lookup api.anthropic.com: no such host"), true},
@@ -75,6 +77,7 @@ func TestRetryPolicyFromEnv(t *testing.T) {
 
 	networkErr := errors.New("dial tcp: no such host")
 	otherErr := errors.New("signal: killed")
+	streamIdleErr := &StreamIdleError{Phase: StreamIdleCold, Idle: time.Minute}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,6 +89,9 @@ func TestRetryPolicyFromEnv(t *testing.T) {
 			}
 			if got := rp.effectiveMaxAttempts(networkErr); got != c.wantTransient {
 				t.Errorf("transient budget = %d, want %d", got, c.wantTransient)
+			}
+			if got := rp.effectiveMaxAttempts(streamIdleErr); got != c.wantTransient {
+				t.Errorf("stream-idle budget = %d, want %d", got, c.wantTransient)
 			}
 		})
 	}

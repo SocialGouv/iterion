@@ -1,15 +1,15 @@
 // The chat dock's presentation vocabulary, lifted out of the run
 // console so it isn't owned by `/runs/:id` any more.
 //
-// Three states, unchanged from the original FloatingChatPanel:
+// Three states for the shell-level assistant:
 //   closed        — a bubble in the bottom-right corner
 //   floating      — a non-modal resizable panel over the page
 //   docked-right  — a column the host lays out beside its content
 //
 // Persistence is per USER (one localStorage key for the whole studio),
 // not per route: the operator who docked the assistant on /board must
-// find it docked on /runs. The run console's own steering panel keeps
-// its historical per-console key so the two docks stay independent.
+// find it docked on /runs. The run console's own steering panel is always
+// docked and therefore does not participate in this state machine.
 
 import { readEnumFlag, readStringFlag, writeStringFlag } from "@/lib/localStorageFlag";
 
@@ -25,14 +25,7 @@ export const DOCK_STATES = [
 // At 1024px a 380px reserved column plus the sidebar left too little room
 // for the page, so medium/desktop widths open the resizable floating panel.
 export const DOCK_BREAKPOINT_PX = 768;
-// The run steering panel docks inside its own resizable SideDock rather than
-// reserving a fixed app column. Its older lg threshold is still the right one:
-// below it a floating panel covers the run canvas and bottom tab bar.
-export const STEERING_DOCK_BREAKPOINT_PX = 1024;
-
-// The assistant dock's persisted state. Distinct from the run console's
-// CHAT_DOCK_KEY (`iterion.runview.chatDock`), which belongs to the
-// steering panel.
+// The assistant dock's persisted state.
 export const ASSISTANT_DOCK_KEY = "iterion.chatDock.assistant";
 
 // Which conversational bot answers in the dock. Persisted per browser so an

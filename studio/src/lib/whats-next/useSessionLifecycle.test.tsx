@@ -64,4 +64,43 @@ describe("useSessionLifecycle", () => {
     expect(setErrorMessage).toHaveBeenLastCalledWith("launch unavailable");
     expect(setStatus).toHaveBeenLastCalledWith("idle");
   });
+
+  it("persists the dock tab before launching with typed Studio-chat provenance", async () => {
+    const order: string[] = [];
+    api.createRun.mockImplementationOnce(async () => {
+      order.push("create");
+      return { run_id: "run-1", status: "running" };
+    });
+    api.getRunWithRetry.mockRejectedValueOnce(new Error("snapshot not ready"));
+    const beforeLaunch = vi.fn(() => order.push("persist"));
+    const runSource = {
+      kind: "studio_chat" as const,
+      client_id: "client-1",
+      conversation_id: "conversation-1",
+    };
+    const { result } = renderHook(() =>
+      useSessionLifecycle({
+        bot,
+        scopeKey: "project-a",
+        repoScopeEnabled: false,
+        activeRepo: null,
+        lifetimeAbortRef: { current: new AbortController() },
+        setRunId: vi.fn(),
+        setStatus: vi.fn(),
+        setBusyMessageId: vi.fn(),
+        setErrorMessage: vi.fn(),
+        runSource,
+        beforeLaunch,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.launch({ initial_message: "help" });
+    });
+
+    expect(order).toEqual(["persist", "create"]);
+    expect(api.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({ run_source: runSource }),
+    );
+  });
 });

@@ -82,7 +82,8 @@ you cannot confirm from the card — is a no-fit: label
   iterion (a diagnostic, a failed run, a draft `.bot` the operator
   will validate) → `copilot`. What to work on this week → `whats-next`
   (not a card). Build and land a missing bot → `feature-dev`. Copi is
-  read-only; it never edits or commits.
+  read-only at tool level, but owns bounded repairs through Studio's
+  host-applied authoring bridge when the source is exposed there.
 
 <!-- ITERION:CATALOG:GENERATED:BEGIN -->
 <!-- ITERION:CATALOG:GENERATED:END -->

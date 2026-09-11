@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -636,16 +637,30 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 // author should either install bash via post_create or rewrite the
 // tool body in POSIX shell.
 func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env map[string]string) *exec.Cmd {
-	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
+	// A command template may contain a host-attested editor document. Passing
+	// that complete shell program as one argv element hits Linux's per-argument
+	// limit before bash starts (the Studio editor allows 160 KiB). Mirror the
+	// sandbox drivers' proven 100 KiB threshold and stream oversized programs
+	// through stdin instead. The short command path remains byte-for-byte
+	// unchanged.
+	const maxInlineToolCommandBytes = 100_000
+	args := []string{"bash", "-c", resolved}
+	var stdin io.Reader
+	if len(resolved) > maxInlineToolCommandBytes {
+		args = []string{"bash", "-s"}
+		stdin = strings.NewReader(resolved)
 	}
-	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
+	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		return e.sandbox.Command(ctx, args, sandbox.ExecOpts{Env: env, Stdin: stdin})
+	}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
 	// jobs (`&`, a daemon a build script starts), and those grandchildren
 	// inherit our stdout/stderr pipes: killing only the shell leaves the
 	// read blocked, so cancelling the run would stop the wait and not the
 	// work. Signal the whole group instead.
 	proc.TerminateGroupOnCancel(cmd)
+	cmd.Stdin = stdin
 	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = os.Environ()
 		// Run-level provisioning (devbox profile PATH) — appended after

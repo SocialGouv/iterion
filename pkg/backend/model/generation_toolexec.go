@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -286,6 +287,18 @@ func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock
 			askErr.PendingToolUseID = tu.ID
 			return api.ContentBlock{}, askErr
 		}
+		if diagnostic, ok := diagnosticShellFailureOutput(tu.Name, output, err); ok {
+			_, _ = runner.Fire(ctx, hooks.Context{
+				Event:      hooks.PostToolUse,
+				ToolName:   tu.Name,
+				ToolInput:  hookInput,
+				ToolResult: diagnostic,
+			})
+			return api.ToolResult{
+				ToolUseID: tu.ID,
+				Content:   diagnostic,
+			}.ToContentBlock(), nil
+		}
 		// Post-tool fires are observational; the runner logs any
 		// handler error itself, so we discard the (Decision, error)
 		// return on purpose.
@@ -313,6 +326,36 @@ func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock
 	}.ToContentBlock(), nil
 }
 
+const diagnosticShellExitErrorPrefix = "command exited with error:"
+
+// diagnosticShellFailureOutput exposes a completed diagnostic command's
+// captured output even when it exits non-zero. claw's public executor returns
+// that pair for an exit-status failure, while the usual tool result path would
+// otherwise discard the output. This is deliberately fail-closed: timeouts,
+// cancellation, validation failures, empty output, unknown errors, and every
+// ordinary bash invocation retain the hard-error path above.
+//
+// The upstream executor already limits output to 10 KiB and marks head-only
+// truncation with "[output truncated]". Keep that marker verbatim rather than
+// inventing unavailable tail output; Copi can issue a narrower diagnostic.
+func diagnosticShellFailureOutput(toolName, output string, err error) (string, bool) {
+	if toolName != "diagnostic_shell" || output == "" || err == nil {
+		return "", false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", false
+	}
+	errText := err.Error()
+	if strings.HasPrefix(errText, "command timed out after ") || !strings.HasPrefix(errText, diagnosticShellExitErrorPrefix) {
+		return "", false
+	}
+	header := fmt.Sprintf("Diagnostic command failed (%s); inspect and fix it before continuing:", errText)
+	if strings.Contains(output, "[output truncated]") {
+		header += " Output is partial; run a narrower diagnostic before deciding."
+	}
+	return header + "\n" + output, true
+}
+
 // maybeCompact runs claw's pure-function compactor with a config sized
 // to the given model's context window (default trigger at 85% of the
 // window, last 4 messages kept verbatim). The ratio and preserveRecent
@@ -320,12 +363,11 @@ func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock
 //
 // It is a no-op for short transcripts (returns the input unchanged with
 // `compacted=false`) and a bounded summarisation for long ones — the
-// last preserveRecent turns are kept verbatim, so any assistant message
-// holding a pending tool_use stays addressable for the next tool round
-// or for resume after a pause.
+// last preserveRecent turns are kept verbatim. The shared wrapper also
+// removes any tool protocol half-pair exposed by the raw message boundary.
 func maybeCompact(messages []api.Message, model string, ratio float64, preserveRecent int) (out []api.Message, info CompactInfo, compacted bool) {
 	cfg := clawrt.DefaultCompactionConfigForModel(model, ratio, preserveRecent)
-	res := clawrt.CompactMessages(messages, cfg)
+	res := compactMessagesToolSafe(messages, cfg, nil)
 	if res == nil {
 		return messages, CompactInfo{}, false
 	}
@@ -336,12 +378,20 @@ func maybeCompact(messages []api.Message, model string, ratio float64, preserveR
 	}, true
 }
 
-// maybeCompactPause is a thin wrapper over maybeCompact for the pause
-// path that already discards the info struct (the pause checkpoint
-// records the conversation, not the compaction event).
-func maybeCompactPause(messages []api.Message, model string, ratio float64, preserveRecent int) []api.Message {
-	out, _, _ := maybeCompact(messages, model, ratio, preserveRecent)
-	return out
+// maybeCompactPause is the pause-aware compaction path. It preserves exactly
+// the tool_use named by the suspension while pruning any other incomplete
+// calls before the conversation is checkpointed.
+func maybeCompactPause(messages []api.Message, model string, ratio float64, preserveRecent int, pendingToolUseID string) []api.Message {
+	allowedPending := map[string]struct{}{}
+	if pendingToolUseID != "" {
+		allowedPending[pendingToolUseID] = struct{}{}
+	}
+	cfg := clawrt.DefaultCompactionConfigForModel(model, ratio, preserveRecent)
+	if res := compactMessagesToolSafe(messages, cfg, allowedPending); res != nil {
+		messages = res.CompactedMessages
+	}
+	messages, _ = sanitizeToolPairs(messages, allowedPending, false)
+	return messages
 }
 
 // maxContextCompactRetries bounds the reactive force-compaction that
@@ -387,10 +437,10 @@ func forceCompactToTokens(messages []api.Message, targetTokens, preserveRecent i
 	if preserveRecent <= 0 {
 		preserveRecent = clawrt.DefaultCompactionPreserveRecent
 	}
-	res := clawrt.CompactMessages(messages, clawrt.CompactionConfig{
+	res := compactMessagesToolSafe(messages, clawrt.CompactionConfig{
 		PreserveRecentMessages: preserveRecent,
 		MaxEstimatedTokens:     targetTokens,
-	})
+	}, nil)
 	if res == nil || len(res.CompactedMessages) == 0 || len(res.CompactedMessages) >= len(messages) {
 		return messages, false
 	}
@@ -404,6 +454,9 @@ func forceCompactToTokens(messages []api.Message, targetTokens, preserveRecent i
 // tool loop. Non-context errors and exhausted retries surface unchanged.
 func callWithContextRetry(ctx context.Context, client api.APIClient, opts GenerationOptions, messages *[]api.Message, toolChoice *api.ToolChoice) (*aggregatedResponse, error) {
 	for attempt := 0; ; attempt++ {
+		// Heal persisted/compacted history in place so both this request and
+		// any later session capture see the same valid conversation.
+		*messages, _ = sanitizeToolPairs(*messages, nil, false)
 		req, err := buildRequest(opts, *messages, nil, toolChoice)
 		if err != nil {
 			return nil, err

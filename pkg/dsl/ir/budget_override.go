@@ -22,6 +22,12 @@ type BudgetOverrides struct {
 	MaxDuration         string
 	MaxIterations       int
 	MaxParallelBranches int
+	// UnlimitedWorkflow removes the workflow-owned hard limits before the
+	// non-zero fields above are applied. It deliberately leaves advisory
+	// warnings and MaxParallelBranches alone. Host-owned ceilings are applied
+	// after this override (cloud platform / credential-pool grant), so this is
+	// not authority to bypass an externally imposed cap.
+	UnlimitedWorkflow bool
 	// CapImposed travels with an override whose value was clamped by an
 	// external authority (pool-grant allowance) so the runtime knows the
 	// resulting cap is absolute — see ir.Budget.CapImposed.
@@ -35,7 +41,8 @@ type BudgetOverrides struct {
 // persist (it used to persist as an empty `budget_overrides: {}`).
 func (o BudgetOverrides) IsZero() bool {
 	return o.MaxCostUSD <= 0 && o.MaxTokens <= 0 && o.MaxDuration == "" &&
-		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0
+		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0 &&
+		!o.UnlimitedWorkflow
 }
 
 // Validate rejects a malformed MaxDuration early with an actionable
@@ -66,6 +73,16 @@ func ApplyBudgetOverrides(wf *Workflow, o BudgetOverrides) {
 	}
 	if wf.Budget == nil {
 		wf.Budget = &Budget{}
+	}
+	if o.UnlimitedWorkflow {
+		wf.Budget.MaxCostUSD = 0
+		wf.Budget.MaxTokens = 0
+		wf.Budget.MaxDuration = ""
+		wf.Budget.MaxIterations = 0
+		// CapImposed describes the effective limits currently on the workflow.
+		// The clear happens before a donor/platform authority gets its turn, so
+		// the old workflow snapshot cannot make a later host cap look imposed.
+		wf.Budget.CapImposed = false
 	}
 	if o.MaxCostUSD > 0 {
 		wf.Budget.MaxCostUSD = o.MaxCostUSD

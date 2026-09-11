@@ -126,6 +126,14 @@ export interface BotChatNode {
   prompt?: string;
   text_field?: string;
   approved_field?: string;
+  /** JSON field used only for host-attested automatic events. */
+  host_event_field?: string;
+  /** Host-derived bounded transcript injected at resume time. */
+  history?: {
+    field: string;
+    max_messages?: number;
+    max_estimated_tokens?: number;
+  };
 }
 
 export interface BotChatLauncherVar {

@@ -875,26 +875,26 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 	}
 
 	return LLMFields{
-			Model:           model,
-			Backend:         d.Backend,
-			Provider:        d.Provider,
-			Command:         d.Command,
-			SystemPrompt:    d.System,
-			UserPrompt:      d.User,
-			MaxTokens:       d.MaxTokens,
-			ReasoningEffort: d.ReasoningEffort,
-			Timeout:         d.Timeout,
-			Readonly:        d.Readonly,
-			FullAccess:      d.FullAccess,
-			Images:          d.Images,
-		}, SchemaFields{
-			InputSchema:  d.Input,
-			OutputSchema: d.Output,
-		}, InteractionFields{
-			Interaction:       interaction,
-			InteractionPrompt: d.InteractionPrompt,
-			InteractionModel:  d.InteractionModel,
-		}, true
+		Model:           model,
+		Backend:         d.Backend,
+		Provider:        d.Provider,
+		Command:         d.Command,
+		SystemPrompt:    d.System,
+		UserPrompt:      d.User,
+		MaxTokens:       d.MaxTokens,
+		ReasoningEffort: d.ReasoningEffort,
+		Timeout:         d.Timeout,
+		Readonly:        d.Readonly,
+		FullAccess:      d.FullAccess,
+		Images:          d.Images,
+	}, SchemaFields{
+		InputSchema:  d.Input,
+		OutputSchema: d.Output,
+	}, InteractionFields{
+		Interaction:       interaction,
+		InteractionPrompt: d.InteractionPrompt,
+		InteractionModel:  d.InteractionModel,
+	}, true
 }
 
 func (c *compiler) compileAgents() {
@@ -912,6 +912,7 @@ func (c *compiler) compileAgents() {
 			Publish:           a.Publish,
 			PublishLabels:     a.ArtifactLabels,
 			Session:           a.Session,
+			SessionSlot:       a.SessionSlot,
 			Tools:             a.Tools,
 			ToolPolicy:        a.ToolPolicy,
 			Capabilities:      a.Capabilities,
@@ -949,6 +950,7 @@ func (c *compiler) compileJudges() {
 			MCP:               convertMCPConfig(j.MCP),
 			Publish:           j.Publish,
 			Session:           j.Session,
+			SessionSlot:       j.SessionSlot,
 			Tools:             j.Tools,
 			ToolPolicy:        j.ToolPolicy,
 			Capabilities:      j.Capabilities,

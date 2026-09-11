@@ -343,6 +343,215 @@ func TestPipelineBoardPendingReviewsOldestUpdateFirstAndRepauseMovesToBack(t *te
 	)
 }
 
+func TestPipelineBoardPendingReviewsShareOnlyFanoutSiblingBatchKey(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	env.seedRun(t, "batch-root", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.SubbotChildren = map[string]string{
+			"review_epic@loop_3#branch_fanout_0": "batch-a",
+			"review_epic@loop_3#branch_fanout_1": "batch-b",
+			// A separate loop pass must not be combined with this batch.
+			"review_epic@loop_4#branch_fanout_0": "other-pass",
+		}
+	})
+	seedPaused := func(id string) {
+		t.Helper()
+		env.seedRun(t, id, "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+			run.ParentRunID = "batch-root"
+			run.Checkpoint = &store.Checkpoint{
+				NodeID:               "approval",
+				InteractionID:        id + "-interaction",
+				InteractionQuestions: map[string]any{"approved": "Approve?"},
+			}
+		})
+	}
+	seedPaused("batch-a")
+	seedPaused("batch-b")
+	seedPaused("other-pass")
+
+	card := findPipelineCard(t, env.projection(t).Cards, "run:batch-root")
+	if len(card.PendingReviews) != 3 {
+		t.Fatalf("pending_reviews = %+v, want three", card.PendingReviews)
+	}
+	keys := map[string]string{}
+	for _, review := range card.PendingReviews {
+		keys[review.RunID] = review.BatchKey
+	}
+	if keys["batch-a"] == "" || keys["batch-a"] != keys["batch-b"] {
+		t.Errorf("sibling fan-out reviews must share a batch key: %v", keys)
+	}
+	if keys["other-pass"] == "" || keys["other-pass"] == keys["batch-a"] {
+		t.Errorf("a distinct fan-out pass must not share the batch: %v", keys)
+	}
+}
+
+// A rewind releases the old subbot child pointers but leaves the child run
+// records (and their paused human checkpoints) behind for auditability. The
+// board must keep walking those records for aggregate history while removing
+// their reviews from the action queue. The current gate, which was created
+// after the rewind and is not in the old orphan list, remains visible even
+// when the root has no SubbotChildren map.
+func TestPipelineBoardHidesRewoundOrphanedReviewsKeepsCurrentGate(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	root := env.seedRun(t, "rewind-root", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+	})
+	oldIDs := []string{"old-a", "old-b", "old-c", "old-d", "old-e"}
+	for _, id := range oldIDs {
+		env.seedRun(t, id, "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+			run.ParentRunID = root.ID
+			run.ParentNodeID = "review_epic_acceptance"
+			run.Checkpoint = &store.Checkpoint{NodeID: "approve_epic_card", InteractionID: id + "-gate"}
+		})
+	}
+	current := env.seedRun(t, "current-gate", "visual_foundation", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.ParentRunID = root.ID
+		run.ParentNodeID = "establish_visual_foundation"
+		run.Checkpoint = &store.Checkpoint{NodeID: "approve_visual_foundation", InteractionID: "current-gate-interaction"}
+	})
+	rs := env.runStore(t)
+	if _, err := rs.AppendEvent(context.Background(), root.ID, store.Event{
+		Type:      store.EventRunRewound,
+		RunID:     root.ID,
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"orphaned_child_runs": oldIDs,
+		},
+	}); err != nil {
+		t.Fatalf("append rewind marker: %v", err)
+	}
+	// A later rewind with no detached children must not erase the first
+	// marker: scanRunEvents accumulates the union, never last-wins.
+	if _, err := rs.AppendEvent(context.Background(), root.ID, store.Event{
+		Type:      store.EventRunRewound,
+		RunID:     root.ID,
+		Timestamp: time.Now().UTC(),
+		Data:      map[string]any{"orphaned_child_runs": []any{}},
+	}); err != nil {
+		t.Fatalf("append empty rewind marker: %v", err)
+	}
+
+	card := findPipelineCard(t, env.projection(t).Cards, "run:"+root.ID)
+	if len(card.PendingReviews) != 1 || card.PendingReviews[0].RunID != current.ID {
+		t.Fatalf("pending_reviews = %+v, want only current gate %s", card.PendingReviews, current.ID)
+	}
+	if card.PendingReviews[0].NodeID != "approve_visual_foundation" {
+		t.Fatalf("current review = %+v", card.PendingReviews[0])
+	}
+	if card.DescendantCount != len(oldIDs)+1 {
+		t.Fatalf("descendant_count = %d, want %d (history must remain folded)", card.DescendantCount, len(oldIDs)+1)
+	}
+	if len(card.TreeRunIDs) != len(oldIDs)+2 {
+		t.Fatalf("tree_run_ids = %v, want root + all historical children", card.TreeRunIDs)
+	}
+	for _, id := range oldIDs {
+		found := false
+		for _, got := range card.TreeRunIDs {
+			if got == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("orphaned child %s missing from tree_run_ids", id)
+		}
+	}
+}
+
+// An orphaned child can itself have a paused descendant. The orphan marker
+// belongs to the direct edge, so the projection checks the path only when it
+// reaches a pending gate and suppresses the whole historical subtree.
+func TestPipelineBoardHidesReviewsInOrphanedSubtree(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	root := env.seedRun(t, "orphan-tree-root", "review", store.RunStatusRunning, nil)
+	child := env.seedRun(t, "orphan-tree-child", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.ParentRunID = root.ID
+	})
+	env.seedRun(t, "orphan-tree-grandchild", "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.ParentRunID = child.ID
+		run.Checkpoint = &store.Checkpoint{NodeID: "approval", InteractionID: "grandchild-gate"}
+	})
+	if _, err := env.runStore(t).AppendEvent(context.Background(), root.ID, store.Event{
+		Type:      store.EventRunRewound,
+		RunID:     root.ID,
+		Timestamp: time.Now().UTC(),
+		Data:      map[string]any{"orphaned_child_runs": []string{child.ID}},
+	}); err != nil {
+		t.Fatalf("append rewind marker: %v", err)
+	}
+	card := findPipelineCard(t, env.projection(t).Cards, "run:"+root.ID)
+	if len(card.PendingReviews) != 0 {
+		t.Fatalf("pending_reviews = %+v, want orphaned subtree hidden", card.PendingReviews)
+	}
+	if card.DescendantCount != 2 || len(card.TreeRunIDs) != 3 {
+		t.Fatalf("historical subtree was pruned: descendants=%d tree=%v", card.DescendantCount, card.TreeRunIDs)
+	}
+}
+
+// Once the only pending reviews are historical, lane selection must fall back
+// to the root status. A failed ticket therefore returns to Needs attention
+// and reserves its restart slot instead of being kept In progress by a stale
+// review.
+func TestPipelineBoardOrphanedReviewsDoNotPinFailedRootLane(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{
+		Title: "Recover me",
+		State: native.StateInProgress,
+		Bot:   "review",
+	})
+	if err != nil {
+		t.Fatalf("Create issue: %v", err)
+	}
+	root := env.seedRun(t, "orphaned-failed-root", "review", store.RunStatusFailedResumable, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "workflow failed"
+	})
+	env.seedRun(t, "orphaned-failed-child", "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.ParentRunID = root.ID
+		run.Checkpoint = &store.Checkpoint{NodeID: "approval", InteractionID: "orphaned-failed-gate"}
+	})
+	if _, err := env.runStore(t).AppendEvent(context.Background(), root.ID, store.Event{
+		Type:      store.EventRunRewound,
+		RunID:     root.ID,
+		Timestamp: time.Now().UTC(),
+		Data:      map[string]any{"orphaned_child_runs": []string{"orphaned-failed-child"}},
+	}); err != nil {
+		t.Fatalf("append rewind marker: %v", err)
+	}
+	if err := env.board.SetLastRun(issue.ID, root.ID, ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	card := findPipelineCard(t, env.projection(t).Cards, "run:"+root.ID)
+	if len(card.PendingReviews) != 0 {
+		t.Fatalf("pending_reviews = %+v, want none", card.PendingReviews)
+	}
+	if card.ColumnID != pipelineColumnNeedsAttention || !card.ReservesSlot {
+		t.Fatalf("lane/reservation = (%s, %v), want needs_attention/true", card.ColumnID, card.ReservesSlot)
+	}
+}
+
+// Finished subtrees without a pending gate keep the projection's no-scan
+// fast path. The running root is scanned for progress; the finished child is
+// accounted for without loading its event log.
+func TestPipelineBoardFinishedSubtreeDoesNotTriggerEventScan(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	root := env.seedRun(t, "scan-root", "review", store.RunStatusRunning, nil)
+	child := env.seedRun(t, "scan-finished-child", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.ParentRunID = root.ID
+	})
+	b := &pipelineProjectionBuilder{
+		ctx:          context.Background(),
+		rs:           env.runStore(t),
+		runs:         map[string]*store.Run{root.ID: root, child.ID: child},
+		children:     map[string][]*store.Run{root.ID: []*store.Run{child}},
+		includedRuns: map[string]struct{}{},
+		eventScans:   map[string]*runEventScan{},
+	}
+	b.aggregateTree(root)
+	if len(b.eventScans) != 1 {
+		t.Fatalf("event scans = %d, want only the running root scan", len(b.eventScans))
+	}
+}
+
 // Root status maps to the five lanes; queued is TODO (waiting for a slot).
 func TestPipelineBoardColumnBucketing(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
@@ -1755,12 +1964,18 @@ func TestPipelineBoardHidesChatSessions(t *testing.T) {
 		run.FilePath = env.botPath
 		run.ParentRunID = "chat-open"
 	})
+	env.seedRun(t, "chat-source", "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		// Provenance is authoritative even when the workflow's own manifest is
+		// ordinary or can no longer be resolved.
+		run.FilePath = env.botPath
+		run.Source = &store.RunSource{Kind: store.RunSourceKindStudioChat}
+	})
 	env.seedRun(t, "run-manual", "review", store.RunStatusRunning, func(run *store.Run) {
 		run.FilePath = env.botPath
 	})
 
 	projection := env.projection(t)
-	for _, hidden := range []string{"run:chat-open", "run:chat-legacy", "run:chat-child"} {
+	for _, hidden := range []string{"run:chat-open", "run:chat-legacy", "run:chat-child", "run:chat-source"} {
 		if hasPipelineCard(projection.Cards, hidden) {
 			t.Errorf("chat session %s was projected as a pipeline card", hidden)
 		}

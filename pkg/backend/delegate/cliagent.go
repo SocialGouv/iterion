@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -148,8 +150,13 @@ type CLIAgentProtocol struct {
 // WriteRegistration owns only the backend-specific registration syntax; the
 // shadow-home lifecycle and policy serialisation remain shared.
 type CLIAgentPermissionHook struct {
-	HomeEnv           string
-	DefaultHome       string
+	HomeEnv     string
+	DefaultHome string
+	// ParentHomeLayout means HomeEnv names the process home directory and the
+	// CLI's state lives below it in DefaultHome (for example HOME/.grok).
+	// The default false preserves CLIs whose HomeEnv points directly at their
+	// state directory (for example KIMI_CODE_HOME).
+	ParentHomeLayout  bool
 	ExcludedEntries   []string
 	WriteRegistration func(realHome, shadowHome, command string) error
 }
@@ -371,7 +378,10 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 // preparePermissionHook materialises the common half of the grok/kimi hook
 // seam and returns the environment override plus its cleanup closure.
 func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, proto CLIAgentProtocol, backendName string) ([]string, func(), error) {
-	policy := task.Permission
+	policy, err := externalHookPolicy(task.Permission)
+	if err != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: derive external permission policy: %w", backendName, err)
+	}
 	if !policy.Enabled() {
 		return nil, func() {}, nil
 	}
@@ -461,31 +471,56 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 	// rule granting writes outside the repo before it can touch the gate at
 	// all. os.TempDir() is safe here precisely because a permission-gated
 	// sandboxed run is refused above: this path is always host-side.
-	shadowHome, err := os.MkdirTemp("", "iterion-permission-home-*")
+	shadowParent, err := os.MkdirTemp("", "iterion-permission-home-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("delegate: %s: create permission shadow home: %w", backendName, err)
 	}
-	cleanup := func() { _ = os.RemoveAll(shadowHome) }
+	cleanup := func() { _ = os.RemoveAll(shadowParent) }
 
 	// A run-level environment override is part of the CLI invocation and must
 	// therefore also be the source we shadow. Reading only os.Getenv would
 	// replace an explicitly selected credential home with the ambient default.
-	realHome := ""
-	for _, kv := range task.ExtraEnv {
-		if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
-			realHome = strings.TrimSpace(value)
+	realHome, shadowHome, permissionHome := "", shadowParent, shadowParent
+	if hook.ParentHomeLayout {
+		// Grok discovers ~/.grok through HOME, not through GROK_HOME. Give it a
+		// private parent home so every HOME/XDG fallback lookup in its process
+		// tree is isolated, while the inner .grok shadow retains linked auth.
+		operatorHome := ""
+		for _, kv := range task.ExtraEnv {
+			if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
+				operatorHome = strings.TrimSpace(value)
+			}
 		}
-	}
-	if realHome == "" {
-		realHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
-	}
-	if realHome == "" {
-		operatorHome, homeErr := os.UserHomeDir()
-		if homeErr != nil {
+		if operatorHome == "" {
+			operatorHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
+		}
+		if operatorHome == "" {
 			cleanup()
-			return nil, nil, fmt.Errorf("delegate: %s: resolve operator home: %w", backendName, homeErr)
+			return nil, nil, fmt.Errorf("delegate: %s: %s is required for a parent-home permission shadow", backendName, hook.HomeEnv)
 		}
 		realHome = filepath.Join(operatorHome, hook.DefaultHome)
+		shadowHome = filepath.Join(shadowParent, hook.DefaultHome)
+		if err := os.MkdirAll(shadowHome, 0o750); err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("delegate: %s: create permission shadow state home: %w", backendName, err)
+		}
+	} else {
+		for _, kv := range task.ExtraEnv {
+			if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
+				realHome = strings.TrimSpace(value)
+			}
+		}
+		if realHome == "" {
+			realHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
+		}
+		if realHome == "" {
+			operatorHome, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("delegate: %s: resolve operator home: %w", backendName, homeErr)
+			}
+			realHome = filepath.Join(operatorHome, hook.DefaultHome)
+		}
 	}
 	if abs, absErr := filepath.Abs(realHome); absErr == nil {
 		realHome = abs
@@ -516,7 +551,39 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		cleanup()
 		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)
 	}
-	return []string{hook.HomeEnv + "=" + shadowHome}, cleanup, nil
+	return []string{hook.HomeEnv + "=" + permissionHome}, cleanup, nil
+}
+
+// externalHookPolicy derives the policy carried to a Kimi/Grok PreToolUse
+// hook. Those CLIs can enforce deny but cannot pause a run for an Ask decision.
+// A Claw-only alias is never exposed to either CLI, so keeping its ask rule in
+// the serialized hook would make a safe route fail before the model starts.
+//
+// Keep this narrow and fail-closed. The compiler uses the same toolcatalog
+// predicate when admitting a fallback: unknown, native, wildcard, MCP, and
+// every non-Claw-only ask stays in the policy and therefore still refuses the
+// external route. permission: ask remains unmodified and continues to refuse.
+func externalHookPolicy(policy *permission.Policy) (*permission.Policy, error) {
+	if policy == nil || policy.Mode != permission.ModeDeny {
+		return policy, nil
+	}
+
+	cfg := policy.Config()
+	filtered := make([]string, 0, len(cfg.Ask))
+	removed := false
+	for _, raw := range cfg.Ask {
+		name, _, _ := strings.Cut(strings.TrimSpace(raw), "(")
+		if toolcatalog.IsClawOnlyAlias(name) {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	if !removed {
+		return policy, nil
+	}
+	cfg.Ask = filtered
+	return permission.NewPolicyFromConfig(cfg)
 }
 
 func linkShadowHome(realHome, shadowHome string, excluded []string) error {

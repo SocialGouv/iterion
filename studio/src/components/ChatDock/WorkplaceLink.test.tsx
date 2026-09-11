@@ -1,9 +1,6 @@
 // @vitest-environment jsdom
-//
-// Coming back to a conversation, you want what it is ABOUT — for one that
-// drafted a workflow, the editor with that draft. Reported as: the link took
-// the operator to the board they happened to be on when they opened the tab,
-// which is where the conversation was BORN, not where its work lives.
+// A produced workflow is a secondary destination. The immutable page anchor
+// lives in ContextChip and must never be replaced by this link.
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -15,96 +12,42 @@ vi.mock("wouter", () => ({
 
 import { WorkplaceLink } from "./ConversationStrip";
 
-const bornOnBoard = {
-  id: "c1",
-  botId: "copilot",
-  origin: "view/board",
-  originLabel: "Board",
-};
-
 afterEach(cleanup);
 
-function href() {
-  return screen.getByRole("link").getAttribute("href");
+function renderLink(props: Partial<Parameters<typeof WorkplaceLink>[0]> = {}) {
+  return render(
+    <WorkplaceLink
+      runId="run-1"
+      hasDraft
+      currentPath="/runs"
+      currentSearch=""
+      {...props}
+    />,
+  );
 }
 
-describe("where a conversation takes you back to", () => {
-  it("takes you to the workflow it drafted, not to where it started", () => {
-    render(
-      <WorkplaceLink
-        conversation={bornOnBoard}
-        runId="run-1"
-        hasDraft
-        currentPath="/runs"
-        currentSearch=""
-      />,
+describe("the produced-workflow link", () => {
+  it("links to the workflow without owning the conversation anchor", () => {
+    renderLink();
+    expect(screen.getByRole("link").getAttribute("href")).toBe(
+      "/editor?draft=run-1",
     );
-    expect(href()).toBe("/editor?draft=run-1");
   });
 
-  it("falls back to where it started when it drafted nothing", () => {
-    render(
-      <WorkplaceLink
-        conversation={bornOnBoard}
-        runId="run-1"
-        hasDraft={false}
-        currentPath="/runs"
-        currentSearch=""
-      />,
-    );
-    expect(href()).toBe("/board");
-  });
-
-  // A link to where you stand is noise.
-  it("offers nothing when you are already looking at that draft", () => {
-    render(
-      <WorkplaceLink
-        conversation={bornOnBoard}
-        runId="run-1"
-        hasDraft
-        currentPath="/editor"
-        currentSearch="?draft=run-1"
-      />,
-    );
+  it("offers nothing when the conversation produced no draft", () => {
+    renderLink({ hasDraft: false });
     expect(screen.queryByRole("link")).toBeNull();
   });
 
-  it("still offers the draft when the editor shows a DIFFERENT one", () => {
-    render(
-      <WorkplaceLink
-        conversation={bornOnBoard}
-        runId="run-1"
-        hasDraft
-        currentPath="/editor"
-        currentSearch="?draft=other-run"
-      />,
-    );
-    expect(href()).toBe("/editor?draft=run-1");
-  });
-
-  it("offers nothing when you are already on the origin page", () => {
-    render(
-      <WorkplaceLink
-        conversation={bornOnBoard}
-        runId={null}
-        hasDraft={false}
-        currentPath="/board"
-        currentSearch=""
-      />,
-    );
+  it("offers nothing on the same draft", () => {
+    renderLink({ currentPath: "/editor", currentSearch: "?draft=run-1" });
     expect(screen.queryByRole("link")).toBeNull();
   });
 
-  it("offers nothing when there is nowhere to go", () => {
-    render(
-      <WorkplaceLink
-        conversation={{ id: "c2", botId: "copilot" }}
-        runId={null}
-        hasDraft={false}
-        currentPath="/runs"
-        currentSearch=""
-      />,
+  it("distinguishes two editor queries", () => {
+    renderLink({ currentPath: "/editor", currentSearch: "?draft=other" });
+    expect(screen.getByRole("link").getAttribute("href")).toBe(
+      "/editor?draft=run-1",
     );
-    expect(screen.queryByRole("link")).toBeNull();
   });
 });

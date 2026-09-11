@@ -56,7 +56,9 @@ func main() {
 		// like every other modern CLI tool when API keys / model env
 		// vars live in a `.env` next to a project. Pre-existing env
 		// vars take precedence; .env only fills in missing keys.
-		loadDotEnvFromCwd()
+		if !isWorkspaceStudioInvocation() {
+			loadDotEnvFromCwd()
+		}
 
 		// Error tracking is opt-in: with SENTRY_DSN unset this is a no-op
 		// and iterion behaves exactly as it did. Init sits after the .env
@@ -104,12 +106,42 @@ func main() {
 			errtrack.Flush()
 			os.Exit(2)
 		}
+		var attention *cli.AttentionError
+		if errors.As(err, &attention) {
+			// A health read succeeded; its attention result is an expected
+			// operational signal, not an application exception.
+			errtrack.Flush()
+			os.Exit(3)
+		}
 		// os.Exit skips the deferred flush, so the fatal error is
 		// captured AND flushed here or it never leaves the process.
 		errtrack.CaptureError(err, map[string]any{"command": invokedCommand()})
 		errtrack.Flush()
 		os.Exit(1)
 	}
+}
+
+// isWorkspaceStudioInvocation detects the one long-lived command that must
+// keep the host environment clean before Cobra parses flags. A unified Studio
+// loads each project's dotenv in a child shell and passes the resulting
+// snapshot to that project's executions; preloading cwd/.env here would make
+// the first project leak into every runtime.
+func isWorkspaceStudioInvocation() bool {
+	hasStudio := false
+	hasWorkspace := false
+	for _, arg := range os.Args[1:] {
+		switch arg {
+		case "studio":
+			hasStudio = true
+		case "--workspace":
+			hasWorkspace = true
+		default:
+			if arg == "--workspace=true" || arg == "--workspace=1" {
+				hasWorkspace = true
+			}
+		}
+	}
+	return hasStudio && hasWorkspace
 }
 
 // invokedCommand returns the full command path being run

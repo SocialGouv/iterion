@@ -84,6 +84,11 @@ func TestClassifyRateLimit(t *testing.T) {
 			wantKind: RateLimitKindUsageWindow,
 		},
 		{
+			name:     "Claude usage credits notice (live Copi review)",
+			text:     "You're out of usage credits. Switch to another model, or manage usage credits at claude.ai/settings/usage?from=cc_cli_limit_message, to continue.",
+			wantKind: RateLimitKindUsageWindow,
+		},
+		{
 			// The shape a WEEKLY cap actually prints: a month name and day
 			// before the clock. Seven scheduled prod runs died on this on
 			// 2026-07-27 with the reset ~35h out. The window is NAMED so a

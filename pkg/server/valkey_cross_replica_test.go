@@ -190,7 +190,7 @@ func replicaPost(t *testing.T, hs *httptest.Server, path, token string, body any
 func TestValkeyCrossReplica_BoardTokenMintedOnAAuthorizesWriteOnB(t *testing.T) {
 	r := newTwoReplicas(t)
 
-	if err := r.a.BoardMCPTokens().Register("run-tok", []string{"board.create", "board.read"}, ""); err != nil {
+	if err := r.a.BoardMCPTokens().Register("run-tok", []string{"board.create", "board.read"}, "", ""); err != nil {
 		t.Fatalf("register on replica A: %v", err)
 	}
 

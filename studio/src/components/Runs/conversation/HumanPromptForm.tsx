@@ -26,6 +26,7 @@ import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 
 import PauseForm from "../PauseForm";
+import type { StagedPauseSubmission } from "../PauseForm";
 import GateAttachments from "./GateAttachments";
 import GateInboundPayload from "./GateInboundPayload";
 import MarkdownText from "./MarkdownText";
@@ -65,6 +66,22 @@ interface Props {
   // machinery (reconnect / snapshot resync). A board caller passes this
   // to refetch its own view; when omitted the run-console behaviour runs.
   onResumed?: () => void;
+  // The pipeline board uses this to collect several sibling-gate answers
+  // before one deliberate batch send. Run-console callers omit it, keeping
+  // the ordinary "submit and resume" path unchanged.
+  onStage?: (submission: StagedHumanSubmission) => void;
+  // Purely presentational companion to onStage: the form must not tell an
+  // operator it resumes a run when the response is only being prepared.
+  deferSubmission?: boolean;
+}
+
+export interface StagedHumanSubmission {
+  runId: string;
+  nodeId: string;
+  answers: Record<string, unknown>;
+  source?: string;
+  attachments?: string[];
+  force?: boolean;
 }
 
 type ForceRetry =
@@ -100,6 +117,8 @@ export default function HumanPromptForm({
   quickActions = ["skip", "idk"],
   sourceOverride,
   onResumed,
+  onStage,
+  deferSubmission = false,
 }: Props) {
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
@@ -190,11 +209,11 @@ export default function HumanPromptForm({
     const mode = verdict ? "flat" : undefined;
     return makeHumanIdentityRequired(
       formSpecFromSchema(visible, questions, {
-        submitLabel: "Submit & Resume",
+        submitLabel: deferSubmission ? "Prepare response" : "Submit & Resume",
         mode,
       }),
     );
-  }, [fields, questions]);
+  }, [deferSubmission, fields, questions]);
 
   useEffect(() => {
     if (!formSpec) {
@@ -211,6 +230,20 @@ export default function HumanPromptForm({
     force = false,
     retryIntent: ForceRetry = { kind: "form" },
   ) => {
+    if (onStage) {
+      onStage({
+        runId,
+        nodeId,
+        answers,
+        source: resolvedSource,
+        ...(adHocFiles.length > 0
+          ? { attachments: adHocFiles.map((file) => file.uploadId) }
+          : {}),
+        ...(force ? { force: true } : {}),
+      });
+      setSubmitted(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     setForceRetry(null);
@@ -462,16 +495,19 @@ export default function HumanPromptForm({
           </Button>
         </div>
       ) : useFallback ? (
-        <PauseForm
+      <PauseForm
           runId={runId}
           questions={questions}
           sourceOverride={sourceOverride}
           onSubmitted={() => {
             setSubmitted(true);
             if (onResumed) onResumed();
-            else setRunStatus("running");
-          }}
-        />
+          else setRunStatus("running");
+        }}
+        onStage={onStage ? (submission: StagedPauseSubmission) => {
+          onStage({ runId, nodeId, ...submission });
+        } : undefined}
+      />
       ) : (
         <>
           {formSpec && (

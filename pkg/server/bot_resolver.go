@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -72,7 +73,9 @@ type launchBot struct {
 	// Cloud catalog and stored bots both use it; Cleanup owns the collection.
 	BundleDir string
 	// Ref carries the snapshot and, for stored origins, the row provenance.
-	Ref             *runview.BotBundleRef
+	Ref *runview.BotBundleRef
+	// Manifest describes the exact tier that supplied Source.
+	Manifest        *bundle.Manifest
 	cleanupSnapshot func()
 }
 
@@ -203,7 +206,14 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 		// an absence.
 		return nil, fmt.Errorf("read bot %q: %w", slug, err)
 	}
-	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: string(b)}, nil
+	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFile))
+	if err == nil && m == nil {
+		m, err = bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFileAlt))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read bot %q manifest: %w", slug, err)
+	}
+	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: string(b), Manifest: m}, nil
 }
 
 // teamBotRow finds teamID's OWN botsource row for a bot id, tolerating the
@@ -267,6 +277,7 @@ func (s *Server) storedLaunchBot(bs botsource.BotSource, origin string) (*launch
 		Source:    main,
 		BundleDir: dir,
 		Ref:       &runview.BotBundleRef{TenantID: bs.TenantID, Slug: bs.Slug, Version: bs.Version},
+		Manifest:  bs.Manifest(),
 	}, nil
 }
 

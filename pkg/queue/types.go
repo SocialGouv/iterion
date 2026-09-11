@@ -117,7 +117,14 @@ import (
 // v=15: ModelOverride.Effort and the run-level Permission override from the
 // assistant branch. Stale v14 runners must reject explicit choices they
 // cannot enforce. The branch-local v10/v11 additions are renumbered here.
-const SchemaVersion = 15
+// v=16 (2026-08-29): ResumeSpec.HostInputs carries host-attested derived
+// context (currently bounded chat history) to the runner without recording it
+// as operator answers. A stale runner dropping it would accept an assistant
+// turn while silently removing the continuity fallback, so it must reject.
+// v=17 (2026-09-11): mission resume receipts cross the queue and are stamped
+// on run_resumed. A stale runner would execute the mutation but drop its
+// reconciliation identity, so this additive field changes operator intent.
+const SchemaVersion = 17
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -302,6 +309,7 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+	UnlimitedWorkflow   bool    `json:"unlimited_workflow,omitempty"`
 	CapImposed          bool    `json:"cap_imposed,omitempty"`
 }
 
@@ -407,8 +415,11 @@ type BackendConfig struct {
 // ResumeSpec is non-nil for resume publishes; the runner threads its
 // fields into `runtime.Engine.Resume`.
 type ResumeSpec struct {
-	Answers map[string]any `json:"answers,omitempty"`
-	Force   bool           `json:"force"`
+	Answers        map[string]any  `json:"answers,omitempty"`
+	HostInputs     map[string]any  `json:"host_inputs,omitempty"`
+	Force          bool            `json:"force"`
+	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
+	ReceiptID      string          `json:"receipt_id,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so

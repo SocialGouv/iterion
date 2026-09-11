@@ -35,6 +35,11 @@ func detachedEnabled() bool {
 	return false
 }
 
+// DetachedEnabled exposes the local execution mode to trusted host
+// coordinators. Durable mission receipts cannot cross the detached CLI wire,
+// so mission resumes fail closed instead of becoming uncorrelatable actions.
+func DetachedEnabled() bool { return detachedEnabled() }
+
 // runnerCommand identifies which CLI subcommand the detached runner
 // should invoke. Replacing a free-form string with a typed value
 // keeps the buildRunnerCmd switch exhaustive at compile time.
@@ -120,23 +125,7 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.Supervisors != "" {
 			args = append(args, "--supervisors", spec.Supervisors)
 		}
-		if b := spec.Budget; b != nil {
-			if b.MaxCostUSD > 0 {
-				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
-			}
-			if b.MaxTokens > 0 {
-				args = append(args, "--max-tokens", strconv.Itoa(b.MaxTokens))
-			}
-			if b.MaxDuration != "" {
-				args = append(args, "--max-duration", b.MaxDuration)
-			}
-			if b.MaxIterations > 0 {
-				args = append(args, "--max-iterations", strconv.Itoa(b.MaxIterations))
-			}
-			if b.MaxParallelBranches > 0 {
-				args = append(args, "--max-parallel-branches", strconv.Itoa(b.MaxParallelBranches))
-			}
-		}
+		args = appendDetachedBudgetArgs(args, spec.Budget)
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
 		if spec.AutoMemory != "" {
@@ -151,6 +140,7 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.Force {
 			args = append(args, "--force")
 		}
+		args = appendDetachedBudgetArgs(args, spec.Budget)
 		for k, v := range spec.Answers {
 			args = append(args, "--answer", k+"="+v)
 		}
@@ -194,6 +184,31 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 	cmd.Stderr = nil
 	cmd.Stdin = nil
 	return cmd, nil
+}
+
+func appendDetachedBudgetArgs(args []string, b *ir.BudgetOverrides) []string {
+	if b == nil {
+		return args
+	}
+	if b.UnlimitedWorkflow {
+		args = append(args, "--unlimited-workflow-budget")
+	}
+	if b.MaxCostUSD > 0 {
+		args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
+	}
+	if b.MaxTokens > 0 {
+		args = append(args, "--max-tokens", strconv.Itoa(b.MaxTokens))
+	}
+	if b.MaxDuration != "" {
+		args = append(args, "--max-duration", b.MaxDuration)
+	}
+	if b.MaxIterations > 0 {
+		args = append(args, "--max-iterations", strconv.Itoa(b.MaxIterations))
+	}
+	if b.MaxParallelBranches > 0 {
+		args = append(args, "--max-parallel-branches", strconv.Itoa(b.MaxParallelBranches))
+	}
+	return args
 }
 
 // spawnDetached launches an iterion CLI subprocess for the given spec,
@@ -330,12 +345,13 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// these, so they are stamped here or not at all — a dropped SourceRef
 	// leaves a scheduled run reading as "manual" and invisible to the
 	// overlap gate's source.schedule_id query.
-	if spec.ParentRunID != "" || spec.SourceRef != nil {
+	if spec.ParentRunID != "" || spec.SourceRef != nil || spec.Budget != nil {
 		created.ParentRunID = spec.ParentRunID
 		if spec.SourceRef != nil {
 			src := *spec.SourceRef
 			created.Source = &src
 		}
+		created.BudgetOverrides = RunBudgetOverrides(spec.Budget)
 		if err := s.store.SaveRun(context.Background(), created); err != nil {
 			return nil, fmt.Errorf("runview: save run provenance: %w", err)
 		}

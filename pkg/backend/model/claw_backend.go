@@ -198,7 +198,13 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // V1 limitations of the sandbox-routed path are documented on
 // [delegate.IOTask] and in docs/sandbox.md: no MCP servers, no
 // mid-tool-loop ask_user resume.
-func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
+func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
+	defer func() {
+		if err == nil && task.SessionSlot != "" {
+			result.SessionID = task.SessionID
+			result.SessionFingerprint = clawSessionFingerprint(task.Model)
+		}
+	}()
 	// Carry the resolved compression mode + rewriter chain into the tool loop
 	// so the bash builtin can compress command output (rewrite via context).
 	// Off is a no-op. For the sandboxed path the mode + chain specs ride the
@@ -659,6 +665,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 	// Set the explicit schema for structured output.
 	genOpts := opts
 	genOpts.ExplicitSchema = task.OutputSchema
+	genOpts = applySessionMessages(ctx, taskSessionKey(task), genOpts)
 
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
@@ -667,6 +674,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		}
 		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
+	captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
 
 	output := result.Object
 	if output == nil {
@@ -691,9 +699,9 @@ func (b *ClawBackend) generateTextWithRetry(ctx context.Context, client api.APIC
 }
 
 func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	opts = applySessionMessages(ctx, task.NodeID, opts)
+	opts = applySessionMessages(ctx, taskSessionKey(task), opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
-	captureSessionMessages(ctx, task.NodeID, result)
+	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
 			return r, nil
@@ -788,9 +796,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchemaRetry(ctx context.Context, c
 }
 
 func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	opts = applySessionMessages(ctx, task.NodeID, opts)
+	opts = applySessionMessages(ctx, taskSessionKey(task), opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
-	captureSessionMessages(ctx, task.NodeID, result)
+	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
 			return r, nil
@@ -828,7 +836,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			// accounting reflects both turns.
 			accumulateUsage(&reRun.TotalUsage, result.TotalUsage)
 			result = reRun
-			captureSessionMessages(ctx, task.NodeID, result)
+			captureSessionMessages(ctx, taskSessionKey(task), result)
 		default:
 			// A failure DURING the nudge must not be silently swallowed:
 			// otherwise the degenerate first-pass result falls through to

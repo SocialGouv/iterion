@@ -1,0 +1,23 @@
+name: copilot
+display_name: Copi
+icon: 💬
+description: Deterministic Copi fixture for the live Studio end-to-end demo.
+version: 0.1.0
+enabled: true
+
+launch:
+  primary: [initial_message]
+  hidden: [store_dir]
+
+chat:
+  seed_var: initial_message
+  nodes:
+    seed: {kind: silent}
+    turn: {kind: banner, label: "Copi is thinking"}
+    chat:
+      kind: human
+      text_field: message
+      host_event_field: host_event
+  launcher:
+    prompt: "Décrivez le workflow à créer, lancer et surveiller."
+    submit_label: "Démarrer la démo"

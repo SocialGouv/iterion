@@ -36,6 +36,39 @@ type RemoteRunsListOptions struct {
 	Limit    int
 }
 
+type RemoteRunsMissionStartOptions struct {
+	InvocationKey  string
+	WatchID        string
+	AssistantRunID string
+	Actions        []string
+	TTLSeconds     int64
+	MaxActions     int
+}
+
+func RemoteRunsMissionStart(ctx context.Context, c *RemoteClient, p *Printer, targetID string, opts RemoteRunsMissionStartOptions) error {
+	body, err := json.Marshal(map[string]any{
+		"invocation_key": opts.InvocationKey, "watch_id": opts.WatchID,
+		"assistant_run_id": opts.AssistantRunID, "actions": opts.Actions,
+		"ttl_seconds": opts.TTLSeconds, "max_actions": opts.MaxActions,
+	})
+	if err != nil {
+		return err
+	}
+	return RemoteSendPrint(ctx, c, p, "POST", "/api/runs/"+targetID+"/assistant-missions", body)
+}
+
+func RemoteRunsMissionList(ctx context.Context, c *RemoteClient, p *Printer, targetID string) error {
+	return RemoteGetPrint(ctx, c, p, "/api/runs/"+targetID+"/assistant-missions")
+}
+
+func RemoteRunsMissionGet(ctx context.Context, c *RemoteClient, p *Printer, targetID, missionID string) error {
+	return RemoteGetPrint(ctx, c, p, "/api/runs/"+targetID+"/assistant-missions/"+missionID)
+}
+
+func RemoteRunsMissionStop(ctx context.Context, c *RemoteClient, p *Printer, targetID, missionID string) error {
+	return RemoteSendPrint(ctx, c, p, "POST", "/api/runs/"+targetID+"/assistant-missions/"+missionID+"/stop", nil)
+}
+
 func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts RemoteRunsListOptions) error {
 	q := map[string]string{
 		"status":   opts.Status,
@@ -290,6 +323,148 @@ func RemoteRunsFollow(ctx context.Context, c *RemoteClient, p *Printer, id strin
 		return nil
 	default:
 		return fmt.Errorf("run %s ended with status %s", id, status)
+	}
+}
+
+type remoteWatchHealthCoordinator struct {
+	Present              bool       `json:"present"`
+	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
+	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
+	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
+	Stale                bool       `json:"stale"`
+}
+
+type remoteWatchHealthEpisode struct {
+	EpisodeID       string     `json:"episode_id"`
+	Kind            string     `json:"kind,omitempty"`
+	State           string     `json:"state"`
+	Attempts        int        `json:"attempts"`
+	NextAttemptAt   time.Time  `json:"next_attempt_at"`
+	LastErrorReason string     `json:"last_error_reason,omitempty"`
+	Due             bool       `json:"due"`
+	Overdue         bool       `json:"overdue"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	DeliveredAt     *time.Time `json:"delivered_at,omitempty"`
+}
+
+type remoteWatchHealthWatch struct {
+	WatchID                string                     `json:"watch_id"`
+	TargetRunID            string                     `json:"target_run_id"`
+	AssistantRunID         string                     `json:"assistant_run_id"`
+	CoveredRunID           string                     `json:"covered_run_id,omitempty"`
+	State                  string                     `json:"state"`
+	Active                 bool                       `json:"active"`
+	DuplicateActiveWatch   bool                       `json:"duplicate_active_watch,omitempty"`
+	LastObservedEventSeq   int64                      `json:"last_observed_event_seq"`
+	LastDeliveredAt        *time.Time                 `json:"last_delivered_at,omitempty"`
+	DeliveredEpisodes      int                        `json:"delivered_episodes"`
+	AssistantStatus        string                     `json:"assistant_status,omitempty"`
+	AssistantChatAvailable bool                       `json:"assistant_chat_available"`
+	Episodes               []remoteWatchHealthEpisode `json:"episodes"`
+	EpisodesTruncated      bool                       `json:"episodes_truncated,omitempty"`
+	Attention              []string                   `json:"attention"`
+}
+
+type remoteWatchHealth struct {
+	RunID        string                       `json:"run_id"`
+	TargetStatus string                       `json:"target_status"`
+	Coordinator  remoteWatchHealthCoordinator `json:"coordinator"`
+	Watches      []remoteWatchHealthWatch     `json:"watches"`
+	Attention    []string                     `json:"attention"`
+	Truncated    bool                         `json:"truncated,omitempty"`
+}
+
+// RemoteRunsWatchHealth reads the server's durable assistant-watch
+// projection. It is intentionally separate from RemoteRunsFollow: follow is
+// a terminal run log, while this command reports whether the supervisor and
+// its delivery ledger are alive. --follow never creates or mutates a watch.
+func RemoteRunsWatchHealth(ctx context.Context, c *RemoteClient, p *Printer, id string, follow bool, interval time.Duration) error {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	path := "/api/runs/" + id + "/assistant-watch-health"
+	read := func() (remoteWatchHealth, []byte, error) {
+		var out remoteWatchHealth
+		raw, err := c.Call(ctx, "GET", path, nil, &out)
+		return out, raw, err
+	}
+	print := func(out remoteWatchHealth, raw []byte, heartbeat bool) {
+		if p.Format == OutputJSON {
+			PrintRemoteJSON(p, raw)
+			return
+		}
+		printRemoteWatchHealth(p, out, heartbeat)
+	}
+
+	first, raw, err := read()
+	if err != nil {
+		return err
+	}
+	print(first, raw, false)
+	if !follow {
+		if len(first.Attention) > 0 {
+			return NewAttentionError(first.Attention[0], strings.Join(first.Attention, ", "))
+		}
+		return nil
+	}
+
+	last, _ := json.Marshal(first)
+	lastHeartbeat := time.Now()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			out, raw, readErr := read()
+			if readErr != nil {
+				return readErr
+			}
+			encoded, _ := json.Marshal(out)
+			heartbeat := time.Since(lastHeartbeat) >= time.Minute
+			if string(encoded) != string(last) || heartbeat {
+				print(out, raw, heartbeat && string(encoded) == string(last))
+				last = encoded
+				lastHeartbeat = time.Now()
+			}
+		}
+	}
+}
+
+func printRemoteWatchHealth(p *Printer, health remoteWatchHealth, heartbeat bool) {
+	if heartbeat {
+		p.Line("watch health heartbeat: run=%s", health.RunID)
+	}
+	p.KV("Run", health.RunID)
+	p.KV("Target", health.TargetStatus)
+	p.KV("Coordinator", fmt.Sprintf("present=%t stale=%t", health.Coordinator.Present, health.Coordinator.Stale))
+	if health.Coordinator.LastSweepCompletedAt != nil {
+		p.KV("Last sweep", FormatTime(*health.Coordinator.LastSweepCompletedAt))
+	}
+	if len(health.Watches) == 0 {
+		p.KV("Watches", "none")
+	} else {
+		p.KV("Watches", fmt.Sprintf("%d", len(health.Watches)))
+	}
+	if len(health.Attention) > 0 {
+		p.KV("Attention", strings.Join(health.Attention, ", "))
+	}
+	for _, watch := range health.Watches {
+		p.Line("watch %s: target=%s assistant=%s active=%t assistant=%s episodes=%d", watch.WatchID, watch.TargetRunID, watch.AssistantRunID, watch.Active, watch.AssistantStatus, len(watch.Episodes))
+		if len(watch.Attention) > 0 {
+			p.Line("  attention: %s", strings.Join(watch.Attention, ", "))
+		}
+		for _, episode := range watch.Episodes {
+			state := episode.State
+			if episode.Overdue {
+				state += "/overdue"
+			} else if episode.Due {
+				state += "/due"
+			}
+			p.Line("  episode %s: %s attempts=%d reason=%s", episode.EpisodeID, state, episode.Attempts, episode.LastErrorReason)
+		}
 	}
 }
 

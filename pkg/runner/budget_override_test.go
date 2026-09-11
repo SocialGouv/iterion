@@ -74,6 +74,21 @@ func TestApplyBudgetOverrides(t *testing.T) {
 			t.Errorf("MaxCostUSD = %v, want 100 (ceiling clamps the tenant override)", wf.Budget.MaxCostUSD)
 		}
 	})
+
+	t.Run("platform max iterations is reimposed after unlimited workflow clear", func(t *testing.T) {
+		t.Setenv("ITERION_CLOUD_MAX_ITERATIONS", "12")
+		wf := &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 20, MaxIterations: 100, MaxParallelBranches: 1}}
+		if err := applyBudgetOverrides(wf, &queue.BudgetOverrides{UnlimitedWorkflow: true}, iterlog.Nop()); err != nil {
+			t.Fatalf("applyBudgetOverrides: %v", err)
+		}
+		if wf.Budget.MaxCostUSD != 0 || wf.Budget.MaxIterations != 0 || wf.Budget.MaxParallelBranches != 1 {
+			t.Fatalf("workflow clear = %+v", wf.Budget)
+		}
+		applyCloudBudgetCeiling(wf, iterlog.Nop())
+		if wf.Budget.MaxIterations != 12 || !wf.Budget.CapImposed {
+			t.Fatalf("platform ceiling was not reimposed: %+v", wf.Budget)
+		}
+	})
 }
 
 // #718, driven through the runner's OWN budget resolution and a real

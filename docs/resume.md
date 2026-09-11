@@ -444,10 +444,14 @@ DSL `fail` node keeps its checkpoint, so an explicit rewind can still recover
 it. Runs that failed **before** that preservation existed carry no checkpoint
 and stay unrecoverable (`run ... has no checkpoint — nothing to rewind`).
 
-The run is parked in `cancelled`. That is the one resumable status a cloud
-runner treats as "explicit resume required"; `failed_resumable` and
-`paused_operator` are auto-resumed on queue redelivery, which would race the
-operator's edit and execute the stale workflow.
+After a successful rewind, the run is parked in `paused_operator`, not
+`cancelled`: it is ready at the chosen checkpoint and has not been abandoned.
+It also carries an internal **explicit-resume-required** marker. A cloud runner
+therefore drops any old launch delivery instead of auto-resuming it; only a
+real Resume request may continue. That request carries the normal source hash
+check (`--force` after an edit). A genuine automatic Resume request from a
+separate recovery path is still allowed, but the same hash check prevents it
+from executing an edited workflow without force.
 
 Rewind resolves "downstream" against the workflow source **as it is now**,
 which is why it performs no hash check — you rewind precisely because you

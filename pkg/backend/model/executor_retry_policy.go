@@ -129,7 +129,7 @@ func (rp RetryPolicy) maxAttemptsTransient() int {
 // effectiveMaxAttempts picks the attempt budget for err: the larger transient
 // budget for network/connectivity failures, the standard budget otherwise.
 func (rp RetryPolicy) effectiveMaxAttempts(err error) int {
-	if delegate.IsNetworkError(err) {
+	if isStreamIdleError(err) || delegate.IsNetworkError(err) {
 		return rp.maxAttemptsTransient()
 	}
 	return rp.maxAttempts()

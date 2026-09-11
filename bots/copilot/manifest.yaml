@@ -1,20 +1,64 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.1.2
+version: 0.2.5
+## 0.2.5 — cross-project handoffs carry a host-bound terminal receipt back to
+## the exact source Copi conversation after the target verifies completion or
+## failure.
+## 0.2.4 — instruction ownership is consolidated, contradictory capability
+## claims and retired review prompts are removed, and live safety coverage is
+## separated from prose formatting.
+## 0.2.3 — manager scope uses complete structured model classification and a
+## deterministic intersection guard; excluded or unclassifiable proposals are
+## neutralized atomically and retried once without losing the Copi session.
+## 0.2.2 — manager scope is retained across the authenticated chat boundary;
+## structured excluded proposals are bounded and retried once.
+## 0.2.1 — advisory judge feedback preserves the operator's original outcome:
+## Terra carries a concrete blocker, rather than a broadened critique, into a
+## further private reflection and Sol selects the smallest evidence-backed run
+## repair before considering general workflow changes.
+## 0.2.0 — Terra is the sole user-facing entry and executor; complex work is
+## privately planned by Sol, challenged by a Claude Opus → Kimi K3 → Grok
+## judge chain, then returned to Terra. A blocker during execution re-enters
+## that full private loop without exposing internal debate in chat.
+## 0.1.15 — private cross-review and its intermediate revision are hidden
+## from the assistant transcript; only Copi's final chat answer is rendered.
+## 0.1.14 — cross-review now rechecks revised proposals in a bounded
+## convergence loop before delivery, and the documented reviewer fallback
+## order is enforced as Claude Opus, then Kimi, then Grok.
+## 0.1.13 — the private reviewer now sees exact host/file proposals, and the
+## published revise pass can replace or retire them instead of correcting only
+## Copi's prose while Studio keeps offering the superseded first-pass action.
+## 0.1.12 — Copi owns technical repairs exposed by Studio's active authoring
+## perimeter, verifies them after the host receipt, and delegates only across
+## a real capability boundary or on the operator's explicit request.
+## 0.1.11 — a repair delegation can name an operator-requested configured
+## catalog worker even when its bundle is intentionally outside Copi's active
+## project workspace. The host remains the sole catalog resolver and validates
+## the worker contract before launch; external source-review requests are
+## blocking rather than silently skipped.
+## 0.1.10 —
 description: |
-  Conversational iterion assistant. ONE adaptive agent (claw, bundled
-  skills, a cross-provider model ladder) in a standing chat loop, whose subject is
+  Conversational iterion assistant. Terra (GPT-5.6) is the visible entry and
+  executor in a standing chat loop. It handles simple requests directly; for
+  complex work it asks a private Sol (GPT-5.6) reflection node for a plan. A
+  fresh judge debates that plan, using Claude Opus then Kimi K3 then Grok when
+  needed, before Terra verifies and carries it out. If execution finds a real
+  blocker, Terra returns it to that same private planning loop. The subject is
   iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
   semantics, backends, bundles and convergence doctrine. Three
   postures the operator can switch mid-conversation — info (explain
   and orient), design (draft a workflow, which the run compiles with
   `iterion validate` before the reply is shown), debug (diagnose a
   run from its real events).
-  Read-only agent by construction: a `permission: deny` gate denies Bash,
-  Write, Edit and WebFetch outright — an allow-listed shell prefix is
-  not a boundary, since the matcher grants everything after it — so
-  Copi reads files, run stores and manifests. For the active bot it may return
+  Read-only by default: native Bash, Grep, Write, Edit and WebFetch stay
+  denied. Copi gets a workspace-bounded, credential-filtered content search
+  and paginated reads whose continuation markers make large-file clipping
+  explicit. When file/run evidence cannot reach a live source of truth such
+  as Postgres, a separate diagnostic shell alias pauses for approval of the
+  exact command; it is never prefix-allow-listed. Run evidence comes through
+  the host-owned, capability-gated `runs.read` tools, never through guessed
+  store paths. For the active bot it may return
   bounded exact replacements for companion files explicitly declared in that
   bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
   them under the operator's action policy. Copi itself still has no write
@@ -22,9 +66,9 @@ description: |
   at a budget-free chat pause — the session stays reachable for days,
   and a rolling context_brief carries the conversation across server
   restarts, redeploys and cloud pod changes. Only an explicit "close"
-  ends the session. An optional cross-review (`reviewer: on`) has a
-  SECOND model, from another family, criticise each answer before you
-  read it — off by default, since it costs a full extra call per turn.
+  ends the session. You only read Terra's final answer: plans and judge
+  critiques are private. Reflected work is bounded, so a blocked execution
+  cannot silently spin forever.
 when_to_use: |
   Use to ask questions about iterion itself, from anywhere: what a
   diagnostic code means, why a run paused or failed, how to write or
@@ -54,33 +98,54 @@ launch:
 
 ## Copi is a CONVERSATIONAL bot — the studio hosts him in the assistant
 ## dock. This block is the whole cost of that: bundle.Manifest carries
-## `chat:` now, so a second chat bot needs no studio code (issue #333).
+## `chat:` now, so another chat bot needs no Studio-specific graph code.
 chat:
   seed_var: initial_message
+  ## Debug conversations deliberately trade the bot's own $20/12h session
+  ## guard for operator-supervised persistence. The host activates this at
+  ## launch or on the first resume after Copi emits compose.mode=debug.
+  ## Platform and credential-pool ceilings still apply.
+  budget:
+    unlimited_workflow_when:
+      launch_var: mode
+      state_node: compose
+      state_field: mode
+      equals: [debug]
   ## The studio sends the active in-memory editor document with the operator's
   ## message and may offer Copi's validated replacement back to that exact
-  ## tab/revision. Copi still has no Write/Edit/Bash tool and never chooses a
-  ## path; apply/save remain studio actions.
+  ## tab/revision. Copi still has no Write/Edit or native Bash tool and never
+  ## chooses a path; apply/save remain studio actions.
   editor:
     context: true
     proposals: true
-  ## Declared so the studio KNOWS this bot understands cross-review and can
-  ## offer the choice before a conversation starts. Without it the studio
-  ## would either have to guess, or send `reviewer` to every chat bot —
-  ## including ones that declare no such var.
-  launcher_vars:
-    - name: reviewer
-      label: "Cross-review each answer"
   nodes:
     seed: {kind: silent}
     gate: {kind: silent}
     copi: {kind: banner, label: "Copi is thinking"}
+    terra_route: {kind: silent}
+    validate_scope_guard: {kind: silent}
+    turn_state: {kind: silent}
+    normalize_chat_turn: {kind: silent}
     validate_draft: {kind: banner, label: "Validating Copi's draft"}
-    review: {kind: banner, label: "Cross-reviewing Copi's answer"}
+    extract_authoring_context: {kind: silent}
+    ## Private planning/debate nodes deliberately remain invisible: the dock
+    ## shows only Terra's final response, never a plan or judge critique.
+    reflection_state: {kind: silent}
+    reflect: {kind: silent}
+    judge: {kind: silent}
+    judge_route: {kind: silent}
+    implementation_handoff: {kind: silent}
     compose: {kind: silent}
     ## No `prompt`: Copi's reply IS the chat node's runtime-resolved
-    ## `instructions:`, exactly as for Nexie.
-    chat: {kind: human, text_field: message}
+    ## `instructions:`.
+    chat:
+      kind: human
+      text_field: message
+      host_event_field: host_event
+      history:
+        field: conversation_history
+        max_messages: 8
+        max_estimated_tokens: 12000
   launcher:
     prompt: "What do you want to ask about iterion?"
     description: "A starting point, or type your own — Copi answers about iterion itself, in whatever workspace he is pointed at."
@@ -94,7 +159,7 @@ chat:
         description: "Reads the run store: status, checkpoint, events."
       - value: "Aide-moi à écrire un .bot qui fait ceci : "
         label: "Draft a workflow"
-        description: "Writes real DSL — a draft you validate yourself."
+        description: "Writes real DSL — Iterion validates the complete draft before delivery."
       - value: "Quel bot du catalogue dois-je utiliser pour ce que je veux faire ?"
         label: "Which bot should I use?"
         description: "Routes you through the catalog and its personas."

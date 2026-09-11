@@ -389,6 +389,13 @@ type Task struct {
 	// Used by CLI-based backends; API-based backends use ToolDefs instead.
 	AllowedTools []string
 
+	// DiagnosticShell opts this task into Claude Code's narrow native-Bash
+	// bridge for the workflow's diagnostic_shell approval rule. It is derived
+	// from the node's DECLARED tools before backend-added effective tools are
+	// merged, so an incidental native Bash allowance can never activate it.
+	// The bridge still requires one exact, single-line operator approval.
+	DiagnosticShell bool
+
 	// Permission is the resolved tool-permission policy (the anti-
 	// prompt-injection gate). Nil or a disabled policy means no gate
 	// (today's bypassPermissions behaviour). When enabled, every tool
@@ -412,6 +419,11 @@ type Task struct {
 	// explicitly whenever they want a specific store binding.
 	StoreDir string
 
+	// RunStoreDir is the host-resolved run-store root used only by the
+	// non-sandboxed stdio runs.read transport. It is never model-authored and
+	// is empty in cloud, where the host HTTP/in-process transport owns access.
+	RunStoreDir string
+
 	// BoardHTTPEndpoint is the URL of the iterion-host board MCP HTTP
 	// endpoint, used for sandboxed runs that can't reach the host
 	// `iterion __mcp-board` subprocess via stdio. When non-empty AND the
@@ -425,6 +437,10 @@ type Task struct {
 	// server's BoardMCPTokens registry for this run. The runtime
 	// generates it, registers grants, and revokes on run completion.
 	BoardRunToken string
+
+	// RunsHTTPEndpoint is the read-only runs MCP sibling of the board endpoint.
+	// It shares the same ephemeral capability token and host listener.
+	RunsHTTPEndpoint string
 
 	// AskUserHTTPEndpoint is the URL of the per-run ask-user MCP HTTP
 	// endpoint the engine binds next to the sandbox (ADR-082 Phase 3).
@@ -653,6 +669,9 @@ type Task struct {
 
 	// SessionID is an optional session ID to resume (empty = fresh session).
 	SessionID string
+	// SessionSlot is the runtime-owned key for in-process session history.
+	// Empty preserves the historical per-node key.
+	SessionSlot string
 
 	// ForkSession, when true, forks from the resumed session instead of
 	// continuing it. Requires SessionID to be set. The forked session gets

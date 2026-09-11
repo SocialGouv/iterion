@@ -214,6 +214,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if r.Checkpoint != nil {
 		pausedNode = r.Checkpoint.PausedNodeID()
 	}
+	opts.Budget = mergePersistedResumeBudget(r.BudgetOverrides, opts.Budget)
 
 	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile, opts.Force)
 	// Install cleanup BEFORE the error check: resumeOpenWorkflow returns a
@@ -273,6 +274,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// executor so the hub also rides the backend-hook seam (the only one
 	// carrying assistant_text / tool events).
 	resumeOpts := []runtime.EngineOption{}
+	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
+		resumeOpts = append(resumeOpts, runtime.WithBudgetOverrides(raw))
+	}
 	var superviseHub *supervise.EventHub
 	var hookObservers []func(store.Event)
 	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
@@ -358,6 +362,13 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
 	}
+	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
+		if patcher := store.AsRunBudgetOverridesPatcher(s); patcher != nil {
+			if err := patcher.PatchRunBudgetOverrides(ctx, opts.RunID, raw); err != nil {
+				return fmt.Errorf("persist resume budget override: %w", err)
+			}
+		}
+	}
 
 	if p.Format == OutputHuman {
 		p.Header("Resume: " + opts.RunID)
@@ -389,6 +400,35 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,
 	})
+}
+
+// mergePersistedResumeBudget gives a rebuilt CLI engine the raw launch intent
+// before layering explicit --max-* flags. Detached studio resumes pass the
+// full raw value, while a manual bare `iterion resume` still inherits it.
+func mergePersistedResumeBudget(persisted *store.RunBudgetOverrides, explicit BudgetOverrides) BudgetOverrides {
+	out := BudgetOverrides{}
+	if base := runview.BudgetOverridesFromRun(persisted); base != nil {
+		out = *base
+	}
+	if explicit.MaxCostUSD > 0 {
+		out.MaxCostUSD = explicit.MaxCostUSD
+	}
+	if explicit.MaxTokens > 0 {
+		out.MaxTokens = explicit.MaxTokens
+	}
+	if explicit.MaxDuration != "" {
+		out.MaxDuration = explicit.MaxDuration
+	}
+	if explicit.MaxIterations > 0 {
+		out.MaxIterations = explicit.MaxIterations
+	}
+	if explicit.MaxParallelBranches > 0 {
+		out.MaxParallelBranches = explicit.MaxParallelBranches
+	}
+	if explicit.UnlimitedWorkflow {
+		out.UnlimitedWorkflow = true
+	}
+	return out
 }
 
 // ParseAnswerFlags parses a slice of "key=value" strings into a map.

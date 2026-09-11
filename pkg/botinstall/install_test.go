@@ -44,6 +44,13 @@ func TestInstall_SingleBundleRoot(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, "mybot", "main.bot")); err != nil {
 		t.Errorf("main.bot not installed: %v", err)
 	}
+	origin, err := ReadOrigin(res.InstalledPath)
+	if err != nil {
+		t.Fatalf("read install origin: %v", err)
+	}
+	if origin.Source != repo {
+		t.Errorf("origin source = %q, want %q", origin.Source, repo)
+	}
 }
 
 func TestInstall_NameOverride(t *testing.T) {
@@ -179,6 +186,10 @@ func TestInstallFromBotzBytes_RoundTrip(t *testing.T) {
 	}
 	if res.Source != "upload" {
 		t.Errorf("source = %q, want upload", res.Source)
+	}
+	origin, err := ReadOrigin(res.InstalledPath)
+	if err != nil || origin.Source != "upload" {
+		t.Fatalf("upload origin = %#v, %v", origin, err)
 	}
 	if _, err := os.Stat(filepath.Join(dest, "packed", "main.bot")); err != nil {
 		t.Errorf("main.bot not installed: %v", err)

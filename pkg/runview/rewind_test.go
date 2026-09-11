@@ -255,8 +255,17 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load rewound run: %v", err)
 	}
-	if run.Status != store.RunStatusCancelled {
-		t.Errorf("status = %q, want cancelled (the one resumable status the cloud runner will not auto-resume)", run.Status)
+	if result.Status != string(store.RunStatusPausedOperator) {
+		t.Errorf("result.Status = %q, want paused_operator", result.Status)
+	}
+	if run.Status != store.RunStatusPausedOperator {
+		t.Errorf("status = %q, want paused_operator (parked at the rewind checkpoint)", run.Status)
+	}
+	if !run.ResumeRequiresExplicit {
+		t.Error("ResumeRequiresExplicit = false, want true after a rewind")
+	}
+	if run.FinishedAt != nil {
+		t.Errorf("FinishedAt = %v, want nil on a paused rewound run", run.FinishedAt)
 	}
 	if run.Error != "" {
 		t.Errorf("run.Error = %q, want cleared — the run is parked at the pivot, not failed", run.Error)
@@ -336,6 +345,45 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 	}
 	if found.Data["retired_output_corrections"] != float64(2) && found.Data["retired_output_corrections"] != 2 {
 		t.Errorf("run_rewound retired corrections = %v, want 2", found.Data["retired_output_corrections"])
+	}
+}
+
+func TestResolveRewindPivotIsNonMutatingAndGuardedReceiptIsAuditable(t *testing.T) {
+	cp := &store.Checkpoint{NodeID: "verify", Outputs: outputsOf("survey", "plan", "implement", "verify")}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	pivot, err := svc.ResolveRewindPivot(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pivot.NodeID != "implement" || pivot.EntryNodeID != "survey" {
+		t.Fatalf("pivot = %#v", pivot)
+	}
+	before, _ := st.LoadRun(context.Background(), runID)
+	if before.Status != store.RunStatusFailedResumable || before.Checkpoint.NodeID != "verify" {
+		t.Fatalf("resolver mutated run: %#v", before)
+	}
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement", ExpectedPivot: "plan", RestoreScope: RestoreScopeNone, ReceiptID: "receipt-wrong"}); err == nil || !strings.Contains(err.Error(), "pivot changed") {
+		t.Fatalf("expected pivot mismatch = %v", err)
+	}
+	still, _ := st.LoadRun(context.Background(), runID)
+	if still.Status != store.RunStatusFailedResumable {
+		t.Fatalf("pivot mismatch mutated status to %s", still.Status)
+	}
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement", ExpectedPivot: "implement", RestoreScope: RestoreScopeNone, ReceiptID: "receipt-ok"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == store.EventRunRewound && event.Data["receipt_id"] == "receipt-ok" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("run_rewound event did not preserve receipt identity")
 	}
 }
 
@@ -757,8 +805,8 @@ func TestRewind_AcceptsFailedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load rewound run: %v", err)
 	}
-	if run.Status != store.RunStatusCancelled {
-		t.Errorf("status = %q, want cancelled (parked, resumable)", run.Status)
+	if run.Status != store.RunStatusPausedOperator {
+		t.Errorf("status = %q, want paused_operator (parked, resumable)", run.Status)
 	}
 }
 
@@ -1291,19 +1339,9 @@ func TestRewind_RetiresAbandonedAsyncQuestions(t *testing.T) {
 	}
 }
 
-// TestRewind_KeepsTheFinishedAtTheClaimStamped is Revi's R95a324.
-//
-// `run` is loaded before the CAS; UpdateRunStatusIf mutates its OWN copy
-// (loadRunRaw → applyStatusTransition), which stamps FinishedAt for the
-// `cancelled` transition. SaveRun is a full-document overwrite, so saving
-// the pre-claim snapshot dropped that stamp whenever the pre-rewind
-// status was paused_* or queued — where FinishedAt was nil. The run then
-// persisted as cancelled with finished_at null; healRun only repairs
-// `running`, and runs_stats falls back to now for a run with no end, so
-// the studio duration ticker never stopped.
-//
-// The same read-modify-write-across-a-CAS hazard as Rafe0da, one path over.
-func TestRewind_KeepsTheFinishedAtTheClaimStamped(t *testing.T) {
+// TestRewind_ClearsTheTemporaryCancelledFinishedAt ensures the temporary CAS
+// claim cannot leak its terminal timestamp into the paused rewind result.
+func TestRewind_ClearsTheTemporaryCancelledFinishedAt(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "verify",
 		Outputs: outputsOf("survey", "plan", "implement", "verify"),
@@ -1326,12 +1364,14 @@ func TestRewind_KeepsTheFinishedAtTheClaimStamped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if got.Status != store.RunStatusCancelled {
-		t.Fatalf("status = %q, want cancelled", got.Status)
+	if got.Status != store.RunStatusPausedOperator {
+		t.Fatalf("status = %q, want paused_operator", got.Status)
 	}
-	if got.FinishedAt == nil {
-		t.Error("finished_at is nil on a run parked by a rewind — the claim stamped it and " +
-			"the save dropped it, so the studio duration ticker runs forever")
+	if got.FinishedAt != nil {
+		t.Errorf("finished_at = %v, want nil on a paused rewound run", got.FinishedAt)
+	}
+	if !got.ResumeRequiresExplicit {
+		t.Error("ResumeRequiresExplicit = false, want true after rewind")
 	}
 }
 

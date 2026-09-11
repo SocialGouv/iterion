@@ -16,6 +16,7 @@ import {
   getDocumentStore,
   type DocumentStore,
 } from "@/store/document";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
@@ -25,7 +26,29 @@ import type { TypedReference } from "./routeReference";
 // Large bots belong behind a fetch/tool boundary, not copied into every LLM
 // turn. Never send a prefix: a partial workflow looks editable but cannot be
 // validated honestly. The marker tells the bot the document was withheld.
+//
+// This is the DEFAULT, not a wall. The operator raises it with
+// ITERION_ASSISTANT_EDITOR_MAX_SOURCE (surfaced as
+// server_info.assistant_editor_max_source) when they would rather pay the
+// tokens than lose the document — a cap nobody can lift is a defect, and the
+// bot that most needs help is usually the largest one.
+//
+// Why the default stays conservative rather than generous: the document is
+// re-captured on EVERY send, so the cost is per-turn, not per-conversation.
+// And because the block rides the user message — at the end of the
+// conversation — its position shifts each turn, so prompt caching does not
+// absorb the repetition. 347 KB of .bot is ~87k tokens, every message.
 export const MAX_ACTIVE_EDITOR_SOURCE = 160_000;
+
+// activeEditorSourceLimit resolves the operator override over the default.
+// Non-positive or absent values fall back rather than disabling the guard:
+// a mis-typed cap must not turn into "inline everything" or "inline nothing".
+export function activeEditorSourceLimit(): number {
+  const configured = useServerInfoStore.getState().info?.assistant_editor_max_source;
+  return typeof configured === "number" && configured > 0
+    ? configured
+    : MAX_ACTIVE_EDITOR_SOURCE;
+}
 export const MAX_ATTACHED_BOT_FILE_SOURCE = 64 * 1024;
 
 const tokenByTab = new Map<string, string>();
@@ -65,7 +88,7 @@ export async function captureActiveEditorDocument(
   // Unparse the AST snapshot, not currentSource: currentSource is a cache of
   // the last open/save/source-edit operation and can lag canvas mutations.
   const source = await api.unparse(state.document);
-  const complete = source.length <= MAX_ACTIVE_EDITOR_SOURCE;
+  const complete = source.length <= activeEditorSourceLimit();
   const sessionId = tokenForTab(tabId);
   let authoring: AssistantAuthoringSnapshot | undefined;
   let sharedBundle: api.SharedBundleFileMetadata | undefined;
@@ -101,6 +124,7 @@ export async function captureActiveEditorDocument(
     file: state.currentFilePath,
     complete,
     sourceLength: source.length,
+    dirty: state.isDirty(),
     ...(complete ? { source } : {}),
     ...(authoring ? { authoring } : {}),
     ...(sharedBundle ? { sharedBundle } : {}),

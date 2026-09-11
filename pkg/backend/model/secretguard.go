@@ -59,6 +59,16 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 		if val == "" || !store.IsSecretEnvName(name) {
 			continue
 		}
+		// Ambient variables are not necessarily credentials merely because
+		// their NAME contains PASSWORD/KEY/AUTH. Registering a short,
+		// dictionary-like value as a global substring taint can erase an
+		// unrelated project vocabulary everywhere (for example a local DB
+		// password named after the project). Such values remain protected at
+		// source by the credential-file and permission boundaries; only values
+		// distinctive enough for sink-wide literal matching enter this matcher.
+		if !ambientSecretGloballySafe(val) {
+			continue
+		}
 		known = append(known, secretguard.Secret{
 			Name:  "env_" + name,
 			Value: val,
@@ -78,6 +88,39 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 		return nil
 	}
 	return g
+}
+
+// ambientSecretGloballySafe reports whether an ambient value is distinctive
+// enough to replace as a substring in arbitrary source, logs and artifacts.
+// Twelve mixed characters covers ordinary generated passwords; long
+// passphrases are accepted with two character classes. Short/simple values
+// are intentionally left to source controls instead of becoming toxic global
+// redaction patterns.
+func ambientSecretGloballySafe(value string) bool {
+	runes := []rune(value)
+	if len(runes) < 12 {
+		return false
+	}
+	classes := 0
+	var lower, upper, digit, other bool
+	for _, r := range runes {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= '0' && r <= '9':
+			digit = true
+		default:
+			other = true
+		}
+	}
+	for _, present := range []bool{lower, upper, digit, other} {
+		if present {
+			classes++
+		}
+	}
+	return classes >= 3 || (len(runes) >= 20 && classes >= 2)
 }
 
 // declaredWorkflowSecrets resolves the workflow's `secrets:` block into

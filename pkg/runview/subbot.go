@@ -145,6 +145,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			releaseChild()
 			return nil, err
 		}
+		childExec.SetRunExtraEnv(s.runEnv)
 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result, composing with the service's watch-stamping

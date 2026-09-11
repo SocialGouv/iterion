@@ -3,13 +3,15 @@
 // Several conversations at once, each its own run. The rules that matter are
 // the ones that decide what the operator is LOOKING at after a change — a tab
 // strip that drops you somewhere unexpected is worse than one tab.
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   CONVERSATIONS_KEY,
   MAX_CONVERSATIONS,
   addConversation,
+  anchorConversation,
   closeConversation,
+  conversationContextState,
   newConversationId,
   readActiveConversation,
   readConversations,
@@ -18,6 +20,12 @@ import {
   writeConversations,
   type Conversation,
   claimRun,
+  collectUnreadWatchConversationIds,
+  collectWaitingConversationIds,
+  latestWatchResultSeq,
+  markConversationContextUnknown,
+  markConversationWatchResultRead,
+  setConversationContextEnabled,
   switchConversationBot,
 } from "./conversations";
 
@@ -71,6 +79,11 @@ describe("persistence", () => {
         { id: "bad-origin", botId: "copilot", origin: { href: "/admin" } },
         { id: "bad-run", botId: "copilot", runId: 42 },
         { id: "bad-fresh", botId: "copilot", fresh: "yes" },
+        {
+          id: "bad-href",
+          botId: "copilot",
+          originHref: "/\\attacker.example/path",
+        },
       ]),
     );
     expect(readConversations().map((x) => x.id)).toEqual(["good"]);
@@ -86,6 +99,29 @@ describe("persistence", () => {
   });
 });
 
+describe("workspace persistence", () => {
+  afterEach(() => {
+    delete (globalThis as { __ITERION_SCOPE__?: string }).__ITERION_SCOPE__;
+  });
+
+  it("isolates run ownership between project panes on the same origin", () => {
+    (globalThis as { __ITERION_SCOPE__?: string }).__ITERION_SCOPE__ = "/x/town";
+    writeConversations([{ id: "town-chat", botId: "copilot", runId: "town-run" }]);
+
+    (globalThis as { __ITERION_SCOPE__?: string }).__ITERION_SCOPE__ =
+      "/x/tabarria";
+    expect(readConversations()).toEqual([]);
+    writeConversations([
+      { id: "tabarria-chat", botId: "copilot", runId: "tabarria-run" },
+    ]);
+
+    (globalThis as { __ITERION_SCOPE__?: string }).__ITERION_SCOPE__ = "/x/town";
+    expect(readConversations()).toEqual([
+      { id: "town-chat", botId: "copilot", runId: "town-run" },
+    ]);
+  });
+});
+
 describe("opening", () => {
   it("appends", () => {
     expect(addConversation([c("a")], c("b")).map((x) => x.id)).toEqual(["a", "b"]);
@@ -95,6 +131,83 @@ describe("opening", () => {
   it("refuses to grow past the ceiling", () => {
     const full = Array.from({ length: MAX_CONVERSATIONS }, (_, i) => c(`c${i}`));
     expect(addConversation(full, c("extra"))).toHaveLength(MAX_CONVERSATIONS);
+  });
+});
+
+describe("the immutable first-message context", () => {
+  it("treats an old creation-time origin as pending until the tab starts", () => {
+    const legacy = {
+      id: "a",
+      botId: "copilot",
+      fresh: true,
+      origin: "view/board",
+    };
+    expect(conversationContextState(legacy, false)).toBe("pending");
+  });
+
+  it("anchors once and refuses a later page", () => {
+    const first = anchorConversation([c("a")], "a", {
+      ref: "run/a",
+      label: "Run a",
+      href: "/runs/a?tab=events",
+    });
+    const second = anchorConversation(first, "a", {
+      ref: "view/board",
+      label: "Board",
+      href: "/board",
+    });
+    expect(second[0]).toMatchObject({
+      origin: "run/a",
+      originLabel: "Run a",
+      originHref: "/runs/a?tab=events",
+      contextState: "anchored",
+    });
+  });
+
+  it("lets migration replace the old unmarked creation-time origin", () => {
+    const got = anchorConversation(
+      [{ ...c("a"), runId: "r", origin: "view/board" }],
+      "a",
+      { ref: "run/r", label: "Run r", href: "/runs/r" },
+    );
+    expect(got[0]).toMatchObject({
+      origin: "run/r",
+      originHref: "/runs/r",
+      contextState: "anchored",
+    });
+  });
+
+  it("keeps opt-out scoped to one empty conversation", () => {
+    const disabled = setConversationContextEnabled([c("a"), c("b")], "a", false);
+    expect(disabled[0]?.contextState).toBe("disabled");
+    expect(conversationContextState(disabled[1]!, false)).toBe("pending");
+    const restored = setConversationContextEnabled(disabled, "a", true);
+    expect(restored[0]?.contextState).toBe("pending");
+  });
+
+  it("records an unrecoverable legacy context explicitly", () => {
+    expect(
+      markConversationContextUnknown([{ ...c("a"), runId: "r" }], "a")[0]
+        ?.contextState,
+    ).toBe("unknown");
+  });
+
+  it("keeps a started pending record pending while its transcript loads", () => {
+    const interrupted = {
+      ...c("a"),
+      runId: "r",
+      contextState: "pending" as const,
+    };
+    expect(conversationContextState(interrupted, false)).toBe("pending");
+    expect(
+      markConversationContextUnknown([interrupted], "a")[0]?.contextState,
+    ).toBe("unknown");
+  });
+
+  it("does not mistake a legacy run id for an unavailable context", () => {
+    expect(
+      conversationContextState({ ...c("a"), runId: "r" }, false),
+    ).toBe("pending");
   });
 });
 
@@ -218,6 +331,137 @@ describe("a conversation owns its run", () => {
   it("has none before it launches", () => {
     writeConversations([{ id: "a", botId: "copilot", fresh: true }]);
     expect(readConversations()[0]?.runId).toBeUndefined();
+  });
+});
+
+describe("human-gate attention", () => {
+  const conversations: Conversation[] = [
+    { id: "active", botId: "copilot", runId: "run-active" },
+    { id: "background", botId: "copilot", runId: "run-background" },
+    { id: "operator", botId: "copilot", runId: "run-operator" },
+    { id: "empty", botId: "copilot" },
+  ];
+
+  it("counts each active or background tab parked on its own human gate", () => {
+    const states = new Map([
+      ["active", { runId: "run-active", runStatus: "running" }],
+      [
+        "background",
+        { runId: "run-background", runStatus: "paused_waiting_human" },
+      ],
+      ["operator", { runId: "run-operator", runStatus: "paused_operator" }],
+      ["empty", { runId: null, runStatus: null }],
+    ]);
+    expect(
+      Array.from(
+        collectWaitingConversationIds(
+          conversations,
+          (id) => states.get(id) ?? { runId: null, runStatus: null },
+        ),
+      ),
+    ).toEqual(["background"]);
+  });
+
+  it("refuses a paused run that belongs to another tab", () => {
+    expect(
+      collectWaitingConversationIds(conversations.slice(0, 1), () => ({
+        runId: "neighbour",
+        runStatus: "paused_waiting_human",
+      })).size,
+    ).toBe(0);
+  });
+});
+
+describe("automatic watch unread state", () => {
+  const event = (
+    seq: number,
+    type: "human_answers_recorded" | "human_input_requested",
+    nodeId: string,
+    data: Record<string, unknown>,
+  ) => ({
+    seq,
+    type,
+    node_id: nodeId,
+    run_id: "assistant",
+    timestamp: `2026-08-30T09:00:${String(seq).padStart(2, "0")}Z`,
+    data,
+  });
+
+  it("distinguishes a new watch diagnosis from the ordinary chat pause", () => {
+    const events = [
+      event(10, "human_input_requested", "chat", {}),
+      event(11, "human_answers_recorded", "chat", {
+        answers: {
+          host_event: {
+            kind: "assistant-watch-event",
+            event: "run.failed",
+          },
+        },
+      }),
+      event(12, "human_input_requested", "chat", {}),
+    ];
+    expect(latestWatchResultSeq(events)).toBe(12);
+
+    const conversations: Conversation[] = [
+      { id: "copi", botId: "copilot", runId: "assistant" },
+    ];
+    expect(
+      collectUnreadWatchConversationIds(conversations, () => ({
+        runId: "assistant",
+        runStatus: "paused_waiting_human",
+        latestWatchResultSeq: 12,
+      })),
+    ).toEqual(new Set(["copi"]));
+
+    const read = markConversationWatchResultRead(conversations, "copi", 12);
+    expect(
+      collectUnreadWatchConversationIds(read, () => ({
+        runId: "assistant",
+        runStatus: "paused_waiting_human",
+        latestWatchResultSeq: 12,
+      })).size,
+    ).toBe(0);
+  });
+
+  it("waits for the finalized reply instead of alerting while Copi is working", () => {
+    const events = [
+      event(20, "human_answers_recorded", "chat", {
+        answers: { host_event: { kind: "assistant-watch-event" } },
+      }),
+      // An ask_user pause inside the turn is a different node and must not
+      // publish the automatic diagnosis prematurely.
+      event(21, "human_input_requested", "copi", {}),
+    ];
+    expect(latestWatchResultSeq(events)).toBeNull();
+  });
+
+  it("treats a completed project handoff reply as an unread assistant update", () => {
+    const events = [
+      event(30, "human_answers_recorded", "chat", {
+        answers: {
+          host_event: {
+            kind: "workspace-handoff-completed",
+            receipt_id: "receipt-1",
+          },
+        },
+      }),
+      event(31, "human_input_requested", "chat", {}),
+    ];
+    expect(latestWatchResultSeq(events)).toBe(31);
+  });
+
+  it("persists the monotonic read cursor", () => {
+    const read = markConversationWatchResultRead(
+      [{ id: "copi", botId: "copilot", runId: "assistant" }],
+      "copi",
+      42,
+    );
+    writeConversations(read);
+    expect(readConversations()[0]?.lastReadWatchResultSeq).toBe(42);
+    expect(
+      markConversationWatchResultRead(read, "copi", 41)[0]
+        ?.lastReadWatchResultSeq,
+    ).toBe(42);
   });
 });
 

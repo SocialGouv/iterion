@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/google/uuid"
@@ -71,6 +72,16 @@ func cloneNodeSessions(src map[string]store.NodeSessionSlot) map[string]store.No
 	return dst
 }
 
+// sessionSlotKey is the checkpoint key for a persistent conversation. The
+// node id remains the backward-compatible default; an authored name lets two
+// serial authoring passes (draft/revise) continue one canonical session.
+func sessionSlotKey(node ir.Node) string {
+	if llm, ok := node.(ir.LLMNode); ok && llm.GetSessionSlot() != "" {
+		return llm.GetSessionSlot()
+	}
+	return node.NodeID()
+}
+
 func (e *Engine) adoptCheckpointSessions(rs *runState) {
 	if ev, ok := e.executor.(interface{ EvictRun(string) }); ok && rs != nil {
 		ev.EvictRun(rs.runID)
@@ -111,7 +122,7 @@ func (e *Engine) injectPersistAndResume(ctx context.Context, rs *runState, node 
 		stripSessionKeys(nodeInput)
 		return
 	}
-	slot, has := rs.nodeSessions[node.NodeID()]
+	slot, has := rs.nodeSessions[sessionSlotKey(node)]
 	if has && slot.StateRef != "" && (backend == "" || slot.Backend == "" || slot.Backend == backend) {
 		if e.unpackSlot(ctx, rs, nodeInput, slot, backend) {
 			return
@@ -143,7 +154,7 @@ func (e *Engine) unpackSlot(ctx context.Context, rs *runState, nodeInput map[str
 		nodeInput[delegate.SessionFingerprintKey] = slot.Fingerprint
 		return true
 	}
-	if err := packer.UnpackSession(ctx, slot.Backend, slot.SessionID, blob); err != nil {
+	if err := packer.UnpackSession(model.WithRunID(ctx, rs.runID), slot.Backend, slot.SessionID, blob); err != nil {
 		if e.logger != nil {
 			e.logger.Warn("persist: unpack: %v; running fresh", err)
 		}
@@ -260,7 +271,7 @@ func (e *Engine) hydratePauseSession(ctx context.Context, rs *runState, nodeInpu
 		nodeInput[delegate.SessionStateKey] = blob
 		return
 	}
-	if err := packer.UnpackSession(ctx, backend, sessionID, blob); err != nil {
+	if err := packer.UnpackSession(model.WithRunID(ctx, rs.runID), backend, sessionID, blob); err != nil {
 		if e.logger != nil {
 			e.logger.Warn("persist: unpack pause blob: %v; running fresh", err)
 		}
@@ -278,7 +289,8 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 	sid := stringMap(output[delegate.SessionIDKey])
 	backend := stringMap(output[delegate.BackendNameKey])
 	fp := stringMap(output[delegate.SessionFingerprintKey])
-	old := rs.nodeSessions[node.NodeID()]
+	key := sessionSlotKey(node)
+	old := rs.nodeSessions[key]
 	pauseRef := rs.pauseSessionRef
 	rs.pauseSessionRef = ""
 
@@ -292,7 +304,7 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		}
 	}
 	if sid == "" || len(blob) == 0 {
-		delete(rs.nodeSessions, node.NodeID())
+		delete(rs.nodeSessions, key)
 		if sid != "" {
 			if e.logger != nil {
 				e.logger.Warn("[%s/persist] no packed session blob; slot cleared", node.NodeID())
@@ -312,7 +324,7 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 	}
 	ref := newSessionRef()
 	if err := e.putSessionBlob(ctx, rs.runID, ref, blob); err != nil {
-		delete(rs.nodeSessions, node.NodeID())
+		delete(rs.nodeSessions, key)
 		if e.logger != nil {
 			e.logger.Warn("persist: put slot: %v", err)
 		}
@@ -328,7 +340,7 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		}
 		return nil
 	}
-	rs.nodeSessions[node.NodeID()] = store.NodeSessionSlot{
+	rs.nodeSessions[key] = store.NodeSessionSlot{
 		Backend:     backend,
 		SessionID:   sid,
 		Fingerprint: fp,

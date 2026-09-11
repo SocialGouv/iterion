@@ -120,3 +120,21 @@ func TestApplySessionContinuityNoIDLeavesOptionalClear(t *testing.T) {
 		}
 	}
 }
+
+func TestApplySessionContinuityEmptyRevisitIsRunVisible(t *testing.T) {
+	var seen []SessionDegradedInfo
+	e := &ClawExecutor{hooks: EventHooks{OnSessionDegraded: func(_ string, info SessionDegradedInfo) {
+		seen = append(seen, info)
+	}}}
+	e.applySessionContinuity(&delegate.Task{}, backendFields{id: "copi", backend: "claw", session: ir.SessionInheritIfAvailable}, map[string]any{
+		delegate.SessionIDKey: "",
+	})
+	if len(seen) != 1 || seen[0].Reason != "missing_session_id" {
+		t.Fatalf("missing continuity was silent: %+v", seen)
+	}
+	seen = nil
+	e.applySessionContinuity(&delegate.Task{}, backendFields{id: "copi", backend: "claw", session: ir.SessionInheritIfAvailable}, map[string]any{})
+	if len(seen) != 0 {
+		t.Fatalf("first visit must not be degraded: %+v", seen)
+	}
+}

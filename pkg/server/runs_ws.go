@@ -603,13 +603,13 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		c.sendError("no_answers", "answers is required", env.AckID)
 		return
 	}
+	runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
+	if err != nil {
+		c.sendError("run_not_found", err.Error(), env.AckID)
+		return
+	}
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
-		if err != nil {
-			c.sendError("run_not_found", err.Error(), env.AckID)
-			return
-		}
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
 			c.sendError("file_path_required", "run has no persisted FilePath; supply file_path or source in payload", env.AckID)
@@ -621,15 +621,29 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		c.sendError("invalid_file_path", err.Error(), env.AckID)
 		return
 	}
+	hostInputs, err := c.server.assistantChatHostInputs(c.authCtx(), runMeta)
+	if err != nil {
+		c.sendError("chat_history_failed", err.Error(), env.AckID)
+		return
+	}
 	// Use authCtx (Background-derived, carries tenant/user identity) so
 	// closing the browser tab doesn't cancel the resume but the mongo
 	// tenant_id filter still applies on writes.
 	if _, err := c.server.runs.Resume(c.authCtx(), runview.ResumeSpec{
-		RunID:    c.runID,
-		FilePath: absPath,
-		Source:   req.Source,
-		Answers:  req.Answers,
+		RunID:      c.runID,
+		FilePath:   absPath,
+		Source:     req.Source,
+		Answers:    req.Answers,
+		HostInputs: hostInputs,
 	}); err != nil {
+		// A parked gate has two legitimate resumers — the operator and the
+		// assistant-watch coordinator delivering an event. The loser of that
+		// race did nothing wrong, so name the case instead of surfacing a
+		// generic failure the client can only display.
+		if errors.Is(err, runview.ErrRunNotResumable) {
+			c.sendError(runNotResumableErrorCode, err.Error(), env.AckID)
+			return
+		}
 		c.sendError("resume_failed", err.Error(), env.AckID)
 		return
 	}

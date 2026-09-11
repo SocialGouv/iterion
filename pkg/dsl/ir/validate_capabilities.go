@@ -4,6 +4,7 @@ import (
 	"regexp"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/runops"
 )
 
 // Capability diagnostics.
@@ -41,6 +42,7 @@ var KnownCapabilities = map[string]bool{
 	boardops.CapBoardComment: true,
 	CapWatchSubscribe:        true,
 	CapWatchUnsubscribe:      true,
+	runops.CapRunsRead:       true,
 }
 
 // capShapeRe enforces the lowercase `domain` or `domain.action` shape.

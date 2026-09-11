@@ -5,6 +5,7 @@ import * as projectsApi from "@/api/projects";
 import type { Project } from "@/api/projects";
 import { useDesktop } from "@/hooks/useDesktop";
 import { isDesktop } from "@/lib/desktopBridge";
+import { requestBrowserWorkspaceSwitch } from "@/lib/workspaceNavigation";
 import { useServerInfoStore } from "@/store/serverInfo";
 
 function findCurrent(
@@ -29,7 +30,7 @@ export interface ProjectsAPI {
   currentProject: Project | null;
   refresh: () => Promise<void>;
   switchProject: (id: string) => Promise<void>;
-  addProject: (dir: string) => Promise<void>;
+  addProject: (dir: string) => Promise<Project>;
   removeProject: (id: string) => Promise<void>;
 }
 
@@ -112,7 +113,8 @@ function useServerProjects(): ProjectsAPI {
 
   const switchProject = useCallback(
     async (id: string) => {
-      await projectsApi.switchProject(id);
+      const project = await projectsApi.switchProject(id);
+      await requestBrowserWorkspaceSwitch(project.id);
       // The WS broadcast triggers refresh asynchronously; we also
       // refresh inline so the immediate post-action render is fresh
       // even if the WS hasn't reconnected yet.
@@ -123,8 +125,10 @@ function useServerProjects(): ProjectsAPI {
 
   const addProject = useCallback(
     async (dir: string) => {
-      await projectsApi.addProject(dir);
+      const project = await projectsApi.addProject(dir);
+      await requestBrowserWorkspaceSwitch(project.id);
       await refresh();
+      return project;
     },
     [refresh],
   );
@@ -159,13 +163,8 @@ function useDesktopProjects(): ProjectsAPI {
     projects: d.projects,
     currentProject: d.currentProject,
     refresh: d.refresh,
-    // d.addProject returns the inserted Project; ProjectsAPI returns
-    // void so we forward and discard. d.switchProject / d.removeProject
-    // already return void.
     switchProject: d.switchProject,
-    addProject: async (dir: string) => {
-      await d.addProject(dir);
-    },
+    addProject: d.addProject,
     removeProject: d.removeProject,
   };
 }

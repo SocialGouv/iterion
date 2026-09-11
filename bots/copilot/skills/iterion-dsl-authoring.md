@@ -192,6 +192,7 @@ change that only *adds* files is invisible.
 | C102 | invalid `compress:` value |
 | C110–C112 | permission mode / rule-list problems |
 | C128 | `sandbox: none` opt-out (warning) |
+| C137 | a command reference is inside quotes written by the workflow; refs are already shell-quoted at runtime, so remove the surrounding quotes |
 
 When a validate run produces a dozen errors, fix the **first** one and
 re-run: parse errors cascade, and the later messages usually name

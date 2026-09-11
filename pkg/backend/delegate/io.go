@@ -52,8 +52,10 @@ type IOTask struct {
 	Readonly               bool                  `json:"readonly,omitempty"`
 	Capabilities           []string              `json:"capabilities,omitempty"`
 	StoreDir               string                `json:"store_dir,omitempty"`
+	RunStoreDir            string                `json:"run_store_dir,omitempty"`
 	BoardHTTPEndpoint      string                `json:"board_http_endpoint,omitempty"`
 	BoardRunToken          string                `json:"board_run_token,omitempty"`
+	RunsHTTPEndpoint       string                `json:"runs_http_endpoint,omitempty"`
 	AskUserHTTPEndpoint    string                `json:"ask_user_http_endpoint,omitempty"`
 	AskUserRunToken        string                `json:"ask_user_run_token,omitempty"`
 	ToolDefs               []IOToolDef           `json:"tool_defs,omitempty"`
@@ -75,6 +77,7 @@ type IOTask struct {
 	CompactThresholdRatio  float64               `json:"compact_threshold_ratio,omitempty"`
 	CompactPreserveRecent  int                   `json:"compact_preserve_recent,omitempty"`
 	SessionID              string                `json:"session_id,omitempty"`
+	SessionSlot            string                `json:"session_slot,omitempty"`
 	ForkSession            bool                  `json:"fork_session,omitempty"`
 	SessionFingerprint     string                `json:"session_fingerprint,omitempty"`
 	ProviderHint           string                `json:"provider_hint,omitempty"`
@@ -115,6 +118,7 @@ type IOResult struct {
 	ParseFallback       bool            `json:"parse_fallback,omitempty"`
 	FormattingPassUsed  bool            `json:"formatting_pass_used,omitempty"`
 	SessionID           string          `json:"session_id,omitempty"`
+	SessionFingerprint  string          `json:"session_fingerprint,omitempty"`
 	PendingConversation json.RawMessage `json:"pending_conversation,omitempty"`
 	PendingToolUseID    string          `json:"pending_tool_use_id,omitempty"`
 	Error               string          `json:"error,omitempty"`
@@ -147,8 +151,10 @@ func ToIOTask(t Task) IOTask {
 		Readonly:               t.Readonly,
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
+		RunStoreDir:            t.RunStoreDir,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
+		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
 		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
 		AskUserRunToken:        t.AskUserRunToken,
 		ToolDefs:               ioToolDefs,
@@ -170,6 +176,7 @@ func ToIOTask(t Task) IOTask {
 		CompactThresholdRatio:  t.CompactThresholdRatio,
 		CompactPreserveRecent:  t.CompactPreserveRecent,
 		SessionID:              t.SessionID,
+		SessionSlot:            t.SessionSlot,
 		ForkSession:            t.ForkSession,
 		SessionFingerprint:     t.SessionFingerprint,
 		ProviderHint:           t.ProviderHint,
@@ -202,8 +209,10 @@ func FromIOTask(t IOTask) Task {
 		Readonly:               t.Readonly,
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
+		RunStoreDir:            t.RunStoreDir,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
+		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
 		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
 		AskUserRunToken:        t.AskUserRunToken,
 		OutputSchema:           t.OutputSchema,
@@ -224,6 +233,7 @@ func FromIOTask(t IOTask) Task {
 		CompactThresholdRatio:  t.CompactThresholdRatio,
 		CompactPreserveRecent:  t.CompactPreserveRecent,
 		SessionID:              t.SessionID,
+		SessionSlot:            t.SessionSlot,
 		ForkSession:            t.ForkSession,
 		SessionFingerprint:     t.SessionFingerprint,
 		ProviderHint:           t.ProviderHint,
@@ -252,6 +262,7 @@ func ToIOResult(r Result) IOResult {
 		ParseFallback:       r.ParseFallback,
 		FormattingPassUsed:  r.FormattingPassUsed,
 		SessionID:           r.SessionID,
+		SessionFingerprint:  r.SessionFingerprint,
 		PendingConversation: r.PendingConversation,
 		PendingToolUseID:    r.PendingToolUseID,
 	}
@@ -272,6 +283,7 @@ func FromIOResult(r IOResult) Result {
 		ParseFallback:       r.ParseFallback,
 		FormattingPassUsed:  r.FormattingPassUsed,
 		SessionID:           r.SessionID,
+		SessionFingerprint:  r.SessionFingerprint,
 		PendingConversation: r.PendingConversation,
 		PendingToolUseID:    r.PendingToolUseID,
 	}

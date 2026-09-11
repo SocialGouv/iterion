@@ -5,6 +5,327 @@ semantics, backends. Read-only by construction. Newest run first.
 
 ---
 
+## 2026-08-31 — host-event resumes survive the HTTP acknowledgement
+
+- **Observed defect:** Studio could acknowledge an executed Copi action with
+  `action-completed`, then immediately cancel Copi because the resumed engine
+  inherited the completed HTTP request context. Its target watch stopped with
+  it, breaking the `target → Copi → CLI` supervision chain.
+- **Repair:** `handleDeliverHostEvent` now detaches the engine lifetime while
+  preserving request-scoped values, matching the existing human-answer path.
+  Copi also recognizes host receipts by `kind`, correlates a completed action,
+  verifies it through read evidence and retains the confirmed result in its
+  brief before requesting the next safe step.
+- **Verification:** the server lifecycle regression closes the HTTP response
+  before a deterministic resumed turn finishes. On the live `:4893` Studio,
+  Copi `01a05819-7366-7ede-8142-e9c5623f22bf` requested watch
+  `b2e82db0-3185-449f-b4b1-2e1fbb393873` for town_planner
+  `01a04ee1-e661-71e6-a130-a222f994862d`; its failure event woke Copi, then
+  the exact production receipt `{action, args, message}` was delivered. Copi
+  correlated `action: run.watch`, re-read the target, retained the confirmed
+  watch in its brief and returned to its chat pause without cancellation.
+- **Prompt migration:** the prior Copi requested its watch be stopped before
+  the on-disk prompt hash changed; it remains parked as evidence, while the
+  fresh Copi owns the active watch. This avoids a stale assistant silently
+  failing its next resume on the workflow hash guard.
+
+---
+
+## 2026-08-30 — complete diagnostic evidence without an unguarded shell
+
+- **Observed defect:** Copi could inspect bounded Iterion run events but could
+  not search the live workspace by content, routinely missed project-owned
+  evidence under `state/`, and received no warning when a large source read
+  crossed a downstream 256 KiB clipping boundary. DB-backed project state was
+  unreachable. Separately, the ambient `POSTGRES_PASSWORD=shorts` registered
+  `shorts` as a global literal secret and erased thousands of unrelated source
+  occurrences from persisted observability.
+- **Workspace evidence:** claw `read_file` now returns at most 240 KiB with an
+  explicit line continuation marker and accepts `start_line`/`line_count`.
+  `workspace_grep` is confined to the active workspace, searches ignored
+  project artifacts such as `state/`, and excludes credential files and
+  internal run stores before scanning.
+- **Live evidence:** native Bash and Grep remain denied by default. Copi alone
+  declares a `diagnostic_shell` alias under an explicit `ask` rule. On Claude
+  Code its declared, single-line Bash verification request is mapped to that
+  alias only after explicit-deny screening, so the operator approves the full
+  exact command. The bridge permits bounded diagnostics and source-
+  nonmutating targeted tests/validation, never Git/source writes; a multiline
+  command or any other node remains native Bash → deny.
+- **Redaction:** short/simple ambient values are no longer eligible for global
+  substring taint. Credential-file denies, launch-env name redaction and the
+  permission boundary still keep those values out of ordinary model inputs;
+  distinctive generated passwords/tokens continue through known-value
+  redaction.
+- **Verification:** tool tests pin explicit large-file continuation,
+  credential-safe search and outside-workspace refusal; permission tests pin
+  native Bash/Grep deny versus diagnostic-shell ask; secretguard tests cover
+  both the `shorts` collision and a distinctive ambient secret. The Copi bot
+  validates with only its intentional C128 `sandbox:none` warning.
+
+---
+
+## 2026-08-29 — tool-pair-safe persistent conversation (run `copi-toolpair-fix-smoke-20260829`)
+
+- **Status:** validated on the Tabarria Studio at `:4893`; the smoke run was
+  cancelled deliberately after its third successful chat pause.
+- **Versions:** Copi from `feat/assistant-epic` · Iterion
+  `beb4568ac569-dirty`, rebuilt statically with the tool-pair repair.
+- **Method:** three real operator turns with `reviewer=on`, OpenAI claw for
+  `copi`/`revise`, Claude Code for `review`, `sandbox:none`, no supervisors and
+  no host actions. Turns two and three explicitly referred to the preceding
+  answer to exercise the shared `assistant_conversation` slot.
+- **Result:** all three passes completed `copi → review → revise → compose →
+  chat`; the same claw session id (`ee4063e8-…`) survived every turn, revise's
+  request grew from 6 to 12 to 18 messages, and no OpenAI function-output 400
+  or fallback occurred. The final persisted envelope contains 20 messages and
+  seven exactly matched `tool_use`/`tool_result` ids.
+- **Engine hardening:** compaction now prunes orphaned tool blocks in both
+  directions without widening the retained window; loading repairs historical
+  envelopes; request construction validates the invariant; `ask_user` keeps
+  only its explicitly pending id. Fallback restores the pre-attempt snapshot
+  under the effective named slot instead of wiping the conversation. The exact
+  4893 summary/result boundary and tight-budget shrink are covered
+  deterministically in `pkg/backend/model/session_toolpairs_test.go`.
+
+---
+
+## 2026-08-29 — durable conversational continuity
+
+- **Observed defect:** Copi used `session: inherit_if_available` on `claw`, but
+  claw returned no `_session_id`; every ordinary chat resume therefore ran
+  fresh. The edge wiring was dead and `context_brief` was the only memory.
+- **Host projection:** the manifest's chat node now requests a canonical
+  `conversation_history` projection. The server rebuilds it from the existing
+  run events, keeps the newest eight messages under an estimated 12k-token
+  cap, and injects it as an ephemeral host input. It is not copied into
+  `human_answers_recorded` or an artifact, so events remain the authority.
+- **Verbatim continuity:** claw now packs its compacted `api.Message` history
+  into the existing backend-session store for `session: persist`. Copi and its
+  private revise pass share `session_slot: assistant_conversation`, ensuring
+  the next turn continues from the answer shown to the operator rather than
+  the pre-review draft.
+- **Fail-safe:** a provider-fingerprint change discards the opaque session and
+  falls back to the bounded projection. A present-but-empty continuity key is
+  now a visible `session_degraded` event instead of an Info-only fresh start.
+- **Verification:** deterministic tests cover host-input non-persistence,
+  named-slot hand-off, claw envelope round-trip/size cap, history bounds and
+  missing-session observability; `iterion validate bots/copilot/main.bot`
+  passes (only the pre-existing C128 sandbox opt-out warning).
+
+---
+
+## 2026-08-29 — cross-project failed-bot delegation
+
+- **Status**: deployed on 4893/4894; deterministic validation and a zero-LLM
+  live delegation smoke pass.
+- **Scope**: Copi `0.1.7`, Featurly `2.4.0`, generic run provenance and launch
+  contracts. No bot id is introduced in `pkg/`.
+- **Contract**: Copi stays read-only and emits `run.launch` with a catalog
+  worker plus `source_run_id`. The host resolves the failed bot's owner repo,
+  injects a bounded `run_failure` envelope and operator instructions, pins a
+  snapshot commit, requires the worker's declared `worktree:auto`, and forces
+  `merge_into:none`.
+- **Isolation**: dirty/untracked source content is captured through a temporary
+  Git index without changing the operator checkout/index. A deterministic
+  per-attempt worker run id makes the run store's unique create the CAS for one
+  active repair per failure fingerprint. Consumer re-pin and merge remain
+  separate confirmed operations.
+- **Return path**: the Studio watches worker `finished|failed|cancelled`
+  outcomes and the existing safe host-event wake returns the result to Copi.
+- **Verification**: Go tests cover provenance persistence, install sidecars,
+  dirty-tree snapshot isolation and outcome-kind selection; Vitest covers the
+  closed action payload and host-selected terminal watch. Both modified bots
+  pass `iterion validate`. Live run
+  `repair-b5b67a91d83531344432d38b-1` resolved legacy run
+  `01a0451b-dead-700f-8fcb-99b60c155c78` to `iterion-bots`, snapshotted all
+  38 dirty/untracked entries at hidden commit `092ceea8a0d6`, ran in an
+  isolated worktree and finished without changing the source checkout or its
+  HEAD (`e972a8a308d2`).
+
+## 2026-08-29 — durable target-run watch and safe automatic diagnostic wake
+
+- **Status**: implementation and deterministic validation complete; live
+  failure smoke is pending deployment below.
+- **Scope**: Copi `0.1.6`, generic chat manifest protocol, local/Mongo control
+  plane, Studio action/UX. Existing native-ticket watches are unchanged.
+- **Contract**: `run.watch` creates a rooted run-tree → assistant-run link in
+  `diagnose` or `propose` mode. Descendant actionable outcomes are included;
+  successful child completion stays silent and root Done alone resolves it.
+  Outcome events are the fast path and a durable tree sweep is the backstop.
+  Episodes use a CAS lease, concrete outcome-run provenance, failure fingerprint,
+  cooldown, maximum count and conversation-budget guard.
+- **Wake boundary**: delivery is accepted only while the assistant is
+  `paused_waiting_human` on its manifest chat node. Running turns stay pending;
+  mid-turn `ask_user` and `paused_operator` are not resumed. Cancelling or
+  finishing the assistant stops its watches; minimizing the dock does not.
+- **Authority**: the resume carries a JSON `host_event` field, not the chat
+  `message`. The transcript renders it as an automatic host event and Copi's
+  prompt forbids treating it as explicit intent. `auto_safe` is rejected: a
+  browser/localStorage action policy is not server authority.
+- **Verification**: FS store tests cover idempotent episodes, one winner under
+  concurrent claims and lease recovery. Server tests pin chat-vs-ask_user/
+  paused_operator eligibility, the 90% budget guard and stable fingerprints.
+  Studio tests pin host-selected assistant ids, rejection of `auto_safe`, and
+  the absence of an operator message for watch wake-ups. Go package tests,
+  Copi validation, TypeScript and targeted Vitest pass.
+
+## 2026-08-29 — closing an assistant conversation stops its owned run
+
+- **Status**: deterministic validation complete; production Studio rebuilt and
+  reloaded on ports 4893 and 4894. Browser close smoke pending an operator
+  gesture so no existing run is cancelled without confirmation.
+- **Scope**: Studio assistant lifecycle; Copi bundle remains `0.1.5` on branch
+  `feat/assistant-epic`.
+- **Trigger**: closed conversation tabs could leave Copi runs in
+  `paused_waiting_human`. The close path read `runId` and status only from an
+  in-memory snapshot, fire-and-forgot `cancelRun`, swallowed every error, then
+  deleted the tab and store immediately. A not-yet-hydrated or stale tab sent
+  no cancellation at all. Bot switching dropped the persisted id without any
+  cancellation, and a single conversation exposed only Minimise, no stop
+  control.
+- **Implementation**: close, new-session and bot-switch now share one
+  cancel-before-dispose contract. It prefers the conversation-owned run id,
+  never gates on client status, treats 404/410 as already gone, waits for HTTP
+  acceptance, and retains the owner with a persistent Retry toast on real
+  failures. A synchronous memory-only guard deduplicates gestures; destructive
+  live/resumable disposal asks for confirmation. The single-conversation strip
+  now exposes a visible **Close conversation and stop its run** cross. The
+  dock's minus remains pure minimisation.
+- **Verification**: pure tests cover id resolution, confirmation classification,
+  delayed acceptance, 404/410 and 5xx. Provider tests exercise absent snapshots,
+  deduplication, retained tabs on error and bot switching. Component tests pin
+  the single-tab affordance and minimisation semantics. The complete Studio
+  suite passes (192 files, 1,700 tests), as do TypeScript and the production
+  build; both live servers load the rebuilt asset containing the new close
+  contract.
+
+## 2026-08-29 — assistant resume handles workflow source drift
+
+- **Status**: validated locally and deployed to the Studio instances on ports 4893 and 4894.
+- **Versions**: bot 0.1.4 → 0.1.5 · branch `feat/assistant-epic`.
+- **Trigger**: Copi emitted an explicit `run.resume` for cancelled run
+  `01a044da-f33b-712c-b167-0b6ed6795c66`. The server correctly refused because
+  the current workflow hash differed from the launch hash, but the assistant
+  card reduced that guard to `API error 400` plus a `Retry` button that could
+  only repeat the same unforced request.
+- **Implementation**: assistant resume now mirrors the Pipelines board's
+  two-step source-drift path. It first sends `{}`; the exact source-change
+  verdict transitions the card to a warning with **Resume with updated
+  workflow**; that second explicit gesture sends `{force:true}`. Other resume
+  errors remain ordinary errors.
+- **Authority boundary**: `force` is not accepted in the Copi action contract.
+  The validator strips a model-supplied value, and only host context from the
+  second operator gesture can add it to the API request. Auto-action policy may
+  attempt the normal resume, but can never auto-force through source drift.
+- **Verification**: request-boundary tests prove model `force:true` is stripped
+  and host force is honored; action-card tests exercise the 400 → warning →
+  second gesture → forced resume sequence; the existing Pipelines tests keep
+  the same behavior pinned. Typecheck passes.
+
+## 2026-08-29 — cross-review closes the loop before publication
+
+- **Status**: validated — deterministic suites plus one live non-empty-review
+  turn after the static rebuild/reload of both studios.
+- **Versions**: bot 0.1.3 → 0.1.4 · branch `feat/assistant-epic`.
+- **Trigger**: with `reviewer: on`, the chat displayed Copi's draft followed by
+  a separate « Revue croisée » block. Copi never received that feedback: the
+  graph was `copi → review → compose`, and `compose` concatenated the two
+  strings deterministically.
+- **Implementation**: the reviewed path is now
+  `copi → review → revise → compose → chat`. `revise` uses Copi's model,
+  fallback ladder and tools; it inherits Copi's backend session when one is
+  exposed, with the explicit question/draft/brief as the cold-session fallback.
+  It challenges the private critique and returns the only operator-visible
+  answer. `compose` is now a plain delivery projection, never a text
+  concatenator, and carries the revised `context_brief` into the next turn.
+- **Integrity**: the revision pass may change conversational prose, quick
+  replies and rolling memory only. Typed host actions, editor proposals and
+  companion-file replacements remain the first Copi pass's published requests,
+  so an editorial model cannot replace a host-policy-checked action after the
+  fact. The prompt requires the prose to stay aligned with those immutable
+  requests and preserves deterministic validation verdicts verbatim.
+- **Verification**: the graph contract checks the same-family author session,
+  private critique edge and absence of critique concatenation. The runtime E2E
+  supplies a deliberately wrong draft plus a non-empty critique and proves that
+  the chat receives only Copi's corrected answer; after resume it proves the
+  next turn gets the revised brief and session rather than the draft state.
+- **Live result**: run `copi-review-refine-20260829` on the `:4894` project
+  produced a substantive reviewer critique, entered `revise`, rechecked the
+  review with `runs.read`, and parked on `chat` with only `outputs.revise.reply`.
+  Neither the original draft nor the critique/« Revue croisée » label appeared
+  in the delivered question payload. This CLI replay intentionally tested the
+  editorial topology, not card resolution (host-attested page context is added
+  by the Studio send path, not by a raw CLI `--var initial_message`). Claw
+  exposed no resumable session id on this turn, exercising the explicit
+  question/draft/brief fallback successfully.
+
+## 2026-08-29 — run diagnosis uses host-attested context (`:4893`, `:4894`)
+
+- **Status**: validated — deterministic suites plus one live Copi turn after a
+  static rebuild and reload of both studios.
+- **Versions**: bot 0.1.2 → 0.1.3 · branch `feat/assistant-epic`.
+- **Trigger**: Copi answered that it could not inspect a failed run in two
+  studios. On `:4893`, run `01a04943-36a8-7629-ba07-9d309787fab7` existed in
+  the server-selected global project store but Copi globbed only the workspace.
+  On `:4894`, `native:d5fc94b2-ca40-4cb5-9056-ea02fb8dfdaf` was a task
+  reference; Copi incorrectly treated its UUID as a run id instead of following
+  `last_run_id` to cancelled run `01a044da-f33b-712c-b167-0b6ed6795c66`.
+- **Root cause**: the assistant had typed pointers but no host-resolved facts;
+  its run-debug skill suggested a glob that cannot cross the workspace
+  boundary, while the claw node exposed only workspace reads. The optional
+  reviewer could identify the mistake only when it happened to reach the
+  external store, and could not repair the answer already returned.
+- **Implementation**:
+  - the Studio resolves attached/active `run`, `node`, and `card` references,
+    plus explicit `native:` task mentions, at send time and stamps a bounded
+    `<resolved-assistant-context>` containing task state, `last_run_id`, run
+    status, failing node, error code and error;
+  - a bot-agnostic `runs.read` capability exposes read-only `run_get`,
+    `run_events`, and `runs_list` over the current `RunStore`; claw calls stay
+    in-process, non-sandboxed delegate calls use stdio, and sandbox/cloud calls
+    use the existing ephemeral host-MCP listener with the run tenant pinned in
+    the token grant;
+  - Copi and its reviewer use those tools and are explicitly forbidden from
+    reconstructing or globbing `.iterion` store paths;
+  - a selected Pipelines drawer contributes its exact card/run typed reference,
+    so navigate-then-send quick replies resolve after the drawer is active.
+- **Isolation**: no store directory, workdir, run inputs or arbitrary task body
+  is added to the prompt. Local project isolation remains host-owned; cloud
+  reads are tenant-scoped even though MCP token requests do not carry an
+  operator JWT.
+- **Verification**: Go tests cover the resolver, capability gate, bounded run
+  projection, in-process tools, HTTP tenant pinning and backend/runtime wiring.
+  Studio typecheck plus context/page/dock tests pass. A Copi botreplay golden
+  requires the stamped failed status and failing node without a live model key.
+- **Live result**: studios `:4893` and `:4894` were reloaded on Iterion
+  `beb4568a`; both resolver calls returned the expected run/task facts. Live
+  run `01a04cb1-e8b3-71b1-90d4-d699dabe8965` on `:4893` called `run_get` and
+  `run_events`, cited `run_failed` seq. 141, identified internal node
+  `seal_experience` and missing `experience-map.a2.candidate.json`, and warned
+  against a blind Resume. It did not glob or reconstruct `.iterion`.
+- **Live-run hardening**: that replay exposed an oversized raw event page
+  (~770 KB). Before finalizing, `run_events` was changed to a 192-KB bounded
+  diagnostic projection (max 250 events/page) that omits inputs, prompts and
+  arbitrary tool/node outputs; a regression test seeds all three and proves
+  they do not cross the capability boundary.
+- **Follow-up regression**: a task id typed directly in prose
+  (`#native:d5fc…`) from the generic Pipelines page bypassed the first
+  implementation, which only resolved active or attached chips. The dock now
+  asks the host resolver on every free-text send; the host recognizes bounded
+  `native:` mentions, resolves them as cards and follows `last_run_id`. A dock
+  test pins this generic-page launch shape. Model-visible run-tool errors are
+  also sanitized at the runops boundary, so a missing id reports only
+  `run not found` and never the filesystem store path.
+- **Follow-up live result**: after rebuilding and reloading both studios, run
+  `01a04cc2-e099-784d-8f05-01b2407497ec` on `:4894` replayed the exact
+  generic-page question. Copi followed the card to
+  `01a044da-f33b-712c-b167-0b6ed6795c66`, called `run_get` and two pages of
+  `run_events`, and correctly distinguished cancellation from failure: two
+  `context canceled` delegate errors around `plan_macro` led to
+  `run_cancelled` events 240 and 246.
+
+
 ## 2026-08-28 — cross-review without memory, reviewer probing the Studio API (runs `01a04999`, `01a049e1`, `01a049e4`)
 
 - **Status**: validated — two fixes to the reviewer's input and prompt, measured on two follow-up runs.

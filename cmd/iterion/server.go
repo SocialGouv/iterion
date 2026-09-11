@@ -50,6 +50,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
@@ -715,6 +716,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		DisableAuth:                 disableAuth,
 		Metrics:                     mreg,
 		ModelPrefs:                  modelPrefStore,
+		RunWatches:                  runwatch.NewMongoStore(st.DB()),
 		// /readyz pings each dependency under a 1s deadline. Only Mongo is
 		// CRITICAL (it is the store — without it the pod serves nothing
 		// real): the others are reported as "degraded" in the probe body
@@ -868,6 +870,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
 		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},
+		{"assistant_run_watches", func(c context.Context) error { return runwatch.NewMongoStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
 		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
 	}

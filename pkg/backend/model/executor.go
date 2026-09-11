@@ -78,6 +78,7 @@ type ClawExecutor struct {
 	sharedStateDir string
 	botID          string // stable bot/workflow id used for bot-scoped memory
 	storeDir       string // dispatcher store root (empty = backend default)
+	runStoreDir    string // run store root for non-sandboxed runs.read stdio
 	// artifactFilesDir is the run's tool-output scratch area
 	// (runs/<id>/artifact_files), exported to HOST tool-node subprocesses as
 	// ITERION_ARTIFACT_FILES_DIR. Sandboxed runs already get the variable from
@@ -248,7 +249,33 @@ type ClawExecutor struct {
 // from host devbox provisioning (pkg/runtime/devbox_host.go); the same
 // happens-before as SetSandbox makes a mutex unnecessary.
 func (e *ClawExecutor) SetRunExtraEnv(env []string) {
-	e.runExtraEnv = env
+	e.runExtraEnv = mergeProcessEnv(e.runExtraEnv, env)
+}
+
+func mergeProcessEnv(base, overlay []string) []string {
+	order := make([]string, 0, len(base)+len(overlay))
+	values := make(map[string]string, len(base)+len(overlay))
+	put := func(entry string) {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			return
+		}
+		if _, exists := values[key]; !exists {
+			order = append(order, key)
+		}
+		values[key] = entry
+	}
+	for _, entry := range base {
+		put(entry)
+	}
+	for _, entry := range overlay {
+		put(entry)
+	}
+	out := make([]string, 0, len(order))
+	for _, key := range order {
+		out = append(out, values[key])
+	}
+	return out
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The
@@ -463,6 +490,10 @@ func WithArtifactFilesDir(dir string) ClawExecutorOption {
 
 func WithStoreDir(dir string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.storeDir = dir }
+}
+
+func WithRunStoreDir(dir string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.runStoreDir = dir }
 }
 
 // WithLogger sets a leveled logger for the executor.
@@ -1103,7 +1134,23 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		// Sessions are preserved on error so the recovery dispatcher
 		// has something to compact for the next attempt.
 		if e.sessions != nil && runID != "" {
-			e.sessions.evict(runID, node.NodeID())
+			key := node.NodeID()
+			persist := false
+			if llm, ok := node.(ir.LLMNode); ok && llm.GetSession() == ir.SessionPersist {
+				persist = true
+				if llm.GetSessionSlot() != "" {
+					key = llm.GetSessionSlot()
+				}
+			}
+			if persist && output != nil {
+				sid, _ := output[delegate.SessionIDKey].(string)
+				fingerprint, _ := output[delegate.SessionFingerprintKey].(string)
+				if blob := e.packClawSession(runID, key, sid, fingerprint); len(blob) > 0 {
+					output[delegate.SessionStateBlobKey] = blob
+				}
+			} else {
+				e.sessions.evict(runID, key)
+			}
 		}
 		if output != nil && e.hooks.OnNodeFinished != nil {
 			e.hooks.OnNodeFinished(node.NodeID(), output)

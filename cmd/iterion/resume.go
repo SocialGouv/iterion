@@ -34,6 +34,7 @@ var resumeOpts struct {
 	maxDuration         string
 	maxIterations       int
 	maxParallelBranches int
+	unlimitedWorkflow   bool
 	autoResume          int
 }
 
@@ -70,6 +71,7 @@ var resumeCmd = &cobra.Command{
 				MaxDuration:         resumeOpts.maxDuration,
 				MaxIterations:       resumeOpts.maxIterations,
 				MaxParallelBranches: resumeOpts.maxParallelBranches,
+				UnlimitedWorkflow:   resumeOpts.unlimitedWorkflow,
 			},
 		}
 		if len(resumeOpts.answerFlags) > 0 {
@@ -107,7 +109,7 @@ func init() {
 	f.StringVar(&resumeOpts.fallback, "fallback", "", "Re-apply the run-level fallback route on resume: \"<backend>:<model>\". Resume does NOT persist launch rules, and a long run outliving a quota window is exactly the case that resumes — pass the same --fallback used at run or the route stops applying silently.")
 	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|pi|kimi|grok; codex is legacy). Same selector syntax as --model.")
 	f.StringArrayVar(&resumeOpts.effortFor, "effort-for", nil, "Re-apply a per-node/-group reasoning_effort override on resume (repeatable): \"selector=effort\" or a bare \"effort\" (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model.")
-	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches)
+	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches, &resumeOpts.unlimitedWorkflow)
 	registerAutoResumeFlag(f, &resumeOpts.autoResume)
 	mustMarkRequired(resumeCmd, "run-id")
 	rootCmd.AddCommand(resumeCmd)

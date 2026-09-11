@@ -40,6 +40,9 @@ type BoardMCPTokenRegistry struct {
 
 type boardMCPGrant struct {
 	Capabilities boardops.Capabilities
+	// TenantID pins token-authenticated runs.read calls to the run's tenant.
+	// Empty in local mode. An MCP request has no operator JWT context.
+	TenantID string
 	// SourceIssueID is the ticket that owns the granted run, carried so
 	// board.create over this transport auto-stamps parent_id /
 	// spawned_from the same way the stdio and in-process transports do.
@@ -57,7 +60,7 @@ type boardMCPGrant struct {
 // a Register failure means the minted token would never authorize, so the
 // minter must not hand it out; lookup is called by the HTTP handler.
 type BoardMCPTokenStore interface {
-	Register(token string, caps []string, sourceIssueID string) error
+	Register(token string, caps []string, sourceIssueID, tenantID string) error
 	Revoke(token string)
 	lookup(token string) (boardMCPGrant, bool)
 }
@@ -85,10 +88,11 @@ func newBoardMCPToken() string {
 // Register stores a token with its grant. A subsequent call with the same
 // token replaces the grant. A full registry is an error: the token would
 // never authorize, so the caller must not hand it out.
-func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID string) error {
+func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID, tenantID string) error {
 	grant := boardMCPGrant{
 		Capabilities:  boardops.Capabilities{},
 		SourceIssueID: strings.TrimSpace(sourceIssueID),
+		TenantID:      strings.TrimSpace(tenantID),
 		ExpiresAt:     r.now().Add(boardMCPDefaultTTL),
 	}
 	for _, c := range caps {

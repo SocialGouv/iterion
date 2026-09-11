@@ -864,7 +864,7 @@ func TestSetupWorktree_AnchorsOnTheLaunchCheckout(t *testing.T) {
 		t.Fatalf("the fixture did not move main: %s", secondSHA)
 	}
 
-	wc, cleanup, err := setupWorktree(t.TempDir(), "run-anchor", linked, nil)
+	wc, cleanup, err := setupWorktree(t.TempDir(), "run-anchor", linked, "", nil)
 	if err != nil {
 		t.Fatalf("setupWorktree from a linked worktree: %v", err)
 	}
@@ -897,7 +897,7 @@ func TestSetupWorktree_AnchorsOnTheLaunchCheckout(t *testing.T) {
 func TestSetupWorktree_SingleCheckoutUnchanged(t *testing.T) {
 	main, firstSHA := initBareishRepo(t)
 
-	wc, cleanup, err := setupWorktree(t.TempDir(), "run-plain", main, nil)
+	wc, cleanup, err := setupWorktree(t.TempDir(), "run-plain", main, "", nil)
 	if err != nil {
 		t.Fatalf("setupWorktree: %v", err)
 	}

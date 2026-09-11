@@ -139,20 +139,65 @@ describe("EditorChangeOffer", () => {
     expect(screen.getByText(/return to the captured editor tab/i)).toBeTruthy();
   });
 
-  it("keeps Save As under operator control for an untitled buffer", async () => {
-    await liveProposal(null);
+  it("opens the shared Save As flow for an applied untitled buffer", async () => {
+    const { store } = await liveProposal(null);
     render(<EditorChangeOffer runId="run-1" revision={1} />);
 
     const apply = await screen.findByRole("button", { name: "Apply to editor" });
     await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(apply);
-    await screen.findByText(/use save as in the editor/i);
+    await screen.findByText(/choose a location to write it to disk/i);
 
-    expect(
-      (screen.getByRole("button", { name: "Save current file" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Choose location and save" }));
+    await screen.findByRole("dialog");
     expect(api.saveFile).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("filename.bot"), {
+      target: { value: "reviewed-workflow.bot" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Editor change saved");
+
+    expect(api.saveFile).toHaveBeenCalledWith(
+      "reviewed-workflow.bot",
+      store.getState().document,
+      { createOnly: true },
+    );
+    expect(store.getState().currentFilePath).toBe("bots/demo/main.bot");
+  });
+
+  it("saves the host buffer without applying model content on a save-only turn", async () => {
+    const { store, snapshot } = await liveProposal(null);
+    proposal.current = {
+      source: null,
+      sessionId: snapshot.sessionId,
+      revision: snapshot.revision,
+      applyIntent: "explicit",
+      saveIntent: "explicit",
+    };
+    api.saveFile.mockResolvedValue({
+      path: "host-choice.bot",
+      source: "workflow original:\n  entry: a\n",
+    });
+
+    render(<EditorChangeOffer runId="run-1" revision={2} />);
+
+    expect(await screen.findByText("Save editor buffer")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Apply to editor" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Choose location and save" }));
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByPlaceholderText("filename.bot"), {
+      target: { value: "host-choice.bot" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Editor change saved");
+
+    expect(api.parseSource).not.toHaveBeenCalled();
+    expect(api.saveFile).toHaveBeenCalledWith(
+      "host-choice.bot",
+      store.getState().document,
+      { createOnly: true },
+    );
   });
 
   it("offers one confirmed apply-and-save action", async () => {
@@ -166,6 +211,33 @@ describe("EditorChangeOffer", () => {
     expect(store.getState().document?.workflows[0]?.name).toBe("changed");
     expect(api.saveFile).toHaveBeenCalledTimes(1);
     expect(store.getState().isDirty()).toBe(false);
+  });
+
+  it("applies an untitled draft before asking where to save it", async () => {
+    const { store } = await liveProposal(null);
+    proposal.current.saveIntent = "explicit";
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Apply and save" }));
+    await screen.findByRole("dialog");
+
+    expect(store.getState().document?.workflows[0]?.name).toBe("changed");
+    expect(api.parseSource).toHaveBeenCalledTimes(1);
+    expect(api.saveFile).not.toHaveBeenCalled();
+  });
+
+  it("rechecks save policy when an untitled destination is confirmed", async () => {
+    await liveProposal(null);
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Apply to editor" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose location and save" }));
+    await screen.findByRole("dialog");
+    writeAssistantActionPolicy("editor.save", "deny");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/saving assistant changes is disabled/i);
+    expect(api.saveFile).not.toHaveBeenCalled();
   });
 
   it("auto-applies and saves only when both policies and explicit intent allow it", async () => {

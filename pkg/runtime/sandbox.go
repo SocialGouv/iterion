@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
@@ -155,6 +156,42 @@ func workflowHasBoardCapability(wf *ir.Workflow) bool {
 	return false
 }
 
+// workflowHasHostCapability gates the shared token-authenticated MCP
+// listener. Board tools use /board; read-only run tools use /runs on the same
+// listener and host-gateway alias.
+func workflowHasHostCapability(wf *ir.Workflow) bool {
+	if workflowHasBoardCapability(wf) {
+		return true
+	}
+	if wf == nil {
+		return false
+	}
+	has := func(caps []string) bool {
+		for _, capability := range caps {
+			if capability == runops.CapRunsRead {
+				return true
+			}
+		}
+		return false
+	}
+	if has(wf.Capabilities) {
+		return true
+	}
+	for _, node := range wf.Nodes {
+		switch typed := node.(type) {
+		case *ir.AgentNode:
+			if has(typed.Capabilities) {
+				return true
+			}
+		case *ir.JudgeNode:
+			if has(typed.Capabilities) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // SandboxParams bundles the resolution inputs for
 // [resolveAndStartSandbox]. Keeping these in a struct avoids long
 // positional arg lists at call sites and makes the contract explicit.
@@ -172,9 +209,10 @@ type SandboxParams struct {
 	RepoRoot      string
 	WorkspacePath string
 	SecretVars    map[string]any
-	CLIOverride   string // "" means no override
-	GlobalDefault string // "" means no global default
-	DefaultImage  string // "" lets the runtime pick the built-in default
+	CLIOverride   string            // "" means no override
+	GlobalDefault string            // "" means no global default
+	DefaultImage  string            // "" lets the runtime pick the built-in default
+	Environment   map[string]string // project env overlay; workflow sandbox.env wins
 
 	// HostStateOverride / HostStateDefault carry the precedence inputs
 	// for the host_state mount (auto-bind of ~/.iterion + ~/.claude).
@@ -247,11 +285,9 @@ type SandboxParams struct {
 	// inspection also forces a proxy to run even under network: open.
 	SecretRewriter netproxy.SecretRewriter
 
-	// BoardMCPHandler, when non-nil, serves the board MCP routes for a
-	// per-run gateway-reachable listener started alongside the egress
-	// proxy, so sandboxed board-capability nodes can write the operator's
-	// board (C082). The engine sets it from WithBoardMCP (server path);
-	// nil (CLI / no server) leaves sandboxed board-emit disabled.
+	// BoardMCPHandler, when non-nil, serves the dedicated board/runs MCP
+	// routes for a per-run gateway-reachable listener started alongside the
+	// egress proxy (C082). The historical name remains for compatibility.
 	BoardMCPHandler http.Handler
 
 	// EffectiveBackend resolves a node's backend the way DISPATCH will —
@@ -337,6 +373,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			}
 		}
 		return nil, nil
+	}
+	if len(p.Environment) > 0 {
+		if spec.Env == nil {
+			spec.Env = make(map[string]string, len(p.Environment))
+		}
+		for key, value := range p.Environment {
+			if _, authored := spec.Env[key]; !authored {
+				spec.Env[key] = value
+			}
+		}
 	}
 
 	// Select the driver up front: its capabilities decide which
@@ -517,7 +563,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// at `docker run` time — so the driver must know now that an
 	// endpoint will be advertised, proxy or no proxy (the default
 	// network: open starts none).
-	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow)
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow)
 	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
 
 	info := sandbox.RunInfo{
@@ -587,22 +633,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 	}
 
-	// C082: when the server supplies a board MCP handler and a board-cap
-	// node exists, start a per-run gateway-reachable board listener so
-	// sandboxed claude_code can write the operator's board. Non-fatal: a
-	// failure degrades to the prior (board-disabled) behaviour rather than
-	// breaking the run.
+	// C082: when the server supplies its dedicated host-MCP handler and a
+	// board/runs-capability node exists, start one gateway-reachable listener.
+	// Non-fatal: a failure disables those host tools rather than the run.
 	if wantsBoardListener {
 		endpoint, srv, berr := startSandboxMCPListener(driver, p.BoardMCPHandler, "/api/v1/mcp/board")
 		if berr != nil {
 			if logger != nil {
-				logger.Warn("runtime: sandbox: board MCP listener failed to start (board-emit disabled for this run): %v", berr)
+				logger.Warn("runtime: sandbox: host MCP listener failed to start (board/runs tools disabled for this run): %v", berr)
 			}
 		} else {
 			active.boardEndpoint = endpoint
 			active.boardListener = srv
 			if logger != nil {
-				logger.Info("sandbox: board MCP listener on %s (sandboxed board-emit enabled)", endpoint)
+				logger.Info("sandbox: host MCP listener on %s (sandboxed board/runs tools enabled)", endpoint)
 			}
 		}
 	}
@@ -1615,6 +1659,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		CLIOverride:              e.sandboxOverride,
 		GlobalDefault:            e.sandboxDefault,
 		DefaultImage:             e.sandboxDefaultImage,
+		Environment:              projectEnvironmentOverlay(e.runEnv),
 		HostStateOverride:        e.sandboxHostStateOverride,
 		HostStateDefault:         e.sandboxHostStateDefault,
 		Drivers:                  e.sandboxDrivers,

@@ -224,6 +224,7 @@ type AgentNode struct {
 	Publish          string     // persistent artifact name (empty if not set)
 	PublishLabels    []string   // DSL artifact_labels: applied to the published artifact
 	Session          SessionMode
+	SessionSlot      string
 	Tools            []string // tool capability names
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	Capabilities     []string // host-side capabilities (e.g. board.create); nil = inherit workflow
@@ -254,6 +255,7 @@ type JudgeNode struct {
 	ActiveMCPServers []string
 	Publish          string
 	Session          SessionMode
+	SessionSlot      string
 	Tools            []string
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	Capabilities     []string // host-side capabilities (e.g. board.read); nil = inherit workflow
@@ -547,6 +549,7 @@ type LLMNode interface {
 	GetInteractionFields() *InteractionFields
 	GetAwaitMode() AwaitMode
 	GetSession() SessionMode
+	GetSessionSlot() string
 	GetPublish() string
 	GetTools() []string
 	GetToolMaxSteps() int
@@ -580,6 +583,7 @@ func (n *AgentNode) GetSchemaFields() *SchemaFields           { return &n.Schema
 func (n *AgentNode) GetInteractionFields() *InteractionFields { return &n.InteractionFields }
 func (n *AgentNode) GetAwaitMode() AwaitMode                  { return n.AwaitMode }
 func (n *AgentNode) GetSession() SessionMode                  { return n.Session }
+func (n *AgentNode) GetSessionSlot() string                   { return n.SessionSlot }
 func (n *AgentNode) GetPublish() string                       { return n.Publish }
 func (n *AgentNode) GetTools() []string                       { return n.Tools }
 func (n *AgentNode) GetToolMaxSteps() int                     { return n.ToolMaxSteps }
@@ -600,6 +604,7 @@ func (n *JudgeNode) GetSchemaFields() *SchemaFields           { return &n.Schema
 func (n *JudgeNode) GetInteractionFields() *InteractionFields { return &n.InteractionFields }
 func (n *JudgeNode) GetAwaitMode() AwaitMode                  { return n.AwaitMode }
 func (n *JudgeNode) GetSession() SessionMode                  { return n.Session }
+func (n *JudgeNode) GetSessionSlot() string                   { return n.SessionSlot }
 func (n *JudgeNode) GetPublish() string                       { return n.Publish }
 func (n *JudgeNode) GetTools() []string                       { return n.Tools }
 func (n *JudgeNode) GetToolMaxSteps() int                     { return n.ToolMaxSteps }
@@ -913,12 +918,13 @@ const (
 type InteractionMode = types.InteractionMode
 
 const (
-	InteractionNone       = types.InteractionNone
-	InteractionHuman      = types.InteractionHuman
-	InteractionLLM        = types.InteractionLLM
-	InteractionLLMOrHuman = types.InteractionLLMOrHuman
-	InteractionReview     = types.InteractionReview
-	InteractionAsync      = types.InteractionAsync
+	InteractionNone        = types.InteractionNone
+	InteractionHuman       = types.InteractionHuman
+	InteractionLLM         = types.InteractionLLM
+	InteractionLLMOrHuman  = types.InteractionLLMOrHuman
+	InteractionReview      = types.InteractionReview
+	InteractionAsync       = types.InteractionAsync
+	InteractionHumanOrHost = types.InteractionHumanOrHost
 )
 
 // Review-gate posture values (interaction: review).

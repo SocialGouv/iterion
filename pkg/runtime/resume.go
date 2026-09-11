@@ -73,6 +73,14 @@ func ValidateResumeWorkflowHash(runID, persistedHash, currentHash string, force 
 // failed-resumable runs, execution restarts from the node after the last
 // successfully completed one (re-executing the failed node).
 func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]any) error {
+	return e.ResumeWithHostInputs(ctx, runID, answers, nil)
+}
+
+// ResumeWithHostInputs resumes a run while carrying host-attested, ephemeral
+// fields into the paused human node's downstream output. Host inputs are not
+// persisted as human answers or artifacts; callers must be able to derive
+// them again from the durable run record on every resume.
+func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) error {
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -162,7 +170,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
-		return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
+		return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		// paused_operator resumes via the same machinery as cancelled
 		// runs: checkpoint preserved, no pending interaction, restart
@@ -183,7 +191,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		// pre-first-node failure (e.g. a runner-side clone-prep error) left
 		// no checkpoint at all.
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
-			return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
+			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	default:
@@ -837,6 +845,10 @@ func (e *Engine) rebuildArtifactsWithRevisions(ctx context.Context, runID string
 // resumeFromPause resumes a paused run by recording human answers and
 // continuing execution from the node after the human checkpoint.
 func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any, prepared ...*resumeArtifactState) error {
+	return e.resumeFromPauseWithHostInputs(ctx, r, answers, nil, prepared...)
+}
+
+func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run, answers, hostInputs map[string]any, prepared ...*resumeArtifactState) error {
 	runID := r.ID
 	if r.Checkpoint == nil {
 		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
@@ -933,7 +945,14 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	if outputs == nil {
 		outputs = make(map[string]map[string]any)
 	}
-	outputs[humanNodeID] = answers
+	nodeOutput := cloneResumeInputs(answers)
+	if nodeOutput == nil {
+		nodeOutput = make(map[string]any)
+	}
+	for key, value := range hostInputs {
+		nodeOutput[key] = value
+	}
+	outputs[humanNodeID] = nodeOutput
 
 	// Persist artifact if the human node has publish, then mark it finished.
 	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
@@ -1038,7 +1057,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	e.markPreNodeBoundary(rs, humanNodeID)
 
 	// Select edge from the human node to find the next node.
-	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, answers)
+	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, nodeOutput)
 	if err != nil {
 		return e.failRunErrWithCheckpoint(rs, humanNodeID, err)
 	}
@@ -1181,6 +1200,17 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 	return loopErr
 }
 
+func cloneResumeInputs(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
 // recordHumanAnswers loads the pending interaction (falling back to the
 // checkpoint's embedded questions if the on-disk file is missing), stamps
 // the operator's answers + AnsweredAt, writes the interaction back, and
@@ -1288,6 +1318,12 @@ func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Che
 // restart_node}, so the trace names the retry. nil data keeps the plain
 // human-pause shape.
 func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any, allowed ...store.RunStatus) error {
+	if e.expectedResumeStatus != "" {
+		if e.expectedResumeStatus == store.RunStatusCancelled {
+			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", r.ID)
+		}
+		allowed = []store.RunStatus{e.expectedResumeStatus}
+	}
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
@@ -1307,6 +1343,18 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 // without the stamp the first one needs.
 func (e *Engine) markResumed(ctx context.Context, runID string, data map[string]any) error {
 	e.stampEffectiveBudget(ctx, runID)
+	if e.resumeReceiptID != "" {
+		if data == nil {
+			data = map[string]any{}
+		} else {
+			copy := make(map[string]any, len(data)+1)
+			for key, value := range data {
+				copy[key] = value
+			}
+			data = copy
+		}
+		data["receipt_id"] = e.resumeReceiptID
+	}
 	return e.emit(ctx, runID, store.EventRunResumed, "", data)
 }
 
@@ -1715,8 +1763,15 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 // flip already applied (see Resume's queued case — routed here only when a
 // checkpoint exists). The CAS still rejects double claims.
 func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *store.Checkpoint, restartNodeID string) error {
+	allowed := []store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued}
+	if e.expectedResumeStatus != "" {
+		if e.expectedResumeStatus == store.RunStatusCancelled {
+			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", runID)
+		}
+		allowed = []store.RunStatus{e.expectedResumeStatus}
+	}
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
-		[]store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued})
+		allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
@@ -2416,10 +2471,15 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 		return e.handleAwaitEscalation(ctx, rs, nodeID, node, ni, depth)
 	}
 	switch nodeInteraction(node) {
-	case ir.InteractionHuman, ir.InteractionAsync:
+	case ir.InteractionHuman, ir.InteractionAsync, ir.InteractionHumanOrHost:
 		// interaction: async only changes the NON-blocking tools; a
 		// blocking ask_user from such a node is a deliberate hard stop,
 		// identical to interaction: human.
+		//
+		// human_or_host declares an ADDITIONAL source for the gate's answer
+		// (the host), never a different pause. Leaving it out here would
+		// send it to the default arm and fail the run on the one path — a
+		// mid-turn ask_user — where the mode must change nothing at all.
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:

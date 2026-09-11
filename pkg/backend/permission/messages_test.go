@@ -1,6 +1,9 @@
 package permission
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseAnswer(t *testing.T) {
 	cases := []struct {
@@ -9,6 +12,7 @@ func TestParseAnswer(t *testing.T) {
 	}{
 		{"allow", true, false},
 		{"Allow", true, false},
+		{"allow once", true, false},
 		{"yes", true, false},
 		{"once", true, false},
 		{"allow always", true, true},
@@ -41,6 +45,48 @@ func TestGrantRuleFor(t *testing.T) {
 	p := mustPolicy(t, ModeAsk, []string{got}, nil, nil)
 	if dec, _ := p.Evaluate("Bash", map[string]any{"command": "go build ./..."}); dec != Allow {
 		t.Errorf("granted call = %v, want Allow", dec)
+	}
+}
+
+func TestGrantRuleFor_LongGenericArgumentAuthorizesExactRetry(t *testing.T) {
+	command := "git diff -- " + strings.Repeat("bots/shared-planner/path-", 12)
+	if len(command) <= 200 {
+		t.Fatalf("test command length = %d, want > 200", len(command))
+	}
+	input := map[string]any{"command": command}
+
+	rule := GrantRuleFor("diagnostic_shell", input, false)
+	if strings.Contains(rule, "…") {
+		t.Fatalf("once-grant rule was truncated: %q", rule)
+	}
+	p := mustPolicy(t, ModeAsk, nil, []string{"diagnostic_shell"}, nil)
+	p.AddGrantRule(rule)
+	if got, _ := p.Evaluate("diagnostic_shell", input); got != Allow {
+		t.Errorf("identical long retry = %v, want Allow", got)
+	}
+	if got, _ := p.Evaluate("diagnostic_shell", map[string]any{"command": command + " --cached"}); got != Ask {
+		t.Errorf("different long retry = %v, want Ask", got)
+	}
+}
+
+func TestDiagnosticShellGrantUsesOnlyTheExactCommand(t *testing.T) {
+	command := "iterion validate bots/shared-planner/workflows/hierarchy-epic-author.bot"
+	input := map[string]any{
+		"command":     command,
+		"description": "Validate the saved workflow",
+		"timeout":     300000,
+	}
+	rule := GrantRuleFor("diagnostic_shell", input, false)
+	if rule != "diagnostic_shell("+command+")" {
+		t.Fatalf("diagnostic once-grant = %q, want command-only scope", rule)
+	}
+	p := mustPolicy(t, ModeDeny, nil, []string{"diagnostic_shell"}, nil)
+	p.AddGrantRule(rule)
+	if got, _ := p.Evaluate("diagnostic_shell", map[string]any{"command": command, "description": "Retry"}); got != Allow {
+		t.Errorf("same diagnostic command = %v, want Allow despite changed metadata", got)
+	}
+	if got, _ := p.Evaluate("diagnostic_shell", map[string]any{"command": command + " --strict"}); got != Ask {
+		t.Errorf("different diagnostic command = %v, want Ask", got)
 	}
 }
 

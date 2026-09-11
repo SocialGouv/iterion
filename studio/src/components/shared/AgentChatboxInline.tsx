@@ -25,7 +25,7 @@ interface Props {
   disabled?: boolean;
   maxVisible?: number;
   // When true, the textarea grows up to ~10 rows; when false, capped
-  // at 4 rows for use in tight containers (FloatingChatPanel).
+  // at 4 rows for use in tight containers (the run SteeringPanel).
   compact?: boolean;
   // When the parent transcript renders queued messages inline (the
   // user-message card variant the runChat fold emits), pass `embedded`

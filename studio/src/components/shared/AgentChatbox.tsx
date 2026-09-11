@@ -8,7 +8,7 @@ interface Props {
   // transcript (e.g. WhatsNextView), pass `embedded` so the chatbox
   // suppresses its built-in queue list — otherwise the transcript and
   // the chatbox both surface the same messages and the operator sees
-  // duplicates. RunView's FloatingChatPanel leaves this false because
+  // duplicates. RunView's SteeringPanel leaves this false because
   // the popup is the only surface showing the queue there.
   embedded?: boolean;
   // Forwarded to AgentChatboxInline: placeholder override and an
@@ -22,7 +22,7 @@ interface Props {
 // with a top border and a centered max-w-3xl content column. Still
 // used by WhatsNextView's flush-bottom layout.
 //
-// New surfaces (FloatingChatPanel in RunView) should render
+// New surfaces (SteeringPanel in RunView) should render
 // `AgentChatboxInline` directly without this chrome.
 export default function AgentChatbox({
   runId,

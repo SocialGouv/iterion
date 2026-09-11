@@ -195,6 +195,24 @@ func EndedBecausePRClosed(r *Run) bool {
 	return r.EndReason == RunEndReasonPRClosed || IsPRClosedCancel(r.Error)
 }
 
+// IsResumable reports whether a run's STATUS admits `iterion resume`. It is
+// the single authority for that question, and it lives on the type because
+// the question was previously answered by hand in several packages — which
+// diverged: the bot-facing run_get omitted `cancelled` while the engine's own
+// gate accepted it, so an assistant reading that tool truthfully reported a
+// cancelled run as unresumable and told the operator a door was closed that
+// was open. `cancelled` preserves a checkpoint unlike `failed`; a successful
+// rewind parks in paused_operator instead, but cancellation remains resumable
+// for an interrupted operator.
+//
+// Status is a necessary condition, not a sufficient one: resuming a run
+// parked on a human gate still requires answers, and a changed workflow
+// source still requires --force. Those are the caller's checks; this is only
+// "is this status one that can come back".
+func (s RunStatus) IsResumable() bool {
+	return s.IsPaused() || s == RunStatusFailedResumable || s == RunStatusCancelled
+}
+
 // ---------------------------------------------------------------------------
 // Run — top-level run metadata persisted in run.json
 // ---------------------------------------------------------------------------
@@ -379,6 +397,7 @@ type RunBudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`
+	UnlimitedWorkflow   bool    `json:"unlimited_workflow,omitempty" bson:"unlimited_workflow,omitempty"`
 }
 
 // RunBudgetRaises is the live-steering (raise_budget) counterpart of
@@ -591,6 +610,15 @@ type Run struct {
 	// from demanding the same force flag again after WorkflowHash is restamped.
 	ArtifactCompatibilityRevision string `json:"artifact_compatibility_revision,omitempty" bson:"artifact_compatibility_revision,omitempty"`
 	FilePath                      string `json:"file_path,omitempty" bson:"file_path,omitempty"` // absolute .bot source path captured at launch (resume without re-supplying file)
+	// BotOrigin identifies the code location that supplied the workflow.
+	// It is distinct from Source (the action/ticket that triggered the run)
+	// and BotSourceTenant (the stored-bot resolution tier). The host stamps
+	// it so assistants never have to reconstruct repository paths or pins.
+	BotOrigin *BotOrigin `json:"bot_origin,omitempty" bson:"bot_origin,omitempty"`
+	// Delegation links a worker run back to the failed run episode it was
+	// launched to address. It is generic orchestration metadata: no bot id or
+	// repair policy is encoded here.
+	Delegation *RunDelegation `json:"delegation,omitempty" bson:"delegation,omitempty"`
 	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
 	// answers "did the source change since?"; this answers "which node
 	// changed", which is what `iterion rewind --auto` needs to target the
@@ -772,6 +800,12 @@ type Run struct {
 	EndReason     RunEndReason   `json:"end_reason,omitempty" bson:"end_reason,omitempty"`
 	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
 	ArtifactIndex map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
+	// ResumeRequiresExplicit is set by a successful rewind. It keeps the run
+	// visibly paused while preventing a stale cloud launch delivery from
+	// synthesizing an automatic resume before an operator (or a deliberately
+	// authorized automation) asks to continue. The flag is consumed by the
+	// transition to running, never by queueing the explicit resume request.
+	ResumeRequiresExplicit bool `json:"resume_requires_explicit,omitempty" bson:"resume_requires_explicit,omitempty"`
 	// WorkDir is the absolute filesystem path the run executes in
 	// (the per-run git worktree when Worktree is true, otherwise the
 	// engine's resolved cwd at start). Persisted so studio surfaces
@@ -1050,6 +1084,32 @@ type Run struct {
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty" bson:"callback_answer_node,omitempty"`
 }
 
+// BotOrigin is the durable provenance of the bot/workflow code executed by a
+// run. RepoRoot is local-only host state; RepoURL/ProjectID are portable cloud
+// identities. WorkflowPath and Package are relative/logical labels.
+type BotOrigin struct {
+	Kind          string `json:"kind" bson:"kind"`
+	ProjectID     string `json:"project_id,omitempty" bson:"project_id,omitempty"`
+	RepoURL       string `json:"repo_url,omitempty" bson:"repo_url,omitempty"`
+	ConnectionID  string `json:"connection_id,omitempty" bson:"connection_id,omitempty"`
+	RepoRoot      string `json:"repo_root,omitempty" bson:"repo_root,omitempty"`
+	Commit        string `json:"commit,omitempty" bson:"commit,omitempty"`
+	TreeHash      string `json:"tree_hash,omitempty" bson:"tree_hash,omitempty"`
+	WorkflowPath  string `json:"workflow_path,omitempty" bson:"workflow_path,omitempty"`
+	Package       string `json:"package,omitempty" bson:"package,omitempty"`
+	InstallSource string `json:"install_source,omitempty" bson:"install_source,omitempty"`
+	InstallRef    string `json:"install_ref,omitempty" bson:"install_ref,omitempty"`
+	InstallPath   string `json:"install_path,omitempty" bson:"install_path,omitempty"`
+	Dirty         bool   `json:"dirty,omitempty" bson:"dirty,omitempty"`
+}
+
+type RunDelegation struct {
+	SourceRunID        string `json:"source_run_id" bson:"source_run_id"`
+	Kind               string `json:"kind" bson:"kind"`
+	EpisodeFingerprint string `json:"episode_fingerprint" bson:"episode_fingerprint"`
+	Attempt            int    `json:"attempt" bson:"attempt"`
+}
+
 // dedupeNonEmpty returns ids with empty strings and duplicates removed,
 // first-seen order preserved. Returns nil when the result is empty so
 // the WatchedIssueIDs field stays omitted from the persisted record.
@@ -1110,12 +1170,13 @@ func removeWatchedIssues(existing, drop []string) []string {
 const (
 	RunSourceKindDispatcher = "dispatcher"
 	RunSourceKindSchedule   = "schedule"
+	RunSourceKindStudioChat = "studio_chat"
 )
 
 // RunSource captures who originated this run. Populated by the
-// dispatcher when an issue is claimed and by the scheduled-launch
-// paths (host-cron, trigger spine, cloudsched); empty for CLI /
-// studio / fork-spawned runs.
+// dispatcher when an issue is claimed, by scheduled-launch paths
+// (host-cron, trigger spine, cloudsched), and by typed Studio chat launches;
+// empty for ordinary CLI / Studio Launch / fork-spawned runs.
 type RunSource struct {
 	// Kind is the producer of this run (see RunSourceKind* consts).
 	Kind string `json:"kind,omitempty" bson:"kind,omitempty"`
@@ -1141,6 +1202,12 @@ type RunSource struct {
 	// ScheduleName is the human label of the schedule when it differs
 	// from ScheduleID (display only).
 	ScheduleName string `json:"schedule_name,omitempty" bson:"schedule_name,omitempty"`
+	// ClientID and ConversationID identify one browser profile's durable chat
+	// tab when Kind == studio_chat. They are launch provenance only: the engine
+	// treats them as opaque metadata, while the Studio uses them to recover a
+	// missing tab→run link and cancel runs whose owning tab disappeared.
+	ClientID       string `json:"client_id,omitempty" bson:"client_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty" bson:"conversation_id,omitempty"`
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's
@@ -1425,7 +1492,8 @@ type Checkpoint struct {
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.
 	BackendPendingToolUseID string `json:"backend_pending_tool_use_id,omitempty" bson:"backend_pending_tool_use_id,omitempty"`
-	// NodeSessions holds per-node persist slots (ADR-089). Keyed by node id.
+	// NodeSessions holds persist slots (ADR-089). Keyed by session_slot when
+	// authored, otherwise by node id for backward compatibility.
 	NodeSessions map[string]NodeSessionSlot `json:"node_sessions,omitempty" bson:"node_sessions,omitempty"`
 	// BackendSessionStateRef is the in-flight CLI ask_user pack (ADR-089).
 	// Distinct from NodeSessions: that map is the last *completed* visit.

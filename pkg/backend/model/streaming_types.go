@@ -85,4 +85,8 @@ type ObjectResult[T any] struct {
 
 	// FinishReason indicates why generation stopped.
 	FinishReason FinishReason
+
+	// Messages is the replay-safe conversation. Structured output is stored
+	// as assistant JSON text (not an unmatched synthetic tool_use block).
+	Messages []api.Message
 }

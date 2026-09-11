@@ -18,6 +18,7 @@ func TestDeriveSourceKind(t *testing.T) {
 		{"plain launch", store.Run{}, "manual"},
 		{"schedule", store.Run{Source: &store.RunSource{Kind: store.RunSourceKindSchedule, ScheduleID: "s1"}}, "schedule"},
 		{"dispatcher", store.Run{Source: &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: "native:1"}}, "dispatcher"},
+		{"studio chat", store.Run{Source: &store.RunSource{Kind: store.RunSourceKindStudioChat, ClientID: "browser", ConversationID: "tab"}}, "studio_chat"},
 		{"webhook owner", store.Run{OwnerID: "webhook:gitlab"}, "webhook"},
 		{"fork", store.Run{ForkedFrom: "run-parent"}, "fork"},
 		{"shard", store.Run{ParentRunID: "run-parent"}, "shard"},
@@ -33,5 +34,25 @@ func TestDeriveSourceKind(t *testing.T) {
 				t.Fatalf("deriveSourceKind = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSummarizeRunCarriesAnIndependentSource(t *testing.T) {
+	r := &store.Run{
+		ID:           "chat-run",
+		WorkflowName: "copilot",
+		Source: &store.RunSource{
+			Kind:           store.RunSourceKindStudioChat,
+			ClientID:       "browser",
+			ConversationID: "tab",
+		},
+	}
+	summary := summarizeRun(r, false)
+	if summary.Source == nil || summary.Source.ClientID != "browser" || summary.Source.ConversationID != "tab" {
+		t.Fatalf("summary source = %+v", summary.Source)
+	}
+	summary.Source.ClientID = "changed"
+	if r.Source.ClientID != "browser" {
+		t.Fatal("summary source aliases persisted run source")
 	}
 }

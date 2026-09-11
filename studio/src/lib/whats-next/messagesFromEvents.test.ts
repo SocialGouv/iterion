@@ -10,6 +10,19 @@ import { messagesFromEvents } from "./messagesFromEvents";
 
 const whatsNext = FIRST_CLASS_BOTS["whats-next"] as FirstClassBot;
 
+const copiWithPrivateReview: FirstClassBot = {
+  id: "copilot",
+  label: "Copi",
+  description: "Conversational assistant",
+  workflowPath: "bots/copilot/main.bot",
+  launcherVars: [],
+  nodeMap: {
+    review: { kind: "silent" },
+    revise: { kind: "silent" },
+    chat: { kind: "human", textField: "message" },
+  },
+};
+
 let nextSeq = 1;
 function evt(
   type: RunEvent["type"],
@@ -128,6 +141,44 @@ describe("messagesFromEvents (whats-next v2)", () => {
       nodeId: "nexie",
       text: "Je regarde le board.\n\n3 candidats sérieux.",
     });
+  });
+
+  it("keeps Copi private review and revision text out of the transcript", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      bot: copiWithPrivateReview,
+      events: [
+        evt("node_started", { node_id: "review" }),
+        evt("assistant_text", {
+          node_id: "review",
+          data: { text: "Critique (privée, à l'auteur)", iteration: 0 },
+        }),
+        evt("node_finished", { node_id: "review" }),
+        evt("node_started", { node_id: "revise" }),
+        evt("assistant_text", {
+          node_id: "revise",
+          data: { text: "Version intermédiaire", iteration: 0 },
+        }),
+        evt("node_finished", { node_id: "revise" }),
+        evt("human_input_requested", {
+          node_id: "chat",
+          data: {
+            interaction_id: "run_test_chat",
+            instructions: "Voici la réponse finale de Copi.",
+            questions: { message: "…" },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+
+    expect(out).toEqual([
+      expect.objectContaining({
+        kind: "human-question",
+        nodeId: "chat",
+        prompt: "Voici la réponse finale de Copi.",
+      }),
+    ]);
   });
 
   it("surfaces an ask_user pause on the AGENT node as a human-question keyed by interaction id", () => {

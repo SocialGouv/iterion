@@ -40,7 +40,7 @@ const DEFAULT_DOCK_BOT: FirstClassBot = {
   description: "Conversational iterion assistant.",
   workflowPath: "bots/copilot/main.bot",
   launcherVars: [
-    { name: "reviewer", label: "Cross-review each answer" },
+    { name: "reviewer", label: "Review and refine each answer" },
   ],
   seedVar: "initial_message",
   editor: { context: true, proposals: true },
@@ -49,7 +49,10 @@ const DEFAULT_DOCK_BOT: FirstClassBot = {
     gate: { kind: "silent" },
     copi: { kind: "banner", label: "Copi is thinking" },
     validate_draft: { kind: "banner", label: "Validating Copi's draft" },
-    review: { kind: "banner", label: "Cross-reviewing Copi's answer" },
+    // The cross-review loop is private. Keep the fallback aligned with the
+    // manifest so a failed catalog lookup cannot expose its streamed text.
+    review: { kind: "silent" },
+    revise: { kind: "silent" },
     compose: { kind: "silent" },
     chat: { kind: "human", textField: "message" },
   },

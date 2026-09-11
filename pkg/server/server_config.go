@@ -5,6 +5,7 @@ import (
 	"embed"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/assistantmission"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -33,6 +34,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -53,12 +55,21 @@ var StaticFS embed.FS
 
 // Config holds the server configuration.
 type Config struct {
-	Port        int    // HTTP port (default 4891). Pass 0 for an OS-assigned random port.
-	Bind        string // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
-	ExamplesDir string // path to examples directory
-	WorkDir     string // root directory for file operations
-	StoreDir    string // run store directory (default: <WorkDir>/.iterion)
-	OpenBrowser bool   // open browser on start
+	Port        int      // HTTP port (default 4891). Pass 0 for an OS-assigned random port.
+	Bind        string   // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
+	ExamplesDir string   // path to examples directory
+	WorkDir     string   // root directory for file operations
+	StoreDir    string   // run store directory (default: <WorkDir>/.iterion)
+	RunEnv      []string // project-specific child environment; never installed process-wide
+	OpenBrowser bool     // open browser on start
+
+	// RecoveryPassive is a local, loopback-only operational-recovery mode.
+	// The HTTP surface, assistant chat and explicit run actions stay live, but
+	// ListenAndServe starts no autonomous worker: no dispatcher, watch sweep,
+	// admission/reconciliation loop, notification delivery or cleanup reaper.
+	// It exists to let an operator safely ask the assistant for a recovery
+	// proposal before normal automation is allowed to observe the same store.
+	RecoveryPassive bool
 
 	// SkipProjectRegistration disables the boot-time call to the
 	// shared project registry (~/.config/Iterion/config.json's
@@ -348,6 +359,15 @@ type Config struct {
 	// ignored and the supplied store is wired into runview.NewService
 	// directly. Plan §F (T-30).
 	Store store.RunStore
+
+	// RunWatches persists assistant→target run watches and their delivery
+	// episodes. Cloud wiring supplies the Mongo implementation; local mode
+	// derives a filesystem store beside the run store when this is nil.
+	RunWatches runwatch.Store
+
+	// AssistantMissions persists bounded assistant control loops. Cloud
+	// wiring supplies Mongo; local mode derives an FS twin beside run.json.
+	AssistantMissions assistantmission.Store
 
 	// LaunchPublisher, when non-nil, routes the run console's Launch /
 	// Resume / Cancel through the cloud queue instead of spawning the

@@ -153,20 +153,14 @@ oscillate. The shipped mechanism is one capable agent plus a
 deterministic verify gate (a real exit code) plus a machine-checkable
 termination flag, closing a single bounded loop.
 
-## Honest boundaries
+## Evidence boundaries
 
-Iterion is large and moves, and **you cannot run anything** — no shell.
-So when asked about a flag, an endpoint or a field you are not certain
-of, do one of two things, never a third:
+Iterion is large and moves. Derive the available evidence surface from the
+current node's declared tools and permissions rather than from this domain
+skill. Read workspace sources or use an available bounded diagnostic when that
+can settle the question. Otherwise give the operator the exact non-mutating
+check that would establish it.
 
-1. **Read for it.** The workspace usually holds the answer: use `Glob` to
-   locate bot bundles, `.bot` sources and docs, then `Read` the likely files.
-   A quoted line from a real file beats a recollection.
-2. **Hand the operator the check.** `iterion <command> --help`,
-   `iterion models`, `iterion bots list`, `iterion version` — say what
-   you expect it to show and ask them to paste it back.
-
-The third thing — asserting a flag you have not seen — is the failure
-mode this section exists to prevent. "I'm not sure, here is how to
-check" is a good answer; an invented flag is not, and it costs the
-operator more than the silence would have.
+Never assert a flag, endpoint, field, or capability from recollection when the
+current evidence can verify it. State what remains unknown and what evidence
+would resolve it.

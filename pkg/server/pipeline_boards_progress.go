@@ -89,6 +89,12 @@ type runEventScan struct {
 	// (pauseForRecovery) and a turn whose instructions template renders
 	// empty (humanInstructionsExtra returns nil).
 	instructions map[string]string
+	// orphanedChildRuns is the union of every child id released by a
+	// run_rewound event in this run's history. Rewind writes the exact
+	// direct-child ids it detached; keeping the union (rather than the last
+	// event only) prevents a later rewind from making an earlier stale gate
+	// actionable again.
+	orphanedChildRuns map[string]struct{}
 }
 
 // instructionScanKey namespaces interaction ids apart from node ids so the
@@ -103,7 +109,10 @@ func (b *pipelineProjectionBuilder) scanRunEvents(runID string) *runEventScan {
 	if scan, ok := b.eventScans[runID]; ok {
 		return scan
 	}
-	scan := &runEventScan{instructions: map[string]string{}}
+	scan := &runEventScan{
+		instructions:      map[string]string{},
+		orphanedChildRuns: map[string]struct{}{},
+	}
 	if b.rs != nil {
 		seen := map[string]struct{}{}
 		_ = b.rs.ScanEvents(b.ctx, runID, func(e *store.Event) bool {
@@ -124,6 +133,10 @@ func (b *pipelineProjectionBuilder) scanRunEvents(runID string) *runEventScan {
 				if id, ok := e.Data["interaction_id"].(string); ok && id != "" {
 					scan.instructions[instructionScanKey("interaction", id)] = text
 				}
+			case store.EventRunRewound:
+				for _, childID := range orphanedChildRunIDs(e.Data["orphaned_child_runs"]) {
+					scan.orphanedChildRuns[childID] = struct{}{}
+				}
 			}
 			return true
 		})
@@ -134,6 +147,40 @@ func (b *pipelineProjectionBuilder) scanRunEvents(runID string) *runEventScan {
 	}
 	b.eventScans[runID] = scan
 	return scan
+}
+
+// orphanedChildRunIDs normalises the rewind event payload across the typed
+// in-memory form and the []any form produced by an events.jsonl round-trip.
+// It intentionally accepts only non-empty strings: the rewind writer emits
+// direct run ids, and malformed values must never hide an unrelated review.
+func orphanedChildRunIDs(raw any) []string {
+	var values []string
+	switch v := raw.(type) {
+	case []string:
+		values = v
+	case []any:
+		for _, item := range v {
+			if id, ok := item.(string); ok {
+				values = append(values, id)
+			}
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, id := range values {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 // totalNodes compiles the run's workflow (memoized by file path) and

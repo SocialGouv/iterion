@@ -1,7 +1,7 @@
 // A validated assistant proposal becomes a Studio action, never a file tool.
 // The operator's global action policy decides whether Iterion denies, asks,
-// or executes. Every path still checks the exact live tab + revision; saving
-// can only reuse the path already bound to that tab.
+// or executes. Every path still checks the exact live tab + revision; an
+// untitled buffer can only gain a path through host-owned Save As.
 
 import {
   useCallback,
@@ -15,9 +15,12 @@ import { useLocation } from "wouter";
 
 import * as api from "@/api/client";
 import { Button } from "@/components/ui/Button";
+import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
+import { useDocumentSaveAs } from "@/components/DocumentSaveAs/useDocumentSaveAs";
 import { useEditorProposal } from "@/hooks/useEditorProposal";
 import {
   decideAssistantAction,
+  readAssistantActionPolicy,
   useAssistantActionPolicy,
 } from "@/lib/chatDock/assistantActions";
 import {
@@ -45,6 +48,7 @@ export default function EditorChangeOffer({
   const isCloud = useServerInfoStore((state) => state.info?.mode === "cloud");
   const addToast = useUIStore((state) => state.addToast);
   const pushRecent = useRecentsStore((state) => state.pushRecent);
+  const saveAs = useDocumentSaveAs();
   const applyPolicy = useAssistantActionPolicy("editor.apply");
   const savePolicy = useAssistantActionPolicy("editor.save");
   const [appliedRevision, setAppliedRevision] = useState<number | null>(null);
@@ -86,7 +90,7 @@ export default function EditorChangeOffer({
     isSharedBundleFilePath(path) ||
     (!!path && isCloud && api.parseBotSourceEditorPath(path) === null);
   const unavailable = targetStale || !onEditor || readOnly;
-  const persistable = !!path && !readOnly;
+  const hasDraft = !!proposal.source;
   // Intent is model-reported but never grants authority: it can only select
   // the operator's preconfigured branch. Unknown/legacy intent is non-explicit
   // and therefore still asks under the "explicit" policy.
@@ -94,9 +98,10 @@ export default function EditorChangeOffer({
   const applyDecision = decideAssistantAction(applyPolicy, applyExplicit);
   const saveExplicit = proposal.saveIntent === "explicit";
   const saveRequested = proposal.saveIntent !== "none";
+  const saveOnly = !hasDraft && saveRequested;
   const saveDecision = decideAssistantAction(savePolicy, saveExplicit);
 
-  const saveApplied = useCallback(
+  const saveBoundFile = useCallback(
     async (proposalSession: string, generation: number): Promise<void> => {
       const current = resolveEditorSession(proposalSession);
       if (
@@ -149,6 +154,65 @@ export default function EditorChangeOffer({
     [addToast, isCloud, pushRecent],
   );
 
+  const saveEditorAtGeneration = useCallback(
+    async (proposalSession: string, generation: number): Promise<void> => {
+      const current = resolveEditorSession(proposalSession);
+      if (
+        !current ||
+        !isEditorSessionActive(proposalSession) ||
+        !routeRef.current.startsWith("/editor") ||
+        current.store.getState()._generation !== generation
+      ) {
+        throw new Error(
+          "The editor changed before it could be saved. Ask again from the current buffer.",
+        );
+      }
+
+      const state = current.store.getState();
+      if (state.currentFilePath) {
+        await saveBoundFile(proposalSession, generation);
+        return;
+      }
+      if (isCloud) {
+        throw new Error(
+          "Save As isn't available in cloud. Create a bot from the Bots page first.",
+        );
+      }
+
+      const targetStore = current.store;
+      const opened = saveAs.requestSaveAs({
+        store: targetStore,
+        expectedGeneration: generation,
+        isTargetCurrent: () => {
+          const live = resolveEditorSession(proposalSession);
+          return (
+            !!live &&
+            live.store === targetStore &&
+            isEditorSessionActive(proposalSession) &&
+            routeRef.current.startsWith("/editor")
+          );
+        },
+        validate: () =>
+          decideAssistantAction(
+            readAssistantActionPolicy("editor.save"),
+            saveExplicit,
+          ) === "deny"
+            ? "Saving assistant changes is disabled in Settings → Assistant."
+            : null,
+        onSaved: (result) => {
+          setAction(result.clean ? "saved" : "applied");
+        },
+      });
+      if (!opened) {
+        throw new Error("Could not open Save As for the current editor buffer.");
+      }
+      // The validated source is now in memory. Persistence remains pending
+      // until the operator confirms a destination in the shared dialog.
+      setAction("applied");
+    },
+    [isCloud, saveAs, saveBoundFile, saveExplicit],
+  );
+
   const applyProposal = useCallback(
     async (saveAfter: boolean) => {
       if (!proposal.source || !proposal.sessionId || proposal.revision === null) return;
@@ -184,12 +248,11 @@ export default function EditorChangeOffer({
       }
       if (saveAfter) {
         const currentPath = current.store.getState().currentFilePath;
-        if (!currentPath) {
-          setError("This buffer has no file yet. Use Save As in the editor to choose its location.");
-          setAction("error");
-          return;
-        }
-        if (isCloud && api.parseBotSourceEditorPath(currentPath) === null) {
+        if (
+          currentPath &&
+          isCloud &&
+          api.parseBotSourceEditorPath(currentPath) === null
+        ) {
           setError("This catalog bot is read-only. Duplicate it before saving changes.");
           setAction("error");
           return;
@@ -237,7 +300,7 @@ export default function EditorChangeOffer({
         setAppliedRevision(generation);
 
         if (saveAfter) {
-          await saveApplied(proposal.sessionId, generation);
+          await saveEditorAtGeneration(proposal.sessionId, generation);
         } else {
           setAction("applied");
           addToast(
@@ -257,13 +320,14 @@ export default function EditorChangeOffer({
       applyDecision,
       saveDecision,
       isCloud,
-      saveApplied,
+      saveEditorAtGeneration,
       addToast,
     ],
   );
 
   const save = useCallback(async () => {
-    if (!proposal.sessionId || appliedRevision === null) return;
+    const generation = appliedRevision ?? proposal.revision;
+    if (!proposal.sessionId || generation === null) return;
     if (saveDecision === "deny") {
       setError("Saving assistant changes is disabled in Settings → Assistant.");
       setAction("error");
@@ -271,45 +335,59 @@ export default function EditorChangeOffer({
     }
     setError(null);
     try {
-      await saveApplied(proposal.sessionId, appliedRevision);
+      await saveEditorAtGeneration(proposal.sessionId, generation);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
       setAction("error");
     }
-  }, [proposal.sessionId, appliedRevision, saveDecision, saveApplied]);
+  }, [
+    proposal.sessionId,
+    proposal.revision,
+    appliedRevision,
+    saveDecision,
+    saveEditorAtGeneration,
+  ]);
 
   // Auto execution is a policy decision, not a model shortcut. The ref makes
   // React StrictMode/remount churn idempotent within this mounted offer; the
   // revision guard is the durable second line of defence.
   useEffect(() => {
     if (
-      !proposal.source ||
       !proposal.sessionId ||
       proposal.revision === null ||
       unavailable ||
-      action !== "idle" ||
-      applyDecision !== "auto"
+      action !== "idle"
     ) {
       return;
     }
     const key = `${proposal.sessionId}:${proposal.revision}`;
     if (autoStarted.current === key) return;
-    autoStarted.current = key;
-    const autoSave =
-      saveRequested && saveDecision === "auto" && persistable;
-    void applyProposal(autoSave);
+    if (hasDraft && applyDecision === "auto") {
+      autoStarted.current = key;
+      const autoSave = saveRequested && saveDecision === "auto";
+      void applyProposal(autoSave);
+    } else if (saveOnly && saveDecision === "auto") {
+      autoStarted.current = key;
+      void save();
+    }
   }, [
     proposal,
     unavailable,
     action,
+    hasDraft,
+    saveOnly,
     applyDecision,
     saveRequested,
     saveDecision,
-    persistable,
     applyProposal,
+    save,
   ]);
 
-  if (!proposal.source || !proposal.sessionId || proposal.revision === null) {
+  if (
+    (!hasDraft && !saveOnly) ||
+    !proposal.sessionId ||
+    proposal.revision === null
+  ) {
     return null;
   }
 
@@ -318,10 +396,10 @@ export default function EditorChangeOffer({
   const canApply =
     !unavailable && applyDecision !== "deny" && action !== "applying";
   const canSave =
-    hasApplied &&
+    (hasApplied || saveOnly) &&
     action !== "saved" &&
     !unavailable &&
-    persistable &&
+    (!isCloud || !!path) &&
     saveDecision !== "deny";
   const returnToEditor = () => {
     if (!resolved) return;
@@ -331,23 +409,31 @@ export default function EditorChangeOffer({
     );
   };
 
-  let detail = "Apply changes only the live buffer; you can undo or save afterwards.";
+  let detail = saveOnly
+    ? path
+      ? "Save the current host-owned editor buffer to its existing file."
+      : "Choose a destination for the current host-owned editor buffer."
+    : "Apply changes only the live buffer; you can undo or save afterwards.";
   if (action === "saved") detail = path ?? "Saved";
   else if (needsReturn) detail = "Return to the captured editor tab to review or run this action.";
   else if (readOnly) detail = "This locked shared bundle is read-only in the consumer project.";
   else if (!revisionMatches) detail = "The document changed since this proposal was created.";
-  else if (applyDecision === "deny") detail = "Applying assistant changes is disabled in Settings → Assistant.";
+  else if (saveOnly && saveDecision === "deny") detail = "Saving assistant changes is disabled in Settings → Assistant.";
+  else if (hasDraft && applyDecision === "deny") detail = "Applying assistant changes is disabled in Settings → Assistant.";
   else if (action === "applying") detail = "Validating and applying the proposed bot…";
   else if (action === "saving") detail = "Saving the validated buffer to its existing file…";
   else if (action === "applied") {
-    detail = path
-      ? "Applied to the live buffer. Nothing has been written to disk."
-      : "Applied to the live buffer. Use Save As in the editor to choose a location.";
+    detail = saveOnly
+      ? "Nothing has been written to disk. Confirm a destination to save this buffer."
+      : path
+        ? "Applied to the live buffer. Nothing has been written to disk."
+        : "Applied to the live buffer. Choose a location to write it to disk.";
   } else if (applyDecision === "auto") {
     detail = "Authorized by your Assistant settings. Validation will run before application.";
   }
 
   return (
+    <>
     <div className="mt-3 rounded-md border border-border-subtle bg-surface-2 p-2.5">
       <div className="flex items-start gap-2">
         {action === "saved" ? (
@@ -357,7 +443,11 @@ export default function EditorChangeOffer({
         )}
         <div className="min-w-0 flex-1">
           <p className="text-label font-medium">
-            {action === "saved" ? "Editor change saved" : "Proposed editor change"}
+            {action === "saved"
+              ? "Editor change saved"
+              : saveOnly
+                ? "Save editor buffer"
+                : "Proposed editor change"}
           </p>
           <p className="mt-0.5 text-caption text-fg-muted">{detail}</p>
           {error && <p className="mt-1 text-caption text-danger-fg">{error}</p>}
@@ -367,7 +457,8 @@ export default function EditorChangeOffer({
                 Return to the bot
               </Button>
             )}
-            {!hasApplied &&
+            {hasDraft &&
+              !hasApplied &&
               action !== "saved" &&
               applyDecision === "confirm" && (
                 <>
@@ -379,7 +470,7 @@ export default function EditorChangeOffer({
                   >
                     {action === "applying" ? "Validating…" : "Apply to editor"}
                   </Button>
-                  {persistable && saveDecision !== "deny" && (
+                  {saveDecision !== "deny" && (!isCloud || !!path) && (
                     <Button
                       variant="primary"
                       size="sm"
@@ -391,19 +482,27 @@ export default function EditorChangeOffer({
                   )}
                 </>
               )}
-            {hasApplied && action !== "saved" && saveDecision !== "deny" && (
+            {(hasApplied || saveOnly) &&
+              action !== "saved" &&
+              saveDecision !== "deny" && (
               <Button
                 variant="primary"
                 size="sm"
                 disabled={!canSave || action === "saving"}
                 onClick={() => void save()}
               >
-                {action === "saving" ? "Saving…" : "Save current file"}
+                {action === "saving"
+                  ? "Saving…"
+                  : path
+                    ? "Save current file"
+                    : "Choose location and save"}
               </Button>
             )}
           </div>
         </div>
       </div>
     </div>
+    <DocumentSaveAsDialog controller={saveAs} />
+    </>
   );
 }

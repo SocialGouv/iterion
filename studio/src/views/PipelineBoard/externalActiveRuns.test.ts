@@ -93,6 +93,26 @@ describe("externalActiveRuns", () => {
     ).toEqual([]);
   });
 
+  it("does not present Studio assistant conversations as project pipelines", () => {
+    const marked = run("marked-chat", "copilot", "2026-07-28T12:00:00Z");
+    marked.source_kind = "studio_chat";
+    const legacyLinked = run(
+      "legacy-chat",
+      "copilot",
+      "2026-07-28T12:01:00Z",
+    );
+    const pipeline = run("pipeline", "town_planner", "2026-07-28T12:02:00Z");
+
+    expect(
+      externalActiveRuns(
+        [marked, legacyLinked, pipeline],
+        [],
+        "/home/user/Workspace/game/town",
+        new Set([legacyLinked.id]),
+      ).map((item) => item.id),
+    ).toEqual([pipeline.id]);
+  });
+
   it("folds external child runs into their root instead of showing fake pipelines", () => {
     const root = run("root", "town_planner", "2026-07-28T12:00:00Z");
     const child = run("child", "scope_survey", "2026-07-28T12:01:00Z");

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// Cross-review is real money — a full extra model call per turn, for the whole
-// conversation — so the choice is offered before a conversation starts rather
-// than buried. These tests pin the two properties that make that safe.
+// Review + refinement is real money — up to two extra model calls per turn,
+// for the whole conversation — so the choice is offered before a conversation
+// starts rather than buried. These tests pin the safety boundary.
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {

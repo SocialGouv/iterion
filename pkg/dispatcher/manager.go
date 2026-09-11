@@ -47,6 +47,9 @@ type ManagerOptions struct {
 	// the host's bots without the operator having to configure them
 	// twice.
 	DefaultBotsPaths []string
+	// RunEnv is the immutable project environment inherited by dispatcher
+	// hooks and every engine the manager creates.
+	RunEnv []string
 	// DefaultsFn builds a zero-config dispatcher Config from the
 	// host environment (typically by extracting the embedded bot
 	// catalogue under <storeDir>/dispatcher/bots/). When set, the
@@ -72,6 +75,7 @@ type Manager struct {
 	nativeStore      *native.Store
 	logger           *iterlog.Logger
 	defaultBotsPaths []string
+	runEnv           []string
 	defaultsFn       func() (*Config, error)
 
 	mu        sync.Mutex
@@ -104,6 +108,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		nativeStore:      opts.NativeStore,
 		logger:           opts.Logger,
 		defaultBotsPaths: append([]string(nil), opts.DefaultBotsPaths...),
+		runEnv:           append([]string(nil), opts.RunEnv...),
 		defaultsFn:       opts.DefaultsFn,
 		state:            ManagerStateIdle,
 	}
@@ -272,7 +277,7 @@ func (m *Manager) start(paused bool) error {
 	// cfg.AssigneeWorkflows is empty (backward-compatible) or a
 	// RoutingRunner that dispatches per assignee with cfg.Workflow as
 	// the fallback.
-	runner, err := NewRoutingRunner(cfg, m.logger)
+	runner, err := NewRoutingRunner(cfg, m.logger, WithProjectRunEnv(m.runEnv))
 	if err != nil {
 		m.setError(err)
 		return err
@@ -300,6 +305,7 @@ func (m *Manager) start(paused bool) error {
 		Workspaces: workspaces,
 		Logger:     m.logger,
 		StoreDir:   m.storeDir,
+		BaseEnv:    m.runEnv,
 	})
 	if err != nil {
 		_ = runner.Close()

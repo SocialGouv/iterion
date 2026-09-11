@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -34,13 +36,91 @@ type openFileRequest struct {
 }
 
 type saveFileRequest struct {
-	Path     string          `json:"path"`
-	Document json.RawMessage `json:"document"`
+	Path       string          `json:"path"`
+	Document   json.RawMessage `json:"document"`
+	CreateOnly bool            `json:"create_only,omitempty"`
 }
 
 type saveFileResponse struct {
-	Path   string `json:"path"`
-	Source string `json:"source"`
+	Path              string `json:"path"`
+	Source            string `json:"source"`
+	ConfirmedDiskPath string `json:"confirmed_disk_path,omitempty"`
+}
+
+type exclusiveWorkflowFile interface {
+	Write([]byte) (int, error)
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
+type exclusiveWorkflowOpen func(string, int, fs.FileMode) (exclusiveWorkflowFile, error)
+
+func openExclusiveWorkflowFile(path string, flag int, mode fs.FileMode) (exclusiveWorkflowFile, error) {
+	return os.OpenFile(path, flag, mode)
+}
+
+// writeWorkflowFileCreateOnly is the Save As write path. O_EXCL makes the
+// collision decision atomic; the cleanup guard compares file identity before
+// removing a partial write so it can never delete a replacement placed at the
+// same pathname after the exclusive open.
+func writeWorkflowFileCreateOnly(path string, data []byte) error {
+	return writeWorkflowFileCreateOnlyWith(path, data, openExclusiveWorkflowFile, os.Lstat, os.Remove)
+}
+
+func writeWorkflowFileCreateOnlyWith(
+	path string,
+	data []byte,
+	openFile exclusiveWorkflowOpen,
+	lstat func(string) (os.FileInfo, error),
+	remove func(string) error,
+) error {
+	f, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	created, statErr := f.Stat()
+	if statErr != nil {
+		closeErr := f.Close()
+		return errors.Join(
+			fmt.Errorf("stat newly created workflow: %w", statErr),
+			closeErr,
+			fmt.Errorf("partial file may remain at %s because ownership could not be verified", path),
+		)
+	}
+
+	written, writeErr := f.Write(data)
+	if writeErr == nil && written != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	closeErr := f.Close()
+	if writeErr == nil && closeErr == nil {
+		return nil
+	}
+
+	cleanupErr := cleanupCreatedWorkflowFile(path, created, lstat, remove)
+	return errors.Join(writeErr, closeErr, cleanupErr)
+}
+
+func cleanupCreatedWorkflowFile(
+	path string,
+	created os.FileInfo,
+	lstat func(string) (os.FileInfo, error),
+	remove func(string) error,
+) error {
+	current, err := lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("partial file may remain at %s: verify ownership: %w", path, err)
+	}
+	if !os.SameFile(created, current) {
+		return fmt.Errorf("partial file was not removed because ownership changed at %s", path)
+	}
+	if err := remove(path); err != nil {
+		return fmt.Errorf("remove partial file %s: %w", path, err)
+	}
+	return nil
 }
 
 // --- Helpers ---
@@ -394,6 +474,10 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := os.ReadFile(absPath)
+	confirmedDiskPath := ""
+	if err == nil {
+		confirmedDiskPath = absPath
+	}
 	if err != nil {
 		// Embedded-recipe fallback: the bot picker sets currentFilePath
 		// to "bots/<name>" (legacy "examples/<name>") after loading a
@@ -432,15 +516,17 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, struct {
-		Source      string          `json:"source"`
-		Document    json.RawMessage `json:"document"`
-		Diagnostics []string        `json:"diagnostics,omitempty"`
-		Path        string          `json:"path"`
+		Source            string          `json:"source"`
+		Document          json.RawMessage `json:"document"`
+		Diagnostics       []string        `json:"diagnostics,omitempty"`
+		Path              string          `json:"path"`
+		ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	}{
-		Source:      string(data),
-		Document:    json.RawMessage(docJSON),
-		Diagnostics: diags,
-		Path:        req.Path,
+		Source:            string(data),
+		Document:          json.RawMessage(docJSON),
+		Diagnostics:       diags,
+		Path:              req.Path,
+		ConfirmedDiskPath: confirmedDiskPath,
 	})
 }
 
@@ -485,9 +571,23 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 	if s.watcher != nil {
 		s.watcher.IgnorePath(absPath)
 	}
-	if err := os.WriteFile(absPath, []byte(source), 0o644); err != nil {
-		httpError(w, http.StatusInternalServerError, "write error: %v", err)
+	var writeErr error
+	if req.CreateOnly {
+		writeErr = writeWorkflowFileCreateOnly(absPath, []byte(source))
+	} else {
+		writeErr = os.WriteFile(absPath, []byte(source), 0o644)
+	}
+	if req.CreateOnly && errors.Is(writeErr, fs.ErrExist) {
+		httpError(w, http.StatusConflict, "file already exists")
 		return
 	}
-	writeJSON(w, saveFileResponse{Path: req.Path, Source: source})
+	if writeErr != nil {
+		httpError(w, http.StatusInternalServerError, "write error: %v", writeErr)
+		return
+	}
+	writeJSON(w, saveFileResponse{
+		Path:              req.Path,
+		Source:            source,
+		ConfirmedDiskPath: absPath,
+	})
 }

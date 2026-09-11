@@ -76,6 +76,25 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("DELETE /api/runs/{id}/queue-message/{msgID}", s.handleCancelQueuedMessage)
 	s.mux.HandleFunc("POST /api/runs/{id}/watch/{issueID}", s.handleAddWatch)
 	s.mux.HandleFunc("DELETE /api/runs/{id}/watch/{issueID}", s.handleRemoveWatch)
+	// Durable assistant watches are a different domain from issue watches:
+	// target-run outcome → claimed assistant chat turn.
+	s.mux.HandleFunc("POST /api/runs/{id}/assistant-watches", s.handleCreateAssistantWatch)
+	s.mux.HandleFunc("GET /api/runs/{id}/assistant-watches", s.handleListAssistantWatches)
+	s.mux.HandleFunc("GET /api/runs/{id}/assistant-watch-health", s.handleAssistantWatchHealth)
+	s.mux.HandleFunc("DELETE /api/assistant-watches/{watchID}", s.handleStopAssistantWatch)
+	s.mux.HandleFunc("POST /api/runs/{id}/assistant-missions", s.handleCreateAssistantMission)
+	s.mux.HandleFunc("GET /api/runs/{id}/assistant-missions", s.handleListAssistantMissions)
+	s.mux.HandleFunc("GET /api/runs/{id}/assistant-missions/{missionID}", s.handleGetAssistantMission)
+	s.mux.HandleFunc("POST /api/runs/{id}/assistant-missions/{missionID}/stop", s.handleStopAssistantMission)
+	// The mirror of the line above: by TARGET answers "who is watching this
+	// run", by ASSISTANT answers "what am I watching" — the question the chat
+	// dock asks to draw its standby banner, and the one the store could
+	// already answer while no route exposed it.
+	s.mux.HandleFunc("GET /api/runs/{id}/watching", s.handleListRunVeille)
+	// The second producer for a chat gate's host_event door: "the thing you
+	// asked for has happened". Without it a conversational bot cannot chain
+	// past any action whose effect is not a run outcome.
+	s.mux.HandleFunc("POST /api/runs/{id}/host-event", s.handleDeliverHostEvent)
 	s.mux.HandleFunc("POST /api/runs/{id}/resume", s.handleResumeRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/merge", s.handleMergeRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/commit-and-finalize", s.handleCommitAndFinalize)

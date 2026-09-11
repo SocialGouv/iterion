@@ -43,9 +43,14 @@ export function useLaunchDoc(
     (s) => s._generation !== s._savedGeneration,
   );
   const noSource = !filePath && editorFilePath === null && !editorDirty;
+  const [confirmedDiskPath, setConfirmedDiskPath] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    // A confirmation belongs to one exact ?file= load. Never carry it over
+    // to an inline editor buffer or to a different path while async reads
+    // are in flight.
+    setConfirmedDiskPath(null);
     if (!filePath) {
       // No ?file= path — launch the unsaved editor buffer via inline
       // source. The launch API (resolveWorkflowPath) runs off Source when
@@ -91,6 +96,7 @@ export function useLaunchDoc(
         if (cancelled) return;
         setDoc(res.document);
         setCurrentSource(res.source);
+        setConfirmedDiskPath(res.confirmed_disk_path ?? null);
         const fields = pickVars(res.document);
         const initial: Record<string, string> = {};
         for (const f of fields) initial[f.name] = defaultStringFor(f);
@@ -142,6 +148,7 @@ export function useLaunchDoc(
     doc,
     noSource,
     currentSource,
+    confirmedDiskPath,
     values,
     setValues,
     fields,

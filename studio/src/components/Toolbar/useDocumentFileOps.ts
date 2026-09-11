@@ -15,10 +15,14 @@
 import { useCallback, useState } from "react";
 
 import * as api from "@/api/client";
-import { useDocumentStore } from "@/store/document";
+import {
+  useDocumentStore,
+  useDocumentStoreInstance,
+} from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
+import { useDocumentSaveAs } from "@/components/DocumentSaveAs/useDocumentSaveAs";
 import { createEmptyDocument } from "@/lib/defaults";
 import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
@@ -27,6 +31,7 @@ import { openExampleIntoStore } from "@/lib/openExample";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
+import type { DocumentSaveAsController } from "@/components/DocumentSaveAs/useDocumentSaveAs";
 
 export interface UseDocumentFileOpsArgs {
   // Promise-based confirm from useConfirm() — the hook needs it for the
@@ -41,13 +46,8 @@ export interface UseDocumentFileOpsResult {
   // Loading flag for the open/import path. Surfaced as the spinner
   // pill in the toolbar.
   loading: boolean;
-  // Save-As dialog state — the file-name input draft plus its open
-  // flag. Lifted into the hook because handleSave and
-  // handleSaveAsRequest both seed it; the Toolbar renders the Dialog.
-  showSaveDialog: boolean;
-  setShowSaveDialog: (open: boolean) => void;
-  saveFileName: string;
-  setSaveFileName: (name: string) => void;
+  // Shared Save As controller used by both the toolbar and Copi offers.
+  saveAs: DocumentSaveAsController;
   // Two-step confirm for the workflow-remove IconButton. Kept here
   // because handleRemoveWorkflow is the only place that consumes it.
   confirmRemoveWorkflow: boolean;
@@ -59,7 +59,6 @@ export interface UseDocumentFileOpsResult {
   handleValidate: () => Promise<void>;
   handleSave: () => Promise<void>;
   handleSaveAsRequest: () => void;
-  handleSaveAs: () => Promise<void>;
   handleDownload: () => Promise<void>;
   handleCopySource: () => Promise<void>;
   handleAddWorkflow: () => void;
@@ -72,6 +71,7 @@ export function useDocumentFileOps({
   // Document/UI/recents stores — selected one-at-a-time so the hook
   // only re-runs when the slices it actually depends on change.
   const setDocument = useDocumentStore((s) => s.setDocument);
+  const documentStore = useDocumentStoreInstance();
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
@@ -100,10 +100,9 @@ export function useDocumentFileOps({
   const openDiagnosticsPanel = useUIStore((s) => s.openDiagnosticsPanel);
   const pushRecent = useRecentsStore((s) => s.pushRecent);
   const removeRecent = useRecentsStore((s) => s.removeRecent);
+  const saveAs = useDocumentSaveAs();
 
   const [loading, setLoading] = useState(false);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [saveFileName, setSaveFileName] = useState("");
   const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
 
   const confirmDiscard = useCallback(async () => {
@@ -265,9 +264,7 @@ export function useDocumentFileOps({
         addToast("Save failed", "error");
       }
     } else {
-      const name = document.workflows?.[0]?.name || "workflow";
-      setSaveFileName(`${name}.bot`);
-      setShowSaveDialog(true);
+      saveAs.requestSaveAs({ store: documentStore });
     }
   }, [
     document,
@@ -278,6 +275,8 @@ export function useDocumentFileOps({
     pushRecent,
     readOnly,
     READ_ONLY_MSG,
+    saveAs,
+    documentStore,
   ]);
 
   // Always opens the Save As dialog regardless of whether a file path
@@ -285,50 +284,8 @@ export function useDocumentFileOps({
   // current path when one exists.
   const handleSaveAsRequest = useCallback(() => {
     if (!document) return;
-    const fallback = document.workflows?.[0]?.name || "workflow";
-    const seed = currentFilePath
-      ? currentFilePath.split("/").pop() || `${fallback}.bot`
-      : `${fallback}.bot`;
-    setSaveFileName(seed);
-    setShowSaveDialog(true);
-  }, [document, currentFilePath]);
-
-  const handleSaveAs = useCallback(async () => {
-    if (!document || !saveFileName) return;
-    if (isCloud) {
-      // Save As targets a filesystem path, which cloud can't write. Route bot
-      // creation through the Bots page (/bots/new) or "Duplicate & edit".
-      addToast(
-        "Save As isn't available in cloud — create a bot from the Bots page, or Duplicate & edit an existing one.",
-        "warning",
-      );
-      setShowSaveDialog(false);
-      return;
-    }
-    const fileName = saveFileName.endsWith(".bot") ? saveFileName : `${saveFileName}.bot`;
-    try {
-      const result = await api.saveFile(fileName, document);
-      setCurrentFilePath(result.path);
-      setCurrentSource(result.source);
-      markSaved();
-      pushRecent(result.path);
-      addToast("Saved successfully", "success");
-      setShowSaveDialog(false);
-    } catch (err) {
-      console.error("Save failed:", err);
-      addToast("Save failed", "error");
-    }
-  }, [
-    document,
-    saveFileName,
-    setCurrentFilePath,
-    setCurrentSource,
-    markSaved,
-    pushRecent,
-    addToast,
-    isCloud,
-    setShowSaveDialog,
-  ]);
+    saveAs.requestSaveAs({ store: documentStore });
+  }, [document, documentStore, saveAs]);
 
   const handleDownload = useCallback(async () => {
     if (!document) return;
@@ -375,10 +332,7 @@ export function useDocumentFileOps({
   return {
     readOnly,
     loading,
-    showSaveDialog,
-    setShowSaveDialog,
-    saveFileName,
-    setSaveFileName,
+    saveAs,
     confirmRemoveWorkflow,
     setConfirmRemoveWorkflow,
     handleNew,
@@ -387,7 +341,6 @@ export function useDocumentFileOps({
     handleValidate,
     handleSave,
     handleSaveAsRequest,
-    handleSaveAs,
     handleDownload,
     handleCopySource,
     handleAddWorkflow,

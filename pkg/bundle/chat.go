@@ -54,6 +54,53 @@ type ChatSurface struct {
 	// while Proposals lets the bot return a candidate replacement that the
 	// studio may validate and offer back to that exact editor session.
 	Editor *ChatEditorSurface `json:"editor,omitempty" yaml:"editor,omitempty"`
+
+	// Budget is a host-side policy for a conversational SESSION. It names
+	// generic launch/checkpoint state; the host does not learn what a value
+	// such as "debug" means. External platform/donor ceilings remain outside
+	// this policy's authority.
+	Budget *ChatBudgetSurface `json:"budget,omitempty" yaml:"budget,omitempty"`
+}
+
+type ChatBudgetSurface struct {
+	UnlimitedWorkflowWhen *ChatStateMatch `json:"unlimited_workflow_when,omitempty" yaml:"unlimited_workflow_when,omitempty"`
+}
+
+// ChatStateMatch lets the host recognize the same conversational state at
+// launch and after a paused turn without baking a bot's node names into the
+// product. Equals is an allow-list; matching is exact after normalization.
+type ChatStateMatch struct {
+	LaunchVar  string   `json:"launch_var" yaml:"launch_var"`
+	StateNode  string   `json:"state_node" yaml:"state_node"`
+	StateField string   `json:"state_field" yaml:"state_field"`
+	Equals     []string `json:"equals" yaml:"equals"`
+}
+
+func (c *ChatSurface) UnlimitedWorkflowForLaunch(vars map[string]string) bool {
+	if c == nil || c.Budget == nil || c.Budget.UnlimitedWorkflowWhen == nil {
+		return false
+	}
+	p := c.Budget.UnlimitedWorkflowWhen
+	return p.matches(vars[p.LaunchVar])
+}
+
+func (c *ChatSurface) UnlimitedWorkflowForOutputs(outputs map[string]map[string]any) bool {
+	if c == nil || c.Budget == nil || c.Budget.UnlimitedWorkflowWhen == nil {
+		return false
+	}
+	p := c.Budget.UnlimitedWorkflowWhen
+	value, _ := outputs[p.StateNode][p.StateField].(string)
+	return p.matches(value)
+}
+
+func (p *ChatStateMatch) matches(value string) bool {
+	value = strings.TrimSpace(value)
+	for _, allowed := range p.Equals {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatEditorSurface is deliberately capability-shaped rather than bot-shaped:
@@ -103,6 +150,26 @@ type ChatNode struct {
 	// ApprovedField is the boolean field for a "human" node rendered with
 	// approve/reject buttons instead of a free-text composer.
 	ApprovedField string `json:"approved_field,omitempty" yaml:"approved_field,omitempty"`
+
+	// HostEventField is a JSON answer-schema field reserved for host-attested
+	// events (for example a watched run failing). It is intentionally separate
+	// from TextField: automatic input must never become operator speech or an
+	// authorization signal in the transcript/policy layer.
+	HostEventField string `json:"host_event_field,omitempty" yaml:"host_event_field,omitempty"`
+
+	// History asks the host to project a bounded canonical transcript into
+	// Field when this human boundary is resumed. The projection is rebuilt
+	// from durable run events; it is never a second mutable transcript.
+	History *ChatHistorySurface `json:"history,omitempty" yaml:"history,omitempty"`
+}
+
+// ChatHistorySurface configures the generic chat-history projection. Limits
+// are explicit in the bundle so a long-running assistant cannot silently grow
+// every future prompt without bound.
+type ChatHistorySurface struct {
+	Field              string `json:"field" yaml:"field"`
+	MaxMessages        int    `json:"max_messages,omitempty" yaml:"max_messages,omitempty"`
+	MaxEstimatedTokens int    `json:"max_estimated_tokens,omitempty" yaml:"max_estimated_tokens,omitempty"`
 }
 
 // ChatLauncherVar is one var the session launcher collects up front.
@@ -166,14 +233,23 @@ func (c *ChatSurface) normalized() *ChatSurface {
 		if out.Nodes == nil {
 			out.Nodes = map[string]ChatNode{}
 		}
-		out.Nodes[id] = ChatNode{
-			Kind:          ChatNodeKind(strings.TrimSpace(string(n.Kind))),
-			Label:         strings.TrimSpace(n.Label),
-			SummaryField:  strings.TrimSpace(n.SummaryField),
-			Prompt:        strings.TrimSpace(n.Prompt),
-			TextField:     strings.TrimSpace(n.TextField),
-			ApprovedField: strings.TrimSpace(n.ApprovedField),
+		normalizedNode := ChatNode{
+			Kind:           ChatNodeKind(strings.TrimSpace(string(n.Kind))),
+			Label:          strings.TrimSpace(n.Label),
+			SummaryField:   strings.TrimSpace(n.SummaryField),
+			Prompt:         strings.TrimSpace(n.Prompt),
+			TextField:      strings.TrimSpace(n.TextField),
+			ApprovedField:  strings.TrimSpace(n.ApprovedField),
+			HostEventField: strings.TrimSpace(n.HostEventField),
 		}
+		if n.History != nil {
+			normalizedNode.History = &ChatHistorySurface{
+				Field:              strings.TrimSpace(n.History.Field),
+				MaxMessages:        n.History.MaxMessages,
+				MaxEstimatedTokens: n.History.MaxEstimatedTokens,
+			}
+		}
+		out.Nodes[id] = normalizedNode
 	}
 	for _, v := range c.LauncherVars {
 		name := strings.TrimSpace(v.Name)
@@ -219,8 +295,26 @@ func (c *ChatSurface) normalized() *ChatSurface {
 			Proposals: c.Editor.Proposals,
 		}
 	}
+	if c.Budget != nil && c.Budget.UnlimitedWorkflowWhen != nil {
+		p := c.Budget.UnlimitedWorkflowWhen
+		normalized := &ChatStateMatch{
+			LaunchVar:  strings.TrimSpace(p.LaunchVar),
+			StateNode:  strings.TrimSpace(p.StateNode),
+			StateField: strings.TrimSpace(p.StateField),
+		}
+		seen := map[string]bool{}
+		for _, value := range p.Equals {
+			value = strings.TrimSpace(value)
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			normalized.Equals = append(normalized.Equals, value)
+		}
+		out.Budget = &ChatBudgetSurface{UnlimitedWorkflowWhen: normalized}
+	}
 	if out.Label == "" && out.Description == "" && out.SeedVar == "" &&
-		len(out.Nodes) == 0 && len(out.LauncherVars) == 0 && out.Launcher == nil && out.Editor == nil {
+		len(out.Nodes) == 0 && len(out.LauncherVars) == 0 && out.Launcher == nil && out.Editor == nil && out.Budget == nil {
 		return nil
 	}
 	return &out
@@ -243,7 +337,7 @@ func validateChatSurface(c *ChatSurface) error {
 		if !chatNodeKinds[n.Kind] {
 			return fmt.Errorf("chat: node %q has kind %q — expected banner, human or silent", id, n.Kind)
 		}
-		if n.Kind != ChatNodeHuman && (n.TextField != "" || n.ApprovedField != "") {
+		if n.Kind != ChatNodeHuman && (n.TextField != "" || n.ApprovedField != "" || n.HostEventField != "" || n.History != nil) {
 			return fmt.Errorf("chat: node %q is %q but declares an answer field — only a human node collects one", id, n.Kind)
 		}
 		if n.Kind == ChatNodeHuman {
@@ -252,7 +346,15 @@ func validateChatSurface(c *ChatSurface) error {
 			// compiled-workflow consistency pass verifies the declared field
 			// types; here we only reject a turn with nowhere to put an answer.
 			if n.TextField == "" && n.ApprovedField == "" {
-				return fmt.Errorf("chat: node %q is the operator's turn but names neither text_field nor approved_field — its answers would have nowhere to land", id)
+				return fmt.Errorf("chat: node %q is the operator's turn but names neither text_field nor approved_field — its operator answers would have nowhere to land", id)
+			}
+			if n.History != nil {
+				if n.History.Field == "" {
+					return fmt.Errorf("chat: node %q history.field is empty", id)
+				}
+				if n.History.MaxMessages < 0 || n.History.MaxEstimatedTokens < 0 {
+					return fmt.Errorf("chat: node %q history limits must be positive", id)
+				}
 			}
 		}
 	}
@@ -264,6 +366,15 @@ func validateChatSurface(c *ChatSurface) error {
 	}
 	if c.Editor != nil && c.Editor.Proposals && !c.Editor.Context {
 		return fmt.Errorf("chat: editor proposals require editor context — otherwise the bot cannot bind a proposal to the active document revision")
+	}
+	if c.Budget != nil && c.Budget.UnlimitedWorkflowWhen != nil {
+		p := c.Budget.UnlimitedWorkflowWhen
+		if p.LaunchVar == "" || p.StateNode == "" || p.StateField == "" || len(p.Equals) == 0 {
+			return fmt.Errorf("chat: budget.unlimited_workflow_when requires launch_var, state_node, state_field and at least one equals value")
+		}
+		if _, ok := c.Nodes[p.StateNode]; !ok {
+			return fmt.Errorf("chat: budget.unlimited_workflow_when state_node %q is not declared in chat.nodes", p.StateNode)
+		}
 	}
 	return nil
 }

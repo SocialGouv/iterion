@@ -1789,6 +1789,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// BotSourceTenant is empty for a baked bundle AND for a run that
 		// resolved no bot, so it cannot say which of the two happened.
 		BotSourceTier:   spec.BotSourceTier,
+		BotOrigin:       spec.BotOrigin,
+		Delegation:      spec.Delegation,
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
 		// The override is authoritative run intent, not display metadata: the
@@ -2150,6 +2152,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
+	if spec.ExpectedStatus != "" && priorStatus != spec.ExpectedStatus {
+		return fmt.Errorf("cloudpublisher: run %s status changed: got %s, expected %s", spec.RunID, priorStatus, spec.ExpectedStatus)
+	}
+	if spec.ExpectedStatus == store.RunStatusCancelled {
+		return fmt.Errorf("cloudpublisher: durable resume refuses cancelled run %s", spec.RunID)
+	}
 	// The runview layer validates first, but SubmitResume repeats the
 	// boundary check because another request may have changed the row
 	// since that read.
@@ -2208,6 +2216,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		}
 	}()
 
+	rawBudget := runview.MergeBudgetOverrides(budgetOverridesFromRun(prior.BudgetOverrides), spec.Budget)
+	if rawBudget != nil && rawBudget.UnlimitedWorkflow && (prior.BudgetOverrides == nil || !prior.BudgetOverrides.UnlimitedWorkflow) {
+		persisted := runBudgetOverrides(rawBudget)
+		patcher := store.AsRunBudgetOverridesPatcher(p.store)
+		if patcher == nil {
+			return fmt.Errorf("cloudpublisher: store cannot atomically persist resume budget activation")
+		}
+		if err := patcher.PatchRunBudgetOverrides(ctx, spec.RunID, persisted); err != nil {
+			return fmt.Errorf("cloudpublisher: persist resume budget activation: %w", err)
+		}
+		prior.BudgetOverrides = persisted
+	}
+
 	// Keys may have rotated between launch and resume; using the prior run's
 	// secrets ref blindly would inject stale plaintext. Preserve BotID so bot-
 	// secret bindings remain durable across pause/failure/TTL republishes.
@@ -2261,8 +2282,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		ExecutionContext: prior.ExecutionContext.Clone(),
 		IRCompiled:       body,
 		Resume: &queue.ResumeSpec{
-			Answers: spec.Answers,
-			Force:   spec.Force,
+			Answers:        spec.Answers,
+			HostInputs:     spec.HostInputs,
+			Force:          spec.Force,
+			ExpectedStatus: spec.ExpectedStatus,
+			ReceiptID:      spec.ReceiptID,
 		},
 		SecretsRef: creds.secretsRef,
 		// Re-resolved by the resume surface like credentials are re-sealed:
@@ -2757,7 +2781,7 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 	// override replaces the workflow's own figure (ApplyBudgetOverrides
 	// semantics), and zero means unlimited.
 	resolved := ir.Budget{MaxCostUSD: effective.MaxCostUSD}
-	if resolved.MaxCostUSD <= 0 && wf != nil && wf.Budget != nil {
+	if resolved.MaxCostUSD <= 0 && !effective.UnlimitedWorkflow && wf != nil && wf.Budget != nil {
 		resolved.MaxCostUSD = wf.Budget.MaxCostUSD
 	}
 	// The donor's allowance is a ceiling like any other, so it goes through
@@ -2788,6 +2812,7 @@ func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
 		MaxDuration:         o.MaxDuration,
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
 		CapImposed:          o.CapImposed,
 	}
 }
@@ -2888,4 +2913,32 @@ func queueOverridesFromRun(entries []store.RunModelOverride) []queue.ModelOverri
 		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
 	}
 	return out
+}
+
+func runBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
+	if o == nil || o.IsZero() {
+		return nil
+	}
+	return &store.RunBudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
+	}
+}
+
+func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
+	if o == nil {
+		return nil
+	}
+	return &ir.BudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
+	}
 }

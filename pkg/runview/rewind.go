@@ -158,6 +158,96 @@ type RewindSpec struct {
 	// operator rewinds precisely because they edited it, and the resume
 	// that follows executes the new graph too.
 	SourcePath string
+	// ExpectedPivot is an optional host-side guard evaluated after auto
+	// resolution and fan-out promotion, immediately before mutation.
+	ExpectedPivot string
+	// ReceiptID correlates this mutation with a durable assistant mission.
+	ReceiptID string
+}
+
+// RewindPivot is the non-mutating, final pivot selected for a rewind. NodeID
+// already includes fan-out promotion and is therefore safe to persist as an
+// expected value for a later guarded Rewind call.
+type RewindPivot struct {
+	NodeID       string       `json:"node_id"`
+	EntryNodeID  string       `json:"entry_node_id"`
+	PromotedFrom string       `json:"promoted_from,omitempty"`
+	AutoTargeted bool         `json:"auto_targeted,omitempty"`
+	Changes      []DeclChange `json:"changes,omitempty"`
+}
+
+// ResolveRewindPivot performs the graph/source checks needed to choose a
+// rewind pivot without claiming or modifying the run.
+func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*RewindPivot, error) {
+	if spec.RunID == "" {
+		return nil, errors.New("runview: rewind: run_id is required")
+	}
+	if spec.NodeID == "" && !spec.Auto {
+		return nil, errors.New("runview: rewind: node_id is required (or set auto to derive it from the source diff)")
+	}
+	run, err := s.store.LoadRun(ctx, spec.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("load run: %w", err)
+	}
+	if !isRewindableStatus(run.Status) {
+		return nil, fmt.Errorf("%w: %s (rewindable: %s)", ErrRewindNotRewindable, run.Status, joinStatuses(rewindableStatuses))
+	}
+	cp := run.Checkpoint
+	if cp == nil {
+		return nil, fmt.Errorf("runview: rewind: run %s has no checkpoint — nothing to rewind", spec.RunID)
+	}
+	sourcePath := spec.SourcePath
+	if sourcePath == "" {
+		sourcePath = resolveWorkflowPath(run)
+	}
+	if sourcePath == "" {
+		return nil, fmt.Errorf("runview: rewind: run %s has no workflow source path — pass one explicitly", spec.RunID)
+	}
+	wf, _, err := CompileWorkflowWithHash(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w", sourcePath, spec.NodeID, err)
+	}
+	executed := map[string]bool{}
+	for id := range cp.Outputs {
+		executed[id] = true
+	}
+	if cp.Parallel != nil {
+		for _, branch := range cp.Parallel.Branches {
+			if branch != nil {
+				for id := range branch.Outputs {
+					executed[id] = true
+				}
+			}
+		}
+	}
+	if cp.NodeID != "" {
+		executed[cp.NodeID] = true
+	}
+	pivot := spec.NodeID
+	var changes []DeclChange
+	autoTargeted := false
+	if pivot == "" {
+		current, readErr := os.ReadFile(sourcePath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read current workflow source %s: %w", sourcePath, readErr)
+		}
+		pivot, changes, err = resolveAutoPivot(run.WorkflowSource, string(current), wf, executed)
+		if err != nil {
+			return nil, err
+		}
+		autoTargeted = true
+	}
+	if _, ok := wf.Nodes[pivot]; !ok {
+		return nil, fmt.Errorf("runview: rewind: node %q is not in workflow %s", pivot, sourcePath)
+	}
+	if !executed[pivot] {
+		return nil, fmt.Errorf("%w: %q (reached: %s)", ErrRewindNodeNotReached, pivot, joinSorted(setKeys(executed)))
+	}
+	promotedFrom := ""
+	if router := fanOutRouterFor(wf, pivot); router != "" && router != pivot {
+		promotedFrom, pivot = pivot, router
+	}
+	return &RewindPivot{NodeID: pivot, EntryNodeID: wf.Entry, PromotedFrom: promotedFrom, AutoTargeted: autoTargeted, Changes: changes}, nil
 }
 
 // RewindResult is the response shape returned to HTTP / CLI callers.
@@ -219,6 +309,15 @@ var rewindableStatuses = []store.RunStatus{
 	store.RunStatusQueued,
 }
 
+// IsRewindableRun reports the recovery capability exposed by Rewind. Keep
+// this separate from RunStatus.IsTerminal and Resume eligibility: a DSL fail
+// node intentionally stops execution, but its checkpoint can still be moved
+// to an earlier node. Callers use this to avoid presenting `failed` as
+// irrecoverable merely because a bare Resume would be rejected.
+func IsRewindableRun(run *store.Run) bool {
+	return run != nil && run.Checkpoint != nil && isRewindableStatus(run.Status)
+}
+
 // Rewind re-anchors an existing run's checkpoint on an already-executed
 // node and invalidates every output downstream of it, so the next Resume
 // re-executes from there without replaying the upstream nodes that were
@@ -229,11 +328,10 @@ var rewindableStatuses = []store.RunStatus{
 // misconfiguration rather than exploring an alternative. See
 // docs/resume.md § Rewind.
 //
-// The run is parked in `cancelled` — the one resumable status the cloud
-// runner treats as "explicit resume required" (see pkg/runner/loop.go:
-// failed_resumable and paused_operator are auto-resumed on queue
-// redelivery, which would race the operator's .bot edit and execute the
-// stale workflow).
+// A successful rewind parks the run in `paused_operator` with an
+// explicit-resume marker. The runner drops stale cloud launch deliveries while
+// that marker is set, so the normal paused state does not race the operator's
+// .bot edit; a real Resume consumes it when it claims the run as running.
 //
 // SCOPE: this rewinds ENGINE state (checkpoint outputs), the store
 // artifacts those nodes published, their subbot child pointers, and — for
@@ -376,6 +474,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 				promotedFrom, pivot)
 		}
 	}
+	if spec.ExpectedPivot != "" && pivot != spec.ExpectedPivot {
+		return nil, fmt.Errorf("runview: rewind pivot changed: got %q, expected %q", pivot, spec.ExpectedPivot)
+	}
 
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
@@ -473,7 +574,8 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 
 	retiredCorrections := retireOutputCorrections(run, invalidated, time.Now().UTC())
-	run.Status = store.RunStatusCancelled
+	run.Status = store.RunStatusPausedOperator
+	run.ResumeRequiresExplicit = true
 	// Clear the stale failure message AND its typed code: the run is no
 	// longer "failed at verify", it is parked at the pivot awaiting a
 	// fresh execution — a synthetic parking carries no failure
@@ -486,6 +588,8 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// The claim stamped FinishedAt and advanced the version. SaveRun refuses
 	// if another writer changed the run while the rewind was being prepared.
 
+	// A successful rewind is parked, so clear the temporary claim timestamp.
+	run.FinishedAt = nil
 	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("save rewound run: %w", err)
 	}
@@ -561,6 +665,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 			// ReportPathCap, the counts above stay exact.
 			"files_overwritten_paths":   files.Overwritten,
 			"files_left_in_place_paths": files.LeftInPlace,
+			"receipt_id":                spec.ReceiptID,
 		},
 	}); err != nil && s.logger != nil {
 		// Best-effort: the state mutation already landed and is the
@@ -581,7 +686,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		TombstonedArtifacts: tombstoned,
 		OrphanedChildRuns:   orphaned,
 		Files:               files,
-		Status:              string(store.RunStatusCancelled),
+		Status:              string(store.RunStatusPausedOperator),
 		AutoTargeted:        autoTargeted,
 		PromotedFrom:        promotedFrom,
 		Changes:             changes,

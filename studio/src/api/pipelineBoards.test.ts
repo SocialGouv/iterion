@@ -169,6 +169,80 @@ describe("normalizePipelineBoard", () => {
     expect(board.cards[0]?.pending_reviews).toBeUndefined();
   });
 
+  it("preserves review batch keys so fan-out reviews remain navigable", () => {
+    // The component tests construct already-normalized cards. Keep this
+    // ingress regression here so a server-provided batch key cannot be lost
+    // before SequentialReviews gets a chance to render its pages.
+    const sharedBatch = Array.from({ length: 5 }, (_, index) => ({
+      run_id: `run-shared-${index}`,
+      node_id: "approve",
+      depth: 1,
+      updated_at: `2026-07-14T09:0${index}:00Z`,
+      batch_key: "root:fanout-shared",
+    }));
+    const board = normalizePipelineBoard({
+      cards: [
+        {
+          id: "run:shared",
+          column_id: "in_progress",
+          title: "Shared fan-out",
+          pending_reviews: sharedBatch,
+        },
+        {
+          id: "run:distinct",
+          column_id: "in_progress",
+          title: "Distinct fan-outs",
+          pending_reviews: [
+            {
+              run_id: "run-a",
+              depth: 1,
+              updated_at: "2026-07-14T09:00:00Z",
+              batch_key: "root:fanout-a",
+            },
+            {
+              run_id: "run-b",
+              depth: 1,
+              updated_at: "2026-07-14T09:01:00Z",
+              batch_key: "root:fanout-b",
+            },
+          ],
+        },
+        {
+          id: "run:missing",
+          column_id: "in_progress",
+          title: "Unrelated pause",
+          pending_reviews: [
+            {
+              run_id: "run-missing",
+              depth: 1,
+              updated_at: "2026-07-14T09:02:00Z",
+            },
+            {
+              run_id: "run-blank",
+              depth: 1,
+              updated_at: "2026-07-14T09:03:00Z",
+              batch_key: "   ",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(board.cards[0]?.pending_reviews).toHaveLength(5);
+    expect(board.cards[0]?.pending_reviews?.map((review) => review.run_id)).toEqual(
+      sharedBatch.map((review) => review.run_id),
+    );
+    expect(board.cards[0]?.pending_reviews?.every(
+      (review) => review.batch_key === "root:fanout-shared",
+    )).toBe(true);
+    expect(board.cards[1]?.pending_reviews?.map((review) => review.batch_key)).toEqual([
+      "root:fanout-a",
+      "root:fanout-b",
+    ]);
+    expect(board.cards[2]?.pending_reviews?.[0]).not.toHaveProperty("batch_key");
+    expect(board.cards[2]?.pending_reviews?.[1]).not.toHaveProperty("batch_key");
+  });
+
   // Regression: this normalizer is a whitelist, and planner provenance was
   // missing from it — so a parent card arrived in the views with no
   // children_summary and rendered neither the Plan badge nor the

@@ -225,6 +225,14 @@ type LaunchSpec struct {
 	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
 	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
 	WorkDir string
+	// WorktreeBaseCommit pins worktree:auto to a host-verified commit.
+	// Cross-project delegation uses it to execute an exact snapshot without
+	// moving or staging the operator's checkout.
+	WorktreeBaseCommit string
+	// BotOrigin is the workflow code provenance; Delegation links an
+	// optional worker run to the source run episode that requested it.
+	BotOrigin  *store.BotOrigin
+	Delegation *store.RunDelegation
 	// ExtraObservers are per-launch event observers fired on EVERY run
 	// event — both the engine-level events runtime.WithEventObserver sees
 	// AND the high-frequency tool_started/tool_called events the backend
@@ -244,9 +252,9 @@ type LaunchSpec struct {
 	// the service's dailyCap.
 	DailyCap *runtime.DailyCapGuard
 	// SourceRef stamps who originated this run onto the run record
-	// (runtime.WithSource); the studio RunHeader links back to it. The
-	// dispatcher sets it to the kanban issue that triggered the dispatch. Nil
-	// leaves Source unset (CLI / studio / fork launches).
+	// (runtime.WithSource); the studio RunHeader links back to it. Dispatcher,
+	// schedule, and typed Studio-chat launches populate it. Nil leaves Source
+	// unset (CLI / ordinary Studio Launch / fork launches).
 	SourceRef *store.RunSource
 	// PipelineTicketID is the native ticket this ROOT launch belongs to.
 	// Purely a concurrency-gate hint: a ticket whose last run died sits in
@@ -369,6 +377,13 @@ type BotBundleRef struct {
 type ResumeSpec struct {
 	RunID    string
 	FilePath string // .bot file (loaded fresh; must match the run's WorkflowHash unless Force)
+	// ExpectedStatus is an optional authority-side compare-and-set guard. It
+	// is used by durable assistant missions so a proposal prepared against a
+	// failed run can never resume a later operator-paused or cancelled state.
+	ExpectedStatus store.RunStatus
+	// ReceiptID correlates the durable mission action with run_resumed. It is
+	// host-issued and never accepted from an assistant artifact directly.
+	ReceiptID string
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
@@ -380,8 +395,14 @@ type ResumeSpec struct {
 	BundleDir string
 	BotBundle *BotBundleRef
 	Answers   map[string]any // answers for human nodes; ignored for failed_resumable
-	Force     bool           // skip workflow hash check
-	Timeout   time.Duration  // 0 disables
+	// HostInputs are host-attested, ephemeral fields merged into the paused
+	// human node output for downstream mappings. They are deliberately kept
+	// out of human_answers_recorded and published artifacts: this is a derived
+	// projection (for example bounded chat history), not operator speech and
+	// not a second durable authority.
+	HostInputs map[string]any
+	Force      bool          // skip workflow hash check
+	Timeout    time.Duration // 0 disables
 	// AutoMemory re-states the run-level auto-memory override ("", "on",
 	// "off"). It is not inherited from the original launch: overrides are not
 	// persisted on the run, so a resume that said nothing would silently fall
@@ -412,7 +433,63 @@ type ResumeSpec struct {
 	// keeps the raised cap instead of silently reverting to the launch
 	// ask that already killed the run. Nil = inherit the doc's replay
 	// source (today's behaviour).
+	// UnlimitedWorkflow can also be activated between conversational turns;
+	// once active, subsequent resumes preserve that choice.
 	Budget *ir.BudgetOverrides
+}
+
+// RunBudgetOverrides converts an engine launch override into the persisted
+// raw replay source. It is intentionally distinct from store.RunBudget, which
+// is the effective/display snapshot after workflow and host ceilings resolve.
+func RunBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
+	if o == nil || o.IsZero() {
+		return nil
+	}
+	return &store.RunBudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
+	}
+}
+
+// BudgetOverridesFromRun rebuilds the engine override persisted on a run.
+func BudgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
+	if o == nil {
+		return nil
+	}
+	return &ir.BudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+		UnlimitedWorkflow:   o.UnlimitedWorkflow,
+	}
+}
+
+// MergeBudgetOverrides replays base and admits only a monotonic unlimited
+// activation from next. A resume is continuation, not a second launch form:
+// allowing it to replace finite caps would make unattended resumers silently
+// change operator intent. Once unlimited, re-capping is unsafe because the
+// session may already have spent beyond the old workflow limit.
+func MergeBudgetOverrides(base, next *ir.BudgetOverrides) *ir.BudgetOverrides {
+	if base == nil && (next == nil || !next.UnlimitedWorkflow) {
+		return nil
+	}
+	merged := ir.BudgetOverrides{}
+	if base != nil {
+		merged = *base
+	}
+	if next != nil && next.UnlimitedWorkflow {
+		merged.UnlimitedWorkflow = true
+	}
+	if merged.IsZero() {
+		return nil
+	}
+	return &merged
 }
 
 // RunSummary is the lightweight per-row shape returned by List.
@@ -451,6 +528,8 @@ type RunSummary struct {
 	// human sentence — what tells "cancelled because its pull request
 	// closed" from an operator's click. Empty = unknown/legacy.
 	EndReason store.RunEndReason `json:"end_reason,omitempty"`
+	// Source records the provenance needed to recover Studio chat tabs.
+	Source *store.RunSource `json:"source,omitempty"`
 	// Active reports whether the run is currently held by this
 	// process's manager. A run with status "running" but Active=false
 	// belongs to another process or to a previous boot — Cancel won't
@@ -549,18 +628,21 @@ type Service struct {
 	// workspaceTrackDisabled is the per-service opt-out (see
 	// WithoutWorkspaceTracking), checked alongside the env default.
 	workspaceTrackDisabled bool
-	// boardMCPHandler serves the board MCP routes for the per-run
-	// gateway-reachable listener (C082); boardRegister mints per-node
-	// board tokens. Both nil unless the server wires them via
-	// WithBoardMCP — sandboxed board-emit then stays disabled.
+	// boardMCPHandler serves the capability-gated board/runs MCP routes for
+	// the per-run gateway-reachable listener (C082); boardRegister mints
+	// per-node host tokens. The historical field names remain for wire
+	// compatibility.
 	boardMCPHandler http.Handler
-	boardRegister   func(caps []string, sourceIssueID string) string
+	boardRegister   func(caps []string, sourceIssueID, runID string) string
 	// workDir is the directory the engine should treat as ${PROJECT_DIR}
 	// and as the repo-lookup seed for worktree: auto. Empty means
 	// "default to os.Getwd() at Run() time" — the right thing for the
 	// CLI (which runs in the user's cwd) but wrong for the desktop
 	// server (whose process cwd is the user's home).
 	workDir string
+	// runEnv is the project-specific child-process environment snapshot. It is
+	// immutable for the service lifetime and never applied to the host process.
+	runEnv  []string
 	logger  *iterlog.Logger
 	broker  *EventBroker
 	manager *Manager
@@ -660,6 +742,10 @@ type Service struct {
 	// resumeFiller re-derives a bare ResumeSpec's source/bundle from the
 	// persisted run (see WithResumeSourceFiller). Nil = no-op.
 	resumeFiller ResumeSourceFiller
+	// resumePolicyFiller applies host-derived, monotonic session policy to
+	// EVERY resume surface (HTTP, WS, assistant watch, retry sweeper). Unlike
+	// resumeFiller it always runs, including when a caller supplied source.
+	resumePolicyFiller ResumePolicyFiller
 
 	// localSecrets + localSealer are the local (non-cloud) sealed secret
 	// store and its AES-GCM sealer. When set (local studio / desktop),
@@ -729,6 +815,10 @@ type Service struct {
 	// provided). 0 disables the cap. Set via WithMaxConcurrentPipelines
 	// (CLI flag) or the ITERION_MAX_CONCURRENT_PIPELINES env.
 	maxConcurrentPipelines int
+	// recoveryPassive leaves explicit HTTP-driven launch/resume controls
+	// available while suppressing every boot-time or periodic store mutation.
+	// It is used by the local recovery console and by workspace rehearsals.
+	recoveryPassive bool
 	// pipelineQueue is the local admission gate + FIFO built from
 	// maxConcurrentPipelines. nil = unlimited (in-process launches start
 	// eagerly, exactly as before). Only the in-process (non-publisher,
@@ -767,6 +857,14 @@ type ServiceOption func(*Service)
 func WithWorkDir(dir string) ServiceOption {
 	return func(s *Service) {
 		s.workDir = dir
+	}
+}
+
+// WithRunEnv installs the environment snapshot used by every executor this
+// project service creates.
+func WithRunEnv(env []string) ServiceOption {
+	return func(svc *Service) {
+		svc.runEnv = append([]string(nil), env...)
 	}
 }
 
@@ -867,6 +965,15 @@ func WithResumeSourceFiller(fn ResumeSourceFiller) ServiceOption {
 	return func(s *Service) { s.resumeFiller = fn }
 }
 
+// ResumePolicyFiller derives host-owned continuation policy from the durable
+// run/checkpoint. It runs while Resume still has the authoritative run record
+// and before the workflow/executor is rebuilt.
+type ResumePolicyFiller func(ctx context.Context, run *store.Run, spec *ResumeSpec) error
+
+func WithResumePolicyFiller(fn ResumePolicyFiller) ServiceOption {
+	return func(s *Service) { s.resumePolicyFiller = fn }
+}
+
 // WithForgeTokenResolver wires the forge-credential lookup used to merge
 // repo-targeted runs server-side. See ForgeTokenResolver.
 func WithForgeTokenResolver(fn ForgeTokenResolver) ServiceOption {
@@ -885,6 +992,12 @@ func WithMaxConcurrentPipelines(n int) ServiceOption {
 			s.maxConcurrentPipelines = n
 		}
 	}
+}
+
+// WithRecoveryPassive disables boot reconciliation, sandbox reaping, alerts,
+// and pipeline scheduling. Explicit Service operations remain available.
+func WithRecoveryPassive() ServiceOption {
+	return func(s *Service) { s.recoveryPassive = true }
 }
 
 // WithLocalSecrets wires the local (non-cloud) sealed secret store + its
@@ -907,13 +1020,11 @@ func WithStore(s store.RunStore) ServiceOption {
 	return func(svc *Service) { svc.injectedStore = s }
 }
 
-// WithBoardMCP wires the board MCP HTTP transport for sandboxed
-// board-capability nodes (C082). handler must serve ONLY the board MCP
-// routes (it is exposed gateway-reachable, token-gated) — never the full
-// server mux. register mints a per-node run token against the server's
-// BoardMCPTokenRegistry. Both are threaded into the engine + executor so
-// sandboxed claude_code can write the operator's board.
-func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID string) string) ServiceOption {
+// WithBoardMCP wires the dedicated host MCP HTTP transport for sandboxed
+// board/runs-capability nodes (C082). handler must serve ONLY the token-gated
+// MCP routes — never the full server mux. register mints a per-node token
+// against the server's historical BoardMCPTokenRegistry name.
+func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID, runID string) string) ServiceOption {
 	return func(svc *Service) {
 		svc.boardMCPHandler = handler
 		svc.boardRegister = register
@@ -1060,13 +1171,15 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	if s.maxConcurrentPipelines <= 0 {
 		s.maxConcurrentPipelines = envMaxConcurrentPipelines()
 	}
-	if s.publisher == nil {
+	if s.publisher == nil && !s.recoveryPassive {
 		s.pipelineQueue = newPipelineQueue(s.maxConcurrentPipelines)
 	}
 
 	if s.alertSettings != nil {
 		s.alertManager = s.buildAlertManager(*s.alertSettings)
-		s.alertManager.Start(context.Background())
+		if !s.recoveryPassive {
+			s.alertManager.Start(context.Background())
+		}
 	}
 
 	if s.completionNotifier == nil {
@@ -1087,16 +1200,18 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 			notify.WithSigningSecret(secret))
 	}
 
-	s.reconcileOrphans(context.Background())
-	s.reconcileSandboxContainers()
-	s.reconcileSandboxK8sResources(context.Background())
-	s.startPeriodicReconcile()
-	// Recover any pipelines left waiting in the queue by a previous
-	// process lifetime (persisted as queued docs), then start the
-	// scheduler that admits them as slots free. No-op when the cap is
-	// disabled (pipelineQueue == nil).
-	s.rebuildPipelineQueue()
-	s.startPipelineScheduler()
+	if !s.recoveryPassive {
+		s.reconcileOrphans(context.Background())
+		s.reconcileSandboxContainers()
+		s.reconcileSandboxK8sResources(context.Background())
+		s.startPeriodicReconcile()
+		// Recover any pipelines left waiting in the queue by a previous
+		// process lifetime (persisted as queued docs), then start the
+		// scheduler that admits them as slots free. No-op when the cap is
+		// disabled (pipelineQueue == nil).
+		s.rebuildPipelineQueue()
+		s.startPipelineScheduler()
+	}
 	return s, nil
 }
 

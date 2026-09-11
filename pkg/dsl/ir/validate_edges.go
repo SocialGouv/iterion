@@ -74,6 +74,18 @@ func (c *compiler) validateHumanModesInExecBranch(w *Workflow) {
 	}
 }
 
+func (c *compiler) validateSessionSlots(w *Workflow) {
+	for id, node := range w.Nodes {
+		llm, ok := node.(LLMNode)
+		if !ok || llm.GetSessionSlot() == "" || llm.GetSession() == SessionPersist {
+			continue
+		}
+		c.errorf(DiagSessionSlotWithoutPersist,
+			"node %q declares session_slot %q but session is %s; named slots require session: persist",
+			id, llm.GetSessionSlot(), llm.GetSession())
+	}
+}
+
 // findConvergenceNodes returns the set of node IDs that are convergence points.
 // A node is a convergence point if it has AwaitMode != AwaitNone OR
 // if it receives unconditional edges from multiple distinct sources.

@@ -215,6 +215,7 @@ func TestCopilotAuthoringStandardIsEmbedded(t *testing.T) {
 	}
 
 	main := string(mainRaw)
+	system := copilotContractSection(t, main, "prompt copi_system:", "prompt copi_user:")
 	skill := string(skillRaw)
 	for _, forbidden := range []string{
 		"ITERION_AUTHORING_STANDARD_PATH",
@@ -224,9 +225,10 @@ func TestCopilotAuthoringStandardIsEmbedded(t *testing.T) {
 			t.Errorf("copilot prompt still delegates its standard to an external file: found %q", forbidden)
 		}
 	}
-	if !strings.Contains(main, "Never search the\n  workspace, the operator's home") {
-		t.Error("copilot prompt does not explicitly forbid filesystem discovery of an authoring standard")
-	}
+	requireCopilotContract(t, "Copi embedded authoring standard", system,
+		"An authoring_standard declaration names those embedded rules; it is not a path.",
+		"Never search the workspace, the operator's home, or an environment variable for another copy.",
+	)
 
 	for _, required := range []string{
 		"**Identifier:** `victor/iterion-bot-authoring/v1`",
@@ -241,6 +243,59 @@ func TestCopilotAuthoringStandardIsEmbedded(t *testing.T) {
 	if strings.Contains(skill, "ITERION_AUTHORING_STANDARD_PATH") {
 		t.Error("architecture skill still instructs Copi to resolve an external authoring-standard file")
 	}
+}
+
+func TestCopilotUsesRawBytesForExactActiveFileChanges(t *testing.T) {
+	raw, err := os.ReadFile("copilot/main.bot")
+	if err != nil {
+		t.Fatalf("read copilot: %v", err)
+	}
+	src := string(raw)
+	system := copilotContractSection(t, src, "prompt copi_system:", "prompt copi_user:")
+	requireCopilotContract(t, "Copi exact active-file changes", system,
+		"Prefer exact active-file changes when the active local authoring snapshot is clean and readable and bounded unique replacements are safe",
+		"Read raw bytes with read_file.",
+		"Never copy a before anchor from the active-editor-document AST serialization.",
+		"Each before is nonempty, byte-exact, and occurs once.",
+		"A file_changes-only turn has empty draft_bot, has_draft false, and all editor apply/save intents none.",
+		"Never emit a full draft and exact replacements for the same file.",
+		"With dirty:true, ask the operator to save or discard before any whole-document replacement.",
+	)
+	if strings.Contains(src, "DECLARED COMPANION FILES") || strings.Contains(src, "declared companion-file exact") {
+		t.Error("copilot still calls the declared authoring perimeter companion-only")
+	}
+	if strings.Contains(src, "This is for text only") {
+		t.Error("copilot still forces localized structural edits through full-document drafts")
+	}
+}
+
+func TestCopilotRunWatchContractBoundsOutcomeKinds(t *testing.T) {
+	raw, err := os.ReadFile("copilot/main.bot")
+	if err != nil {
+		t.Fatalf("read copilot: %v", err)
+	}
+	src := string(raw)
+	system := copilotContractSection(t, src, "prompt copi_system:", "prompt copi_user:")
+	requireCopilotContract(t, "Copi run.watch outcomes", system,
+		"run.watch kinds contains one to four distinct outcomes, never all five.",
+		"Choose the narrowest set.",
+		`exactly ["run.paused","run.failed","run.stalled","run.finished"]`,
+	)
+}
+
+func TestCopilotRunWatchContractUnderstandsRootedTreeCoverage(t *testing.T) {
+	raw, err := os.ReadFile("copilot/main.bot")
+	if err != nil {
+		t.Fatalf("read copilot: %v", err)
+	}
+	src := string(raw)
+	system := copilotContractSection(t, src, "prompt copi_system:", "prompt copi_user:")
+	requireCopilotContract(t, "Copi rooted-tree watch", system,
+		"target_run is the watched root; outcome_run is the concrete root or descendant that emitted the outcome.",
+		"A run.watch covered_run_id means an ancestor watch covers the child.",
+		"Another assistant's watch or a 409 is not this conversation's confirmed coverage.",
+		"A full run.watch request updates the same assistant's watch in place; do not unwatch first.",
+	)
 }
 
 // stripSkillsDeclarations removes everything the MODEL never reads, so that

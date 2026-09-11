@@ -289,6 +289,20 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // attempt (QueuedAt) and from its history (the checkpoint) before
 // letting a launch through.
 func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
+	// A successful rewind deliberately parks at paused_operator, but an old
+	// launch delivery must not turn that visible pause into a silent replay of
+	// an edited workflow. The marker survives the explicit resume's queued
+	// hand-off and is consumed only when that resume claims running.
+	if run.ResumeRequiresExplicit && msg.Resume == nil {
+		return preconditionOutcome{
+			finalStatus: string(run.Status),
+			op:          "ack-explicit-resume-required",
+			action:      actionAck,
+			level:       logInfo,
+			logFmt:      "runner: run %s was rewound — dropping stale delivery (explicit resume required to continue)",
+			logArgs:     []any{msg.RunID},
+		}
+	}
 	switch run.Status {
 	case store.RunStatusCancelled:
 		// Cancelled is terminal for a redelivery — checkpoint or not, resume
@@ -2387,6 +2401,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// This was previously dropped on the floor.
 		engineOpts = append(engineOpts, runtime.WithForceResume(true))
 	}
+	if msg.Resume != nil && msg.Resume.ReceiptID != "" {
+		// The publisher already consumed ExpectedStatus in its exact CAS to
+		// queued. The runner claims queued, but must retain the durable
+		// receipt so reconciliation can prove whether the action happened.
+		engineOpts = append(engineOpts, runtime.WithResumeReceiptID(msg.Resume.ReceiptID))
+	}
 	// Live steering: hand the engine the override channel processOne
 	// registered for this run, so bump_loop / raise_budget commands
 	// arriving on iterion.steer.<run_id> reach the execution loop.
@@ -2426,7 +2446,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 
 	var runErr error
 	if msg.Resume != nil {
-		runErr = engine.Resume(ctx, msg.RunID, msg.Resume.Answers)
+		runErr = engine.ResumeWithHostInputs(ctx, msg.RunID, msg.Resume.Answers, msg.Resume.HostInputs)
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 	}
@@ -2641,8 +2661,8 @@ func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *ite
 		return fmt.Errorf("runner: launch budget override: %w", err)
 	}
 	ir.ApplyBudgetOverrides(wf, o)
-	logger.Info("runner: launch budget overrides applied (cost=%.2f tokens=%d duration=%q iterations=%d branches=%d)",
-		o.MaxCostUSD, o.MaxTokens, o.MaxDuration, o.MaxIterations, o.MaxParallelBranches)
+	logger.Info("runner: launch budget overrides applied (cost=%.2f tokens=%d duration=%q iterations=%d branches=%d unlimited_workflow=%t)",
+		o.MaxCostUSD, o.MaxTokens, o.MaxDuration, o.MaxIterations, o.MaxParallelBranches, o.UnlimitedWorkflow)
 	return nil
 }
 

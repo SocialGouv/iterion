@@ -47,7 +47,11 @@ type subbotDepthKey struct{}
 // whereas here the daemon's cwd is the host repo, so workDir must be threaded
 // explicitly or the child resolves relative paths (a bot's `.venv/bin/python`)
 // against the wrong tree.
-func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger) runtime.SubbotRunner {
+func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger, runEnv ...[]string) runtime.SubbotRunner {
+	var projectEnv []string
+	if len(runEnv) > 0 {
+		projectEnv = runEnv[0]
+	}
 	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{WorkDir: workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
@@ -114,6 +118,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			RunID:    childRunID,
 			Logger:   logger,
 			StoreDir: storeDir,
+			WorkDir:  childWorkDir,
 			// A subbot is a DIFFERENT bot from its parent, so it keys its own
 			// bot-scoped memory — derived from the CHILD's path, exactly as the
 			// CLI and studio runners do. Without it the executor falls back to
@@ -142,6 +147,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			releaseLock()
 			return nil, err
 		}
+		childExec.SetRunExtraEnv(projectEnv)
 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result. The callback fires concurrently when the
@@ -160,7 +166,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.
-			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, logger)),
+			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, logger, projectEnv)),
 			// Le parent a six reprises à repli exponentiel sur un incident
 			// transitoire (timeout http2, 429, DNS) ; sans ça l'enfant mourrait
 			// définitivement au premier, et comme `ReattachSubbotChild` repart
@@ -174,6 +180,9 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 					lastMu.Unlock()
 				}
 			}),
+		}
+		if len(projectEnv) > 0 {
+			opts = append(opts, runtime.WithRunEnv(projectEnv))
 		}
 		if childWorkDir != "" {
 			opts = append(opts, runtime.WithWorkDir(childWorkDir))

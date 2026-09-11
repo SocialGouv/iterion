@@ -30,9 +30,18 @@ describe("ChatDockShell dock states", () => {
     expect(screen.queryByText("body")).toBeNull();
   });
 
-  it("counts unread on the bubble's accessible name", () => {
-    renderShell({ dock: "closed", unread: 3 });
-    expect(screen.getByRole("button", { name: /open assistant \(3 new\)/i })).toBeTruthy();
+  it("announces the caller-defined badge without calling it unread", () => {
+    renderShell({
+      dock: "closed",
+      badgeCount: 3,
+      badgeAccessibleLabel: "3 open conversations are ready for your next message",
+    });
+    expect(
+      screen.getByRole("button", {
+        name: /open assistant\. 3 open conversations are ready for your next message/i,
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/new/i)).toBeNull();
   });
 
   it("springs open for a reference drag while closed", () => {

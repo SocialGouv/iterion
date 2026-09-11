@@ -10,6 +10,8 @@ import type {
   ForkRunRequest,
   ForkRunResponse,
   PreviewCostResponse,
+  RewindRunRequest,
+  RewindRunResponse,
   ResumeRunRequest,
 } from "./types";
 
@@ -52,6 +54,21 @@ export function isForceResumeRequiredError(err: unknown): boolean {
     );
   }
   return isWorkflowSourceChangedError(err);
+}
+
+// Stable wire code emitted by POST /runs/:id/resume (and the WS answer path)
+// when the run's status no longer admits a resume. A parked chat gate has two
+// legitimate resumers — the operator, and the assistant-watch coordinator
+// delivering a host event — so losing that race is a routing signal, not a
+// failure to show. See pkg/server/runs_launch.go.
+export const RUN_NOT_RESUMABLE_ERROR_CODE = "run_not_resumable";
+
+// isRunNotResumableError is deliberately code-only, with no prose fallback:
+// unlike workflow_source_changed there is no legacy phrasing to stay
+// compatible with, and guessing from a message would risk re-routing an
+// operator's answer into a queued message on an unrelated error.
+export function isRunNotResumableError(err: unknown): boolean {
+  return err instanceof ApiError && err.errorCode === RUN_NOT_RESUMABLE_ERROR_CODE;
 }
 
 export async function createRun(req: CreateRunRequest): Promise<CreateRunResponse> {
@@ -143,6 +160,93 @@ export async function removeWatch(
   );
 }
 
+export interface AssistantRunWatch {
+  id: string;
+  /** Present when this response proves that an ancestor watch covers the requested run. */
+  covered_run_id?: string;
+  target_run_id: string;
+  assistant_run_id: string;
+  mode: "diagnose" | "propose";
+  state: "active" | "resolved" | "stopped";
+  /** @deprecated Persisted for compatibility; watches are lifetime-bound. */
+  max_episodes?: number;
+  delivered_episodes: number;
+  cooldown_seconds: number;
+  kinds?: string[];
+  created_at: string;
+}
+
+// createAssistantRunWatch links a host-selected assistant run to one rooted
+// run tree. A descendant request widens and returns its covering ancestor
+// watch instead of opening a duplicate. The server owns delivery and only wakes a manifest-declared chat
+// boundary; this is unrelated to the native-ticket addWatch API above.
+export async function createAssistantRunWatch(
+  targetRunId: string,
+  input: {
+    assistant_run_id: string;
+    mode: "diagnose" | "propose";
+    /** @deprecated Accepted by older servers/clients and ignored by current servers. */
+    max_episodes?: number;
+    cooldown_seconds?: number;
+    kinds?: Array<"run.failed" | "run.finished" | "run.cancelled" | "run.stalled" | "run.paused">;
+  },
+): Promise<AssistantRunWatch> {
+  return request(`/runs/${encodeURIComponent(targetRunId)}/assistant-watches`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listAssistantRunWatches(
+  targetRunId: string,
+): Promise<AssistantRunWatch[]> {
+  return request(`/runs/${encodeURIComponent(targetRunId)}/assistant-watches`);
+}
+
+// RunVeille is what the assistant run is STANDING BY on, both channels at
+// once. They travel together because a button that cuts only the run watches
+// is not idempotent: the card subscription re-arms a fresh watch at that
+// card's next dispatch, so the operator who pressed "stop" gets spoken to
+// again anyway.
+export interface RunVeille {
+  run_watches: AssistantRunWatch[];
+  watched_issue_ids: string[];
+}
+
+// listRunVeille is the reconciliation read behind the dock's live
+// assistant_veille_* events: the banner is pushed by those, this is what a
+// freshly mounted dock (or one that missed an event) calls to catch up.
+// deliverHostEvent wakes a PARKED conversational run with a host-attested
+// event, through the chat gate's host_event field. It is how the studio tells
+// an assistant that something it asked for has happened — the completion
+// signal without which a multi-step repair stalls after its first action,
+// because parking a run is not an outcome and fires no watch episode.
+//
+// 409 means "not at a chat boundary": the assistant is mid-turn and the
+// caller should retry, not report a failure.
+export async function deliverHostEvent(
+  runId: string,
+  kind: string,
+  event: Record<string, unknown>,
+): Promise<{ delivered: boolean }> {
+  return request(`/runs/${encodeURIComponent(runId)}/host-event`, {
+    method: "POST",
+    body: JSON.stringify({ kind, event }),
+  });
+}
+
+export async function listRunVeille(runId: string): Promise<RunVeille> {
+  return request(`/runs/${encodeURIComponent(runId)}/watching`);
+}
+
+export async function stopAssistantRunWatch(
+  watchId: string,
+): Promise<{ id: string; state: "stopped" }> {
+  return request(`/assistant-watches/${encodeURIComponent(watchId)}`, {
+    method: "DELETE",
+  });
+}
+
 // forkRun creates a new run that resumes from a prior turn of the
 // parent. The new run starts in cancelled status with a synthetic
 // checkpoint; the caller posts /resume on it to actually execute.
@@ -163,6 +267,19 @@ export async function resumeRun(
   req: ResumeRunRequest = {},
 ): Promise<CreateRunResponse> {
   return request(`/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+// rewindRun re-anchors an existing run and invalidates downstream engine
+// state. Callers choose file restoration explicitly; assistant actions always
+// send restore_scope:none so a model cannot roll back workspace files.
+export async function rewindRun(
+  runId: string,
+  req: RewindRunRequest,
+): Promise<RewindRunResponse> {
+  return request(`/runs/${encodeURIComponent(runId)}/rewind`, {
     method: "POST",
     body: JSON.stringify(req),
   });

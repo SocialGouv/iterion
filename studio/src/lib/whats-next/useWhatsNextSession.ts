@@ -22,7 +22,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { type RunStatus } from "@/api/runs";
+import { type CreateRunRequest, type RunStatus } from "@/api/runs";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import {
   useSessionModelPref,
@@ -107,6 +107,10 @@ export interface WhatsNextSessionOptions {
   // is what stops several conversations on the same bot from converging on
   // whichever run the bot-scoped lookup happens to return.
   attachRunId?: string | null;
+  /** Dock-only typed provenance; omitted by /whats-next. */
+  runSource?: CreateRunRequest["run_source"];
+  /** Persists a lazy dock tab immediately before createRun. */
+  beforeLaunch?: () => void;
 }
 
 export function useWhatsNextSession(
@@ -311,6 +315,8 @@ export function useWhatsNextSession(
     setStatus,
     setBusyMessageId,
     setErrorMessage,
+    runSource: options?.runSource,
+    beforeLaunch: options?.beforeLaunch,
   });
 
   const { submitHumanAnswer, resume } = useSessionSteering({

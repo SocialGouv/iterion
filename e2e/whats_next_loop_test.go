@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,6 +87,25 @@ func TestWhatsNextV2_GraphContract(t *testing.T) {
 	}
 	if slices.Contains(nexie.Tools, "bash") || slices.Contains(nexie.Tools, "write_file") {
 		t.Errorf("nexie write-shaped tools must stay absent, got %v", nexie.Tools)
+	}
+
+	// Nexie emits the same board-action contract as Copi. Keep its local prompt
+	// synchronized without turning this targeted fix into a shared-catalogue
+	// refactor.
+	nexieSystem := wf.Prompts["nexie_system"].Body
+	for _, want := range []string{
+		"priority?: integer",
+		"examples, not an enum",
+		"Never emit",
+		`"low"`,
+		`"medium"`,
+		`"high"`,
+		`"priority":20`,
+		"action card is the only execution result",
+	} {
+		if !strings.Contains(nexieSystem, want) {
+			t.Errorf("nexie_system is missing host-action contract %q", want)
+		}
 	}
 
 	var loopEdge *ir.Edge

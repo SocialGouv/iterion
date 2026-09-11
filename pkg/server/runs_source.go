@@ -118,6 +118,33 @@ func (s *Server) resolveCachedInlineSource(filePath string) (string, bool) {
 	return clean, true
 }
 
+// isServerOwnedWorkflowCache recognises source snapshots materialised by the
+// server itself. It is intentionally narrower than a general filesystem
+// existence check: only these immutable cache roots may be re-associated with
+// a current catalog bot during legacy resume recovery.
+func (s *Server) isServerOwnedWorkflowCache(filePath string) bool {
+	if _, ok := s.resolveCachedInlineSource(filePath); ok {
+		return true
+	}
+	if !filepath.IsAbs(filePath) {
+		return false
+	}
+	cacheRoot := s.embeddedRecipeCacheDir()
+	if cacheRoot == "" {
+		return false
+	}
+	cacheAbs, err := filepath.Abs(cacheRoot)
+	if err != nil {
+		return false
+	}
+	clean := filepath.Clean(filePath)
+	if !pathContains(cacheAbs, clean) {
+		return false
+	}
+	info, err := os.Stat(clean)
+	return err == nil && !info.IsDir()
+}
+
 // materializeInlineSource writes the SPA-provided inline workflow content
 // into a stable per-store cache directory and returns its absolute
 // path. The cache lives at <storeDir>/inline-sources/<sha12>-<basename>:

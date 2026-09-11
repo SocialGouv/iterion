@@ -1,8 +1,11 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "wouter";
 
+import { resumeRun } from "@/api/runs";
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
+import type { StagedHumanSubmission } from "@/components/Runs/conversation/HumanPromptForm";
+import { errorMessage } from "@/lib/errorHints";
 import { ReviewScopePanel } from "./ReviewScopePanel";
 import { Badge, Button, InlineBanner } from "@/components/ui";
 
@@ -14,31 +17,45 @@ import {
 
 interface Props {
   card: PipelineBoardCard;
-  // Refetches the board after every successful answer. The component pins the
-  // next existing turn first; the fresh projection may then retire the old
-  // review or append a new turn without replacing the active form.
+  // Refetches the board after the batch was sent. Individual answers stay as
+  // local drafts until that deliberate final action.
   onResolved: () => void;
 }
 
-// SequentialReviews steps through a card's pending human interactions one at a
-// time. Each pause can live in the root run or any descendant; the answer is
-// POSTed to the exact run_id/node_id the review names (via HumanPromptForm's
-// existing resume path — not reimplemented here).
+type SubmissionResult = { message: string };
+
+const maxReviewBatchSize = 10;
+
+// SequentialReviews presents one answer page at a time, but only sends a
+// fan-out's sibling reviews when the operator has finished the whole group.
+// A review without runtime fan-out provenance deliberately remains a batch of
+// one: unrelated pauses must never be coupled merely because they appeared on
+// the same card at the same time.
 export function SequentialReviews({ card, onResolved }: Props) {
-  const reviews = useMemo(
+  const pending = useMemo(
     () => sortPendingReviewsChronologically(card.pending_reviews ?? []),
     [card.pending_reviews],
+  );
+  const batchKey = pending[0]?.batch_key;
+  const reviews = useMemo(
+    () => (batchKey
+      ? pending.filter((review) => review.batch_key === batchKey).slice(0, maxReviewBatchSize)
+      : pending.slice(0, 1)),
+    [batchKey, pending],
   );
   const reviewKeys = useMemo(
     () => reviews.map(pendingReviewVersionKey),
     [reviews],
   );
   const [activeReviewKey, setActiveReviewKey] = useState<string | null>(null);
+  const [staged, setStaged] = useState<Record<string, StagedHumanSubmission>>({});
+  const [results, setResults] = useState<Record<string, SubmissionResult>>({});
+  const [sending, setSending] = useState(false);
 
   // Polling may remove an answered turn and append a newer turn from the same
   // AI. Keep the exact active version mounted while it still exists, so a
-  // draft in another form cannot be replaced underneath the operator. Once
-  // it disappears, continue from the (oldest) head of the refreshed queue.
+  // draft cannot be replaced underneath the operator. Once it disappears,
+  // continue from the oldest page in the current fan-out batch.
   let current = activeReviewKey === null ? -1 : reviewKeys.indexOf(activeReviewKey);
   if (current < 0) current = 0;
 
@@ -49,16 +66,79 @@ export function SequentialReviews({ card, onResolved }: Props) {
   const reviewKey = reviewKeys[current];
   if (!review || !reviewKey) return null;
 
+  const stagedCount = reviewKeys.filter((key) => staged[key] !== undefined).length;
+  const allStaged = stagedCount === total;
+
   const selectReview = (index: number) => {
     const key = reviewKeys[clampReviewIndex(index, total)];
     if (key) setActiveReviewKey(key);
   };
 
-  const handleResolved = () => {
-    // Advance immediately to the oldest other pending turn and pin it before
-    // the refetch returns. A new turn from the just-answered AI can then only
-    // append behind this active form; it cannot steal the screen.
-    setActiveReviewKey(reviewKeys.find((key) => key !== reviewKey) ?? null);
+  const stage = (submission: StagedHumanSubmission) => {
+    setStaged((previous) => ({ ...previous, [reviewKey]: submission }));
+    setResults((previous) => {
+      const next = { ...previous };
+      delete next[reviewKey];
+      return next;
+    });
+    const nextUnstaged = reviewKeys.find(
+      (key) => key !== reviewKey && staged[key] === undefined,
+    );
+    if (nextUnstaged) setActiveReviewKey(nextUnstaged);
+  };
+
+  const unstage = () => {
+    setStaged((previous) => {
+      const next = { ...previous };
+      delete next[reviewKey];
+      return next;
+    });
+    setResults((previous) => {
+      const next = { ...previous };
+      delete next[reviewKey];
+      return next;
+    });
+  };
+
+  const sendBatch = async () => {
+    if (!allStaged || sending) return;
+    setSending(true);
+    setResults({});
+    const outcomes = await Promise.all(
+      reviewKeys.map(async (key) => {
+        const submission = staged[key];
+        if (!submission) return [key, { message: "This response is missing." }] as const;
+        try {
+          await resumeRun(submission.runId, {
+            answers: submission.answers,
+            source: submission.source,
+            ...(submission.attachments && submission.attachments.length > 0
+              ? { attachments: submission.attachments }
+              : {}),
+            ...(submission.force ? { force: true } : {}),
+          });
+          return [key, null] as const;
+        } catch (error) {
+          return [key, { message: errorMessage(error) }] as const;
+        }
+      }),
+    );
+    const failures = Object.fromEntries(
+      outcomes.filter(([, result]) => result !== null) as Array<[string, SubmissionResult]>,
+    );
+    setSending(false);
+    if (Object.keys(failures).length === 0) {
+      setStaged({});
+      onResolved();
+      return;
+    }
+    // Successful resumes must never be sent a second time. A refresh removes
+    // their completed cards while retaining the failed drafts and their exact
+    // server explanation for correction or a force retry.
+    setStaged((previous) =>
+      Object.fromEntries(Object.entries(previous).filter(([key]) => failures[key] !== undefined)),
+    );
+    setResults(failures);
     onResolved();
   };
 
@@ -70,7 +150,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
         </span>
         {total > 1 && (
           <span className="text-micro text-fg-subtle">
-            Review {current + 1} of {total}
+            Review {current + 1} of {total} · {stagedCount} prepared
           </span>
         )}
         {review.depth > 0 && <Badge variant="neutral">child · depth {review.depth}</Badge>}
@@ -79,7 +159,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
             <Button
               variant="secondary"
               size="sm"
-              disabled={current <= 0}
+              disabled={current <= 0 || sending}
               onClick={() => selectReview(current - 1)}
               aria-label="Previous review"
             >
@@ -88,7 +168,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
             <Button
               variant="secondary"
               size="sm"
-              disabled={current >= total - 1}
+              disabled={current >= total - 1 || sending}
               onClick={() => selectReview(current + 1)}
               aria-label="Next review"
             >
@@ -118,36 +198,63 @@ export function SequentialReviews({ card, onResolved }: Props) {
         </div>
       )}
 
-      {/* One key for the pair. Sibling keys must be unique: React's
-          remaining-children map keeps only the last child per key, so a
-          shared reviewKey leaked every previous ReviewScopePanel when
-          stepping turns. pauseKey still cache-keys the scope query — a
-          second gate on the same run_id would otherwise reuse gate N-1. */}
       <Fragment key={reviewKey}>
         {review.run_id && (
-          <ReviewScopePanel
-            runId={review.run_id}
-            pauseKey={reviewKey}
-            live
-          />
+          <ReviewScopePanel runId={review.run_id} pauseKey={reviewKey} live />
         )}
 
-        {review.run_id && review.node_id ? (
+        {!review.run_id || !review.node_id ? (
+          <InlineBanner tone="warning" layout="inline">
+            This pause has no node identifier, so it cannot be answered inline. Open the run
+            console to inspect it.
+          </InlineBanner>
+        ) : staged[reviewKey] ? (
+          <div className="flex items-center gap-2 rounded border border-border-subtle bg-surface px-2 py-1">
+            <span className="text-micro text-fg-subtle">Response prepared for this review.</span>
+            <Button variant="secondary" size="sm" disabled={sending} onClick={unstage}>
+              Change response
+            </Button>
+          </div>
+        ) : (
           <HumanPromptForm
             runId={review.run_id}
             nodeId={review.node_id}
             questions={review.questions ?? {}}
             instructions={review.instructions}
             sourceOverride={null}
-            onResumed={handleResolved}
+            onStage={total > 1 ? stage : undefined}
+            onResumed={total === 1 ? onResolved : undefined}
+            deferSubmission={total > 1}
           />
-        ) : (
-          <InlineBanner tone="warning" layout="inline">
-            This pause has no node identifier, so it cannot be answered inline. Open the run
-            console to inspect it.
-          </InlineBanner>
         )}
       </Fragment>
+
+      {Object.keys(results).length > 0 && (
+        <div className="space-y-1" role="alert">
+          {Object.entries(results).map(([key, result]) => (
+            <p key={key} className="text-danger-fg text-micro">
+              One response was not sent: {result.message}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {total > 1 && (
+        <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2">
+          <span className="text-micro text-fg-subtle">
+            Responses stay editable until the whole batch is sent.
+          </span>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!allStaged || sending}
+            loading={sending}
+            onClick={() => void sendBatch()}
+          >
+            Send {total} responses
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -15,6 +15,8 @@ export interface SeedState {
   /** Run of bots/preview-bot, which emitted a preview_url_available event. */
   previewRunId: string;
   previewUrl: string;
+  /** Loopback-only control surface for the deterministic OpenAI fake. */
+  mockOpenAIControlUrl: string | null;
   /** Native kanban card seeded in the `inbox` state. */
   issueId: string;
   maxConcurrentPipelines: number;

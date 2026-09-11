@@ -625,6 +625,8 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	save("run-cancelled-cp", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"})
 	save("run-failres", store.RunStatusFailedResumable, &store.Checkpoint{NodeID: "n1"})
 	save("run-pausedop", store.RunStatusPausedOperator, &store.Checkpoint{NodeID: "n1"})
+	save("run-rewound-pausedop", store.RunStatusPausedOperator, &store.Checkpoint{NodeID: "n1"})
+	save("run-rewound-queued", store.RunStatusQueued, &store.Checkpoint{NodeID: "n1"})
 	save("run-finished", store.RunStatusFinished, nil)
 	// A PR-closed cancel writes the reason (wrapped by CancelRunWithReason)
 	// into run.Error. The runner admission MUST detect it and drop the
@@ -647,6 +649,16 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	// post-dates the publish — whatever the error shape.
 	saveErr("run-cancelled-op", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled")
 	saveErr("run-cancelled-interrupted", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled (was running: runtime: run interrupted)")
+	for _, id := range []string{"run-rewound-pausedop", "run-rewound-queued"} {
+		run, err := st.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("load %s: %v", id, err)
+		}
+		run.ResumeRequiresExplicit = true
+		if err := st.SaveRun(ctx, run); err != nil {
+			t.Fatalf("mark %s rewound: %v", id, err)
+		}
+	}
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 
@@ -682,6 +694,9 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 		{"cancel PR-closed drops bare redelivery too", "run-cancel-pr-closed", nil, false, actionAck, "cancelled", false},
 		{"failed_resumable converts to resume", "run-failres", nil, true, 0, "", true},
 		{"paused_operator converts to resume", "run-pausedop", nil, true, 0, "", true},
+		{"rewound operator pause drops stale launch", "run-rewound-pausedop", nil, false, actionAck, "paused_operator", false},
+		{"rewound queued run drops stale launch", "run-rewound-queued", nil, false, actionAck, "queued", false},
+		{"rewound operator pause explicit resume proceeds", "run-rewound-pausedop", &queue.ResumeSpec{}, true, 0, "", true},
 		{"explicit resume passes through", "run-failres", &queue.ResumeSpec{}, true, 0, "", true},
 		{"finished acks stale delivery", "run-finished", nil, false, actionAck, "finished", false},
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,6 +72,369 @@ func TestRegisterClawBuiltins_DoesNotRegisterComputerUse(t *testing.T) {
 		if hasTool(r, name) {
 			t.Errorf("expected %q NOT registered by default; vision tools are opt-in", name)
 		}
+	}
+}
+
+func TestRegisterClawWorkspaceDiagnostics_IsExplicitOptIn(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"workspace_grep", "diagnostic_shell"} {
+		if hasTool(r, name) {
+			t.Fatalf("%q registered without diagnostic opt-in", name)
+		}
+	}
+	if err := RegisterClawWorkspaceDiagnostics(r, t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"workspace_grep", "diagnostic_shell"} {
+		if !hasTool(r, name) {
+			t.Errorf("%q missing after diagnostic opt-in", name)
+		}
+	}
+}
+
+func TestClawShellToolsRunInTheirRegisteredWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	otherDir := t.TempDir()
+	t.Chdir(otherDir)
+
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterClawWorkspaceDiagnostics(r, workspace, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"bash", "diagnostic_shell"} {
+		t.Run(name, func(t *testing.T) {
+			td, err := r.Resolve(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := td.Execute(context.Background(), json.RawMessage(`{"command":"pwd"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := filepath.Clean(strings.TrimSpace(out)); got != workspace {
+				t.Fatalf("%s cwd = %q, want registered workspace %q", name, got, workspace)
+			}
+		})
+	}
+}
+
+// TestDiagnosticShellCharacterizesFailureOutput pins the dependency contract
+// Copi relies on for diagnostics: the public claw executor returns combined
+// output alongside a non-nil error when a command exits non-zero. The model
+// layer decides how to present that pair; this test must fail if a dependency
+// upgrade changes either half of the contract.
+func TestDiagnosticShellCharacterizesFailureOutput(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterClawWorkspaceDiagnostics(r, t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	td, err := r.Resolve("diagnostic_shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := td.Execute(context.Background(), json.RawMessage(`{"command":"printf stdout; printf stderr >&2; exit 7"}`))
+	if !strings.Contains(out, "stdout") || !strings.Contains(out, "stderr") {
+		t.Fatalf("non-zero diagnostic output = %q, want combined stdout and stderr", out)
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "command exited with error:") {
+		t.Fatalf("non-zero diagnostic error = %v, want documented exit error", err)
+	}
+}
+
+func TestDiagnosticShellCharacterizesInvalidInput(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterClawWorkspaceDiagnostics(r, t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	td, err := r.Resolve("diagnostic_shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := td.Execute(context.Background(), json.RawMessage(`{}`))
+	if out != "" {
+		t.Fatalf("invalid diagnostic output = %q, want empty", out)
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "bash:") {
+		t.Fatalf("invalid diagnostic error = %v, want validation error", err)
+	}
+}
+
+func TestClawReadFile_LargeFileHasExplicitContinuation(t *testing.T) {
+	dir := t.TempDir()
+	var body strings.Builder
+	for i := 1; i <= 12_000; i++ {
+		fmt.Fprintf(&body, "line-%05d: payload payload payload\n", i)
+	}
+	path := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, dir); err != nil {
+		t.Fatal(err)
+	}
+	td, err := r.Resolve("read_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := td.Execute(context.Background(), json.RawMessage(`{"path":"large.txt"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > 256*1024 {
+		t.Fatalf("read output crossed downstream safety boundary: %d bytes", len(out))
+	}
+	if !strings.Contains(out, "[read_file partial:") || !strings.Contains(out, "continue with path \"large.txt\" and start_line") {
+		t.Fatalf("large read did not advertise continuation: tail=%q", out[len(out)-300:])
+	}
+	if strings.Contains(out, "line-12000") {
+		t.Fatal("first chunk unexpectedly contained the file tail")
+	}
+
+	out, err = td.Execute(context.Background(), json.RawMessage(`{"path":"large.txt","start_line":11995}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "line-12000") || strings.Contains(out, "[read_file partial:") {
+		t.Fatalf("continuation did not return the complete tail: %q", out)
+	}
+}
+
+func TestClawGrep_SearchesWorkspaceButSkipsCredentials(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "state", "films"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state", "films", "timing.json"), []byte("diagnostic-needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.bak"), []byte("PASSWORD=diagnostic-needle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".ssh", "id_rsa"), []byte("diagnostic-needle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, dir); err != nil {
+		t.Fatal(err)
+	}
+	td, err := r.Resolve("grep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := td.Execute(context.Background(), json.RawMessage(`{"pattern":"diagnostic-needle","path":"."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "timing.json:1:diagnostic-needle") {
+		t.Fatalf("workspace artifact match missing: %q", out)
+	}
+	if strings.Contains(out, ".env") || strings.Contains(out, ".ssh") || strings.Contains(out, "PASSWORD") {
+		t.Fatalf("credential file leaked through grep: %q", out)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("diagnostic-needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{"pattern": "diagnostic-needle", "path": outside})
+	if _, err := td.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("outside-workspace grep = %v, want refusal", err)
+	}
+}
+
+func TestClawWorkspaceGrep_BoundsOutputDuringScan(t *testing.T) {
+	dir := t.TempDir()
+	var body strings.Builder
+	for i := range 40 {
+		fmt.Fprintf(&body, "needle-%02d %s\n", i, strings.Repeat("x", 48))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "large.txt"), []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const maxOutput = 512
+	out, err := executeWorkspaceGrepWithLimits(
+		map[string]any{"pattern": "needle-", "path": "."},
+		dir,
+		workspaceGrepLimits{maxResults: 100, maxOutputBytes: maxOutput},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > maxOutput {
+		t.Fatalf("grep output crossed byte limit: got %d, max %d", len(out), maxOutput)
+	}
+	if !strings.Contains(out, "needle-00") || strings.Contains(out, "needle-39") {
+		t.Fatalf("grep did not preserve the bounded prefix: %q", out)
+	}
+	if !strings.Contains(out, "[grep partial: stopped at output limit (512 bytes)") {
+		t.Fatalf("grep did not advertise byte truncation: %q", out)
+	}
+}
+
+func TestClawWorkspaceGrep_OversizedFirstMatchReportsPartial(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "single.txt"),
+		[]byte("needle "+strings.Repeat("x", 2_000)+"\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	const maxOutput = 256
+	out, err := executeWorkspaceGrepWithLimits(
+		map[string]any{"pattern": "needle", "path": "."},
+		dir,
+		workspaceGrepLimits{maxResults: 100, maxOutputBytes: maxOutput},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > maxOutput {
+		t.Fatalf("grep output crossed byte limit: got %d, max %d", len(out), maxOutput)
+	}
+	if strings.Contains(out, "No matches found") || !strings.Contains(out, "[grep partial: stopped at output limit (256 bytes)") {
+		t.Fatalf("oversized first match was reported incorrectly: %q", out)
+	}
+}
+
+func TestClawWorkspaceGrep_ReportsInjectedResultLimit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "many.txt"),
+		[]byte("needle-0\nneedle-1\nneedle-2\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeWorkspaceGrepWithLimits(
+		map[string]any{"pattern": "needle-", "path": "."},
+		dir,
+		workspaceGrepLimits{maxResults: 2, maxOutputBytes: 512},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "needle-0") || !strings.Contains(out, "needle-1") || strings.Contains(out, "needle-2") {
+		t.Fatalf("grep result limit kept the wrong matches: %q", out)
+	}
+	if !strings.Contains(out, "[grep partial: stopped at result limit (2)") {
+		t.Fatalf("grep did not advertise the injected result limit: %q", out)
+	}
+}
+
+func TestClawGlob_IsWorkspaceBoundedAndProtectsSensitivePaths(t *testing.T) {
+	workspace := t.TempDir()
+	for path, contents := range map[string]string{
+		"bots/planner/manifest.yaml":     "planner",
+		"node_modules/pkg/manifest.yaml": "dependency",
+		".ssh/manifest.yaml":             "secret",
+		".env/manifest.yaml":             "secret",
+	} {
+		fullPath := filepath.Join(workspace, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, workspace); err != nil {
+		t.Fatal(err)
+	}
+	td, err := r.Resolve("glob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := td.Execute(context.Background(), json.RawMessage(`{"path":".","pattern":"**/manifest.yaml"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "bots/planner/manifest.yaml") {
+		t.Fatalf("workspace match missing: %q", out)
+	}
+	if strings.Contains(out, "node_modules") || strings.Contains(out, ".ssh") || strings.Contains(out, ".env") {
+		t.Fatalf("ignored or sensitive path leaked: %q", out)
+	}
+	out, err = td.Execute(context.Background(), json.RawMessage(`{"path":".","pattern":"bots/*/manifest.yaml"}`))
+	if err != nil || out != "bots/planner/manifest.yaml" {
+		t.Fatalf("non-recursive workspace glob = %q, %v", out, err)
+	}
+
+	if _, err := td.Execute(context.Background(), json.RawMessage(`{"path":"../","pattern":"**/manifest.yaml"}`)); err == nil || !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("outside-workspace glob = %v, want refusal", err)
+	}
+	if _, err := td.Execute(context.Background(), json.RawMessage(`{"path":".","pattern":"../manifest.yaml"}`)); err == nil || !strings.Contains(err.Error(), "must not traverse") {
+		t.Fatalf("traversing pattern = %v, want refusal", err)
+	}
+}
+
+func TestWorkspaceGlob_StopsOnCancellationAndTraversalBudget(t *testing.T) {
+	workspace := t.TempDir()
+	for i := 0; i < 6; i++ {
+		path := filepath.Join(workspace, fmt.Sprintf("dir-%d", i), "marker.txt")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := workspaceGlobLimits{maxResults: 100, maxOutputBytes: 10_000, maxVisitedEntries: 3}
+	out, err := executeWorkspaceGlobWithLimits(context.Background(), map[string]any{"path": ".", "pattern": "**/absent.txt"}, workspace, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "visited-entry limit (3)") {
+		t.Fatalf("walk did not advertise traversal cutoff: %q", out)
+	}
+	limits.maxVisitedEntries = 100
+	limits.maxResults = 1
+	out, err = executeWorkspaceGlobWithLimits(context.Background(), map[string]any{"path": ".", "pattern": "**/*.txt"}, workspace, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "result limit (1)") {
+		t.Fatalf("walk did not advertise result cutoff: %q", out)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = executeWorkspaceGlobWithLimits(ctx, map[string]any{"path": ".", "pattern": "**/*.txt"}, workspace, defaultWorkspaceGlobLimits)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled glob error = %v, want context.Canceled", err)
 	}
 }
 

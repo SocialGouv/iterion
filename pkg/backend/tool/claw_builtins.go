@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
+	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 )
 
 // ctxKeyBashExtraEnv carries per-task env additions (KEY=value entries)
@@ -74,29 +75,75 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
-		// Per-task env (Task.ExtraEnv, installed into ctx by the claw
-		// backend — run-level provisioning such as the devbox profile
-		// PATH) composes after the registration-time env so on a
-		// duplicate key the per-task value wins.
-		extraEnv := bashExtraEnv
-		if ctxEnv := BashExtraEnvFromContext(ctx); len(ctxEnv) > 0 {
-			extraEnv = append(append([]string{}, bashExtraEnv...), ctxEnv...)
-		}
-		if len(extraEnv) > 0 {
-			return clawtools.ExecuteBashWithEnv(ctx, input, workspace, extraEnv)
-		}
-		return clawtools.ExecuteBash(ctx, input, workspace)
+		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
 	}
 
 	return registerClawSpecs(reg, []clawBuiltinSpec{
-		{tool: clawtools.ReadFileTool(), exec: clawtools.ExecuteReadFile},
+		{tool: workspaceReadFileTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceReadFile(input, workspace)
+		}},
 		{tool: clawtools.WriteFileTool(), exec: clawtools.ExecuteWriteFile},
-		{tool: clawtools.GlobTool(), exec: clawtools.ExecuteGlob},
-		{tool: clawtools.GrepTool(), exec: clawtools.ExecuteGrep},
+		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGlob(ctx, input, workspace)
+		}},
+		{tool: clawtools.GrepTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGrep(input, workspace)
+		}},
 		{tool: clawtools.FileEditTool(), exec: clawtools.ExecuteFileEdit},
 		{tool: clawtools.WebFetchTool(), exec: clawtools.ExecuteWebFetch},
 		{tool: clawtools.BashTool(), exec: bashExec},
 	})
+}
+
+// RegisterClawWorkspaceDiagnostics adds Copi's two deliberately separate
+// diagnostic aliases. They are opt-in at registry construction so a workflow
+// that merely denies native Bash/Grep cannot acquire a new spelling for either
+// tool. The workflow still has to declare the aliases in its tools list and
+// permission policy.
+func RegisterClawWorkspaceDiagnostics(reg *Registry, workspace string, bashExtraEnv []string) error {
+	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
+		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
+			input = rewritten
+		}
+		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
+	}
+	return registerClawSpecs(reg, []clawBuiltinSpec{
+		{tool: workspaceGrepTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGrep(input, workspace)
+		}},
+		{tool: diagnosticShellTool(), exec: bashExec},
+	})
+}
+
+// executeWorkspaceBash keeps Claw's command validation and environment
+// handling, but makes its actual shell start in the host-selected workspace.
+// claw-code-go receives a workspace for validation yet leaves exec.Cmd.Dir
+// empty, which otherwise inherits the Studio process directory. Copy before
+// prefixing so the model-provided command remains the value that reaches
+// Iterion's permission/audit boundary; only the trusted workspace is added to
+// the command handed to the third-party executor.
+func executeWorkspaceBash(ctx context.Context, input map[string]any, workspace string, bashExtraEnv []string) (string, error) {
+	command, ok := input["command"].(string)
+	if workspace != "" && ok {
+		executionInput := make(map[string]any, len(input))
+		for key, value := range input {
+			executionInput[key] = value
+		}
+		executionInput["command"] = "cd -- " + shellquote.Quote(workspace) + " && " + command
+		input = executionInput
+	}
+
+	// Per-task env (Task.ExtraEnv, installed into ctx by the claw backend —
+	// run-level provisioning such as the devbox profile PATH) composes after
+	// the registration-time env so on a duplicate key the per-task value wins.
+	extraEnv := bashExtraEnv
+	if ctxEnv := BashExtraEnvFromContext(ctx); len(ctxEnv) > 0 {
+		extraEnv = append(append([]string{}, bashExtraEnv...), ctxEnv...)
+	}
+	if len(extraEnv) > 0 {
+		return clawtools.ExecuteBashWithEnv(ctx, input, workspace, extraEnv)
+	}
+	return clawtools.ExecuteBash(ctx, input, workspace)
 }
 
 // registerClawSpecs registers every spec in the supplied slice against
@@ -543,6 +590,11 @@ type ClawDefaults struct {
 	// always registered (no display needed).
 	IncludeComputerUse bool
 
+	// IncludeWorkspaceDiagnostics opts into the workspace_grep and
+	// diagnostic_shell aliases. Hosts should enable it only when the compiled
+	// workflow explicitly declares one of those names.
+	IncludeWorkspaceDiagnostics bool
+
 	// Config, when non-nil, is exposed via the `config` tool. Leave
 	// nil to surface an empty map — the tool will still register but
 	// every key lookup reports `found: false`.
@@ -601,6 +653,11 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 
 	if err := RegisterClawBuiltinsWithEnv(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
 		return err
+	}
+	if defaults.IncludeWorkspaceDiagnostics {
+		if err := RegisterClawWorkspaceDiagnostics(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
+			return err
+		}
 	}
 	if err := RegisterClawSimple(reg); err != nil {
 		return err

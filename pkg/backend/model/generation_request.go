@@ -3,7 +3,9 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -39,6 +41,88 @@ func wireModelID(spec string) string {
 // traced under, so one query in Sentry covers them all.
 const llmSpanOp = "llm.generate"
 
+const (
+	// defaultClawStreamColdTimeout bounds the silence before a provider emits
+	// its first stream event. It deliberately applies to silence, not to the
+	// total duration of a model request: a long response which keeps emitting
+	// events must remain healthy.
+	defaultClawStreamColdTimeout = 5 * time.Minute
+	// defaultClawStreamIdleTimeout is the maximum silence after the first
+	// provider event. It matches the mature Claude Code hot-stream guard and
+	// leaves room for long-running, still-live reasoning or tool work.
+	defaultClawStreamIdleTimeout = 15 * time.Minute
+)
+
+// resolveClawStreamTimeout reads a non-negative duration. A zero value is an
+// explicit opt-out; an empty or malformed value keeps the safe default.
+func resolveClawStreamTimeout(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return fallback
+	}
+	return d
+}
+
+func resolveClawStreamColdTimeout() time.Duration {
+	return resolveClawStreamTimeout("ITERION_CLAW_STREAM_COLD_TIMEOUT", defaultClawStreamColdTimeout)
+}
+
+func resolveClawStreamIdleTimeout() time.Duration {
+	return resolveClawStreamTimeout("ITERION_CLAW_STREAM_IDLE_TIMEOUT", defaultClawStreamIdleTimeout)
+}
+
+type streamStartResult struct {
+	stream <-chan api.StreamEvent
+	err    error
+}
+
+// startStreamWithColdWatchdog also bounds a client which blocks before it
+// returns a stream. Production clients must honor requestCtx cancellation;
+// the buffered result channel nevertheless lets Iterion regain control even
+// when an adapter is late to observe that cancellation.
+func startStreamWithColdWatchdog(
+	parentCtx context.Context,
+	requestCtx context.Context,
+	client api.APIClient,
+	req api.CreateMessageRequest,
+	coldTimeout time.Duration,
+) (<-chan api.StreamEvent, error) {
+	if coldTimeout <= 0 {
+		return client.StreamResponse(requestCtx, req)
+	}
+	started := make(chan streamStartResult, 1)
+	go func() {
+		stream, err := client.StreamResponse(requestCtx, req)
+		select {
+		case started <- streamStartResult{stream: stream, err: err}:
+		case <-requestCtx.Done():
+		}
+	}()
+
+	timer := time.NewTimer(coldTimeout)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	select {
+	case result := <-started:
+		return result.stream, result.err
+	case <-parentCtx.Done():
+		return nil, parentCtx.Err()
+	case <-timer.C:
+		return nil, &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
+	}
+}
+
 // modelProvider is wireModelID's other half: the routing prefix of a
 // model spec ("anthropic/claude-opus-5" → "anthropic"), or "default"
 // when the spec is bare and the registry picks the provider.
@@ -50,6 +134,9 @@ func modelProvider(spec string) string {
 }
 
 func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []api.Tool, toolChoice *api.ToolChoice) (api.CreateMessageRequest, error) {
+	if err := validateToolPairs(messages); err != nil {
+		return api.CreateMessageRequest{}, err
+	}
 	maxTokens := opts.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
@@ -203,7 +290,11 @@ func callAndAggregate(
 	span.SetTag("llm.model", wireModelID(opts.Model))
 
 	start := time.Now()
-	ch, err := client.StreamResponse(ctx, req)
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	defer cancelRequest()
+	coldTimeout := resolveClawStreamColdTimeout()
+	idleTimeout := resolveClawStreamIdleTimeout()
+	ch, err := startStreamWithColdWatchdog(ctx, requestCtx, client, req, coldTimeout)
 	if err != nil {
 		span.Finish(err)
 		if opts.OnResponse != nil {
@@ -215,7 +306,29 @@ func callAndAggregate(
 		return nil, err
 	}
 
-	agg := aggregateStream(ctx, ch)
+	// The cold allowance began before StreamResponse was entered. Carry its
+	// remaining time into aggregation instead of accidentally granting a
+	// second full cold window to a provider that returned a stream late.
+	coldRemaining := coldTimeout
+	if coldTimeout > 0 {
+		coldRemaining = time.Until(start.Add(coldTimeout))
+		if coldRemaining <= 0 {
+			err := &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
+			span.Finish(err)
+			if opts.OnResponse != nil {
+				opts.OnResponse(ResponseInfo{Latency: time.Since(start), Error: err})
+			}
+			return nil, err
+		}
+	}
+	agg := aggregateStreamWithIdleWatchdog(ctx, ch, coldRemaining, idleTimeout)
+	// aggregate receives the remaining cold allowance so its timer is exact,
+	// while callers and operators need the configured policy duration in the
+	// typed error rather than an incidental sub-millisecond remainder.
+	var streamIdle *StreamIdleError
+	if errors.As(agg.err, &streamIdle) && streamIdle.Phase == StreamIdleCold {
+		streamIdle.Idle = coldTimeout
+	}
 	latency := time.Since(start)
 	span.SetData("llm.input_tokens", agg.usage.InputTokens)
 	span.SetData("llm.output_tokens", agg.usage.OutputTokens)

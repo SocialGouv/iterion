@@ -40,6 +40,18 @@ func TestApplyBudgetOverrides(t *testing.T) {
 			want: &Budget{MaxCostUSD: 9, MaxDuration: "9h", MaxTokens: 9, MaxIterations: 9, MaxParallelBranches: 9},
 		},
 		{
+			name: "unlimited workflow clears hard axes but preserves warning and parallelism",
+			base: &Budget{MaxCostUSD: 60, MaxDuration: "2h", MaxTokens: 5000, WarnTokens: 4000, MaxIterations: 20, MaxParallelBranches: 1, CapImposed: true},
+			over: BudgetOverrides{UnlimitedWorkflow: true},
+			want: &Budget{WarnTokens: 4000, MaxParallelBranches: 1},
+		},
+		{
+			name: "host cap is applied after workflow caps are cleared",
+			base: &Budget{MaxCostUSD: 20, MaxIterations: 20, MaxParallelBranches: 1},
+			over: BudgetOverrides{UnlimitedWorkflow: true, MaxCostUSD: 7, MaxIterations: 9, CapImposed: true},
+			want: &Budget{MaxCostUSD: 7, MaxIterations: 9, MaxParallelBranches: 1, CapImposed: true},
+		},
+		{
 			name: "zero/negative fields do not override",
 			base: &Budget{MaxCostUSD: 60, MaxTokens: 5000},
 			over: BudgetOverrides{MaxCostUSD: -5, MaxTokens: 0},
@@ -104,5 +116,8 @@ func TestBudgetOverridesIsZero(t *testing.T) {
 	}
 	if !(BudgetOverrides{MaxCostUSD: 5, CapImposed: true}).IsZero() == false {
 		t.Fatal("a clamped cap with its marker should not be zero")
+	}
+	if (BudgetOverrides{UnlimitedWorkflow: true}).IsZero() {
+		t.Fatal("UnlimitedWorkflow-only override must survive wire/persistence zero checks")
 	}
 }

@@ -1,0 +1,42 @@
+{
+  "bot": "copilot",
+  "scenario": "run_failure_host_context",
+  "node": "copi",
+  "backend": "claw",
+  "model": "openai/gpt-5.6-terra",
+  "recorded_at": "2026-08-29T00:00:00Z",
+  "vars": {
+    "initial_message": "Pourquoi ce run a échoué ?",
+    "mode": "debug"
+  },
+  "input": {
+    "operator_message": "[page context: run/run-failed]\n<resolved-assistant-context>{\"references\":[{\"reference\":\"run/run-failed\",\"resolved\":true,\"kind\":\"run\",\"run\":{\"id\":\"run-failed\",\"status\":\"failed_resumable\",\"failing_node\":\"seal_experience\",\"error_code\":\"EXECUTION_FAILED\",\"error\":\"candidate artifact missing\"}}]}</resolved-assistant-context>\n\nPourquoi ce run a échoué ?",
+    "mode": "debug",
+    "context_brief": ""
+  },
+  "output": {
+    "reply": "Le run `run-failed` est en `failed_resumable`. L'échec est attaché au nœud `seal_experience` avec le code `EXECUTION_FAILED` : l'artefact candidat attendu manque. Le checkpoint étant conservé, il faut corriger la production de cet artefact en amont puis reprendre le run.",
+    "close": false,
+    "mode": "debug",
+    "context_brief": "Diagnostic de run-failed : failed_resumable sur seal_experience, artefact candidat manquant ; corriger le producteur puis reprendre.",
+    "quick_replies": [],
+    "draft_bot": "",
+    "has_draft": false,
+    "editor_session_id": "",
+    "editor_revision": 0,
+    "editor_apply_intent": "none",
+    "editor_save_intent": "none",
+    "assistant_actions": [],
+    "file_changes": [],
+    "file_changes_intent": "none",
+    "needs_reflection": false,
+    "reflection_request": "",
+    "emitted_scope_exclusions": [],
+    "proposal_scope_status": "complete",
+    "proposal_scope_categories": [],
+    "requires_authoring_context": false,
+    "implementation_complete": false,
+    "wait_for_operator": false,
+    "authoring_context": ""
+  }
+}

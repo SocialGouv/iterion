@@ -1077,6 +1077,7 @@ var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9'’-]+ ){0,3}limit`
 // The 200-char length cap is the second guard against agents quoting
 // these phrases mid-paragraph.
 var rateLimitSignals = []string{
+	"out of usage credits",
 	"rate limit exceeded",
 	"quota exceeded",
 	"usage limit reached",
@@ -1138,6 +1139,7 @@ func isRateLimitMessage(text string) bool {
 // … limit") are all windows too and are matched by hitYourLimitRe in
 // classifyRateLimit. Plain throttles ("rate limit exceeded") stay transient.
 var usageWindowSignals = []string{
+	"out of usage credits",
 	"usage limit reached",
 }
 

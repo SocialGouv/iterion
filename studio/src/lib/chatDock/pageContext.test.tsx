@@ -24,12 +24,14 @@ describe("page context contributions", () => {
           state: { dirty: true },
         },
         { section: "agent-inspector", state: { selectedNode: "reviewer" } },
+        { reference: referenceForRoute("/runs/019f") ?? undefined },
       ]),
     ).toEqual({
       title: "review-pr",
       section: "agent-inspector",
       entity: { type: "bot", id: "review-pr" },
       state: { dirty: true, selectedNode: "reviewer" },
+      reference: referenceForRoute("/runs/019f"),
     });
   });
 

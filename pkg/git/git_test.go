@@ -145,6 +145,43 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 	t.Fatalf("commit %s not found in %+v", sha, entries)
 }
 
+func TestSnapshotWorkingTreePreservesCheckoutAndIndex(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("working\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeIndexCmd := exec.Command("git", NoAutoMaintenance("diff", "--cached", "--binary")...)
+	beforeIndexCmd.Dir, beforeIndexCmd.Env = repo, gitTestEnv()
+	beforeIndex, _ := beforeIndexCmd.Output()
+
+	commit, tree, err := SnapshotWorkingTree(repo, "test/snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit == "" || tree == "" {
+		t.Fatalf("snapshot = commit %q tree %q", commit, tree)
+	}
+	afterIndexCmd := exec.Command("git", NoAutoMaintenance("diff", "--cached", "--binary")...)
+	afterIndexCmd.Dir, afterIndexCmd.Env = repo, gitTestEnv()
+	afterIndex, _ := afterIndexCmd.Output()
+	if string(afterIndex) != string(beforeIndex) {
+		t.Fatal("snapshot modified the operator index")
+	}
+	show := exec.Command("git", NoAutoMaintenance("show", commit+":new.txt")...)
+	show.Dir, show.Env = repo, gitTestEnv()
+	out, err := show.Output()
+	if err != nil || string(out) != "untracked\n" {
+		t.Fatalf("snapshot omitted untracked file: %q, %v", out, err)
+	}
+	body, err := os.ReadFile(filepath.Join(repo, "a.txt"))
+	if err != nil || string(body) != "working\n" {
+		t.Fatalf("checkout changed: %q, %v", body, err)
+	}
+}
+
 func TestStatusEmptyClean(t *testing.T) {
 	dir := gitRepo(t)
 	files, err := Status(dir)

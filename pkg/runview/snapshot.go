@@ -136,6 +136,8 @@ type RunHeader struct {
 	// closed" from an operator's click. Empty = unknown/legacy.
 	EndReason  store.RunEndReason `json:"end_reason,omitempty"`
 	Checkpoint *store.Checkpoint  `json:"checkpoint,omitempty"`
+	// Rewindable permits restoring an earlier checkpoint even after a terminal fail.
+	Rewindable bool `json:"rewindable,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
@@ -1531,6 +1533,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Error:                r.Error,
 		FailureCode:          r.FailureCode,
 		EndReason:            r.EndReason,
+		Rewindable:           IsRewindableRun(r),
 		Checkpoint:           r.Checkpoint,
 		WorkDir:              r.WorkDir,
 		ProjectPath:          r.ProjectPath,

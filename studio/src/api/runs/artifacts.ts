@@ -16,9 +16,12 @@ import type {
   WireWorkflow,
 } from "./types";
 import {
-  parseAssistantActionRequests,
+  ASSISTANT_ACTIONS,
+  parseAssistantActionRequestsDetailed,
+  type RejectedAssistantAction,
   type AssistantActionRequest,
 } from "@/lib/chatDock/assistantActions";
+import { loadEvents } from "./snapshot";
 
 // listAllArtifacts returns the latest published artifact per node for a
 // run (node id, version, labels, title) — the data behind the centralized,
@@ -208,6 +211,45 @@ export interface EditorProposalLookup {
 
 export interface AssistantActionsLookup {
   requests: AssistantActionRequest[];
+  invalid?: AssistantActionInvalidFeedback;
+}
+
+export interface AssistantActionInvalidFeedback {
+  sourceKey: string;
+  attempt: number;
+  rejected: RejectedAssistantAction[];
+  validIds: string[];
+  canonicalIds: string[];
+}
+
+async function priorInvalidActionFeedbackCount(
+  runId: string,
+  sourceKey: string,
+): Promise<number> {
+  try {
+    const events = await loadEvents(runId);
+    return events.reduce((count, event) => {
+      const answers = (event.data as { answers?: unknown } | undefined)?.answers;
+      if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+        return count;
+      }
+      const hostEvent = (answers as { host_event?: unknown }).host_event;
+      if (
+        hostEvent &&
+        typeof hostEvent === "object" &&
+        !Array.isArray(hostEvent) &&
+        (hostEvent as { kind?: unknown }).kind === "assistant-action-invalid" &&
+        (hostEvent as { source?: unknown }).source === sourceKey
+      ) {
+        return count + 1;
+      }
+      return count;
+    }, 0);
+  } catch {
+    // A missing event read must not make a valid action disappear. The host
+    // event endpoint remains the authority for whether feedback is accepted.
+    return 0;
+  }
 }
 
 export interface AssistantFileReplacement {
@@ -215,11 +257,15 @@ export interface AssistantFileReplacement {
   after: string;
 }
 
-export interface AssistantFileChange {
+interface AssistantFileChangeTarget {
   scope: "bundle" | "workspace";
   path: string;
-  replacements: AssistantFileReplacement[];
 }
+
+export type AssistantFileChange = AssistantFileChangeTarget & (
+  | { replacements: AssistantFileReplacement[]; create?: never }
+  | { create: { content: string }; replacements?: never }
+);
 
 export interface FileChangeProposalLookup {
   changes: AssistantFileChange[];
@@ -323,21 +369,26 @@ export async function lookupEditorProposal(
     const session = data[EDITOR_SESSION_FIELD];
     const revision = data[EDITOR_REVISION_FIELD];
     const source = data[DRAFT_BOT_FIELD];
+    const saveIntent = editorActionIntent(data[EDITOR_SAVE_INTENT_FIELD]);
+    const hasDraft = typeof source === "string" && source.trim() !== "";
     if (
       typeof session === "string" &&
       session.trim() !== "" &&
       typeof revision === "number" &&
       Number.isInteger(revision) &&
       revision >= 0 &&
-      typeof source === "string" &&
-      source.trim() !== ""
+      (hasDraft || saveIntent !== "none")
     ) {
       return {
-        source,
+        source: hasDraft ? source : null,
         sessionId: session,
         revision,
-        applyIntent: editorActionIntent(data[EDITOR_APPLY_INTENT_FIELD]),
-        saveIntent: editorActionIntent(data[EDITOR_SAVE_INTENT_FIELD]),
+        // A save-only artifact can never smuggle an apply request without a
+        // draft. The document to persist comes exclusively from host state.
+        applyIntent: hasDraft
+          ? editorActionIntent(data[EDITOR_APPLY_INTENT_FIELD])
+          : "none",
+        saveIntent,
       };
     }
     // `mode` exists on every current Copi turn. Reaching it without a valid
@@ -380,11 +431,26 @@ export async function lookupAssistantActions(
         ASSISTANT_ACTIONS_FIELD,
       )
     ) {
+      const key = `${runId}:${summary.node_id}:${summary.version}`;
+      const parsed = parseAssistantActionRequestsDetailed(
+        artifact.data[ASSISTANT_ACTIONS_FIELD],
+        key,
+      );
+      if (parsed.rejected.length > 0) {
+        const prior = await priorInvalidActionFeedbackCount(runId, key);
+        return {
+          requests: [],
+          invalid: {
+            sourceKey: key,
+            attempt: Math.min(prior + 1, 2),
+            rejected: parsed.rejected,
+            validIds: parsed.requests.map((request) => request.id),
+            canonicalIds: ASSISTANT_ACTIONS.map((action) => action.id),
+          },
+        };
+      }
       return {
-        requests: parseAssistantActionRequests(
-          artifact.data[ASSISTANT_ACTIONS_FIELD],
-          `${runId}:${summary.node_id}:${summary.version}`,
-        ),
+        requests: parsed.requests,
       };
     }
   }
@@ -401,7 +467,22 @@ function parseFileChanges(value: unknown): AssistantFileChange[] {
     if (
       (item.scope !== "bundle" && item.scope !== "workspace") ||
       typeof item.path !== "string" ||
-      item.path.trim() === "" ||
+      item.path.trim() === ""
+    ) {
+      return [];
+    }
+    const hasCreate = Object.prototype.hasOwnProperty.call(item, "create");
+    const hasReplacements = Object.prototype.hasOwnProperty.call(item, "replacements");
+    if (hasCreate === hasReplacements) return [];
+    if (hasCreate) {
+      if (!item.create || typeof item.create !== "object" || Array.isArray(item.create)) return [];
+      const create = item.create as Record<string, unknown>;
+      if (typeof create.content !== "string" || create.content.length > 32 * 1024) return [];
+      total += create.content.length;
+      parsed.push({ scope: item.scope, path: item.path, create: { content: create.content } });
+      continue;
+    }
+    if (
       !Array.isArray(item.replacements) ||
       item.replacements.length === 0 ||
       item.replacements.length > 16

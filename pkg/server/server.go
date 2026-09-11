@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/alert"
+	"github.com/SocialGouv/iterion/pkg/assistantmission"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -27,6 +29,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -37,6 +40,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -46,10 +50,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // Server is the studio HTTP server.
 type Server struct {
+	// embeddedOnce guards the local background services when this Server is
+	// mounted below a workspace host instead of owning a TCP listener.
+	embeddedOnce sync.Once
+	embeddedErr  error
 	// stateMu guards the hot-swappable fields used by ProjectSwitcher
 	// (cfg.WorkDir, cfg.StoreDir, runs, watcher, localSecrets, statsCache).
 	// Acquired write-side
@@ -68,21 +77,32 @@ type Server struct {
 	// raced the write, read nil, and skipped the very wait the drain
 	// depends on — caught by -race).
 	boardDispDone chan struct{}
+	// assistantDependencyMu serializes the bounded dependency-update action.
+	// It prevents two confirmed Copi cards from racing over one bots.lock while
+	// stateMu keeps a project switch from moving the action to another workdir.
+	assistantDependencyMu sync.Mutex
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
-	currentProjectID  string
-	cfg               Config
-	logger            *iterlog.Logger
-	mux               *recordingMux // records routes → GET /api/openapi.json
-	handler           http.Handler  // mux wrapped with auth middleware
-	server            *http.Server
-	hub               *Hub
-	watcher           *Watcher
-	runs              *runview.Service         // run console service; nil disables /api/runs endpoints
-	watchCoord        *watchCoordinator        // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
-	triggerCoord      *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
-	cloudTriggerCoord *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
+	currentProjectID       string
+	cfg                    Config
+	logger                 *iterlog.Logger
+	mux                    *recordingMux // records routes → GET /api/openapi.json
+	handler                http.Handler  // mux wrapped with auth middleware
+	server                 *http.Server
+	hub                    *Hub
+	watcher                *Watcher
+	runs                   *runview.Service  // run console service; nil disables /api/runs endpoints
+	watchCoord             *watchCoordinator // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	assistantWatches       runwatch.Store    // durable target-run watches; deliberately separate from issue watches
+	assistantWatch         *assistantWatchCoordinator
+	assistantWatchCancel   func()
+	assistantMissions      assistantmission.Store
+	assistantMission       *assistantMissionCoordinator
+	assistantMissionCancel func()
+	localEvents            eventbus.Bus             // local outcome spine when no trigger coordinator is configured
+	triggerCoord           *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
+	cloudTriggerCoord      *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
 	// userNotify + pushSink are the user-notification stack (web push on
 	// human-input pauses and run outcomes); nil when the feature is off
 	// (no subscription store / no VAPID keys). userNotifyCancel detaches
@@ -431,12 +451,12 @@ type Server struct {
 	// mode (the iframe + screenshot scrubber paths still work).
 	browserSessions mcp.BrowserRegistry
 
-	// boardMCPTokens authorizes sandboxed bots that hit the board MCP
-	// HTTP endpoint. Tokens are minted per node by the closure
+	// boardMCPTokens authorizes sandboxed bots that hit Iterion's internal
+	// board/runs MCP HTTP endpoints. Tokens are minted per node by the closure
 	// boardMCPServiceOption hands to the runview Service, which calls
 	// Register at mint time; a Register failure degrades that node to
-	// board-disabled (empty token). Non-nil iff cfg.NativeTrackerStore
-	// is non-nil (handler is only mounted when the board exists).
+	// capability-disabled (empty token). The historical name remains for wire
+	// compatibility; grants carry generic capability names.
 	boardMCPTokens BoardMCPTokenStore
 
 	// forgePublishTokens authorizes runs that POST their review findings
@@ -500,8 +520,7 @@ type Server struct {
 }
 
 // BoardMCPTokens returns the per-run token registry the runtime uses
-// to authorize sandboxed bots talking to the board MCP HTTP endpoint.
-// Returns nil when the server was built without a NativeTrackerStore.
+// to authorize sandboxed bots talking to host-owned MCP HTTP endpoints.
 func (s *Server) BoardMCPTokens() BoardMCPTokenStore {
 	return s.boardMCPTokens
 }
@@ -513,14 +532,17 @@ func (s *Server) BoardMCPTokens() BoardMCPTokenStore {
 // carries authenticated routes — plus a per-node token minter against this
 // server's registry. Returns (nil, false) when the native board store
 // isn't configured (board-emit then stays disabled, as before).
-func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceOption, bool) {
-	if s.cfg.NativeTrackerStore == nil || s.boardMCPTokens == nil {
+func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.RunStore) (runview.ServiceOption, bool) {
+	if (s.cfg.NativeTrackerStore == nil && runStore == nil) || s.boardMCPTokens == nil {
 		return nil, false
 	}
 	mux := http.NewServeMux()
-	RegisterBoardMCPRoutes(mux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
+	if s.cfg.NativeTrackerStore != nil {
+		RegisterBoardMCPRoutes(mux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
+	}
+	RegisterRunsMCPRoutes(mux, "/api/v1/mcp/runs", runStore, s.boardMCPTokens)
 	reg := s.boardMCPTokens
-	return runview.WithBoardMCP(mux, func(caps []string, sourceIssueID string) string {
+	return runview.WithBoardMCP(mux, func(caps []string, sourceIssueID, runID string) string {
 		token := newBoardMCPToken()
 		if token == "" {
 			if logger != nil {
@@ -528,7 +550,34 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 			}
 			return ""
 		}
-		if err := reg.Register(token, caps, sourceIssueID); err != nil {
+		tenantID := ""
+		if runStore != nil && runID != "" {
+			lookupCtx := context.Background()
+			if strings.EqualFold(s.cfg.Mode, "cloud") {
+				// The run id comes from the executor being built by this service,
+				// not from an HTTP caller. This one privileged lookup discovers
+				// the tenant that every later token call is pinned back to.
+				lookupCtx = store.WithoutTenantFilter(lookupCtx)
+			}
+			run, err := runStore.LoadRun(lookupCtx, runID)
+			if err != nil {
+				if strings.EqualFold(s.cfg.Mode, "cloud") {
+					if logger != nil {
+						logger.Error("host MCP: resolve tenant for run %s: %v; capability disabled", runID, err)
+					}
+					return ""
+				}
+			} else {
+				tenantID = run.TenantID
+			}
+		}
+		if strings.EqualFold(s.cfg.Mode, "cloud") && tenantID == "" {
+			if logger != nil {
+				logger.Error("host MCP: run %s has no tenant; capability disabled", runID)
+			}
+			return ""
+		}
+		if err := reg.Register(token, caps, sourceIssueID, tenantID); err != nil {
 			if logger != nil {
 				logger.Error("board MCP: %v; sandboxed board-emit disabled for a node", err)
 			}
@@ -708,7 +757,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		s.configShares = configshare.NewMemoryStore()
 	}
 	s.configShareSvc = configshare.NewService(s.configShares)
-	if cfg.NativeTrackerStore != nil {
+	if cfg.NativeTrackerStore != nil || cfg.Store != nil || cfg.StoreDir != "" || cfg.WorkDir != "" {
 		// Valkey-backed token registry when a distributed backend is wired,
 		// else the in-memory one (replaced transparently — same interface).
 		if s.redis != nil {
@@ -769,7 +818,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// In cloud mode the server pod has no local source tree (workflows
 	// arrive inline on the wire) and starting the watcher there would
 	// generate noise events on whatever transient WorkDir was passed.
-	if cfg.WorkDir != "" && cfg.Mode != "cloud" {
+	if cfg.WorkDir != "" && cfg.Mode != "cloud" && !cfg.RecoveryPassive {
 		var err error
 		s.watcher, err = NewWatcher(cfg.WorkDir, s.hub, logger)
 		if err != nil {
@@ -799,6 +848,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if cfg.LaunchPublisher != nil {
 			opts = append(opts, runview.WithLaunchPublisher(cfg.LaunchPublisher))
 		}
+		if cfg.RecoveryPassive {
+			opts = append(opts, runview.WithRecoveryPassive())
+		}
 		// Repo-targeted runs merge in a server-side clone; the service
 		// needs the forge credential lookup to clone and push.
 		opts = append(opts, runview.WithForgeTokenResolver(s.forgeTokenForRun))
@@ -815,6 +867,10 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// async auto-resume) re-derive it from the run's persisted origin —
 		// same tiers as an explicit resume, never the pod's baked twin.
 		opts = append(opts, runview.WithResumeSourceFiller(s.resumeSourceFiller))
+		opts = append(opts, runview.WithResumePolicyFiller(s.assistantResumePolicy))
+		if opt, ok := s.boardMCPServiceOption(logger, cfg.Store); ok {
+			opts = append(opts, opt)
+		}
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			logger.Warn("run console disabled: %v", svcErr)
@@ -825,9 +881,16 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(logger),
 			runview.WithMaxConcurrentPipelines(cfg.MaxConcurrentPipelines),
+			runview.WithResumePolicyFiller(s.assistantResumePolicy),
 			// Sandbox-by-default for studio/server-launched in-process runs
 			// (same resolution as `iterion run`).
 			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+		}
+		if cfg.RecoveryPassive {
+			svcOpts = append(svcOpts, runview.WithRecoveryPassive())
+		}
+		if len(cfg.RunEnv) > 0 {
+			svcOpts = append(svcOpts, runview.WithRunEnv(cfg.RunEnv))
 		}
 		if cfg.WorkDir != "" {
 			svcOpts = append(svcOpts, runview.WithWorkDir(cfg.WorkDir))
@@ -835,7 +898,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if cfg.Alerts != nil {
 			svcOpts = append(svcOpts, runview.WithAlerts(*cfg.Alerts))
 		}
-		if opt, ok := s.boardMCPServiceOption(logger); ok {
+		if mcpStore, openErr := store.New(storeDir); openErr != nil {
+			logger.Warn("runs MCP: open store %s: %v — sandboxed runs.read disabled", storeDir, openErr)
+		} else if opt, ok := s.boardMCPServiceOption(logger, mcpStore); ok {
 			svcOpts = append(svcOpts, opt)
 		}
 		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
@@ -849,6 +914,25 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			logger.Warn("run console disabled: %v", svcErr)
 		} else {
 			s.runs = svc
+		}
+	}
+	// Run watches use their own persistence contract. In local mode it lives
+	// beside run.json; in cloud the Mongo run store exposes its database so the
+	// watch collections share the same tenant-scoped durability boundary.
+	s.assistantWatches = cfg.RunWatches
+	if s.assistantWatches == nil && s.runs != nil {
+		if dbs, ok := cfg.Store.(interface{ DB() *mongo.Database }); ok && dbs.DB() != nil {
+			s.assistantWatches = runwatch.NewMongoStore(dbs.DB())
+		} else if rs := s.runs.RunStore(); rs != nil && rs.Root() != "" {
+			s.assistantWatches = runwatch.NewFSStore(rs.Root())
+		}
+	}
+	s.assistantMissions = cfg.AssistantMissions
+	if s.assistantMissions == nil && s.runs != nil {
+		if dbs, ok := cfg.Store.(interface{ DB() *mongo.Database }); ok && dbs.DB() != nil {
+			s.assistantMissions = assistantmission.NewMongoStore(dbs.DB())
+		} else if rs := s.runs.RunStore(); rs != nil && rs.Root() != "" {
+			s.assistantMissions = assistantmission.NewFSStore(rs.Root())
 		}
 	}
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket

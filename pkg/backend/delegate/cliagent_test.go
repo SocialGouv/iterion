@@ -360,6 +360,15 @@ func TestCLIAgentPermissionUnsupportedModesRefuse(t *testing.T) {
 		t.Fatalf("deny + ask rule error = %v, want an explicit refusal", err)
 	}
 
+	unknownAskPolicy, err := permission.NewPolicy(permission.ModeDeny, nil, []string{"future_cli_tool"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: unknownAskPolicy}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "ask rules") {
+		t.Fatalf("deny + unknown ask rule error = %v, want an explicit refusal", err)
+	}
+
 	denyPolicy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -377,6 +386,94 @@ func TestCLIAgentPermissionUnsupportedModesRefuse(t *testing.T) {
 	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyPolicy, Sandbox: noopLikeRun{}}, kimiProtocol, BackendKimi)
 	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
 		t.Fatalf("noop-driver gated run error = %v, want the same refusal: ExecOpts.Env would drop the shadow home", err)
+	}
+}
+
+func TestExternalHookPolicyDropsOnlyClawOnlyAskRules(t *testing.T) {
+	policy, err := permission.NewPolicy(
+		permission.ModeDeny,
+		[]string{"Read(**)"},
+		[]string{"diagnostic_shell", "diagnostic_shell(git status:*)"},
+		[]string{"Bash(rm:*)"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.AddGrantRule("Read(docs/**)")
+	policy.MarkExempt("ask_user")
+
+	got, err := externalHookPolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CanAsk() {
+		t.Fatalf("Claw-only asks must not reach an external hook: %+v", got.Config())
+	}
+	want := permission.PolicyConfig{
+		Mode:   "deny",
+		Allow:  []string{"Read(**)"},
+		Ask:    []string{},
+		Deny:   []string{"Bash(rm:*)"},
+		Grants: []string{"Read(docs/**)"},
+		Exempt: []string{"ask_user"},
+	}
+	if actual := got.Config(); !reflect.DeepEqual(actual, want) {
+		t.Fatalf("external hook policy = %+v, want %+v", actual, want)
+	}
+}
+
+func TestCLIAgentPermissionHookAllowsOnlyClawOnlyAskRules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX hook command fixture")
+	}
+	binDir := t.TempDir()
+	iterionBin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(iterionBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", iterionBin)
+
+	realHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte("model = \"k2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := permission.NewPolicy(
+		permission.ModeDeny,
+		[]string{"Read(**)"},
+		[]string{"diagnostic_shell", "diagnostic_shell(git status:*)"},
+		[]string{"Bash(rm:*)"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.AddGrantRule("Read(docs/**)")
+	policy.MarkExempt("ask_user")
+	task := Task{NodeID: "n", StoreDir: t.TempDir(), Permission: policy, ExtraEnv: []string{"KIMI_CODE_HOME=" + realHome}}
+	env, cleanup, err := (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), task, kimiProtocol, BackendKimi)
+	if err != nil {
+		t.Fatalf("Claw-only asks must not block the Kimi hook: %v", err)
+	}
+	t.Cleanup(cleanup)
+	shadow := strings.TrimPrefix(env[0], "KIMI_CODE_HOME=")
+	registered, err := os.ReadFile(filepath.Join(shadow, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered := policy.Config()
+	filtered.Ask = []string{}
+	filteredB64, err := permissionhook.EncodePolicy(filtered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(registered), filteredB64) {
+		t.Fatalf("hook did not receive the filtered policy:\n%s", registered)
+	}
+	originalB64, err := permissionhook.EncodePolicy(policy.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(registered), originalB64) {
+		t.Fatalf("hook still received Claw-only ask rules:\n%s", registered)
 	}
 }
 

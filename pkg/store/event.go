@@ -672,6 +672,22 @@ const (
 	// human pause (claude_code / codex). Data carries the
 	// QueuedUserMessage record.
 	EventUserMessageQueued EventType = "user_message_queued"
+
+	// EventAssistantVeilleArmed / EventAssistantVeilleStopped record that a
+	// conversational run started or stopped standing by for something outside
+	// itself — a board card's transitions, or the outcome of a run that card
+	// produced. They are OBSERVATIONAL: the authority stays in the run's
+	// WatchedIssueIDs set and in the runwatch store.
+	//
+	// They exist because the assistant dock cannot derive this from the run
+	// snapshot. The snapshot reducer is deterministic over (run.json, events)
+	// — the frontend replays it locally for the time-travel scrubber — so a
+	// field fed by a second store would diverge between server and client.
+	// Emitting the fact as an event keeps the reducer pure, gives the dock a
+	// live WS push instead of a poll, and leaves a durable trace explaining
+	// why the assistant speaks up again three hours later.
+	EventAssistantVeilleArmed   EventType = "assistant_veille_armed"
+	EventAssistantVeilleStopped EventType = "assistant_veille_stopped"
 	// EventUserMessageDelivered fires when the engine extracts a
 	// queued message from the inbox and hands it to the agent. For
 	// claw this happens inline at the tool-iteration boundary; for

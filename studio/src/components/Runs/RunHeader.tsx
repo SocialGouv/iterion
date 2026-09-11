@@ -23,6 +23,7 @@ import { useRunStore, type WsState } from "@/store/run";
 import { useServerInfoStore } from "@/store/serverInfo";
 
 import ForkDialog from "./ForkDialog";
+import RewindDialog from "./RewindDialog";
 import ResumeDialog from "./ResumeDialog";
 import { botSourceTierMeta } from "./runBotSourceMeta";
 import { RunShellPanel } from "./RunShellPanel";
@@ -40,6 +41,7 @@ import RunInformationAccordion from "./runHeader/RunInformationAccordion";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
+import AssistantWatchBadge from "./runHeader/AssistantWatchBadge";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
 import { isDeletable, isResumable } from "./runStatusActions";
@@ -63,6 +65,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   const resultLinks = useRunStore((s) => s.resultLinks);
   const { busy, error, run: runAction, setError } = useAsyncAction();
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [rewindOpen, setRewindOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
   const [shellOpen, setShellOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -121,6 +124,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // / paused_operator runs (isResumable — shared with the run list's
   // inline Resume quick action).
   const canResume = isResumable(run.status);
+  // `failed` is terminal for execution but not necessarily irrecoverable.
+  // The server stamps this capability only when a usable checkpoint exists.
+  const canRewind = run.rewindable === true;
 
   const onCancel = () => runAction(() => cancelRun(run.id));
 
@@ -261,6 +267,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
             </div>
           )}
           <StatusBadge status={run.status} />
+          <AssistantWatchBadge runId={run.id} />
           {(run.permission_mode === "ask" || run.permission_mode === "deny") && (
             <Tooltip
               content={
@@ -373,6 +380,18 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
                   disabled={busy}
                 >
                   Resume…
+                </Button>
+              </Tooltip>
+            )}
+            {canRewind && (
+              <Tooltip content="Recover this terminal run by moving its checkpoint to an earlier node.">
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => setRewindOpen(true)}
+                  disabled={busy}
+                >
+                  Recover…
                 </Button>
               </Tooltip>
             )}
@@ -501,6 +520,14 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           run={run}
           open={resumeOpen}
           onOpenChange={setResumeOpen}
+        />
+      )}
+      {canRewind && (
+        <RewindDialog
+          run={run}
+          open={rewindOpen}
+          onOpenChange={setRewindOpen}
+          onRewound={() => setResumeOpen(true)}
         />
       )}
       {canFork && (

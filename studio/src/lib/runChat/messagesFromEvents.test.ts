@@ -223,6 +223,38 @@ describe("runChat messagesFromEvents", () => {
     });
   });
 
+  it("renders a watch wake-up as a host event, never operator speech", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "ask_user" }),
+        evt("human_input_requested", { node_id: "ask_user", data: { iteration: 0 } }),
+        evt("human_answers_recorded", {
+          node_id: "ask_user",
+          data: {
+            answers: {
+              host_event: {
+                kind: "assistant-watch-event",
+                mode: "diagnose",
+                target_run: { id: "run-failed", status: "failed" },
+              },
+            },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    expect(out).toContainEqual(
+      expect.objectContaining({
+        kind: "host-event",
+        targetRunId: "run-failed",
+        mode: "diagnose",
+      }),
+    );
+    expect(out.some((message) => message.kind === "user-message")).toBe(false);
+  });
+
   it("renders an answerable human-question for a recovery pause on an agent node", () => {
     nextSeq = 1;
     // Graceful-failure recovery pauses the run on an AGENT node with

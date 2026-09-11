@@ -396,6 +396,30 @@ func TestClawBackend_NudgeRetryableErrorPropagates(t *testing.T) {
 
 // TestClawBackend_RetryClassification verifies retry classification.
 func TestClawBackend_RetryClassification(t *testing.T) {
+	t.Run("stream_idle_timeout_retries_with_fresh_cold_watchdog", func(t *testing.T) {
+		t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", "15ms")
+		reg := NewRegistry()
+		client := &silentThenTextClient{}
+		reg.Register("test", func(modelID string) (api.APIClient, error) { return client, nil })
+		var retries int
+		backend := NewClawBackend(reg, EventHooks{
+			OnLLMRetry: func(_ string, _ RetryInfo) { retries++ },
+		}, RetryPolicy{MaxAttemptsTransient: 2, BackoffBase: time.Millisecond})
+
+		result, err := backend.Execute(context.Background(), delegate.Task{
+			NodeID: "agent1", Model: "test/test-model", UserPrompt: "hello",
+		})
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if retries != 1 || client.calls != 2 {
+			t.Errorf("retries/calls = %d/%d, want 1/2", retries, client.calls)
+		}
+		if got, _ := result.Output["text"].(string); got != "recovered after idle" {
+			t.Errorf("text = %q", got)
+		}
+	})
+
 	t.Run("retryable_APIError", func(t *testing.T) {
 		reg := NewRegistry()
 		mock := &failThenSucceedClient{
@@ -551,6 +575,21 @@ func TestClawBackend_RetryClassification(t *testing.T) {
 			t.Errorf("retries = %d, want 0 (non-retryable errors should not retry)", retries)
 		}
 	})
+}
+
+// silentThenTextClient leaves its first provider stream open forever, then
+// supplies a complete response on the retry. It proves watchdog expiry gets
+// the transient retry budget and each attempt receives a fresh cold timer.
+type silentThenTextClient struct {
+	calls int
+}
+
+func (c *silentThenTextClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.calls++
+	if c.calls == 1 {
+		return make(chan api.StreamEvent), nil
+	}
+	return mockStreamEvents("recovered after idle", "end_turn"), nil
 }
 
 // TestClawBackend_HookEmissionOrdering verifies hook emission order.
@@ -850,7 +889,7 @@ func TestMaybeCompactPause(t *testing.T) {
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}},
 		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "tu_1", Name: "ask_user", Input: map[string]any{"question": "?"}}}},
 	}
-	got := maybeCompactPause(short, "", 0, 0)
+	got := maybeCompactPause(short, "", 0, 0, "tu_1")
 	if len(got) != len(short) {
 		t.Errorf("short transcript was unexpectedly compacted: %d → %d", len(short), len(got))
 	}
@@ -879,7 +918,7 @@ func TestMaybeCompactPause(t *testing.T) {
 		}},
 	})
 
-	got = maybeCompactPause(long, "", 0, 0)
+	got = maybeCompactPause(long, "", 0, 0, "tu_pending")
 	if len(got) >= len(long) {
 		t.Fatalf("long transcript not compacted: input %d, got %d", len(long), len(got))
 	}

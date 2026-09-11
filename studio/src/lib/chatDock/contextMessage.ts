@@ -12,19 +12,26 @@
 // tool it actually holds. Changing CONTEXT_PREFIX or the reference
 // vocabulary means changing that section too.
 
-import { sanitizeReferenceText } from "./routeReference";
+import {
+  isSafeStudioHref,
+  referenceFromWire,
+  sanitizeReferenceText,
+} from "./routeReference";
 import type { TypedReference } from "./routeReference";
 import type {
   AssistantPageContextSnapshot,
   PageContextValue,
 } from "./pageContext";
 import type { AssistantAuthoringSnapshot } from "@/api/assistantAuthoring";
+import type { ResolvedAssistantContext } from "@/api/assistantContext";
 
 export const CONTEXT_PREFIX = "[page context:";
 export const VISIBLE_PAGE_PREFIX = "<visible-page-context>";
 export const VISIBLE_PAGE_SUFFIX = "</visible-page-context>";
 export const ACTIVE_EDITOR_PREFIX = "<active-editor-document>";
 export const ACTIVE_EDITOR_SUFFIX = "</active-editor-document>";
+export const RESOLVED_CONTEXT_PREFIX = "<resolved-assistant-context>";
+export const RESOLVED_CONTEXT_SUFFIX = "</resolved-assistant-context>";
 
 export interface ActiveEditorDocumentSnapshot {
   sessionId: string;
@@ -32,6 +39,13 @@ export interface ActiveEditorDocumentSnapshot {
   file: string | null;
   complete: boolean;
   sourceLength: number;
+  // dirty reports whether the in-memory document diverges from the file on
+  // disk. It only MATTERS when complete is false: the bot then has `file` but
+  // no `source`, and its only way to see the document is to read the disk
+  // copy — which is safe exactly when the buffer holds nothing unsaved.
+  // Without this the bot must ask the operator to save every single time,
+  // including the common case where there was nothing to save.
+  dirty: boolean;
   source?: string;
   authoring?: AssistantAuthoringSnapshot;
   sharedBundle?: import("@/api/client").SharedBundleFileMetadata;
@@ -44,16 +58,20 @@ export interface ActiveEditorDocumentSnapshot {
 // distinction that makes a drop worth making.
 export const ATTACHED_PREFIX = "[attached:";
 
+export interface InitialPageContext {
+  reference: TypedReference;
+  href?: string;
+}
+
 // Same reasoning as the composed-length cap in routeReference: the header is
 // a pointer list, and a message whose first lines scroll is one where the
 // operator can no longer see what they attached.
 const MAX_ATTACHED_ON_WIRE = 8;
 
 /**
- * withPageContext prefixes an outbound message with the references the
- * operator can see above their composer: the pinned page one (implicit) and
- * anything they dropped in (explicit). Returns the text unchanged when there
- * is neither (no route match, dismissed, nothing attached).
+ * withPageContext prefixes an outbound message with its opening anchor, when
+ * this is the first message, and any one-shot explicit references. Returns
+ * the text unchanged when there is neither.
  */
 export function withPageContext(
   text: string,
@@ -122,6 +140,35 @@ export function withActiveEditorDocument(
 }
 
 /**
+ * Add the bounded, server-attested facts behind typed run/card pointers.
+ * Unlike visible page state this object is not assembled by the browser: the
+ * active server resolved it against its request-scoped stores immediately
+ * before send, which makes a task's last_run_id and a run's failure status
+ * deterministic for the model.
+ */
+export function withResolvedAssistantContext(
+  text: string,
+  context: ResolvedAssistantContext | null,
+): string {
+  if (!context || context.references.length === 0 || text.trim() === "") {
+    return text;
+  }
+  const json = JSON.stringify(context)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+  const line = `${RESOLVED_CONTEXT_PREFIX}${json}${RESOLVED_CONTEXT_SUFFIX}`;
+  const contextEnd = text.indexOf("\n\n");
+  const hasLeadingPageProtocol =
+    text.startsWith(CONTEXT_PREFIX) ||
+    text.startsWith(VISIBLE_PAGE_PREFIX) ||
+    text.startsWith(ATTACHED_PREFIX);
+  if (!hasLeadingPageProtocol || contextEnd < 0) return `${line}\n${text}`;
+  return `${text.slice(0, contextEnd)}\n${line}${text.slice(contextEnd)}`;
+}
+
+/**
  * withoutPageContext strips the machine-generated context lines for DISPLAY.
  *
  * They are protocol, not speech. The operator already sees what the assistant
@@ -143,6 +190,7 @@ export function withoutPageContext(text: string): string {
       line.startsWith(CONTEXT_PREFIX) ||
       line.startsWith(VISIBLE_PAGE_PREFIX) ||
       line.startsWith(ACTIVE_EDITOR_PREFIX) ||
+      line.startsWith(RESOLVED_CONTEXT_PREFIX) ||
       line.startsWith(ATTACHED_PREFIX)
     ) {
       start += 1;
@@ -151,6 +199,53 @@ export function withoutPageContext(text: string): string {
     break;
   }
   return lines.slice(start).join("\n").trimStart();
+}
+
+/**
+ * Recover the machine-generated opening anchor from a persisted transcript.
+ * Only the leading protocol block is considered; matching prose later in the
+ * operator's message is ordinary content and must never become navigation.
+ */
+export function initialPageContextFromMessage(
+  text: string,
+): InitialPageContext | null {
+  const lines = text.split("\n");
+  const first = (lines[0] ?? "").trim();
+  if (!first.startsWith(`${CONTEXT_PREFIX} `) || !first.endsWith("]")) {
+    return null;
+  }
+  const wire = first.slice(CONTEXT_PREFIX.length + 1, -1);
+  let route: string | undefined;
+  let title: string | undefined;
+  for (const raw of lines.slice(1)) {
+    const line = raw.trim();
+    if (line === "") break;
+    if (
+      line.startsWith(VISIBLE_PAGE_PREFIX) &&
+      line.endsWith(VISIBLE_PAGE_SUFFIX)
+    ) {
+      try {
+        const value: unknown = JSON.parse(
+          line.slice(VISIBLE_PAGE_PREFIX.length, -VISIBLE_PAGE_SUFFIX.length),
+        );
+        if (value && typeof value === "object") {
+          const page = value as { route?: unknown; title?: unknown };
+          if (isSafeStudioHref(page.route)) {
+            route = page.route;
+          }
+          if (typeof page.title === "string" && page.title.trim()) {
+            title = page.title.trim().slice(0, 200);
+          }
+        }
+      } catch {
+        // The pointer may still be recoverable; malformed optional page JSON
+        // is not allowed to discard it.
+      }
+    }
+  }
+  const reference = referenceFromWire(wire, title);
+  if (!reference) return null;
+  return { reference, ...(route ? { href: route } : {}) };
 }
 
 // Page contributions are deliberately bounded metadata, not a DOM dump. The

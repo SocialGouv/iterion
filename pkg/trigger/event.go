@@ -54,6 +54,11 @@ const (
 	KindRunFinished  = "run.finished"
 	KindRunFailed    = "run.failed"
 	KindRunCancelled = "run.cancelled"
+	// KindRunStalled is a durable run-health episode. Unlike terminal
+	// outcomes it does not change the run status: a watch uses it to wake a
+	// supervisor only after reconciliation confirms that no descendant is
+	// still making progress.
+	KindRunStalled = "run.stalled"
 	// KindRunPaused fires when a run suspends waiting for a human answer
 	// (paused_waiting_human) or an operator soft-pause (paused_operator). It
 	// is NOT a terminal kind: the run holds a valid checkpoint plus a pending

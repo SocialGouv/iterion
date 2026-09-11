@@ -82,7 +82,8 @@ you cannot confirm from the card — is a no-fit: label
   iterion (a diagnostic, a failed run, a draft `.bot` the operator
   will validate) → `copilot`. What to work on this week → `whats-next`
   (not a card). Build and land a missing bot → `feature-dev`. Copi is
-  read-only; it never edits or commits.
+  read-only at tool level, but owns bounded repairs through Studio's
+  host-applied authoring bridge when the source is exposed there.
 
 <!-- ITERION:CATALOG:GENERATED:BEGIN -->
 
@@ -335,18 +336,26 @@ with blocked lots requalified against the final tree.
 
 ### `copilot` — Copi
 
-Conversational iterion assistant. ONE adaptive agent (claw, bundled
-skills, a cross-provider model ladder) in a standing chat loop, whose subject is
+Conversational iterion assistant. Terra (GPT-5.6) is the visible entry and
+executor in a standing chat loop. It handles simple requests directly; for
+complex work it asks a private Sol (GPT-5.6) reflection node for a plan. A
+fresh judge debates that plan, using Claude Opus then Kimi K3 then Grok when
+needed, before Terra verifies and carries it out. If execution finds a real
+blocker, Terra returns it to that same private planning loop. The subject is
 iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
 semantics, backends, bundles and convergence doctrine. Three
 postures the operator can switch mid-conversation — info (explain
 and orient), design (draft a workflow, which the run compiles with
 `iterion validate` before the reply is shown), debug (diagnose a
 run from its real events).
-Read-only agent by construction: a `permission: deny` gate denies Bash,
-Write, Edit and WebFetch outright — an allow-listed shell prefix is
-not a boundary, since the matcher grants everything after it — so
-Copi reads files, run stores and manifests. For the active bot it may return
+Read-only by default: native Bash, Grep, Write, Edit and WebFetch stay
+denied. Copi gets a workspace-bounded, credential-filtered content search
+and paginated reads whose continuation markers make large-file clipping
+explicit. When file/run evidence cannot reach a live source of truth such
+as Postgres, a separate diagnostic shell alias pauses for approval of the
+exact command; it is never prefix-allow-listed. Run evidence comes through
+the host-owned, capability-gated `runs.read` tools, never through guessed
+store paths. For the active bot it may return
 bounded exact replacements for companion files explicitly declared in that
 bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
 them under the operator's action policy. Copi itself still has no write
@@ -354,9 +363,9 @@ tool. Every turn ends
 at a budget-free chat pause — the session stays reachable for days,
 and a rolling context_brief carries the conversation across server
 restarts, redeploys and cloud pod changes. Only an explicit "close"
-ends the session. An optional cross-review (`reviewer: on`) has a
-SECOND model, from another family, criticise each answer before you
-read it — off by default, since it costs a full extra call per turn.
+ends the session. You only read Terra's final answer: plans and judge
+critiques are private. Reflected work is bounded, so a blocked execution
+cannot silently spin forever.
 
 - **Use when**:
   Use to ask questions about iterion itself, from anywhere: what a
@@ -369,7 +378,7 @@ read it — off by default, since it costs a full extra call per turn.
   it never edits or commits directly; the Studio-owned authoring bridge is the
   only write path it may request.
 - **Triggers**: copi, copilot
-- **Vars**: `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `initial_message` (string), `mode` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/copilot/main.bot`
 
 ### `dep-update-guard` — Vetty
@@ -589,7 +598,7 @@ pull request (PR; merge request on GitLab).
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `delegation_instructions` (string), `failure_context` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini

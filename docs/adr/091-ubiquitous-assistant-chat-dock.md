@@ -11,7 +11,7 @@ The studio's assistant was reachable from exactly **one** route.
 owned the session; every other page had no way to talk to it.
 
 The one other chat-shaped thing —
-[`FloatingChatPanel`](../../studio/src/components/Runs/FloatingChatPanel.tsx)
+[`SteeringPanel`](../../studio/src/components/Runs/SteeringPanel.tsx)
 on `/runs/:id` — is **not** an assistant. It is *steering*: text typed
 there is queued into a live agent's inbox
 ([`api/queueMessages.ts`](../../studio/src/api/queueMessages.ts)) and
@@ -42,15 +42,14 @@ others:
 outside the `<Switch>`. It survives navigation *by construction* rather
 than by remembering to re-attach.
 
-Presentation is extracted into
+Assistant presentation is extracted into
 [`ChatDockShell`](../../studio/src/components/ChatDock/ChatDockShell.tsx):
 the three states (`closed` bubble → `floating` non-modal panel →
 `docked-right` column), the `lg`-breakpoint open-from-closed rule, the
 Escape handling and the unread badge, with transcript, composer and
-unread count injected. `FloatingChatPanel` is now a **caller** of it, not
-a fork — the alternative (copy the panel for the assistant) would have
-left two implementations of a deliberately non-modal surface to keep in
-step.
+unread count injected. The run-scoped `SteeringPanel` reuses only its
+docked panel/chrome primitives: it is always present in the run console's
+right dock and deliberately has no floating or minimised state.
 
 The session moves with it.
 [`AssistantProvider`](../../studio/src/components/ChatDock/AssistantProvider.tsx)
@@ -61,11 +60,10 @@ long-lived and parks on its budget-free `chat` node for days, and
 re-attachment. What did *not* survive the naive lift is state ownership —
 see (B).
 
-Dock state (`closed|floating|docked-right`) is persisted **per user**
-under one key, not per route: docking the assistant on `/board` must
-leave it docked on `/runs`. The run console's steering panel keeps its
-historical `run-console-v2.chat-dock` key, so the two docks stay
-independent while sharing one vocabulary
+Assistant dock state (`closed|floating|docked-right`) is persisted **per
+user** under one key, not per route: docking the assistant on `/board`
+must leave it docked on `/runs`. Steering has no presentation state to
+persist because it is a permanent run-console column
 ([`lib/chatDock/dockState.ts`](../../studio/src/lib/chatDock/dockState.ts)).
 
 ### B. Give the always-mounted session its own run store
@@ -93,36 +91,38 @@ column — on each event, dragging the whole route subtree with it.
 [`referenceForRoute`](../../studio/src/lib/chatDock/routeReference.ts)
 maps a location to `run/<id>`, `card/<id>`, `bot/<path>`, `repo/<key>` or
 `view/<name>` — the same vocabulary an explicit drop chip produces, so
-both paths converge on one protocol and a bot has one thing to learn. Every
-route also emits a one-line `<visible-page-context>{…}</visible-page-context>`
-snapshot with its pathname and semantic page state. Known views enrich that
+both paths converge on one protocol and a bot has one thing to learn. The
+route visible at the first accepted message also emits a one-line
+`<visible-page-context>{…}</visible-page-context>` snapshot with its pathname
+and semantic page state. Known views enrich that
 floor through `useAssistantPageContext` (selected editor item, active section,
 dirty state); it is explicitly not a DOM or accessibility-tree scrape.
 
-Two properties are load-bearing:
+Three properties are load-bearing:
 
-- **A pointer, never content.** The reference rides on the message as one
-  line (`[page context: run/019f…]`); the assistant resolves it with the
-  tools it already has. A huge run therefore costs the prompt one line,
-  and the assistant reads only what it decides it needs.
-
-  **Resolution is the receiving bot's contract, not the engine's.** The
-  studio emits the pointer; what a given kind costs to resolve depends on
-  what that bot holds. For Nexie: `card/` is a board tool call (it
-  declares `board.read`), `run/` and `node/` are a shell read of the run
-  store — **no run-inspection MCP surface is wired** (`__mcp-control`
-  exists as a hidden stdio server for an external `claude` session
-  driving iterion-desktop; no run, on any backend, is given it), so the
-  store files are the ground truth. The mapping lives in the bot, in the
-  "Page context from the studio" section of `prompt nexie_system:`. A
-  studio that emits a wire format its only consumer was never taught is
-  a chip that looks like context and is not; teaching the bot is part of
-  shipping the protocol, not a follow-up.
+- **A pointer plus a bounded host attestation, never page content.** The
+  reference rides on the opening message as one line
+  (`[page context: run/019f…]`).
+  At send time, the server resolves run/node/card pointers against its current
+  project/tenant stores and stamps only status-level facts. Bots granted
+  `runs.read` can fetch a projected chronology without learning or guessing a
+  store path. Other reference kinds remain the receiving bot's contract. A
+  studio that emits a wire format its consumer was never taught is a chip that
+  looks like context and is not; teaching the bot is part of shipping the
+  protocol, not a follow-up.
 - **Automatic coverage, explicit enrichment.** `ROUTE_RULES` upgrades known
   routes to resolvable entity pointers. An unmapped route still receives a
   generic, distinct `view/route-…` reference, so a newly-added page never
   silently loses context. A view hook is reserved for state a route cannot
   know; its contributions merge and mounted-but-hidden panes do not publish.
+- **First-message anchoring, explicit later scope.** The reference and visible
+  snapshot are frozen synchronously when send begins, then persisted as the
+  conversation's immutable anchor once the message is accepted. Navigation
+  cannot silently redefine what a standing conversation is about. A later
+  page enters one message only through `Join this page`, a drag/drop, or a
+  typed suggested reply whose destination the operator chose. The live editor
+  document remains a separate per-message capability for a conversation
+  anchored to that editor.
 - **The delimiter is a security boundary, so it is enforced, not
   assumed.** *(added 2026-08-01, after the first implementation shipped
   without it.)* The reference is minted from route params, which are URL
@@ -177,11 +177,13 @@ Two properties are load-bearing:
   something other than what the message carries, and the chip exists
   precisely so context is never invisible.
 
-The reference is shown as a pinned, dismissible chip. Context is never
-silent. Dismissal is keyed on the reference itself rather than a boolean,
-so dropping `run/019f…` keeps it gone for that run across navigation
-while `/board` still contributes its own — and it leaves a restore
-affordance, so it is not a one-way door.
+The candidate reference is shown in a persistent banner below the assistant
+header with an explicit `Remove` action until the first send. That opt-out is
+conversation-scoped: removing it from one empty tab cannot silence another.
+After acceptance the banner names the immutable conversation context and,
+when navigation moved elsewhere, links back to its exact Studio location
+including the query string. It no longer offers to remove context already
+present in history.
 
 ### D. Two surfaces, named apart — not one dock with a mode switch
 
@@ -189,10 +191,9 @@ On `/runs/:id`, the dock is the **Assistant** (it answers you) and the run
 panel is **Steering** (it pushes into a live agent). They are titled
 accordingly in one place
 ([`lib/chatDock/labels.ts`](../../studio/src/lib/chatDock/labels.ts)),
-carry different icons, and occupy different bottom-right **lanes** so
-their bubbles and floating panels never overlap. The assistant owns lane
-0 — the canonical corner — because it is the surface present on every
-route: its position must not move under the operator.
+and use different presentation: Assistant may float, minimise, or dock;
+Steering is always the run console's right-hand dock (and shares that
+column with Browser through tabs).
 
 On `/whats-next` the dock stands down: that route renders the same
 session full-width, and since both composers write the same store's
@@ -213,12 +214,12 @@ ask. Server-side identity, tenant permissions and domain validation remain in
 force after the Studio decision. Secrets are not an action argument type.
 
 When an offer appears is part of the boundary too: only once the turn is
-parked on its chat pause, i.e. after the optional cross-review has been
-composed into the reply the offer sits under. The artifact carrying the
-requests is published when the agent node finishes, earlier than that, and
-rendering from it directly put an executable card in front of the operator
-while the reviewer was still writing (run 01a04999, 2026-08-28). A turn that
-never reaches its pause offers nothing.
+parked on its chat pause, i.e. after the optional reviewer feedback has gone
+back to Copi and Copi's revised answer is ready. The artifact carrying the
+requests is published on the first agent pass, earlier than that, and rendering
+from it directly put an executable card in front of the operator while the
+private editorial loop was still running (run 01a04999, 2026-08-28). A turn
+that never reaches its pause offers nothing.
 
 This also closes an architectural inconsistency in Nexie: board reads remain
 capability-gated MCP calls, while board writes no longer happen inside the
@@ -272,9 +273,9 @@ the existing watched-card feedback loop survives the move.
 - *A portal rendered by each view.* Every view pays integration cost, and
   the session unmounts with whichever view happened to own it — exactly
   today's bug, spread wider.
-- *Inlining page content into the prompt.* Cheap to build, unbounded in
-  cost, and stale the moment the operator navigates. The pointer +
-  existing tools path is bounded and always current.
+- *Inlining page content into the prompt.* Cheap to build and unbounded in
+  cost. A bounded opening snapshot plus resolvable pointers gives the
+  conversation a stable subject without serialising each page visited later.
 - *One dock hosting assistant and steering as two modes.* Fewer pixels,
   but it merges two things whose only shared property is being
   chat-shaped: one answers, the other pushes into a running agent and
@@ -287,23 +288,14 @@ Decision (A) says the session lives above the route tree because
 navigation must not restart it. Two follow-ups showed the rule is wider
 than the session, and both were bugs before they were principles:
 
-- **Anything the OPERATOR set about the dock belongs there too.** The
-  dismissed context chip was `useState` inside `useRouteReference`, which
-  the dock owns — and the dock unmounts on `/whats-next` (per A, that
-  route renders the session itself). A `/board → /whats-next → /board`
-  round trip therefore resurrected a chip the operator had dismissed. It
-  now sits in `AssistantProvider`, still keyed on the reference so other
-  routes keep contributing their own. The test for it unmounts through
-  the same `isAssistantOwnRoute` predicate the dock uses, so the two
-  cannot drift apart silently.
-- **A docked column's cost is not paid by padding alone.** (B) notes
-  `AppShell` reserving `DOCKED_WIDTH_PX`. That reservation is invisible
-  to a `fixed` element, so the run console's steering bubble sat *under*
-  the assistant's column, unclickable — docking the assistant removed
-  steering. Both now read one `useAssistantReservedWidthPx`: the shell
-  reserves it as padding, fixed corner surfaces step out of it. The
-  coupling the "costs, accepted" list calls real is real in a second
-  direction, and worth naming: a surface pinned to the viewport must
-  ask what else has claimed the edge.
+- **Anything the OPERATOR set about a conversation belongs there too.** The
+  first implementation kept dismissal in route/dock state, so opting out in
+  one tab could affect another tab looking at the same reference. Candidate
+  acceptance, opt-out and the final anchor now live on the conversation in
+  `AssistantProvider`; a `/board → /whats-next → /board` round trip and a
+  conversation switch both preserve the correct independent choice.
+- **Run steering is structural, not another floating surface.** It is a
+  permanent panel inside the run console's own resizable SideDock. The
+  shell-level assistant may still reserve a separate outer column.
 
 Neither changes the decision; they are what it costs to hold it.

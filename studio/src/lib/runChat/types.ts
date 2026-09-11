@@ -195,6 +195,18 @@ export interface AssistantTextMessage {
   text: string;
 }
 
+// HostEventMessage is automatic, host-attested input (currently a watched
+// run failure). It is deliberately neither UserMessage nor HumanQuestion:
+// rendering it as operator speech would falsely imply intent/authorization.
+export interface HostEventMessage {
+  kind: "host-event";
+  id: string;
+  event: "run.failed";
+  targetRunId: string;
+  targetStatus?: string;
+  mode: "diagnose" | "propose";
+}
+
 export type RunChatMessage =
   | BannerMessage
   | HumanQuestionMessage
@@ -202,4 +214,5 @@ export type RunChatMessage =
   | SessionClosedMessage
   | ExtensionMessage
   | UserMessage
-  | AssistantTextMessage;
+  | AssistantTextMessage
+  | HostEventMessage;

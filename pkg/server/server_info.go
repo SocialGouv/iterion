@@ -2,7 +2,10 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -14,9 +17,14 @@ import (
 // upload is attempted, and by the AuthProvider to decide whether to
 // gate the studio on a sign-in flow.
 type serverInfoResponse struct {
-	Mode    string `json:"mode"`
-	Version string `json:"version"`
-	Commit  string `json:"commit,omitempty"`
+	Mode string `json:"mode"`
+	// RecoveryPassive tells the SPA and an operator that this server will not
+	// autonomously act on runs or watches. It is deliberately separate from
+	// Mode: the deployment remains local, only its operational behaviour is
+	// constrained for a supervised recovery.
+	RecoveryPassive bool   `json:"recovery_passive"`
+	Version         string `json:"version"`
+	Commit          string `json:"commit,omitempty"`
 	// AuthRequired is false in local / desktop mode (single-user TTY,
 	// no JWT) and true in cloud mode (multitenant). The SPA short-
 	// circuits its bootstrap when false and renders the studio as a
@@ -109,6 +117,23 @@ type serverInfoResponse struct {
 	// spawning an interactive host shell from a multi-tenant API is not
 	// a thing.
 	RunShellEnabled bool `json:"run_shell_enabled"`
+	// AssistantEditorMaxSource caps how much of the ACTIVE EDITOR document the
+	// studio inlines into an assistant turn, in characters. Zero means "use
+	// the SPA's built-in default".
+	//
+	// It exists because the previous value was a hardcoded constant with no
+	// way out: an operator whose bot exceeded it simply could not use the
+	// assistant on it, and had no way to say "I will pay those tokens". A
+	// limit nobody can lift is a defect, not a policy.
+	//
+	// Raising it is a REAL spend decision, not a formality: the document is
+	// re-captured on every send, so its cost is per-turn, and because the
+	// block rides the user message (at the end of the conversation) its
+	// position shifts each turn and prompt caching does not absorb it. The
+	// default stays conservative for that reason — a large bot is better read
+	// through the assistant's own paginated file tools than copied into every
+	// turn. Set ITERION_ASSISTANT_EDITOR_MAX_SOURCE to override.
+	AssistantEditorMaxSource int `json:"assistant_editor_max_source,omitempty"`
 	// PipelineConcurrency reports the local pipeline-concurrency gate
 	// (max/active/waiting) so the pipeline board can render the cap + how
 	// many pipelines wait for a slot. Enabled=false when no cap is set.
@@ -134,10 +159,11 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		mode = "local"
 	}
 	resp := serverInfoResponse{
-		Mode:         mode,
-		Version:      appinfo.Version,
-		Commit:       appinfo.Commit,
-		AuthRequired: s.authSvc != nil && !s.cfg.DisableAuth,
+		Mode:            mode,
+		RecoveryPassive: s.cfg.RecoveryPassive,
+		Version:         appinfo.Version,
+		Commit:          appinfo.Commit,
+		AuthRequired:    s.authSvc != nil && !s.cfg.DisableAuth,
 		Limits: serverLimitsBlock{
 			Upload: uploadLimitsBlock{
 				MaxFileSize:    s.cfg.MaxUploadSize,
@@ -176,6 +202,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	resp.SecretsEnabled = s.cfg.Mode != "cloud" && localSecrets != nil && s.sealer != nil
 	resp.SkillsEnabled = s.cfg.Mode != "cloud"
 	resp.RunShellEnabled = s.cfg.Mode != "cloud"
+	resp.AssistantEditorMaxSource = assistantEditorMaxSource()
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {
@@ -205,4 +232,21 @@ func deriveProjectName(dir string) string {
 		return ""
 	}
 	return base
+}
+
+// assistantEditorMaxSource reads the operator's override for the inlined
+// active-editor document, in characters. It fails SOFT — an unparsable or
+// non-positive value returns 0, which leaves the SPA on its own default
+// rather than silently sending nothing or everything. A cap this cheap to
+// mis-type must not be able to break the assistant.
+func assistantEditorMaxSource() int {
+	raw := strings.TrimSpace(os.Getenv("ITERION_ASSISTANT_EDITOR_MAX_SOURCE"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }

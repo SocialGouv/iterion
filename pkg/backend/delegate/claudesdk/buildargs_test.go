@@ -99,3 +99,13 @@ func TestBuildArgs_Settings(t *testing.T) {
 		t.Error("--settings must be omitted when no inline settings are configured")
 	}
 }
+
+func TestBuildArgs_DisallowedTools(t *testing.T) {
+	args := buildArgs(processConfig{DisallowedTools: []string{"Bash", "Write"}}, true)
+	if got := flagValue(args, "--disallowedTools"); got != "Bash,Write" {
+		t.Errorf("--disallowedTools = %q, want Bash,Write", got)
+	}
+	if hasFlag(buildArgs(processConfig{}, true), "--disallowedTools") {
+		t.Error("--disallowedTools must be omitted when no native tools are restricted")
+	}
+}

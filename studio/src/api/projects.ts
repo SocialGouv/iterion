@@ -16,6 +16,10 @@ export interface Project {
   kind?: "local" | "cloud";
   dir: string;
   store_dir?: string;
+  state?: "starting" | "ready" | "degraded";
+  runtime_ready?: boolean;
+  error?: string;
+  scoped_url?: string;
   last_opened: string; // ISO 8601 UTC
   color?: string;
   // Cloud-connection fields (kind === "cloud" only).

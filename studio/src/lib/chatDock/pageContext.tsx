@@ -37,6 +37,11 @@ export interface AssistantPageContextContribution {
   section?: string;
   entity?: PageContextEntity;
   state?: Record<string, PageContextValue>;
+  // A visible overlay/drawer can address a more specific entity than its
+  // underlying route. The latest visible contribution wins, exactly like
+  // title/section, so opening a Pipeline card publishes the same pointer as
+  // its dedicated page without forcing a navigation.
+  reference?: TypedReference;
 }
 
 export interface AssistantPageContextSnapshot
@@ -146,6 +151,7 @@ export function mergePageContextContributions(
     if (value.title !== undefined) merged.title = value.title;
     if (value.section !== undefined) merged.section = value.section;
     if (value.entity !== undefined) merged.entity = value.entity;
+    if (value.reference !== undefined) merged.reference = value.reference;
     if (value.state !== undefined) state = { ...state, ...value.state };
   }
   if (state) merged.state = state;

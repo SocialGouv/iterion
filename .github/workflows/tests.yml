@@ -394,7 +394,7 @@ jobs:
             ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
-            ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
+            ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/...
 
       - name: Mongo diagnostics on failure

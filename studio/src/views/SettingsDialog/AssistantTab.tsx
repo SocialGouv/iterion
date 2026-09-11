@@ -19,6 +19,7 @@ import {
 } from "@/lib/chatDock/assistantPrefs";
 
 const ACTION_GROUPS: readonly AssistantActionGroup[] = [
+  "Workspace",
   "Editor",
   "Board",
   "Pipelines",
@@ -40,18 +41,18 @@ export default function AssistantTab() {
   return (
     <div className="space-y-5 text-label text-fg-default">
       <section className="space-y-2">
-        <h3 className="text-label font-medium">Cross-review</h3>
+        <h3 className="text-label font-medium">Review and refinement</h3>
         <Checkbox
           checked={reviewer}
           onChange={(e) => {
             setReviewer(e.target.checked);
             writeReviewer(e.target.checked);
           }}
-          label="Cross-review each answer by default"
+          label="Review and refine each answer by default"
         />
         <p className="text-caption text-fg-subtle">
-          A second model, from another family, criticises each answer before you
-          read it. It catches real mistakes — and costs a full extra model call
+          A second model privately critiques Copi's draft, then Copi rewrites
+          the answer before you read it. It costs up to two extra model calls
           per turn, which is why it is off by default. Applies to new
           conversations; one already running keeps the choice it started with.
         </p>

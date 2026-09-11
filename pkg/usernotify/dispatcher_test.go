@@ -249,3 +249,63 @@ func TestDispatcherTerminalKinds(t *testing.T) {
 		t.Fatalf("recipients = %v", n.UserIDs)
 	}
 }
+
+// A conversational assistant parked on a standby is not asking the operator
+// for anything. Pushing "your run is waiting on you" there is false, and a
+// notification that cries wolf teaches its reader to ignore the one that
+// matters — so the suppressor vetoes exactly that kind and nothing else.
+func TestDispatcherSuppressesHumanInputOnAStandbyPause(t *testing.T) {
+	newDispatcher := func(t *testing.T, suppress func(context.Context, string) bool) (*Dispatcher, *store.FilesystemRunStore, *captureSink) {
+		t.Helper()
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		sink := &captureSink{name: "capture"}
+		d := NewDispatcher(st, NewMemPrefsStore(), NewMemSentStore(), "", nil, sink)
+		if suppress != nil {
+			d.SetPauseSuppressor(suppress)
+		}
+		return d, st, sink
+	}
+
+	t.Run("standby pause is not announced", func(t *testing.T) {
+		var asked string
+		d, st, sink := newDispatcher(t, func(_ context.Context, runID string) bool {
+			asked = runID
+			return true
+		})
+		ev := pausedRun(t, st, "run-standby")
+		if err := d.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		if asked != "run-standby" {
+			t.Fatalf("suppressor consulted for %q, want run-standby", asked)
+		}
+		if len(sink.seen) != 0 {
+			t.Fatalf("a standby pause was announced: %+v", sink.seen)
+		}
+	})
+
+	t.Run("an ordinary pause still is", func(t *testing.T) {
+		d, st, sink := newDispatcher(t, func(context.Context, string) bool { return false })
+		ev := pausedRun(t, st, "run-waiting")
+		if err := d.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		if n := sink.last(t); n.Kind != KindHumanInputRequested {
+			t.Fatalf("kind = %q, want the human-input notification", n.Kind)
+		}
+	})
+
+	t.Run("no suppressor keeps the historical behaviour", func(t *testing.T) {
+		d, st, sink := newDispatcher(t, nil)
+		ev := pausedRun(t, st, "run-legacy")
+		if err := d.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		if n := sink.last(t); n.Kind != KindHumanInputRequested {
+			t.Fatalf("kind = %q, want the human-input notification", n.Kind)
+		}
+	})
+}

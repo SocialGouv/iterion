@@ -22,9 +22,11 @@ default. The model cannot talk its way past a rule, because the rules
 are not part of its context.
 
 This mirrors the official Anthropic model (Agent SDK *Configure
-permissions* + *Handle approvals and user input*): tool calls are
+permissions* + *Handle approvals and user input*): workflow rules are
 evaluated **deny rules → ask rules → allow rules → mode default**, and
-unmatched calls fall through to human approval.
+unmatched calls fall through to human approval. An engine-owned grant created
+by an explicit operator approval is evaluated after a deny rule and before an
+ask rule, so the approved retry proceeds without changing the workflow DSL.
 
 ## Modes
 
@@ -78,6 +80,23 @@ claw's `bash`/`shell`, pi's `bash`, Grok's `run_terminal_command`, and Kimi's
 `Bash`; `Edit(...)` covers `Edit`/`edit_file`/`file_edit`/Grok's
 `search_replace`; `Read(...)` covers `Read`/`read_file`; etc.
 (see `canonicalToolName`).
+
+### Claude Code diagnostic bridge
+
+`diagnostic_shell` remains a Claw-only alias in the normal tool catalogue. A
+node that explicitly declares it may, on Claude Code only, request one native
+`Bash` command through that alias's approval card. The bridge maps only a
+nonempty, single-line command, only when no explicit `deny: ["Bash", …]`
+rule matches. The card and its one-time grant are scoped to the command alone;
+model-authored descriptions do not broaden or break the retry. Multi-line
+commands and every node that did not declare the alias remain ordinary native
+`Bash` calls and follow the workflow's normal policy (typically `deny`).
+
+The bridge is for bounded read diagnostics and source-nonmutating verification
+such as a targeted test or `iterion validate`. It is not a generic shell
+capability: do not use it for redirects, installs, network access, Git/source
+writes, or a command whose effect cannot be inspected from the single-line
+approval card.
 
 **Infrastructure exemption.** iterion's own interaction/capability
 plumbing — `ask_user`, the board / control / watch MCP families — is

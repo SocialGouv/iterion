@@ -23,9 +23,15 @@ export type AssistantActionPolicy =
   (typeof ASSISTANT_ACTION_POLICY_VALUES)[number];
 
 export type AssistantActionId =
+  | "workspace.handoff"
+  | "workspace.handoff.complete"
   | "editor.apply"
   | "editor.save"
   | "editor.files.save"
+  | "authoring.git.commit"
+  | "authoring.git.publish"
+  | "dependency.bots.update"
+  | "dependency.bots.localize"
   | "board.issue.create"
   | "board.issue.update"
   | "board.issue.transition"
@@ -41,8 +47,11 @@ export type AssistantActionId =
   | "run.launch"
   | "run.pause"
   | "run.resume"
+  | "run.rewind"
   | "run.cancel"
   | "run.rename"
+  | "run.watch"
+  | "run.unwatch"
   | "run.delete"
   | "dispatcher.start"
   | "dispatcher.pause"
@@ -56,6 +65,7 @@ export type AssistantActionId =
   | "plugin.uninstall";
 
 export type AssistantActionGroup =
+  | "Workspace"
   | "Editor"
   | "Board"
   | "Pipelines"
@@ -75,6 +85,24 @@ export interface AssistantActionDefinition {
 
 export const ASSISTANT_ACTIONS: readonly AssistantActionDefinition[] = [
   {
+    id: "workspace.handoff",
+    group: "Workspace",
+    label: "Continue in another project",
+    description:
+      "Open Copi in a registered project with a short, single-use handoff summary bound to that project's live runtime.",
+    risk: "reversible",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "workspace.handoff.complete",
+    group: "Workspace",
+    label: "Report project handoff result",
+    description:
+      "Send the verified terminal result back to the exact Copi conversation that created this project handoff.",
+    risk: "reversible",
+    defaultPolicy: "allow",
+  },
+  {
     id: "editor.apply",
     group: "Editor",
     label: "Apply changes to the open bot",
@@ -88,16 +116,49 @@ export const ASSISTANT_ACTIONS: readonly AssistantActionDefinition[] = [
     group: "Editor",
     label: "Save the open bot",
     description:
-      "Write the validated live buffer to the file already bound to its editor tab. The assistant never chooses a path.",
+      "Write the validated live buffer to its bound file, or open host-owned Save As for an untitled buffer. The assistant never chooses a path.",
     risk: "persistent",
     defaultPolicy: "ask",
   },
   {
     id: "editor.files.save",
     group: "Editor",
-    label: "Save declared bot companion files",
+    label: "Save assistant authoring changes",
     description:
-      "Preview and persist exact replacements only in files declared by the open bot manifest, with stale-content checks.",
+      "Preview and persist exact replacements in the active bot or files declared by its manifest, with compile and stale-content checks.",
+    risk: "persistent",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "authoring.git.commit",
+    group: "Editor",
+    label: "Commit declared authoring files",
+    description:
+      "Create one Git commit from a selected, host-validated subset of the open bot manifest's declared files. Existing unrelated staged changes block the action.",
+    risk: "persistent",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "authoring.git.publish",
+    group: "Editor",
+    label: "Publish verified authoring commit",
+    description: "Push the current verified authoring HEAD once to a fresh origin branch; force and overwrite are unavailable.",
+    risk: "persistent",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "dependency.bots.update",
+    group: "Bots",
+    label: "Update one pinned bot dependency",
+    description: "Refresh one existing bots.lock dependency at an exact Git commit, materialize it, and commit only bots.lock. Sources, paths and Git commands stay host-owned.",
+    risk: "persistent",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "dependency.bots.localize",
+    group: "Bots",
+    label: "Localize one bot dependency",
+    description: "Copy one verified installed dependency into the open consumer bundle, repin bots.lock to that local source, and make two narrow commits. Sources, paths and Git commands stay host-owned.",
     risk: "persistent",
     defaultPolicy: "ask",
   },
@@ -201,7 +262,7 @@ export const ASSISTANT_ACTIONS: readonly AssistantActionDefinition[] = [
     id: "run.launch",
     group: "Runs",
     label: "Launch a bot run",
-    description: "Resolve a catalog bot and launch it with bounded string variables.",
+    description: "Launch a catalog worker or a verified local workflow file with bounded variables and supervised outcomes.",
     risk: "compute",
     defaultPolicy: "ask",
   },
@@ -217,8 +278,17 @@ export const ASSISTANT_ACTIONS: readonly AssistantActionDefinition[] = [
     id: "run.resume",
     group: "Runs",
     label: "Resume a run",
-    description: "Resume a paused or resumable run using its saved checkpoint.",
+    description: "Resume from the saved checkpoint; source drift requires a second explicit confirmation.",
     risk: "compute",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "run.rewind",
+    group: "Runs",
+    label: "Rewind a run",
+    description:
+      "Re-anchor the checkpoint on the current workflow and invalidate downstream run state. Assistant rewinds never restore workspace files.",
+    risk: "destructive",
     defaultPolicy: "ask",
   },
   {
@@ -234,6 +304,22 @@ export const ASSISTANT_ACTIONS: readonly AssistantActionDefinition[] = [
     group: "Runs",
     label: "Rename a run",
     description: "Change the friendly display name of an existing run.",
+    risk: "reversible",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "run.watch",
+    group: "Runs",
+    label: "Watch a run",
+    description: "Keep this assistant linked to one run and wake it at a safe chat boundary for the selected outcomes.",
+    risk: "compute",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "run.unwatch",
+    group: "Runs",
+    label: "Stop watching a run",
+    description: "Remove a durable assistant run watch.",
     risk: "reversible",
     defaultPolicy: "ask",
   },
@@ -356,36 +442,93 @@ export interface AssistantActionRequest {
   args: Record<string, unknown>;
 }
 
-export function parseAssistantActionRequests(
+export interface RejectedAssistantAction {
+  index: number;
+  id: string;
+  reason: string;
+}
+
+export interface ParsedAssistantActionRequests {
+  requests: AssistantActionRequest[];
+  rejected: RejectedAssistantAction[];
+}
+
+function safeActionId(value: unknown): string {
+  if (typeof value === "string") return value.slice(0, 128);
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * Parse one assistant action list without silently accepting malformed
+ * entries. The returned request order is the wire order; callers that need
+ * atomic publication must withhold the whole list when rejected is non-empty.
+ */
+export function parseAssistantActionRequestsDetailed(
   value: unknown,
   keyPrefix: string,
-): AssistantActionRequest[] {
+): ParsedAssistantActionRequests {
   let raw = value;
   if (typeof raw === "string") {
     try {
       raw = JSON.parse(raw);
     } catch {
-      return [];
+      return {
+        requests: [],
+        rejected: [{ index: 0, id: "string", reason: "actions_not_json" }],
+      };
     }
   }
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, 8).flatMap((entry, index) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+  if (!Array.isArray(raw)) {
+    return {
+      requests: [],
+      rejected: [{ index: 0, id: safeActionId(raw), reason: "actions_not_array" }],
+    };
+  }
+
+  const requests: AssistantActionRequest[] = [];
+  const rejected: RejectedAssistantAction[] = [];
+  raw.slice(0, 8).forEach((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      rejected.push({ index, id: safeActionId(entry), reason: "entry_not_object" });
+      return;
+    }
     const item = entry as Record<string, unknown>;
-    if (!isAssistantActionId(item.id)) return [];
+    if (!isAssistantActionId(item.id)) {
+      rejected.push({ index, id: safeActionId(item.id), reason: "unknown_action_id" });
+      return;
+    }
+    if (
+      item.intent !== undefined &&
+      item.intent !== "explicit" &&
+      item.intent !== "suggested"
+    ) {
+      rejected.push({ index, id: item.id, reason: "invalid_intent" });
+      return;
+    }
     const args =
       item.args && typeof item.args === "object" && !Array.isArray(item.args)
         ? (item.args as Record<string, unknown>)
         : {};
-    return [
-      {
-        key: `${keyPrefix}:${index}`,
-        id: item.id,
-        intent: item.intent === "explicit" ? "explicit" : "suggested",
-        args,
-      },
-    ];
+    requests.push({
+      key: `${keyPrefix}:${index}`,
+      id: item.id,
+      intent: item.intent === "explicit" ? "explicit" : "suggested",
+      args,
+    });
   });
+  if (raw.length > 8) {
+    rejected.push({ index: 8, id: "array", reason: "too_many_actions" });
+  }
+  return { requests, rejected };
+}
+
+export function parseAssistantActionRequests(
+  value: unknown,
+  keyPrefix: string,
+): AssistantActionRequest[] {
+  return parseAssistantActionRequestsDetailed(value, keyPrefix).requests;
 }
 
 const POLICY_EVENT = "iterion:assistant-action-policy";

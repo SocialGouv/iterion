@@ -7,6 +7,7 @@ import type { PipelineFilterState } from "./filters";
 import {
   collectFilterOptions,
   emptyPipelineFilters,
+  excludeAssistantConversationCards,
   filterInventoryCards,
   filterPipelineCards,
   partitionPipelineCards,
@@ -158,6 +159,23 @@ describe("filterPipelineCards", () => {
     expect(
       filterPipelineCards(cards, { ...f, bot: "digest" }),
     ).toEqual([]);
+  });
+});
+
+describe("excludeAssistantConversationCards", () => {
+  it("hides a legacy run owned by a dock tab without hiding project work", () => {
+    const cards = [
+      card({ id: "chat", run_id: "run-chat", bot_id: "copilot" }),
+      card({ id: "pipeline", run_id: "run-pipeline", bot_id: "feature-dev" }),
+      card({ id: "task", kind: "task" }),
+    ];
+
+    expect(
+      excludeAssistantConversationCards(cards, new Set(["run-chat"])).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["pipeline", "task"]);
+    expect(excludeAssistantConversationCards(cards, new Set())).toBe(cards);
   });
 });
 

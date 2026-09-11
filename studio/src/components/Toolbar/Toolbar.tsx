@@ -13,8 +13,6 @@ import {
   Button,
   IconButton,
   Select,
-  Dialog,
-  Input,
   DropdownMenu,
   DropdownMenuItem,
   DropdownMenuSub,
@@ -55,6 +53,7 @@ import {
   PlayIcon,
 } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
+import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
 
 export default function Toolbar() {
   const [, setLocation] = useLocation();
@@ -118,10 +117,7 @@ export default function Toolbar() {
   const {
     readOnly,
     loading,
-    showSaveDialog,
-    setShowSaveDialog,
-    saveFileName,
-    setSaveFileName,
+    saveAs,
     confirmRemoveWorkflow,
     setConfirmRemoveWorkflow,
     handleNew,
@@ -130,7 +126,6 @@ export default function Toolbar() {
     handleValidate,
     handleSave,
     handleSaveAsRequest,
-    handleSaveAs,
     handleDownload,
     handleCopySource,
     handleAddWorkflow,
@@ -554,35 +549,7 @@ export default function Toolbar() {
         onCancel={() => setConfirmRemoveWorkflow(false)}
       />
 
-      {/* Save dialog */}
-      <Dialog
-        open={showSaveDialog}
-        onOpenChange={setShowSaveDialog}
-        title="Save As"
-        widthClass="max-w-sm"
-        footer={
-          <>
-            <Button variant="secondary" size="sm" onClick={() => setShowSaveDialog(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" size="sm" onClick={handleSaveAs}>
-              Save
-            </Button>
-          </>
-        }
-      >
-        <Input
-          autoFocus
-          value={saveFileName}
-          onChange={(e) => setSaveFileName(e.target.value)}
-          placeholder="filename.bot"
-          size="md"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") handleSaveAs();
-            if (e.key === "Escape") setShowSaveDialog(false);
-          }}
-        />
-      </Dialog>
+      <DocumentSaveAsDialog controller={saveAs} />
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
       {confirmDialog}

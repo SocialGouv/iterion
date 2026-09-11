@@ -192,6 +192,12 @@ export interface ServerInfo {
   // offers the post-mortem shell (GET /api/ws/runs/{id}/shell) on
   // terminal runs whose preserved worktree still exists.
   run_shell_enabled?: boolean;
+  // assistant_editor_max_source caps, in characters, how much of the active
+  // editor document the dock inlines into an assistant turn. Absent or 0 =
+  // use the built-in default (see MAX_ACTIVE_EDITOR_SOURCE). Operators raise
+  // it with ITERION_ASSISTANT_EDITOR_MAX_SOURCE when they would rather pay
+  // the per-turn tokens than have the document withheld.
+  assistant_editor_max_source?: number;
   // skills_enabled is true in local (non-cloud) mode: the SPA surfaces the
   // Skills library management view + nav entry. No sealing, so it gates on
   // mode alone.
@@ -648,6 +654,8 @@ export interface ListFilesResponse {
 export interface SaveFileResponse {
   path: string;
   source: string;
+  /** Present only after a real local on-disk write, never for cloud/bundle sources. */
+  confirmed_disk_path?: string;
 }
 
 // WebSocket file watching events

@@ -57,6 +57,17 @@ const (
 	// DiagChatLauncherVarInvalid: a launcher_vars entry is absent or not
 	// string-compatible (the launcher submits string values).
 	DiagChatLauncherVarInvalid Code = "C209"
+	// DiagChatHostEventModeMismatch: the manifest's host_event_field and the
+	// workflow node's `interaction: human_or_host` disagree. The two halves
+	// declare one thing — "this gate also accepts a host-attested answer" —
+	// and only this package can see both: the IR compiler never reads a
+	// manifest, and the manifest loader never sees the compiled graph.
+	//
+	// The severe direction is a node declaring the mode with no field to
+	// receive on: the gate then advertises a standby nothing can ever
+	// deliver, which is exactly the inert-declared-gate class the fallback
+	// chain refuses under C176.
+	DiagChatHostEventModeMismatch Code = "C212"
 
 	// DiagForgeSecretUnknown: the forge secret name the bot expects to be
 	// bound has no matching declaration in the main.bot secrets: block.
@@ -258,6 +269,10 @@ func checkChatSurface(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow) {
 		if decl.ApprovedField != "" {
 			checkChatSchemaField(diags, w, node, decl.ApprovedField, fieldBase+".approved_field", ir.FieldTypeBool)
 		}
+		if decl.HostEventField != "" {
+			checkChatSchemaField(diags, w, node, decl.HostEventField, fieldBase+".host_event_field", ir.FieldTypeJSON)
+		}
+		checkHostEventMode(diags, node, decl, id, fieldBase)
 	}
 
 	if name := m.Chat.SeedVar; name != "" {
@@ -624,6 +639,36 @@ func checkEngineRequirement(diags *[]Diag, m *bundle.Manifest, build string) {
 			Code: DiagEngineRequirementUnchecked, Severity: SeverityWarning,
 			Field: "requires.iterion", Message: reason,
 			Hint: "validate with a released build (or one built through `task build`, which injects the version) to check the requirement",
+		})
+	}
+}
+
+// checkHostEventMode cross-checks the two halves of a host-event gate: the
+// manifest field the host writes into, and the DSL mode that declares the
+// gate accepts it at all.
+//
+// A gate is only usable when both are present, but the two absences are not
+// equally bad. A field with no mode WORKS — that is how the surface shipped,
+// before the mode existed — so it is a warning nudging the author to make the
+// capability visible in the .bot. A mode with no field is DEAD: the run parks
+// on a gate advertising a standby, and nothing will ever be able to wake it.
+func checkHostEventMode(diags *[]Diag, node ir.Node, decl bundle.ChatNode, id, fieldBase string) {
+	if decl.Kind != bundle.ChatNodeHuman {
+		return
+	}
+	declaresMode := ir.NodeInteraction(node) == ir.InteractionHumanOrHost
+	switch {
+	case declaresMode && decl.HostEventField == "":
+		*diags = append(*diags, Diag{
+			Code: DiagChatHostEventModeMismatch, Severity: SeverityError, Field: fieldBase + ".host_event_field",
+			Message: fmt.Sprintf("workflow node %q declares interaction: human_or_host but the manifest gives it no host_event_field — nothing can ever deliver a host event to this gate", id),
+			Hint:    "add host_event_field to the chat node (its output schema needs a matching json field), or drop interaction: human_or_host",
+		})
+	case !declaresMode && decl.HostEventField != "":
+		*diags = append(*diags, Diag{
+			Code: DiagChatHostEventModeMismatch, Severity: SeverityWarning, Field: fieldBase + ".host_event_field",
+			Message: fmt.Sprintf("the manifest declares host_event_field on %q but the workflow node does not declare interaction: human_or_host — the gate works, but reading main.bot gives no hint that anything other than the operator can resume it", id),
+			Hint:    "set interaction: human_or_host on the human node so the capability is visible in the graph",
 		})
 	}
 }

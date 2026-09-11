@@ -443,7 +443,12 @@ export type PassthroughEventType =
   | "sandbox_build_started"
   | "sandbox_build_finished"
   | "sandbox_build_failed"
-  | "worktree_branch_failed";
+  | "worktree_branch_failed"
+  // Observational: the assistant started or stopped standing by on a board
+  // card or on another run's outcome. The dock uses them as a doorbell to
+  // re-read the authoritative state (see useRunVeille).
+  | "assistant_veille_armed"
+  | "assistant_veille_stopped";
 
 export interface PassthroughRunEvent extends RunEventBase {
   type: PassthroughEventType;

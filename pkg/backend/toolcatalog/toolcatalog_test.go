@@ -16,6 +16,19 @@ func TestConstrainsToolsIsClawOnly(t *testing.T) {
 	}
 }
 
+func TestIsClawOnlyAlias(t *testing.T) {
+	for _, name := range []string{"workspace_grep", "diagnostic_shell"} {
+		if !IsClawOnlyAlias(name) {
+			t.Errorf("IsClawOnlyAlias(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"bash", "read_file", "mcp.example.inspect", "unknown_tool"} {
+		if IsClawOnlyAlias(name) {
+			t.Errorf("IsClawOnlyAlias(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestIsStaticBuiltinRef(t *testing.T) {
 	static := []string{"read_file", "bash", " glob "}
 	dynamic := []string{

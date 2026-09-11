@@ -16,6 +16,13 @@ version: 2.5.0
 ## `workspace_probe`, a deterministic entry precondition, refuses a launch
 ## whose workspace_dir is absent or not a git repository with the typed code
 ## WORKSPACE_NOT_A_REPO before any LLM node spends.
+## 2.5.0 — keeps Claude Code as the preferred feature worker but routes a
+## closed/unavailable Claude quota to the confirmed Kimi CLI. The blocking
+## plan reviewer now uses Kimi, satisfying delegated repairs' approved
+## reviewer requirement without depending on an OpenAI route.
+## 2.4.0 — accepts the host-owned failure_context and
+## delegation_instructions vars used by cross-project run delegation. The
+## worker still runs in worktree:auto and never merges implicitly.
 ## 2.3.1 — plan_review_policy defaults to "skip": the cross-model plan peer
 ## is an optional enrichment, and the primary family alone must always
 ## suffice. A dead/parked peer credential (401, shut forfait window,
@@ -105,4 +112,4 @@ invocations:
 ## out of the form (still settable via --var / bot_args).
 launch:
   primary: [feature_prompt]
-  hidden: [source_issue_ref]
+  hidden: [source_issue_ref, failure_context, delegation_instructions]

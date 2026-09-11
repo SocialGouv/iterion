@@ -29,6 +29,12 @@ export interface Project {
   kind?: "local" | "cloud";
   dir: string;
   store_dir?: string;
+  state?: "starting" | "ready" | "degraded";
+  runtime_ready?: boolean;
+  error?: string;
+  scoped_url?: string;
+  bots_paths?: string[];
+  env_file?: string;
   last_opened: string; // ISO timestamp
   color?: string;
   // Cloud-connection fields (kind === "cloud" only).
@@ -178,6 +184,45 @@ export function isWailsHosted(): boolean {
   );
 }
 
+// isBrowserWorkspace is set by the single-process workspace host in its root
+// index. Scoped panes receive only __ITERION_SCOPE__ and behave like ordinary
+// same-origin browser clients.
+export function isBrowserWorkspace(): boolean {
+  return (
+    typeof globalThis !== "undefined" &&
+    (globalThis as { __ITERION_WORKSPACE__?: unknown }).__ITERION_WORKSPACE__ === true
+  );
+}
+
+async function workspaceRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
+    ...init,
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Workspace request failed with ${response.status}`);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+const browserOpenKey = "iterion.workspace.open-projects";
+
+function browserOpenProjects(): string[] {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(browserOpenKey) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function setBrowserOpenProjects(ids: string[]) {
+  sessionStorage.setItem(browserOpenKey, JSON.stringify([...new Set(ids)]));
+}
+
 // call invokes the Wails binding identified by `key` with the given args.
 // In browser mode it returns a rejected Promise so callers can rely on
 // the wrappers being uniformly async (no synchronous throw).
@@ -223,18 +268,51 @@ export const desktop = {
 
   // Projects / connections (the unified MRU list holds both local projects
   // and remote cloud connections; listConnections is the semantic alias).
-  listProjects: () => call("ListProjects"),
-  listConnections: () => call("ListConnections"),
-  getCurrentProject: () => call("GetCurrentProject"),
-  addProject: (dir: string) => call("AddProject", dir),
-  addProjectSilently: (dir: string) => call("AddProjectSilently", dir),
-  removeProject: (id: string) => call("RemoveProject", id),
-  removeConnection: (id: string) => call("RemoveConnection", id),
-  switchProject: (id: string) => call("SwitchProject", id),
-  openConnection: (id: string) => call("OpenConnection", id),
-  closeConnection: (id: string) => call("CloseConnection", id),
-  getOpenConnections: () => call("GetOpenConnections"),
-  pickProjectDirectory: () => call("PickProjectDirectory"),
+  listProjects: () =>
+    isBrowserWorkspace() ? workspaceRequest<Project[]>("/api/projects") : call("ListProjects"),
+  listConnections: () =>
+    isBrowserWorkspace() ? workspaceRequest<Project[]>("/api/projects") : call("ListConnections"),
+  getCurrentProject: () =>
+    isBrowserWorkspace() ? workspaceRequest<Project | null>("/api/projects/current") : call("GetCurrentProject"),
+  addProject: (dir: string) =>
+    isBrowserWorkspace()
+      ? workspaceRequest<Project>("/api/projects", { method: "POST", body: JSON.stringify({ dir }) })
+      : call("AddProject", dir),
+  addProjectSilently: (dir: string) =>
+    isBrowserWorkspace()
+      ? workspaceRequest<Project>("/api/projects", { method: "POST", body: JSON.stringify({ dir }) })
+      : call("AddProjectSilently", dir),
+  removeProject: (id: string) =>
+    isBrowserWorkspace()
+      ? workspaceRequest<void>(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" })
+      : call("RemoveProject", id),
+  removeConnection: (id: string) =>
+    isBrowserWorkspace()
+      ? workspaceRequest<void>(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" })
+      : call("RemoveConnection", id),
+  switchProject: (id: string) =>
+    isBrowserWorkspace()
+      ? workspaceRequest<Project>("/api/projects/switch", { method: "POST", body: JSON.stringify({ id }) }).then(() => undefined)
+      : call("SwitchProject", id),
+  openConnection: async (id: string) => {
+    if (!isBrowserWorkspace()) return call("OpenConnection", id);
+    const projects = await workspaceRequest<Project[]>("/api/projects");
+    const project = projects.find((candidate) => candidate.id === id);
+    if (!project) throw new Error(`Unknown project ${id}`);
+    setBrowserOpenProjects([...browserOpenProjects(), id]);
+    return project;
+  },
+  closeConnection: (id: string) => {
+    if (!isBrowserWorkspace()) return call("CloseConnection", id);
+    setBrowserOpenProjects(browserOpenProjects().filter((candidate) => candidate !== id));
+    return Promise.resolve();
+  },
+  getOpenConnections: () =>
+    isBrowserWorkspace() ? Promise.resolve(browserOpenProjects()) : call("GetOpenConnections"),
+  pickProjectDirectory: () =>
+    isBrowserWorkspace()
+      ? Promise.resolve(window.prompt("Absolute project directory")?.trim() ?? "")
+      : call("PickProjectDirectory"),
 
   // Cloud connections
   connectCloud: (cloudURL: string, email: string, password: string) =>
@@ -257,8 +335,10 @@ export const desktop = {
   detectExternalCLIs: (force = false) => call("DetectExternalCLIs", force),
 
   // First-run
-  isFirstRunPending: () => call("IsFirstRunPending"),
-  markFirstRunDone: () => call("MarkFirstRunDone"),
+  isFirstRunPending: () =>
+    isBrowserWorkspace() ? Promise.resolve(false) : call("IsFirstRunPending"),
+  markFirstRunDone: () =>
+    isBrowserWorkspace() ? Promise.resolve() : call("MarkFirstRunDone"),
 
   // Updates
   checkForUpdate: () => call("CheckForUpdate"),

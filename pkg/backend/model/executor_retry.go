@@ -25,6 +25,12 @@ import (
 // errors) and claw-code-go's *clawapi.APIError (returned by provider HTTP
 // clients on non-2xx responses, e.g. 429 / 5xx).
 func isRetryable(err error) bool {
+	// Iterion's own stream-silence watchdog owns this expiry and cancels only
+	// one provider attempt. It is therefore safe to retry, unlike a parent
+	// run/node context deadline which must still stop immediately below.
+	if isStreamIdleError(err) {
+		return true
+	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.IsRetryable
@@ -66,6 +72,9 @@ func statusCodeOf(err error) int {
 func isDelegateRetryable(err error) bool {
 	if err == nil {
 		return false
+	}
+	if isStreamIdleError(err) {
+		return true
 	}
 	var transient *delegate.ErrTransient
 	if errors.As(err, &transient) {
@@ -150,6 +159,9 @@ func extractExitCode(msg string) int {
 // a connectivity blip from other transient failures (OOM signal, idle hang)
 // so the operator can tell "internet hiccup" from "subprocess died".
 func retryReason(err error) string {
+	if isStreamIdleError(err) {
+		return "claw stream-silence watchdog"
+	}
 	if delegate.IsNetworkError(err) {
 		return "network connectivity issue"
 	}
@@ -1012,11 +1024,9 @@ func (e *ClawExecutor) dispatchChain(
 					if cd.Cause != nil {
 						causes = append(causes, cd.Cause)
 					}
-					// A route change drops the node's session even when no call
-					// was made on this dispatch. The store has no provider
-					// fingerprint, so a prior failed attempt's messages must not
-					// be replayed into the fallback element.
-					e.evictNodeSessionForFallback(ctx, nodeID)
+					// No call ran on this dispatch, hence there is no failed
+					// attempt to roll back. Keep the last-good durable slot for
+					// the fallback route.
 					// A remembered failure must route a later build error exactly
 					// like a fresh one. Otherwise a usage_window-filtered terminal
 					// skip becomes unreachable after an unbuildable rescue route.
@@ -1037,6 +1047,7 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend = backendName
+		sessionBeforeAttempt := e.snapshotTaskSession(ctx, task)
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
@@ -1114,17 +1125,18 @@ func (e *ClawExecutor) dispatchChain(
 				sessionDegraded = true
 				spent.add(result)
 				// Dropping task.SessionID is not, by itself, enough to
-				// make the retry fresh. The (runID, nodeID) claw store is
+				// make the retry fresh. The claw store's effective
+				// (runID, session_slot-or-nodeID) entry is
 				// replayed independently of the id (claw_backend's
-				// session_replay envelope), and it is keyed by NODE, not
-				// by element or iteration — so a node that ran on claw
+				// session_replay envelope), not by element or iteration —
+				// so a node that ran on claw
 				// earlier in its chain, or in an earlier loop pass, can
 				// still hold messages that would be replayed into the call
 				// this event just announced as FRESH. sessionResumeEligible
 				// keeps the degrade off claw itself, so this is the guard
 				// for that residue, on the same terms the route-change path
 				// evicts for.
-				e.evictNodeSessionForFallback(ctx, nodeID)
+				e.evictTaskSession(ctx, task)
 				fresh := *task
 				fresh.SessionID = ""
 				fresh.ForkSession = false
@@ -1206,13 +1218,11 @@ func (e *ClawExecutor) dispatchChain(
 		// node that is a plain doubling of what the delegate_error
 		// event reports.
 		spent.add(result)
-		// Drop the failed element's conversation before another
-		// backend/provider sees it. The session store is keyed
-		// (runID, nodeID) with no provider fingerprint and captures a
-		// FAILED attempt's messages, so replaying them into the next
-		// element re-sends one provider's signed thinking blocks to
-		// another — a 400 at best, a mangled conversation at worst.
-		e.evictNodeSessionForFallback(ctx, nodeID)
+		// Discard only the failed attempt, not the named durable slot. The
+		// claw session format contains provider-neutral message blocks; the
+		// rollback also strips any legacy provider-specific thinking blocks
+		// before the next route sees the last-good conversation.
+		e.rollbackTaskSession(ctx, sessionBeforeAttempt)
 		fromModel := result.EffectiveModel
 		if fromModel == "" {
 			fromModel = effModel(el)
@@ -1364,17 +1374,44 @@ func (e *ClawExecutor) noteSessionDegrade(
 	})
 }
 
-// evictNodeSessionForFallback drops the node's in-process claw
-// conversation so the next chain element starts fresh.
-//
-// The cost is stated plainly: the failed attempt's work is discarded,
-// which the steady-state path deliberately preserves for compaction.
-// Keeping it would be worse — the store has no provider fingerprint, so
-// the preserved conversation would be replayed into whatever runs next.
-func (e *ClawExecutor) evictNodeSessionForFallback(ctx context.Context, nodeID string) {
+type taskSessionSnapshot struct {
+	key      string
+	messages []api.Message
+}
+
+func (e *ClawExecutor) snapshotTaskSession(ctx context.Context, task *delegate.Task) taskSessionSnapshot {
+	if task == nil {
+		return taskSessionSnapshot{}
+	}
+	runID, sessions := runtimeContextFrom(ctx)
+	key := taskSessionKey(*task)
+	if runID == "" || sessions == nil || key == "" {
+		return taskSessionSnapshot{key: key}
+	}
+	return taskSessionSnapshot{key: key, messages: sessions.load(runID, key)}
+}
+
+// rollbackTaskSession restores the last-good state captured before a failed
+// route. A named persistent slot therefore keeps the user's conversation while
+// partial output from the failed provider is discarded.
+func (e *ClawExecutor) rollbackTaskSession(ctx context.Context, snapshot taskSessionSnapshot) {
+	runID, sessions := runtimeContextFrom(ctx)
+	if runID == "" || sessions == nil || snapshot.key == "" {
+		return
+	}
+	messages, _ := sanitizeToolPairs(snapshot.messages, nil, true)
+	sessions.save(runID, snapshot.key, messages)
+}
+
+// evictTaskSession is reserved for an explicitly fresh retry. Unlike the old
+// node-ID-only helper it honors a named session_slot.
+func (e *ClawExecutor) evictTaskSession(ctx context.Context, task *delegate.Task) {
+	if task == nil {
+		return
+	}
 	runID, sessions := runtimeContextFrom(ctx)
 	if runID == "" || sessions == nil {
 		return
 	}
-	sessions.evict(runID, nodeID)
+	sessions.evict(runID, taskSessionKey(*task))
 }
