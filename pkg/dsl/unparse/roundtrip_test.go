@@ -3,6 +3,7 @@ package unparse_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -174,5 +175,53 @@ workflow main:
 	}
 	if tool.InputSchema != "ToolInput" || tool.OutputSchema != "ToolOutput" {
 		t.Fatalf("compiled tool schemas mismatch: input=%q output=%q", tool.InputSchema, tool.OutputSchema)
+	}
+}
+
+// TestActionIdentPropsSurviveARoundTrip.
+//
+// `action:` and `connection:` were written BARE, while the AST is also built
+// programmatically (the JSON round trip, the studio editor, a refactoring
+// tool) where nothing stops a space landing in either. Unparsed bare,
+// `action: "forgejo issue comment"` came back as three tokens — Action
+// truncated to "forgejo", `issue` read as an unknown tool property — so a save
+// turned one diagnostic into a mangled node plus one about text the author
+// never wrote.
+func TestActionIdentPropsSurviveARoundTrip(t *testing.T) {
+	for _, tc := range []struct{ name, action, connection string }{
+		{"well-formed", "forgejo.issue.comment", "forge_main"},
+		{"an alias with a dash", "forgejo.issue.comment", "forge-main"},
+		{"an id with a space", "forgejo issue comment", "forge_main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &ast.File{Tools: []*ast.ToolNodeDecl{{
+				Name: "t", Action: tc.action, Connection: tc.connection,
+			}}}
+			out := unparse.Unparse(src)
+			res := parser.Parse("rt.bot", out)
+			for _, d := range res.Diagnostics {
+				if d.Severity == parser.SeverityError {
+					t.Fatalf("re-parse of\n%s\nfailed: %s", out, d.Message)
+				}
+			}
+			if len(res.File.Tools) != 1 {
+				t.Fatalf("re-parse gave %d tools:\n%s", len(res.File.Tools), out)
+			}
+			got := res.File.Tools[0]
+			if got.Action != tc.action {
+				t.Errorf("Action = %q, want %q (written as:\n%s)", got.Action, tc.action, out)
+			}
+			if got.Connection != tc.connection {
+				t.Errorf("Connection = %q, want %q (written as:\n%s)", got.Connection, tc.connection, out)
+			}
+		})
+	}
+	// The ordinary id stays UNQUOTED: quoting every action would churn the
+	// diff of every `.bot` the studio saves.
+	out := unparse.Unparse(&ast.File{Tools: []*ast.ToolNodeDecl{{
+		Name: "t", Action: "forgejo.issue.comment", Connection: "forge_main",
+	}}})
+	if !strings.Contains(out, "action: forgejo.issue.comment\n") {
+		t.Errorf("a well-formed id must stay bare, got:\n%s", out)
 	}
 }

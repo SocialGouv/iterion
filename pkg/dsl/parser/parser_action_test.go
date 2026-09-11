@@ -359,3 +359,23 @@ workflow w:
 		})
 	}
 }
+
+// An alias is chosen by the OPERATOR at `iterion connections add --alias`,
+// where a dash is an ordinary thing to write. Read as a bare identifier only,
+// `forge-main` — a name that command stores without a word — could not be
+// named from any workflow, and the quoted form is what lets the unparser hand
+// back a programmatically-built AST without corrupting it.
+func TestParseActionConnectionAcceptsAQuotedAlias(t *testing.T) {
+	for _, tc := range []struct{ written, want string }{
+		{"forge_main", "forge_main"},
+		{`"forge-main"`, "forge-main"},
+		{`"main 2"`, "main 2"},
+	} {
+		res := parser.Parse("test.bot", "tool t:\n  action: p.r.v\n  connection: "+tc.written+"\n")
+		assertNoDiags(t, res)
+		if len(res.File.Tools) != 1 {
+			t.Fatalf("%s: expected 1 tool", tc.written)
+		}
+		assertEq(t, "Connection", res.File.Tools[0].Connection, tc.want)
+	}
+}

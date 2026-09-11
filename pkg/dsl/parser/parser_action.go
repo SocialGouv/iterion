@@ -54,6 +54,21 @@ func (p *parser) expectActionID() string {
 	return b.String()
 }
 
+// expectConnectionAlias reads the alias a `.bot` names its connection by.
+//
+// A quoted form is accepted for the same reason `action:` accepts one, and
+// here it is not only a kindness: an alias is chosen by the OPERATOR at
+// `iterion connections add --alias`, where a dash is an ordinary thing to
+// write. Reading it with expectIdent alone meant `forge-main` — a name that
+// command stores without a word — could not be named from any workflow, and
+// the limit came from nothing but the reader.
+func (p *parser) expectConnectionAlias() string {
+	if p.peek().Type == TokenString {
+		return p.next().Value
+	}
+	return p.expectIdent()
+}
+
 // expectScalarText reads a bare scalar (`30s`, `3`) or a quoted string, and
 // renders it as text. Durations and counts are naturally written unquoted,
 // and requiring quotes for them would be a papercut in every action node.

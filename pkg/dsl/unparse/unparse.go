@@ -623,11 +623,19 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		}
 		// Connector action (ADR-098), written in the order an author reads it:
 		// what is called, with what credential, with which arguments.
+		// Both through the quoting path, like every other name-shaped field:
+		// the AST is also built programmatically (the JSON round trip, the
+		// studio editor, a refactoring tool), where nothing stops a space or a
+		// dot-less word landing in either. Written bare, `action: "forgejo
+		// issue comment"` came back out as three tokens — `Action` truncated
+		// to "forgejo" and `issue` read as an unknown tool property — so a
+		// save turned one C260 into a mangled node plus a diagnostic about
+		// text the author never wrote.
 		if t.Action != "" {
-			writeProp(&w.b, "action", t.Action)
+			writeActionIDProp(&w.b, "action", t.Action)
 		}
 		if t.Connection != "" {
-			writeProp(&w.b, "connection", t.Connection)
+			writeIdentProp(&w.b, "connection", t.Connection)
 		}
 		if len(t.Params) > 0 {
 			w.b.WriteString("  params:\n")
@@ -970,6 +978,21 @@ func writeQuotedProp(b *buf, key, value string) {
 // with a cryptic lexer error far away from the offending field. Quote
 // the fallback so the malformed value at least round-trips into a
 // TokenString the parser can complain about precisely.
+// writeActionIDProp is writeIdentProp for an operation id, which is DOTTED
+// (`forgejo.issue.comment`) and so is not a bare identifier. Each segment has
+// to be one; anything else is quoted, which the parser reads back as the
+// literal id — deliberately, so an author who writes it quoted is not
+// corrected for being unambiguous.
+func writeActionIDProp(b *buf, key, value string) {
+	for _, seg := range strings.Split(value, ".") {
+		if !isBareIdent(seg) {
+			writeQuotedProp(b, key, value)
+			return
+		}
+	}
+	writeProp(b, key, value)
+}
+
 func writeIdentProp(b *buf, key, value string) {
 	if isBareIdent(value) {
 		writeProp(b, key, value)

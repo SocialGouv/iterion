@@ -539,7 +539,7 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			td.Action = p.expectActionID()
 		case "connection":
 			p.expect(TokenColon)
-			td.Connection = p.expectIdent()
+			td.Connection = p.expectConnectionAlias()
 		case "params":
 			td.Params = p.parseActionParamsBlock()
 		case "retry":
