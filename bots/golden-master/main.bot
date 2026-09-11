@@ -106,6 +106,13 @@ prompt campaign_user:
   stride — leaves your own set unsealed, unscored and readable by the next pass,
   and your own gate then reports that same vacuous `holdout 0/0`.
 
+  That sealing run reports `holdout_sealed_uncommitted`: your own set left the
+  tree with no committed copy. Do NOT answer it by putting that set back. It is
+  scored here and published as evidence either way, and a copy re-committed
+  under `mutants/holdout/` is the same set by fingerprint, so the later gate
+  refuses it — red, days from now, for work done today. The successor is the
+  answer to that notice.
+
   A sealed set lives only as long as the sealed pile, which is keyed on a
   workspace that dies with the run; a committed one has a durable home, and the
   gate that owns it — a LATER one, never this one — opts in with
