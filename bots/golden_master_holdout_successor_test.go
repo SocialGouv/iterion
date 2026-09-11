@@ -151,7 +151,24 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"out from under git as uncommitted deletions.\n  Clause as parsed: %q", clause)
 	}
 
-	// 5. The motive, stated as the harness actually behaves. A spent set does
+	// 5. THE NOTICE THE SEALING RUN WILL EMIT. `holdout_sealed_uncommitted`
+	//    fires on exactly the run this instruction now asks for, and its text
+	//    says "a set a LATER run must score has one durable home — commit it
+	//    under mutants/holdout/". Answered literally, the rite re-commits the
+	//    set it just sealed: same fingerprint, published under mutants/audit/
+	//    by this very run, so the gate that finally opts in refuses it as
+	//    `holdout_reused`. The successor is the answer; say so where the
+	//    instruction sends the agent to look.
+	if !strings.Contains(clause, "holdout_sealed_uncommitted") {
+		t.Errorf("the successor instruction no longer tells the rite how to read "+
+			"holdout_sealed_uncommitted.\n"+
+			"  Why it is there: that notice fires on the sealing run this paragraph "+
+			"asks for, and its literal answer — re-committing the set just sealed — "+
+			"is a repeated fingerprint the later gate refuses.\n"+
+			"  Clause as parsed: %q", clause)
+	}
+
+	// 6. The motive, stated as the harness actually behaves. A spent set does
 	//    not make the next gate refuse — it boots, replays the whole corpus and
 	//    reports 0/0 with `holdout_spent_unreplaced`, which the conjunction
 	//    passes. Naming the field keeps the paragraph checkable against the
