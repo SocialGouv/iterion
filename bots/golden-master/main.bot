@@ -95,9 +95,9 @@ prompt campaign_user:
   refused by fingerprint once published, so the next gate to run — a lot's
   verify, days later — has nothing held out left to score. It does not refuse
   for want of a set: it boots the application, replays the whole corpus, reports
-  `holdout 0/0` with
-  `holdout_spent_unreplaced`, and its `detected == total` term passes on that
-  emptiness. The full price paid, for a term that reads green by being vacuous.
+  `holdout 0/0` with `holdout_spent_unreplaced`, and its `detected == total`
+  term passes on that emptiness. The full price paid, for a term that reads
+  green by being vacuous.
 
   So draw a SECOND set and leave it COMMITTED under `mutants/holdout/`, unsealed
   and unscored — and do it ONLY AFTER a harness run (`GM_MODE=selfcheck`) has
@@ -150,9 +150,9 @@ prompt campaign_user:
   readable only because it must WAIT, and applying it here — or hardening the
   comparator against what it catches — spends the next gate's whole
   counter-test while leaving it green. For the same reason, a later pass of this
-  same run does not write a third: while a committed set sits under
-  `mutants/holdout/` nothing there can be sealed, so what you add stays readable
-  and proves nothing. Your set for this cycle is already in the pile.
+  same run does not write a third: your set for this cycle is already in the
+  pile, and by the rule above nothing more can be sealed while the successor
+  sits there — what you add would stay readable and prove nothing.
 
   {{input.fail_log}}
 
