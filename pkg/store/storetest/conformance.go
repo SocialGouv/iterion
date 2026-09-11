@@ -223,6 +223,13 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 			"historic": {NodeID: "planner", Version: 0, ValueFromRevision: true},
 		},
 		ArtifactRevisionsKnown: true,
+		// The floor a stabilized fan-out left on a convergence node. It
+		// rides the checkpoint precisely because the failure that creates
+		// it is what parks the run, so a store that drops it resumes the
+		// join with none of its incoming mappings (#559).
+		SettledIncoming: map[string][]store.IncomingEdge{
+			"collect": {{From: "work", To: "collect"}, {From: "review", To: "collect", IsElse: true}},
+		},
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
 			InvocationKey:               "dispatch@outer=2",
@@ -286,6 +293,10 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if !r.Checkpoint.ArtifactRevisions["historic"].ValueFromRevision {
 		t.Fatalf("historical artifact value reference was lost in store round-trip: %+v", r.Checkpoint.ArtifactRevisions)
+	}
+	settled := r.Checkpoint.SettledIncoming["collect"]
+	if len(settled) != 2 || settled[0].From != "work" || settled[1].From != "review" || !settled[1].IsElse {
+		t.Fatalf("settled floor after round-trip = %+v — a join whose fan-out produced nothing resumes with no incoming mapping at all when this is lost", settled)
 	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]

@@ -14,7 +14,11 @@ import (
 // node's await strategy, merges outputs into the run state, builds the
 // convergence node's input from multi-edge with-mappings, and returns
 // the convergence node ID for the main loop to continue execution.
-func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult) (string, error) {
+//
+// seeds are the nodes this invocation actually entered — the provenance of
+// the settled floor recorded for the join. The caller computes them because
+// the two fan-out shapes differ (see settledSeedsPerEdge / ForTemplate).
+func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult, seeds []string) (string, error) {
 	convNode, ok := e.workflow.Nodes[convergenceNodeID]
 	if !ok {
 		return "", &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: convergenceNodeID, Message: fmt.Sprintf("convergence node %q not found", convergenceNodeID)}
@@ -154,7 +158,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		e.logger.Warn("failed to emit convergence_ready: %v", err)
 	}
 
-	mergeJoinIncoming(rs, convergenceNodeID, results)
+	e.mergeJoinIncoming(rs, convergenceNodeID, results, seeds)
 
 	// Return the convergence node ID — the main loop will execute it normally.
 	return convergenceNodeID, nil

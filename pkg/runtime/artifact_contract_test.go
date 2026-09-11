@@ -1091,7 +1091,7 @@ func TestMaterializeHumanArtifactKeepsIncomingArtifactDependency(t *testing.T) {
 		map[string]map[string]any{"planner": {"ok": true}},
 		map[string]map[string]any{"plan": {"ok": true}},
 		revisions,
-		map[string][]store.IncomingEdge{"approve": {incomingFromEdge(edge)}},
+		&store.Checkpoint{SelectedIncoming: map[string][]store.IncomingEdge{"approve": {incomingFromEdge(edge)}}},
 	)
 	if err != nil {
 		t.Fatal(err)

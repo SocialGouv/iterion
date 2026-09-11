@@ -145,7 +145,17 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 		tracked = false
 	}
 	overlayForward := tracked && incomingOnlyBounded(selected)
-	return ir.NodeArtifactRefsForEdges(e.workflow, nodeID, func(edge *ir.Edge) bool {
+	sc := resolveScope{vars: rs.vars, outputs: rs.outputs, artifacts: rs.artifacts, rs: rs}
+	floor := settledFloorFor(nodeID, sc)
+	// Floor edges are answered separately, by the SAME function that decides
+	// what the node's input carries. Letting them through this predicate
+	// would record a dependency on an artifact the conflict rule refused to
+	// apply — and a required dependency is re-validated on resume, so an
+	// artifact nobody consumed can go on to block one.
+	refs := ir.NodeArtifactRefsForEdges(e.workflow, nodeID, func(edge *ir.Edge) bool {
+		if settledFloorEligible(edge, floor) {
+			return false
+		}
 		if edge.From != "" {
 			if _, local := rs.outputs[edge.From]; !local {
 				if _, inherited := rs.inheritedOutputs[edge.From]; !inherited {
@@ -158,6 +168,22 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 		}
 		return edgeInIncoming(edge, selected)
 	})
+	if len(floor) == 0 {
+		return refs
+	}
+	applied, _ := e.settledFloorMappings(nodeID, sc)
+	seen := make(map[string]bool, len(refs))
+	for _, name := range refs {
+		seen[name] = true
+	}
+	for name := range applied.artifactRefs {
+		if !seen[name] {
+			seen[name] = true
+			refs = append(refs, name)
+		}
+	}
+	sort.Strings(refs)
+	return refs
 }
 
 // ValidateArtifactContracts checks persisted artifact metadata before a

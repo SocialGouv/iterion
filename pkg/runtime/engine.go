@@ -431,6 +431,14 @@ type runState struct {
 	// cannot race this map; the trunk copies the join union at
 	// processConvergence. Re-seeded at resume from Checkpoint.SelectedIncoming.
 	selectedIncoming map[string][]store.IncomingEdge
+	// settledIncoming records, per convergence node, the edges a fan-out
+	// invocation stabilized on whose source produced no output — every
+	// branch failed, or the collection fanned over was empty. Kept apart
+	// from selectedIncoming because a join may be a loop head, whose
+	// selection the back-edge REPLACES on re-entry; the floor is a
+	// forward-pass base that has to survive that. Re-seeded at resume from
+	// Checkpoint.SettledIncoming.
+	settledIncoming map[string][]store.IncomingEdge
 	// parallel is non-nil while the trunk is parked on a fan-out router.
 	// Branch goroutines mutate it only through its mutex-protected helpers;
 	// the trunk clears/replaces it at router invocation boundaries.

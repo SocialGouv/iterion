@@ -147,6 +147,12 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		if rs.selectedIncoming != nil {
 			delete(rs.selectedIncoming, convergence)
 		}
+		// The untracked fallback keeps only edges whose source produced
+		// output, and no branch ran at all — so a mapping reading a durable
+		// parent output or a var would go missing too (#1113, the twin of
+		// #559's all-failed case). Settle the floor on the edges this
+		// invocation WOULD have fired.
+		rs.setSettledFloor(convergence, settledEdgesInto(e.workflow, settledSeedsForTemplate(tmplEdge, nil), convergence, evidenceFromBranches(nil)))
 		return convergence, nil
 	}
 
@@ -362,7 +368,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 
-	next, err := e.processConvergence(rs, convergenceNodeID, results)
+	next, err := e.processConvergence(rs, convergenceNodeID, results, settledSeedsForTemplate(tmplEdge, results))
 	if err == nil {
 		rs.parallel = nil
 	}
