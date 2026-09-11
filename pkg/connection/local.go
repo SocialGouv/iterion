@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -210,23 +211,33 @@ func (t *privateHostHint) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err == nil {
 		return resp, nil
 	}
-	// Asked ONLY on the error path, and asked precisely. Resolving with the
-	// policy OFF separates the two failures that look alike from the outside:
-	// a host that resolves and is refused for WHAT it resolved to is the
-	// hatch's case, while a host that does not resolve at all is a typo or a
-	// dead DNS and must not be told to open a security guard. A cancelled or
-	// timed-out context lands in the second branch, so the hint is omitted
-	// rather than guessed.
-	host := req.URL.Hostname()
-	if host == "" {
-		return nil, err
-	}
-	ip, rerr := httpdial.ResolvePublicHost(req.Context(), host, false)
-	if rerr != nil || httpdial.IsPublicUnicast(ip) {
+	ip, ok := refusedAsPrivate(req.Context(), req.URL.Hostname())
+	if !ok {
 		return nil, err
 	}
 	return nil, fmt.Errorf("%w (%s is a private or loopback address; set %s=1 to let connector calls reach a self-hosted instance)",
 		err, ip, AllowPrivateHostsEnv)
+}
+
+// refusedAsPrivate reports whether host is one the guard refuses FOR WHAT IT
+// RESOLVED TO, and the address that settles it.
+//
+// The two-step is the whole point, and both callers need exactly it: resolving
+// with the policy OFF separates two failures that look alike from the outside.
+// A host that resolves and is refused for its address is the hatch's case; a
+// host that does not resolve at all is a typo or a dead DNS, and telling its
+// author to open a security guard would be advice about the wrong problem. A
+// cancelled or timed-out context lands in the second branch, so the answer is
+// "no" rather than a guess.
+func refusedAsPrivate(ctx context.Context, host string) (net.IP, bool) {
+	if host == "" {
+		return nil, false
+	}
+	ip, err := httpdial.ResolvePublicHost(ctx, host, false)
+	if err != nil || httpdial.IsPublicUnicast(ip) {
+		return nil, false
+	}
+	return ip, true
 }
 
 // UnreachableBaseURL says why this process will refuse to call baseURL, or ""
@@ -243,16 +254,11 @@ func UnreachableBaseURL(ctx context.Context, baseURL string) string {
 		return ""
 	}
 	u, err := url.Parse(baseURL)
-	if err != nil || u.Hostname() == "" {
+	if err != nil {
 		return ""
 	}
-	// Same two-step as the transport's hint, and for the same reason: only a
-	// host that RESOLVES and is refused for what it resolved to belongs here.
-	// A name that does not resolve on this machine may well resolve where the
-	// run happens, and telling its author to open a security guard would be
-	// advice about the wrong problem.
-	ip, rerr := httpdial.ResolvePublicHost(ctx, u.Hostname(), false)
-	if rerr != nil || httpdial.IsPublicUnicast(ip) {
+	ip, ok := refusedAsPrivate(ctx, u.Hostname())
+	if !ok {
 		return ""
 	}
 	return fmt.Sprintf("%s resolves to %s, a private or loopback address that connector calls refuse by default — set %s=1 to permit a self-hosted instance",
