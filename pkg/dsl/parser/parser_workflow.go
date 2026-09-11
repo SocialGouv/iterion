@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"fmt"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -395,7 +397,14 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 		}
 	case TokenProjectRoot:
 		p.expect(TokenColon)
-		if v := p.parseBool(); v != nil {
+		// Removed from profile 2 (ADR-098): refused by name, the value
+		// still consumed so the line draws one diagnostic, and not set —
+		// the program of a profile-2 file has no project_root.
+		removed := p.lex.Profile() > ast.DefaultProfile
+		if removed {
+			p.addError(DiagRemovedInProfile, propTok, fmt.Sprintf("`project_root:` was removed from dsl profile %d", p.lex.Profile()))
+		}
+		if v := p.parseBool(); v != nil && !removed {
 			mb.ProjectRoot = v
 		}
 	case TokenVisibility:

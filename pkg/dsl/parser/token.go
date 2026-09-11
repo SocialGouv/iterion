@@ -51,7 +51,6 @@ const (
 	TokenAgent
 	TokenJudge
 	TokenRouter
-	TokenJoin
 	TokenHuman
 	TokenTool
 	TokenWorkflow
@@ -239,7 +238,6 @@ var tokenNames = map[TokenType]string{
 	TokenAgent:              "agent",
 	TokenJudge:              "judge",
 	TokenRouter:             "router",
-	TokenJoin:               "join",
 	TokenHuman:              "human",
 	TokenTool:               "tool",
 	TokenWorkflow:           "workflow",
@@ -387,7 +385,6 @@ var keywords = map[string]TokenType{
 	"agent":                 TokenAgent,
 	"judge":                 TokenJudge,
 	"router":                TokenRouter,
-	"join":                  TokenJoin,
 	"human":                 TokenHuman,
 	"tool":                  TokenTool,
 	"workflow":              TokenWorkflow,

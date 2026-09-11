@@ -200,9 +200,19 @@ func Table(k Kind) string {
 	var b strings.Builder
 	b.WriteString("| Property | Value | Meaning |\n|---|---|---|\n")
 	for _, p := range k.Properties {
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", p.Name, valueCell(p), escapePipes(p.Doc))
+		fmt.Fprintf(&b, "| `%s` | %s | %s%s |\n", p.Name, valueCell(p), escapePipes(p.Doc), profileNote(p))
 	}
 	return b.String()
+}
+
+// profileNote says which profiles still accept a property the language
+// removed, so a reader of the table is not sent to write a line profile 2
+// refuses.
+func profileNote(p Property) string {
+	if p.Until == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — profile %d only (removed in profile %d)", p.Until, p.Until+1)
 }
 
 func valueCell(p Property) string {
@@ -265,7 +275,11 @@ func SkillSection() string {
 		if len(k.Properties) > 0 {
 			parts := make([]string, 0, len(k.Properties))
 			for _, p := range k.Properties {
-				parts = append(parts, p.Name+" "+shortForm(p))
+				part := p.Name + " " + shortForm(p)
+				if p.Until > 0 {
+					part += fmt.Sprintf(" (profile ≤%d)", p.Until)
+				}
+				parts = append(parts, part)
 			}
 			b.WriteString(" — " + strings.Join(parts, " · "))
 		}

@@ -53,6 +53,10 @@ type Property struct {
 	// Body names the kind whose properties fill a Block / BlockOrIdent.
 	Body string
 	Doc  string
+	// Until is the last syntax profile that accepts the property (0: every
+	// profile). From the next profile the parser refuses it by name
+	// (E043), and the rendered documents say so.
+	Until int
 }
 
 // Role says what a kind is in the grammar.
@@ -472,7 +476,8 @@ var Kinds = []Kind{
 			prop("read", Bool, "Allow memory_read"),
 			prop("write", Bool, "Allow memory_write"),
 			prop("pre_compact_inject", Bool, "Re-inject memory before a compaction"),
-			prop("project_root", Bool, "Key the space on the repository root rather than the working directory (legacy; exclusive with visibility)"),
+			Property{Name: "project_root", Form: Bool, Until: 1,
+				Doc: "Key the space on the repository root rather than the working directory (legacy; exclusive with visibility)"},
 			Property{Name: "visibility", Form: String, Values: []string{"bot", "project", "cross_project", "user", "org", "global"},
 				Doc: "Who sees the space (C170); quoted"},
 		}},

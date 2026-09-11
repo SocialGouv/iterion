@@ -558,7 +558,7 @@ A block opened by `memory:` inside `agent`, `judge`.
 | `read` | bool | Allow memory_read |
 | `write` | bool | Allow memory_write |
 | `pre_compact_inject` | bool | Re-inject memory before a compaction |
-| `project_root` | bool | Key the space on the repository root rather than the working directory (legacy; exclusive with visibility) |
+| `project_root` | bool | Key the space on the repository root rather than the working directory (legacy; exclusive with visibility) — profile 1 only (removed in profile 2) |
 | `visibility` | string — `bot`, `project`, `cross_project`, `user`, `org`, `global` | Who sees the space (C170); quoted |
 
 ### mcp

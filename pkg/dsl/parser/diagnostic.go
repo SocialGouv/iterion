@@ -32,6 +32,7 @@ const (
 	DiagUnknownProfile     DiagCode = "E040" // the header names a profile this build does not read, or is not a positive integer
 	DiagMisplacedHeader    DiagCode = "E041" // the header is not the first declaration, or appears twice
 	DiagDirectiveInProfile DiagCode = "E042" // the profile-1 strict-escape directive in a file of profile 2 or later
+	DiagRemovedInProfile   DiagCode = "E043" // a property the file's profile removed (`project_root:` from profile 2)
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -55,6 +56,7 @@ var hints = map[DiagCode]string{
 	DiagUnknownProfile:      "Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: \">= <version>\" }` in the bundle manifest.",
 	DiagMisplacedHeader:     "Move the `dsl:` line above every declaration — after the leading comments, before the first block or node — and keep a single one.",
 	DiagDirectiveInProfile:  "Profile 2 reads standard escapes in every quoted string by default: delete the `strict-escape` directive (a backslash that must stay literal is written `\\\\`).",
+	DiagRemovedInProfile:    "Keep the file in profile 1 (drop the `dsl: 2` header), or redesign the memory scope: `visibility:` is a different axis (C171), not a drop-in replacement for `project_root:`.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is

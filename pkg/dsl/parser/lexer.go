@@ -90,6 +90,13 @@ func NewLexer(filename, src string) *Lexer {
 	return l
 }
 
+// Profile is the syntax profile the source declared (1 when it declared
+// none, or a header the parser refuses), the reading every string of the
+// token stream got.
+func (l *Lexer) Profile() int {
+	return max(l.profile, 1)
+}
+
 // detectStrictEscape scans the first directives at the top of the file
 // (leading `## key: value` comments before any significant token) and
 // returns true if `## strict-escape: on` is present. Recipes opt into
