@@ -7950,14 +7950,23 @@ tool promote_audit:
 
     out = {"promoted": 0, "audit_dir": "", "notice": ""}
     if not os.path.isdir(sealed) or not os.listdir(sealed):
-        # Distinguish the two, because conflating them is what let a silent
-        # no-op read as success: a converged gate SCORED a held-out set, so at
-        # this point an empty sealed directory means the path is wrong, not
-        # that nothing was withheld.
-        out["notice"] = ("nothing to promote at %s. The gate converged, which means it "
-                         "scored a held-out set — so this directory being empty means the "
-                         "path is WRONG, not that none was withheld. The published evidence "
-                         "for this cycle is missing." % sealed)
+        # Distinguish a wrong path from an empty pile, because conflating them
+        # is what let a silent no-op read as success. A converged gate scored
+        # what the pile HELD, and that is not always a set: the conjunction
+        # passes 0 == 0 on a cycle whose set was spent and published, and on
+        # one whose seal declined because mutants/holdout/ already carried a
+        # committed successor nobody opted into. Only when a set WAS sealed
+        # this cycle does an empty directory here mean the path is wrong —
+        # naming one cause for both sends the operator to debug a path that is
+        # fine, which is the diagnosis this node exists to avoid.
+        out["notice"] = ("nothing to promote at %s. A converged gate scored what the "
+                         "sealed pile HELD, which may have been nothing: a set spent and "
+                         "published in an earlier cycle (holdout_spent_unreplaced), or a "
+                         "seal that declined because mutants/holdout/ already carried a "
+                         "committed successor no gate opted into. Either way the held-out "
+                         "figure was 0/0 and there is no evidence to publish. If a set WAS "
+                         "sealed this cycle, then this path is WRONG and the published "
+                         "evidence is missing." % sealed)
         print(json.dumps(out)); raise SystemExit(0)
 
     os.makedirs(dest, exist_ok=True)
