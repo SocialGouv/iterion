@@ -291,7 +291,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// would then fall back to the workflow name — while a RESUME of that
 		// same run derives the id from the path and lands on a different
 		// memory space. Same rule on both sides, so the two cannot diverge.
-		BotID:          ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
+		BotID:           ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
 		BoardRegister:   s.boardRegister,
 		Compress:        spec.Compress,
 		AutoMemory:      spec.AutoMemory,
