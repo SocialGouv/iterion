@@ -366,16 +366,6 @@ func (rs *runState) setSettledFloor(joinNodeID string, settled []store.IncomingE
 	rs.settledIncoming[joinNodeID] = settled
 }
 
-// incomingState is the PAIR of per-node edge sets a node's input and its
-// artifact contract are both built from. They travel together because either
-// one alone answers half the question: the selection says which live edges
-// fired, the floor says what a stabilized fan-out left behind. A contract
-// built from the selection alone omits exactly what the floor supplied.
-type incomingState struct {
-	selected map[string][]store.IncomingEdge
-	settled  map[string][]store.IncomingEdge
-}
-
 // settledFloorFor returns the floor recorded for nodeID, if any.
 func settledFloorFor(nodeID string, sc resolveScope) []store.IncomingEdge {
 	if sc.rs == nil {

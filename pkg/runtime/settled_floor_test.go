@@ -778,7 +778,7 @@ func TestSettledFloor_HumanCollectorPublishesItsFloorDependency(t *testing.T) {
 		map[string]map[string]any{"planner": {"ok": true}},
 		map[string]map[string]any{"plan": {"ok": true}},
 		map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 0}},
-		incomingState{settled: map[string][]store.IncomingEdge{"approve": {incomingFromEdge(edge)}}},
+		&store.Checkpoint{SettledIncoming: map[string][]store.IncomingEdge{"approve": {incomingFromEdge(edge)}}},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -788,6 +788,67 @@ func TestSettledFloor_HumanCollectorPublishesItsFloorDependency(t *testing.T) {
 	}
 	if artifact.Contract == nil || len(artifact.Contract.Dependencies) != 1 || artifact.Contract.Dependencies[0].NodeID != "planner" {
 		t.Fatalf("human artifact contract = %+v — the collector consumed {{artifacts.plan}} through the floor, so its published approval depends on it", artifact.Contract)
+	}
+}
+
+// The contract for a human collector is computed from a state built BY HAND
+// on the resume path, and the floor's artifact refs now depend on how it
+// RESOLVES. Hand that state fewer namespaces than the node's input was built
+// from and the shared function answers the two callers differently: two
+// alternatives that disagree through `{{vars.*}}` read nil == nil, agree, and
+// record as REQUIRED an artifact the collector never consumed.
+func TestSettledFloor_HumanContractResolvesInTheSameNamespacesAsTheInput(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "human-vars", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	human := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "approve"}, Publish: "approval"}
+	// The two alternatives differ ONLY through the var they read; the two
+	// artifacts have identical bodies, so a path that cannot see vars finds
+	// them equal and calls it agreement.
+	alt := func(varName, artifactName string, isElse bool) *ir.Edge {
+		raw := "{{vars." + varName + "}}/{{artifacts." + artifactName + "}}"
+		return &ir.Edge{From: "dead", To: "approve", IsElse: isElse, Condition: map[bool]string{true: "", false: "ok"}[isElse], With: []*ir.DataMapping{{
+			Key: "choice", Raw: raw,
+			Refs: []*ir.Ref{
+				{Kind: ir.RefVars, Path: []string{varName}},
+				{Kind: ir.RefArtifacts, Path: []string{artifactName}},
+			},
+		}}}
+	}
+	whenEdge, elseEdge := alt("a_pick", "plan", false), alt("b_pick", "notes", true)
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"noter":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "noter"}, Publish: "notes"},
+		"dead":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dead"}},
+		"approve": human,
+	}, Edges: []*ir.Edge{whenEdge, elseEdge}}, s, newStubExecutor())
+
+	if _, err := eng.materializeHumanArtifact(
+		ctx, "human-vars", "approve", map[string]any{"approved": true},
+		map[string]int{"planner": 1, "noter": 1},
+		map[string]map[string]any{},
+		map[string]map[string]any{"plan": {"same": true}, "notes": {"same": true}},
+		map[string]store.ArtifactRevisionRef{
+			"plan":  {NodeID: "planner", Version: 0},
+			"notes": {NodeID: "noter", Version: 0},
+		},
+		&store.Checkpoint{
+			Vars: map[string]any{"a_pick": "A", "b_pick": "B"},
+			SettledIncoming: map[string][]store.IncomingEdge{
+				"approve": {incomingFromEdge(whenEdge), incomingFromEdge(elseEdge)},
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := s.LoadArtifact(ctx, "human-vars", "approve", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Contract != nil && len(artifact.Contract.Dependencies) != 0 {
+		t.Fatalf("contract dependencies = %+v — the two alternatives disagree through {{vars.*}}, so `choice` never reached the collector; a contract blind to vars reads them as equal and records an artifact nobody consumed, which a later resume can refuse over", artifact.Contract.Dependencies)
 	}
 }
 

@@ -919,8 +919,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	artifactRevisions := artifactState.revisions
 	artifacts := artifactState.artifacts
 	artifactOwners := artifactState.owners
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions,
-		incomingState{selected: cp.SelectedIncoming, settled: cp.SettledIncoming})
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp)
 	if err != nil {
 		return err
 	}
@@ -1194,7 +1193,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, outputs, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef, incoming incomingState) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, outputs, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef, cp *store.Checkpoint) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
 		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
@@ -1205,11 +1204,29 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	if artifactRevisions == nil {
 		artifactRevisions = make(map[string]store.ArtifactRevisionRef)
 	}
+	if cp == nil {
+		cp = &store.Checkpoint{}
+	}
+	// The contract is computed from a state built BY HAND here, and the
+	// artifact refs it records now depend on how the settled floor RESOLVES
+	// — a conflict between two alternatives is decided on values, not on
+	// edge identities alone. So this state has to carry the same namespaces
+	// the node's input was built from, or the two callers of
+	// settledFloorMappings hand it different worlds and it answers them
+	// differently: two mappings disagreeing only through `{{vars.x}}` would
+	// read nil == nil here, agree, and record as REQUIRED an artifact the
+	// collector never consumed — which a later resume can refuse over.
+	// Sharing a function is not sharing an answer; both callers now read the
+	// same checkpoint.
 	contractState := &runState{
 		outputs: outputs, artifacts: artifacts, artifactVersions: artifactVersions,
-		artifactRevisions: artifactRevisions,
-		selectedIncoming:  cloneIncoming(incoming.selected),
-		settledIncoming:   cloneIncoming(incoming.settled),
+		artifactRevisions:  artifactRevisions,
+		selectedIncoming:   cloneIncoming(cp.SelectedIncoming),
+		settledIncoming:    cloneIncoming(cp.SettledIncoming),
+		vars:               cp.Vars,
+		loopCounters:       cp.LoopCounters,
+		loopPreviousOutput: cp.LoopPreviousOutput,
+		loopCurrentOutput:  cp.LoopCurrentOutput,
 	}
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
