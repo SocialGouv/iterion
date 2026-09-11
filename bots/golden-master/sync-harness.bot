@@ -7197,6 +7197,15 @@ tool sync_harness:
                      "has not earned. See skills/oracle-mutation.md."
                      % json.dumps(gaps, ensure_ascii=False))
 
+            probe_gaps = missing_corpus_probes(corpus, config)
+            if probe_gaps:
+                report["missing_corpus_probes"] = probe_gaps
+                bail("the corpus is missing required probes: %s. A mutant can only test "
+                     "what the corpus watches; every probe here is a regression class "
+                     "that shipped through a corpus hole once. See "
+                     "skills/surface-discovery.md."
+                     % json.dumps(probe_gaps, ensure_ascii=False))
+
             # A held-out set that repeats an already-spent one is not held out at
             # all: its mutants are committed under mutants/audit/ where anyone,
             # including the hardening loop, can read them. Reuse is refused by
@@ -7220,15 +7229,6 @@ tool sync_harness:
                      "draw a fresh one, or the held-out figure measures "
                      "nothing the hardening loop could not already see."
                      % ", ".join(report["holdout_reused"]))
-
-            probe_gaps = missing_corpus_probes(corpus, config)
-            if probe_gaps:
-                report["missing_corpus_probes"] = probe_gaps
-                bail("the corpus is missing required probes: %s. A mutant can only test "
-                     "what the corpus watches; every probe here is a regression class "
-                     "that shipped through a corpus hole once. See "
-                     "skills/surface-discovery.md."
-                     % json.dumps(probe_gaps, ensure_ascii=False))
 
             # The perimeter check runs on the TREE, before the application boots:
             # an unwatched route is a fact of the corpus, not of the run.
