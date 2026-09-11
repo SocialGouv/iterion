@@ -81,7 +81,7 @@ func TestAPackagesOwnMaxPagesIsClamped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &Executor{Client: srv.Client()}
+	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 5000)
 	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
 	if err != nil {
@@ -120,7 +120,7 @@ func TestACursorThatDoesNotAdvanceStopsTheWalk(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &Executor{Client: srv.Client()}
+	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 50)
 	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
 	if err != nil {
@@ -163,7 +163,7 @@ func TestAWalkStopsOnItsByteBudget(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &Executor{Client: srv.Client()}
+	e := &Executor{Client: MarkGuarded(srv.Client())}
 	// A page ceiling far above what the byte budget allows, so the stop can
 	// only come from the bytes.
 	pkg, op := walkFixture(srv.URL, 400)
@@ -216,7 +216,7 @@ func TestAWalkThatFailsMidWayStillReportsWhatItSpent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &Executor{Client: srv.Client()}
+	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 50)
 	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
 	if err != nil {
@@ -268,7 +268,7 @@ func TestAWalkThatDiesOnTransportReportsThePagesItSpent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &Executor{Client: srv.Client()}
+	e := &Executor{Client: MarkGuarded(srv.Client())}
 	pkg, op := walkFixture(srv.URL, 50)
 	_, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
 	if err != nil {

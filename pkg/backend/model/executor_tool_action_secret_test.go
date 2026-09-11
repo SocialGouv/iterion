@@ -41,7 +41,7 @@ func queryTokenNode(t *testing.T, base, secretValue string) (*model.ClawExecutor
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
 		model.WithSecretGuard(guard),
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: base}, http.DefaultClient))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: base}, exec.MarkGuarded(&http.Client{})))
 	return e, node
 }
 

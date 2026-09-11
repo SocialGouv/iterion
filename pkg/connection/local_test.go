@@ -136,3 +136,15 @@ func TestTheGuardsRefusalIsNotAnUndecidedMutation(t *testing.T) {
 		t.Errorf("cause = %v, want it to still name %s", res.Err.Cause, connection.AllowPrivateHostsEnv)
 	}
 }
+
+// The one constructor a production connector call goes out on must produce a
+// client the executor accepts.
+//
+// The executor's own tests cannot show this: each of them marks the stub it
+// injects, so they would all stay green with the production wiring dropped.
+// This is the witness reachable only through that line.
+func TestTheProductionClientIsFitToCarryAConnectorCall(t *testing.T) {
+	if !exec.IsGuarded(connection.LocalHTTPClient()) {
+		t.Error("LocalHTTPClient must mark the client it returns: an unmarked one is refused at the first call, and it is the only client a connector node has")
+	}
+}

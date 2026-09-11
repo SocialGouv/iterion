@@ -268,3 +268,55 @@ func TestConnectionsAddRefusesACredentialThatCannotAuthenticate(t *testing.T) {
 		})
 	}
 }
+
+// A helper that returns the right string is not the promise; the promise is
+// that an operator SEES it. Both surfaces are asserted because a record created
+// before this warning existed is never re-added, so `list` is the only place it
+// can still be told — and because the warning must be about the SCHEME, not
+// about flagging every connection, which asserting one http origin alone would
+// not distinguish.
+func TestAnHTTPOriginIsFlaggedOnAddAndOnEveryList(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	// Opens the private-host hatch so the only advice in the output is the one
+	// under test; a LAN address keeps DNS out of a unit test.
+	t.Setenv("ITERION_CONNECTOR_ALLOW_PRIVATE", "1")
+	storeDir := filepath.Join(ws, ".iterion")
+
+	var add bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Alias: "cleartext", Scheme: "token",
+		BaseURL:  "http://192.168.1.10:3000",
+		TokenEnv: "FORGE_TEST_TOKEN",
+		StoreDir: storeDir,
+	}, &add); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if !strings.Contains(add.String(), "plain http") {
+		t.Errorf("an http origin must be flagged when the operator CHOOSES it, got:\n%s", add.String())
+	}
+
+	var addTLS bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Alias: "encrypted", Scheme: "token",
+		BaseURL:  "https://192.168.1.20:3000",
+		TokenEnv: "FORGE_TEST_TOKEN",
+		StoreDir: storeDir,
+	}, &addTLS); err != nil {
+		t.Fatalf("add https: %v", err)
+	}
+	if strings.Contains(addTLS.String(), "plain http") {
+		t.Errorf("an https origin must not be flagged, got:\n%s", addTLS.String())
+	}
+
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(storeDir, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	out := list.String()
+	if strings.Count(out, "plain http") != 1 {
+		t.Errorf("list must flag the http connection and only it, got:\n%s", out)
+	}
+	if !strings.Contains(out, "192.168.1.10:3000") {
+		t.Errorf("the warning must name the host it is about, got:\n%s", out)
+	}
+}
