@@ -849,9 +849,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.assistantWatchCancel()
 		s.assistantWatchCancel = nil
 	}
-	if s.assistantMissionCancel != nil {
-		s.assistantMissionCancel()
-		s.assistantMissionCancel = nil
+	// Swapped under s.stateMu by restartAssistantMissions (a project switch
+	// races a shutdown), so read-and-clear it under the same lock and call
+	// the cancel outside — it reaches back into the server.
+	s.stateMu.Lock()
+	missionCancel := s.assistantMissionCancel
+	s.assistantMission, s.assistantMissionCancel = nil, nil
+	s.stateMu.Unlock()
+	if missionCancel != nil {
+		missionCancel()
 	}
 	if s.gateAutofixCancel != nil {
 		s.gateAutofixCancel()

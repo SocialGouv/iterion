@@ -35,6 +35,10 @@ type assistantMissionCoordinator struct {
 	watches  runwatch.Store
 	missions assistantmission.Store
 	worker   string
+	// wake carries at most one pending sweep request from the event bus to
+	// sweepLoop. Buffered size 1 so a burst of run events coalesces into one
+	// extra pass instead of one goroutine each.
+	wake chan struct{}
 }
 
 func (s *Server) startAssistantMissions() {
@@ -48,13 +52,28 @@ func (s *Server) startAssistantMissions() {
 	s.restartAssistantMissions(s.runs, s.assistantWatches, s.assistantMissions)
 }
 
+// restartAssistantMissions is called at boot AND on a project switch, from
+// projects.go AFTER s.stateMu is released — while a request goroutine reads
+// s.assistantMission and Shutdown reads s.assistantMissionCancel. Both
+// fields are therefore shared state and take s.stateMu: `race` is a
+// required check here, and the interleaving that made it one (a switch
+// racing a shutdown) also drops a cancel and leaks a coordinator.
+//
+// The lock is never held across the bus subscription or the previous
+// coordinator's cancel — eventsBus and the cancel closure reach back into
+// the server.
 func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatch.Store, missions assistantmission.Store) {
-	if s.assistantMissionCancel != nil {
-		s.assistantMissionCancel()
+	s.stateMu.Lock()
+	prevCancel := s.assistantMissionCancel
+	s.assistantMission, s.assistantMissionCancel = nil, nil
+	s.stateMu.Unlock()
+	if prevCancel != nil {
+		prevCancel()
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &assistantMissionCoordinator{server: s, runs: runs, watches: watches, missions: missions, worker: "assistant-mission:" + uuid.NewString()}
-	s.assistantMission = c
+	c.wake = make(chan struct{}, 1)
 	cancelBus := func() {}
 	if bus := s.eventsBus(); bus != nil {
 		if stop, err := bus.Subscribe("assistant-mission-"+uuid.NewString(), trigger.Matcher{Sources: []trigger.Source{trigger.SourceRun}}, c.handleEvent); err != nil {
@@ -63,13 +82,41 @@ func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatc
 			cancelBus = stop
 		}
 	}
+
+	s.stateMu.Lock()
+	s.assistantMission = c
 	s.assistantMissionCancel = func() { cancelBus(); cancel() }
+	s.stateMu.Unlock()
 	go c.sweepLoop(ctx)
 }
 
+// handleEvent coalesces instead of spawning. The matcher filters only by
+// source, so every started/finished/failed/cancelled/paused of every run
+// arrives here; `go c.sweep(context.Background())` per event was unbounded
+// in count AND detached from the ctx restartAssistantMissions cancels, so a
+// burst produced a burst of concurrent ListReconcileCandidates(250) passes
+// and a project switch left them running against the old stores.
+//
+// A size-1 buffered channel is the whole mechanism: one pending wake-up is
+// all a sweep that re-reads the store needs, and the drain happens on the
+// coordinator's own goroutine under its own ctx.
 func (c *assistantMissionCoordinator) handleEvent(context.Context, trigger.Event) error {
-	go c.sweep(context.Background())
+	c.nudge()
 	return nil
+}
+
+// nudge asks for one extra sweep without blocking the caller. Dropping the
+// request when one is already queued is the point: a sweep re-reads the
+// whole candidate page, so a second pending wake-up would find nothing the
+// first will not.
+func (c *assistantMissionCoordinator) nudge() {
+	if c == nil || c.wake == nil {
+		return
+	}
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (c *assistantMissionCoordinator) sweepLoop(ctx context.Context) {
@@ -80,6 +127,8 @@ func (c *assistantMissionCoordinator) sweepLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.wake:
+			c.sweep(ctx)
 		case <-ticker.C:
 			c.sweep(ctx)
 		}
@@ -602,8 +651,14 @@ func (s *Server) handleCreateAssistantMission(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, status, "create assistant mission: %v", err)
 		return
 	}
-	if s.assistantMission != nil {
-		go s.assistantMission.sweep(context.Background())
+	// The coordinator pointer is swapped on a project switch, so read it
+	// under the lock and nudge it through its own wake channel — a `go
+	// sweep` here would run detached from the ctx that switch cancels.
+	s.stateMu.RLock()
+	coordinator := s.assistantMission
+	s.stateMu.RUnlock()
+	if coordinator != nil {
+		coordinator.nudge()
 	}
 	s.writeJSONFor(w, r, persisted)
 }

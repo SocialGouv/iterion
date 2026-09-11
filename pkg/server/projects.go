@@ -416,12 +416,16 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	// runs-stats memo so per-run cost from the previous project can't
 	// linger (and the cache can't grow unbounded across switches).
 	s.statsCache.clear()
+	// Snapshotted under the lock: the restart below runs outside it and must
+	// not read a field another switch could be writing. A switch that
+	// supplied no new watch store keeps the one already installed.
+	watchesForMissions := s.assistantWatches
 	s.stateMu.Unlock()
 	if newAssistantWatches != nil && s.assistantWatch != nil {
 		s.assistantWatch.setStore(newAssistantWatches)
 	}
 	if newAssistantMissions != nil {
-		s.restartAssistantMissions(newRuns, s.assistantWatches, newAssistantMissions)
+		s.restartAssistantMissions(newRuns, watchesForMissions, newAssistantMissions)
 	}
 
 	// Re-point the concurrency gate's reservation source at the new run
