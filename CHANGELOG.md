@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.139.0](https://github.com/SocialGouv/iterion/compare/v3.138.2...v3.139.0) (2026-09-11)
+
+### Features
+
+* **sec-audit:** the capped findings can travel in the envelope, so triage is not pinned to one backend ([#1141](https://github.com/SocialGouv/iterion/issues/1141)) ([5551f72](https://github.com/SocialGouv/iterion/commit/5551f721157eccd824c41a33e57056a6599e2a0c))
+
+    <details><summary>why</summary>
+
+    triage reads the scanner findings through json_paths — it opens the files the tool nodes wrote. That works only where triage shares a filesystem with those nodes, and exactly one backend does: the sandbox-routed claude_code. `claw` is in-process and never enters the sandbox (delegate.go: "In-process backends (claw) refuse to start when this is set"), and `codex` refuses to run inside one at all (codex.go: "cannot run inside Iterion %s sandbox with the pinned SDK").
+
+    </details>
+
 ## [3.138.2](https://github.com/SocialGouv/iterion/compare/v3.138.1...v3.138.2) (2026-09-11)
 
 ### Bug Fixes
