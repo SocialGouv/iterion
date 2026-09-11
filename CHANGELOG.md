@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.136.2](https://github.com/SocialGouv/iterion/compare/v3.136.1...v3.136.2) (2026-09-11)
+
+### Bug Fixes
+
+* **runtime:** a convergence its whole fan-out failed lost every incoming mapping ([#1120](https://github.com/SocialGouv/iterion/issues/1120)) ([4745fd9](https://github.com/SocialGouv/iterion/commit/4745fd9fd9c8b9a13ad382879bf4167024dafb64)), references [#559](https://github.com/SocialGouv/iterion/issues/559) [#1113](https://github.com/SocialGouv/iterion/issues/1113) [#484](https://github.com/SocialGouv/iterion/issues/484) [#484](https://github.com/SocialGouv/iterion/issues/484) [#559](https://github.com/SocialGouv/iterion/issues/559) [#1113](https://github.com/SocialGouv/iterion/issues/1113) [#1118](https://github.com/SocialGouv/iterion/issues/1118) [#484](https://github.com/SocialGouv/iterion/issues/484)
+
+    <details><summary>why</summary>
+
+    When a fan-out stabilizes without a single branch producing output — every branch failed under `best_effort` (#559), or a `fan_out_each` fanned over an empty collection (#1113, the twin site) — the convergence node ran with NO incoming `with` mapping at all. Not just the ones reading the dead branches: also the ones reading a durable parent output or a var, which the failure never touched. A `tool` node was then handed the literal `{{input.x}}` in its command, since shell rendering deliberately…
+
+    </details>
+
 ## [3.136.1](https://github.com/SocialGouv/iterion/compare/v3.136.0...v3.136.1) (2026-09-10)
 
 ### Bug Fixes
