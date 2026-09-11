@@ -75,10 +75,7 @@ func NewLexer(filename, src string) *Lexer {
 	// The head of the file decides how the rest is read (ReadPreamble): a
 	// header the parser will refuse (E040) reads as profile 1 meanwhile.
 	pre := ReadPreamble(src)
-	profile := pre.Profile
-	if profile < 1 {
-		profile = 1
-	}
+	profile := max(pre.Profile, 1)
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,
@@ -219,6 +216,14 @@ func (l *Lexer) handleLineStart() {
 
 	// Blank line or end of file — skip
 	if l.pos >= len(l.src) || l.src[l.pos] == '\n' {
+		if l.promptMode && l.profile > 1 && l.pos < len(l.src) {
+			// Profile 2 keeps a paragraph break inside a prompt body: an
+			// empty prompt line, whatever spaces the line held. The parser
+			// trims trailing ones, so the blank line after a body is not
+			// part of it. Profile 1 skips every blank line — the model gets
+			// one newline for a paragraph break — a rule frozen with it.
+			l.emit(TokenPromptLine, "", l.line, 1)
+		}
 		if l.pos < len(l.src) {
 			l.advance() // consume '\n'
 		}

@@ -142,7 +142,7 @@ func canonicalPrompts(f *ast.File) *ast.File {
 	cp.Prompts = make([]*ast.PromptDecl, len(f.Prompts))
 	for i, p := range f.Prompts {
 		q := *p
-		q.Body = parser.CanonicalPromptBody(p.Body)
+		q.Body = parser.CanonicalPromptBodyIn(f.EffectiveProfile(), p.Body)
 		cp.Prompts[i] = &q
 	}
 	return &cp

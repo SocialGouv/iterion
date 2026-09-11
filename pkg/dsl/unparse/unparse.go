@@ -392,13 +392,19 @@ func (w *fileWriter) writePrompts(prompts []*ast.PromptDecl) {
 		// carry at all (parser.CheckPromptBody) lands as its nearest form,
 		// de-indented; Verify, which every production caller runs on this
 		// text, refuses it by name.
-		body := parser.CanonicalPromptBody(p.Body)
+		body := parser.CanonicalPromptBodyIn(w.profile, p.Body)
 		if body == "" {
 			// A bare header IS the empty prompt; an indented blank line
 			// would be neither a body nor a valid empty form.
 			continue
 		}
 		for _, line := range strings.Split(body, "\n") {
+			if line == "" {
+				// A paragraph break, which only profile 2's canonical form
+				// holds: written blank, never indented.
+				w.b.WriteByte('\n')
+				continue
+			}
 			w.b.WriteString("  ")
 			w.b.WriteString(line)
 			w.b.WriteByte('\n')

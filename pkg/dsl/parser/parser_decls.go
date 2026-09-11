@@ -465,6 +465,12 @@ func (p *parser) parsePromptDecl() *ast.PromptDecl {
 		}
 	}
 
+	// Trailing empty lines are the blank lines between the body and the
+	// next declaration — profile 2 emits them, since it keeps a paragraph
+	// break; a body never ends with a newline, in either profile.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	body := strings.Join(lines, "\n")
 
 	return &ast.PromptDecl{
