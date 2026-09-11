@@ -357,7 +357,9 @@ func TestDirForMainBot(t *testing.T) {
 					}
 					continue
 				}
-				if err := os.WriteFile(mp, []byte("name: x\n"), 0o644); err != nil {
+				// An iterion manifest: it carries the key every one of
+				// ours has (a foreign one marks nothing, see below).
+				if err := os.WriteFile(mp, []byte("schema_version: 1\nname: x\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -382,5 +384,60 @@ func TestDirForMainBot_MarkersAreLayoutConstants(t *testing.T) {
 		if m != DirSkills && m != ManifestFile && m != ManifestFileAlt {
 			t.Errorf("marker %q is none of DirSkills, ManifestFile, ManifestFileAlt", m)
 		}
+	}
+}
+
+// TestDirForMainBot_ManifestMustBeIterions: a manifest marks a bundle only
+// when it claims to be iterion's. A `manifest.yaml` of another tool beside
+// a loose main.bot — a common filename — marks nothing, so the file
+// compiles alone as it always did; an iterion manifest that does not
+// DECODE still marks its bundle (the loader's refusal is then loud, on
+// every surface, instead of a run starting without its prompts and
+// skills); and a `skills/` marks regardless.
+func TestDirForMainBot_ManifestMustBeIterions(t *testing.T) {
+	cases := []struct {
+		name     string
+		manifest string
+		content  string
+		want     bool
+	}{
+		{"foreign manifest.yaml", ManifestFile, "apiVersion: v2\nname: my-chart\nversion: 1.0.0\n", false},
+		{"foreign manifest.yml", ManifestFileAlt, "manifest_version: 3\nname: ext\n", false},
+		{"iterion manifest.yml", ManifestFileAlt, "schema_version: 1\nname: x\n", true},
+		{"broken iterion manifest", ManifestFile, "schema_version: 99\nname: [broken\n", true},
+		{"iterion key deeper than schema_version", ManifestFile, "name: x\ndisplay_name: X\n", true},
+		{"empty manifest", ManifestFile, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "b")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, MainBotFile), []byte("workflow x:\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, tc.manifest), []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := DirForMainBot(filepath.Join(dir, MainBotFile))
+			if tc.want && got != dir {
+				t.Errorf("DirForMainBot = %q, want %q", got, dir)
+			}
+			if !tc.want && got != "" {
+				t.Errorf("DirForMainBot = %q, want \"\" (a manifest that is not iterion's marks nothing)", got)
+			}
+		})
+	}
+	// A directory named like a manifest is not a manifest.
+	dir := filepath.Join(t.TempDir(), "b")
+	if err := os.MkdirAll(filepath.Join(dir, ManifestFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, MainBotFile), []byte("workflow x:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != "" {
+		t.Errorf("a directory named manifest.yaml marked a bundle: %q", got)
 	}
 }

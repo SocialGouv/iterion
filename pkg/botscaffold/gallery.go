@@ -199,7 +199,7 @@ func Templates() []Template {
 			Description: "One agent works in passes; the repo's own checks gate; a bounded loop with a typed failure.",
 			Spec: Spec{
 				Shape:        "campaign-loop",
-				Description:  "Carries a mission to completion in verified, committed passes.",
+				Description:  "Carries a mission to completion in verified, committed passes. The verifier needs jq on the run's PATH (every iterion sandbox image ships it).",
 				WhenToUse:    "Use for work that must converge on a deterministic check (build, tests) rather than an opinion.",
 				Instructions: "Describe the campaign: what to change, where, and what \"done\" means.\nThe agent works in passes and commits each unit; after every pass the\nverifier runs {{vars.verify_command}} and its exit code is the verdict.",
 				Vars: []VarSpec{

@@ -152,18 +152,21 @@ var varRefRe = regexp.MustCompile(`(?:\{\{\s*vars\.|(?:^|[^.\w])vars\.)([a-z_][a
 // to it), which is what lets a missing var be refused by name at the form
 // rather than met as C033 after it.
 func shapeVarRefs(shape string) []string {
-	dir := path.Join(galleryRoot, shape)
+	return varRefsIn(galleryFS, path.Join(galleryRoot, shape))
+}
+
+// varRefsIn is shapeVarRefs over any file system: the vars the shape
+// rooted at dir references in the files rendered against the Spec.
+func varRefsIn(fsys fs.FS, dir string) []string {
 	seen := map[string]bool{}
-	_ = fs.WalkDir(galleryFS, dir, func(p string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(fsys, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		// A child workflow the shape ships (worker.bot) declares its own
-		// vars; only main.bot and the prompts read the Spec's.
-		if name := strings.TrimSuffix(d.Name(), ".tmpl"); name != "main.bot" && strings.HasSuffix(name, ".bot") {
+		if !scansForVarRefs(strings.TrimPrefix(p, dir+"/")) {
 			return nil
 		}
-		raw, err := galleryFS.ReadFile(p)
+		raw, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return err
 		}
@@ -178,6 +181,19 @@ func shapeVarRefs(shape string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// scansForVarRefs says whether a shape file (its path relative to the
+// shape's directory) is read for `vars.<name>` references — an ALLOW
+// list: main.bot and the prompts are rendered against the Spec's vars
+// block, so a reference there is a var the Spec must declare. Everything
+// else is not: a child workflow (worker.bot) declares its own vars, a
+// skill is mirrored VERBATIM into `.claude/skills/` and an attachment is
+// a default input — a `{{vars.x}}` either documents in prose would
+// otherwise demand a var the workflow does not read.
+func scansForVarRefs(rel string) bool {
+	name := strings.TrimSuffix(rel, ".tmpl")
+	return name == "main.bot" || strings.HasPrefix(name, "prompts/")
 }
 
 // sortedAnnexes returns the annex paths in a stable order.

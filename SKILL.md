@@ -40,7 +40,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 
 | Template | Shape |
 |---|---|
-| `campaign-loop` | an entry gate (unset `verify_command` = typed refusal) → one agent in passes → a `tool` running the repo's own checks → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
+| `campaign-loop` | an entry gate (unset `verify_command` = typed refusal) → one agent in passes → a `tool` running the repo's own checks (needs `jq` on the run's PATH; every iterion image ships it) → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
 | `review-fanout` | a `tool` scope gate (empty scope = typed refusal) → `router fan_out_all` → two read-only reviewers → a `compute` with `await: wait_all` → a typed blocked verdict |
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |

@@ -178,7 +178,7 @@ func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 	}
 	b, err := bundle.OpenDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("%s is the entrypoint of bundle %s, which does not open: %w (a main.bot beside a manifest.yaml or a skills/ is that bundle; if the manifest is not iterion's, give main.bot a directory of its own)", filePath, dir, err)
+		return nil, fmt.Errorf("%s is the entrypoint of bundle %s, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", filePath, dir, err)
 	}
 	return b, nil
 }

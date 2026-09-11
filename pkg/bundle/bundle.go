@@ -16,8 +16,10 @@
 package bundle
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // Layout directory names. A bundle resolves each by convention at its
@@ -58,11 +60,43 @@ const (
 )
 
 // dirMarkers are the sibling entries that mark a directory as a bundle
-// rather than somewhere a loose main.bot happens to sit. Both manifest
-// spellings count: the loader accepts either, and a marker the loader
-// reads but the promotion ignores would give the file and the directory
+// rather than somewhere a loose main.bot happens to sit. A manifest marks
+// only when it is iterion's (manifestIsIterions): `manifest.yaml` and
+// `manifest.yml` are common filenames of other tools, and a bundle that
+// carries a marker but does not open is refused on every surface — so a
+// foreign manifest beside a loose main.bot must mark nothing, while an
+// iterion manifest that does not decode must still mark its bundle, so the
+// open fails loudly instead of the run starting without its prompts and
+// skills. Both spellings count, as the loader reads both: a marker the
+// loader reads but the promotion ignored gave the file and the directory
 // forms of the same bundle two verdicts.
 var dirMarkers = []string{DirSkills, ManifestFile, ManifestFileAlt}
+
+// iterionManifestKeyRe matches a top-level key only an iterion manifest
+// carries. `name`, `version`, `description` are every tool's; these are
+// ours, and `schema_version` is required of every manifest that decodes.
+var iterionManifestKeyRe = regexp.MustCompile(`(?m)^(schema_version|display_name|when_to_use|invocations|dispatch_vars|produces|consumes|config_share|usage_window|compat|triggers)\s*:`)
+
+// manifestIsIterions reports whether path is a manifest file that CLAIMS
+// to be iterion's: a regular file carrying at least one of the top-level
+// keys only an iterion manifest has. Whether it then DECODES is the
+// loader's verdict, not this one's. Read bounded — a manifest is small,
+// and this runs on every path a workflow is opened from.
+func manifestIsIterions(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return false
+	}
+	head, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	if err != nil {
+		return false
+	}
+	return iterionManifestKeyRe.Match(head)
+}
 
 // DirForMainBot returns the bundle directory holding path, or "" when
 // path is not a bundle's main.bot.
@@ -83,7 +117,14 @@ func DirForMainBot(path string) string {
 	}
 	parent := filepath.Dir(abs)
 	for _, marker := range dirMarkers {
-		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
+		p := filepath.Join(parent, marker)
+		if marker == DirSkills {
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				return parent
+			}
+			continue
+		}
+		if manifestIsIterions(p) {
 			return parent
 		}
 	}
