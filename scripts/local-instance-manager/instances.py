@@ -28,8 +28,17 @@ import webbrowser
 
 
 SCHEMA_VERSION = 1
-TERMINAL_RUN_STATES = {"success", "succeeded", "finished", "failed", "cancelled", "canceled"}
-HUMAN_GATE_MARKERS = ("waiting_human", "human_input", "operator_pause")
+ACTIVE_RUN_STATES = frozenset({"running", "queued"})
+TERMINAL_RUN_STATES = frozenset({"finished", "failed", "failed_resumable", "cancelled"})
+DORMANT_RUN_STATES = frozenset({"paused_waiting_human", "paused_operator"})
+KNOWN_RUN_STATES = ACTIVE_RUN_STATES | TERMINAL_RUN_STATES | DORMANT_RUN_STATES
+TARGET_GATE_STATES = DORMANT_RUN_STATES
+RUN_SUMMARY_FINGERPRINT_FIELDS = (
+    "id", "status", "updated_at", "finished_at", "end_reason", "failure_code",
+)
+DISPATCHER_DESIRED_STATES = frozenset({"running", "paused", "stopped"})
+DIAGNOSTIC_LIMIT = 12
+RUN_SUMMARY_VALUE_LIMIT = 512
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 AUTHORITY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -598,6 +607,20 @@ class Manager:
         capability = self.capability(instance, run_id) if state == "up" else {"state": "not-probed", "http_status": None}
         run_status, run_payload = (self.http_json(self.url(instance), f"/api/runs/{run_id}") if run_id and state == "up" else (None, None))
         run_summary = self.summarize_run(run_payload)
+        store = self.store(root, instance, pid)
+        inventory = None
+        intent = None
+        admission_blockers: list[dict[str, Any]] = []
+        if run_id and state == "up":
+            inventory = self.run_inventory(instance)
+            intent = self.dispatcher_intent(store)
+            admission_blockers = self.admission_blockers(run_summary, inventory, run_id)
+            if capability["state"] != "absent-recoverable":
+                admission_blockers.append({
+                    "code": "BOOTSTRAP_NOT_NEEDED",
+                    "message": "le bootstrap exige un adaptateur assistant-missions absent avec HTTP 404",
+                    "capability": capability,
+                })
         server = {"reachable": status == 200, "http_status": status, "info": info if isinstance(info, dict) else None}
         if isinstance(info, dict) and info.get("work_dir"):
             try:
@@ -637,6 +660,15 @@ class Manager:
             "run": run_summary,
             "live_binary": live_binary,
             "live_binary_sha256": live_binary_sha256,
+            "inventory_fingerprint": inventory["fingerprint"] if inventory else None,
+            "dispatcher_intent_sha256": intent["sha256"] if intent else None,
+        }
+        deployment_eligibility = {
+            "evaluated": inventory is not None and intent is not None,
+            "eligible": inventory is not None and intent is not None and not admission_blockers,
+            "blockers": self._bounded(admission_blockers),
+            "inventory": self.public_inventory(inventory) if inventory else None,
+            "dispatcher_intent": intent,
         }
         return {
             "schema_version": SCHEMA_VERSION,
@@ -651,7 +683,7 @@ class Manager:
                 "selected_binary_matches_live": live_binary_sha256 == selected_sha256 if live_binary_sha256 else None,
                 "launch": launch,
             },
-            "store": self.store(root, instance, pid),
+            "store": store,
             "engine": {
                 "source_repository": str(Path(profile["source_repository"]).expanduser().resolve()),
                 "integration_base_ref": profile["integration_base_ref"],
@@ -661,6 +693,7 @@ class Manager:
             "server": server,
             "assistant_missions": capability,
             "run": {"id": run_id, "http_status": run_status, "data": run_summary},
+            "deployment_eligibility": deployment_eligibility,
             "context_token": json_hash(token_body),
         }
 
@@ -818,25 +851,205 @@ class Manager:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait(timeout=5)
 
-    def active_runs(self, instance: Instance) -> list[dict[str, Any]]:
+    @staticmethod
+    def _bounded(entries: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "total": len(entries),
+            "entries": entries[:DIAGNOSTIC_LIMIT],
+            "omitted": max(0, len(entries) - DIAGNOSTIC_LIMIT),
+        }
+
+    @staticmethod
+    def _optional_summary_string(item: dict[str, Any], field: str, index: int) -> str:
+        value = item.get(field)
+        if value is None or value == "":
+            return ""
+        if not isinstance(value, str):
+            fail(
+                "RUN_INVENTORY_INVALID",
+                f"le champ {field} d'un run doit être une chaîne ou null",
+                index=index,
+                field=field,
+                actual_type=type(value).__name__,
+            )
+        if len(value) > RUN_SUMMARY_VALUE_LIMIT:
+            fail("RUN_INVENTORY_INVALID", f"le champ {field} d'un run est trop long", index=index, field=field)
+        return value
+
+    def run_inventory(self, instance: Instance) -> dict[str, Any]:
+        """Read and validate one complete, unfiltered RunSummary inventory."""
         status, payload = self.http_json(self.url(instance), "/api/runs")
         if status != 200:
             fail("RUN_INVENTORY_UNAVAILABLE", "impossible d'énumérer les runs avant déploiement", http_status=status)
         if isinstance(payload, dict):
-            candidates = payload.get("runs") or payload.get("items") or []
+            if "runs" in payload:
+                candidates = payload["runs"]
+            elif "items" in payload:
+                candidates = payload["items"]
+            else:
+                fail("RUN_INVENTORY_INVALID", "la réponse /api/runs ne contient pas de liste documentée")
         else:
             candidates = payload
         if not isinstance(candidates, list):
             fail("RUN_INVENTORY_INVALID", "la réponse /api/runs n'est pas une liste documentée")
-        return [item for item in candidates if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for total_key in ("total", "total_count"):
+                if total_key in payload and (not isinstance(payload[total_key], int) or payload[total_key] != len(candidates)):
+                    fail("RUN_INVENTORY_INCOMPLETE", "l'inventaire /api/runs annonce un total différent", field=total_key)
+            next_page = payload.get("next")
+            next_cursor = payload.get("next_cursor")
+            if payload.get("has_more") is True or next_page not in (None, "") or next_cursor not in (None, ""):
+                fail("RUN_INVENTORY_INCOMPLETE", "l'inventaire /api/runs est paginé ou incomplet")
+
+        records: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(candidates):
+            if not isinstance(item, dict):
+                fail("RUN_INVENTORY_INVALID", "une entrée /api/runs n'est pas un objet", index=index, actual_type=type(item).__name__)
+            run_id = item.get("id")
+            if not isinstance(run_id, str) or not run_id.strip():
+                fail("RUN_INVENTORY_INVALID", "un run n'a pas d'identifiant non vide", index=index)
+            if len(run_id) > RUN_SUMMARY_VALUE_LIMIT:
+                fail("RUN_INVENTORY_INVALID", "un identifiant de run est trop long", index=index)
+            if run_id in seen:
+                fail("RUN_INVENTORY_DUPLICATE", "un identifiant de run apparaît plusieurs fois", id=run_id[:160])
+            seen.add(run_id)
+            run_status = item.get("status")
+            if not isinstance(run_status, str) or not run_status:
+                fail("RUN_INVENTORY_INVALID", "un run n'a pas de statut structuré", index=index, id=run_id[:160])
+            if run_status not in KNOWN_RUN_STATES:
+                fail("RUN_STATUS_UNKNOWN", "un statut de run inconnu interdit le déploiement", id=run_id[:160], status=run_status[:160])
+            updated_at = item.get("updated_at")
+            if not isinstance(updated_at, str) or not updated_at:
+                fail("RUN_INVENTORY_INVALID", "un run n'a pas de updated_at sérialisé", index=index, id=run_id[:160])
+            if len(updated_at) > RUN_SUMMARY_VALUE_LIMIT:
+                fail("RUN_INVENTORY_INVALID", "updated_at est trop long", index=index, id=run_id[:160])
+            record = {
+                "id": run_id,
+                "status": run_status,
+                "updated_at": updated_at,
+                "finished_at": self._optional_summary_string(item, "finished_at", index),
+                "end_reason": self._optional_summary_string(item, "end_reason", index),
+                "failure_code": self._optional_summary_string(item, "failure_code", index),
+            }
+            records.append(record)
+        records.sort(key=lambda item: item["id"])
+        by_status = {state: 0 for state in sorted(KNOWN_RUN_STATES)}
+        for record in records:
+            by_status[record["status"]] += 1
+        return {
+            "records": records,
+            "fingerprint": json_hash(records),
+            "counts": {
+                "total": len(records),
+                "active": sum(by_status[state] for state in ACTIVE_RUN_STATES),
+                "terminal": sum(by_status[state] for state in TERMINAL_RUN_STATES),
+                "dormant": sum(by_status[state] for state in DORMANT_RUN_STATES),
+                "by_status": by_status,
+            },
+        }
 
     @staticmethod
-    def run_id(item: dict[str, Any]) -> str:
-        return str(item.get("id") or item.get("run_id") or "")
+    def public_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
+        return {"fingerprint": inventory["fingerprint"], "counts": inventory["counts"]}
 
     @staticmethod
-    def run_state(item: dict[str, Any]) -> str:
-        return str(item.get("status") or item.get("state") or "").lower()
+    def dispatcher_intent(store: dict[str, Any]) -> dict[str, str]:
+        path = Path(str(store["path"])) / "dispatcher" / "runtime.json"
+        try:
+            raw = path.read_text()
+        except FileNotFoundError:
+            desired = "absent"
+        except OSError as exc:
+            fail("DISPATCHER_INTENT_UNAVAILABLE", "l'intention persistée du dispatcher est illisible", path=str(path), cause=str(exc))
+        else:
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                fail("DISPATCHER_INTENT_INVALID", "l'intention persistée du dispatcher est invalide", path=str(path), cause=str(exc))
+            if not isinstance(value, dict):
+                fail("DISPATCHER_INTENT_INVALID", "l'intention persistée du dispatcher n'est pas un objet", path=str(path))
+            candidate = value.get("desired", "")
+            if not isinstance(candidate, str):
+                fail("DISPATCHER_INTENT_INVALID", "desired doit être une chaîne", path=str(path))
+            desired = candidate if candidate in DISPATCHER_DESIRED_STATES else "absent"
+        return {"path": str(path), "desired": desired, "sha256": json_hash({"desired": desired})}
+
+    def admission_blockers(self, target: Any, inventory: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+        blockers: list[dict[str, Any]] = []
+        target_status = target.get("status") if isinstance(target, dict) else None
+        inventory_target = next((record for record in inventory["records"] if record["id"] == run_id), None)
+        if not isinstance(target_status, str) or target_status not in KNOWN_RUN_STATES:
+            blockers.append({"code": "TARGET_RUN_STATUS_INVALID", "message": "le statut du run cible est absent ou inconnu"})
+        elif target_status in TARGET_GATE_STATES:
+            blockers.append({"code": "HUMAN_GATE_ACTIVE", "message": "le run cible attend explicitement une action humaine ou opérateur", "status": target_status})
+        elif target_status in ACTIVE_RUN_STATES:
+            blockers.append({"code": "TARGET_RUN_NOT_RESUMABLE", "message": "le run cible est encore en exécution ou en file", "status": target_status})
+        if inventory_target is None:
+            blockers.append({"code": "TARGET_INVENTORY_MISSING", "message": "le run cible n'apparaît pas dans l'inventaire complet"})
+        elif isinstance(target_status, str) and inventory_target["status"] != target_status:
+            blockers.append({
+                "code": "TARGET_CONTEXT_MISMATCH",
+                "message": "le détail et l'inventaire du run cible divergent",
+                "detail_status": target_status,
+                "inventory_status": inventory_target["status"],
+            })
+        active_others = [
+            {"id": record["id"], "status": record["status"]}
+            for record in inventory["records"]
+            if record["id"] != run_id and record["status"] in ACTIVE_RUN_STATES
+        ]
+        if active_others:
+            blockers.append({
+                "code": "OTHER_ACTIVE_RUNS",
+                "message": "d'autres runs sont réellement en exécution ou en file sur cette instance",
+                "runs": self._bounded(active_others),
+            })
+        return blockers
+
+    @staticmethod
+    def require_admission(blockers: list[dict[str, Any]]) -> None:
+        if blockers:
+            first = blockers[0]
+            fail(first["code"], first["message"], blockers=blockers)
+
+    def preservation_observation(
+        self,
+        baseline: dict[str, Any],
+        current: dict[str, Any],
+        baseline_intent: dict[str, str],
+        current_intent: dict[str, str],
+        target_id: str,
+    ) -> dict[str, Any]:
+        baseline_by_id = {record["id"]: record for record in baseline["records"]}
+        current_by_id = {record["id"]: record for record in current["records"]}
+        disappeared: list[dict[str, Any]] = []
+        changed: list[dict[str, Any]] = []
+        for record_id, before in baseline_by_id.items():
+            if record_id == target_id:
+                continue
+            after = current_by_id.get(record_id)
+            if after is None:
+                disappeared.append({"id": record_id, "status": before["status"]})
+            elif any(after[field] != before[field] for field in RUN_SUMMARY_FINGERPRINT_FIELDS):
+                changed.append({"id": record_id, "before": before, "after": after})
+        created = [record for record_id, record in current_by_id.items() if record_id not in baseline_by_id]
+        created_active = [record for record in created if record["status"] in ACTIVE_RUN_STATES]
+        intent_changed = current_intent["sha256"] != baseline_intent["sha256"]
+        return {
+            "ok": not disappeared and not changed and not created_active and not intent_changed,
+            "baseline_fingerprint": baseline["fingerprint"],
+            "current_fingerprint": current["fingerprint"],
+            "disappeared": self._bounded(disappeared),
+            "changed": self._bounded(changed),
+            "created": self._bounded(created),
+            "created_active": self._bounded(created_active),
+            "dispatcher_intent": {
+                "changed": intent_changed,
+                "before": baseline_intent["desired"],
+                "after": current_intent["desired"],
+            },
+        }
 
     def verify_adoption(self, instance: Instance, pid: int, root: Path) -> None:
         try:
@@ -907,21 +1120,12 @@ class Manager:
                 fail("INSTANCE_NOT_MANAGED_UP", "le bootstrap ne peut remplacer qu'une instance déjà active et gérée")
             if context["server"].get("work_dir_matches") is not True:
                 fail("LIVE_PROJECT_MISMATCH", "le Studio live ne sert pas le chemin réel attendu")
-            if context["assistant_missions"]["state"] != "absent-recoverable":
-                fail("BOOTSTRAP_NOT_NEEDED", "le bootstrap exige un adaptateur assistant-missions absent avec HTTP 404", capability=context["assistant_missions"])
-            target = context["run"].get("data") or {}
-            target_state = self.run_state(target)
-            if any(marker in target_state for marker in HUMAN_GATE_MARKERS):
-                fail("HUMAN_GATE_ACTIVE", "un gate humain/opérateur est actif; aucun redéploiement automatique")
-            runs = self.active_runs(instance)
-            non_terminal = [item for item in runs if self.run_state(item) not in TERMINAL_RUN_STATES]
-            others = [item for item in non_terminal if self.run_id(item) != run_id]
-            if others:
-                fail("OTHER_ACTIVE_RUNS", "d'autres runs non terminaux utilisent cette instance", runs=[{"id": self.run_id(item), "status": self.run_state(item)} for item in others])
-            if target_state and target_state not in TERMINAL_RUN_STATES:
-                resumable = bool(target.get("resumable") or target.get("can_resume") or "resumable" in target_state)
-                if not resumable:
-                    fail("TARGET_RUN_NOT_RESUMABLE", "le run cible est actif sans preuve de reprise sûre", status=target_state)
+            eligibility = context.get("deployment_eligibility")
+            if not isinstance(eligibility, dict) or eligibility.get("evaluated") is not True:
+                fail("DEPLOYMENT_CONTEXT_INCOMPLETE", "le contexte ne contient pas l'inventaire et l'intention nécessaires")
+            blocker_summary = eligibility.get("blockers")
+            blockers = blocker_summary.get("entries", []) if isinstance(blocker_summary, dict) else []
+            self.require_admission(blockers)
             metadata = read_json(self.state_dir / "artifacts" / artifact_id / "metadata.json", "ARTIFACT_NOT_FOUND")
             artifact = canonical(metadata.get("binary", ""))
             if artifact.name != "iterion" or sha256_file(artifact) != metadata.get("sha256") or metadata.get("preflight", {}).get("recovery_passive") is not True:
@@ -931,6 +1135,8 @@ class Manager:
             self.verify_adoption(instance, pid, root)
             transaction_id = f"{int(time.time())}-{artifact_id}"
             transaction_dir = self.state_dir / "deployments" / instance.name / "transactions" / transaction_id
+            transaction_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+            os.chmod(transaction_dir, 0o700)
             journal_path = transaction_dir / "journal.json"
             transaction = {
                 "schema_version": SCHEMA_VERSION,
@@ -938,6 +1144,7 @@ class Manager:
                 "project_id": manifest["project_id"],
                 "project_root": str(root),
                 "instance": instance.name,
+                "store": context["store"],
                 "goal": goal,
                 "run_id": run_id,
                 "artifact_id": artifact_id,
@@ -951,8 +1158,49 @@ class Manager:
             old_env = self.load_frozen_env(Path(previous["environment_file"]))
             selector_path = self.state_dir / "deployments" / instance.name / "current.json"
             previous_selector = read_json(selector_path, "BINARY_SELECTOR_INVALID") if selector_path.is_file() else None
+            old_stopped = False
+            observations: list[dict[str, Any]] = []
+            baseline_inventory: dict[str, Any] | None = None
+            baseline_intent: dict[str, str] | None = None
             try:
+                baseline_inventory = self.run_inventory(instance)
+                baseline_intent = self.dispatcher_intent(context["store"])
+                target = next((record for record in baseline_inventory["records"] if record["id"] == run_id), None)
+                self.require_admission(self.admission_blockers(target, baseline_inventory, run_id))
+                expected_inventory = eligibility.get("inventory")
+                expected_intent = eligibility.get("dispatcher_intent")
+                if not isinstance(expected_inventory, dict) or baseline_inventory["fingerprint"] != expected_inventory.get("fingerprint"):
+                    fail("CONTEXT_CHANGED", "l'inventaire des runs a changé avant SIGTERM; relancer context")
+                if not isinstance(expected_intent, dict) or baseline_intent["sha256"] != expected_intent.get("sha256"):
+                    fail("CONTEXT_CHANGED", "l'intention du dispatcher a changé avant SIGTERM; relancer context")
+                receipt_path = transaction_dir / "preservation-receipt.json"
+                receipt = {
+                    "schema_version": SCHEMA_VERSION,
+                    "transaction_id": transaction_id,
+                    "project_id": manifest["project_id"],
+                    "project_root": str(root),
+                    "instance": instance.name,
+                    "store": context["store"],
+                    "target_run_id": run_id,
+                    "inventory": baseline_inventory,
+                    "dispatcher_intent": baseline_intent,
+                    "previous": previous,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+                atomic_json(receipt_path, receipt, mode=0o600)
+                receipt_reference = {"path": str(receipt_path), "sha256": sha256_file(receipt_path)}
+                self.journal(
+                    journal_path,
+                    transaction,
+                    "preservation-receipt-recorded",
+                    preservation_receipt=receipt_reference,
+                    baseline={
+                        "inventory": self.public_inventory(baseline_inventory),
+                        "dispatcher_intent": {"desired": baseline_intent["desired"], "sha256": baseline_intent["sha256"]},
+                    },
+                )
                 self.stop_pid(instance, pid, timeout=90, allow_kill=False)
+                old_stopped = True
                 self.journal(journal_path, transaction, "old-stopped")
                 candidate_pid = self.spawn(instance, artifact, env={str(k): str(v) for k, v in old_env.items()})
                 self.journal(journal_path, transaction, "candidate-starting", candidate_pid=candidate_pid)
@@ -964,20 +1212,39 @@ class Manager:
                     fail("LIVE_VERIFICATION_FAILED", "le commit live ne correspond pas à l'artefact", expected=metadata["commit"], actual=embedded)
                 if self.process_binary_hash(candidate_pid) != metadata["sha256"]:
                     fail("LIVE_VERIFICATION_FAILED", "les octets du processus live ne correspondent pas à l'artefact scellé")
+                current_inventory = self.run_inventory(instance)
+                current_intent = self.dispatcher_intent(context["store"])
+                observation = self.preservation_observation(baseline_inventory, current_inventory, baseline_intent, current_intent, run_id)
+                observations.append({"point": "post-readiness", **observation})
+                self.journal(journal_path, transaction, "candidate-inventory-checked", observations=observations)
+                if not observation["ok"]:
+                    fail("RUN_PRESERVATION_FAILED", "l'état de runs préexistants ou l'intention du dispatcher a changé après readiness", observation=observation)
                 capability = self.capability(instance, run_id)
                 if capability["state"] != "present":
                     fail("LIVE_VERIFICATION_FAILED", "assistant-missions n'est pas disponible après le switch", capability=capability)
+                current_inventory = self.run_inventory(instance)
+                current_intent = self.dispatcher_intent(context["store"])
+                observation = self.preservation_observation(baseline_inventory, current_inventory, baseline_intent, current_intent, run_id)
+                observations.append({"point": "post-mission-probe", **observation})
+                self.journal(journal_path, transaction, "mission-probe-inventory-checked", capability=capability, observations=observations)
+                if not observation["ok"]:
+                    fail("RUN_PRESERVATION_FAILED", "l'état de runs préexistants ou l'intention du dispatcher a changé pendant le probe", observation=observation)
                 selector = {"schema_version": SCHEMA_VERSION, "artifact_id": artifact_id, "binary": str(artifact), "sha256": metadata["sha256"], "commit": metadata["commit"]}
                 self.record_runtime_binary(instance, artifact, "bootstrap-deployment")
                 atomic_json(selector_path, selector)
-                self.journal(journal_path, transaction, "committed", server_info=info, capability=capability)
+                self.journal(journal_path, transaction, "committed", server_info=info, capability=capability, observations=observations)
                 return {"deployed": True, "rolled_back": False, "transaction": transaction, "journal": str(journal_path)}
             except Exception as raw_deployment_error:
                 deployment_error = raw_deployment_error if isinstance(raw_deployment_error, ManagerError) else ManagerError("DEPLOYMENT_INTERNAL_ERROR", str(raw_deployment_error))
                 if deployment_error.code == "GRACEFUL_SHUTDOWN_TIMEOUT" and self.pid(instance) == pid and self.process_alive(pid):
                     self.journal(journal_path, transaction, "aborted-old-still-running", deployment_error={"code": deployment_error.code, "message": deployment_error.message})
                     fail("DEPLOYMENT_ABORTED", "SIGTERM n'a pas arrêté l'ancien Studio; il est resté en place sans SIGKILL", journal=str(journal_path))
-                self.journal(journal_path, transaction, "rollback-starting", deployment_error={"code": deployment_error.code, "message": deployment_error.message})
+                if not old_stopped:
+                    self.journal(journal_path, transaction, "aborted-before-stop", deployment_error={"code": deployment_error.code, "message": deployment_error.message})
+                    raise deployment_error
+                self.journal(journal_path, transaction, "rollback-starting", deployment_error={"code": deployment_error.code, "message": deployment_error.message}, observations=observations)
+                recovery_observation: dict[str, Any] | None = None
+                recovery_observation_error: ManagerError | None = None
                 try:
                     candidate_pid = self.pid(instance)
                     if candidate_pid is not None:
@@ -987,12 +1254,21 @@ class Manager:
                     rollback_info = self.wait_ready(instance, rollback_pid)
                     if canonical(rollback_info.get("work_dir", "")) != root or self.process_binary_hash(rollback_pid) != previous["sha256"]:
                         fail("ROLLBACK_POSTCONDITION_FAILED", "le processus restauré ne correspond pas au runtime figé")
+                    try:
+                        assert baseline_inventory is not None and baseline_intent is not None
+                        recovery_inventory = self.run_inventory(instance)
+                        recovery_intent = self.dispatcher_intent(context["store"])
+                        recovery_observation = self.preservation_observation(
+                            baseline_inventory, recovery_inventory, baseline_intent, recovery_intent, run_id,
+                        )
+                        observations.append({"point": "post-recovery", **recovery_observation})
+                    except ManagerError as observation_error:
+                        recovery_observation_error = observation_error
                     self.record_runtime_binary(instance, previous_binary, "deployment-rollback")
                     if previous_selector is None:
                         selector_path.unlink(missing_ok=True)
                     else:
                         atomic_json(selector_path, previous_selector)
-                    self.journal(journal_path, transaction, "rolled-back", rollback_pid=rollback_pid, rollback_server_info=rollback_info)
                 except Exception as raw_rollback_error:
                     rollback_error = raw_rollback_error if isinstance(raw_rollback_error, ManagerError) else ManagerError("ROLLBACK_INTERNAL_ERROR", str(raw_rollback_error))
                     try:
@@ -1000,7 +1276,54 @@ class Manager:
                     except Exception:
                         pass
                     fail("ROLLBACK_FAILED", "le candidat a échoué et le rollback n'a pas satisfait ses postconditions", journal=str(journal_path), deployment_error=deployment_error.code, rollback_error=rollback_error.code)
-                fail("DEPLOYMENT_ROLLED_BACK", "le candidat a échoué; l'ancien binaire exact a été relancé", journal=str(journal_path), deployment_error=deployment_error.code)
+                preservation_failed = deployment_error.code == "RUN_PRESERVATION_FAILED" or (recovery_observation is not None and not recovery_observation["ok"])
+                if preservation_failed:
+                    self.journal(
+                        journal_path,
+                        transaction,
+                        "rolled-back-state-changed",
+                        rollback_pid=rollback_pid,
+                        rollback_server_info=rollback_info,
+                        observations=observations,
+                    )
+                    fail(
+                        "DEPLOYMENT_STATE_CHANGED",
+                        "l'ancien binaire a été restauré, mais le rollback n'annule pas les changements de runs observés",
+                        journal=str(journal_path),
+                        deployment_error=deployment_error.code,
+                    )
+                if recovery_observation_error is not None:
+                    self.journal(
+                        journal_path,
+                        transaction,
+                        "rolled-back-preservation-unverified",
+                        rollback_pid=rollback_pid,
+                        rollback_server_info=rollback_info,
+                        observations=observations,
+                        observation_error={"code": recovery_observation_error.code, "message": recovery_observation_error.message},
+                    )
+                    fail(
+                        "DEPLOYMENT_RECOVERY_INCOMPLETE",
+                        "l'ancien binaire a été restauré, mais l'état des runs n'a pas pu être revérifié",
+                        journal=str(journal_path),
+                        deployment_error=deployment_error.code,
+                        observation_error=recovery_observation_error.code,
+                    )
+                self.journal(
+                    journal_path,
+                    transaction,
+                    "rolled-back",
+                    rollback_pid=rollback_pid,
+                    rollback_server_info=rollback_info,
+                    observations=observations,
+                )
+                fail(
+                    "DEPLOYMENT_ROLLED_BACK",
+                    "le candidat a échoué; l'ancien binaire exact a été relancé sans effacer les runs éventuellement créés",
+                    journal=str(journal_path),
+                    deployment_error=deployment_error.code,
+                    recovery_observation=recovery_observation,
+                )
 
     def deployment_status(self, project: str | None) -> dict[str, Any]:
         root, instance, manifest, _profile = self.resolve(project)

@@ -59,13 +59,38 @@ starts the candidate against temporary project/store directories with
 
 `deploy` is narrower than ordinary instance administration: the project must
 already be running under this manager, the assistant-missions probe for the
-real run must return 404, the context token must still match, and no unrelated
-non-terminal run may share the instance. It snapshots the exact live binary
-and effective process environment, sends SIGTERM without escalation, launches
-the candidate with the same recipe and `ITERION_BIN`, then requires the real
-mission endpoint to return its documented list payload. Any failed
-postcondition triggers rollback to the frozen bytes. Transaction state is
-available through:
+real run must return 404 and the context token must still match. Admission uses
+the authoritative lifecycle vocabulary: unrelated `running` and `queued` runs
+block; `finished`, `failed`, `failed_resumable`, `cancelled`,
+`paused_waiting_human`, and `paused_operator` rows are restart-admissible.
+Those last two statuses remain exact blockers when they belong to the target
+run itself. Unknown statuses, malformed rows, duplicate or missing IDs, and
+incomplete inventories fail closed.
+
+`context` performs one unfiltered `/api/runs` read, validates every served
+`RunSummary`, and binds its canonical fingerprint plus the persisted dispatcher
+intent from `<store>/dispatcher/runtime.json` into the context token. The
+fingerprint covers `id`, `status`, `updated_at`, `finished_at`, `end_reason`,
+and `failure_code`; absent, null, and empty optional values canonicalize to the
+same empty value. Diagnostics are bounded, but admission always examines the
+complete served list.
+
+Immediately before SIGTERM, `deploy` rechecks the inventory and dispatcher
+intent and writes a private transaction receipt. It snapshots the exact live
+binary and effective process environment, drains without escalation, launches
+the candidate with the same recipe and `ITERION_BIN`, then compares every
+pre-existing unrelated run after readiness and again after the real mission
+probe. There is no HTTP inventory read while the process is down. New active
+or unknown rows and any changed or disappeared pre-existing unrelated record
+fail deployment; new known terminal or dormant rows are retained and reported.
+
+The replacement and rollback binaries both follow the persisted dispatcher
+intent; bootstrap does not invent a passive-start barrier or require an old
+Studio dispatcher-control route. Rollback restores exact executable bytes and
+environment, but never overwrites run records, reverts operator intent, deletes
+created runs, or claims those effects were undone. The journal distinguishes
+process restoration from a detected or unverifiable preservation failure.
+Transaction state is available through:
 
 ```sh
 iterion-instances deployment-status --project "$PWD" --json
@@ -76,8 +101,10 @@ the target only among already-managed configured instances. A candidate must
 return that run and report a canonical `server.info.work_dir` equal to its
 configured project path; zero or multiple matches fail closed.
 
-Human-input gates, operator pauses, stopped instances, foreign processes and
-global CLI replacement are outside bootstrap authority.
+An exact `paused_waiting_human` or `paused_operator` status on the target,
+verified operator stops, stopped instances, foreign processes and global CLI
+replacement are outside bootstrap authority. An unrelated dormant row does not
+become a target gate merely because it is waiting at a healthy chat boundary.
 
 ## Installation and tests
 
