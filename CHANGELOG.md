@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.137.0](https://github.com/SocialGouv/iterion/compare/v3.136.3...v3.137.0) (2026-09-11)
+
+### Features
+
+* **sec-audit:** the deep scanner's findings leave the pod ([#1104](https://github.com/SocialGouv/iterion/issues/1104)) ([e68d353](https://github.com/SocialGouv/iterion/commit/e68d3538664c15b49f77336ffeac4eef0bbccaf7))
+
+    <details><summary>why</summary>
+
+    The deep scanner writes its findings to a file inside the sandbox, and the pod is destroyed with the run. The published envelope carries the PATH, so a pass that dies AFTER it — at triage, at the jury, on a provider usage cap — takes the whole contribution with it.
+
+    </details>
+
 ## [3.136.3](https://github.com/SocialGouv/iterion/compare/v3.136.2...v3.136.3) (2026-09-11)
 
 ### Bug Fixes
