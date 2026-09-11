@@ -534,10 +534,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err != nil {
 		return nil, err
 	}
-	if s.logger != nil && spec.RunID == "01a082d8-bc94-77f5-afad-23ec349f7752" {
-		s.logger.Warn("diagnostic: run=%s resume_args file=%q source_len=%d bundle=%q hash=%s", spec.RunID, spec.FilePath, len(spec.Source), spec.BundleDir, hash)
-	}
-	logDiagnosticCopiMapping(s.logger, spec.RunID, "resume-compiled", wf)
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
 	}
@@ -630,7 +626,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 	executor.SetRunExtraEnv(s.runEnv)
-	logDiagnosticCopiMapping(runLogger, spec.RunID, "resume-after-executor", wf)
 	if len(r.Inputs) > 0 {
 		executor.SetVars(r.Inputs)
 	}
@@ -928,9 +923,7 @@ func (s *Service) spawnRun(
 	// drains it at the same safe boundary as the pause signal.
 	steerCh := make(chan *runtime.OverrideMsg, 8)
 	opts = append(opts, runtime.WithOverrideChannel(steerCh))
-	logDiagnosticCopiMapping(runLogger, runID, "spawn-before-engine", wf)
 	eng := runtime.New(wf, emitStore, executor, opts...)
-	logDiagnosticCopiMapping(runLogger, runID, "spawn-after-engine", wf)
 	// Publish the engine so the store's Event.ActiveMs stamping can read
 	// this run's monotonic active elapsed. Removed when the goroutine exits.
 	s.registerRunEngine(runID, eng, steerCh)
@@ -1129,25 +1122,6 @@ type launchExtras struct {
 	budgetOverrides      *store.RunBudgetOverrides
 	expectedResumeStatus store.RunStatus
 	resumeReceiptID      string
-}
-
-// logDiagnosticCopiMapping is temporary instrumentation for the live Copi
-// recovery session. It is deliberately scoped to that run and one field so
-// it cannot turn an operator message into a log payload.
-func logDiagnosticCopiMapping(logger *iterlog.Logger, runID, stage string, wf *ir.Workflow) {
-	if logger == nil || runID != "01a082d8-bc94-77f5-afad-23ec349f7752" || wf == nil {
-		return
-	}
-	for _, edge := range wf.Edges {
-		if edge.From != "normalize_chat_turn" || edge.To != "turn_state" {
-			continue
-		}
-		for _, dm := range edge.With {
-			if dm.Key == "actionless_clarification_count" {
-				logger.Warn("diagnostic: run=%s stage=%s edge=%s->%s key=%s raw=%q refs=%d", runID, stage, edge.From, edge.To, dm.Key, dm.Raw, len(dm.Refs))
-			}
-		}
-	}
 }
 
 // engineOptions builds the standard option set for both Launch and

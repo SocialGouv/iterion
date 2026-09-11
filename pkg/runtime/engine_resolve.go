@@ -149,9 +149,6 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		for _, dm := range edge.With {
 			e.warnMissingEdgeInput(edge, dm, effectiveInputs)
 			val := e.resolveMapping(dm, edgeScope)
-			if e.logger != nil && sc.rs != nil && sc.rs.runID == "01a082d8-bc94-77f5-afad-23ec349f7752" && nodeID == "turn_state" && dm.Key == "actionless_clarification_count" {
-				e.logger.Warn("diagnostic: run=%s node=%s edge=%s->%s key=%s raw=%q refs=%d resolved_type=%T resolved=%v", sc.rs.runID, nodeID, edge.From, edge.To, dm.Key, dm.Raw, len(dm.Refs), val, val)
-			}
 			// Include nil values too: a ref that resolves to nil
 			// (e.g. `{{outputs.fixer.pushback}}` before the fixer
 			// has run, `{{loop.X.previous_output}}` on iteration 1)
