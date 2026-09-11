@@ -302,6 +302,16 @@ func TestGalleryShapes(t *testing.T) {
 			if converge != 1 {
 				t.Errorf("want one wait_all compute, got %d", converge)
 			}
+			// The concurrency bound is what makes a fan-out over an
+			// unbounded ticket list safe, and it is the one budget line a
+			// shape writes itself. This is also the shape whose workflow
+			// block opens a `budget:` the shared partials then render INTO
+			// (the worktree dial, the sandbox/permission dials), at the
+			// outer indent: a partial that stopped dedenting would turn its
+			// own lines into budget properties and drop this one.
+			if w.Budget == nil || w.Budget.MaxParallelBranches != 3 {
+				t.Errorf("budget = %+v, want the shape's max_parallel_branches: 3", w.Budget)
+			}
 			// The child ships with the bundle and is a workflow of its own.
 			src, err := os.ReadFile(filepath.Join(dir, "worker.bot"))
 			if err != nil {
