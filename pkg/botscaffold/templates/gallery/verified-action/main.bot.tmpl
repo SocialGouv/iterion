@@ -7,9 +7,18 @@
 ## `recover` → an LLM proposes a corrected command from goal + stdout +
 ## stderr, re-run deterministically; still unmet → the policy decides).
 ## GATES stay deterministic: never attach recovery to a check whose
-## recipe IS its postcondition (C105). Fill in: the mission, `tag`.
-## docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md
+## recipe IS its postcondition (C105). The commit lands in a per-run git
+## worktree — the TAG does not: git tags live in the repository's SHARED
+## ref store, so it stays in your repo even when the run is discarded or
+## its merge is skipped, and a second run with the same name meets the
+## previous tag (the postcondition refuses it as stale, then recovery can
+## only force-move it). Hence `tag` is REQUIRED and per run: an entry gate
+## refuses an empty one before the agent runs. Fill in: the mission,
+## `tag`. docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md
 <%template "vars_block" .%>
+schema check_out:
+  configured: bool
+
 schema prep_out:
   summary: string
 
@@ -23,6 +32,15 @@ prompt prep_user:
   Prepare the release: apply the mission, update the changelog for the
   pending changes, and commit. Do NOT create the tag — the verified
   action after you does that.
+
+## The entry gate, deterministic and before any LLM call: no tag name,
+## no run. `!!` is the expression language's truthiness, which trims: an
+## empty, blank or ABSENT tag is refused (so are the strings "false",
+## "no" and "0", which no release is named).
+compute check:
+  output: check_out
+  expr:
+    configured: "!!vars.tag"
 
 agent prepare:<%template "llm_fields" .%>
   system: mission
@@ -49,9 +67,18 @@ tool tag_release:
     max_repair_attempts: 2
     max_agent_attempts: 0
 
+fail tag_unset:
+  description: "no tag name was given"
+  code: TAG_UNSET
+  message: "tag is empty: name the annotated tag this run creates (a per-run name — the previous run's tag is still in the shared ref store)"
+
 workflow <%.WorkflowName%>:
-  entry: prepare
-  ## The commit and the tag land in a per-run git worktree.
+  entry: check
+  ## The commit lands in a per-run git worktree — the tag does not (see
+  ## the header): it is written to the shared ref store and outlives the
+  ## worktree.
   worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  check -> tag_unset when not configured
+  check -> prepare when configured
   prepare -> tag_release
   tag_release -> done

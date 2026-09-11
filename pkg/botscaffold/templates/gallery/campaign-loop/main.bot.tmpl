@@ -9,10 +9,16 @@
 ## reaches the next pass through the back-edge's `with` mapping, and a
 ## deterministic entry node gives the first pass the same input shape —
 ## a prompt reference to a node that has not run yet would render as its
-## literal placeholder. Fill in: the mission, `verify_command`,
-## `max_passes`. Read docs/workflow_authoring_pitfalls.md before pointing
-## it at real code.
+## literal placeholder. An entry gate refuses a run whose verifier is not
+## configured: a `verify_command` left empty would make every verdict
+## green, and a campaign that "converges" on a check that checks nothing
+## is the façade the shape exists to prevent. Fill in: the mission,
+## `verify_command`, `max_passes`. Read docs/workflow_authoring_pitfalls.md
+## before pointing it at real code.
 <%template "vars_block" .%>
+schema check_out:
+  configured: bool
+
 schema pass_input:
   ## What the previous pass's verifier said; empty on the first pass.
   previous_verify: string
@@ -44,6 +50,20 @@ prompt pass_user:
   Verifier output from the previous pass (empty on the first):
   {{input.previous_verify}}
 
+## The entry gate, deterministic and before any LLM call: no verifier,
+## no campaign. `!!` is the expression language's truthiness, which
+## trims: an empty, blank or ABSENT verify_command is refused (so are the
+## strings "false", "no" and "0", which nobody runs their tests with). A
+## bound under 1 is refused too — it would end the run on
+## PASSES_EXHAUSTED after one pass. A non-numeric `--var max_passes=…`
+## does not reach the typed refusal: the resolver keeps a bad override
+## as text, and the comparison then fails this node loudly
+## (EXPRESSION_FAILED, before any pass) rather than silently.
+compute check:
+  output: check_out
+  expr:
+    configured: "!!vars.verify_command && vars.max_passes >= 1"
+
 ## The first pass has no verifier output yet: an empty one, so the
 ## campaign's input is the same shape on every pass.
 compute first_pass:
@@ -60,6 +80,10 @@ agent campaign:<%template "llm_fields" .%>
 ## The truth oracle: the repository's own checks, on their exit code. A
 ## {{ref}} in a command is shell-escaped by the runtime, so
 ## `sh -c {{vars.verify_command}}` runs the whole string as one command.
+## The entry gate is the ONE guard against an unset verifier: vars are
+## resolved once per run, so this node reads the value the gate admitted
+## (and an unresolved ref would render as its literal placeholder, never
+## as an empty string — a second check here could not fire).
 ## The node's WHOLE stdout is parsed as one JSON object, so the checks'
 ## own output goes to stderr (`>&2`) and stdout carries nothing but the
 ## printf: `go test`'s log ahead of it would make the parse fail and the
@@ -76,6 +100,11 @@ compute gate:
   expr:
     converged: "outputs.campaign.work_complete && outputs.verify.ok"
 
+fail misconfigured:
+  description: "the campaign has no verifier, or no pass to run"
+  code: CAMPAIGN_MISCONFIGURED
+  message: "verify_command must name the repository's own checks (got '{{vars.verify_command}}') and max_passes must be at least 1 (got {{vars.max_passes}})"
+
 fail passes_exhausted:
   description: "the bounded loop ran out before the gate turned green"
   code: PASSES_EXHAUSTED
@@ -83,10 +112,12 @@ fail passes_exhausted:
   resumable: true
 
 workflow <%.WorkflowName%>:
-  entry: first_pass
+  entry: check
   ## Commits land in a per-run git worktree; on success they are
   ## squash-merged into your checked-out branch (docs/dsl.md).
   worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  check -> misconfigured when not configured
+  check -> first_pass when configured
   first_pass -> campaign with { previous_verify: "{{outputs.first_pass.previous_verify}}" }
   campaign -> verify
   verify -> gate

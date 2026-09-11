@@ -180,8 +180,8 @@ func Templates() []Template {
 				WhenToUse:    "Use for work that must converge on a deterministic check (build, tests) rather than an opinion.",
 				Instructions: "Describe the campaign: what to change, where, and what \"done\" means.\nThe agent works in passes and commits each unit; after every pass the\nverifier runs {{vars.verify_command}} and its exit code is the verdict.",
 				Vars: []VarSpec{
-					{Name: "verify_command", Type: "string", Default: "true", Description: "The repository's own build+test, run by sh -c after every pass; its exit code is the verdict."},
-					{Name: "max_passes", Type: "int", Default: "4", Description: "Upper bound on passes before the run fails PASSES_EXHAUSTED (resumable: raise it and resume)."},
+					{Name: "verify_command", Type: "string", Default: "", Description: "REQUIRED: the repository's own build+test, run by sh -c after every pass; its exit code is the verdict. Left empty, the run refuses at entry (CAMPAIGN_MISCONFIGURED) before any pass — a verifier that checks nothing would make every verdict green."},
+					{Name: "max_passes", Type: "int", Default: "4", Description: "Upper bound on passes before the run fails PASSES_EXHAUSTED (resumable: raise it and resume); under 1 the run refuses at entry."},
 				},
 			},
 		},
@@ -252,7 +252,7 @@ func Templates() []Template {
 				WhenToUse:    "Use when one brittle shell action (a tag, a push, a publish) must end in a checked state.",
 				Instructions: "Describe the release preparation: what the changelog entry covers and\nwhat to check before committing.",
 				Vars: []VarSpec{
-					{Name: "tag", Type: "string", Default: "v0.0.0-next", Description: "The annotated tag the verified action creates on HEAD."},
+					{Name: "tag", Type: "string", Default: "", Description: "REQUIRED, per run: the annotated tag the verified action creates on HEAD. Git tags live in the repository's shared ref store and outlive the run's worktree, so a fixed name meets its own previous tag on the next run; left empty, the run refuses at entry (TAG_UNSET)."},
 				},
 			},
 		},

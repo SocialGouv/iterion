@@ -121,14 +121,29 @@ func TestGalleryShapes(t *testing.T) {
 			if len(w.Loops) != 1 {
 				t.Errorf("want one bounded loop, got %d", len(w.Loops))
 			}
-			if len(typedFails(w)) != 1 {
-				t.Errorf("want the typed fail node")
+			if len(typedFails(w)) != 2 {
+				t.Errorf("want the typed exhaustion and the typed misconfiguration, got %d typed fails", len(typedFails(w)))
 			}
 			if len(nodesOf[*ir.ToolNode](w)) != 1 {
 				t.Errorf("want the verify tool")
 			}
-			if len(nodesOf[*ir.ComputeNode](w)) != 2 {
-				t.Errorf("want the first-pass input and the deterministic gate, got %d computes", len(nodesOf[*ir.ComputeNode](w)))
+			if len(nodesOf[*ir.ComputeNode](w)) != 3 {
+				t.Errorf("want the entry gate, the first-pass input and the deterministic gate, got %d computes", len(nodesOf[*ir.ComputeNode](w)))
+			}
+			// No verifier, no campaign: the entry gate refuses an unset
+			// verify_command before any LLM call — a verifier that checks
+			// nothing would make every verdict green.
+			if w.Entry != "check" {
+				t.Errorf("entry = %q, want the check gate", w.Entry)
+			}
+			if e := edge(w, "check", "misconfigured"); e == nil || e.Condition != "configured" || !e.Negated {
+				t.Errorf("want check -> misconfigured when not configured, got %+v", e)
+			}
+			if e := edge(w, "check", "first_pass"); e == nil || e.Condition != "configured" || e.Negated {
+				t.Errorf("want check -> first_pass when configured, got %+v", e)
+			}
+			if v, ok := w.Vars["verify_command"]; !ok || v.Default != "" {
+				t.Errorf("verify_command default = %v; a placeholder verifier must not be a passing one", v)
 			}
 			if w.Worktree != "auto" {
 				t.Errorf("worktree = %q, want auto (the campaign commits)", w.Worktree)
@@ -315,6 +330,25 @@ func TestGalleryShapes(t *testing.T) {
 			}
 			if w.Worktree != "auto" {
 				t.Errorf("worktree = %q, want auto (the action commits and tags)", w.Worktree)
+			}
+			// The tag is REQUIRED and per run — git tags live in the shared
+			// ref store and outlive the worktree, so a fixed default meets
+			// its own previous tag on the next run: the entry gate refuses
+			// an empty name before the agent runs, and the Spec ships none.
+			if w.Entry != "check" {
+				t.Errorf("entry = %q, want the check gate", w.Entry)
+			}
+			if e := edge(w, "check", "tag_unset"); e == nil || e.Condition != "configured" || !e.Negated {
+				t.Errorf("want check -> tag_unset when not configured, got %+v", e)
+			}
+			if e := edge(w, "check", "prepare"); e == nil || e.Condition != "configured" || e.Negated {
+				t.Errorf("want check -> prepare when configured, got %+v", e)
+			}
+			if len(typedFails(w)) != 1 {
+				t.Errorf("want the typed unset-tag refusal, got %d typed fails", len(typedFails(w)))
+			}
+			if v, ok := w.Vars["tag"]; !ok || v.Default != "" {
+				t.Errorf("tag default = %v; a fixed tag name collides with itself on the next run", v)
 			}
 		},
 		"async-questions": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
