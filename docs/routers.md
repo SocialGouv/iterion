@@ -278,11 +278,15 @@ command deliberately keeps an unresolved reference visible, so there it stays
 `{{input.<key>}}`.
 
 Precedence is the ordinary one: a live edge, and a loop back-edge, both
-outrank the floor on a shared key. Two exclusive alternatives from one dead
-source (`a -> collect when ok` and `a -> collect else`, with `a` never run)
-are genuinely undecided: where they agree the value applies, and where they
-disagree the key is left unset with a warning naming the node, both edges and
-the key — never picked by declaration order.
+outrank the floor on a shared key.
+
+**A key two floor edges disagree on is left unset**, with a warning naming the
+node, both edges and the key — never picked by declaration order. The two need
+not share a source: the node that would have chosen between them is often
+further back (`head -> x when ok` / `head -> y else`, then `x -> collect` and
+`y -> collect`, with `head` never run), and the alternatives then arrive from
+two different nodes. Where they agree, the value is theirs whichever would
+have fired.
 
 **Only the branch that actually ran contributes.** What reaches the collector
 this way is read from what the invocation DID — the nodes its branches entered

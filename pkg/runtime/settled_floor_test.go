@@ -656,6 +656,56 @@ func TestSettledFloor_ArtifactDependencyEntersTheJoinsContract(t *testing.T) {
 	}
 }
 
+// The node that would have chosen between two alternatives is not always
+// their common source. A conditional head that never ran leaves BOTH of its
+// mutually exclusive successors reachable and output-less, so they reach the
+// join as two distinct sources — and a disagreement judged per source never
+// sees them meet.
+func TestSettledFloor_AlternativesFromTwoDeadSourcesAreStillUndecided(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "settled_cross_source", Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"head":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "head"}},
+			"x":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}},
+			"y":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "y"}},
+			"other":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "other"}},
+			"join":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}, AwaitMode: ir.AwaitBestEffort},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "head"},
+			{From: "router", To: "other"},
+			{From: "head", To: "x", Condition: "ok"},
+			{From: "head", To: "y", IsElse: true},
+			{From: "x", To: "join", With: []*ir.DataMapping{settledLiteral("verdict", "from-x")}},
+			{From: "y", To: "join", With: []*ir.DataMapping{settledLiteral("verdict", "from-y")}},
+			{From: "other", To: "join", With: []*ir.DataMapping{settledRef("note", "entry", "note")}},
+			{From: "join", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+
+	var logBuf bytes.Buffer
+	got := runSettledFanOutOpts(t, wf, "run-559-cross-source", map[string]func() (map[string]any, error){
+		"head":  func() (map[string]any, error) { return nil, errors.New("head fails") },
+		"other": func() (map[string]any, error) { return nil, errors.New("other fails") },
+	}, "join", WithLogger(log.New(log.LevelWarn, &logBuf)))
+
+	if v, ok := got["verdict"]; ok {
+		t.Fatalf("verdict = %v — `x` and `y` are mutually exclusive and neither ran, so declaration order settled it; judging the disagreement per SOURCE never puts them in the same bucket", v)
+	}
+	if got["note"] != "n" {
+		t.Fatalf("note = %v, want %q — refusing one disagreement must not cost the other sources' keys", got["note"], "n")
+	}
+	if !bytes.Contains(logBuf.Bytes(), []byte(`disagree on "verdict"`)) {
+		t.Fatalf("the dropped key was silent; log:\n%s", logBuf.String())
+	}
+}
+
 // A key the conflict rule refused to apply is not a dependency: the node
 // never received it. Recording it anyway makes a later resume re-validate an
 // artifact nobody consumed, and refuse over its absence.

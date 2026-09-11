@@ -253,8 +253,8 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 func (e *Engine) applySettledFloor(nodeID string, sc resolveScope, result map[string]any) {
 	applied, conflicts := e.settledFloorMappings(nodeID, sc)
 	for _, c := range conflicts {
-		e.logger.Warn("runtime: node %s: incoming edges %s and %s are exclusive alternatives from %s, neither ran, and they disagree on %q (%v vs %v) — leaving it unset rather than picking by declaration order",
-			nodeID, c.firstEdge, c.secondEdge, c.from, c.key, c.first, c.second)
+		e.logger.Warn("runtime: node %s: incoming edges %s and %s both settled without running and disagree on %q (%v vs %v) — leaving it unset rather than picking by declaration order",
+			nodeID, c.firstEdge, c.secondEdge, c.key, c.first, c.second)
 	}
 	for _, key := range applied.order {
 		result[key] = applied.values[key]
@@ -270,9 +270,9 @@ type settledFloorContribution struct {
 	artifactRefs map[string]bool
 }
 
-// settledFloorConflict is one key two undecided alternatives disagreed on.
+// settledFloorConflict is one key two undecided floor edges disagreed on.
 type settledFloorConflict struct {
-	from, key             string
+	key                   string
 	firstEdge, secondEdge string
 	first, second         any
 }
@@ -283,11 +283,14 @@ type settledFloorConflict struct {
 // carry must not appear among the artifacts the node is recorded to depend
 // on, or a later resume is refused over a value nobody consumed.
 //
-// Resolution is grouped per SOURCE, because two floor edges from one source
-// are exclusive alternatives (`when` / `else`) that routing never got to
-// decide between — the source never ran. Where they agree, the value is
-// theirs whichever would have fired; where they disagree, picking by
-// declaration order is precisely the guess #484 removed.
+// A disagreement is judged per KEY across the WHOLE floor, not per source.
+// Two floor edges are alternatives whenever the node that would have chosen
+// between them never ran, and that node is not always their common source:
+// `head -> x when ok` / `head -> y else` with `x -> join` / `y -> join` puts
+// two mutually exclusive mappings on the join from two DIFFERENT sources.
+// Bucketing by source let declaration order settle exactly the case the rule
+// exists to refuse. Where the alternatives agree, the value is theirs
+// whichever would have fired; where they disagree, the key is left unset.
 func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFloorContribution, []settledFloorConflict) {
 	out := settledFloorContribution{values: map[string]any{}, artifactRefs: map[string]bool{}}
 	floor := settledFloorFor(nodeID, sc)
@@ -302,9 +305,8 @@ func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFl
 		fromEdge string
 	}
 	var conflicts []settledFloorConflict
-	sources := make([]string, 0, 2)
-	keyOrder := make(map[string][]string)
-	bySource := make(map[string]map[string]*floorValue)
+	var keyOrder []string
+	byKey := make(map[string]*floorValue)
 	for _, edge := range e.workflow.Edges {
 		if edge == nil || edge.To != nodeID || len(edge.With) == 0 {
 			continue
@@ -312,61 +314,60 @@ func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFl
 		if !settledFloorEligible(edge, floor) {
 			continue
 		}
-		bucket, seen := bySource[edge.From]
-		if !seen {
-			bucket = make(map[string]*floorValue, len(edge.With))
-			bySource[edge.From] = bucket
-			sources = append(sources, edge.From)
-		}
 		// The source produced nothing, so `{{input.*}}` on this edge has no
 		// namespace to read: an explicit empty map, never the caller's
 		// runInputs, which would silently promote a run-level payload into
-		// the source-output namespace (#479). warnMissingEdgeInput is
-		// deliberately skipped — it would fire on every field of a node that
-		// never ran, and say "not on the source node's output" about a source
-		// that has no output at all.
+		// the source-output namespace (#479). Every floor edge therefore
+		// resolves in the SAME scope, which is what makes the template
+		// short-circuit below sound across sources too. warnMissingEdgeInput
+		// is deliberately skipped — it would fire on every field of a node
+		// that never ran, and say "not on the source node's output" about a
+		// source that has no output at all.
 		edgeScope := sc
 		edgeScope.runInputs = map[string]any{}
 		for _, dm := range edge.With {
-			prev, dup := bucket[dm.Key]
+			prev, dup := byKey[dm.Key]
 			if dup && prev.raw == dm.Raw {
-				// The same template on both alternatives IS the same
-				// mapping, whatever it resolves to. Resolving it twice and
-				// comparing would report a false disagreement for any
-				// namespace that moves between the two reads —
-				// `{{run.elapsed_seconds}}` differs on every lookup.
+				// The same template IS the same mapping, whatever it
+				// resolves to. Resolving it twice and comparing would report
+				// a false disagreement for any namespace that moves between
+				// the two reads — `{{run.elapsed_seconds}}` differs on every
+				// lookup.
 				continue
 			}
 			val := e.resolveMapping(dm, edgeScope)
 			if !dup {
-				bucket[dm.Key] = &floorValue{value: val, raw: dm.Raw, refs: dm.Refs, decided: true, fromEdge: edgeLabel(edge)}
-				keyOrder[edge.From] = append(keyOrder[edge.From], dm.Key)
+				byKey[dm.Key] = &floorValue{value: val, raw: dm.Raw, refs: dm.Refs, decided: true, fromEdge: edgeLabel(edge)}
+				keyOrder = append(keyOrder, dm.Key)
 				continue
 			}
-			if prev.decided && !reflect.DeepEqual(prev.value, val) {
+			if !prev.decided {
+				continue
+			}
+			if !reflect.DeepEqual(prev.value, val) {
 				prev.decided = false
 				conflicts = append(conflicts, settledFloorConflict{
-					from: edge.From, key: dm.Key,
+					key:       dm.Key,
 					firstEdge: prev.fromEdge, secondEdge: edgeLabel(edge),
 					first: prev.value, second: val,
 				})
-			}
-		}
-	}
-	for _, from := range sources {
-		for _, key := range keyOrder[from] {
-			v := bySource[from][key]
-			if v == nil || !v.decided {
 				continue
 			}
-			if _, dup := out.values[key]; !dup {
-				out.order = append(out.order, key)
-			}
-			out.values[key] = v.value
-			for _, ref := range v.refs {
-				if ref != nil && ref.Kind == ir.RefArtifacts && len(ref.Path) > 0 {
-					out.artifactRefs[ref.Path[0]] = true
-				}
+			// They agree on the value by two different templates: both were
+			// genuinely read, so both sets of references were consumed.
+			prev.refs = append(prev.refs, dm.Refs...)
+		}
+	}
+	for _, key := range keyOrder {
+		v := byKey[key]
+		if v == nil || !v.decided {
+			continue
+		}
+		out.order = append(out.order, key)
+		out.values[key] = v.value
+		for _, ref := range v.refs {
+			if ref != nil && ref.Kind == ir.RefArtifacts && len(ref.Path) > 0 {
+				out.artifactRefs[ref.Path[0]] = true
 			}
 		}
 	}
