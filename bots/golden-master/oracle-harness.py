@@ -4689,6 +4689,35 @@ def _selftest():
         check("cycles depenses comptes par CYCLE, pas par mutant",
               [spent_cycles(adir), spent_cycles(gmd)], [2, 0])
 
+        # Reutilisation : une empreinte deja publiee sous mutants/audit/ n'est
+        # plus un jeu tenu a l'ecart, c'est une piece a conviction que la boucle
+        # de durcissement peut lire. C'est la regle que la porte consomme via
+        # `holdout_reused`, et elle s'exerce ici sur les VRAIES fonctions.
+        #
+        # Elle vit dans ce fichier parce que ce fichier se recopie dans le depot
+        # cible : un test a cote ne suivrait pas, et le filet materialise
+        # embarquerait une regle de decision que plus rien ne verifie.
+        reuse_root = tempfile.mkdtemp(prefix="gm-selftest-reuse-")
+        spent_map = spent_fingerprints(adir)
+
+        def mk_mutant(name, body):
+            d = os.path.join(reuse_root, name)
+            os.makedirs(d)
+            with open(os.path.join(d, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write(body)
+            return d
+
+        check("empreinte deja publiee -> reutilisation vue ; contenu different -> non",
+              [mutant_fingerprint(mk_mutant("same", "true\n")) in spent_map,
+               mutant_fingerprint(mk_mutant("other", "false\n")) in spent_map],
+              [True, False])
+        # Le nom ne fait pas partie de l'empreinte : renommer un jeu depense ne
+        # le blanchit pas. C'est la moitie de la garantie qu'un refus par nom
+        # n'aurait jamais tenue.
+        check("le renommage ne blanchit rien : l'empreinte ignore le nom du dossier",
+              mutant_fingerprint(mk_mutant("un-nom-tout-autre", "true\n")) in spent_map,
+              True)
+
         prev_seal = os.environ.get("GM_SEAL_COMMITTED")
         os.environ["GM_SEAL_COMMITTED"] = "1"
         try:
@@ -7063,6 +7092,17 @@ def main():
             "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
             for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
         if report["holdout_reused"]:
+            # Withheld, not zero-because-failed — the idiom used by selfcheck and
+            # by the lost-baseline arm above. Bailing here leaves the held-out
+            # figures at their 0/0 defaults, and the gate converges in part on
+            # `holdout_detected == holdout_total`: a refused report must fail
+            # that term rather than sail through on a 0 == 0 coincidence. The
+            # .bot gate and the emitted wrapper both also refuse on
+            # `holdout_reused` and on `runner_replayable`, so this is the third
+            # lock, not the only one — but it is the one that holds for a reader
+            # this file has never heard of.
+            report["holdout_total"] = len(held_meta)
+            report["holdout_detected"] = -1
             bail("the held-out set REPEATS mutants already scored and "
                  "published: %s. A spent set is evidence, not a test — "
                  "draw a fresh one, or the held-out figure measures "
