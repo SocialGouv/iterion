@@ -421,3 +421,44 @@ workflow main:
 		}
 	}
 }
+
+// TestTheRetryRemedyDoesNotTeachTheFormItRefuses.
+//
+// `retry:` takes a count of EXTRA attempts and nothing else — the delay
+// between them is the vendor's Retry-After to name, not the workflow's to
+// choose. Three surfaces render that remedy (the property registry, this
+// catalogue, docs/references/diagnostics.md) and they drifted one at a time:
+// the registry was corrected while the catalogue still read "an attempt count
+// or a duration", so an author writing `retry: 1m` was refused by C265 and
+// then told by HintFor — which `iterion validate`, the studio badge and the
+// MCP result all render — to write exactly that.
+//
+// A remedy that cannot be followed is worse than none: it sends the author
+// round the loop a second time with the compiler's own instructions.
+func TestTheRetryRemedyDoesNotTeachTheFormItRefuses(t *testing.T) {
+	_, diags := compileSource(t, `
+tool t:
+  action: forgejo.issue.comment
+  connection: c
+  retry: 1m
+workflow main:
+  entry: t
+  t -> done
+`)
+	if !hasCode(diags, DiagActionBadTimeout) {
+		t.Fatalf("a duration in `retry:` must be refused, got %v", codesOf(diags))
+	}
+	hint := HintFor(DiagActionBadTimeout)
+	if hint == "" {
+		t.Fatal("the code must carry a fix line")
+	}
+	// The remedy must not offer the form the compiler just refused.
+	for _, forbidden := range []string{"or a duration", "or `retry: 1m`", "attempt count or"} {
+		if strings.Contains(hint, forbidden) {
+			t.Errorf("the remedy offers what C265 refuses (%q): %s", forbidden, hint)
+		}
+	}
+	if !strings.Contains(hint, "attempts") {
+		t.Errorf("the remedy must say what `retry:` does take: %s", hint)
+	}
+}
