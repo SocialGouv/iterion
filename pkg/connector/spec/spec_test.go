@@ -230,6 +230,33 @@ func TestValidateRefusals(t *testing.T) {
 			wantMsg: "no cursor_field",
 		},
 		{
+			// Prevents: a walk whose every iteration re-sends an identical
+			// request. CallPaged writes the position only when the parameter
+			// is named, so the vendor answers page one max_pages times and
+			// its items are appended max_pages times — a node acting once per
+			// item acts twenty times on each.
+			name: "cursor pagination with no cursor_param",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageCursor, CursorField: "next",
+				}
+			},
+			wantMsg: "no cursor_param",
+		},
+		{
+			// The same hole on the numbered styles, which have no
+			// cursor_field check to fall back on.
+			name: "page_number pagination with no page_param",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageNumber, SizeParam: "limit", DefaultSize: 50,
+				}
+			},
+			wantMsg: "no page_param",
+		},
+		{
 			// Prevents: a style the executor has no arm for reaching
 			// production, where it fails at the first call instead of at
 			// validation. link_header is declared in the model but not yet

@@ -466,7 +466,30 @@ func (op Operation) validatePagination() error {
 		return nil
 	}
 	if !ValidPaginationStyle(p.Style) {
-		return fmt.Errorf("operation %q: pagination style %q is not one iterion can walk (want page_number|cursor|offset|link_header)", op.ID, p.Style)
+		// The list is what this build WALKS, not what the model spells:
+		// `link_header` is declared in the style enum and has no arm in
+		// CallPaged, so naming it here as an acceptable value handed the
+		// author of a refused package the very value that is refused.
+		return fmt.Errorf("operation %q: pagination style %q is not one iterion can walk (want page_number|cursor|offset)", op.ID, p.Style)
+	}
+	// The parameter the walk ADVANCES THROUGH, by the same argument as
+	// cursor_field just below: CallPaged writes the position only when the
+	// parameter is named (`if p.CursorParam != ""`, `if p.PageParam != ""`),
+	// so without it every iteration re-sends an identical request. The vendor
+	// answers page one each time with the same non-empty cursor, nothing
+	// short-circuits, and the walk runs its full bound: `max_pages` identical
+	// requests, page one's items appended that many times, `complete=false`.
+	// A node that acts once per item then acts twenty times on each, and
+	// twenty of the vendor's slots are spent per execution.
+	switch p.Style {
+	case PageCursor:
+		if p.CursorParam == "" {
+			return fmt.Errorf("operation %q: cursor pagination declares no cursor_param, so every page of the walk would re-send an identical request", op.ID)
+		}
+	case PageNumber, PageOffset:
+		if p.PageParam == "" {
+			return fmt.Errorf("operation %q: %s pagination declares no page_param, so every page of the walk would re-send an identical request", op.ID, p.Style)
+		}
 	}
 	if p.Style == PageCursor && p.CursorField == "" {
 		return fmt.Errorf("operation %q: cursor pagination declares no cursor_field, so the walk could never advance past page one", op.ID)
