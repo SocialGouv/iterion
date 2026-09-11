@@ -89,6 +89,19 @@ func TestParseActionParamRefusesAnUnquotedMultiWordValue(t *testing.T) {
 			}
 		}
 	}
+	// LOAD-BEARING: an ERROR, not a warning. The AST keeps the partial head
+	// (`hello`) so tooling has something to show, and only the severity stops
+	// that truncated value from being sent — a warning here would be a worse
+	// bug than the join, since the vendor would receive half the argument.
+	var fatal bool
+	for _, d := range res.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			fatal = true
+		}
+	}
+	if !fatal {
+		t.Error("an unquotable value must be an error: a warning would let the truncated value be sent")
+	}
 }
 
 // The third word used to be read as the NEXT parameter name, so the author got
