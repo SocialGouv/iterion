@@ -414,8 +414,20 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		out.Params = append(out.Params, body...)
 		out.HTTP.RequestBody = encoding
 		out.HTTP.ContentType = w.lastBodyMediaType
-	} else if enc := w.swaggerBodyEncoding(op); enc != "" {
-		out.HTTP.RequestBody = enc
+	} else if out.HasBodyParams() {
+		// ONLY when the operation actually carries body members. Swagger's
+		// `consumes` is inherited from the ROOT, so it says nothing about
+		// whether THIS operation has a body — and an unsupported one
+		// (`application/xml`, `text/plain`) is deliberately kept below rather
+		// than cleared, precisely so a body iterion cannot build becomes a
+		// coverage gap. Asked unconditionally, the two combined to refuse
+		// every BODYLESS operation of such an API: a GET carrying a root
+		// `consumes: [application/xml]` was published as
+		// `unsupported:application/xml`, validation refused it, and an API
+		// whose root advertises only XML lost its entire read surface — the
+		// generator reporting every operation as malformed. Measured on a
+		// three-GET description: 0 derived, 3 skipped.
+		out.HTTP.RequestBody = w.swaggerBodyEncoding(op)
 	}
 	out.Params = sortParams(dedupParams(out.Params))
 	// An encoding is only meaningful when there IS a body. Swagger inherits

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -200,15 +201,26 @@ func decode(data []byte) (map[string]any, error) {
 }
 
 // normalizeYAML converts yaml.v2's map[interface{}]interface{} into
-// map[string]any so one walk serves both input syntaxes. A non-string key is
-// dropped: no API description has one, and carrying it would force every
-// reader downstream to handle a case that cannot occur.
+// map[string]any so one walk serves both input syntaxes.
+//
+// A non-string SCALAR key is RENDERED, not dropped. "No API description has
+// one" was wrong about the only syntax that can produce one: YAML resolves an
+// unquoted `200:` as an int, so the ordinary hand-written form of a responses
+// block — `responses:` / `  200:` / `  404:` — lost every case, silently and
+// with no skip reported. The operation shipped with no results and no errors,
+// which also disables validatePagination's array check: the very same
+// description saved as JSON was correctly refused. YAML 1.1 does the same to
+// `on:`/`no:`/`yes:`/`off:`, which it resolves as bools, so a schema property
+// genuinely named `on` disappeared the same way.
+//
+// A non-scalar key (YAML's complex-key form) is still dropped: it has no
+// rendering a reader downstream could act on, and no description has one.
 func normalizeYAML(v any) any {
 	switch t := v.(type) {
 	case map[any]any:
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			ks, ok := k.(string)
+			ks, ok := yamlKeyString(k)
 			if !ok {
 				continue
 			}
@@ -226,6 +238,28 @@ func normalizeYAML(v any) any {
 }
 
 // detectFormat reads the version marker each format carries at the root.
+// yamlKeyString renders a YAML mapping key the way the document wrote it.
+// The JSON twin of the same description carries these as strings, so the two
+// syntaxes must produce the same tree — that is the whole point of
+// normalizing.
+func yamlKeyString(k any) (string, bool) {
+	switch t := k.(type) {
+	case string:
+		return t, true
+	case int:
+		return strconv.Itoa(t), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case uint64:
+		return strconv.FormatUint(t, 10), true
+	case float64:
+		return trimFloat(t), true
+	case bool:
+		return strconv.FormatBool(t), true
+	}
+	return "", false
+}
+
 func detectFormat(doc map[string]any) (Format, error) {
 	if v, ok := doc["openapi"].(string); ok {
 		if strings.HasPrefix(v, "3.") {
@@ -290,16 +324,17 @@ func strSlice(m map[string]any, key string) []string {
 
 // enumStrings renders an enum whose members may be numbers or booleans, since
 // the values become a validation list and a form's options.
+//
+// Through the same renderer as a mapping key, for the same reason: JSON
+// decodes every number as a float64 while yaml.v2 yields int / uint64, so a
+// type switch listing only float64 kept `enum: [1, 2, 3]` for a JSON
+// description and dropped it for the YAML twin — silently disabling exec's
+// own enum guard for that parameter on one syntax only.
 func enumStrings(m map[string]any) []string {
 	var out []string
 	for _, v := range sliceAt(m, "enum") {
-		switch t := v.(type) {
-		case string:
-			out = append(out, t)
-		case float64:
-			out = append(out, trimFloat(t))
-		case bool:
-			out = append(out, fmt.Sprint(t))
+		if s, ok := yamlKeyString(v); ok {
+			out = append(out, s)
 		}
 	}
 	return out

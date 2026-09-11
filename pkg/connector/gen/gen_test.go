@@ -510,6 +510,119 @@ paths:
 	}
 }
 
+// TestAnUnquotedScalarKeyIsStillAKey.
+//
+// YAML resolves an unquoted `200:` as an INT, and yaml.v2 hands it back as a
+// non-string map key. Dropping those keys ("no API description has one") lost
+// the whole responses block of the ordinary hand-written form — no results, no
+// errors, no skip, no error: the JSON twin of the same document was read
+// correctly, so the two syntaxes disagreed about the vendor's API. The same
+// drop took an int enum (yaml.v2 gives int where JSON gives float64) and, by
+// YAML 1.1's resolution rules, a property literally named `on`.
+//
+// The existing YAML test could not see any of it: its status codes are quoted.
+func TestAnUnquotedScalarKeyIsStillAKey(t *testing.T) {
+	const y = `
+swagger: "2.0"
+info:
+  title: Probe
+  version: "1.0"
+host: probe.example
+securityDefinitions:
+  tok:
+    type: apiKey
+    name: X-Token
+    in: header
+paths:
+  /things:
+    get:
+      tags: [thing]
+      operationId: thingList
+      summary: List things
+      parameters:
+        - name: state
+          in: query
+          type: integer
+          enum: [1, 2, 3]
+      responses:
+        200:
+          description: ok
+          schema:
+            type: array
+            items:
+              type: object
+        404:
+          description: gone
+`
+	pkg, report, err := gen.Generate([]byte(y), gen.Options{ConnectorID: "probe"})
+	if err != nil {
+		t.Fatalf("generate from YAML: %v", err)
+	}
+	if len(report.Skipped) > 0 {
+		t.Fatalf("skipped: %+v", report.Skipped)
+	}
+	op, ok := pkg.Operation("probe.thing.list")
+	if !ok {
+		t.Fatalf("operations = %v, want probe.thing.list", opIDs(pkg))
+	}
+	if len(op.Results) != 1 || op.Results[0].Status != 200 {
+		t.Errorf("results = %+v, want the 200 the document declares — an unquoted status code is a status code", op.Results)
+	}
+	// The error case matters twice over: without it nothing tells a workflow
+	// that a 404 is documented, and the loss is invisible.
+	if len(op.Errors) != 1 || op.Errors[0].Status != 404 {
+		t.Errorf("errors = %+v, want the declared 404", op.Errors)
+	}
+	if len(op.Params) != 1 || len(op.Params[0].Enum) != 3 {
+		t.Errorf("params = %+v, want `state` keeping its three enum members — exec's own enum guard is disabled without them", op.Params)
+	}
+}
+
+// TestABodylessSwaggerOperationIgnoresTheRootConsumes.
+//
+// Swagger inherits `consumes` from the ROOT, so it says nothing about whether
+// a given operation has a body. Asking for the encoding unconditionally turned
+// every bodyless operation of an XML-advertising API into
+// `unsupported:application/xml` — deliberately not cleared, since for a REAL
+// body that pair is what becomes a coverage gap — and validation then refused
+// it. An API whose root advertises only a media type iterion cannot build lost
+// its entire READ surface: measured at 0 operations derived, 3 skipped, with a
+// diagnostic about a request body none of them has.
+func TestABodylessSwaggerOperationIgnoresTheRootConsumes(t *testing.T) {
+	const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "consumes": ["application/xml"],
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/things": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingList", "summary": "List",
+        "responses": {"200": {"description": "ok", "schema": {"type": "array", "items": {"type": "object"}}}}
+      }
+    },
+    "/things/{id}": {
+      "delete": {
+        "tags": ["thing"], "operationId": "thingDelete", "summary": "Delete",
+        "parameters": [{"name": "id", "in": "path", "required": true, "type": "string"}],
+        "responses": {"204": {"description": "gone"}}
+      }
+    }
+  }
+}`
+	pkg := generate(t, body)
+	for _, id := range []string{"probe.thing.list", "probe.thing.delete"} {
+		op, ok := pkg.Operation(id)
+		if !ok {
+			t.Fatalf("%s missing, got %v — a bodyless operation must not inherit the root's media type", id, opIDs(pkg))
+		}
+		if op.HTTP.RequestBody != "" {
+			t.Errorf("%s request body = %q, want none — the operation has no body to encode", id, op.HTTP.RequestBody)
+		}
+	}
+}
+
 // TestDeterministicOutput pins reproducibility: regenerating an unchanged
 // description must produce an identical package, or every regeneration is an
 // unreviewable diff.
