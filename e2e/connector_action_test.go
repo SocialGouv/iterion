@@ -253,6 +253,93 @@ func TestAnUndecidedMutationParksTheRunForAnOperator(t *testing.T) {
 	}
 }
 
+// connectorFanOutBot puts the same action node under a `fan_out_all` router,
+// beside a compute branch that succeeds. Everything else is the bot above.
+const connectorFanOutBot = `
+vars:
+  issue: string = "42"
+
+schema num:
+  n: int
+
+router fork:
+  mode: fan_out_all
+
+tool comment:
+  action: probe.issue.comment
+  connection: main
+  params:
+    owner: "acme"
+    repo: "widgets"
+    index: "{{vars.issue}}"
+    body: "shipped"
+  timeout: 30s
+  output: comment_result
+
+schema comment_result:
+  status: int
+
+compute side:
+  output: num
+  expr:
+    n: "1"
+
+compute gather:
+  await: wait_all
+  output: num
+  expr:
+    n: "outputs.side.n"
+
+workflow main:
+  budget:
+    max_parallel_branches: 4
+  entry: fork
+  fork -> comment
+  fork -> side
+  comment -> gather
+  side -> gather
+  gather -> done
+`
+
+// TestAnUndecidedMutationInABranchStillParksTheRun is the sibling of the test
+// above, on the path the aggregate takes.
+//
+// A branch failure does not reach the classifier as itself: processConvergence
+// builds ONE error for the whole convergence, and its untyped fallback
+// (`fmt.Errorf("%s", msg)`) flattens the chain to a string. commonBranchFailureCode
+// cannot rescue an executor failure — it reads a *RuntimeError, which an
+// *exec.Error is not — so an undecided mutation inside a branch was failed
+// EXECUTION_FAILED, which IS on the auto-resume allow-list: the resume
+// re-enters the router and re-runs every branch, re-sending the call whose
+// outcome nobody knows. One action node under a `fan_out_all` is the whole
+// recipe, and neither end's own test can see it.
+func TestAnUndecidedMutationInABranchStillParksTheRun(t *testing.T) {
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	}))
+	defer srv.Close()
+
+	resolver := seedProbeConnection(t, t.TempDir(), srv.URL)
+	_, r, err := runConnectorBot(t, connectorFanOutBot, resolver, srv.Client(),
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())))
+	if err == nil {
+		t.Fatal("a 500 on a mutating branch must fail the run")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Errorf("the vendor saw %d requests — an undecided mutation must be sent exactly once", got)
+	}
+	if r.FailureCode != store.FailureAmbiguousEffect {
+		t.Errorf("failure code = %q, want %q — a branch's undecided effect must survive the convergence that aggregates it",
+			r.FailureCode, store.FailureAmbiguousEffect)
+	}
+	if retrypolicy.AutoResumable(r.FailureCode) {
+		t.Error("the aggregate became auto-resumable — a scheduler would re-run every branch, mutation included")
+	}
+}
+
 // runConnectorBot compiles the source, builds the REAL executor with the
 // connector seam wired, and runs it on the real engine. Returns the tool
 // node's output.

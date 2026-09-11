@@ -77,6 +77,30 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
 				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
+			// An UNDECIDED remote effect outranks the agreement rule below
+			// and needs no agreement of its own: ONE branch whose mutation
+			// may already have happened is enough to make the aggregate
+			// unreplayable. commonBranchFailureCode structurally cannot
+			// answer for it — it reads a *RuntimeError, and an executor's
+			// typed failure is not one — so the aggregate fell through to
+			// the untyped return below, which flattens the chain to a
+			// string. The classifier then never sees the ambiguity, the run
+			// fails EXECUTION_FAILED, and that code IS on the auto-resume
+			// allow-list: the resume re-enters the router, re-runs every
+			// branch, and re-sends the very call whose outcome was unknown.
+			// One action node under a `fan_out_all`, or a `fan_out_each`
+			// over N items, is the whole recipe.
+			if amb := firstAmbiguousBranchErr(results); amb != nil {
+				return "", &RuntimeError{
+					Code:    ErrCodeAmbiguousEffect,
+					Message: msg,
+					NodeID:  convergenceNodeID,
+					Hint:    "check the remote system before resuming: a branch's call may have taken effect, so re-running it would duplicate it",
+					// WRAPPED, because the classification asks the CHAIN
+					// (IsAmbiguousEffect) and not only the code.
+					Cause: amb,
+				}
+			}
 			// When every failed branch carries the SAME typed code, the
 			// aggregate keeps it — a fan-out hitting one deterministic
 			// wall (a ghost node after a source edit) must not launder
@@ -282,6 +306,24 @@ func deepCopyValue(v any) any {
 
 // commonBranchFailureCode returns the typed failure code shared by
 // EVERY failed branch result, or "" when they disagree (or none is
+// firstAmbiguousBranchErr returns the first branch failure that declares its
+// remote effect UNDECIDED, or nil.
+//
+// Unlike the agreement rule below it takes the FIRST match rather than a
+// unanimous one: the question it answers is "may anything here already have
+// happened", and one branch saying yes settles it.
+func firstAmbiguousBranchErr(results []*branchResult) error {
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		if IsAmbiguousEffect(r.err) {
+			return r.err
+		}
+	}
+	return nil
+}
+
 // typed) — partial agreement stays the catch-all, never a guess.
 func commonBranchFailureCode(results []*branchResult) ErrorCode {
 	var code ErrorCode
