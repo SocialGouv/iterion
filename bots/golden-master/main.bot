@@ -118,6 +118,14 @@ prompt campaign_user:
   the sealed pile. The held-out SCORE is withheld there on purpose; do not go
   looking for it.
 
+  Neither set is yours to run. The first has left the tree; the second is
+  readable only because it must WAIT, and applying it here — or hardening the
+  comparator against what it catches — spends the next gate's whole
+  counter-test while leaving it green. For the same reason, a later pass of this
+  same run does not write a third: while a committed set sits under
+  `mutants/holdout/` nothing there can be sealed, so what you add stays readable
+  and proves nothing. Your set for this cycle is already in the pile.
+
   {{input.fail_log}}
 
   When a previous pass left a failure above, fix the ORACLE, not the
