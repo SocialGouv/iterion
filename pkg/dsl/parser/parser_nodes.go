@@ -913,9 +913,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 		// is the source of an internal edge when an arrow follows its
 		// reference; the type of its token says nothing about that.
 		if p.edgeAhead() {
-			if e := p.parseEdge(); e != nil {
-				gd.Edges = append(gd.Edges, e)
-			}
+			gd.Edges = append(gd.Edges, p.parseEdge()...)
 			continue
 		}
 		switch t.Type {
@@ -959,9 +957,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 				continue
 			}
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
-				if e := p.parseEdge(); e != nil {
-					gd.Edges = append(gd.Edges, e)
-				}
+				gd.Edges = append(gd.Edges, p.parseEdge()...)
 			} else {
 				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
 				p.next()

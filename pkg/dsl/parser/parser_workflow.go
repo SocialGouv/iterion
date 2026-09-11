@@ -40,9 +40,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		// …) is the source of an edge when an arrow follows its reference;
 		// the type of its token says nothing about that.
 		if p.edgeAhead() {
-			if edge := p.parseEdge(); edge != nil {
-				wd.Edges = append(wd.Edges, edge)
-			}
+			wd.Edges = append(wd.Edges, p.parseEdge()...)
 			continue
 		}
 
@@ -184,10 +182,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 					continue
 				}
 				p.backup()
-				edge := p.parseEdge()
-				if edge != nil {
-					wd.Edges = append(wd.Edges, edge)
-				}
+				wd.Edges = append(wd.Edges, p.parseEdge()...)
 			} else {
 				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in workflow")
 				p.next()

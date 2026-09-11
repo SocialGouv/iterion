@@ -27,6 +27,7 @@ const (
 	// Edge clause errors
 	DiagDuplicateEdgeClause DiagCode = "E030" // duplicate when/as/with clause on an edge
 	DiagElseWithWhen        DiagCode = "E031" // an edge cannot carry both when and else
+	DiagClauseBeforeArrow   DiagCode = "E032" // a clause in the middle of a chain `a -> b when x -> c`
 
 	// Header errors (the `dsl: N` syntax profile, ADR-098)
 	DiagUnknownProfile     DiagCode = "E040" // the header names a profile this build does not read, or is not a positive integer
@@ -53,6 +54,7 @@ var hints = map[DiagCode]string{
 	DiagInvalidType:         "Types are `string`, `bool`, `int`, `float`, `json` and `string[]` (a schema field may also be `file`).",
 	DiagDuplicateEdgeClause: "Each of `when`/`else`, `as` and `with` may appear once per edge.",
 	DiagElseWithWhen:        "An edge is either guarded (`when`) or the fallback (`else`), never both.",
+	DiagClauseBeforeArrow:   "In a chain `a -> b -> c …` the clauses apply to the LAST segment only; to guard, loop or map an earlier one, write that segment as its own edge line.",
 	DiagUnknownProfile:      "Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: \">= <version>\" }` in the bundle manifest.",
 	DiagMisplacedHeader:     "Move the `dsl:` line above every declaration — after the leading comments, before the first block or node — and keep a single one.",
 	DiagDirectiveInProfile:  "Profile 2 reads standard escapes in every quoted string by default: delete the `strict-escape` directive (a backslash that must stay literal is written `\\\\`).",
