@@ -139,8 +139,11 @@ func (c *layeredCatalog) Connectors() []string {
 // a bot pointed at somebody else's repository never does.
 const ProjectCatalogEnv = "ITERION_CONNECTOR_PROJECT_CATALOG"
 
-// projectCatalogEnabled reports whether this process consults the project tier.
-func projectCatalogEnabled() bool {
+// ProjectCatalogGranted reports whether this process consults the project
+// tier. Exported because a surface that has to SAY so — `connections add`
+// naming the roots it expects — must read the same rule that decides it, not a
+// second copy of the environment check.
+func ProjectCatalogGranted() bool {
 	return os.Getenv(ProjectCatalogEnv) == "1"
 }
 
@@ -174,7 +177,7 @@ func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			if project && !projectCatalogEnabled() {
+			if project && !ProjectCatalogGranted() {
 				// Not consulted, so its readability is nobody's problem.
 				continue
 			}
@@ -185,7 +188,7 @@ func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 			// hold one, so this is an absence rather than a refusal.
 			continue
 		}
-		if project && !projectCatalogEnabled() {
+		if project && !ProjectCatalogGranted() {
 			out = append(out, disabledCatalog{root: root})
 			continue
 		}
@@ -210,10 +213,6 @@ func (c disabledCatalog) Package(connectorID string) (*spec.Package, error) {
 
 // Connectors lists nothing: a tier that cannot serve must not advertise.
 func (c disabledCatalog) Connectors() []string { return nil }
-
-// ProjectCatalogGranted reports whether this process consults the project tier,
-// for a surface that needs to SAY so rather than to resolve through it.
-func ProjectCatalogGranted() bool { return projectCatalogEnabled() }
 
 // LocalResolver builds the resolver a local run uses: the layered package
 // catalog, the file-backed connection store, and the local sealer.
