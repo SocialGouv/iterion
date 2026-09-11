@@ -143,6 +143,7 @@ func (s *MemoryStore) Update(_ context.Context, c Connection) error {
 	if err := checkAliasFree(s.byID, c, c.ID); err != nil {
 		return err
 	}
+	c.SealedPayload = keptCredential(prev, c)
 	c.CreatedAt = prev.CreatedAt
 	c.UpdatedAt = s.clock()
 	s.byID[c.ID] = c
@@ -178,6 +179,28 @@ func aliasEq(a, b string) bool {
 // Shared by create and update because it was enforced on create only, and a
 // rename onto an existing alias left two records answering one name — with
 // `ByAlias` returning whichever the map iteration reached first.
+// keptCredential answers what an update leaves sealed on the record.
+//
+// An update is a full replace, and `Connection.SealedPayload` is `json:"-"`
+// — deliberately, since a credential has no business in an API response. So
+// any caller that rebuilds the record from the TRANSPORT shape (the studio's
+// PATCH, which is what this exported interface exists for) hands back a
+// record with no payload at all, and a replace would write the credential
+// away: the connection survives, `connections list` still shows it active,
+// and it 401s at its next call with an error that reads like a bad token.
+// That is the exact failure fileRecord was introduced to prevent, on the
+// update path instead of the write path.
+//
+// So an absent payload means "unchanged", and rotating one means SENDING one.
+// A credential is never removed by omission, which no caller can mean:
+// unbinding a connection is Delete, and suspending it is Status.
+func keptCredential(prev, next Connection) []byte {
+	if len(next.SealedPayload) == 0 {
+		return prev.SealedPayload
+	}
+	return next.SealedPayload
+}
+
 func checkAliasFree(all map[string]Connection, c Connection, exceptID string) error {
 	for id, other := range all {
 		if id == exceptID {

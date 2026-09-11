@@ -288,6 +288,7 @@ func (s *FileStore) Update(_ context.Context, c Connection) error {
 		if err := checkAliasFree(s.byID, c, c.ID); err != nil {
 			return err
 		}
+		c.SealedPayload = keptCredential(prev, c)
 		c.CreatedAt = prev.CreatedAt
 		c.UpdatedAt = s.clock()
 		s.byID[c.ID] = c

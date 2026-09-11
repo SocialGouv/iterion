@@ -226,6 +226,60 @@ func TestAFutureFormatIsRefusedByNAME(t *testing.T) {
 	}
 }
 
+// TestAnUpdateKeepsTheCredential — on EVERY store.
+//
+// `Connection.SealedPayload` is `json:"-"`, so a record rebuilt from the
+// TRANSPORT shape — the studio's PATCH, which is what this exported interface
+// exists for — carries no credential at all. Update being a full replace, it
+// wrote the payload away: the connection survived, `connections list` still
+// showed it active, and it 401'd at its next call with an error that reads
+// like a bad token. The same omission was in BOTH twins, which is precisely
+// why the suite could not see it — so the assertion belongs here.
+//
+// Rotation still works, and is what an update carrying a payload MEANS.
+func TestAnUpdateKeepsTheCredential(t *testing.T) {
+	for name, build := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := build()
+			c := conn("c1", "tenant-a", "main")
+			c.SealedPayload = []byte("sealed-original")
+			if err := s.Create(ctx, c); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			// The transport shape: everything but the credential.
+			edit := conn("c1", "tenant-a", "main")
+			edit.DisplayName = "renamed for display only"
+			if err := s.Update(ctx, edit); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			got, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if string(got.SealedPayload) != "sealed-original" {
+				t.Errorf("after an edit the credential is %q, want the stored one kept — "+
+					"a record rebuilt from the API shape carries none, and wiping it leaves a connection that 401s", got.SealedPayload)
+			}
+
+			// And an update that DOES carry one rotates it.
+			rot := conn("c1", "tenant-a", "main")
+			rot.SealedPayload = []byte("sealed-rotated")
+			if err := s.Update(ctx, rot); err != nil {
+				t.Fatalf("rotate: %v", err)
+			}
+			got, err = s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("get after rotation: %v", err)
+			}
+			if string(got.SealedPayload) != "sealed-rotated" {
+				t.Errorf("after a rotation the credential is %q, want the new one", got.SealedPayload)
+			}
+		})
+	}
+}
+
 // TestARenameCannotCollideWithAnotherAlias — on EVERY store.
 //
 // Uniqueness was enforced at creation only, so renaming one connection onto
