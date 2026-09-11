@@ -366,17 +366,33 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		if !ok {
 			continue
 		}
-		got := w.params(pm)
-		if len(got) == 0 && boolAt(pm, "required") {
+		// RESOLVED FIRST, because both readings below are about the parameter
+		// and not about the reference to it. `boolAt(pm, "required")` on a
+		// `{"$ref": …}` wrapper is always false — a `$ref` object carries
+		// nothing else — so the two cases this check names, an unresolvable
+		// reference and a location iterion cannot build, were exactly the two
+		// it could never see: a `$ref`'d required cookie parameter was dropped
+		// and reported as no skip at all.
+		resolved, refOK := w.resolveParam(pm)
+		got := w.params(resolved)
+		if len(got) == 0 && (boolAt(resolved, "required") || !refOK) {
 			// A REQUIRED parameter was dropped — an unresolvable `$ref`, or a
-			// location iterion cannot build (a cookie). Recorded here so the
-			// caller can skip the whole operation.
+			// location iterion cannot build (a cookie). An unresolvable
+			// reference counts whatever it said: what it declared is precisely
+			// what cannot be read, so treating it as optional is a guess in
+			// the direction that ships a hole. Recorded here so the caller can
+			// skip the whole operation.
 			//
 			// Erasing it published an operation that cannot be called, with
 			// ZERO skips reported: exactly the invisible gap the skip
 			// mechanism exists to make impossible. A dropped OPTIONAL
 			// parameter only narrows the operation, so it still ships.
-			dropped = append(dropped, paramLabel(pm))
+			// Labelled from the RESOLVED view, so the reason names the
+			// parameter an author can act on (`session (in: cookie)`) rather
+			// than the reference that carried it. When the reference could not
+			// be read, `resolved` IS the wrapper and the label falls back to
+			// the `$ref` string — which is then the only thing known about it.
+			dropped = append(dropped, paramLabel(resolved))
 		}
 		out.Params = append(out.Params, got...)
 	}
@@ -444,6 +460,25 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 // paramLabel names a parameter for a skip reason. A `$ref` that did not
 // resolve has no name of its own, so the reference is what identifies it —
 // and it is also what the reader has to go and look at.
+// resolveParam turns a `{"$ref": …}` wrapper into the parameter it names. The
+// second return says whether the reference was READABLE: false means there was
+// one and this document does not define it (a remote or multi-file `$ref`), so
+// nothing at all is known about what it declared.
+//
+// Taken out of `params` — its only caller — because the caller needs the same
+// answer for its own decision, and resolving in two places is how the two came
+// to disagree about which parameter they were looking at.
+func (w *walker) resolveParam(pm map[string]any) (map[string]any, bool) {
+	ref := str(pm, "$ref")
+	if ref == "" {
+		return pm, true
+	}
+	if resolved := w.resolveRef(ref); resolved != nil {
+		return resolved, true
+	}
+	return pm, false
+}
+
 func paramLabel(pm map[string]any) string {
 	if n := str(pm, "name"); n != "" {
 		if in := str(pm, "in"); in != "" {
@@ -555,13 +590,6 @@ func assignParamKeys(params []spec.Param) {
 // expands into one param per member: a node author writes a single flat map
 // and never has to mirror the vendor's request envelope.
 func (w *walker) params(pm map[string]any) []spec.Param {
-	// A $ref'd parameter (a shared "page" definition, say) is resolved here
-	// so its shape reaches the flat list like any inline one.
-	if ref := str(pm, "$ref"); ref != "" {
-		if resolved := w.resolveRef(ref); resolved != nil {
-			pm = resolved
-		}
-	}
 	in := strings.ToLower(str(pm, "in"))
 	name := str(pm, "name")
 	if name == "" && in != "body" {

@@ -610,6 +610,76 @@ func TestWhatCannotBeDerivedIsReportedNotErased(t *testing.T) {
 		}
 	})
 
+	// The SAME parameter, delivered by reference — the form a real description
+	// uses for anything shared. `boolAt(pm, "required")` was read off the
+	// `{"$ref": …}` wrapper, which carries nothing else, so it was always
+	// false: the two cases the check names were exactly the two it could not
+	// see, and the operation shipped missing an input the vendor requires with
+	// ZERO skips reported.
+	t.Run("a required parameter delivered as a $ref", func(t *testing.T) {
+		const body = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "servers": [{"url": "https://probe.example"}],
+  "components": {
+    "securitySchemes": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+    "parameters": {
+      "Session": {"name": "session", "in": "cookie", "required": true, "schema": {"type": "string"}}
+    }
+  },
+  "paths": {
+    "/thing": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetThing", "summary": "Needs a cookie",
+        "parameters": [{"$ref": "#/components/parameters/Session"}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+		_, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+		if err == nil {
+			t.Fatal("a description whose only operation is underivable must fail")
+		}
+		if len(report.Skipped) != 1 {
+			t.Fatalf("report.Skipped = %+v, want the operation counted as a gap", report.Skipped)
+		}
+		if !strings.Contains(report.Skipped[0].Reason, "session") {
+			t.Errorf("the reason must name the parameter that was lost: %q", report.Skipped[0].Reason)
+		}
+	})
+
+	// A reference this document does not define says NOTHING about what it
+	// declared — including whether it was required — so it cannot be treated
+	// as optional: that is a guess in the direction that ships a hole.
+	t.Run("a parameter whose $ref is not defined", func(t *testing.T) {
+		const body = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "servers": [{"url": "https://probe.example"}],
+  "components": {"securitySchemes": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}}},
+  "paths": {
+    "/thing": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetThing", "summary": "Needs something",
+        "parameters": [{"$ref": "shared.yaml#/components/parameters/Session"}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+		_, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+		if err == nil {
+			t.Fatal("an operation whose parameter cannot be read must not be published")
+		}
+		if len(report.Skipped) != 1 {
+			t.Fatalf("report.Skipped = %+v, want the operation counted as a gap", report.Skipped)
+		}
+		if !strings.Contains(report.Skipped[0].Reason, "shared.yaml") {
+			t.Errorf("the reason must name the reference it could not read: %q", report.Skipped[0].Reason)
+		}
+	})
+
 	t.Run("a request body whose $ref is not defined", func(t *testing.T) {
 		const body = `{
   "openapi": "3.0.0",
