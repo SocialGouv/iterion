@@ -54,6 +54,20 @@ func walkFixture(base string, maxPages int) (*spec.Package, spec.Operation) {
 	return pkg, op
 }
 
+// endlessPage is one page of a collection that never ends, carrying a cursor
+// that ADVANCES.
+//
+// That is what a real vendor does, and iterion's no-progress guard requires
+// it: a cursor repeated verbatim says nothing, so re-sending it would re-read
+// one page, and the walk stops rather than spending the ceiling on it. A
+// fixture that models an endless collection has to model an endless PROTOCOL.
+//
+// The counter is fixed-width so every page is the same size on the wire, which
+// is what the byte-budget test's arithmetic rests on.
+func endlessPage(n int, pad string) string {
+	return fmt.Sprintf(`{"items":[{"id":1,"s":%q}],"next":"p%06d"}`, pad, n)
+}
+
 // TestAPackagesOwnMaxPagesIsClamped.
 //
 // The number is the PACKAGE's, and a package is not the workflow's to trust
@@ -63,7 +77,7 @@ func TestAPackagesOwnMaxPagesIsClamped(t *testing.T) {
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
-		_, _ = fmt.Fprint(w, `{"items":[{"id":1}],"next":"more"}`)
+		_, _ = fmt.Fprint(w, endlessPage(requests, ""))
 	}))
 	defer srv.Close()
 
@@ -87,6 +101,46 @@ func TestAPackagesOwnMaxPagesIsClamped(t *testing.T) {
 	}
 }
 
+// TestACursorThatDoesNotAdvanceStopsTheWalk.
+//
+// `walkFixture`'s vendor always answers the same cursor, which is what the two
+// bound tests exploit — and it is also a real shape: a vendor that echoes its
+// cursor on the last page, or a package naming a field that happens to be
+// constant. Re-sending it fetches the SAME page again, so the walk spent up to
+// maxWalkPages of the vendor's rate-limit slots and returned 500 copies of one
+// page. The duplicated items are the worse half: a workflow acts on them.
+//
+// Incomplete rather than an error — the pages gathered are real, and the
+// protocol never said the collection had ended.
+func TestACursorThatDoesNotAdvanceStopsTheWalk(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = fmt.Fprint(w, `{"items":[{"id":1}],"next":"stuck"}`)
+	}))
+	defer srv.Close()
+
+	e := &Executor{Client: srv.Client()}
+	pkg, op := walkFixture(srv.URL, 50)
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// Two: the first page sets the cursor, the second answers the same one.
+	if requests != 2 {
+		t.Errorf("the vendor was called %d times, want 2 — a cursor that does not advance says nothing, and re-sending it re-reads one page", requests)
+	}
+	if len(items) != 2 {
+		t.Errorf("items = %d, want the pages actually walked", len(items))
+	}
+	if complete {
+		t.Error("the protocol never said the collection had ended, so this walk is NOT complete")
+	}
+	if last.Requests != 2 {
+		t.Errorf("Requests = %d, want the walk's total", last.Requests)
+	}
+}
+
 // TestAWalkStopsOnItsByteBudget.
 //
 // The page ceiling alone is not a bound: the bytes are what the pod pays, and
@@ -96,13 +150,16 @@ func TestAPackagesOwnMaxPagesIsClamped(t *testing.T) {
 func TestAWalkStopsOnItsByteBudget(t *testing.T) {
 	// One item per page, large, so the DECODED size stays close to the wire
 	// size and the test's own memory is the budget and not a multiple of it.
+	// The cursor advances (fixed-width, so every page weighs the same), which
+	// is what keeps the stop attributable to the BYTES.
 	const pageSize = 8 << 20
-	body := []byte(`{"items":[{"s":"` + strings.Repeat("x", pageSize) + `"}],"next":"more"}`)
+	pad := strings.Repeat("x", pageSize)
+	pageLen := len(endlessPage(1, pad))
 
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
-		_, _ = w.Write(body)
+		_, _ = fmt.Fprint(w, endlessPage(requests, pad))
 	}))
 	defer srv.Close()
 
@@ -117,19 +174,19 @@ func TestAWalkStopsOnItsByteBudget(t *testing.T) {
 	if complete {
 		t.Error("a walk stopped on its byte budget is NOT complete")
 	}
-	wantPages := maxWalkBytes / len(body)
-	if len(body)*wantPages < maxWalkBytes {
+	wantPages := maxWalkBytes / pageLen
+	if pageLen*wantPages < maxWalkBytes {
 		wantPages++
 	}
 	if requests != wantPages {
 		t.Errorf("the vendor was called %d times (%d bytes), want the walk stopped at %d — the budget is %d",
-			requests, requests*len(body), wantPages, maxWalkBytes)
+			requests, requests*pageLen, wantPages, maxWalkBytes)
 	}
 	if len(items) != wantPages {
 		t.Errorf("items = %d, want one per page walked", len(items))
 	}
-	if last.Bytes != requests*len(body) {
-		t.Errorf("Bytes = %d, want the walk's TOTAL (%d) — it is what the budget is measured in", last.Bytes, requests*len(body))
+	if last.Bytes != requests*pageLen {
+		t.Errorf("Bytes = %d, want the walk's TOTAL (%d) — it is what the budget is measured in", last.Bytes, requests*pageLen)
 	}
 }
 
@@ -155,7 +212,7 @@ func TestAWalkThatFailsMidWayStillReportsWhatItSpent(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"error":"boom"}`)
 			return
 		}
-		_, _ = fmt.Fprint(w, `{"items":[{"id":1}],"next":"more"}`)
+		_, _ = fmt.Fprint(w, endlessPage(requests, ""))
 	}))
 	defer srv.Close()
 
@@ -193,7 +250,7 @@ func TestAWalkThatDiesOnTransportReportsThePagesItSpent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if served < answerPages {
 			served++
-			_, _ = fmt.Fprint(w, `{"items":[{"id":1}],"next":"more"}`)
+			_, _ = fmt.Fprint(w, endlessPage(served, ""))
 			return
 		}
 		// From here the vendor takes the request and never answers.

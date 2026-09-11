@@ -1427,6 +1427,21 @@ spent dozens of rate-limit slots. Accumulated before the returns now, with a
 test per failure shape (HTTP and transport), each falsified against the old
 placement.
 
+### Found beside it: a cursor that does not advance
+
+A cursor walk read termination off the cursor being EMPTY and nothing else, so
+a vendor that echoes the same cursor every page — on its last page, or because
+the package named a field that happens to be constant — was re-sent it up to
+`maxWalkPages` times. 500 of the vendor's rate-limit slots, and 500 copies of
+one page returned as the collection. The duplicated items are the worse half: a
+workflow acts on them.
+
+A cursor repeated verbatim is the protocol saying nothing, so the walk stops
+and reports `complete=false` — the signal `CallPaged`'s contract already tells
+a caller to read. The three fixtures that modelled an endless collection with a
+constant cursor were modelling an endless *collection* through a degenerate
+*protocol*; they advance it now, which is what a real vendor does.
+
 
 ## The ambiguity class, counted across the rounds
 

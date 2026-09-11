@@ -635,10 +635,27 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		// moved out of the cursor branch once; it had to be moved out of the
 		// shared pre-check too.
 		if p.Style == spec.PageCursor {
-			cursor = stringField(res.Data, p.CursorField)
-			if cursor == "" {
+			next := stringField(res.Data, p.CursorField)
+			if next == "" {
 				return items, true, last, nil
 			}
+			// A cursor that did not ADVANCE is the protocol saying nothing.
+			//
+			// Re-sending it fetches the same page again, so the walk spends up
+			// to maxWalkPages of the vendor's rate-limit slots and returns 500
+			// copies of one page — duplicated items a workflow then acts on,
+			// which is worse than the cost. A vendor that echoes its cursor on
+			// the last page, or a package naming a field that happens to be
+			// constant, both land here.
+			//
+			// Reported as an INCOMPLETE collection rather than an error: the
+			// pages already gathered are real, and `complete=false` is exactly
+			// the "stopped early, there may be more" signal a caller is already
+			// told to read. Calling it complete would be the one wrong answer.
+			if next == cursor {
+				return items, false, last, nil
+			}
+			cursor = next
 			page++
 			continue
 		}
