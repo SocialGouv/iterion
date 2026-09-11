@@ -4,9 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -643,6 +648,42 @@ func TestRateLimitCarriesItsDelay(t *testing.T) {
 	}
 }
 
+// TestAHeaderNetHTTPWillNotWriteIsRefusedLOCALLY.
+//
+// A trailing newline on a pasted token is the ordinary way this happens, and
+// `Do` rejects the header before writing anything — which used to arrive at
+// `transportError` and park a mutation on `unknown_outcome`, asserting a
+// request net/http had declined to send. Refused in `buildRequest` instead,
+// which is a local refusal by construction and never reaches that
+// classification.
+//
+// The credential must not appear in the message: for the auth header it IS the
+// credential, and this error travels to the run's events and error tracking.
+func TestAHeaderNetHTTPWillNotWriteIsRefusedLocally(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a request with an unsendable header must never reach the vendor")
+		w.WriteHeader(http.StatusOK)
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.comment")
+	const pasted = "s3cret\n"
+	res, err := e.Call(context.Background(), pkg, op, fullParams("probe.issue.comment"),
+		exec.Credential{SchemeID: "token", Value: pasted})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil || res.Err.Class != spec.ErrBadRequest {
+		t.Fatalf("err = %v, want %q — nothing was sent, so this is a bad request and not a lost answer", res.Err, spec.ErrBadRequest)
+	}
+	if res.Err.AmbiguousEffect() {
+		t.Error("a request that was never written leaves no mutation to reconcile")
+	}
+	if strings.Contains(res.Err.Error(), "s3cret") {
+		t.Errorf("the refusal must not echo the header's value — it is the credential: %v", res.Err)
+	}
+}
+
 // TestAMutationWithNoAnswerIsUnknown is the honesty rule. The request was
 // sent, no answer came back, the operation creates something and the vendor
 // offers no idempotency key — so iterion says it cannot tell, rather than
@@ -729,6 +770,100 @@ func TestAMutationWithAnIdempotencyKeyIsRetryable(t *testing.T) {
 	op.IdempotencyKeyParam = ""
 	if e.Retryable(op, sent) {
 		t.Error("without an idempotency key, a mutation must not be repeated on a 5xx")
+	}
+}
+
+// failingTransport fails every call with a fixed cause — the one way to pin
+// how a SPECIFIC Go error is classified, which a real server cannot produce on
+// demand.
+type failingTransport struct{ err error }
+
+func (t failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
+
+// TestACallThatNeverLEFTIsNotAnUndecidedMutation.
+//
+// `Client.Do` fails on both sides of the request being written, and this read
+// every one of them as the second: a mutation with no idempotency key got
+// `unknown_outcome`, which refuses any retry, classifies as AMBIGUOUS_EFFECT
+// and parks the run terminally off the auto-resume list — with a message
+// asserting "the request was sent and no answer came back".
+//
+// The failures BEFORE a byte goes out are not exotic, they are the default:
+// the SSRF guard refusing a private host is what a self-hosted Forgejo — the
+// single connector this catalog ships — gets on its very first mutating call.
+// A name that does not resolve and a connection refused are the same phase.
+//
+// The table is the whole point: the downgrade must fire on what PROVES nothing
+// was sent and on nothing else, because guessing in that direction is how a
+// duplicate mutation ships.
+func TestACallThatNeverLeftIsNotAnUndecidedMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cause   error
+		notSent bool
+	}{
+		{
+			"the guard refused the host",
+			fmt.Errorf("%w: httpdial: resolved address 127.0.0.1 is not a public unicast IP", exec.ErrNotSent),
+			true,
+		},
+		{
+			"the name does not resolve",
+			&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "git.example.invalid", IsNotFound: true}},
+			true,
+		},
+		{
+			"the connection was refused",
+			&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+			true,
+		},
+		// The falsifier, and the case the class exists for: a connection was
+		// established and the failure came later, so the request may well have
+		// been written. "read" and "write" are deliberately NOT dial.
+		{
+			"the answer was lost mid-read",
+			&net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF},
+			false,
+		},
+		// An unrecognised failure is UNKNOWN, not "not sent". Defaulting the
+		// other way would turn every future error shape into a licensed retry.
+		{"an opaque failure", errors.New("something went wrong"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &exec.Executor{Client: &http.Client{Transport: failingTransport{err: tc.cause}}}
+			pkg := probe("https://git.example.invalid")
+			op := opOf(t, pkg, "probe.issue.comment")
+			args := fullParams("probe.issue.comment")
+
+			res, err := e.Call(context.Background(), pkg, op, args, creds())
+			if err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if res.Err == nil {
+				t.Fatal("a failed call must produce a typed error")
+			}
+			if !tc.notSent {
+				if res.Err.Class != spec.ErrUnknownOutcome {
+					t.Errorf("class = %q, want %q — a mutation whose request may have gone out stays undecided", res.Err.Class, spec.ErrUnknownOutcome)
+				}
+				if res.Err.Retryable(op, args) {
+					t.Error("an undecided mutation must never be retried automatically")
+				}
+				return
+			}
+			if res.Err.Class != spec.ErrTransport {
+				t.Errorf("class = %q, want %q — nothing was sent, so nothing is undecided", res.Err.Class, spec.ErrTransport)
+			}
+			if !res.Err.NotSent {
+				t.Error("the error must carry the fact that decided it, or every reader has to re-derive it")
+			}
+			if res.Err.AmbiguousEffect() {
+				t.Error("AmbiguousEffect is what parks the run terminally — a call that never left has no effect to reconcile")
+			}
+			if !res.Err.Retryable(op, args) {
+				t.Error("a call the vendor never received duplicates nothing, so repeating it is safe")
+			}
+		})
 	}
 }
 

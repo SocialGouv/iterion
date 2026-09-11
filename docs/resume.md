@@ -127,6 +127,16 @@ interface rather than by type, so the engine never learns what a connector
 is. **Reconcile the remote state before resuming** — a resume re-executes
 the failing node, which here means performing the call again.
 
+*The request left* is the load-bearing half of that sentence, and it is
+checked rather than assumed. A call can fail before a byte is written — the
+SSRF guard refusing a private host (the default for a self-hosted instance),
+a name that does not resolve, a connection refused, a header net/http will
+not send — and none of those leaves anything to reconcile. Those are
+ordinary transport failures: retryable, `EXECUTION_FAILED`, on the
+auto-resume list. The downgrade fires only on a cause that PROVES nothing was
+sent; an unrecognised failure stays ambiguous, because guessing in that
+direction is what duplicates a mutation.
+
 The bar for *deterministic* is deliberately high: a resume **re-executes
 the failing node** on freshly resolved inputs, so anything an LLM decided
 — a `SCHEMA_VALIDATION` on an agent's output, a `NO_OUTGOING_EDGE` chosen

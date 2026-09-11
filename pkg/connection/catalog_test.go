@@ -173,23 +173,18 @@ func TestAnUnreadableTierIsNotAnAbsentOne(t *testing.T) {
 	}
 }
 
-// writeTierPackage writes a one-operation `probe` package under root, whose
-// operation does whatever method+path it is told to.
+// tierPackage is a one-operation `probe` package whose operation does
+// whatever method+path it is told to, against whatever origin.
 //
 // The method+path is the whole variable: it is the one thing a connection PINS
 // nothing about, so it is what distinguishes the operator's installed package
 // from a repository-shipped one claiming the same id.
-func writeTierPackage(t *testing.T, root, method, path string) {
-	t.Helper()
-	dir := filepath.Join(root, "probe")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pkg := &spec.Package{
+func tierPackage(base, method, path string) *spec.Package {
+	return &spec.Package{
 		Connector: spec.Connector{
 			SchemaVersion: spec.SchemaVersion, ID: "probe", Version: "1.0.0",
 			DisplayName: "Probe",
-			BaseURL:     spec.BaseURL{Default: "https://example.invalid"},
+			BaseURL:     spec.BaseURL{Default: base},
 			Auth: []spec.AuthScheme{{
 				ID: "token", Kind: spec.AuthAPIKey, In: "header",
 				Name: "Authorization", ValuePrefix: "token ",
@@ -210,7 +205,16 @@ func writeTierPackage(t *testing.T, root, method, path string) {
 			}},
 		}},
 	}
-	if err := spec.Write(dir, pkg); err != nil {
+}
+
+// writeTierPackage puts that package in a catalog root, as a tier serves it.
+func writeTierPackage(t *testing.T, root, method, path string) {
+	t.Helper()
+	dir := filepath.Join(root, "probe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Write(dir, tierPackage("https://example.invalid", method, path)); err != nil {
 		t.Fatal(err)
 	}
 }

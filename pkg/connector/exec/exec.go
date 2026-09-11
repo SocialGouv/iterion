@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -149,9 +150,30 @@ type Error struct {
 	// retrying every other undecided mutation — the same defect, one error
 	// class over.
 	Ambiguous bool
+	// NotSent marks the opposite certainty: the call PROVABLY never left this
+	// host, so no effect of any kind can have happened.
+	//
+	// It is the other end of the same axis as Ambiguous and, like it, cannot be
+	// read off the class — `transport` covers both "the answer was lost" and
+	// "the dial was refused". Only the place that holds the Go error can tell
+	// them apart, so that is where it is decided; from there it is what lets a
+	// mutation with no idempotency key be repeated, which is otherwise exactly
+	// what must not happen.
+	NotSent bool
 	// Cause is the underlying Go error for a transport failure.
 	Cause error
 }
+
+// ErrNotSent marks a Go error as belonging to the phase BEFORE any byte of the
+// request was written.
+//
+// Exported because the only layer that can be sure is the one that builds the
+// client: a custom dialer's refusal (`pkg/connection`'s SSRF guard on a
+// self-hosted instance) is an ordinary opaque error by the time it reaches
+// here, indistinguishable from a read that timed out mid-answer. A client that
+// knows says so; one that does not still gets the typed net checks in
+// neverSent, which cover the ordinary DNS and dial failures.
+var ErrNotSent = errors.New("the request was never sent")
 
 func (e *Error) Error() string {
 	if e == nil {
@@ -252,6 +274,14 @@ func (e *Error) Retryable(op spec.Operation, params map[string]any) bool {
 	if !op.Effect.Mutating() {
 		return true
 	}
+	// A call that never left the host duplicates nothing, whatever it mutates.
+	// This is the same exemption 429 gets two lines down, and for the same
+	// reason: the vendor did not receive the request, so there is no effect to
+	// repeat. Without it a momentary DNS failure made a mutating node
+	// un-retryable on a fact that proves the opposite.
+	if e.NotSent {
+		return true
+	}
 	// A mutation may only be repeated when THIS call carried a key that makes
 	// it idempotent. Rate limiting is the exception: a 429 means the request
 	// was REFUSED, not performed, so repeating it cannot duplicate anything.
@@ -316,7 +346,7 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 
 	resp, err := e.Client.Do(req)
 	if err != nil {
-		return Result{Err: e.transportError(op, params, redactSecrets(err, op, params, cred))}, nil
+		return Result{Err: e.transportError(op, params, err, cred)}, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -326,8 +356,10 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if readErr != nil {
 		// The status arrived, the body did not. For a mutation that is the
-		// ambiguous case: the vendor may well have performed it.
-		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, redactSecrets(readErr, op, params, cred))}, nil
+		// ambiguous case: the vendor may well have performed it — and the
+		// status having arrived is itself proof the request was sent, so no
+		// cause reaching here can downgrade it.
+		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, readErr, cred)}, nil
 	}
 	res := e.readResponse(pkg, op, resp, body)
 	res.Requests = 1
@@ -373,16 +405,66 @@ func redactErrorText(e *Error, op spec.Operation, params map[string]any, cred Cr
 // repeated, while a MUTATION that failed to answer may or may not have
 // happened. Reporting the second as a plain transport error would invite a
 // retry that duplicates the effect.
-func (e *Executor) transportError(op spec.Operation, params map[string]any, cause error) *Error {
-	if op.Effect.Mutating() && !idempotencyKeySent(op, params) {
+//
+// The third case is the one this read as the second for a whole lot: a call
+// that never LEFT. `Client.Do` fails before a byte is written too — the SSRF
+// guard refusing a private host (the default for the self-hosted Forgejo this
+// catalog ships), a DNS name that does not resolve, a connection refused — and
+// every one of those was reported as "the request was sent and no answer came
+// back", refused any retry, and parked the run terminally on
+// AMBIGUOUS_EFFECT. The very first mutating action against a self-hosted
+// instance was that, with a message asserting the opposite of what happened.
+//
+// The default is unchanged and stays unknown_outcome: only a cause that PROVES
+// nothing was sent downgrades. Guessing in that direction is how a duplicate
+// mutation ships.
+//
+// It takes the raw cause and redacts inside, because the two readings need
+// different errors: the classification must see the Go error's own type chain,
+// which redaction flattens to text, while what travels onward must be the
+// redacted copy.
+func (e *Executor) transportError(op spec.Operation, params map[string]any, cause error, cred Credential) *Error {
+	safe := redactSecrets(cause, op, params, cred)
+	notSent := neverSent(cause)
+	if op.Effect.Mutating() && !idempotencyKeySent(op, params) && !notSent {
 		return &Error{
 			Class: spec.ErrUnknownOutcome,
 			Message: "the request was sent and no answer came back; this operation mutates and this call carries no idempotency key, " +
 				"so iterion cannot tell whether it happened — reconcile before retrying",
-			Cause: cause,
+			Cause: safe,
 		}
 	}
-	return &Error{Class: spec.ErrTransport, Message: cause.Error(), Cause: cause}
+	return &Error{Class: spec.ErrTransport, Message: safe.Error(), Cause: safe, NotSent: notSent}
+}
+
+// neverSent reports whether a Go error PROVES the request never left the host.
+//
+// Conservative on purpose — an unrecognised failure is not "not sent", it is
+// unknown, and unknown on a mutation is what the class above exists for. Three
+// things qualify:
+//
+//   - ErrNotSent, which a client that owns its dialer attaches (the local tier
+//     wraps its guarded DialContext, so the SSRF refusal — an opaque
+//     `fmt.Errorf` string — is recognisable without string matching).
+//   - A DNS failure: nothing was dialled, so nothing was written. It arrives
+//     both wrapped by the guard's own resolve step and bare from the dialer.
+//   - A DIAL-stage net.OpError: connection refused, no route, dial timeout.
+//     Deliberately only "dial" — a "read" or "write" OpError happens on an
+//     established connection, where the request may well have gone out, and
+//     that is exactly the case that must stay undecided.
+func neverSent(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNotSent) {
+		return true
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // Page is one step of a paginated walk.

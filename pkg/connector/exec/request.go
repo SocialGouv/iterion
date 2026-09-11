@@ -71,7 +71,55 @@ func (e *Executor) buildRequest(ctx context.Context, pkg *spec.Package, op spec.
 	if err := applyCredential(req, pkg, op, cred); err != nil {
 		return nil, err
 	}
+	if err := checkHeaderValues(req, op); err != nil {
+		return nil, err
+	}
 	return req, nil
+}
+
+// checkHeaderValues refuses a header this build assembled and net/http will
+// not write.
+//
+// Checked HERE, once, after every writer — the declared header parameters and
+// the credential — because both take text iterion does not control: a workflow
+// var reaches a header parameter, and a hand-pasted token routinely carries the
+// newline the paste brought with it.
+//
+// Two things go wrong without it, and the second is the expensive one. A
+// CR/LF-bearing value is header injection in the general case. And `Do` rejects
+// it AFTER the operation has been judged mutating-with-no-idempotency-key, so
+// the refusal arrived as a transport failure and the run was parked on
+// `unknown_outcome` — "the request was sent and no answer came back" about a
+// request net/http declined to write. A local refusal is the truthful one, and
+// `buildRequest`'s errors never reach that classification at all.
+//
+// The VALUE is never echoed: for the credential's header it is the credential.
+func checkHeaderValues(req *http.Request, op spec.Operation) error {
+	for name, values := range req.Header {
+		for _, v := range values {
+			if i := indexInvalidHeaderByte(v); i >= 0 {
+				return &Error{
+					Class: spec.ErrBadRequest,
+					Message: fmt.Sprintf("operation %s: header %q carries byte %#x at offset %d, which cannot be sent in a header — a stray newline on a pasted credential is the usual cause",
+						op.ID, name, v[i], i),
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// indexInvalidHeaderByte returns the offset of the first byte net/http refuses
+// in a header value, or -1. It is RFC 7230's field-value set, the same one
+// httpguts.ValidHeaderFieldValue enforces: horizontal tab and anything from
+// 0x20 up, except DEL.
+func indexInvalidHeaderByte(v string) int {
+	for i := 0; i < len(v); i++ {
+		if b := v[i]; b != '\t' && (b < ' ' || b == 0x7f) {
+			return i
+		}
+	}
+	return -1
 }
 
 // checkAuthorized verifies the credential can perform the operation BEFORE

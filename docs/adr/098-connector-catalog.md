@@ -1375,6 +1375,41 @@ shipping a `connectors` directory iterion may not read.
 | Pinned placement (where in the request it goes) | **Shipped** (round five) — `PlacementOf` is the one definition, written and compared |
 | Pinned operation identity (what the call DOES) | **Not pinned, and now unreachable by default** — the untrusted tier that could redefine it is a grant (`ITERION_CONNECTOR_PROJECT_CATALOG`). The identity lock this ADR has owed since round two is still owed, and is what a granted project tier or a future team/marketplace tier will need |
 
+### A call that never LEFT was parked as an undecided mutation
+
+The ambiguity class took six rounds and four sites to hold (the tally at the
+end of this document). This is the fifth, and it is the mirror image of all of
+them: not a failure wrongly read as decided, but a **non-failure wrongly read
+as undecided**.
+
+`transportError` classified every `Client.Do` failure on a mutation with no
+idempotency key as `unknown_outcome`. `Do` also fails before a byte is written:
+the SSRF guard refusing a private host — the default for the self-hosted
+Forgejo that is the one connector this catalog ships — a name that does not
+resolve, a connection refused, or a header value net/http declines to send
+(a pasted credential's trailing newline). Every one of those was reported as
+*"the request was sent and no answer came back … reconcile before retrying"*,
+refused any retry, classified `AMBIGUOUS_EFFECT` and parked the run terminally,
+off the auto-resume list. The very first mutating action against a self-hosted
+instance with the guard closed was that.
+
+The default is unchanged — only a cause that **proves** nothing was sent
+downgrades, because guessing in that direction is how a duplicate mutation
+ships. Three qualify: an `ErrNotSent`-marked cause, a `*net.DNSError`, and a
+**dial-stage** `*net.OpError` (deliberately not `read`/`write`, which happen on
+an established connection where the request may well have gone out).
+
+The guard's own refusal is an opaque `fmt.Errorf` string, so it is marked where
+it is KNOWN rather than matched by text: the local tier wraps its guarded
+`DialContext`, and a dialer that returned an error returned no connection.
+`Error.NotSent` carries the fact onward, which is also what makes such a
+mutation retryable again — a call the vendor never received duplicates nothing.
+
+The header case is fixed at the other end: `buildRequest` now refuses a value
+net/http would reject, naming the header and the offending byte and **never**
+the value, since for the auth header the value is the credential. A local
+refusal never reaches the transport classification at all.
+
 
 ## The ambiguity class, counted across the rounds
 

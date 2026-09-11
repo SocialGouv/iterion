@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
@@ -293,6 +294,7 @@ func allowPrivateHosts() bool {
 func LocalHTTPClient() *http.Client {
 	strict := !allowPrivateHosts()
 	c := httpdial.SafeClient(strict, 2*time.Minute)
+	markDialFailuresAsNotSent(c)
 	if strict {
 		// Only under the guard: with the hatch open there is no refusal to
 		// explain, and a hint on an ordinary "connection refused" to localhost
@@ -300,6 +302,39 @@ func LocalHTTPClient() *http.Client {
 		c.Transport = &privateHostHint{base: c.Transport}
 	}
 	return c
+}
+
+// markDialFailuresAsNotSent tells the executor that a failed DIAL is a call
+// that never left the host.
+//
+// The executor classifies a mutation whose answer never arrived as
+// `unknown_outcome` — terminal, un-retryable, off the auto-resume list — which
+// is right for a lost answer and exactly wrong for a request that was never
+// written. It recognises the ordinary shapes by type (a *net.DNSError, a
+// dial-stage *net.OpError), but the guard's own refusal is an opaque
+// `fmt.Errorf` string from httpdial, and matching it by text would break the
+// first time that wording changed.
+//
+// So the fact is attached where it is KNOWN. A dialer that returned an error
+// returned no connection, so nothing can have been written on it — and
+// net/http only retries a request on a fresh connection when nothing was
+// written on the old one, so the invariant survives the transport's own
+// retries. Done here rather than in httpdial because the guard is shared with
+// callers (webhooks, OIDC, the preview proxy) that have no such distinction to
+// draw.
+func markDialFailuresAsNotSent(c *http.Client) {
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok || tr.DialContext == nil {
+		return
+	}
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", exec.ErrNotSent, err)
+		}
+		return conn, nil
+	}
 }
 
 // privateHostHint turns the guard's refusal into one an operator can act on.
