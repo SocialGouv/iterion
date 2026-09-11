@@ -1,12 +1,27 @@
 ## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: fan-out reviewers + deterministic convergence.
 ##
-## A router runs two read-only reviewers in parallel, each with its own
-## lens on the same diff; a compute (`await: wait_all`) folds their
-## verdicts without an LLM; a typed failure carries a blocked verdict.
-## Fill in: the lenses, the scope (`git diff HEAD` or a base ref). A
-## third reviewer is one more node and two more edges. docs/routers.md
+## A deterministic scope gate, then a router runs two read-only reviewers
+## in parallel, each with its own lens on the same diff; a compute
+## (`await: wait_all`) folds their verdicts without an LLM; typed
+## failures carry a blocked verdict and an empty scope.
+## The reviewers are read-only in FACT, not only by declaration
+## (`readonly: true` is the assertion workspace safety trusts to run
+## them side by side): neither writes the index — a `git add -N .` in a
+## parallel branch takes .git/index.lock and is FATAL when the sibling
+## holds it, and the loser's empty report would read as an approve.
+## Untracked files are read with `git diff --no-index`.
+## The run reviews the checkout IN PLACE (`worktree: none`) unless the
+## worktree dial is on: a `worktree: auto` run starts from the anchor
+## COMMIT, without the uncommitted work — set `base` then, or the scope
+## gate refuses. Fill in: the lenses, the scope. A third reviewer is one
+## more node and two more edges. docs/routers.md
 <%template "vars_block" .%>
+schema scope_out:
+  files: int
+  empty: bool
+
 schema findings:
+  reviewed: bool
   findings: string[]
   blocking: bool
 
@@ -17,17 +32,32 @@ prompt mission:
 <%indent 2 .Instructions%>
 
 prompt correctness_lens:
-  Lens: CORRECTNESS. Run `git add -N . && git diff HEAD` (or diff against
-  {{vars.base}} when it is set) and hunt for real bugs: logic errors,
-  missed edge cases, races. Read enough surrounding code to judge each
-  finding. Report each confirmed finding as file:line plus the failure
-  scenario, and set blocking=true if any must be fixed before merge.
-  Do not edit any file.
+  Lens: CORRECTNESS. Read the pending changes with `git diff HEAD` (or
+  diff against {{vars.base}} when it is set), and read the files git does
+  not track yet with `git ls-files --others --exclude-standard -z | xargs
+  -0 -I{} git diff --no-index -- /dev/null {}` (exit 1 per file and 123
+  for the batch mean "there is a diff", not a failure; an empty new file
+  shows a header and no hunk). Write NOTHING to the index
+  (no staging, no intent-to-add): the other reviewer branch races you on
+  it. Set reviewed=false with no findings if you could not read the diff.
+  Hunt for real bugs: logic errors, missed edge cases, races. Read enough
+  surrounding code to judge each finding. Report each confirmed finding as
+  file:line plus the failure scenario, and set blocking=true if any must
+  be fixed before merge. Do not edit any file.
 
 prompt security_lens:
-  Lens: SECURITY. Same diff: look for injection, unsafe deserialisation,
-  secrets in code, missing authorisation checks, SSRF. Same report shape,
-  same rule on blocking, no edits.
+  Lens: SECURITY. Same diff, read the same way: look for injection, unsafe
+  deserialisation, secrets in code, missing authorisation checks, SSRF.
+  Same report shape, same rules on reviewed and blocking, no edits.
+
+## The scope gate, deterministic: an EMPTY scope is a typed refusal,
+## never an approve — an honest "nothing to report" on nothing is what a
+## clean tree, or a fresh worktree without a base ref, would otherwise
+## turn into a green verdict. Counts the changed and the untracked files
+## without writing the index; its stdout is the JSON the schema wants.
+tool scope:
+  command: `b={{vars.base}}; n=$({ if [ -n "$b" ]; then git diff --name-only "$b"; else git diff --name-only HEAD; fi; git ls-files --others --exclude-standard; } | wc -l | tr -d ' '); if [ "$n" -eq 0 ]; then printf '{"files":0,"empty":true}'; else printf '{"files":%s,"empty":false}' "$n"; fi`
+  output: scope_out
 
 router split:
   mode: fan_out_all
@@ -45,21 +75,33 @@ agent review_security:<%template "llm_fields" .%>
   output: findings
 
 ## Deterministic convergence: no LLM decides whether the reviews block.
+## `reviewed` is each reviewer's own account of having read the diff, so
+## one that reports it could not is a block, not an approve.
 compute verdict:
   await: wait_all
   output: verdict_out
   expr:
-    approved: "!outputs.review_correctness.blocking && !outputs.review_security.blocking"
+    approved: "outputs.review_correctness.reviewed && outputs.review_security.reviewed && !outputs.review_correctness.blocking && !outputs.review_security.blocking"
+
+fail nothing_to_review:
+  description: "the scope holds no change to review"
+  code: NOTHING_TO_REVIEW
+  message: "no changed or untracked file in the scope (base={{vars.base}}); a worktree: auto run holds committed work only — review pending work in place, or set base"
 
 fail review_blocked:
-  description: "a reviewer found a blocking issue"
+  description: "a reviewer found a blocking issue, or could not review"
   code: REVIEW_BLOCKED
-  message: "blocking: correctness={{outputs.review_correctness.blocking}} security={{outputs.review_security.blocking}}"
+  message: "reviewed: correctness={{outputs.review_correctness.reviewed}} security={{outputs.review_security.reviewed}}; blocking: correctness={{outputs.review_correctness.blocking}} security={{outputs.review_security.blocking}}"
 
 workflow <%.WorkflowName%>:
-  entry: split
+  entry: scope
   budget:
-    max_parallel_branches: 2<%template "budget_lines" .%><%template "worktree_dial" .%><%template "dials" .%>
+    max_parallel_branches: 2<%template "budget_lines" .%>
+  ## In place by default: the pending work IS the scope. With the dial on,
+  ## the run isolates in a fresh worktree and needs `base`.
+  worktree: <%if .Worktree%>auto<%else%>none<%end%><%template "dials" .%>
+  scope -> nothing_to_review when empty
+  scope -> split when not empty
   split -> review_correctness
   split -> review_security
   review_correctness -> verdict

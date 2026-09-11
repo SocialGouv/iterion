@@ -567,8 +567,21 @@ shipped bots, so they are written here:
   — under any other policy it is dead config (C106); the postcondition's
   JSON stdout is the node's output on every rung, the skip included.
 - **Parallel branches may hold ONE mutating node**; reviewers that fan out
-  together are all `readonly: true`, or the run is refused at launch
-  (`WORKSPACE_SAFETY`). A `router` and a `fail` node take no `output:`.
+  together are all `readonly: true` — a declaration the engine trusts, not
+  one it checks — or the run is refused at the fan-out (`WORKSPACE_SAFETY`),
+  not at validate. Read-only in FACT too: never `git add -N .` in a
+  parallel branch — it takes `.git/index.lock` and is FATAL when the
+  sibling holds it (`git diff`'s own stat refresh just skips), and the
+  loser's empty findings read as an approve. Read untracked files with
+  `git ls-files --others --exclude-standard -z | xargs -0 -I{} git diff
+  --no-index -- /dev/null {}` (exit 1 per file, 123 for the batch: a diff,
+  not a failure). A `router` and a `fail` node take no `output:`.
+- **A `worktree: auto` run starts from the anchor COMMIT**: staged, unstaged
+  and untracked work is not in it — that is the isolation. A reviewer of
+  "pending changes" runs `worktree: none` or diffs a `base` ref, and gates
+  an EMPTY scope as a typed refusal before the fan-out: an honest "nothing
+  to report" on nothing is not an approve (the `review-fanout` template's
+  `scope` tool).
 - **`jq` ships in the sandbox images; `python3` does not.** A tool that must
   turn text into the JSON its `output:` schema wants uses `jq -Rs`; a missing
   interpreter degrades the output to `{"result": …}` silently.
@@ -753,7 +766,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | Template | Shape |
 |---|---|
 | `campaign-loop` | one agent in passes → a `tool` running the repo's own checks → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
-| `review-fanout` | `router fan_out_all` → two read-only reviewers → a `compute` with `await: wait_all` → a typed blocked verdict |
+| `review-fanout` | a `tool` scope gate (empty scope = typed refusal) → `router fan_out_all` → two read-only reviewers → a `compute` with `await: wait_all` → a typed blocked verdict |
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
 | `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |

@@ -242,6 +242,12 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	}
 	for _, rel := range sortedAnnexes(annexes) {
 		if strings.HasSuffix(rel, ".bot") {
+			// No annexes: a subbot child is compiled as a bare file at
+			// launch (runview/subbot.go, CompileWorkflowWithHash on the
+			// child path — only main.bot is promoted to its bundle), so the
+			// bundle's prompts/*.md are not in ITS scope either. Should the
+			// child launch ever merge them, this guard passes the annexes
+			// too, or it refuses a child the launch would accept.
 			if err := compileGuard(s.Slug+"/"+rel, string(annexes[rel]), nil); err != nil {
 				return Result{}, err
 			}

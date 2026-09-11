@@ -159,6 +159,36 @@ func TestGalleryShapes(t *testing.T) {
 			if readonly < 2 {
 				t.Errorf("want at least two read-only reviewers, got %d", readonly)
 			}
+			// Read-only in FACT — a canary for the trap the shape shipped with,
+			// not a proof of read-only-ness: no prompt of the shape says
+			// `git add` (an intent-to-add in a parallel branch takes
+			// .git/index.lock, is fatal when the sibling holds it, and the
+			// loser's empty findings would read as an approve).
+			for name, p := range w.Prompts {
+				if strings.Contains(p.Body, "git add") {
+					t.Errorf("prompt %q tells a read-only reviewer to write the index (git add)", name)
+				}
+			}
+			// The convergence requires both reviewers' own account of having
+			// read the diff, not merely their not blocking.
+			var approved bool
+			for _, c := range nodesOf[*ir.ComputeNode](w) {
+				if c.ID != "verdict" {
+					continue
+				}
+				for _, e := range c.Exprs {
+					if e.Key != "approved" {
+						continue
+					}
+					approved = true
+					if !strings.Contains(e.Raw, "review_correctness.reviewed") || !strings.Contains(e.Raw, "review_security.reviewed") {
+						t.Errorf("approved = %q; it must require both reviewers' `reviewed`", e.Raw)
+					}
+				}
+			}
+			if !approved {
+				t.Errorf("want the deterministic `approved` expression on compute verdict")
+			}
 			var converge int
 			for _, c := range nodesOf[*ir.ComputeNode](w) {
 				if c.AwaitMode == ir.AwaitWaitAll {
@@ -168,8 +198,28 @@ func TestGalleryShapes(t *testing.T) {
 			if converge != 1 {
 				t.Errorf("want one wait_all compute, got %d", converge)
 			}
-			if len(typedFails(w)) != 1 {
-				t.Errorf("want the typed blocked verdict")
+			// An EMPTY scope is a typed refusal, never an approve: the
+			// deterministic gate counts the changed and untracked files before
+			// the fan-out, and its two edges are the exhaustive pair.
+			if w.Entry != "scope" {
+				t.Errorf("entry = %q, want the scope gate", w.Entry)
+			}
+			if tools := nodesOf[*ir.ToolNode](w); len(tools) != 1 || tools[0].ID != "scope" || tools[0].OutputSchema == "" {
+				t.Errorf("want the one scope tool with an output schema, got %+v", tools)
+			}
+			if e := edge(w, "scope", "nothing_to_review"); e == nil || e.Condition != "empty" || e.Negated {
+				t.Errorf("want scope -> nothing_to_review when empty, got %+v", e)
+			}
+			if e := edge(w, "scope", "split"); e == nil || e.Condition != "empty" || !e.Negated {
+				t.Errorf("want scope -> split when not empty, got %+v", e)
+			}
+			if len(typedFails(w)) != 2 {
+				t.Errorf("want the typed blocked verdict and the typed empty-scope refusal, got %d typed fails", len(typedFails(w)))
+			}
+			// In place by default: a `worktree: auto` run starts from the
+			// anchor COMMIT, without the pending work the shape reviews.
+			if w.Worktree != "none" {
+				t.Errorf("worktree = %q, want none (the pending work IS the scope)", w.Worktree)
 			}
 			wantExit(t, w, "verdict", "review_blocked")
 			if e := edge(w, "verdict", "review_blocked"); e != nil && !e.IsElse {
