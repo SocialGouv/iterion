@@ -238,15 +238,13 @@ func ConnectionsRemove(storeDir, connector, alias string, out io.Writer) error {
 func localCatalog(storeDir string) (connection.Catalog, error) {
 	wd, _ := os.Getwd()
 	paths := connection.LocalCatalogPaths(wd, store.GlobalIterionDataDir())
-	var tiers []connection.Catalog
-	for _, root := range []string{paths.Project, paths.Home} {
-		if root == "" {
-			continue
-		}
-		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-			continue
-		}
-		tiers = append(tiers, connection.NewFSCatalog(root))
+	// The SAME tier construction a run uses, not a second copy of it: the two
+	// had drifted into one shared defect (an unreadable root read as an absent
+	// one), and a command whose whole job is to refuse what a run would refuse
+	// cannot answer that question from its own reading of the disk.
+	tiers, err := connection.LocalCatalogs(paths)
+	if err != nil {
+		return nil, err
 	}
 	if len(tiers) == 0 {
 		return nil, fmt.Errorf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)

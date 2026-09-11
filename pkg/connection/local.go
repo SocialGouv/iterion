@@ -110,6 +110,41 @@ func (c *layeredCatalog) Connectors() []string {
 	return out
 }
 
+// LocalCatalogs builds the package tiers of a local install, most specific
+// first — the one place that decides which roots are catalogs, so `iterion
+// connections add` refuses exactly what a run would refuse.
+//
+// A root that is ABSENT is skipped; a root that is there and cannot be read
+// (EACCES on its parent, EIO, a name that is not a directory's to hold) is an
+// ERROR. Collapsing the two is how validation becomes selection — the defect
+// layeredCatalog.Package refuses by name one file over: with the project tier
+// silently dropped, the home tier serves a DIFFERENT package for the same
+// connector id, with different operations and a different auth placement, and
+// nothing in the run says so. The rule has to hold where the tiers are BUILT
+// too, or the tier that would have won is simply not there to win.
+func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
+	var out []Catalog
+	for _, root := range []string{paths.Project, paths.Home} {
+		if root == "" {
+			continue
+		}
+		fi, err := os.Stat(root)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("connector catalog %s cannot be read: %w", root, err)
+		}
+		if !fi.IsDir() {
+			// Not a catalog at all — a directory is the only thing that can
+			// hold one, so this is an absence rather than a refusal.
+			continue
+		}
+		out = append(out, NewFSCatalog(root))
+	}
+	return out, nil
+}
+
 // LocalResolver builds the resolver a local run uses: the layered package
 // catalog, the file-backed connection store, and the local sealer.
 //
@@ -119,20 +154,21 @@ func (c *layeredCatalog) Connectors() []string {
 // an action fails with "this process has no connector catalog wired" instead
 // of a resolution error that reads as though the connector were at fault.
 func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer) (*Resolver, error) {
-	var catalogs []Catalog
-	for _, root := range []string{paths.Project, paths.Home} {
-		if root == "" {
-			continue
-		}
-		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-			continue
-		}
-		catalogs = append(catalogs, NewFSCatalog(root))
+	catalogs, err := LocalCatalogs(paths)
+	if err != nil {
+		return nil, err
 	}
 	storePath := DefaultPath(storeDir)
-	_, statErr := os.Stat(storePath)
-	if len(catalogs) == 0 && statErr != nil {
-		return nil, nil
+	if _, err := os.Stat(storePath); err != nil {
+		// Same rule as the tiers: ABSENT is "nothing wired", anything else is
+		// a store that is there and cannot be read, which must not be
+		// reported as a feature nobody configured.
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("connection store %s cannot be read: %w", storePath, err)
+		}
+		if len(catalogs) == 0 {
+			return nil, nil
+		}
 	}
 	st, err := NewFileStore(storePath)
 	if err != nil {

@@ -110,3 +110,49 @@ func TestAMalformedTierStopsTheSearchInsteadOfFallingThrough(t *testing.T) {
 		t.Errorf("an ABSENT connector must fall through to the next tier: %v", err)
 	}
 }
+
+// TestAnUnreadableTierIsNotAnAbsentOne.
+//
+// The rule above has to hold where the tiers are BUILT, or the tier that
+// would have won is simply not there to win. Both construction sites read
+// `if fi, err := os.Stat(root); err != nil || !fi.IsDir() { continue }`,
+// which collapses "absent" with "present and unreadable" (EACCES on the
+// parent, EIO): the project tier was dropped whole and the home tier then
+// served a DIFFERENT package for the same connector id — different
+// operations, a different auth placement — with nothing in the run saying so.
+func TestAnUnreadableTierIsNotAnAbsentOne(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test relies on")
+	}
+	parent := t.TempDir()
+	project := filepath.Join(parent, "connectors")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Unreadable through its parent: the directory IS there, and stat fails
+	// with something that is not ErrNotExist.
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	_, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()})
+	if err == nil {
+		t.Fatal("a catalog root that exists and cannot be read must be an error, not a tier that quietly disappears")
+	}
+	if !strings.Contains(err.Error(), project) {
+		t.Errorf("error = %v, want it to name the root that could not be read", err)
+	}
+
+	// The falsifier: an ABSENT root is still just absent.
+	tiers, err := connection.LocalCatalogs(connection.LocalPaths{
+		Project: filepath.Join(t.TempDir(), "nothing-here"),
+		Home:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("an absent root must not be an error: %v", err)
+	}
+	if len(tiers) != 1 {
+		t.Errorf("tiers = %d, want only the home one", len(tiers))
+	}
+}
