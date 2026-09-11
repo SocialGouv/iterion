@@ -259,6 +259,14 @@ schema mutation_report:
   ## Held-out mutants that repeat an already-scored, already-published one.
   ## Must be empty: a set the hardening loop can read is not held out.
   holdout_reused: string[]
+  ## True when this run DREW a held-out set into a `mutants/holdout/` the seal
+  ## holds shut — an earlier cycle's successor is committed there and the gate
+  ## that owns it never opted in, and the decline is directory-wide. The set
+  ## drawn here then never leaves the tree, nothing reaches the sealed pile,
+  ## and `holdout_detected == holdout_total` passes 0 == 0. A term, not a
+  ## notice: only the net's owner can clear it, and an unrefused obligation is
+  ## a waiver with extra steps.
+  holdout_seal_blocked: bool
   log_tail: string
 
 schema audit_state:
@@ -2679,6 +2687,27 @@ tool oracle_run:
         return code == 0 and bool(out.strip())
 
 
+    def holdout_drawn_in_tree(gm_dir):
+        """True when mutants/holdout/ carries entries this run WROTE, not inherited.
+
+        The committed check above is directory-wide, so ONE tracked entry — a
+        successor an earlier cycle left for a gate that never opted in — makes the
+        seal decline for everything beside it. A set drawn in that state never
+        leaves the tree: it stays readable by the hardening loop it is held out
+        from, the sealed pile stays empty, and `holdout_detected == holdout_total`
+        passes 0 == 0.
+
+        Untracked-ness is what separates that from the two states which look
+        identical in the report and are NOT defects: a lot's CI on a clean
+        checkout (everything under mutants/holdout/ tracked, nothing drawn here)
+        and a rite that sealed its own set before committing its successor (same).
+        Both stay silent; only a run that DREW a set it cannot seal is refused.
+        """
+        code, out = run("git ls-files --others --exclude-standard -- mutants/holdout",
+                        gm_dir, timeout=60)
+        return code == 0 and bool(out.strip())
+
+
     def seal_holdout(gm_dir, sealed_dir):
         """Move the held-out set OUT of the worktree, once, at the first gate.
 
@@ -4959,6 +4988,25 @@ tool oracle_run:
                    os.path.isdir(os.path.join(gmd2, "mutants", "holdout", "t01")),
                    os.path.isdir(sealed2)],
                   [False, True, False])
+            # Le predicat qui separe l'HERITAGE du DESSIN. Le declin ci-dessus est
+            # repertoire-large : une seule entree committee le ferme pour tout ce
+            # qui est a cote, donc un jeu dessine la reste dans l'arbre, lisible
+            # par la boucle de durcissement dont il est cense etre soustrait, et
+            # le 0/0 qui en sort passe la conjonction du gate. Non-suivi est ce
+            # qui distingue ce cas des deux qui lui ressemblent dans le rapport
+            # sans etre des defauts : la CI d'un lot sur un checkout propre, et un
+            # rite qui a scelle son jeu AVANT de committer son successeur.
+            check("jeu committe seul -> rien n'a ete dessine ici",
+                  holdout_drawn_in_tree(gmd2), False)
+            drawn = os.path.join(gmd2, "mutants", "holdout", "t02")
+            os.makedirs(drawn)
+            with open(os.path.join(drawn, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+            check("jeu dessine a cote d'un jeu committe -> vu, et le sceau le laisse en place",
+                  [holdout_drawn_in_tree(gmd2), seal_holdout(gmd2, sealed2),
+                   os.path.isdir(drawn)],
+                  [True, False, True])
+            shutil.rmtree(drawn)
             # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
             # sont pas la meme, et aucune n'est un echec : ce sont des etats que
             # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
@@ -7048,6 +7096,7 @@ tool oracle_run:
                   "holdout_awaiting_gate": False,
                   "holdout_spent_unreplaced": False, "holdout_spent_cycles": 0,
                   "holdout_sealed_uncommitted": False,
+                  "holdout_seal_blocked": False,
                   "pending_rebaselines": [],
                   "pending_extensions": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
@@ -7243,6 +7292,9 @@ tool oracle_run:
         if mode != "record":
             try:
                 committed_before = holdout_committed_in_tree(gm_dir)
+                # Measured BEFORE the seal, which is the only moment it is still
+                # answerable: a seal that proceeds moves those very entries out.
+                drawn_before = holdout_drawn_in_tree(gm_dir)
                 sealed_now = seal_holdout(gm_dir, sealed_dir)
                 awaiting = holdout_committed_in_tree(gm_dir) and \
                     not seal_committed_opted_in(gm_dir)
@@ -7275,6 +7327,17 @@ tool oracle_run:
                              "consume the set; a committed set with no gate on its "
                              "horizon narrows the counter-test while reading as "
                              "prepared.")
+            # And the case where that debt stops being someone else's problem: a
+            # run that DREW a set into a directory the decline holds shut. The
+            # inherited entry is not the defect — leaving it in place is the whole
+            # point — but the set drawn beside it never leaves the tree, so it is
+            # readable by the very hardening loop it is held out from, and the
+            # pile it never reached is what `holdout_detected == holdout_total`
+            # then compares: 0 == 0, green, on a term nothing measured. A proof
+            # obligation nothing refuses is a waiver with extra steps, so this one
+            # is a FIELD the two gates read, not a notice. Only the net's owner can
+            # clear it, by opting the gate that owns the orphaned set in.
+            report["holdout_seal_blocked"] = bool(awaiting and drawn_before)
             held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
             # The held-out set lives outside the workspace once sealed. If the
             # sealed directory moved or was wiped, it is GONE — and the archetype
@@ -7800,6 +7863,19 @@ tool oracle_run:
             report["holdout_reused"] = sorted(
                 "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
                 for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
+            if report["holdout_seal_blocked"]:
+                problems.append("the held-out set drawn by this run CANNOT BE SEALED: "
+                                "mutants/holdout/ already carries a committed set — a "
+                                "successor an earlier cycle left for a gate that has not "
+                                "opted in — and the seal declines DIRECTORY-WIDE, so what "
+                                "was drawn here stays in the tree, readable by the "
+                                "hardening loop it is held out from. The held-out figure "
+                                "below is 0/0 and measures nothing. Nothing this run may "
+                                "do clears it: writing `\"seal_committed\": true` would "
+                                "spend the inherited set at the wrong gate, and deleting "
+                                "it destroys an artefact this run did not draw. The net's "
+                                "owner arms that opt-in on the gate that OWNS the "
+                                "inherited set, and this run reports the debt.")
             if report["holdout_reused"]:
                 problems.append("the held-out set REPEATS mutants already scored and "
                                 "published: %s. A spent set is evidence, not a test — "
@@ -7952,7 +8028,14 @@ compute oracle_gate:
     ## defect was an unproved class went green while every docstring in the
     ## harness claimed the gate checked it. A proof obligation nothing refuses is
     ## a waiver with extra steps.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    ## `holdout_seal_blocked` is a TERM for the same reason. The rite is told to
+    ## leave the next gate a committed successor, and the seal declines
+    ## DIRECTORY-WIDE: on a net whose successor nobody ever claimed, the set
+    ## this run draws never leaves the tree, the sealed pile stays empty, and
+    ## the conjunction's last term compares 0 == 0 — green, on the one figure
+    ## the whole bot exists to earn. Stated to the agent in a prompt and
+    ## enforced by nothing, it would be the seal-by-sentence all over again.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && !outputs.oracle_run.holdout_seal_blocked && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -8009,6 +8092,11 @@ tool emit_runner:
         # spent, published set from being replayed as if it were fresh -- and
         # the standalone entry point is what CI and humans run.
         "    and r.get(\"runner_replayable\") and not r.get(\"holdout_reused\")\n"
+        # And `holdout_seal_blocked`, which is the state in which the term on
+        # the next line is vacuous: the seal declined directory-wide on an
+        # inherited committed set, so what this run drew never reached the
+        # pile and 0 == 0 is what gets compared.
+        "    and not r.get(\"holdout_seal_blocked\")\n"
         "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
         # A notice is never fatal, but it must never be silent either: the one
         # that matters here says the held-out figure is 0/0 because the set was
