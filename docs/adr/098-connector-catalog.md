@@ -1126,7 +1126,10 @@ vendor did not process the call.
 Four more corrections found while verifying those: an unmapped vendor error
 code silently restored the status range over the class the package declared
 for that status (`403 → rate_limited` downgraded to a non-retryable
-`forbidden`); the C265 remedy in the diagnostic catalogue and the reference
+`forbidden`); a Swagger `consumes` naming only unbuildable media types read
+as JSON, so a `text/plain` body went out as `json.Marshal("# Hello")` —
+quotes included — under a JSON content type, where the OpenAPI 3 arm of the
+same generator refuses and reports a coverage gap; the C265 remedy in the diagnostic catalogue and the reference
 still taught `retry: 1m` — the form C265 refuses — after the property
 registry had been corrected for it in round four; Swagger 2 dropped
 `required` on a whole-body parameter where the OpenAPI 3 arm of the same
@@ -1145,11 +1148,13 @@ in its own comment were the two it could never see.
   (`ops/repository.yaml`, `create_pull_review_comment`). Needs a
   cycle-guarded resolve loop AND a regeneration of the shipped package,
   which needs the vendor description this repo does not commit.
-- **The shipped package still carries two generator defects that are FIXED in
-  the generator**: Swagger 2 dropping `required` on a whole-body parameter
+- **The shipped package still carries three generator defects that are FIXED
+  in the generator**: Swagger 2 dropping `required` on a whole-body parameter
   (the OpenAPI 3 arm of the same function propagated it; `checkParams` then
-  treated the mandatory body as absent and the POST went out with none), and a
-  required parameter behind a `$ref` dropped without a skip. The code is
+  treated the mandatory body as absent and the POST went out with none), a
+  required parameter behind a `$ref` dropped without a skip, and a `consumes`
+  naming only media types iterion cannot build read as JSON (wrong bytes,
+  wrong header) where the OpenAPI 3 arm makes it a coverage gap. The code is
   corrected and tested; `connectors/forgejo/**` shows the old output until it
   is regenerated, with the same caveat as above.
 - **A response's integers are `float64`.** The REQUEST direction was fixed
