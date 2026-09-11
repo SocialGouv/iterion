@@ -93,14 +93,30 @@ prompt campaign_user:
   LEAVE THE NEXT GATE A SET TO SCORE. The set you seal above is YOURS: you score
   it at your own gate and it is published as evidence, which spends it. A set is
   refused by fingerprint once published, so the next gate to run — a lot's
-  verify, days later — finds an empty magazine and refuses, having paid for a
-  boot and a full corpus replay to learn it.
+  verify, days later — has nothing held out left to score. It does not refuse:
+  it boots the application, replays the whole corpus, reports `holdout 0/0` with
+  `holdout_spent_unreplaced`, and its `detected == total` term passes on that
+  emptiness. The full price paid, for a term that reads green by being vacuous.
 
   So draw a SECOND set and leave it COMMITTED under `mutants/holdout/`, unsealed
-  and unscored. A sealed set lives only as long as the sealed pile, which is
-  keyed on a workspace that dies with the run; a committed one has a durable
-  home and the gate that owns it opts in with `"seal_committed": true`. You are
-  finished on this point when the report reads `holdout_awaiting_gate: true`.
+  and unscored — and do it ONLY AFTER a harness run (`GM_MODE=selfcheck`) has
+  moved your own set out of the tree. The committed check is directory-wide: one
+  tracked entry under `mutants/holdout/` makes the seal decline for EVERYTHING
+  there, so a successor committed too early — or your own set committed in
+  stride — leaves your own set unsealed, unscored and readable by the next pass,
+  and your own gate then reports that same vacuous `holdout 0/0`.
+
+  A sealed set lives only as long as the sealed pile, which is keyed on a
+  workspace that dies with the run; a committed one has a durable home, and the
+  gate that owns it — a LATER one, never this one — opts in with
+  `"seal_committed": true`. No mutation of the second set may repeat one of the
+  first: identity is the `apply.sh` and `revert.sh` bytes plus the declared
+  `targets`, so a rename is not a fresh draw, and a repeat turns that later gate
+  red. You are finished on this point when ONE selfcheck report, taken after the
+  commit, reads `holdout_awaiting_gate: true` AND a non-zero `holdout_total` —
+  the first says the successor is waiting, the second that your own set reached
+  the sealed pile. The held-out SCORE is withheld there on purpose; do not go
+  looking for it.
 
   {{input.fail_log}}
 
