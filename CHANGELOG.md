@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.136.3](https://github.com/SocialGouv/iterion/compare/v3.136.2...v3.136.3) (2026-09-11)
+
+### Bug Fixes
+
+* **sec-audit:** the deep scanner reports what it did, and its timeout escalates ([#1100](https://github.com/SocialGouv/iterion/issues/1100)) ([8e82c61](https://github.com/SocialGouv/iterion/commit/8e82c615cfe6838e5d8f35a709d2c97c0ec2e918))
+
+    <details><summary>why</summary>
+
+    Two defects, both measured on real runs, both of the same family: a failure that leaves no readable trace.
+
+    </details>
+
 ## [3.136.2](https://github.com/SocialGouv/iterion/compare/v3.136.1...v3.136.2) (2026-09-11)
 
 ### Bug Fixes
