@@ -1,9 +1,11 @@
 package connection
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -143,15 +145,116 @@ func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer) (*R
 	}, nil
 }
 
+// AllowPrivateHostsEnv is the deployment-controlled exception that lets a
+// local connector call reach a private, loopback or link-local address.
+//
+// ADR-098 owes it: "a tenant-supplied URL must not be its own justification
+// for reaching a private address; a self-hosted endpoint needs a
+// deployment-controlled exception". Without one the guard below is not a
+// load-bearing limit but an artificial one — the single connector this
+// catalog ships is Forgejo, which is overwhelmingly self-hosted, so
+// `--base-url http://localhost:3000` was accepted by `connections add` and
+// then refused at every call with no way to permit it.
+//
+// An ENV var rather than a per-connection field on purpose: the decision
+// belongs to whoever runs the process, not to whoever adds the connection —
+// the same reasoning, and the same spelling, as
+// ITERION_RUNNER_CLONE_ALLOW_PRIVATE for on-prem forge clones.
+const AllowPrivateHostsEnv = "ITERION_CONNECTOR_ALLOW_PRIVATE"
+
+// allowPrivateHosts reports whether this process permits it. Read at client
+// construction, which is once per run — an operator flipping it mid-run is not
+// a case worth re-reading the environment for.
+func allowPrivateHosts() bool {
+	return os.Getenv(AllowPrivateHostsEnv) == "1"
+}
+
 // LocalHTTPClient is the client a local connector call goes out on.
 //
-// The GUARDED one, with no exception for a local run. A connector reaches a
-// host an operator configured, and "it is only my laptop" is exactly the
-// reasoning that makes a workflow able to fetch
+// The GUARDED one by default, with no exception for a local run. A connector
+// reaches a host an operator configured, and "it is only my laptop" is exactly
+// the reasoning that makes a workflow able to fetch
 // http://169.254.169.254/latest/meta-data/ on the machine where the developer
-// is signed into everything. The timeout is generous because a vendor's
-// pagination can be slow; the node's own `timeout:` is the shorter bound an
-// author sets.
+// is signed into everything. AllowPrivateHostsEnv is the deliberate,
+// greppable way out for a self-hosted instance. The timeout is generous
+// because a vendor's pagination can be slow; the node's own `timeout:` is the
+// shorter bound an author sets.
+//
+// LOCAL tier only. A cloud tier builds its own client and must NOT read the
+// env var: there the base URL is tenant-supplied, so relaxing the guard would
+// hand one tenant the pod's own network — which is the case the guard exists
+// for, not an ergonomic papercut.
 func LocalHTTPClient() *http.Client {
-	return httpdial.SafeClient(true, 2*time.Minute)
+	strict := !allowPrivateHosts()
+	c := httpdial.SafeClient(strict, 2*time.Minute)
+	if strict {
+		// Only under the guard: with the hatch open there is no refusal to
+		// explain, and a hint on an ordinary "connection refused" to localhost
+		// would name a variable that is already set.
+		c.Transport = &privateHostHint{base: c.Transport}
+	}
+	return c
+}
+
+// privateHostHint turns the guard's refusal into one an operator can act on.
+//
+// httpdial answers "resolved address 10.0.0.5 is not a public unicast IP",
+// which is true and useless: it names neither the workflow's connection nor a
+// way to permit the host. The remedy is added here rather than in httpdial
+// because the env var is this package's, and the guard is shared with callers
+// (webhooks, OIDC, the preview proxy) for whom it is not a way out at all.
+type privateHostHint struct{ base http.RoundTripper }
+
+func (t *privateHostHint) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err == nil {
+		return resp, nil
+	}
+	// Asked ONLY on the error path, and asked precisely. Resolving with the
+	// policy OFF separates the two failures that look alike from the outside:
+	// a host that resolves and is refused for WHAT it resolved to is the
+	// hatch's case, while a host that does not resolve at all is a typo or a
+	// dead DNS and must not be told to open a security guard. A cancelled or
+	// timed-out context lands in the second branch, so the hint is omitted
+	// rather than guessed.
+	host := req.URL.Hostname()
+	if host == "" {
+		return nil, err
+	}
+	ip, rerr := httpdial.ResolvePublicHost(req.Context(), host, false)
+	if rerr != nil || httpdial.IsPublicUnicast(ip) {
+		return nil, err
+	}
+	return nil, fmt.Errorf("%w (%s is a private or loopback address; set %s=1 to let connector calls reach a self-hosted instance)",
+		err, ip, AllowPrivateHostsEnv)
+}
+
+// UnreachableBaseURL says why this process will refuse to call baseURL, or ""
+// when it will reach it.
+//
+// Told at the moment a connection is ADDED, because that is where the mistake
+// is made. The refusal otherwise arrives a layer away — in a run, from a
+// workflow that names an operation rather than a URL — where it reads as a
+// broken connector rather than as a host this deployment does not permit.
+// Advice only: the answer can change with the environment, so it never
+// refuses the record.
+func UnreachableBaseURL(ctx context.Context, baseURL string) string {
+	if baseURL == "" || allowPrivateHosts() {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	// Same two-step as the transport's hint, and for the same reason: only a
+	// host that RESOLVES and is refused for what it resolved to belongs here.
+	// A name that does not resolve on this machine may well resolve where the
+	// run happens, and telling its author to open a security guard would be
+	// advice about the wrong problem.
+	ip, rerr := httpdial.ResolvePublicHost(ctx, u.Hostname(), false)
+	if rerr != nil || httpdial.IsPublicUnicast(ip) {
+		return ""
+	}
+	return fmt.Sprintf("%s resolves to %s, a private or loopback address that connector calls refuse by default — set %s=1 to permit a self-hosted instance",
+		u.Hostname(), ip, AllowPrivateHostsEnv)
 }

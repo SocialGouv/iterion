@@ -350,6 +350,8 @@ tool comment:
 
 **`unknown_outcome` is a first-class result.** When a mutating operation's answer is lost and the vendor offers no idempotency key, iterion reports that it cannot tell whether the call happened — and never retries it automatically. Repeating might duplicate a comment, a release, a payment; reporting success would be a lie.
 
+**Reaching a self-hosted instance.** Every connector call goes out on the guarded dialer, which refuses a private, loopback or link-local address — the guard that keeps a workflow from fetching `http://169.254.169.254/` on the machine an operator is signed into. A self-hosted Forgejo or GitLab is exactly the legitimate case for it, so the exception is deployment-controlled and greppable: **`ITERION_CONNECTOR_ALLOW_PRIVATE=1`** opens the guard for the process. The refusal names the variable, and `iterion connections add` warns at once when a `--base-url` will be refused, rather than leaving the first run to discover it.
+
 ### `compute`
 
 `compute` evaluates bounded expressions without an LLM or shell:

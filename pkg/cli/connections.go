@@ -131,6 +131,14 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	fmt.Fprintf(out, "connected %s as %q → %s\n", opts.Connector, alias, host)
 	fmt.Fprintf(out, "  scheme: %s · capabilities: %s\n", scheme, strings.Join(opts.Capabilities, ", "))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
+	// A self-hosted instance is the common case for the connectors this
+	// catalog ships, and the guarded dialer refuses one by default. Said here
+	// rather than left for the first run to discover: the record is still
+	// created — the environment can change, and this command is not the place
+	// to decide a deployment's network policy.
+	if advice := connection.UnreachableBaseURL(context.Background(), conn.BaseURL); advice != "" {
+		fmt.Fprintf(out, "  warning: %s\n", advice)
+	}
 	return nil
 }
 

@@ -784,7 +784,7 @@ Its state after `pkg/connection` and the two fix passes:
 | Tenant-carrying connector grant | **Shipped.** Every `connection.Store` read takes the tenant as a positional argument; another tenant's record is `ErrNotFound` |
 | Execution-only credential capability | **Shipped, structurally.** `openCredential` is unexported and its one caller is the resolver, inside a call |
 | Zero-LLM action policy | **Shipped**, with the behavioural test that runs with the classifier ENABLED (F5) |
-| Guarded dialer on every connector path | **Local path shipped** (`connection.LocalHTTPClient` is `httpdial.SafeClient`). The executor still accepts any non-nil client, so a future wiring could hand it an unguarded one |
+| Guarded dialer on every connector path | **Local path shipped** (`connection.LocalHTTPClient` is `httpdial.SafeClient`), **with the deployment-controlled exception this ADR owes it**: `ITERION_CONNECTOR_ALLOW_PRIVATE=1` opens the guard for a self-hosted instance, the refusal names it, and `connections add` warns when a base URL will be refused. Local tier only — a cloud tier must not read it, since there the base URL is tenant-supplied. The executor still accepts any non-nil client, so a future wiring could hand it an unguarded one |
 | Fenced refresh claim | Not implemented — `pkg/forge/refresh.go` still scans without a claim, and no connector refresh worker exists yet |
 | Immutable retained packages / `ConnectorRefs` | Not implemented; queue versions remain 14/10 |
 | A cloud (Mongo) `connection.Store` | **Not implemented.** The interface and its conformance suite exist and the memory/file twins pass it; until the Mongo one lands, connectors are LOCAL-ONLY — a cloud hole by this repository's own doctrine, not a limitation |
