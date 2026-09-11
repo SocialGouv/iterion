@@ -54,6 +54,20 @@ vars:
   ## the truncation explicitly. Raise it for exhaustive small-repo runs;
   ## lower it on a tighter-context model.
   findings_cap_per_file: int    = 50
+  ## Transport for the capped findings, in BYTES. 0 (the default) means
+  ## triage opens the scanner JSON itself through json_paths — the cheapest
+  ## route, because it lets triage grep and read selectively.
+  ##
+  ## That route requires triage to share a filesystem with the tool nodes,
+  ## which holds only on a sandbox-routed backend (claude_code). `claw` is
+  ## in-process and never enters the sandbox; `codex` refuses to run inside
+  ## one at all. On either, json_paths point at files that cannot be opened,
+  ## and the pass renders an EMPTY triage that reads as a clean repository.
+  ## Set a byte budget (524288 is a reasonable start) to carry the findings
+  ## in the envelope instead, which makes the node backend-independent. It
+  ## costs context: the whole payload lands in the prompt whether or not
+  ## triage would have read all of it.
+  triage_inline_max_bytes: int  = 0
   ## Anti-façade smoke gate. The always-on generic scanners (gitleaks,
   ## trivy, semgrep --config=auto) MUST each write a JSON file on any repo
   ## when they actually run — a missing file means the tool crashed or was
@@ -333,6 +347,15 @@ schema findings_budget_output:
   truncated:     bool
   per_file_cap:  int
   per_scanner:   json
+  ## The capped findings THEMSELVES, when vars.triage_inline_max_bytes > 0.
+  ## Empty list otherwise, which is the signal to read json_paths instead.
+  ## A list of {file, array, findings}. The two counts make a budget cut
+  ## visible the same way the deepsec bank does: whole findings are dropped,
+  ## never truncated mid-object, and the gap is a subtraction.
+  inline:            json
+  inline_embedded:   int
+  inline_total:      int
+  inline_truncated:  bool
 
 ## scan_health emits the scanner-coverage signal so a broken toolchain
 ## (scanners that crashed / are absent in the sandbox and produced no
@@ -1074,7 +1097,18 @@ prompt triage_system:
   - vuln-matchers-guide.md    (when fields surprise you)
 
   Your job:
-  1. Read every scanner JSON listed in *.json_paths.
+  1. Obtain the raw scanner findings. There are TWO transports; take the
+     first that yields anything:
+     a. `findings_budget.inline` — when non-empty it CARRIES the findings
+        themselves, already severity-sorted and trimmed, as a list of
+        {file, array, findings}. Use it and do not open json_paths. This is
+        the transport used when you run on a backend that shares no
+        filesystem with the scanners.
+     b. Otherwise read every scanner JSON listed in *.json_paths.
+     If neither yields a single finding while `findings_budget.total_kept`
+     is above zero, your input is unreadable — not a clean repository. Say
+     so in `stats.input_error` and emit no candidates rather than an empty
+     list that would read as a clean bill of health.
   2. For each raw finding, emit one candidate object with:
        id                    — sequential C-001, C-002, …
        finding_type          — one of finding-taxonomy.md (REQUIRED)
@@ -3079,7 +3113,7 @@ if generic_present < min_generic:
 ## emitted so triage surfaces the truncation in the report. Security signal
 ## is bounded, never silently dropped.
 tool cap_findings:
-  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} python3 -c "
+  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} python3 -c "
 import os, json, glob
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -3089,6 +3123,12 @@ except ValueError:
     cap = 50
 if cap < 1:
     cap = 50
+try:
+    inline_max = int(os.environ.get('INLINE_MAX', '0') or '0')
+except ValueError:
+    inline_max = 0
+if inline_max < 0:
+    inline_max = 0
 
 FINDING_KEYS = ['results', 'Issues', 'findings', 'matches', 'vulnerabilities', 'Vulns', 'alerts']
 SEV = {'critical': 5, 'blocker': 5, 'high': 4, 'error': 4, 'major': 4, 'medium': 3, 'warning': 3, 'moderate': 3, 'minor': 2, 'low': 2, 'info': 1, 'note': 1, 'unknown': 0}
@@ -3131,6 +3171,7 @@ def trim(item):
     return item
 
 per_scanner = []
+harvest = []
 total_raw = total_kept = total_capped = 0
 for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
     try:
@@ -3162,6 +3203,30 @@ for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
     total_kept += len(kept)
     total_capped += capped
     per_scanner.append({'file': os.path.basename(jf), 'array': key, 'raw': raw, 'kept': len(kept), 'capped': capped})
+    harvest.append({'file': os.path.basename(jf), 'array': key, 'findings': data[key]})
+
+# The findings travel in the envelope only when asked for, because the
+# payload lands in the triage prompt whole. Whole findings are dropped at the
+# budget, never truncated mid-object, so a cut payload still parses and the
+# gap is a subtraction rather than a guess — the same contract as the deepsec
+# bank, for the same reason.
+inline = []
+inline_embedded = 0
+if inline_max > 0:
+    size = 0
+    for grp in harvest:
+        kept_here = []
+        for it in grp['findings']:
+            chunk = len(json.dumps(it, ensure_ascii=False))
+            if (inline_embedded or kept_here) and size + chunk > inline_max:
+                break
+            kept_here.append(it)
+            size += chunk
+        if kept_here:
+            inline.append({'file': grp['file'], 'array': grp['array'], 'findings': kept_here})
+            inline_embedded += len(kept_here)
+        if size >= inline_max:
+            break
 
 print(json.dumps({
     'total_raw': total_raw,
@@ -3170,6 +3235,10 @@ print(json.dumps({
     'truncated': total_capped > 0,
     'per_file_cap': cap,
     'per_scanner': per_scanner,
+    'inline': inline,
+    'inline_embedded': inline_embedded,
+    'inline_total': total_kept,
+    'inline_truncated': inline_max > 0 and inline_embedded < total_kept,
 }))
 "`
   output: findings_budget_output
