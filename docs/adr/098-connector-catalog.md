@@ -1029,7 +1029,7 @@ surfaces"* — and a node that reaches an unwired surface fails explicitly
 rather than reporting a success it never performed. Named here because the
 gap is invisible from the CLI, which is where the feature was exercised.
 
-## Adversarial review disposition, round five (one finding)
+## Adversarial review disposition, round five
 
 **The other half of a basic credential was outside the redaction net.**
 `exec.secretValues` listed `cred.Value` and the params a package marked
@@ -1057,3 +1057,97 @@ given vendor made secret. Over-redacting costs a marker in an error message;
 under-redacting costs a key in the run's events, the tool hooks and error
 tracking. The test asserts the bytes really travelled before asserting they
 came back redacted, so it cannot pass by sending nothing.
+
+### Seven more, found by re-reading the lot rather than the review
+
+The gate's finding above was the one handed over. Re-reading the diff on
+the axes four rounds had not walked — the DSL's own readers, the CLI's
+refusals, the reading of a vendor's answer — turned up seven more. The
+shape is the round-four shape again: something that **reads as configured
+and is not**, one layer further out each time.
+
+**A trailing comment was not a line ending.** `scanComment` consumes the
+newline and emits `TokenComment` in its place — which is why
+`skipToNewline` and `skipNewlinesFrom` both stop on one — and `atLineEnd`
+listed only Newline/Dedent/EOF. So `timeout: 30s   # keep it short` was an
+E020 error on a valid line, and then `restOfLineText` ran past the comment
+into the NEXT line and deleted that property from the node. Every property
+of this recipe reads through that path.
+
+**The unit join was licensed by the head being numeric**, not by adjacency.
+`body: 2 failures` was still joined into `2failures`, silently, because
+after the join the line IS ended and the refusal added in round four never
+fires. Two tokens join only when the second begins exactly where the first
+ended, which is what `30s` actually is.
+
+**`params:` hand-rolled its own block reader.** It tested for an INDENT and
+consumed the rest of the line otherwise, which reads as defensive and is
+the opposite: a bare `params:` followed by a sibling property swallowed
+that property's line, and `params: { owner: "acme" }` dropped every
+argument — both with no diagnostic, on the one recipe whose promise is that
+the request is what was declared. It goes through `blockBodyAfter` now, the
+reader every other block uses.
+
+**A path argument could be path STRUCTURE.** The `/` case was closed by
+escaping each segment; `.` and `..` are unreserved, so `url.PathEscape`
+returns them unchanged and Go sends `EscapedPath()` verbatim. Measured:
+`repo: ".."` sent `/api/v1/repos/acme/../issues/1`, which the vendor — or
+any proxy — resolves to `/api/v1/repos/issues/1`, and `repo: ""` sent `//`.
+A path argument comes from `{{...}}`: an issue title, a branch name, a
+model's output. The call addressed a resource the workflow never named and
+that answer was checkpointed as the declared call's; on a mutation it is a
+write to the wrong place.
+
+**`connections add` wrote three connections no call could use** — a
+self-hosted connector with no `--base-url` (the shipped Forgejo package is
+`operator_supplied` with no default, and `add` printed "(the package
+default)" for a default that does not exist), a base URL with no scheme,
+and `--scheme basic`, which this writer cannot seal since it has no
+`--username-env`. Each was stored, listed and reported as connected, then
+failed at the first action node. It was also the one caller passing a nil
+warning sink to `NewLocalSealer` — so the command that first mints the
+master key for a connector-only operator was the one that did not say it
+had written it to disk.
+
+**A walk with no position parameter re-sends one request.**
+`validatePagination` demands `cursor_field` "so the walk could never
+advance past page one" and never demanded the parameter the walk advances
+THROUGH; `CallPaged` writes the position only when it is named. A package
+declaring `style: cursor` with no `cursor_param` sent `max_pages` identical
+requests and appended page one's items that many times.
+
+**A 303 on a mutation was read as "it never happened".** The 3xx branch was
+the only error path not asking `markAmbiguous`. iterion does not follow a
+redirect, so the call did not reach the redirect TARGET — but 303 is the
+canonical answer to a POST whose effect already happened, and 302 is used
+the same way. 307/308/301 stay unambiguous, deliberately: each says the
+vendor did not process the call.
+
+Two more corrections found while verifying those: an unmapped vendor error
+code silently restored the status range over the class the package declared
+for that status (`403 → rate_limited` downgraded to a non-retryable
+`forbidden`), and the C265 remedy in the diagnostic catalogue and the
+reference still taught `retry: 1m` — the form C265 refuses — after the
+property registry had been corrected for it in round four.
+
+### Open, with what each needs
+
+- **The generator resolves a `$ref` one hop.** A vendor definition that is
+  itself an alias (`CreatePullReviewCommentOptions: {$ref:
+  CreatePullReviewComment}`) resolves to a map whose only key is `$ref`, so
+  the body is declared a whole-body blob and its five members are not
+  addressable from a `.bot`. Visible in the committed package
+  (`ops/repository.yaml`, `create_pull_review_comment`). Needs a
+  cycle-guarded resolve loop AND a regeneration of the shipped package,
+  which needs the vendor description this repo does not commit.
+- **Swagger 2 drops `required` on a whole-body parameter** (`walk.go`'s
+  `case "body"` passes only the schema; the OpenAPI 3 side propagates it).
+  `checkParams` then treats the unset optional body as absent and the POST
+  goes out with no body at all. Same regeneration caveat.
+- **A response's integers are `float64`.** The REQUEST direction was fixed
+  in this lot (`asPositiveInt`'s `json.Number` arm, "so a large id survives
+  to the wire exactly"); `decodeJSON` still unmarshals into `any`, so an id
+  above 2^53 read back from a vendor and fed into a follow-up call
+  addresses a neighbouring row. `UseNumber` is the one-line change, but
+  `Result.Data` flows into node outputs and from there into the expression
+  evaluator, so it needs that path verified rather than assumed.
