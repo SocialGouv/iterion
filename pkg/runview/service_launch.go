@@ -615,7 +615,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if detachedEnabled() {
 		spec.Budget = rawBudget
-		return s.resumeDetached(parent, spec)
+		// The permission gate is replayed from the run doc, exactly as
+		// resumeExecutorSpec does for the in-process path. ResumeSpec
+		// carries no Permission of its own and `iterion resume` never
+		// reads the persisted override, so without this the subprocess
+		// re-resolves the gate from the workflow — usually `off` — and an
+		// operator's launch-time "deny" quietly stops applying at the
+		// first resume.
+		return s.resumeDetached(parent, spec, r.PermissionOverride)
 	}
 
 	_, runLogger := s.prepareRunLog(spec.RunID)

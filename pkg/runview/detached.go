@@ -93,6 +93,13 @@ type detachedSpec struct {
 	// Supervisors forwards the run-level supervisors kill switch as the
 	// CLI's --supervisors flag, for the same re-resolution reason.
 	Supervisors string
+	// Permission forwards the run-level tool-permission-gate mode as the
+	// CLI's --permission flag. Same re-resolution reason as AutoMemory,
+	// and the one where it matters most: the gate is the
+	// anti-prompt-injection boundary, and the workflow's own value is
+	// usually `off`. Dropping it here made an operator's explicit "deny"
+	// fail OPEN while the studio still drew the control as applied.
+	Permission string
 	// Budget forwards launch-time budget overrides as the CLI's
 	// --max-* flags, so the detached runner applies the same caps the
 	// in-process path would. Launch only; nil = no override.
@@ -125,6 +132,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.Supervisors != "" {
 			args = append(args, "--supervisors", spec.Supervisors)
 		}
+		if spec.Permission != "" {
+			args = append(args, "--permission", spec.Permission)
+		}
 		args = appendDetachedBudgetArgs(args, spec.Budget)
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
@@ -136,6 +146,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		}
 		if spec.Supervisors != "" {
 			args = append(args, "--supervisors", spec.Supervisors)
+		}
+		if spec.Permission != "" {
+			args = append(args, "--permission", spec.Permission)
 		}
 		if spec.Force {
 			args = append(args, "--force")
@@ -384,6 +397,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
+		Permission:      spec.Permission,
 		Budget:          spec.Budget,
 	})
 	if err != nil {
@@ -410,7 +424,10 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 // Service.Resume has already compiled the workflow and performed the
 // synchronous source-hash preflight before reaching this asynchronous path.
 // The detached CLI compiles and checks again after startup as a TOCTOU guard.
-func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
+// permission is the gate replayed from the run doc's PermissionOverride —
+// ResumeSpec has no field of its own, and the subprocess re-resolves the
+// knob from the workflow when nothing is passed.
+func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permission string) (*LaunchResult, error) {
 	s.prepareRunLogNoFile(spec.RunID)
 
 	answers, convErr := resumeAnswersToStrings(spec.Answers)
@@ -428,6 +445,7 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*Laun
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
+		Permission:      permission,
 		Force:           spec.Force,
 		Timeout:         spec.Timeout,
 		// E2 (#652 review round 1): forward the resume-time budget
