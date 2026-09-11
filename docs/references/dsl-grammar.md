@@ -269,8 +269,8 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `action` | ident | Connector operation to call, `connector.resource.verb` — exclusive with command:/script: (ADR-098, C260) |
 | `connection` | ident | The connection binding that authenticates the action (C261) |
 | `params` | block → [params](#params) | The action's arguments, by the operation's own parameter keys |
-| `retry` | string | Action: attempt count or duration; empty takes the package default (C265) |
-| `timeout` | string | Action: bound on one call, e.g. "30s" (C265) |
+| `retry` | string | Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266) |
+| `timeout` | string | Action: bound on one call, e.g. "30s" (C265). Inert without `action:` (C266) |
 <!-- dsl-spec:end -->
 
 `command` and `script` are mutually exclusive. Recovery accepts `max_repair_attempts: INT`, `max_agent_attempts: INT`, `model: STRING`, and `agent_tools: tool_ref_list`.
