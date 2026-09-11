@@ -825,10 +825,20 @@ func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding
 	if chosen != canonicalMediaType(encoding) {
 		w.lastBodyMediaType = chosen
 	}
-	// `required: true` on the body itself is NOT propagated onto its members:
+	// `required: true` on the body itself is NOT propagated onto its MEMBERS:
 	// it says the envelope must be sent, while which members are mandatory is
 	// the schema's own `required` list, which bodyParams already read.
-	return w.bodyParams(mapAt(mapAt(content, chosen), "schema")), encoding, ""
+	//
+	// A WHOLE-BODY parameter is the exception, because it IS the envelope.
+	// Leaving it optional published an operation whose mandatory payload could
+	// simply be omitted: the request went out with no body at all, and the
+	// local required-parameter check — the one that exists to catch exactly
+	// this before a round trip — had nothing to check.
+	params := w.bodyParams(mapAt(mapAt(content, chosen), "schema"))
+	if boolAt(rb, "required") && len(params) == 1 && params[0].WholeBody {
+		params[0].Required = true
+	}
+	return params, encoding, ""
 }
 
 // canonicalMediaType is the type an encoding implies, so only a DIVERGENCE is

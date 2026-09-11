@@ -650,3 +650,68 @@ func TestWhatCannotBeDerivedIsReportedNotErased(t *testing.T) {
 		}
 	})
 }
+
+// TestAREQUIREDWholeBodyStaysRequired.
+//
+// `required: true` on a requestBody is not propagated onto its MEMBERS — that
+// is correct, since which members are mandatory is the schema's own list. But
+// a WHOLE-BODY parameter IS the envelope, and leaving it optional published an
+// operation whose mandatory payload could simply be omitted: the request went
+// out with no body at all, and the local required-parameter check that exists
+// to catch exactly this had nothing to check.
+func TestARequiredWholeBodyStaysRequired(t *testing.T) {
+	const body = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "servers": [{"url": "https://probe.example"}],
+  "components": {"securitySchemes": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}}},
+  "paths": {
+    "/things": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingReplaceAll", "summary": "Replace",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"type": "array", "items": {"type": "integer"}}}}
+        },
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/optional": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingMaybe", "summary": "Maybe",
+        "requestBody": {
+          "content": {"application/json": {"schema": {"type": "array", "items": {"type": "integer"}}}}
+        },
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+	pkg := generate(t, body)
+
+	op, ok := pkg.Operation("probe.thing.replace_all")
+	if !ok {
+		t.Fatalf("replace_all missing, got %v", opIDs(pkg))
+	}
+	p, ok := findParam(op, "body")
+	if !ok {
+		t.Fatalf("the whole-body param is missing: %v", paramNames(op))
+	}
+	if !p.WholeBody {
+		t.Error("a body schema with no properties IS the body")
+	}
+	if !p.Required {
+		t.Error("the envelope was declared required, so the parameter that IS the envelope must be")
+	}
+
+	// The falsifier: an optional body stays optional, so this did not simply
+	// mark every whole body required.
+	opt, _ := pkg.Operation("probe.thing.maybe")
+	q, ok := findParam(opt, "body")
+	if !ok {
+		t.Fatalf("the optional whole-body param is missing: %v", paramNames(opt))
+	}
+	if q.Required {
+		t.Error("a body the vendor did not declare required must stay optional")
+	}
+}
