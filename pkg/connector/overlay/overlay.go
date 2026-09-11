@@ -407,3 +407,43 @@ func quoteAll(in []string) []string {
 	}
 	return out
 }
+
+// LoadPackage reads a package as a LAUNCH sees it: the generated half, its
+// overlay applied, then the complete check.
+//
+// It exists because there was no such thing, and its absence was invisible.
+// `spec.Load` reads ops/ and validates — it knows nothing about overlays —
+// so anything that called it for EXECUTION served the generated package while
+// `connectors validate` was reporting on the merged one. The two disagreed
+// about everything the overlay exists to say: the shipped Forgejo package
+// validated with two auth schemes and ran with five, answered to the pinned
+// `forgejo.issue.comment` in validation and to nothing at run time, and lost
+// every declared pagination.
+//
+// One loader, used by both, is what keeps that from coming back. A package
+// has two halves and only their SUM is a package; a function that returns one
+// of them should not be named as though it returns the thing.
+func LoadPackage(dir string) (*spec.Package, error) {
+	pkg, err := spec.LoadGenerated(dir)
+	if err != nil {
+		return nil, err
+	}
+	ov, err := Load(dir)
+	if err != nil {
+		return nil, err
+	}
+	if ov != nil {
+		if err := Apply(pkg, ov); err != nil {
+			return nil, err
+		}
+	}
+	// The COMPLETE check, on the merged package — what a launch requires. The
+	// generated half alone legitimately fails it (a description that declares
+	// no auth is the common case), which is exactly why validating the wrong
+	// one of the two would have been noticed, and validating the wrong one for
+	// EXECUTION was not.
+	if err := pkg.Validate(); err != nil {
+		return nil, err
+	}
+	return pkg, nil
+}

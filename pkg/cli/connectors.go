@@ -220,15 +220,13 @@ func writePackage(dir string, pkg *spec.Package) error {
 // ConnectorsValidate loads a package directory, applies its overlay and runs
 // the complete check — `iterion validate` for a connector.
 func ConnectorsValidate(dir string, out io.Writer) error {
-	pkg, err := spec.LoadGenerated(dir)
+	// The SAME loader a run uses. Assembling the two halves here by hand was
+	// how validation and execution came to disagree: this function merged and
+	// checked, while the catalog called `spec.Load` and got the generated half
+	// alone. An operator's green `validate` described a package no run ever
+	// saw.
+	pkg, err := overlay.LoadPackage(dir)
 	if err != nil {
-		return err
-	}
-	ov, err := overlay.Load(dir)
-	if err != nil {
-		return err
-	}
-	if err := overlay.Apply(pkg, ov); err != nil {
 		return err
 	}
 

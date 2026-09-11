@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
 
@@ -58,10 +59,15 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, error) {
 	}
 
 	dir := filepath.Join(c.root, connectorID)
-	// spec.Load runs the COMPLETE validation, not the generator's: a package
-	// reached from a node has to be one a call can be built from, and finding
-	// out otherwise mid-run means finding out after a credential was resolved.
-	pkg, err := spec.Load(dir)
+	// The EFFECTIVE package — generated half plus overlay, then the complete
+	// check. Not `spec.Load`, which reads only the generated half: calling it
+	// here served execution a package the authored corrections had never
+	// touched, so the shipped Forgejo connector validated with two auth
+	// schemes and ran with five, answered to its pinned operation ids in
+	// validation and to none of them at run time, and lost every declared
+	// pagination. The same loader backs `iterion connectors validate`, so what
+	// an operator checks is what a run gets.
+	pkg, err := overlay.LoadPackage(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("no connector %q in %s%s", connectorID, c.root, c.suggest(connectorID))

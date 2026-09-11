@@ -30,6 +30,7 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 
 	if resp.StatusCode >= 400 {
 		res.Err = e.httpError(pkg, op, resp, data, body)
+		markAmbiguous(op, res.Err, resp.StatusCode)
 		return res
 	}
 	// A redirect is not a success, and iterion's client deliberately does not
@@ -55,6 +56,9 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 			Message: fmt.Sprintf("the vendor answered %d with a body that is not JSON: %v", resp.StatusCode, decodeErr),
 			Cause:   decodeErr,
 		}
+		// The mutation CERTAINLY happened — the vendor answered 2xx — and only
+		// its answer is lost. Repeating it is a duplicate, not a second chance.
+		markAmbiguous(op, res.Err, resp.StatusCode)
 		return res
 	}
 

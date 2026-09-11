@@ -503,6 +503,91 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 	})
 }
 
+// TestTheENGINENeverRetriesAnUndecidedMutation covers the CLASS, not the one
+// error the first fix reached.
+//
+// Round two closed `unknown_outcome` — the answer that never arrived. Round
+// three found the same defect one error class over: a POST answered 500 is
+// `upstream` like any other 500, the connector refuses its own retry, and the
+// ENGINE dispatched a second POST two seconds later. The write may well have
+// committed before the server failed, so that is a duplicate.
+//
+// Fixing the site the report names and leaving the class alive is the mistake
+// this repository's own rule warns about, and it was made here. The predicate
+// is now decided where the facts are — status plus the operation's effect —
+// and covers every way a dispatched mutation can end undecided.
+func TestTheEngineNeverRetriesAnUndecidedMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		handler  http.HandlerFunc
+		wantAmbi bool
+	}{
+		{
+			// The write may have committed before the server failed.
+			name: "a 500 on a mutation",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"boom"}`))
+			},
+			wantAmbi: true,
+		},
+		{
+			// The mutation CERTAINLY happened; only its answer is lost.
+			name: "a 201 whose body will not decode",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{not json`))
+			},
+			wantAmbi: true,
+		},
+		{
+			// A refusal: nothing happened, so a retry duplicates nothing and
+			// parking the run would be wrong.
+			name: "a 400 on a mutation",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"message":"bad"}`))
+			},
+			wantAmbi: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			pkg, op := mutatingPackage(srv.URL)
+
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment",
+				Connection: "main",
+				Params:     []ir.ActionParam{{Key: "body", Value: "ship it"}},
+			}
+			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+			_, err := e.Execute(context.Background(), node, nil)
+			if err == nil {
+				t.Fatal("the node must fail")
+			}
+
+			got := runtime.IsAmbiguousEffect(err)
+			if got != tc.wantAmbi {
+				t.Fatalf("IsAmbiguousEffect = %v, want %v", got, tc.wantAmbi)
+			}
+
+			// The engine's REAL dispatcher is the oracle: the connector's own
+			// opinion was never the thing that failed.
+			dispatch := recovery.Dispatch(recovery.DefaultRecipes())
+			action, _ := dispatch(context.Background(), err, func(runtime.ErrorCode) int { return 0 })
+			retried := action.Kind == runtime.RecoveryRetrySameNode
+			if tc.wantAmbi && retried {
+				t.Errorf("the engine scheduled a retry (delay %s) of a mutation that may already have landed", action.Delay)
+			}
+			if !tc.wantAmbi && !retried {
+				t.Error("a refused request must still be retryable — parking it would be the opposite defect")
+			}
+		})
+	}
+}
+
 // TestAnOrdinaryFailureStillRetries is the falsifier for the guard above: a
 // blanket "connector errors never retry" rule would pass that test while
 // making every transient blip terminal. A GET refused with a 503 never

@@ -124,6 +124,22 @@ type Error struct {
 	Message string
 	// RetryAfter is the delay a 429 named, zero when it named none.
 	RetryAfter time.Duration
+	// Ambiguous marks a failure that leaves a MUTATION undecided: the request
+	// was dispatched, the vendor may have performed it, and nothing available
+	// says whether it did.
+	//
+	// It is a FIELD rather than a property of the class, because the class
+	// alone cannot answer it. A 500 on a POST is `upstream` like any other 500,
+	// yet the write may well have committed before the server failed; a 400 on
+	// the same POST is a refusal and nothing happened. Only the place that
+	// holds the status AND the operation's effect can tell them apart, so that
+	// is where it is decided.
+	//
+	// `unknown_outcome` is the case where the answer never arrived; this is the
+	// wider class it belongs to. Marking only the first left the engine
+	// retrying every other undecided mutation — the same defect, one error
+	// class over.
+	Ambiguous bool
 	// Cause is the underlying Go error for a transport failure.
 	Cause error
 }
@@ -156,7 +172,36 @@ func (e *Error) Error() string {
 // replayed two seconds later — the duplicate mutation the class exists to
 // prevent, arriving through the one path that never asked.
 func (e *Error) AmbiguousEffect() bool {
-	return e != nil && e.Class == spec.ErrUnknownOutcome
+	return e != nil && (e.Class == spec.ErrUnknownOutcome || e.Ambiguous)
+}
+
+// markAmbiguous decides whether a DISPATCHED failure left a mutation
+// undecided, and is the one place that judgement is made.
+//
+// Only a mutation can be undecided — a read that failed changed nothing, so it
+// is always safe to repeat. Among mutations, the statuses that leave the
+// question open are the ones where the vendor may have acted before failing to
+// say so:
+//
+//   - 5xx: the write may have committed and the server then failed.
+//   - 408 / 504: a timeout AFTER the request was received.
+//   - a 2xx whose body could not be read: the mutation certainly HAPPENED and
+//     only the answer is lost, which makes a repeat a duplicate rather than a
+//     second chance.
+//
+// A 4xx is excluded deliberately: the vendor refused the request, so nothing
+// happened and a retry duplicates nothing. Marking those ambiguous would park
+// runs that should simply fail.
+func markAmbiguous(op spec.Operation, err *Error, status int) {
+	if err == nil || !op.Effect.Mutating() {
+		return
+	}
+	switch {
+	case status >= 500,
+		status == http.StatusRequestTimeout,
+		status >= 200 && status < 300:
+		err.Ambiguous = true
+	}
 }
 
 // Retryable reports whether repeating this call is safe AND useful. It is the
