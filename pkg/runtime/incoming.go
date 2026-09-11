@@ -74,6 +74,22 @@ func (rs *runState) setIncoming(edge *ir.Edge) {
 		rs.selectedIncoming = make(map[string][]store.IncomingEdge)
 	}
 	recordIncoming(rs.selectedIncoming, edge, true)
+	if edge != nil && !edge.IsBoundedIteration() {
+		// A FORWARD arrival: routing picked a path into this node that is not
+		// the fan-out that settled its floor, so that floor belongs to an
+		// earlier visit. Keeping it would feed the node with-mappings from
+		// edges this visit's routing did not select, through a path that
+		// bypasses the tracked/selected filter — the #484 shape. This is the
+		// ONE place a forward selection replaces a node's incoming set; the
+		// fan-out writes the join's selection directly (mergeJoinIncoming),
+		// so the fed visit and its resume are untouched.
+		//
+		// A bounded-iteration edge is excluded deliberately: a loop head
+		// re-entered by its own back-edge is the SAME visit continuing, and
+		// its dead branches are still dead — dropping the floor there would
+		// make their mappings vanish from iteration 2 on.
+		delete(rs.settledIncoming, edge.To)
+	}
 }
 
 // incomingFor returns the selected incoming edges recorded for this visit
@@ -163,9 +179,9 @@ func cloneIncoming(m map[string][]store.IncomingEdge) map[string][]store.Incomin
 // mergeJoinIncoming unions the selected incoming edges that successful
 // fan-out branches recorded for the convergence node, and writes that
 // set onto the trunk runState so the join execution applies exactly those
-// mappings. launched is the set of edges this invocation actually started
-// branches on — the provenance of the settled floor recorded alongside.
-func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult, launched []*ir.Edge) {
+// mappings. seeds are the nodes this invocation actually entered — the
+// provenance of the settled floor recorded alongside.
+func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult, seeds []string) {
 	if rs == nil || joinNodeID == "" {
 		return
 	}
@@ -187,7 +203,7 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 	// Record what this invocation settled on, whichever way it went: a
 	// fresh invocation owns the floor for its join, so one that produced
 	// output must not leave the previous one's floor standing.
-	rs.setSettledFloor(joinNodeID, settledEdgesInto(e.workflow, launched, joinNodeID, evidenceFromBranches(results)))
+	rs.setSettledFloor(joinNodeID, settledEdgesInto(e.workflow, seeds, joinNodeID, evidenceFromBranches(results)))
 	if len(union) == 0 {
 		// No successful branch recorded an edge into the join (every
 		// branch failed under best_effort, or the join came from the
@@ -225,12 +241,6 @@ type invocationEvidence struct {
 	ran map[string]bool
 	// chosen holds, per destination, the edges that actually fired into it.
 	chosen map[string][]store.IncomingEdge
-	// entered holds the nodes the branches actually STARTED at. On a resume
-	// that is the durable cursor's start node, which can differ from what
-	// the current graph's template edge names: an edited `fan_out_each`
-	// re-executes the node the cursor recorded, so reading the template
-	// would walk a branch this invocation is not running.
-	entered []string
 }
 
 // evidenceFromBranches gathers what the branches of one invocation recorded.
@@ -239,7 +249,6 @@ type invocationEvidence struct {
 // and the caller's declared edges are then the only provenance available.
 func evidenceFromBranches(results []*branchResult) invocationEvidence {
 	ev := invocationEvidence{ran: map[string]bool{}, chosen: map[string][]store.IncomingEdge{}}
-	seenStart := map[string]bool{}
 	for _, r := range results {
 		if r == nil {
 			continue
@@ -250,25 +259,84 @@ func evidenceFromBranches(results []*branchResult) invocationEvidence {
 		for dst, edges := range r.selectedIncoming {
 			ev.chosen[dst] = append(ev.chosen[dst], edges...)
 		}
-		// Synthetic results — a DAG item skipped because its dependency
-		// failed — carry no start node. They contribute nothing here, and
-		// their siblings supply the provenance.
-		if r.startNodeID != "" && !seenStart[r.startNodeID] {
-			seenStart[r.startNodeID] = true
-			ev.entered = append(ev.entered, r.startNodeID)
-		}
 	}
 	return ev
+}
+
+// settledSeedsPerEdge returns the node the walk starts from FOR EACH launched
+// edge: the start node the branch that edge launched actually reported, or
+// the edge's own target when that branch never started.
+//
+// Per edge, never per invocation. A `fan_out_all` gives every branch its own
+// target, so one sibling reporting a start node says nothing about a sibling
+// that bailed before execBranch — a slot acquired on an already-cancelled
+// fan-out, a resume-turn error, a panic caught before the start all yield a
+// result with an empty start node. Reading the invocation as a whole dropped
+// that branch's subgraph from the floor entirely, which is the very mapping
+// loss this exists to prevent.
+func settledSeedsPerEdge(routerNodeID string, launched []*ir.Edge, results []*branchResult) []string {
+	started := make(map[string]string, len(results))
+	for _, r := range results {
+		if r != nil && r.startNodeID != "" {
+			started[r.branchID] = r.startNodeID
+		}
+	}
+	var seeds []string
+	seen := map[string]bool{}
+	push := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			seeds = append(seeds, id)
+		}
+	}
+	for _, edge := range launched {
+		if edge == nil || edge.IsBoundedIteration() {
+			continue
+		}
+		if start, ok := started[fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)]; ok {
+			push(start)
+			continue
+		}
+		push(edge.To)
+	}
+	return seeds
+}
+
+// settledSeedsForTemplate is the `fan_out_each` shape, where every item
+// replays the SAME template subgraph: one branch's recorded start node speaks
+// for all of them, and it OUTRANKS the template edge because a resumed cursor
+// names the node the branch is really running even when an edit re-pointed
+// the template. Only an invocation where NO branch started at all falls back
+// on the declaration.
+func settledSeedsForTemplate(tmplEdge *ir.Edge, results []*branchResult) []string {
+	var seeds []string
+	seen := map[string]bool{}
+	for _, r := range results {
+		if r != nil && r.startNodeID != "" && !seen[r.startNodeID] {
+			seen[r.startNodeID] = true
+			seeds = append(seeds, r.startNodeID)
+		}
+	}
+	if len(seeds) > 0 {
+		return seeds
+	}
+	if tmplEdge != nil && !tmplEdge.IsBoundedIteration() {
+		return []string{tmplEdge.To}
+	}
+	return nil
 }
 
 // settledEdgesInto returns the edges into joinNodeID that a fan-out
 // invocation would have fired, found by walking forward from the nodes it
 // actually entered.
 //
-// Provenance is the LAUNCHED edges, never the declared ones: an llm router
-// in multi-select mode starts a subset of what the graph declares, so
-// reading the declaration would sweep in the very foreign edge the floor
-// exists to exclude.
+// seeds are the nodes this invocation actually entered, computed by the
+// caller because the two fan-out shapes differ: `fan_out_all` gives each
+// branch its own target (settledSeedsPerEdge), `fan_out_each` replays one
+// template for every item (settledSeedsForTemplate). They come from the
+// LAUNCHED edges, never the declared ones — an llm router in multi-select
+// mode starts a subset of what the graph declares, so reading the declaration
+// would sweep in the very foreign edge the floor exists to exclude.
 //
 // The walk is ROUTING-AWARE, which is what keeps it from resurrecting a
 // rejected route: leaving a node the invocation executed, it follows only the
@@ -279,12 +347,12 @@ func evidenceFromBranches(results []*branchResult) invocationEvidence {
 // Bounded-iteration edges are out of both the walk and the result. A
 // back-edge is a per-iteration overlay applied last, not part of a
 // stabilized forward pass (Rae4900).
-func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string, ev invocationEvidence) []store.IncomingEdge {
-	if wf == nil || joinNodeID == "" || len(launched) == 0 {
+func settledEdgesInto(wf *ir.Workflow, seeds []string, joinNodeID string, ev invocationEvidence) []store.IncomingEdge {
+	if wf == nil || joinNodeID == "" || len(seeds) == 0 {
 		return nil
 	}
-	reachable := make(map[string]bool, len(launched))
-	frontier := make([]string, 0, len(launched))
+	reachable := make(map[string]bool, len(seeds))
+	frontier := make([]string, 0, len(seeds))
 	push := func(id string) {
 		if id == "" || reachable[id] {
 			return
@@ -292,20 +360,8 @@ func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string, e
 		reachable[id] = true
 		frontier = append(frontier, id)
 	}
-	// The nodes the branches REPORTED starting at outrank the declared ones.
-	// On a resume they are the durable cursors, and an edited template would
-	// otherwise send the walk down a branch this invocation is not running.
-	if len(ev.entered) > 0 {
-		for _, id := range ev.entered {
-			push(id)
-		}
-	} else {
-		for _, edge := range launched {
-			if edge == nil || edge.IsBoundedIteration() {
-				continue
-			}
-			push(edge.To)
-		}
+	for _, id := range seeds {
+		push(id)
 	}
 	// Forward closure, stopping AT the join: expanding past it could
 	// re-enter through an unrelated downstream cycle and claim edges this

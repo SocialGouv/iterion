@@ -161,7 +161,9 @@ func TestSettledEdgesInto_EachExclusionHasItsOwnWitness(t *testing.T) {
 			{From: "looper", To: "join", LoopName: "retry"},
 		},
 	}
+	// The seeds a `fan_out_all` produces: each launched edge's own target.
 	launched := []*ir.Edge{wf.Edges[0], wf.Edges[1], wf.Edges[3]}
+	seeds := settledSeedsPerEdge("router", launched, nil)
 	// `live` ran and routed to `taken`, which ran too. Everything else in
 	// this invocation produced nothing — which is what puts `a` and `b` in
 	// the floor and keeps `taken` out.
@@ -172,7 +174,7 @@ func TestSettledEdgesInto_EachExclusionHasItsOwnWitness(t *testing.T) {
 			"join":  {incomingFromEdge(wf.Edges[10])},
 		},
 	}
-	got := settledEdgesInto(wf, launched, "join", ev)
+	got := settledEdgesInto(wf, seeds, "join", ev)
 
 	froms := map[string]bool{}
 	for _, in := range got {
@@ -217,14 +219,110 @@ func TestSettledEdgesInto_RecordedStartNodesOutrankTheDeclaredTemplate(t *testin
 			{From: "new_handle", To: "collect", With: []*ir.DataMapping{settledLiteral("route", "new")}},
 		},
 	}
-	ev := invocationEvidence{
-		ran: map[string]bool{}, chosen: map[string][]store.IncomingEdge{},
-		entered: []string{"old_handle"},
-	}
-	got := settledEdgesInto(wf, []*ir.Edge{wf.Edges[0]}, "collect", ev)
+	ev := invocationEvidence{ran: map[string]bool{}, chosen: map[string][]store.IncomingEdge{}}
+	got := settledEdgesInto(wf, settledSeedsForTemplate(wf.Edges[0], []*branchResult{
+		{branchID: "branch_dispatch_0", startNodeID: "old_handle"},
+	}), "collect", ev)
 
 	if len(got) != 1 || got[0].From != "old_handle" {
 		t.Fatalf("floor = %+v, want old_handle -> collect — the cursor says the branch is running `old_handle`, so that is the branch whose edges settled", got)
+	}
+}
+
+// A `fan_out_all` branch can bail BEFORE execBranch — a slot acquired on an
+// already-cancelled fan-out, a resume-turn error, a panic caught before the
+// start — and then reports no start node at all. Every branch there has its
+// OWN target, so a sibling that did start says nothing about it: reading the
+// invocation as a whole drops its entire subgraph from the floor.
+func TestSettledSeedsPerEdge_ABranchThatNeverStartedKeepsItsOwnSeed(t *testing.T) {
+	launched := []*ir.Edge{
+		{From: "router", To: "a"},
+		{From: "router", To: "b"},
+		{From: "router", To: "resumed"},
+	}
+	seeds := settledSeedsPerEdge("router", launched, []*branchResult{
+		{branchID: "branch_router_a", startNodeID: "a"},
+		// Bailed before execBranch: a result, but no start node.
+		{branchID: "branch_router_b"},
+		// A durable cursor that re-anchored the branch elsewhere.
+		{branchID: "branch_router_resumed", startNodeID: "elsewhere"},
+	})
+
+	want := map[string]bool{"a": true, "b": true, "elsewhere": true}
+	got := map[string]bool{}
+	for _, s := range seeds {
+		got[s] = true
+	}
+	for id := range want {
+		if !got[id] {
+			t.Fatalf("seeds = %v, missing %q — each launched edge answers for ITSELF: its branch's recorded start node, or its own target when that branch never started", seeds, id)
+		}
+	}
+	if got["resumed"] {
+		t.Fatalf("seeds = %v — a branch that DID report a start node must not also seed the declared target", seeds)
+	}
+}
+
+// The floor belongs to the fan-out visit that settled it. A later visit
+// arriving through a bypass edge is a different visit, and routing chose that
+// path: feeding it the dead branches' mappings is the #484 shape through a
+// door that skips the tracked/selected filter.
+func TestSettledFloor_AForwardArrivalDropsAnEarlierVisitsFloor(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "settled_bypass", Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"join":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}, AwaitMode: ir.AwaitBestEffort},
+			"gate":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gate"}},
+			"bypass": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "bypass"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "join", With: []*ir.DataMapping{settledRef("note", "entry", "note")}},
+			{From: "b", To: "join", With: []*ir.DataMapping{settledRef("note", "entry", "note")}},
+			{From: "join", To: "gate"},
+			{From: "gate", To: "bypass", Condition: "again"},
+			{From: "gate", To: "done", IsElse: true},
+			// A FORWARD edge back into the collector, bypassing the fan-out.
+			{From: "bypass", To: "join"},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+
+	var visits []map[string]any
+	pass := 0
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) { return settledEntryOutput(), nil })
+	exec.on("a", func(_ map[string]any) (map[string]any, error) { return nil, errors.New("fail A") })
+	exec.on("b", func(_ map[string]any) (map[string]any, error) { return nil, errors.New("fail B") })
+	exec.on("join", func(input map[string]any) (map[string]any, error) {
+		visits = append(visits, input)
+		return map[string]any{}, nil
+	})
+	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+		pass++
+		return map[string]any{"again": pass < 2}, nil
+	})
+	exec.on("bypass", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "run-559-bypass", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(visits) < 2 {
+		t.Fatalf("the join ran %d time(s), want 2 — the bypass never fired", len(visits))
+	}
+	if visits[0]["note"] != "n" {
+		t.Fatalf("first visit = %v — the fan-out's own visit must get its floor", visits[0])
+	}
+	if v, present := visits[1]["note"]; present {
+		t.Fatalf("second visit note = %v — this visit arrived through the bypass edge routing selected, so the earlier fan-out's floor is not its input (#484)", v)
 	}
 }
 
