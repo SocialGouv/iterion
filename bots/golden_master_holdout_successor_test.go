@@ -181,6 +181,24 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 		}
 	}
 
+	// 5b. AND THAT EXIT ENDS RED, which the paragraph must say because the gate
+	//     now refuses it. `holdout_seal_blocked` is a term of BOTH gates: a run
+	//     that drew a set into a directory the seal holds shut leaves it in the
+	//     tree, readable by the loop it is held out from, and the 0/0 that
+	//     comes out would otherwise pass `holdout_detected == holdout_total`.
+	//     A rite told only "say so and you are finished" would read that red as
+	//     its own defect and chase it for every remaining pass — or take the
+	//     one shortcut that does clear the term, deleting its own unsealable
+	//     draw, which buys the green by making the figure vacuous.
+	if !strings.Contains(clause, "holdout_seal_blocked") {
+		t.Errorf("the successor instruction no longer names holdout_seal_blocked, so "+
+			"the inherited state it describes as \"finished by saying so\" is one the "+
+			"gate refuses without the rite being told.\n"+
+			"  Why it is there: the term is in oracle_gate.converged AND in "+
+			"RUNNER_VERDICT_PY's `ok`. The pass ENDS RED in that state, on purpose, "+
+			"and only the net's owner can clear it.\n  Clause as parsed: %q", clause)
+	}
+
 	// 6. THE NOTICE THE SEALING RUN WILL EMIT. `holdout_sealed_uncommitted`
 	//    fires on exactly the run this instruction now asks for, and its text
 	//    says "a set a LATER run must score has one durable home — commit it

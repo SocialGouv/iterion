@@ -142,9 +142,22 @@ prompt campaign_user:
   judging already carries the opt-in, so a successor you commit is sealed and
   spent by this very run instead of waiting for the next. In both you leave it
   where it is: you do not write the opt-in, you do not delete an artefact you
-  did not draw, and you do not stack a second successor on the first. On this
-  point you are then finished by SAYING so — name which of the two you are in,
-  in `work_remaining` and in `REPORT.md`.
+  did not draw, and you do not stack a second successor on the first. Name
+  which of the two you are in, in `work_remaining` and in `REPORT.md`.
+
+  They do not END the same way. The second still converges: your own set did
+  reach the pile, so the held-out term measures something and only the
+  successor is out of reach — there, saying so IS finishing. The first cannot
+  and is not meant to: the gate refuses it as `holdout_seal_blocked`, because
+  the set you drew stayed in the tree, readable by the very loop it is held
+  out from, and the `holdout 0/0` that comes out of it would read green on the
+  one figure this whole bot exists to earn. Do not chase that red — nothing
+  you may do clears it, and the shortcut that would (deleting your own
+  unsealable draw, leaving nothing for the term to refuse) buys the green by
+  making the figure vacuous, which is the disease rather than the cure. Leave
+  the draw where it is, report the debt, and let the pass end red: the net's
+  owner clears it by arming `"seal_committed": true` on the gate that owns the
+  orphaned set.
 
   Neither set is yours to run. The first has left the tree; the second is
   readable only because it must WAIT, and applying it here — or hardening the
