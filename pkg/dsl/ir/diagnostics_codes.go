@@ -181,5 +181,5 @@ const (
 	DiagActionPostcond     DiagCode = "C263" // `postcondition:` on an action node (error — a shell exit code would overrule the vendor's own typed answer)
 	DiagActionBadParam     DiagCode = "C264" // a duplicate or unnamed `params:` key (error — one of the two could never be addressed)
 	DiagActionBadTimeout   DiagCode = "C265" // `timeout:` / `retry:` is not a value this build can read (error)
-	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
+	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:`/`timeout:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
 )

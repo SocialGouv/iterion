@@ -27,6 +27,14 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 			{"connection", t.Connection != ""},
 			{"params", len(t.Params) > 0},
 			{"retry", t.Retry != ""},
+			// `timeout:` too, and it is the one most likely to be written by
+			// mistake: the parser accepts it on ANY tool node, so `tool build:`
+			// with `command: go test ./...` and `timeout: 30s` compiled clean,
+			// said nothing, and ran with no bound at all. Only the action path
+			// reads CallTimeout. Before this recipe existed the property was
+			// refused as unknown, so the author was told; without this line
+			// they get a node that reads as configured and is not.
+			{"timeout", t.Timeout != ""},
 		} {
 			if orphan.set {
 				c.warnfAt(DiagActionOnlyProperty, t.Name, "",

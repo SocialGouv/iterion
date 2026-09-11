@@ -295,6 +295,55 @@ workflow main:
 	}
 }
 
+// TestOrphanTimeoutWarns is the same guard for the property most likely to be
+// written by mistake.
+//
+// `timeout:` is newly accepted on ANY tool node, and only the action path
+// reads it: `command: go test ./...` with `timeout: 30s` compiled clean, said
+// nothing, and ran with no bound whatsoever. Before the connector recipe
+// existed the property was refused as unknown, so the author was told; an
+// inert one reads as configured, which is strictly worse than an absent
+// control because it is documented.
+func TestOrphanTimeoutWarns(t *testing.T) {
+	for _, recipe := range []string{
+		"command: `go test ./...`",
+		"script: `echo hi`\n  language: sh",
+	} {
+		_, diags := compileSource(t, `
+tool t:
+  `+recipe+`
+  timeout: 30s
+workflow main:
+  entry: t
+  t -> done
+`)
+		if !hasCode(diags, DiagActionOnlyProperty) {
+			t.Errorf("%s: want %s, got %v", recipe, DiagActionOnlyProperty, codesOf(diags))
+		}
+		if errs := errorsOnly(diags); len(errs) > 0 {
+			t.Errorf("%s: an inert property must warn, not fail the compile: %v", recipe, codesOf(errs))
+		}
+	}
+}
+
+// The mirror: on a node that DOES declare an action, `timeout:` is read, so it
+// must draw nothing. A warning that fires on the configured case would teach
+// authors to ignore C266.
+func TestTimeoutOnAnActionNodeIsSilent(t *testing.T) {
+	_, diags := compileSource(t, `
+tool t:
+  action: forgejo.issue.comment
+  connection: forge_main
+  timeout: 30s
+workflow main:
+  entry: t
+  t -> done
+`)
+	if hasCode(diags, DiagActionOnlyProperty) {
+		t.Errorf("`timeout:` is read on an action node and must draw no C266: %v", codesOf(diags))
+	}
+}
+
 // TestActionParamRefsAreValidated closes the same hole `script:` had before
 // it — and the comment in validate_refs.go records that history, which is the
 // point: a third recipe was added without walking the passes that read the
