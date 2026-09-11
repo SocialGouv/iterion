@@ -672,6 +672,28 @@ func TestParameterValuesReachTheVendorIntact(t *testing.T) {
 			value: "",
 			want:  `""`,
 		},
+		{
+			// AUTHORED TEXT is not JSON. Reading it as JSON trimmed it, and
+			// the whitespace may be the point — a code fence, an indented
+			// snippet, a markdown block.
+			name: "a literal keeps its whitespace", declared: "string",
+			value: "  keep whitespace  ",
+			want:  `"  keep whitespace  "`,
+		},
+		{
+			// `null` is an ordinary word. Read as the JSON literal, it made
+			// the argument vanish and the request go out without it.
+			name: "a literal `null` is the word, not an absence", declared: "string",
+			value: "null",
+			want:  `"null"`,
+		},
+		{
+			// A literal that merely LOOKS like JSON is still what the author
+			// wrote.
+			name: "a literal that looks like JSON stays text", declared: "string",
+			value: `{"a":1}`,
+			want:  `"{\"a\":1}"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got string
@@ -715,7 +737,10 @@ func TestAValueOfTheWrongTypeIsRefused(t *testing.T) {
 		{"a fraction where an integer is declared", "integer", "1.5"},
 		{"a number where a boolean is declared", "boolean", "123"},
 		{"an array where a scalar is declared", "boolean", "[1,2]"},
-		{"an object where a string is declared", "string", `{"a":1}`},
+		// NOT listed: a literal that merely LOOKS like JSON under a string
+		// parameter. `body: '{"a":1}'` is an author writing that text, and
+		// sending it verbatim is right — see the literal cases in
+		// TestParameterValuesReachTheVendorIntact.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

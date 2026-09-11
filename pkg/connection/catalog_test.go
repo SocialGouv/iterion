@@ -1,7 +1,9 @@
 package connection_test
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
@@ -57,5 +59,54 @@ func TestTheCatalogServesTheEffectivePackage(t *testing.T) {
 	}
 	if op.Pagination == nil {
 		t.Error("the overlay's pagination was not applied — a walk would return one page")
+	}
+}
+
+// TestAMalformedTierStopsTheSearchInsteadOfFallingThrough.
+//
+// Falling through on every error turned validation into SELECTION: a project
+// pinning a package this build cannot read had it correctly refused, and then
+// the operator's home tier silently served a different package with different
+// operations. The run succeeded against the wrong connector, which is worse
+// than failing — and nothing in the run said which one had answered.
+func TestAMalformedTierStopsTheSearchInsteadOfFallingThrough(t *testing.T) {
+	project := t.TempDir()
+	home := t.TempDir()
+
+	// The project tier HOLDS `probe`, written for a schema this build refuses.
+	dir := filepath.Join(project, "probe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "schema_version: 99\nid: probe\nversion: 0.1.0\n"
+	if err := os.WriteFile(filepath.Join(dir, "connector.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cat := connection.NewLayeredCatalog(
+		connection.NewFSCatalog(project),
+		connection.NewFSCatalog(home),
+	)
+	_, err := cat.Package("probe")
+	if err == nil {
+		t.Fatal("a tier that holds the package and cannot load it must stop the search")
+	}
+	if !strings.Contains(err.Error(), "upgrade iterion") {
+		t.Errorf("error = %v, want the tier's own refusal rather than a not-found from the next one", err)
+	}
+
+	// The falsifier: a tier that simply does NOT hold the connector still
+	// falls through, or layering would be pointless.
+	second := t.TempDir()
+	pdir := filepath.Join(second, "other")
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sound := connection.NewLayeredCatalog(
+		connection.NewFSCatalog(t.TempDir()), // empty: holds nothing
+		connection.NewFSCatalog(filepath.Join("..", "..", "connectors")),
+	)
+	if _, err := sound.Package("forgejo"); err != nil {
+		t.Errorf("an ABSENT connector must fall through to the next tier: %v", err)
 	}
 }

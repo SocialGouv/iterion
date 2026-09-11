@@ -282,7 +282,7 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 			out[p.Key] = rendered
 			continue
 		}
-		v, err := coerceParam(decl, rendered)
+		v, err := coerceParam(decl, rendered, isWholeValueRef(p.Value, p.Refs))
 		if err != nil {
 			return nil, fmt.Errorf("param %q: %w", p.Key, err)
 		}
@@ -307,7 +307,27 @@ func isWholeValueRef(value string, refs []*ir.Ref) bool {
 // number bare, an object as JSON text — so parsing it back is what lets a
 // `.bot` write `index: "{{outputs.pick.issue}}"` and have an integer reach an
 // integer field. Interpolated text arrives as text.
-func coerceParam(decl spec.Param, rendered string) (any, error) {
+func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
+	// AUTHORED TEXT is not JSON, and reading it as JSON altered it.
+	//
+	// The renderer already knows which of the two this is — a whole-value
+	// reference carries a typed value, anything else is a string the author
+	// wrote — and that distinction was being discarded one line later. So a
+	// literal `"  keep whitespace  "` reached the vendor trimmed, and a
+	// literal `"null"` (a perfectly ordinary word to send) produced no request
+	// body at all.
+	//
+	// Only a typed reference is decoded. A literal is what it says, and a
+	// declared non-string type still converts it — `index: "42"` remains an
+	// integer — because that conversion reads the DECLARATION rather than
+	// guessing from the text's shape.
+	if !typed {
+		if decl.Type == "" || decl.Type == "string" {
+			return rendered, nil
+		}
+		return coerceDecoded(decl, rendered)
+	}
+
 	trimmed := strings.TrimSpace(rendered)
 	// Only the JSON null LITERAL means absent. An empty rendering used to
 	// mean it too, which silently dropped an author's deliberate `body: ""`

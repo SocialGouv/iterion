@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,17 @@ import (
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
+
+// errNoSuchConnector marks the ONE catalog failure a layered lookup may fall
+// through on: the tier simply does not hold this connector.
+//
+// Every other failure — a schema version this build cannot read, a malformed
+// overlay, an unreadable directory — means the tier HAS the package and could
+// not load it, and falling through there turns validation into selection: the
+// package an operator pinned is correctly refused, and a different one with
+// different operations is served in its place. A run then succeeds against the
+// wrong connector, which is worse than failing.
+var errNoSuchConnector = errors.New("connection: no such connector in this catalog")
 
 // Catalog resolves a connector id to its package.
 //
@@ -69,8 +81,16 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, error) {
 	// an operator checks is what a run gets.
 	pkg, err := overlay.LoadPackage(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no connector %q in %s%s", connectorID, c.root, c.suggest(connectorID))
+		// errors.Is, not os.IsNotExist: the loader wraps with %w and the
+		// legacy helper does not unwrap, so the absent case was never
+		// recognised — every missing connector reported as a load failure,
+		// and (once layering arrived) stopped the search instead of falling
+		// through to the tier that has it.
+		if errors.Is(err, os.ErrNotExist) {
+			// ABSENT — the only case a layered lookup may fall through on, so
+			// it carries the sentinel. Anything else below means the tier has
+			// the package and cannot load it.
+			return nil, fmt.Errorf("no connector %q in %s%s: %w", connectorID, c.root, c.suggest(connectorID), errNoSuchConnector)
 		}
 		return nil, fmt.Errorf("connector %q: %w", connectorID, err)
 	}
@@ -163,7 +183,7 @@ func (c *MemoryCatalog) Package(connectorID string) (*spec.Package, error) {
 	defer c.mu.RUnlock()
 	p, ok := c.pkg[connectorID]
 	if !ok {
-		return nil, fmt.Errorf("no connector %q in this catalog", connectorID)
+		return nil, fmt.Errorf("no connector %q in this catalog: %w", connectorID, errNoSuchConnector)
 	}
 	return p, nil
 }

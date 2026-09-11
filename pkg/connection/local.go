@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -71,11 +72,22 @@ func (c *layeredCatalog) Package(connectorID string) (*spec.Package, error) {
 		if err == nil {
 			return pkg, nil
 		}
+		// A tier that HAS the package and could not load it stops the search.
+		//
+		// Falling through on every error turned validation into selection: a
+		// project pinning a package this build cannot read — a newer schema
+		// version, a malformed overlay — had it correctly refused, and then the
+		// operator's home tier silently served a DIFFERENT package with
+		// different operations and a different policy. The run succeeded
+		// against the wrong connector, which is worse than failing.
+		if !errors.Is(err, errNoSuchConnector) {
+			return nil, err
+		}
 		reasons = append(reasons, err.Error())
 	}
-	// Every tier's reason, not just the last: "not found" from one and "this
-	// package is malformed" from another are different problems, and reporting
-	// only the last sends the reader to the wrong directory.
+	// Every tier's reason, not just the last: two tiers can be absent for
+	// different reasons, and reporting only the last sends the reader to the
+	// wrong directory.
 	return nil, fmt.Errorf("%s", strings.Join(reasons, "; "))
 }
 
