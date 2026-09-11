@@ -3,6 +3,8 @@ package ir
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
 
 // The connector-action recipe (ADR-098). Every refusal below protects ONE
@@ -497,5 +499,45 @@ workflow main:
 	}
 	if !strings.Contains(hint, "attempts") {
 		t.Errorf("the remedy must say what `retry:` does take: %s", hint)
+	}
+}
+
+// TestTheIDRuleMatchesTheConnectorSpec.
+//
+// `validActionID` decides which ids a `.bot` may NAME;
+// `spec.AddressableOperationID` decides which ids a package may SHIP. They are
+// necessarily two copies — pkg/dsl/ir is the DSL compiler and
+// pkg/connector/spec is a leaf the generator reads, so neither may import the
+// other — and a divergence between them is invisible in both packages' own
+// tests while being the worst outcome there is: an operation generated,
+// validated and shipped that no workflow can ever call.
+//
+// The import goes THIS way because only the test needs it; the compiler
+// itself stays free of the connector layer.
+func TestTheIDRuleMatchesTheConnectorSpec(t *testing.T) {
+	for _, id := range []string{
+		"forgejo.issue.comment",
+		"forgejo.pull_request.create_review_comment",
+		"a.b.c",
+		"forgejo.activitypub.person_get_1",
+		// Everything below is a shape one side or the other has actually
+		// produced: an empty resource from a punctuation tag, a leading digit
+		// from a numeric one, a two-segment id, an uppercase vendor tag.
+		"forgejo..comment",
+		"forgejo.1.comment",
+		"forgejo.issue",
+		"forgejo.Issue.comment",
+		"forgejo.issue.",
+		".issue.comment",
+		"forgejo.issue.comment ",
+		"forgejo.issue.com-ment",
+		"forgejo._issue.comment",
+		"",
+	} {
+		want := validActionID(id)
+		got := spec.AddressableOperationID(id)
+		if want != got {
+			t.Errorf("%q: the compiler says %v and the connector spec says %v — an id only one of them accepts is an operation nobody can call", id, want, got)
+		}
 	}
 }

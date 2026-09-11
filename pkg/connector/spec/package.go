@@ -312,6 +312,20 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	if !strings.HasPrefix(op.ID, connector+".") {
 		return fmt.Errorf("connector %q: operation id %q must start with %q", connector, op.ID, connector+".")
 	}
+	// ADDRESSABLE, which is what this function's own contract claims and what
+	// the prefix check alone does not give.
+	//
+	// An id's segments are derived from a VENDOR's description — the resource
+	// from its first tag — and `snake` maps every separator to `_`, so a tag of
+	// `"---"` yields an empty resource and `probe..list_things`, while a tag of
+	// `"1"` yields `probe.1.list_things`. Both generate clean, validate clean
+	// and are refused by the compiler (C261) at the only moment they could ever
+	// be used, which is the worst of the three outcomes: work an operator paid
+	// for that no workflow can call, with nothing saying so. An overlay pinning
+	// an id by hand reaches here too.
+	if !AddressableOperationID(op.ID) {
+		return fmt.Errorf("operation %q: not addressable from a workflow — an id reads `connector.resource.verb` and every segment must start with a lowercase letter and hold only [a-z0-9_]", op.ID)
+	}
 	if op.HTTP.Method == "" || op.HTTP.Path == "" {
 		return fmt.Errorf("operation %q: missing http method or path", op.ID)
 	}
@@ -582,4 +596,45 @@ func declaresParam(op Operation, name string) bool {
 		}
 	}
 	return false
+}
+
+// AddressableOperationID reports whether a `.bot` could name this operation.
+//
+// The rule is the COMPILER's, mirrored here because the two ends of the
+// contract live in packages that must not depend on each other: `pkg/dsl/ir`
+// is the DSL compiler and `pkg/connector/spec` is a leaf the generator reads,
+// so neither may import the other. `ir.TestTheIDRuleMatchesTheConnectorSpec`
+// is what keeps the two copies from drifting — an id this accepts and the
+// compiler refuses is an operation nobody can ever call.
+func AddressableOperationID(id string) bool {
+	parts := strings.Split(id, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	for _, p := range parts {
+		if !ValidIDSegment(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidIDSegment reports whether s can be ONE segment of an operation id: a
+// lowercase letter first, then letters, digits or underscores.
+//
+// Exported for the GENERATOR, which derives a segment from a vendor's tag and
+// must fall back rather than emit one no workflow can address.
+func ValidIDSegment(s string) bool {
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r == '_' || (r >= '0' && r <= '9'):
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return s != ""
 }

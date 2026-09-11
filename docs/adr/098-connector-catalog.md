@@ -1442,6 +1442,34 @@ a caller to read. The three fixtures that modelled an endless collection with a
 constant cursor were modelling an endless *collection* through a degenerate
 *protocol*; they advance it now, which is what a real vendor does.
 
+### And the shape `CheckConnectorID` refuses, on the DERIVED half
+
+`--id` is checked by the catalog's own rule precisely so that *"what can be
+written is exactly what can later be resolved"* — a green generation for
+something no workflow can call being the worst of the three outcomes. The
+`resource` segment, which is the vendor's first TAG through `snake`, was not.
+
+`snake` collapses every separator to `_`, so a tag of `"---"` or `"[]"` snakes
+to nothing and produced `probe..list_things`; a numeric tag — an API version
+used as a grouping — produced `probe.1.list_things`, whose segment starts with
+a digit. Both generated clean, validated clean, and were refused by C261 at the
+only moment they could ever be used.
+
+Closed at both ends. `Operation.ValidateStandalone` now enforces the
+addressability its own contract claims (it said *"internally coherent and
+addressable"* and checked only the connector prefix), so an overlay pinning an
+id by hand is caught too. And `deriveName` falls back to the no-tag default
+rather than emitting an id nobody can name — dropping the operation over a
+grouping label would be the worse answer, and `uniqueID` already disambiguates
+whatever lands in `api`.
+
+The rule is necessarily TWO copies: `pkg/dsl/ir` is the DSL compiler and
+`pkg/connector/spec` is a leaf the generator reads, so neither may import the
+other. `ir.TestTheIDRuleMatchesTheConnectorSpec` is what keeps them from
+drifting — the divergence is invisible in either package's own tests and is
+exactly the outcome this section is about. All 503 operations of the shipped
+Forgejo package satisfy the rule, so nothing already committed changes.
+
 
 ## The ambiguity class, counted across the rounds
 

@@ -28,7 +28,20 @@ import (
 func deriveName(tags []string, sourceID, method, path string) (resource, verb string) {
 	resource = "api"
 	if len(tags) > 0 && strings.TrimSpace(tags[0]) != "" {
-		resource = snake(tags[0])
+		// Only when the tag survives `snake` as something a workflow can
+		// ADDRESS. Every separator collapses to `_`, so a tag of `"---"` or
+		// `"[]"` snakes to nothing and yielded `probe..list_things`, and a
+		// numeric tag (`"1"`, an API version used as a group) yielded
+		// `probe.1.list_things` — a leading digit, which an id segment may not
+		// have. Both generated clean, validated clean, and were refused by the
+		// compiler at the only moment they could ever be used.
+		//
+		// Falling back to the no-tag default keeps the operation CALLABLE,
+		// which is the point: dropping it would lose work over a grouping
+		// label, and `uniqueID` already disambiguates whatever lands in `api`.
+		if snaked := snake(tags[0]); spec.ValidIDSegment(snaked) {
+			resource = snaked
+		}
 	}
 	if sourceID != "" && !isPathEncodedID(sourceID, method) {
 		verb = snake(stripResourcePrefix(sourceID, resource))

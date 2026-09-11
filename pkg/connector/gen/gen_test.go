@@ -1039,3 +1039,49 @@ func TestASwaggerBodyWithNoConsumesIsStillJSON(t *testing.T) {
 		t.Errorf("request body = %q, want json — the format's default with no consumes declared", op.HTTP.RequestBody)
 	}
 }
+
+// TestATagNoWorkflowCouldAddressFallsBackInsteadOfShipping.
+//
+// The resource segment of every operation id is the vendor's first TAG run
+// through `snake`, which collapses every separator to `_`. A tag of `"---"`
+// or `"[]"` therefore snakes to NOTHING — `probe..list_things` — and a numeric
+// tag, an API version used as a group, keeps its leading digit —
+// `probe.1.list_things`. An id segment may be neither.
+//
+// Both generated clean, validated clean, and were refused by the compiler
+// (C261) at the only moment they could ever be used: work an operator paid a
+// generation for that no workflow can call, with nothing anywhere saying so.
+// That is the outcome `CheckConnectorID` already refuses for `--id`; the
+// DERIVED half had the same hole.
+//
+// The fallback is the no-tag default rather than a drop: losing an operation
+// over a grouping label would be the worse answer.
+func TestATagNoWorkflowCouldAddressFallsBackInsteadOfShipping(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tag  string
+		want string
+	}{
+		{"a tag that snakes to nothing", "---", "probe.api.list_things"},
+		{"a tag that is punctuation", "[]", "probe.api.list_things"},
+		{"a numeric tag, which cannot start a segment", "1", "probe.api.list_things"},
+		// The falsifier: an ordinary tag still names the resource, or the
+		// fallback would have eaten the grouping the ids are built from.
+		{"an ordinary tag", "Issue", "probe.issue.list_things"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := generate(t, `{"openapi":"3.0.0","info":{"title":"probe","version":"1"},`+
+				`"paths":{"/things":{"get":{"operationId":"listThings","tags":["`+tc.tag+`"],`+
+				`"responses":{"200":{"description":"ok"}}}}}}`)
+			got := opIDs(pkg)
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("ids = %v, want [%s]", got, tc.want)
+			}
+			// And the contract the id has to satisfy, asserted directly: the
+			// fallback exists to make this true, not to produce a nicer name.
+			if !spec.AddressableOperationID(got[0]) {
+				t.Errorf("%q is not addressable from a workflow", got[0])
+			}
+		})
+	}
+}
