@@ -75,10 +75,14 @@ The agent writes the mutants too, so the harness constrains them mechanically:
    SUCCESSOR set committed under `mutants/holdout/`, drawn only once its own set had been sealed
    out of the tree — the seal declines directory-wide as soon as anything there is tracked. That
    leaves the next gate a real set to score in place of a vacuous `0/0`, **once that gate opts in**
-   (`"seal_committed": true` in the config it judges, or `GM_SEAL_COMMITTED=1` for a hand-run one):
-   until someone does, the set waits, and a `mutants/holdout/` left tracked blocks the seal for
-   every later run against that net. The next cycle must draw a fresh set; fingerprints, not names,
-   prevent laundering a published mutant through a rename.
+   (`"seal_committed": true` in the config it judges, or `GM_SEAL_COMMITTED=1` for a hand-run one).
+   Until someone does, that tracked `mutants/holdout/` blocks the seal for every later run against
+   the net — so a run that draws a set into it is REFUSED (`holdout_seal_blocked`, a term of both
+   gates) rather than reporting the `0/0` the successor exists to prevent. An unclaimed successor
+   is a debt of the net's owner, and arming the opt-in on the gate that owns it is the owner's act:
+   no run of the bot can take it, since writing the flag spends the set at the wrong gate. The next
+   cycle must draw a fresh set; fingerprints, not names, prevent laundering a published mutant
+   through a rename.
 5. **A width and replayability floor.** `min_corpus` applies to distinct reference hashes, not raw
    entry count, and the gate refuses a runner or harness that is absent or gitignored.
 

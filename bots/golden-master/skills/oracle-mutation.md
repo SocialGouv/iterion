@@ -281,6 +281,10 @@ reason; treat that notice as a stop, not a remark.
   in place, unsealed and readable, and the gate scores only what the sealed pile already held —
   nothing at all on a fresh net, i.e. `holdout 0/0`. So never commit your own set in stride, and
   commit a successor set for a later gate only after a run has sealed yours out of the tree;
+- a `0/0` born that way is **refused**, not merely reported: when the run drew a set into the
+  blocked directory the gate raises `holdout_seal_blocked`, because the draw is still in the tree
+  where the hardening loop can read it and `detected == total` would pass on emptiness. Only the
+  net's owner clears it, by arming the opt-in on the gate that owns the set already tracked there;
 - `GM_MODE=selfcheck` runs stability, the negative control and the visible mutants, and
   **withholds the held-out score**;
 - only the final gate, which the workflow triggers and you do not, ever scores it.
