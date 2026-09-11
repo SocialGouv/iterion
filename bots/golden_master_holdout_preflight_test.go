@@ -1,7 +1,9 @@
 package bots
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -97,4 +99,124 @@ print("%d %d %d %d" % (len(reuse), min(reuse), min(boot), min(seal)))
 			"unsealed, mutant_fingerprint tolerates missing files instead of raising, so "+
 			"detection degrades SILENTLY and a reused set reports clean", seal, reuse)
 	}
+}
+
+// A REUSED held-out set must refuse, and the refused report must not read green
+// on the vacuous term.
+//
+// Bailing in preflight leaves the held-out figures at their 0/0 defaults, and
+// the gate converges in part on `holdout_detected == holdout_total` — which
+// 0 == 0 satisfies. The bail therefore stamps them DELIBERATELY unequal, the
+// idiom the harness already uses for selfcheck and for the lost-baseline arm.
+//
+// That stamping is what this exercises, end to end, on the real harness: the
+// sibling tests cover the fingerprint RULE (selftest) and the PLACEMENT (the
+// AST guard), and neither would notice the two lines going away.
+func TestGoldenMasterReusedHoldoutRefusesWithoutReadingGreen(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	harness, err := filepath.Abs("golden-master/oracle-harness.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	gm := filepath.Join(ws, ".golden-master")
+
+	// One mutant body, written into BOTH the held-out set and the audit pile:
+	// identical content is identical fingerprint, which is the whole rule.
+	const body = "#!/bin/sh\ntrue\n"
+	for _, dir := range []string{
+		filepath.Join(gm, "mutants", "holdout", "z1-reused"),
+		filepath.Join(gm, "mutants", "audit", "01a0-previous-cycle", "z1-reused"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "apply.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// load_mutants keeps only directories carrying a meta.json, so without
+		// one the held-out set reads as ABSENT and the reuse check has nothing
+		// to compare — a different refusal entirely.
+		meta := `{"surface": "write", "archetype": "create_lost", "targets": ["001"]}`
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Visible mutants covering the archetypes the corpus's surfaces require:
+	// that bail runs before this one, and a hole there would mask what is
+	// under test.
+	for name, archetype := range map[string]string{
+		"v1-roundtrip": "roundtrip_corruption",
+		"v2-create":    "create_lost",
+	} {
+		d := filepath.Join(gm, "mutants", name)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "apply.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		meta := `{"surface": "write", "archetype": "` + archetype + `", "targets": ["001"]}`
+		if err := os.WriteFile(filepath.Join(d, "meta.json"), []byte(meta), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(gm, "canon"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"config.json":    `{"up": "true", "base_url": "http://127.0.0.1:1", "standard": 3, "personas": [{"name": "alice", "login": {"fields": {"user": "alice", "pass": "x"}}}, {"name": "alice-upper", "case_variant_of": "alice", "login": {"fields": {"user": "ALICE", "pass": "x"}}}]}`,
+		"corpus.json":    `{"entries": [{"id": "001", "surface": "write", "method": "POST", "path": "/items", "probes": ["write_create"]}, {"id": "002", "surface": "write", "method": "POST", "path": "/items/edit", "steps": [{"path": "/items/edit", "fields": {"name": ""}}, {"path": "/items/edit", "fields": {"name": "ok"}}], "probes": ["error_then_corrected"]}, {"id": "003", "surface": "read", "path": "/Items", "probes": ["case_pair"]}, {"id": "004", "surface": "read", "path": "/items", "probes": ["case_pair"]}, {"id": "005", "surface": "read", "path": "/items?sort=name", "probes": ["text_sort"]}, {"id": "006", "surface": "read", "path": "/profile", "persona": "alice-upper"}]}`,
+		"standard-mark":  "3\n",
+		"canon/rules.py": "def canonicalize(entry, status, headers, body):\n    return status, headers, body\n",
+	} {
+		if err := os.WriteFile(filepath.Join(gm, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command("python3", harness)
+	cmd.Dir = ws
+	cmd.Env = append(os.Environ(), "GM_WORKSPACE="+ws)
+	out, runErr := cmd.CombinedOutput()
+
+	var report struct {
+		HoldoutReused   []string `json:"holdout_reused"`
+		HoldoutDetected int      `json:"holdout_detected"`
+		HoldoutTotal    int      `json:"holdout_total"`
+	}
+	line := lastHarnessReport(string(out))
+	if line == "" {
+		t.Fatalf("the harness printed no JSON report (err=%v):\n%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(line), &report); err != nil {
+		t.Fatalf("report is not JSON (err=%v): %v\n%s", runErr, err, line)
+	}
+
+	if len(report.HoldoutReused) == 0 {
+		t.Fatalf("a held-out set whose fingerprint is already published under mutants/audit/ "+
+			"was not reported as reused — a spent set is evidence, not a test:\n%s", line)
+	}
+	// THE assertion the commit message claimed and nothing pinned.
+	if report.HoldoutDetected == report.HoldoutTotal {
+		t.Errorf("the refused report carries holdout_detected == holdout_total (%d == %d), "+
+			"which the gate converges on: a refusal that reads green on one of the gate's own "+
+			"terms is how a bail sails through for a reader that checks only that pair",
+			report.HoldoutDetected, report.HoldoutTotal)
+	}
+}
+
+// lastHarnessReport returns the final line that parses as a JSON object — the report
+// the harness prints last, past any log noise.
+func lastHarnessReport(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "{") && json.Valid([]byte(l)) {
+			return l
+		}
+	}
+	return ""
 }
