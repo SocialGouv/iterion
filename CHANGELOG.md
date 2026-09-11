@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.138.1](https://github.com/SocialGouv/iterion/compare/v3.138.0...v3.138.1) (2026-09-11)
+
+### Bug Fixes
+
+* **dsl:** an escaped quote in post_create reaches the shell as a literal quote ([#1086](https://github.com/SocialGouv/iterion/issues/1086)) ([9cb9ea2](https://github.com/SocialGouv/iterion/commit/9cb9ea26dae24091c510dd1b7c8c86312943fa0a))
+
+    <details><summary>why</summary>
+
+    A `"..."` DSL string is lexed in legacy escape mode unless the file opts into `## strict-escape: on` — and no bot in the catalogue does. Legacy mode keeps every \X VERBATIM, so a backslash-escaped quote survives into the shell, which reads \" as a literal quote CHARACTER. The command then runs with quotes inside its arguments instead of around them.
+
+    </details>
+
 ## [3.138.0](https://github.com/SocialGouv/iterion/compare/v3.137.0...v3.138.0) (2026-09-11)
 
 ### Features
