@@ -576,6 +576,55 @@ func TestGalleryShapesRenderEveryDial(t *testing.T) {
 	}
 }
 
+// TestGalleryShapesResolveTheWorktreeDialOff: with the dial OFF — the
+// default every shape but docs-writer scaffolds with — each shape's
+// RESOLVED worktree value is the one its own text promises. The value
+// read is the IR's, after ir.defaultWorktreeMode, which is the whole
+// point: an unset `worktree:` resolves to "auto", so a shape that means
+// "in place" and writes nothing ships the opposite of what it says. The
+// table names every shape, so the three that declare `worktree: auto`
+// themselves are pinned against a partial refactor too.
+func TestGalleryShapesResolveTheWorktreeDialOff(t *testing.T) {
+	// The shapes whose deliverable is a commit isolate; the ones whose
+	// deliverable is what the run leaves in the workspace (a digest
+	// file, a reviewed diff, an answer) run in place.
+	want := map[string]string{
+		"campaign-loop":       "auto",
+		"plan-gate-implement": "auto",
+		"verified-action":     "auto",
+		"review-fanout":       "none",
+		"scheduled-digest":    "none",
+		"per-ticket-subbots":  "none",
+		"async-questions":     "none",
+		"multi-file":          "none",
+	}
+	seen := map[string]bool{}
+	for _, tpl := range Templates() {
+		if tpl.Spec.Shape == "" {
+			continue
+		}
+		t.Run(tpl.ID, func(t *testing.T) {
+			spec := tpl.Spec
+			spec.Slug = "off-" + tpl.ID
+			spec.Worktree = false
+			_, w, _ := scaffoldAndCompile(t, spec)
+			exp, ok := want[spec.Shape]
+			if !ok {
+				t.Fatalf("shape %q has no expected dial-OFF worktree value — add it to the table", spec.Shape)
+			}
+			seen[spec.Shape] = true
+			if w.Worktree != exp {
+				t.Errorf("worktree = %q with the dial off, want %q", w.Worktree, exp)
+			}
+		})
+	}
+	for shape := range want {
+		if !seen[shape] {
+			t.Errorf("shape %q is in the table but no template scaffolds it", shape)
+		}
+	}
+}
+
 // TestSpecValidate_RejectsUnknownShape: the shape is checked by name, with
 // the list, before anything renders.
 func TestSpecValidate_RejectsUnknownShape(t *testing.T) {

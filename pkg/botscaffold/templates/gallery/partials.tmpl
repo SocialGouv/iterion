@@ -25,11 +25,22 @@ called right after the `agent x:` header. */ -%>
   ## Tool-permission gate (docs/permissions.md).
   permission: <%.Permission%><%end%><%end%>
 <%- /* worktree_dial: for shapes that do not require a worktree of their
-own; shapes that commit declare `worktree: auto` themselves. */ -%>
+own; shapes that commit declare `worktree: auto` themselves. BOTH
+branches write the property: an unset `worktree:` resolves to `auto`
+(ir.defaultWorktreeMode), so an off branch that emits nothing is not an
+opt-out — it is the same isolation, silently. review-fanout writes the
+same ternary inline. */ -%>
 <%define "worktree_dial"%><%if .Worktree%>
   ## Isolate the run in a git worktree; commits land on a persistent
   ## branch and fast-forward your checked-out branch on success.
-  worktree: auto<%end%><%end%>
+  worktree: auto<%else%>
+  ## In place: this shape's deliverable is what it leaves in the
+  ## workspace, not a commit. An isolated run's worktree is removed when
+  ## the run ends, and whatever it did not commit is auto-banked onto the
+  ## storage branch instead — never merged into your checkout — so the
+  ## artifact would not be where the shape says it is. `worktree:` unset
+  ## means `auto`, so the opt-out has to be written.
+  worktree: none<%end%><%end%>
 <%- /* budget_lines: inside a `budget:` block a shape already opens. */ -%>
 <%define "budget_lines"%><%if .MaxCostUSD%>
     max_cost_usd: <%.MaxCostUSD%><%end%><%if .MaxDuration%>
