@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.140.0](https://github.com/SocialGouv/iterion/compare/v3.139.0...v3.140.0) (2026-09-11)
+
+### Features
+
+* **botscaffold:** a gallery of eight canonical shapes behind `bots create --template` and the studio builder, each held to its form (lot 1 of [#1010](https://github.com/SocialGouv/iterion/issues/1010)) ([#1114](https://github.com/SocialGouv/iterion/issues/1114)) ([bb6b02b](https://github.com/SocialGouv/iterion/commit/bb6b02b22d8e8d2951f01236bd7b4c118aed6889)), closes [#1110](https://github.com/SocialGouv/iterion/issues/1110), references [#1110](https://github.com/SocialGouv/iterion/issues/1110) [#1110](https://github.com/SocialGouv/iterion/issues/1110)
+
+    <details><summary>why</summary>
+
+    The five templates of the bot-creation gallery all rendered the same graph — one campaign agent, `campaign -> done`, from the one main.bot.tmpl — and differed by prompt and metadata only; the forms the catalog bots are made of (a campaign under a deterministic gate with a bounded loop and a typed fail, a reviewer fan-out with a compute convergence, a plan under a human gate, a verified action, …) existed nowhere at a size an author could read whole, and a Verified Action had no .bot instance in…
+
+    </details>
+
 ## [3.139.0](https://github.com/SocialGouv/iterion/compare/v3.138.2...v3.139.0) (2026-09-11)
 
 ### Features
