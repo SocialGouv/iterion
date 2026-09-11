@@ -174,13 +174,15 @@ prompt campaign_user:
   owner clears it by arming `"seal_committed": true` on the gate that owns the
   orphaned set.
 
-  Neither set is yours to run. The first has left the tree; the second is
-  readable only because it must WAIT, and applying it here — or hardening the
-  comparator against what it catches — spends the next gate's whole
-  counter-test while leaving it green. For the same reason, a later pass of this
-  same run does not write a third: your set for this cycle is already in the
-  pile, and by the rule above nothing more can be sealed while the successor
-  sits there — what you add would stay readable and prove nothing.
+  Neither set is yours to run. The first has left the tree — and where it has
+  not, on a blocked directory, that is the damage rather than a permission:
+  readable is exactly what a held-out set must never be to you. The second is
+  readable only because it must WAIT, and applying either here — or hardening
+  the comparator against what it catches — spends a gate's whole counter-test
+  while leaving it green. For the same reason, a later pass of this same run
+  does not write a third: your set for this cycle is drawn, and by the rule
+  above nothing more can be sealed while a committed set sits there — what you
+  add would stay readable and prove nothing.
 
   {{input.fail_log}}
 
