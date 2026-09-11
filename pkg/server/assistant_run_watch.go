@@ -1049,6 +1049,15 @@ func mergeAssistantWatchPolicy(existing runwatch.Watch, requested createAssistan
 }
 
 func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Request) {
+	// A watch arms a durable link that later force-resumes the assistant run
+	// and spends LLM budget, or transfers an existing watch away from
+	// another assistant. That is a state change, so it takes the same gate
+	// as its sibling handleCreateAssistantMission — decodeJSONCapped does
+	// not check Content-Type, so without it a page on any origin could
+	// arm one with a preflight-free POST at the loopback studio.
+	if !s.requireSafeOrigin(w, r) || s.rejectCrossStoreWrite(w, r) {
+		return
+	}
 	if s.assistantWatches == nil {
 		s.httpErrorFor(w, r, http.StatusNotImplemented, "assistant run watch is unavailable")
 		return
@@ -1341,6 +1350,11 @@ func (s *Server) listCoveringAssistantWatches(ctx context.Context, run *store.Ru
 }
 
 func (s *Server) handleStopAssistantWatch(w http.ResponseWriter, r *http.Request) {
+	// Disarming one is a state change too — the mirror of the create gate
+	// above, and of handleStopAssistantMission.
+	if !s.requireSafeOrigin(w, r) || s.rejectCrossStoreWrite(w, r) {
+		return
+	}
 	if s.assistantWatches == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
 		return
