@@ -202,6 +202,68 @@ func TestPathSegmentsAreEscapedIndividually(t *testing.T) {
 	}
 }
 
+// TestPathEscapingSurvivesTheBaseURLAndTheValues.
+//
+// The escaping above is a PAIR — URL.Path and URL.RawPath — and Go keeps the
+// raw half only while it is a valid encoding of the decoded one; otherwise it
+// DISCARDS it and re-escapes Path with encodePath, which does not escape `/`.
+// That discard is silent, so both ways of breaking the pair looked like
+// nothing at all:
+//
+//   - the raw prefix was built from the base's DECODED path, so any instance
+//     URL carrying a byte encodePath escapes (a non-ASCII path, a space, a %)
+//     invalidated RawPath — and the whole per-parameter escaping with it;
+//   - substitution was N successive ReplaceAll over the GROWING result, so a
+//     value containing another parameter's placeholder was substituted a
+//     second time in the decoded half and not in the escaped one (PathEscape
+//     turns `{` into `%7B`), which desynchronised the pair for a value that
+//     merely looked like syntax — and made the outcome depend on a map's
+//     iteration order.
+//
+// Both send an argument as path STRUCTURE, on the same server, with nothing
+// in the run to notice. The oracle is the request the server received.
+func TestPathEscapingSurvivesTheBaseURLAndTheValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, basePath, repo, want string
+	}{
+		{
+			name:     "a non-ASCII instance path",
+			basePath: "/dépôt",
+			repo:     "a/b",
+			want:     "/d%C3%A9p%C3%B4t/api/v1/repos/acme/a%2Fb/issues/1",
+		},
+		{
+			name:     "a value that looks like another placeholder",
+			basePath: "",
+			repo:     "{index}",
+			want:     "/api/v1/repos/acme/%7Bindex%7D/issues/1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.EscapedPath()
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			e := &exec.Executor{Client: srv.Client()}
+			pkg := probe(srv.URL + tc.basePath)
+			res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+				map[string]any{"owner": "acme", "repo": tc.repo, "index": 1}, creds())
+			if err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if !res.OK() {
+				t.Fatalf("a value iterion can escape must not be refused: %v", res.Err)
+			}
+			if got != tc.want {
+				t.Errorf("the server received %q, want %q — the argument reached it as path structure", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestQuerySerializationReachesTheWire pins the difference between `a,b` and
 // two repeated pairs — only one of which the vendor parses.
 func TestQuerySerializationReachesTheWire(t *testing.T) {

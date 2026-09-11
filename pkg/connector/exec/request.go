@@ -215,18 +215,69 @@ func (e *Executor) resolveURL(pkg *spec.Package, op spec.Operation, byKey map[st
 		return nil, &Error{Class: spec.ErrBadRequest, Message: fmt.Sprintf("instance URL %q does not parse: %v", base, err)}
 	}
 
-	// Both forms are built: the DECODED path Go reasons about, and the
-	// ESCAPED one that actually goes on the wire. Setting only the decoded
-	// one lets net/url re-escape a value that is already escaped (`a/b`
-	// became `a%252Fb`); setting only the escaped one leaves URL.Path
-	// disagreeing with it. A value containing `/` must stay ONE segment, or
-	// an issue named "a/b" addresses a different resource than the one the
-	// workflow named.
-	decoded, escaped := op.HTTP.Path, op.HTTP.Path
-	for _, p := range byKey {
-		if p.In != spec.InPath {
-			continue
+	decoded, escaped, err := substitutePath(op, byKey)
+	if err != nil {
+		return nil, err
+	}
+	prefix := strings.TrimRight(u.Path, "/") + pkg.Connector.BaseURL.PathPrefix
+	// The RawPath half is built from the base's ESCAPED path. Reusing the
+	// decoded one (url.Parse returns u.Path already decoded) makes RawPath
+	// stop being a valid encoding of Path the moment a connection's base URL
+	// carries a byte encodePath escapes — a non-ASCII instance path
+	// (`https://host/dépôt/api`), a space, a `%`. Go then silently DISCARDS
+	// RawPath and re-escapes Path, where `/` is NOT escaped: the
+	// per-parameter escaping below would be inert and a value containing `/`
+	// would split into segments, which is the containment this pair exists
+	// for.
+	rawPrefix := strings.TrimRight(u.EscapedPath(), "/") + pkg.Connector.BaseURL.PathPrefix
+	u.Path = prefix + decoded
+	u.RawPath = rawPrefix + escaped
+	// And the invariant is asserted rather than assumed, because its failure
+	// is SILENT: Go drops an invalid RawPath with no error anywhere. Only
+	// when the escaping is load-bearing (a value that escapes to something
+	// else) — otherwise dropping RawPath changes nothing and a package whose
+	// own path template carries an unescaped byte keeps working.
+	if escaped != decoded && u.EscapedPath() != u.RawPath {
+		return nil, &Error{
+			Class: spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: iterion cannot build a URL for this instance whose escaping survives — "+
+				"the base URL's path (%q) and the operation's template would send an argument as path structure", op.ID, base),
 		}
+	}
+	return u, nil
+}
+
+// substitutePath fills the operation's path template in ONE pass over it,
+// returning the decoded form Go reasons about and the escaped one that goes
+// on the wire.
+//
+// Both are needed: setting only the decoded one lets net/url re-escape a
+// value that is already escaped (`a/b` became `a%252Fb`), and setting only
+// the escaped one leaves URL.Path disagreeing with it. A value containing `/`
+// must stay ONE segment, or an issue named "a/b" addresses a different
+// resource than the one the workflow named.
+//
+// One pass, because N successive strings.ReplaceAll ran over the GROWING
+// result and rescanned what they had just written: a value carrying another
+// parameter's placeholder was substituted a second time in the decoded half
+// and not in the escaped one (url.PathEscape turns `{` into `%7B`), so the
+// two desynchronised — and a desynchronised pair is exactly what Go discards.
+// It also made the outcome depend on the map's iteration order, i.e. on the
+// run. Scanning the TEMPLATE means no substituted value is ever read as
+// syntax.
+func substitutePath(op spec.Operation, byKey map[string]spec.Param) (string, string, error) {
+	// Sorted, so which value wins a duplicated wire name and which invalid
+	// argument is reported first are properties of the package, not of a map.
+	keys := make([]string, 0, len(byKey))
+	for k, p := range byKey {
+		if p.In == spec.InPath {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	vals := make(map[string]string, len(keys))
+	for _, k := range keys {
+		p := byKey[k]
 		// Serialized per the parameter's STYLE, like every other location.
 		// This used to be a bare scalarString, so a path array declared
 		// `simple` (the OpenAPI default for a path parameter, and the only
@@ -234,20 +285,47 @@ func (e *Executor) resolveURL(pkg *spec.Package, op spec.Operation, byKey map[st
 		// `%5B%22a%22%2C%22b%22%5D` where the vendor wanted `a,b`.
 		raw, err := pathValue(op, p)
 		if err != nil {
-			return nil, err
+			return "", "", err
 		}
-		decoded = strings.ReplaceAll(decoded, "{"+p.Name+"}", raw)
-		escaped = strings.ReplaceAll(escaped, "{"+p.Name+"}", url.PathEscape(raw))
+		if _, dup := vals[p.Name]; !dup {
+			vals[p.Name] = raw
+		}
 	}
-	if strings.ContainsRune(decoded, '{') {
-		// Validation makes this unreachable for a loaded package; keeping it
-		// means a hand-built operation cannot send a templated URL either.
-		return nil, &Error{Class: spec.ErrBadRequest, Message: fmt.Sprintf("operation %s: path %q still has an unfilled placeholder", op.ID, decoded)}
+
+	var dec, esc strings.Builder
+	rest := op.HTTP.Path
+	for {
+		i := strings.IndexByte(rest, '{')
+		if i < 0 {
+			dec.WriteString(rest)
+			esc.WriteString(rest)
+			return dec.String(), esc.String(), nil
+		}
+		dec.WriteString(rest[:i])
+		esc.WriteString(rest[:i])
+		j := strings.IndexByte(rest[i:], '}')
+		if j < 0 {
+			return "", "", unfilledPlaceholder(op, rest[i:])
+		}
+		name := rest[i+1 : i+j]
+		raw, ok := vals[name]
+		if !ok {
+			// Validation makes this unreachable for a loaded package; keeping
+			// it means a hand-built operation cannot send a templated URL
+			// either.
+			return "", "", unfilledPlaceholder(op, rest[i:i+j+1])
+		}
+		dec.WriteString(raw)
+		esc.WriteString(url.PathEscape(raw))
+		rest = rest[i+j+1:]
 	}
-	prefix := strings.TrimRight(u.Path, "/") + pkg.Connector.BaseURL.PathPrefix
-	u.Path = prefix + decoded
-	u.RawPath = prefix + escaped
-	return u, nil
+}
+
+func unfilledPlaceholder(op spec.Operation, what string) *Error {
+	return &Error{
+		Class:   spec.ErrBadRequest,
+		Message: fmt.Sprintf("operation %s: path %q still has an unfilled placeholder (%s)", op.ID, op.HTTP.Path, what),
+	}
 }
 
 // pathValue renders one path parameter into the single segment a path can
