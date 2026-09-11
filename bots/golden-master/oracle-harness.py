@@ -7036,6 +7036,30 @@ def main():
                  "has not earned. See skills/oracle-mutation.md."
                  % json.dumps(gaps, ensure_ascii=False))
 
+        # A held-out set that repeats an already-spent one is not held out at
+        # all: its mutants are committed under mutants/audit/ where anyone,
+        # including the hardening loop, can read them. Reuse is refused by
+        # FINGERPRINT rather than by name, so renaming does not launder it.
+        #
+        # Checked in PREFLIGHT because it needs nothing the application
+        # provides: spent_fingerprints reads committed audit directories and
+        # mutant_fingerprint hashes a mutant directory, and held_meta is in
+        # hand a few lines above. It used to run as the LAST statement of the
+        # gate, after the boot and the entire corpus replay. Measured on a live
+        # campaign: a lot run of 4 h 04 — of which 2 h 11 inside the replay —
+        # spent to be refused on a magazine that was already empty before a
+        # single request went out.
+        spent = spent_fingerprints(gm_dir)
+        report["holdout_reused"] = sorted(
+            "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
+            for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
+        if report["holdout_reused"]:
+            bail("the held-out set REPEATS mutants already scored and "
+                 "published: %s. A spent set is evidence, not a test — "
+                 "draw a fresh one, or the held-out figure measures "
+                 "nothing the hardening loop could not already see."
+                 % ", ".join(report["holdout_reused"]))
+
         probe_gaps = missing_corpus_probes(corpus, config)
         if probe_gaps:
             report["missing_corpus_probes"] = probe_gaps
@@ -7505,20 +7529,6 @@ def main():
                 "checkout (a copy, or no git available). They are PRESENT, which is what a "
                 "copy of tracked files proves; that they are TRACKED is verified only where "
                 "a checkout exists." % ", ".join(unanswerable)))
-        # A held-out set that repeats an already-spent one is not held out at
-        # all: its mutants are committed under mutants/audit/ where anyone,
-        # including the hardening loop, can read them. Reuse is refused by
-        # FINGERPRINT rather than by name, so renaming does not launder it.
-        spent = spent_fingerprints(gm_dir)
-        report["holdout_reused"] = sorted(
-            "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
-            for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
-        if report["holdout_reused"]:
-            problems.append("the held-out set REPEATS mutants already scored and "
-                            "published: %s. A spent set is evidence, not a test — "
-                            "draw a fresh one, or the held-out figure measures "
-                            "nothing the hardening loop could not already see."
-                            % ", ".join(report["holdout_reused"]))
         report["log_tail"] = "\n".join(problems)[-6000:]
     finally:
         app_down(config, ws)
