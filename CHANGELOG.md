@@ -3,6 +3,30 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.138.2](https://github.com/SocialGouv/iterion/compare/v3.138.1...v3.138.2) (2026-09-11)
+
+### Bug Fixes
+
+* **sec-audit:** the deep scanner's retry resumes instead of starting over ([#1139](https://github.com/SocialGouv/iterion/issues/1139)) ([97db319](https://github.com/SocialGouv/iterion/commit/97db319ade7e2832053bf70df7bb638cdf0bcde3))
+
+    <details><summary>why</summary>
+
+    deepsec exits 1 as soon as ONE batch errored, so the node's single retry is reached far more often than "the pass crashed" suggests — and it opened a FRESH run every time. Every batch the first attempt had already investigated was re-investigated and paid for again, under the same bound that had just expired, which on a large repository is the difference between finishing and timing out twice.
+
+    </details>
+
+## [3.138.1](https://github.com/SocialGouv/iterion/compare/v3.138.0...v3.138.1) (2026-09-11)
+
+### Bug Fixes
+
+* **dsl:** an escaped quote in post_create reaches the shell as a literal quote ([#1086](https://github.com/SocialGouv/iterion/issues/1086)) ([9cb9ea2](https://github.com/SocialGouv/iterion/commit/9cb9ea26dae24091c510dd1b7c8c86312943fa0a))
+
+    <details><summary>why</summary>
+
+    A `"..."` DSL string is lexed in legacy escape mode unless the file opts into `## strict-escape: on` — and no bot in the catalogue does. Legacy mode keeps every \X VERBATIM, so a backslash-escaped quote survives into the shell, which reads \" as a literal quote CHARACTER. The command then runs with quotes inside its arguments instead of around them.
+
+    </details>
+
 ## [3.138.0](https://github.com/SocialGouv/iterion/compare/v3.137.0...v3.138.0) (2026-09-11)
 
 ### Features

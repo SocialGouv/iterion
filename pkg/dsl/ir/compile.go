@@ -285,6 +285,37 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		return nil
 	}
 
+	// A `"..."` DSL string is lexed in legacy escape mode unless the file opts
+	// into `## strict-escape: on`, and legacy mode keeps every \X VERBATIM. So
+	// a backslash-escaped quote written here survives into the shell, which
+	// reads \" as a LITERAL quote character — the argument then carries quotes
+	// instead of being quoted by them.
+	//
+	// Measured 2026-09-10 on a post_create that installed a pinned CLI:
+	//   npm error code EINVALIDPACKAGENAME
+	//   Invalid package name """ of package ""@openai/codex@0.154.0""
+	// The step is best-effort, so the bootstrap had never once run and the
+	// sandbox silently kept an older binary while the run reported success.
+	//
+	// A WARNING, not an error, and deliberately so. The tempting argument —
+	// "under strict escape the lexer would have decoded \", so seeing it here
+	// proves no unescaping happened" — is FALSE: expectString accepts a
+	// TokenString from three scanners and only scanString consults
+	// strictEscape. A backtick raw string and a `|` block scalar keep \"
+	// verbatim BY DESIGN, and \" inside a shell double-quoted region is then a
+	// correct escape (bots/wiki-gen writes JSON that way). The compiler cannot
+	// tell the three apart here, so it cannot prove the defect — only point at
+	// the shape. Refusing would break a working bundle at launch, including
+	// ones stored outside this tree.
+	if strings.Contains(blk.PostCreate, `\"`) {
+		c.warnfAt(DiagEscapedQuoteInShellString, name, "",
+			"%s %q: sandbox.post_create contains a backslash-escaped quote (\\\"). In a \"…\" value the backslash is kept "+
+				"verbatim and the shell reads \\\" as a LITERAL quote character, so the command runs with quotes inside its "+
+				"arguments instead of around them — drop the quotes when the value has no space, or use single quotes when it "+
+				"does. In a backtick raw string or a `|` block scalar, \\\" is verbatim by design and this is likely correct.",
+			scope, name)
+	}
+
 	spec := &SandboxSpec{
 		Mode:            blk.Mode,
 		Image:           blk.Image,

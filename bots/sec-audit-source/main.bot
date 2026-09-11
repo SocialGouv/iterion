@@ -2690,13 +2690,56 @@ unset _cb
 # deepsec runs under ignores it. Measured 2026-09-10 on this node: a 240s
 # bound returned after 27 minutes 39. Without the kill-after escalation the
 # bound is advisory — a limit that reads as enforced and is not.
-_dsproc() { ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout -k 60 2400 deepsec process --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS ); }
+# The optional first argument is a deepsec run id. Passing it RESUMES that
+# run, so the retry re-investigates only the batches the first attempt did not
+# finish; without it the retry opens a fresh run and pays for the whole pass a
+# second time, under the same bound that just expired. Two explicit branches
+# rather than a brace-plus-alternate parameter form, which the DSL expands at
+# LAUNCH with the server environment instead of leaving to the shell.
+_dsproc() {
+  _rid="$1"
+  if [ -n "$_rid" ]; then
+    ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout -k 60 2400 deepsec process --run-id "$_rid" --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS )
+  else
+    ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout -k 60 2400 deepsec process --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS )
+  fi
+}
+
+# deepsec prints "Processing complete. Run: <id>" BEFORE it exits 1 on errored
+# batches, so the id is readable from a FAILED attempt -- which is the only
+# time it is wanted. Strips the ANSI colouring the CLI wraps it in. Empty when
+# the line never appeared, which is the honest input to "start fresh".
+_dsrunid() {
+  grep -a "Processing complete" "$LOG_DIR/process.log" 2>/dev/null | tail -1 \
+    | tr -d "\033" | sed -e "s/.*Run: //" -e "s/\[[0-9;]*m//g" -e "s/[^A-Za-z0-9_.-].*//"
+}
+
+# A quota wall does not heal in twenty seconds. Retrying one buys a second
+# full pass that cannot succeed and spends the remaining wall-clock proving
+# it. deepsec names this failure itself rather than leaving it to be inferred
+# from a provider message: "Stopped: <source> exhausted" (quota-message.ts).
+_dsquota() { grep -qa "Stopped:.*exhausted" "$LOG_DIR/process.log" 2>/dev/null; }
+
 # deepsec process drives its OWN claude LLM calls (outside iterion network
-# retry). A transient blip (rate-limit / quota / network) here drops the
-# whole deepsec contribution and silently thins the audit. Retry once after a
-# short backoff; degrade-with-report only if BOTH attempts fail. Diagnosed: a
-# real run lost all deepsec findings to one such blip.
-_dsproc >"$LOG_DIR/process.log" 2>&1 || { echo "[deepsec] process failed; retrying once after 20s (transient LLM blip)" >>"$LOG_DIR/process.log"; sleep 20; _dsproc >>"$LOG_DIR/process.log" 2>&1; } || ERRS="$ERRS process"
+# retry). A transient blip (rate-limit / network) here drops the whole deepsec
+# contribution and silently thins the audit. Retry once after a short backoff;
+# degrade-with-report only if BOTH attempts fail. Diagnosed: a real run lost
+# all deepsec findings to one such blip.
+if _dsproc "" >"$LOG_DIR/process.log" 2>&1; then
+  :
+elif _dsquota; then
+  echo "[deepsec] quota exhausted: no retry, a quota wall does not clear in 20s. What was investigated before it stays exported." >>"$LOG_DIR/process.log"
+  ERRS="$ERRS process"
+else
+  _RID=$(_dsrunid)
+  if [ -n "$_RID" ]; then
+    echo "[deepsec] process failed; resuming run $_RID in 20s (batches already investigated are not redone)" >>"$LOG_DIR/process.log"
+  else
+    echo "[deepsec] process failed; no run id in the log, the retry starts a fresh pass" >>"$LOG_DIR/process.log"
+  fi
+  sleep 20
+  _dsproc "$_RID" >>"$LOG_DIR/process.log" 2>&1 || ERRS="$ERRS process"
+fi
 
 ( cd "$DSW" && deepsec export --format json --out "$OUT_JSON" ) >"$LOG_DIR/export.log" 2>&1 || ERRS="$ERRS export"
 
@@ -4755,7 +4798,12 @@ workflow sec_audit_source:
     ## step: a failure prints what is consequently unavailable and lets
     ## the run proceed, because deepsec is off by default and the rest of
     ## the audit does not need codex at all.
-    post_create: "set -u; want=0.154.0; pfx=$HOME/.npm-global; if ! \"$pfx/bin/codex\" --version 2>/dev/null | grep -q \"$want\"; then npm install -g --prefix \"$pfx\" \"@openai/codex@$want\" >/dev/null 2>&1 || echo \"iterion: could not install @openai/codex@$want — deepsec falls back to the codex bundled in the image, which may be too old for the model requested\" >&2; fi"
+    ##
+    ## No backslash-escaped quotes: a `"…"` string is lexed in legacy escape
+    ## mode, which keeps \X verbatim, so the backslash reaches the shell and
+    ## \" becomes a LITERAL quote character (C143). Nothing here needs
+    ## quoting — no value has a space — and the message uses single quotes.
+    post_create: "set -u; want=0.154.0; pfx=$HOME/.npm-global; if ! $pfx/bin/codex --version 2>/dev/null | grep -q $want; then npm install -g --prefix $pfx @openai/codex@$want >/dev/null 2>&1 || echo 'iterion: could not install @openai/codex — deepsec falls back to the codex bundled in the image, which may be too old for the model requested' >&2; fi"
 
   ## An audit READS the repository it is pointed at. The mid-run workspace
   ## checkpoint would `git add -A` the pod's tree — this bot's own
