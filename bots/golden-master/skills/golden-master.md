@@ -185,6 +185,14 @@ A set a LATER gate must score therefore has one durable home, the tree: commit i
 `GM_SEAL_COMMITTED=1` for a hand-run gate). A committed set is left in place by the seal
 precisely so it can wait for that gate.
 
+That leaving-in-place is **directory-wide**, which fixes the order of the two acts: commit the
+successor only once a run (`GM_MODE=selfcheck`) has sealed your own set out of the tree. One
+tracked entry under `mutants/holdout/` makes the seal decline for everything there, so a successor
+committed too early leaves your own set unsealed and unscored, and the gate then reports `0/0` —
+a term that reads green by being vacuous. A single selfcheck report separates the two cases:
+`holdout_awaiting_gate: true` with a non-zero `holdout_total` is the right order; a zero
+`holdout_total` beside it means nothing was ever sealed.
+
 Two debts a `0/0` held-out figure can carry, both reported as FIELDS rather than prose, because
 a supervising process needs to see them:
 
