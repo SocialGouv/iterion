@@ -71,7 +71,7 @@ func TestValidate_BotSourcePathMergesItsPrompts(t *testing.T) {
 	if out := validate(edCtx, "botsource://t1/mf/main.bot"); !out.Valid {
 		t.Fatalf("the editor's own bot validated without its stored prompts: %v", out.Diagnostics)
 	}
-	for _, p := range []string{"", "botsource://t2/mf/main.bot", "botsource://t1/unknown/main.bot", "botsource://t1"} {
+	for _, p := range []string{"", "botsource://t2/mf/main.bot", "botsource://t1/mf/worker.bot", "botsource://t1/unknown/main.bot", "botsource://t1"} {
 		if out := validate(edCtx, p); out.Valid {
 			t.Errorf("path %q: the document validated as if the stored prompts were in scope", p)
 		}

@@ -25,11 +25,12 @@ called right after the `agent x:` header. */ -%>
   ## Tool-permission gate (docs/permissions.md).
   permission: <%.Permission%><%end%><%end%>
 <%- /* worktree_dial: for shapes that do not require a worktree of their
-own; shapes that commit declare `worktree: auto` themselves. BOTH
-branches write the property: an unset `worktree:` resolves to `auto`
-(ir.defaultWorktreeMode), so an off branch that emits nothing is not an
-opt-out — it is the same isolation, silently. review-fanout writes the
-same ternary inline. An isolated run's uncommitted output never reaches
+own; the shapes that commit write the same ternary inline and default
+the dial ON in their Spec, so every template honours an explicit
+opt-out. BOTH branches write the property: an unset `worktree:` resolves
+to `auto` (ir.defaultWorktreeMode), so an off branch that emits nothing
+is not an opt-out — it is the same isolation, silently. An isolated run's
+uncommitted output never reaches
 the checkout: the finalizer banks a dirty tree as a wip commit on the
 storage branch and never merges a wip-banked head, so a deliverable
 written at a workspace path is on that branch, not where the shape

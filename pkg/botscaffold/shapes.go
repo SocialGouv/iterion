@@ -138,7 +138,7 @@ func checkAnnexPaths(annexes map[string][]byte) error {
 	return nil
 }
 
-var varRefRe = regexp.MustCompile(`\{\{\s*vars\.([a-z_][a-z0-9_]*)`)
+var varRefRe = regexp.MustCompile(`(?:\{\{\s*vars\.|(?:^|[^.\w])vars\.)([a-z_][a-z0-9_]*)`)
 
 // shapeVarRefs lists, sorted, the vars a shape's files reference as
 // {{vars.<name>}} — the vars its Spec MUST declare, since the vars block is

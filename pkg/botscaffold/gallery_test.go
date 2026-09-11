@@ -29,6 +29,14 @@ func TestBlankTemplateIsolatesByDefault(t *testing.T) {
 	if !ok || !blank.Spec.Worktree {
 		t.Fatalf("the blank template does not isolate by default: %+v", blank.Spec)
 	}
+	// The shapes that commit default the dial ON too, and honour the
+	// opt-out like every other template (no shape hardcodes `auto`).
+	for _, id := range []string{"campaign-loop", "plan-gate-implement", "verified-action"} {
+		tpl, ok := TemplateByID(id)
+		if !ok || !tpl.Spec.Worktree {
+			t.Errorf("%s: the dial is off by default; the shape commits", id)
+		}
+	}
 	for _, id := range []string{"daily-digest", "code-reviewer", "issue-triager"} {
 		tpl, ok := TemplateByID(id)
 		if !ok || tpl.Spec.Worktree {

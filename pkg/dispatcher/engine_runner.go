@@ -68,14 +68,15 @@ func (l ServiceRunLauncher) LaunchAndWait(ctx context.Context, spec runview.Laun
 // at NewEngineRunner — the bundle handle is shared across dispatches,
 // then released via Close() when the dispatcher shuts down.
 type EngineRunner struct {
-	workflow     *ir.Workflow
-	workflowPath string
-	workflowHash string
-	bundle       *bundle.Bundle // nil for plain .bot
-	bundleClean  func() error   // no-op when bundle is nil
-	closeOnce    sync.Once      // guards bundleClean against concurrent/repeat Close
-	closeErr     error          // result of the single bundleClean run
-	logger       *iterlog.Logger
+	workflow         *ir.Workflow
+	workflowPath     string
+	workflowHash     string
+	bundle           *bundle.Bundle // nil for plain .bot
+	bundleConfigured bool           // the CONFIG named a bundle (a directory or an archive), not a bare main.bot promoted to one
+	bundleClean      func() error   // no-op when bundle is nil
+	closeOnce        sync.Once      // guards bundleClean against concurrent/repeat Close
+	closeErr         error          // result of the single bundleClean run
+	logger           *iterlog.Logger
 	// sealer is the local secret store's master-key sealer, built once (lazy —
 	// resolves the key on first use) and reused across dispatches so a
 	// secret-declaring bot doesn't pay a keychain round-trip per run. The
@@ -138,6 +139,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		r.workflowHash = h
 		r.workflowPath = opened.IterPath
 		r.bundle = opened
+		r.bundleConfigured = true
 		r.bundleClean = cleanup
 	case bundle.KindBundleDir:
 		opened, openErr := bundle.OpenDir(workflowPath)
@@ -152,6 +154,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		r.workflowHash = h
 		r.workflowPath = opened.IterPath
 		r.bundle = opened
+		r.bundleConfigured = true
 	default:
 		// A bare <bundle>/main.bot is promoted to its bundle: the hash and
 		// the prompts the other surfaces use, AND the handle, so the
@@ -219,11 +222,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if spec.StoreDir == "" {
 		return fmt.Errorf("engine runner: spec.StoreDir is required")
 	}
-	// ADR-046 convergence: route a fresh, plain-.bot dispatch through the
-	// single launch authority (runview.Service.Launch) when wired + enabled.
-	// Resume dispatches and bundle-backed runners stay on the direct path —
-	// the checkpoint/worktree reuse and the shared bundle handle live there.
-	if r.launcher != nil && r.bundle == nil && spec.ResumeFromRunID == "" && dispatchViaServiceEnabled() {
+	// ADR-046 convergence: route a fresh, file-configured dispatch through
+	// the single launch authority (runview.Service.Launch) when wired +
+	// enabled. Resume dispatches and bundle-CONFIGURED runners (a directory
+	// or an archive) stay on the direct path — the checkpoint/worktree reuse
+	// and the shared bundle handle live there. A bare <bundle>/main.bot
+	// config keeps the service path even though this runner promoted it:
+	// Service.Launch promotes the same file itself, so the run is still
+	// bundle-backed there, and gating on the handle would have moved every
+	// such config off the launch authority in silence.
+	if r.launcher != nil && !r.bundleConfigured && spec.ResumeFromRunID == "" && dispatchViaServiceEnabled() {
 		return r.dispatchViaService(ctx, spec)
 	}
 	baseStore, err := store.New(spec.StoreDir, store.WithLogger(r.logger))

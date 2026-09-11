@@ -37,6 +37,27 @@ func renderedVarRefs(t *testing.T, spec Spec) []string {
 	return out
 }
 
+// TestVarRefScanReadsBothForms: a var is referenced as `{{vars.x}}` in a
+// prompt or a command and as the bare `vars.x` in an `expr:` or a quoted
+// `when` — the scan reads both, so a var a shape uses only in an
+// expression is refused by name at the form (400) rather than met as
+// C033 behind the compile guard (422).
+func TestVarRefScanReadsBothForms(t *testing.T) {
+	src := "  configured: \"!!vars.verify_command && vars.max_passes >= 1\"\n  command: `sh -c {{vars.cmd}}`\n  x: \"{{ vars.spaced }}\" outputs.check.vars.not_a_var"
+	seen := map[string]bool{}
+	for _, m := range varRefRe.FindAllStringSubmatch(src, -1) {
+		seen[m[1]] = true
+	}
+	for _, want := range []string{"verify_command", "max_passes", "cmd", "spaced"} {
+		if !seen[want] {
+			t.Errorf("the scan missed %q in %q", want, src)
+		}
+	}
+	if seen["not_a_var"] {
+		t.Errorf("the scan took `outputs.check.vars.not_a_var` for a var reference")
+	}
+}
+
 // TestShapeVarRefsAreUnconditional: shapeVarRefs reads the RAW templates,
 // so a {{vars.x}} inside a template conditional would be demanded of every
 // Spec, including one whose rendering never emits it. The check stays

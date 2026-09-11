@@ -2,7 +2,8 @@
 ##
 ## A read-only agent drafts the plan, a human approves or sends it back
 ## (up to three rounds, then a typed failure), an agent implements the
-## approved plan in a per-run worktree and commits in stride. The gate
+## approved plan and commits in stride<%if .Worktree%> in a per-run worktree<%else%> on your
+## checked-out branch (the worktree dial is off)<%end%>. The gate
 ## pauses the run: answer it in the studio or with `iterion resume
 ## --answer approve=true`. The operator's feedback reaches the next round
 ## through the back-edge's `with` mapping, and a deterministic entry node
@@ -85,8 +86,13 @@ fail plan_rejected:
 
 workflow <%.WorkflowName%>:
   entry: first_round
-  ## The implementer's commits land in a per-run git worktree.
-  worktree: auto<%template "dials" .%><%template "budget_block" .%>
+<%- if .Worktree%>
+  ## The implementer's commits land in a per-run git worktree; on
+  ## success they are squash-merged into your checked-out branch.
+  worktree: auto<%else%>
+  ## The worktree dial is OFF: the implementer commits directly on your
+  ## checked-out branch, in place — no storage branch, no merge step.
+  worktree: none<%end%><%template "dials" .%><%template "budget_block" .%>
   first_round -> plan with { feedback: "{{outputs.first_round.feedback}}" }
   plan -> approve
   approve -> implement when approve

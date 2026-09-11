@@ -229,7 +229,15 @@ func (s *Server) mergeBotSourcePrompts(r *http.Request, f *ast.File, editorPath 
 		return
 	}
 	parts := strings.SplitN(strings.TrimPrefix(editorPath, botSourceScheme), "/", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
+		return
+	}
+	// Only the bundle's entrypoint gets its prompts, as on disk
+	// (bundle.DirForMainBot fires on main.bot alone): a child .bot the
+	// bundle ships beside it compiles as a bare file at launch, so
+	// validating it with the parent's prompts in scope would be a green
+	// the run does not deliver.
+	if parts[2] != "main.bot" {
 		return
 	}
 	id, ok := auth.FromContext(r.Context())

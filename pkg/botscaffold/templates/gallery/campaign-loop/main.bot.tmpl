@@ -124,9 +124,13 @@ fail passes_exhausted:
 
 workflow <%.WorkflowName%>:
   entry: check
+<%- if .Worktree%>
   ## Commits land in a per-run git worktree; on success they are
   ## squash-merged into your checked-out branch (docs/dsl.md).
-  worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  worktree: auto<%else%>
+  ## The worktree dial is OFF: the campaign commits directly on your
+  ## checked-out branch, in place — no storage branch, no merge step.
+  worktree: none<%end%><%template "dials" .%><%template "budget_block" .%>
   check -> misconfigured when not configured
   check -> first_pass when configured
   first_pass -> campaign with { previous_verify: "{{outputs.first_pass.previous_verify}}" }

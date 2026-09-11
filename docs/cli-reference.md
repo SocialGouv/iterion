@@ -438,7 +438,7 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--dest <dir>` | Parent directory for the bundle, resolved against `--workdir` (default `bots`). |
 | `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
 | `--model`, `--backend` | Pin instead of auto-detection. |
-| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. The blank template isolates by default (`--worktree=false` opts out, writing `worktree: none`); a gallery shape decides for itself — the ones whose deliverable is a file in the checkout run in place. |
+| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 

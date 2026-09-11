@@ -605,22 +605,19 @@ func TestGalleryShapesRenderEveryDial(t *testing.T) {
 	}
 }
 
-// TestGalleryShapesResolveTheWorktreeDialOff: with the dial OFF — the
-// default every shape but docs-writer scaffolds with — each shape's
-// RESOLVED worktree value is the one its own text promises. The value
-// read is the IR's, after ir.defaultWorktreeMode, which is the whole
-// point: an unset `worktree:` resolves to "auto", so a shape that means
-// "in place" and writes nothing ships the opposite of what it says. The
-// table names every shape, so the three that declare `worktree: auto`
-// themselves are pinned against a partial refactor too.
+// TestGalleryShapesResolveTheWorktreeDialOff: with the dial explicitly
+// OFF, every shape's RESOLVED worktree value is `none` — the value read
+// is the IR's, after ir.defaultWorktreeMode, which is the whole point: an
+// unset `worktree:` resolves to "auto", so a shape that writes nothing on
+// the off branch, or hardcodes `auto`, ships the opposite of the
+// operator's explicit choice. The table names every shape, so a shape
+// that stops honouring the dial is pinned. Which shapes default the dial
+// ON (the ones that commit) is TestBlankTemplateIsolatesByDefault's.
 func TestGalleryShapesResolveTheWorktreeDialOff(t *testing.T) {
-	// The shapes whose deliverable is a commit isolate; the ones whose
-	// deliverable is what the run leaves in the workspace (a digest
-	// file, a reviewed diff, an answer) run in place.
 	want := map[string]string{
-		"campaign-loop":       "auto",
-		"plan-gate-implement": "auto",
-		"verified-action":     "auto",
+		"campaign-loop":       "none",
+		"plan-gate-implement": "none",
+		"verified-action":     "none",
 		"review-fanout":       "none",
 		"scheduled-digest":    "none",
 		"per-ticket-subbots":  "none",

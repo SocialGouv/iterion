@@ -189,6 +189,9 @@ func Templates() []Template {
 					{Name: "verify_command", Type: "string", Default: "", Description: "REQUIRED: the repository's own build+test, run by sh -c after every pass; its exit code is the verdict. Left empty, the run refuses at entry (CAMPAIGN_MISCONFIGURED) before any pass — a verifier that checks nothing would make every verdict green."},
 					{Name: "max_passes", Type: "int", Default: "4", Description: "Upper bound on passes before the run fails PASSES_EXHAUSTED (resumable: raise it and resume); under 1 the run refuses at entry."},
 				},
+				// The campaign commits in stride: isolated by default, and the
+				// dial's opt-out commits on the checked-out branch directly.
+				Worktree: true,
 			},
 		},
 		{
@@ -216,6 +219,8 @@ func Templates() []Template {
 				Description:  "Implements a change only after a human approved the plan.",
 				WhenToUse:    "Use when the operator wants to read the plan before any file is touched.",
 				Instructions: "Describe the change to plan and then implement: the goal, the\nconstraints, and how to verify the result.",
+				// The implementer commits: isolated by default, opt-out honoured.
+				Worktree: true,
 			},
 		},
 		{
@@ -260,6 +265,8 @@ func Templates() []Template {
 				Vars: []VarSpec{
 					{Name: "tag", Type: "string", Default: "", Description: "REQUIRED, per run: the annotated tag the verified action creates on HEAD. Git tags live in the repository's shared ref store and outlive the run's worktree, so a fixed name meets its own previous tag on the next run; left empty, the run refuses at entry (TAG_UNSET)."},
 				},
+				// The preparation commits: isolated by default, opt-out honoured.
+				Worktree: true,
 			},
 		},
 		{

@@ -7,10 +7,12 @@
 ## `recover` → an LLM proposes a corrected command from goal + stdout +
 ## stderr, re-run deterministically; still unmet → the policy decides).
 ## GATES stay deterministic: never attach recovery to a check whose
-## recipe IS its postcondition (C105). The commit lands in a per-run git
+## recipe IS its postcondition (C105). <%if .Worktree%>The commit lands in a per-run git
 ## worktree — the TAG does not: git tags live in the repository's SHARED
 ## ref store, so it stays in your repo even when the run is discarded or
-## its merge is skipped. Hence `tag` is REQUIRED and per run, and a name
+## its merge is skipped.<%else%>The commit lands on your checked-out branch (the
+## worktree dial is off) and the tag beside it, in the repository's
+## SHARED ref store, where it outlives every run.<%end%> Hence `tag` is REQUIRED and per run, and a name
 ## that is already TAKEN is refused before the agent runs, deterministic
 ## and typed: were it left to the recipe, `git tag -a` would fail on
 ## "already exists" and the repair rung's only way to satisfy the goal
@@ -92,10 +94,15 @@ fail tag_taken:
 
 workflow <%.WorkflowName%>:
   entry: check
+<%- if .Worktree%>
   ## The commit lands in a per-run git worktree — the tag does not (see
   ## the header): it is written to the shared ref store and outlives the
   ## worktree.
-  worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  worktree: auto<%else%>
+  ## The worktree dial is OFF: the commit lands directly on your
+  ## checked-out branch, in place, and the tag beside it in the shared
+  ## ref store.
+  worktree: none<%end%><%template "dials" .%><%template "budget_block" .%>
   check -> tag_unset when not configured
   check -> tag_free when configured
   tag_free -> tag_taken when not free

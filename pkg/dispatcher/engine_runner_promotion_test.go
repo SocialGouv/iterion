@@ -55,4 +55,31 @@ func TestEngineRunnerPromotesBareMainBot(t *testing.T) {
 	if r.bundle == nil || r.bundle.IterPath != b.IterPath {
 		t.Fatalf("the promoted run carries bundle %+v, want the bundle at %s", r.bundle, b.IterPath)
 	}
+	// The config named a FILE: the ADR-046 service path (which promotes the
+	// same file itself) stays reachable for it, unlike a bundle directory.
+	if r.bundleConfigured {
+		t.Fatalf("a promoted main.bot config reads as bundle-configured; the service path would be bypassed")
+	}
+	dirRunner, err := NewEngineRunner(dir, logger)
+	if err != nil {
+		t.Fatalf("NewEngineRunner on the bundle dir: %v", err)
+	}
+	defer dirRunner.Close()
+	if !dirRunner.bundleConfigured {
+		t.Fatalf("a bundle directory config does not read as bundle-configured")
+	}
+	// And a .botz archive — the third config kind, whose extracted handle
+	// is the one the direct path shares across dispatches.
+	archive := filepath.Join(t.TempDir(), "mf.botz")
+	if _, err := bundle.PackDir(dir, archive); err != nil {
+		t.Fatalf("PackDir: %v", err)
+	}
+	archiveRunner, err := NewEngineRunner(archive, logger)
+	if err != nil {
+		t.Fatalf("NewEngineRunner on the archive: %v", err)
+	}
+	defer archiveRunner.Close()
+	if !archiveRunner.bundleConfigured {
+		t.Fatalf("a bundle archive config does not read as bundle-configured")
+	}
 }

@@ -195,7 +195,7 @@ func init() {
 	botsCreateCmd.Flags().String("instructions", "", "The agent's mission (its system prompt body)")
 	botsCreateCmd.Flags().String("model", "", "Pin a model instead of auto-detection")
 	botsCreateCmd.Flags().String("backend", "", "Pin a backend instead of auto-detection")
-	botsCreateCmd.Flags().Bool("worktree", false, "Run in a dedicated git worktree (the blank template's default; --worktree=false opts out, the gallery shapes decide for themselves)")
+	botsCreateCmd.Flags().Bool("worktree", false, "Run in a dedicated git worktree (on by default for the templates that commit — blank, docs-writer, the campaign, the plan gate, the verified action; --worktree=false opts out; every template honours it)")
 	botsCreateCmd.Flags().Bool("sandbox", false, "Run in a sandboxed container")
 	botsInstallCmd.Flags().String("ref", "", "Git ref (branch or tag) to clone")
 	botsInstallCmd.Flags().String("path", "", "Subdirectory or iterion-bots.yaml bot name to install when the repo holds several")
