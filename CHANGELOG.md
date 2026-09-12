@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.140.2](https://github.com/SocialGouv/iterion/compare/v3.140.1...v3.140.2) (2026-09-12)
+
+### Bug Fixes
+
+* **connector:** the guarded client is carried by the VALUE, and a cleartext origin is named ([#1150](https://github.com/SocialGouv/iterion/issues/1150)) ([302b949](https://github.com/SocialGouv/iterion/commit/302b949ac643a98a967d84b3b77a63ad2373bdde))
+
+    <details><summary>why</summary>
+
+    The executor accepted any non-nil client. A default one and the guarded one have the same type, so nothing in the path could tell them apart, and the whole SSRF posture rested on one production site remembering to pass the right one — a convention held today only by there being exactly one such site, and due to break at the second (the cloud tier, which builds its own client).
+
+    </details>
+
 ## [3.140.1](https://github.com/SocialGouv/iterion/compare/v3.140.0...v3.140.1) (2026-09-11)
 
 ### Bug Fixes
