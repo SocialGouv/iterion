@@ -20,24 +20,28 @@ func TestMaxSyntaxProfileWalksTheSubbotChildren(t *testing.T) {
 		// outside the bundle, never read.
 		"../outside.bot": "dsl: 2\n",
 	}
-	profile, by := MaxSyntaxProfile(files)
+	profile, by, unread := MaxSyntaxProfile(files)
 	if profile != 2 || !reflect.DeepEqual(by, []string{"children/a.bot", "children/b.bot"}) {
 		t.Fatalf("profile %d by %v", profile, by)
 	}
+	// The child outside the bundle is named, not silently skipped.
+	if !reflect.DeepEqual(unread, []string{"../outside.bot"}) {
+		t.Fatalf("unread %v", unread)
+	}
 	// A bundle whose sources all read as profile 1 declares 1, by nobody.
-	profile, by = MaxSyntaxProfile(map[string]string{"main.bot": "agent a:\n  description: \"x\"\n"})
+	profile, by, _ = MaxSyntaxProfile(map[string]string{"main.bot": "agent a:\n  description: \"x\"\n"})
 	if profile != 1 || len(by) != 0 {
 		t.Fatalf("profile %d by %v", profile, by)
 	}
 	// The main itself may be the one that declares it.
-	profile, by = MaxSyntaxProfile(map[string]string{"main.bot": "dsl: 2\nagent a:\n  description: \"x\"\n"})
+	profile, by, _ = MaxSyntaxProfile(map[string]string{"main.bot": "dsl: 2\nagent a:\n  description: \"x\"\n"})
 	if profile != 2 || !reflect.DeepEqual(by, []string{"main.bot"}) {
 		t.Fatalf("profile %d by %v", profile, by)
 	}
 	// A missing child is not this walk's to report.
-	profile, _ = MaxSyntaxProfile(map[string]string{"main.bot": "subbot c:\n  source: \"nope.bot\"\n"})
-	if profile != 1 {
-		t.Fatalf("missing child: profile %d", profile)
+	profile, _, unread = MaxSyntaxProfile(map[string]string{"main.bot": "subbot c:\n  source: \"nope.bot\"\n"})
+	if profile != 1 || len(unread) != 0 {
+		t.Fatalf("missing child: profile %d unread %v", profile, unread)
 	}
 }
 
@@ -49,7 +53,7 @@ func TestMaxSyntaxProfileDirReadsTheBundle(t *testing.T) {
 	}
 	_ = os.WriteFile(filepath.Join(dir, "main.bot"), []byte("subbot k:\n  source: \"kids/k.bot\"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "kids", "k.bot"), []byte("dsl: 2\nagent a:\n  description: \"x\"\n"), 0o644)
-	profile, by := MaxSyntaxProfileDir(dir)
+	profile, by, _ := MaxSyntaxProfileDir(dir)
 	if profile != 2 || !reflect.DeepEqual(by, []string{"kids/k.bot"}) {
 		t.Fatalf("profile %d by %v", profile, by)
 	}

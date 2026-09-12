@@ -29,6 +29,7 @@ import (
 	"text/template"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -129,10 +130,12 @@ type Spec struct {
 // declares no floor, and `iterion validate` asks for one (C252).
 func defaultEngineFloor() string {
 	v := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
-	if _, ok := bundle.CompareVersions(v, "0"); !ok {
-		return ""
+	if _, ok := bundle.CompareVersions(v, "0"); ok {
+		return v
 	}
-	return v
+	// A dev build has no version to write: the templates are written in
+	// the newest profile, and the release that reads it is their floor.
+	return parser.ProfileSince[parser.MaxProfile]
 }
 
 // WorkflowName is the Slug as a DSL identifier — the DSL grammar has no

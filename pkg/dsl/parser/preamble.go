@@ -13,6 +13,14 @@ import (
 // a build that cannot read it.
 const MaxProfile = 2
 
+// ProfileSince names, for each profile above 1, the release that first reads
+// it — the floor a bundle written in that profile must declare in
+// `requires.iterion`, so a runner below it refuses the bundle at admission
+// instead of failing at its first parse of a subbot child
+// (bundle.CheckProfileFloor). Profile 2 ships in v3.141.0 (lot 2 of #1010);
+// should the release number shift before it ships, this entry moves with it.
+var ProfileSince = map[int]string{2: "3.141.0"}
+
 // Preamble is what the head of a file says about how the rest of it is read,
 // decided BEFORE tokenising: the escape mode of every quoted string depends
 // on it, and the lexer cannot tokenise a string without knowing it.

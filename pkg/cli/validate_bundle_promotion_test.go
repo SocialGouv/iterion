@@ -87,13 +87,12 @@ func TestRunValidate_BareMainBotKeepsTheBundleDirName(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 			t.Fatalf("validate %s: output is not JSON: %v\n%s", target, err, out.String())
 		}
-		// A dev build scaffolds a profile-2 bundle with no engine floor (it
-		// has no orderable version to write), and C252 asks for one — the
-		// subject of another test, not of the name-stability check measured
-		// here.
+		// The scaffold declares the profile's release as the floor, which a
+		// dev build cannot order (C251, the unchecked contract) — the
+		// subject of another test, not of the name-stability check here.
 		var others []string
 		for _, d := range result.BundleDiags {
-			if !strings.Contains(d, "[C252]") {
+			if !strings.Contains(d, "[C251]") {
 				others = append(others, d)
 			}
 		}

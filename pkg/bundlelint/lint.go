@@ -122,6 +122,12 @@ const (
 	// runner's own binary, and a build older than the profile fails at that
 	// parse — which a declared floor refuses at admission instead.
 	DiagProfileNeedsFloor Code = "C252"
+	// DiagProfileChildUnread: a subbot child's source lies beyond what the
+	// profile walk could read — a sibling bundle, an absolute path, a link
+	// out of the collection — so the profile reported for the bundle does
+	// not speak for that child. A warning: a child written in a newer
+	// profile than a runner reads fails at that runner's parse.
+	DiagProfileChildUnread Code = "C253"
 )
 
 // minRoutableDescription is the shortest `description:` the skill lint treats
@@ -194,6 +200,9 @@ type Input struct {
 	// like Frontmatter: bundlelint stays I/O-free.
 	SyntaxProfile     int
 	ProfileDeclaredBy []string
+	// ProfileUnread names the subbot children the walk could not read
+	// (bundle.MaxSyntaxProfile's third result).
+	ProfileUnread []string
 }
 
 // SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
@@ -211,18 +220,21 @@ type SkillDoc struct {
 // forge-secret, capability checks). Returned diagnostics are deterministically
 // ordered by (Code, Field).
 func CheckConsistency(in Input) []Diag {
-	m := in.Manifest
-	if m == nil {
-		return nil
-	}
 	var diags []Diag
-	checkVarMaps(&diags, m, in.Workflow)
-	checkForgeSecret(&diags, m, in.Workflow)
-	checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
-	checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
-	checkSkills(&diags, in.Skills)
-	checkEngineRequirement(&diags, m, in.EngineBuild)
+	m := in.Manifest
+	// The profile checks read the manifest but do not need one: a bundle
+	// known by its skills/ alone, written in profile 2, is asked for the
+	// manifest that would carry its floor.
 	checkProfileFloor(&diags, m, in.SyntaxProfile, in.ProfileDeclaredBy, in.EngineBuild)
+	checkProfileUnread(&diags, in.ProfileUnread)
+	if m != nil {
+		checkVarMaps(&diags, m, in.Workflow)
+		checkForgeSecret(&diags, m, in.Workflow)
+		checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
+		checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
+		checkSkills(&diags, in.Skills)
+		checkEngineRequirement(&diags, m, in.EngineBuild)
+	}
 
 	sort.SliceStable(diags, func(i, j int) bool {
 		if diags[i].Code != diags[j].Code {
@@ -513,30 +525,49 @@ func sameStringSet(a, b []string) bool {
 // (pkg/server) and at the launch (pkg/runner) — three surfaces, one predicate
 // in pkg/bundle, so an author, an operator and a pod cannot read the same
 // manifest three different ways.
-// checkProfileFloor asks a bundle written in a syntax profile above 1 to
-// declare the engine floor that keeps it off a build that cannot read the
-// profile (C252). The floor's VALUE is the author's — `iterion dsl migrate`
-// writes the migrating build's own version, the one that reads the profile —
-// so the check asks for its presence, and names this build as the value to
-// declare when it is an orderable one.
+// checkProfileFloor holds the manifest's engine floor against the profile
+// the bundle's sources are written in (C252): a profile above 1 needs a
+// declared `requires.iterion` at or above the release that reads it
+// (bundle.CheckProfileFloor, the predicate the push admission shares) — a
+// floor declared but lower leaves every runner between the two admitting a
+// bundle it cannot parse. The remedy names that release, or this build when
+// the profile has none on record.
 func checkProfileFloor(diags *[]Diag, m *bundle.Manifest, profile int, declaredBy []string, build string) {
-	if profile < 2 {
+	pf := bundle.CheckProfileFloor(m, profile)
+	if pf.OK {
 		return
 	}
-	if m.Requires != nil && strings.TrimSpace(m.Requires.Iterion) != "" {
-		return
-	}
-	floor := "<the release that reads profile " + strconv.Itoa(profile) + ">"
-	if v := strings.TrimPrefix(strings.SplitN(build, "+", 2)[0], "v"); v != "" {
-		if _, ok := bundle.CompareVersions(v, "0"); ok {
-			floor = v
+	floor := pf.Need
+	if floor == "" {
+		floor = "<the release that reads profile " + strconv.Itoa(profile) + ">"
+		if v := strings.TrimPrefix(strings.SplitN(build, "+", 2)[0], "v"); v != "" {
+			if _, ok := bundle.CompareVersions(v, "0"); ok {
+				floor = v
+			}
 		}
 	}
+	msg := fmt.Sprintf("the bundle is written in dsl profile %d (%s) but declares no engine floor: a runner older than the profile re-parses a subbot child as text and fails at that parse", profile, strings.Join(declaredBy, ", "))
+	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest — `iterion dsl migrate` writes it — so such a runner refuses the bundle at admission instead", floor)
+	if pf.Declared != "" {
+		msg = fmt.Sprintf("the bundle is written in dsl profile %d (%s) but requires.iterion %q does not reach %s, the release that reads the profile: a runner between the two re-parses a subbot child as text and fails at that parse", profile, strings.Join(declaredBy, ", "), pf.Declared, floor)
+		hint = fmt.Sprintf("raise it to `requires: { iterion: \">= %s\" }`", floor)
+	}
+	*diags = append(*diags, Diag{Code: DiagProfileNeedsFloor, Severity: SeverityWarning, Field: "requires.iterion", Message: msg, Hint: hint})
+}
+
+// checkProfileUnread names the subbot children whose syntax profile could
+// not be read (C253) — a sibling bundle, an absolute path, a link out of the
+// collection — so a profile of 1 is never taken for "checked" when part of
+// the executable sources was not.
+func checkProfileUnread(diags *[]Diag, unread []string) {
+	if len(unread) == 0 {
+		return
+	}
 	*diags = append(*diags, Diag{
-		Code: DiagProfileNeedsFloor, Severity: SeverityWarning,
+		Code: DiagProfileChildUnread, Severity: SeverityWarning,
 		Field:   "requires.iterion",
-		Message: fmt.Sprintf("the bundle is written in dsl profile %d (%s) but declares no engine floor: a runner older than the profile re-parses a subbot child as text and fails at that parse", profile, strings.Join(declaredBy, ", ")),
-		Hint:    fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest — `iterion dsl migrate` writes it — so such a runner refuses the bundle at admission instead", floor),
+		Message: fmt.Sprintf("subbot child(ren) not read for their syntax profile, being outside the bundle: %s", strings.Join(unread, ", ")),
+		Hint:    "a child written in a newer profile than a runner reads fails at that runner's parse: declare `requires.iterion` for the newest profile among them, or bring the child inside the bundle",
 	})
 }
 

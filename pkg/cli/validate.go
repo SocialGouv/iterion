@@ -288,9 +288,11 @@ func RunValidate(path string, p *Printer) error {
 	// Bundle consistency: cross-check the manifest against the compiled
 	// workflow (var maps, forge secret, capabilities, per-bot-memory name
 	// stability). Only runs for bundles; plain .bot files have no manifest.
-	if bundleHandle != nil && bundleHandle.Manifest != nil && cr.Workflow != nil {
-		syntaxProfile, profileDeclaredBy := bundle.MaxSyntaxProfileDir(bundleHandle.Dir)
+	if bundleHandle != nil && cr.Workflow != nil {
+		syntaxProfile, profileDeclaredBy, profileUnread := bundle.MaxSyntaxProfileDir(bundleHandle.Dir)
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
+			// nil for a bundle known by its skills/ alone: the profile checks
+			// still run, the manifest-side ones are skipped.
 			Manifest:    bundleHandle.Manifest,
 			Workflow:    cr.Workflow,
 			Frontmatter: bundle.ParseFrontmatter(src), // reuse the bytes already read
@@ -304,6 +306,7 @@ func RunValidate(path string, p *Printer) error {
 			// above 1 asks for a declared floor.
 			SyntaxProfile:     syntaxProfile,
 			ProfileDeclaredBy: profileDeclaredBy,
+			ProfileUnread:     profileUnread,
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())

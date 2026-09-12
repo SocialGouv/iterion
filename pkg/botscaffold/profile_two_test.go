@@ -57,8 +57,9 @@ func TestEveryTemplateRendersProfileTwoWithAFloor(t *testing.T) {
 }
 
 // With no floor given, the scaffold writes this build's version when it is
-// orderable and nothing on a dev build — which `iterion validate` then asks
-// for (C252) rather than a release number guessed here.
+// orderable, and on a dev build the release that reads the profile its
+// templates are written in — a bundle written in profile 2 with no floor
+// is what C252 exists to refuse.
 func TestScaffoldFloorIsThisBuildsVersion(t *testing.T) {
 	prev := appinfo.Version
 	t.Cleanup(func() { appinfo.Version = prev })
@@ -79,7 +80,7 @@ func TestScaffoldFloorIsThisBuildsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, err = bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
-	if err != nil || m.Requires != nil {
+	if err != nil || m.Requires == nil || m.Requires.Iterion != ">= 3.141.0" {
 		t.Fatalf("dev build: %v %+v", err, m.Requires)
 	}
 }

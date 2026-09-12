@@ -25,9 +25,9 @@ func TestProfileTwoWithoutAFloorDrawsC252(t *testing.T) {
 	if found.Severity != SeverityWarning || !strings.Contains(found.Message, "children/a.bot") || !strings.Contains(found.Hint, `">= 3.141.0"`) {
 		t.Fatalf("C252 = %+v", *found)
 	}
-	// A dev build names no version, but still asks.
+	// A dev build still names the release that reads the profile.
 	diags = CheckConsistency(Input{Manifest: m, SyntaxProfile: 2, ProfileDeclaredBy: []string{"main.bot"}, EngineBuild: "dev"})
-	if len(diags) != 1 || diags[0].Code != DiagProfileNeedsFloor || !strings.Contains(diags[0].Hint, "the release that reads profile 2") {
+	if len(diags) != 1 || diags[0].Code != DiagProfileNeedsFloor || !strings.Contains(diags[0].Hint, `">= 3.141.0"`) {
 		t.Fatalf("dev build: %v", diags)
 	}
 	// With a floor, or in profile 1, nothing.
