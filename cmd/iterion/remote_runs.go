@@ -62,6 +62,9 @@ var (
 	remoteLaunchModelOverrides  string
 	remoteLaunchCallbackURL     string
 	remoteLaunchCallbackToken   string
+	remoteLaunchRepoURL         string
+	remoteLaunchRepoRef         string
+	remoteLaunchConnectionID    string
 	remoteLaunchFollow          bool
 	remoteLaunchInterval        time.Duration
 )
@@ -105,6 +108,9 @@ var remoteRunsLaunchCmd = &cobra.Command{
 			ModelOverridesJSON: overrides,
 			CallbackURL:        remoteLaunchCallbackURL,
 			CallbackToken:      remoteLaunchCallbackToken,
+			RepoURL:            remoteLaunchRepoURL,
+			RepoRef:            remoteLaunchRepoRef,
+			ConnectionID:       remoteLaunchConnectionID,
 			Follow:             remoteLaunchFollow,
 			FollowInterval:     remoteLaunchInterval,
 		}
@@ -463,6 +469,9 @@ func init() {
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchModelOverrides, "model-overrides", "", "Model overrides JSON array (literal or @file)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCallbackURL, "callback-url", "", "Completion webhook URL")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCallbackToken, "callback-token", "", "Token echoed in the completion webhook")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchRepoURL, "repo-url", "", "Git repository the runner clones into the run's workspace (cloud only)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchRepoRef, "repo-ref", "", "Branch, tag or sha to check out with --repo-url (default: the repo's own default branch)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchConnectionID, "connection-id", "", "Forge connection whose managed token authenticates the --repo-url clone")
 	remoteRunsLaunchCmd.Flags().BoolVar(&remoteLaunchFollow, "follow", false, "Tail the run until it terminates")
 	remoteRunsLaunchCmd.Flags().DurationVar(&remoteLaunchInterval, "interval", 2*time.Second, "Follow poll interval")
 

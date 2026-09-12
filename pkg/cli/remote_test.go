@@ -257,6 +257,63 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}
 }
 
+// A repo-scoped bot (a reviewer, a fixer) is written to read a checkout. The
+// server clones one when the launch names it, so the three fields have to reach
+// the request — and have to stay ABSENT otherwise, since an empty repo_url on a
+// local-mode server is refused rather than ignored.
+func TestRemoteRunsLaunch_AimsTheRunAtARepository(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts cli.RemoteRunsLaunchOptions
+		want map[string]any
+	}{
+		{
+			name: "a repo-targeted launch carries all three",
+			opts: cli.RemoteRunsLaunchOptions{
+				BotID:        "review-pr",
+				RepoURL:      "https://github.com/acme/widgets",
+				RepoRef:      "refs/pull/7/head",
+				ConnectionID: "conn_42",
+			},
+			want: map[string]any{
+				"repo_url":      "https://github.com/acme/widgets",
+				"repo_ref":      "refs/pull/7/head",
+				"connection_id": "conn_42",
+			},
+		},
+		{
+			name: "a launch that names no repo sends no repo key at all",
+			opts: cli.RemoteRunsLaunchOptions{BotID: "review-pr"},
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				fmt.Fprint(w, `{"run_id":"r1","status":"running"}`)
+			}))
+			p, _ := remotePrinter(cli.OutputHuman)
+			if err := cli.RemoteRunsLaunch(context.Background(), c, p, tc.opts); err != nil {
+				t.Fatalf("launch: %v", err)
+			}
+			for _, k := range []string{"repo_url", "repo_ref", "connection_id"} {
+				want, expected := tc.want[k]
+				switch {
+				case expected && got[k] != want:
+					t.Errorf("%s = %v, want %v", k, got[k], want)
+				case !expected:
+					if _, present := got[k]; present {
+						t.Errorf("%s = %v, want it absent — an empty value is not the same as unset to the server", k, got[k])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRemoteRunsFollow_CursorAndTerminal(t *testing.T) {
 	page := 0
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
