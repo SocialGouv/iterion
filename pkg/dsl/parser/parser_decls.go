@@ -307,8 +307,9 @@ func (p *parser) parseSecretField() *ast.SecretField {
 		Name: nameT.Value,
 		Span: ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
 	}
-	// Short form: a quoted value on the same line.
-	if p.peek().Type == TokenString {
+	// Short form: the value on the same line — quoted, or one bare word, as
+	// every string-valued property reads.
+	if t := p.peek(); t.Type == TokenString || t.Type == TokenIdent || isKeywordToken(t.Type) {
 		sf.Value = p.expectString()
 	}
 	p.skipNewlines()

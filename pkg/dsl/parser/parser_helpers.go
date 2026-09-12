@@ -121,6 +121,12 @@ func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []strin
 		switch t.Type {
 		case TokenDash:
 			p.next()
+			if n := p.peek(); lineEnds(n) || n.Type == TokenDedent || n.Type == TokenEOF {
+				// A bare `-` is not an empty item: said, and the rest of the
+				// list still read.
+				p.addErrorHint(DiagExpectedToken, n, "expected an element after `-`: a dash with nothing on its line is not an empty item", "Delete the bare `-`, or write the element after it.")
+				continue
+			}
 			if v, ok := parseElem(); ok {
 				out = append(out, v)
 			}

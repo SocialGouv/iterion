@@ -282,8 +282,9 @@ func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
 		return
 	}
 	p.expect(TokenColon)
-	if p.peek().Type == TokenLBrack {
-		// Named-instance pool (lease form): godot: ["godot-s1", "godot-s2", ...].
+	if t := p.peek(); t.Type == TokenLBrack || lineEnds(t) {
+		// Named-instance pool (lease form): godot: ["godot-s1", "godot-s2", ...],
+		// or the same members one `- item` per line under the name.
 		// Capacity = number of members; each acquire leases a distinct id. Ids
 		// are quoted strings (not bare idents) so they may carry hyphens/slashes
 		// — e.g. MCP server names or worktree paths.
