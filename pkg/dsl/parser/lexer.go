@@ -81,8 +81,7 @@ func NewLexer(filename, src string) *Lexer {
 	//    string-literal scanner don't drag \r into tokens or buffers.
 	//    Stray lone \r is left alone — that's vanishingly rare and a
 	//    legitimate-as-content scenario in heredocs.
-	src = strings.TrimPrefix(src, "\ufeff")
-	src = strings.ReplaceAll(src, "\r\n", "\n")
+	src = NormalizeSource(src)
 	// The head of the file decides how the rest is read (ReadPreamble): a
 	// header the parser will refuse (E040) reads as profile 1 meanwhile.
 	pre := ReadPreamble(src)
@@ -110,6 +109,16 @@ func NewLexer(filename, src string) *Lexer {
 	}
 	l.tokenize()
 	return l
+}
+
+// NormalizeSource is the text every reader of a file sees: the BOM
+// stripped and CRLF folded to LF (the two things NewLexer does before
+// tokenising). ReadPreamble expects this form, so a reader that asks the
+// head of a file on disk — the studio's save guard — normalises through
+// here rather than in its own way.
+func NormalizeSource(src string) string {
+	src = strings.TrimPrefix(src, "\ufeff")
+	return strings.ReplaceAll(src, "\r\n", "\n")
 }
 
 // dashOpensItem reports whether a `-` at the current position opens a list
