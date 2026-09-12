@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.140.3](https://github.com/SocialGouv/iterion/compare/v3.140.2...v3.140.3) (2026-09-12)
+
+### Bug Fixes
+
+* **review-pr:** the merge step no longer pins a gpt review to the Claude wire ([#1160](https://github.com/SocialGouv/iterion/issues/1160)) ([240d066](https://github.com/SocialGouv/iterion/commit/240d066c260b688d5182afcd6b548ba5622c5409)), references [#1150](https://github.com/SocialGouv/iterion/issues/1150)
+
+    <details><summary>why</summary>
+
+    `mono_family` picks which reviewer JUDGES; it never moved who MERGES. `agent converge` sits on every path and carried a hardcoded `backend: "claude_code"`, so selecting the gpt family bought a review that completed and then died on the Anthropic weekly cap at the aggregation step. A family switch that still requires the other family is the half-wired shape the parity doctrine calls a defect — measured today, when the deployment's seven-day window crossed its hard cap and every claude_code run…
+
+    </details>
+
 ## [3.140.2](https://github.com/SocialGouv/iterion/compare/v3.140.1...v3.140.2) (2026-09-12)
 
 ### Bug Fixes
