@@ -17,7 +17,10 @@ import (
 // becomes an Inline prompt of the file, named after its body, and the
 // property refers to it. On every kind that carries a prompt reference.
 func TestAStringOnAPromptPropertyIsAnInlinePrompt(t *testing.T) {
-	src := "agent a:\n  system: \"Review the diff\"\n  user: |\n    First paragraph.\n\n    Second paragraph.\n\nhuman h:\n  instructions: `Decide.`\n\nrouter r:\n  mode: llm\n  system: \"Route it\"\n\nsupervisor s:\n  watches: [a]\n  system: \"Watch.\"\n\nworkflow w:\n  entry: a\n  a -> r\n  r -> h\n  r -> done\n  h -> done\n"
+	// The model is pinned: C018 (no model, no backend) is waived only when
+	// the host can detect a credential, which a bare CI cannot — the test
+	// measures the prompt references, not the host.
+	src := "agent a:\n  model: \"anthropic/claude-opus-4-8\"\n  system: \"Review the diff\"\n  user: |\n    First paragraph.\n\n    Second paragraph.\n\nhuman h:\n  instructions: `Decide.`\n\nrouter r:\n  mode: llm\n  system: \"Route it\"\n\nsupervisor s:\n  watches: [a]\n  system: \"Watch.\"\n\nworkflow w:\n  entry: a\n  a -> r\n  r -> h\n  r -> done\n  h -> done\n"
 	res := parser.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
