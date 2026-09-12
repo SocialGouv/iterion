@@ -51,6 +51,7 @@ func TestDashListMistakesDrawOneDiagnosticEach(t *testing.T) {
 		{"list under a scalar", "agent a:\n  description:\n    - one\n    - two\n  model: \"m\"\n", DiagExpectedToken, "takes a single value, not a `- item` list", true},
 		{"deeper item", "agent a:\n  tools:\n    - bash\n      - grep\n  description: \"x\"\n", DiagBadIndentation, "nothing may be indented deeper", true},
 		{"two on a line", "agent a:\n  tools:\n    - bash grep\n  description: \"x\"\n", DiagUnexpectedToken, "one `- item` per line", true},
+		{"list under a scalar, comment after the colon", "agent a:\n  description: ## note\n    - one\n    - two\n  model: \"m\"\n", DiagExpectedToken, "takes a single value, not a `- item` list", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -103,5 +104,33 @@ func TestDashIsATokenOnlyWhereItOpensAnItem(t *testing.T) {
 	}
 	if !lexerRefusal {
 		t.Fatalf("a mid-line dash was not refused by the lexer: %v", mid.Diagnostics)
+	}
+}
+
+// A trailing `##` comment ends a line the way a newline does — after the
+// property's colon and after an element — and the list still reads whole,
+// on every list path and in every profile. The lexer emits the comment in
+// place of the newline it consumes, which used to hide the block from the
+// list readers and to refuse the `-` of the next item as an unexpected
+// character.
+func TestDashListSurvivesTrailingComments(t *testing.T) {
+	src := "agent a:\n  description: \"x\"\n  tools: ## allowed\n    - bash ## the shell\n    - \"kebab-tool\" ## quoted\n    - grep\n  skills: ## s\n    - house.style ## c\n    - \"changelog-writer\"\n  needs: ## n\n    - godot ## g\n    - blender\n\nsupervisor s:\n  watches: ## w\n    - a ## the agent\n  monitors:\n    - \"tool_error\" ## e\n    - \"cost>3\"\n  system: p\n\nprompt p:\n  Watch.\n\nworkflow w:\n  entry: a\n  allow: ## rules\n    - \"Read(**)\" ## r\n    - \"Bash(go test:*)\"\n  sandbox:\n    network:\n      mode: allowlist\n      rules: ## hosts\n        - \"!**.evil.site\" ## no\n        - github\n  a -> done\n"
+	for _, profile := range []string{"", "dsl: 2\n"} {
+		res := Parse("x.bot", profile+src)
+		if len(res.Diagnostics) != 0 {
+			t.Fatalf("profile %q: %v", profile, res.Diagnostics)
+		}
+		a := res.File.Agents[0]
+		if !reflect.DeepEqual(a.Tools, []string{"bash", "kebab-tool", "grep"}) || !reflect.DeepEqual(a.Skills, []string{"house.style", "changelog-writer"}) || !reflect.DeepEqual(a.Needs, []string{"godot", "blender"}) {
+			t.Fatalf("profile %q: agent lists: tools=%v skills=%v needs=%v", profile, a.Tools, a.Skills, a.Needs)
+		}
+		s := res.File.Supervisors[0]
+		if !reflect.DeepEqual(s.Watches, []string{"a"}) || !reflect.DeepEqual(s.Monitors, []string{"tool_error", "cost>3"}) {
+			t.Fatalf("profile %q: supervisor lists: watches=%v monitors=%v", profile, s.Watches, s.Monitors)
+		}
+		w := res.File.Workflows[0]
+		if len(w.Allow) != 2 || len(w.Sandbox.Network.Rules) != 2 || w.Sandbox.Network.Rules[1] != "github" {
+			t.Fatalf("profile %q: workflow lists: allow=%v rules=%v", profile, w.Allow, w.Sandbox.Network.Rules)
+		}
 	}
 }

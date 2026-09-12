@@ -279,7 +279,7 @@ func (p *parser) parseStringMapBlock() map[string]string {
 // — useful for sandbox.network.rules where authors mix quoted globs
 // like "!**.evil.site" and bare hostnames like github.com.
 func (p *parser) parseStringOrIdentList() []string {
-	if p.peek().Type == TokenNewline {
+	if lineEnds(p.peek()) {
 		return p.parseDashList(func() (string, bool) {
 			v := p.expectStringOrIdent()
 			return v, v != ""

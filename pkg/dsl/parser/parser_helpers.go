@@ -48,11 +48,19 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 	}
 }
 
+// lineEnds reports whether t closes the line a property's colon is on: a
+// newline, or a trailing comment — the lexer emits the comment in place of
+// the newline it consumes (scanComment), so a `- item` block may follow
+// either. Every reader that opens the block after the colon asks this, so
+// the two boundaries cannot drift apart again.
+func lineEnds(t Token) bool {
+	return t.Type == TokenNewline || t.Type == TokenComment
+}
+
 // parseNeedsList parses a node's `needs:` value — either a single resource
 // name (`needs: godot`) or a bracketed list (`needs: [godot, blender]`).
 func (p *parser) parseNeedsList() []string {
-	switch p.peek().Type {
-	case TokenLBrack, TokenNewline:
+	if t := p.peek(); t.Type == TokenLBrack || lineEnds(t) {
 		return p.parseIdentList()
 	}
 	id := p.expectIdent()
@@ -70,7 +78,7 @@ func (p *parser) parseNeedsList() []string {
 // accepted in every profile: the inline form stays valid, so admitting the
 // second changed no text's meaning.
 func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []string {
-	if p.peek().Type == TokenNewline {
+	if lineEnds(p.peek()) {
 		return p.parseDashList(parseElem)
 	}
 	p.expect(TokenLBrack)
@@ -100,7 +108,7 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 // first; it used to draw three diagnostics per line (a stray `-`, a missing
 // `[`, an unknown property named after the element).
 func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []string {
-	p.next() // the newline after `key:`
+	p.next() // the newline after `key:`, or the trailing comment that took its place
 	p.skipNewlines()
 	if t := p.peek(); t.Type != TokenIndent {
 		p.addErrorHint(DiagExpectedToken, t, "expected a list: `[a, b]` after the colon, or `- item` lines indented below the property", "Write `[]` for an empty list.")
@@ -172,7 +180,7 @@ func (p *parser) parseToolList() []string {
 // the lexer does not treat '-' as an identifier part) or a bare dotted ident
 // (e.g. house_style). Empty list [] is allowed.
 func (p *parser) parseSkillList() []string {
-	if p.peek().Type == TokenNewline {
+	if lineEnds(p.peek()) {
 		return p.parseDashList(func() (string, bool) {
 			if p.peek().Type == TokenString {
 				v := p.next().Value

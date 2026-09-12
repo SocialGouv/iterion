@@ -113,11 +113,19 @@ func NewLexer(filename, src string) *Lexer {
 // or the end of the file. Anywhere else `-` is not a token of the language
 // (`->` is), and a prompt body, a block scalar or a raw string never reach
 // this scanner.
+//
+// "First on its line" is read from the source, not from the token stream:
+// a trailing comment stands in for the newline it consumed (scanComment),
+// so on the line after `- bash ## note` the previous TOKEN is the element,
+// while only indentation precedes the `-` on its own line.
 func (l *Lexer) dashOpensItem() bool {
-	switch l.lastSignificantToken() {
-	case TokenNewline, TokenIndent, TokenDedent, TokenEOF:
-	default:
+	if l.line-1 >= len(l.lineStarts) {
 		return false
+	}
+	for i := l.lineStarts[l.line-1]; i < l.pos && i < len(l.src); i++ {
+		if l.src[i] != ' ' && l.src[i] != '\t' {
+			return false
+		}
 	}
 	if l.pos+1 >= len(l.src) {
 		return true
