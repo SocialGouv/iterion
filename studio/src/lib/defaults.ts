@@ -17,6 +17,9 @@ import type {
 // auto-detects on first execution (see docs/backends.md).
 export function createEmptyDocument(): IterDocument {
   return {
+    // A new file is written in the newest syntax profile (ADR-098): the
+    // server writes the `dsl: 2` header back on save.
+    profile: 2,
     prompts: [
       { name: "system_prompt", body: "You are a helpful assistant." },
       { name: "user_prompt", body: "{{input.query}}" },

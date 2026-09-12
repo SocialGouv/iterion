@@ -39,6 +39,23 @@ type Lexer struct {
 	// every \X is preserved verbatim for downstream layers to handle).
 	strictEscape bool
 
+	// profile is the syntax profile the file declares in its `dsl: N`
+	// header (parser.Preamble), 1 when it declares none. Read before
+	// tokenising, as the escape mode is: profile 2 reads standard escapes
+	// with no directive.
+	profile int
+
+	// lineStarts is the rune index of each line's first rune (line 1 at
+	// 0): what turns a token's (Line, Column) into its Offset.
+	lineStarts []int
+
+	// profileReads are the places a profile-1 file would be read otherwise
+	// under profile 2 (ProfileRead); pendingBlanks holds the blank lines of
+	// the prompt body being read until a further body line proves them
+	// interior — the trailing ones are dropped by both profiles.
+	profileReads  []ProfileRead
+	pendingBlanks []ProfileRead
+
 	// blockScalarMode: when true, lines are accumulated into blockScalarBuf
 	// until we see a line less indented than blockScalarBaseLevel. Triggered
 	// by `|` immediately following a colon, YAML-style.
@@ -64,8 +81,16 @@ func NewLexer(filename, src string) *Lexer {
 	//    string-literal scanner don't drag \r into tokens or buffers.
 	//    Stray lone \r is left alone — that's vanishingly rare and a
 	//    legitimate-as-content scenario in heredocs.
-	src = strings.TrimPrefix(src, "\ufeff")
-	src = strings.ReplaceAll(src, "\r\n", "\n")
+	src = NormalizeSource(src)
+	// The head of the file decides how the rest is read (ReadPreamble): a
+	// header the parser will refuse (E040) reads as profile 1 meanwhile.
+	pre := ReadPreamble(src)
+	profile := max(pre.Profile, 1)
+	if profile > MaxProfile {
+		// The parser refuses it (E040); the strings are read as profile 1
+		// meanwhile, never with a profile this build knows nothing of.
+		profile = 1
+	}
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,
@@ -73,10 +98,84 @@ func NewLexer(filename, src string) *Lexer {
 		col:          1,
 		indentStack:  []int{0},
 		atLineStart:  true,
-		strictEscape: detectStrictEscape(src),
+		strictEscape: pre.StrictEscape || profile >= 2,
+		profile:      profile,
+	}
+	l.lineStarts = []int{0}
+	for i, r := range l.src {
+		if r == '\n' {
+			l.lineStarts = append(l.lineStarts, i+1)
+		}
 	}
 	l.tokenize()
 	return l
+}
+
+// NormalizeSource is the text every reader of a file sees: the BOM
+// stripped and CRLF folded to LF (the two things NewLexer does before
+// tokenising). ReadPreamble expects this form, so a reader that asks the
+// head of a file on disk — the studio's save guard — normalises through
+// here rather than in its own way.
+func NormalizeSource(src string) string {
+	src = strings.TrimPrefix(src, "\ufeff")
+	return strings.ReplaceAll(src, "\r\n", "\n")
+}
+
+// dashOpensItem reports whether a `-` at the current position opens a list
+// item — the YAML-style form of a list, one `- item` per line under the
+// property: first token on its line, followed by a space, a tab, a newline
+// or the end of the file. Anywhere else `-` is not a token of the language
+// (`->` is), and a prompt body, a block scalar or a raw string never reach
+// this scanner.
+//
+// "First on its line" is read from the source, not from the token stream:
+// a trailing comment stands in for the newline it consumed (scanComment),
+// so on the line after `- bash ## note` the previous TOKEN is the element,
+// while only indentation precedes the `-` on its own line.
+func (l *Lexer) dashOpensItem() bool {
+	if l.line-1 >= len(l.lineStarts) {
+		return false
+	}
+	for i := l.lineStarts[l.line-1]; i < l.pos && i < len(l.src); i++ {
+		if l.src[i] != ' ' && l.src[i] != '\t' {
+			return false
+		}
+	}
+	if l.pos+1 >= len(l.src) {
+		return true
+	}
+	switch l.src[l.pos+1] {
+	case ' ', '\t', '\n':
+		return true
+	}
+	return false
+}
+
+// ProfileRead is one place where a file read as profile 1 would be read
+// otherwise under profile 2: an `escape` — a backslash inside a `"…"`
+// literal, kept verbatim by profile 1 and decoded by profile 2 — or a
+// `paragraph` — a blank line inside a prompt body, dropped by profile 1 and
+// kept by profile 2. What `iterion validate` reports (C144) on a file with
+// no `dsl:` header, so the profile it is read in is a choice and not a
+// default nobody noticed.
+type ProfileRead struct {
+	Line int
+	Kind string
+}
+
+// ProfileReads lists the places profile 2 would read otherwise, in order
+// of appearance. Empty for a profile-2 source by construction: its escapes
+// take the strict branch and its blank body lines become tokens, so the
+// scanners never note one.
+func (l *Lexer) ProfileReads() []ProfileRead {
+	return l.profileReads
+}
+
+// Profile is the syntax profile the source declared (1 when it declared
+// none, or a header the parser refuses), the reading every string of the
+// token stream got.
+func (l *Lexer) Profile() int {
+	return max(l.profile, 1)
 }
 
 // detectStrictEscape scans the first directives at the top of the file
@@ -135,6 +234,15 @@ func (l *Lexer) Backup() {
 	if l.ti > 0 {
 		l.ti--
 	}
+}
+
+// PeekAt returns the token n positions ahead without consuming anything
+// (PeekAt(0) is Peek).
+func (l *Lexer) PeekAt(n int) Token {
+	if l.ti+n >= len(l.tokens) {
+		return Token{Type: TokenEOF, Line: l.line, Column: l.col}
+	}
+	return l.tokens[l.ti+n]
 }
 
 // ---------------- internal ----------------
@@ -205,6 +313,21 @@ func (l *Lexer) handleLineStart() {
 
 	// Blank line or end of file — skip
 	if l.pos >= len(l.src) || l.src[l.pos] == '\n' {
+		if l.promptMode && l.pos < len(l.src) {
+			if l.profile > 1 {
+				// Profile 2 keeps a paragraph break inside a prompt body: an
+				// empty prompt line, whatever spaces the line held. The
+				// parser trims trailing ones, so the blank line after a body
+				// is not part of it.
+				l.emit(TokenPromptLine, "", l.line, 1)
+			} else {
+				// Profile 1 skips every blank line — the model gets one
+				// newline for a paragraph break — a rule frozen with it.
+				// Noted as a place profile 2 reads otherwise, once a further
+				// body line proves the blank line interior.
+				l.pendingBlanks = append(l.pendingBlanks, ProfileRead{Line: l.line, Kind: "paragraph"})
+			}
+		}
 		if l.pos < len(l.src) {
 			l.advance() // consume '\n'
 		}
@@ -215,8 +338,11 @@ func (l *Lexer) handleLineStart() {
 	// If in prompt mode, emit raw lines until we see less indentation
 	if l.promptMode {
 		if spaces < l.promptBodyLevel {
-			// End prompt mode, fall through to normal indent handling
+			// End prompt mode, fall through to normal indent handling. The
+			// blank lines since the last body line were trailing: both
+			// profiles drop them.
 			l.promptMode = false
+			l.pendingBlanks = nil
 			// Emit DEDENT for the prompt body block
 			if len(l.indentStack) > 1 && l.indentStack[len(l.indentStack)-1] >= l.promptBodyLevel {
 				l.indentStack = l.indentStack[:len(l.indentStack)-1]
@@ -323,6 +449,9 @@ func (l *Lexer) significantIndexAt(idx int) int {
 
 // emitPromptLine captures the rest of the current line as a prompt text line.
 func (l *Lexer) emitPromptLine(leadingSpaces int) {
+	// A further body line: the blank lines before it were interior.
+	l.profileReads = append(l.profileReads, l.pendingBlanks...)
+	l.pendingBlanks = nil
 	startLine := l.line
 	// Compute relative indentation: subtract the prompt body base level
 	relativeSpaces := leadingSpaces - l.promptBodyLevel
@@ -395,6 +524,10 @@ func (l *Lexer) scanToken() {
 	case ch == ':':
 		l.advance()
 		l.emit(TokenColon, ":", startLine, startCol)
+
+	case ch == '-' && l.dashOpensItem():
+		l.advance()
+		l.emit(TokenDash, "-", startLine, startCol)
 
 	case ch == '-' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '>':
 		l.advance()
@@ -473,6 +606,7 @@ func (l *Lexer) scanToken() {
 func (l *Lexer) scanString(startLine, startCol int) {
 	l.advance() // skip opening "
 	var buf []rune
+	noted := false // the literal's backslashes are one ProfileRead
 	for l.pos < len(l.src) && l.src[l.pos] != '"' {
 		if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
 			if l.strictEscape {
@@ -501,6 +635,12 @@ func (l *Lexer) scanString(startLine, startCol int) {
 				l.advance()
 				l.advance()
 				continue
+			}
+			// Profile 1 keeps the backslash and the next character verbatim
+			// — the one reading profile 2 changes.
+			if !noted {
+				l.profileReads = append(l.profileReads, ProfileRead{Line: startLine, Kind: "escape"})
+				noted = true
 			}
 			buf = append(buf, l.src[l.pos], l.src[l.pos+1])
 			l.advance()
@@ -741,8 +881,15 @@ func (l *Lexer) advance() {
 	}
 }
 
+// emit records a token at the position its scanner started from; the
+// scanner has consumed the token's text by now, so the current position is
+// where it ends.
 func (l *Lexer) emit(tt TokenType, value string, line, col int) {
-	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col})
+	offset := 0
+	if line >= 1 && line <= len(l.lineStarts) {
+		offset = l.lineStarts[line-1] + col - 1
+	}
+	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col, Offset: offset, End: l.pos})
 }
 
 // skipRestOfString advances past the remainder of a quoted literal after an

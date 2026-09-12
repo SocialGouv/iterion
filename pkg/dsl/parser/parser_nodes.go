@@ -55,10 +55,10 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.ArtifactLabels = p.parseToolList()
 	case TokenSystem:
 		p.expect(TokenColon)
-		d.System = p.expectIdent()
+		d.System = p.promptRef()
 	case TokenUser:
 		p.expect(TokenColon)
-		d.User = p.expectIdent()
+		d.User = p.promptRef()
 	case TokenSession:
 		p.expect(TokenColon)
 		d.Session = p.parseSessionMode()
@@ -236,11 +236,11 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 		case TokenSystem:
 			p.next()
 			p.expect(TokenColon)
-			rd.System = p.expectIdent()
+			rd.System = p.promptRef()
 		case TokenUser:
 			p.next()
 			p.expect(TokenColon)
-			rd.User = p.expectIdent()
+			rd.User = p.promptRef()
 		case TokenMulti:
 			p.next()
 			p.expect(TokenColon)
@@ -371,7 +371,7 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 		hd.ArtifactLabels = p.parseToolList()
 	case TokenInstructions:
 		p.expect(TokenColon)
-		hd.Instructions = p.expectIdent()
+		hd.Instructions = p.promptRef()
 	case TokenInteraction:
 		p.expect(TokenColon)
 		hd.Interaction = p.parseInteractionMode()
@@ -386,7 +386,7 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 		hd.Model = p.expectString()
 	case TokenSystem:
 		p.expect(TokenColon)
-		hd.System = p.expectIdent()
+		hd.System = p.promptRef()
 	case TokenAwait:
 		p.expect(TokenColon)
 		hd.Await = p.parseAwaitMode()
@@ -909,6 +909,13 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 			}
 			break
 		}
+		// A member named like a declaration keyword (`agent`, `tool`, …)
+		// is the source of an internal edge when an arrow follows its
+		// reference; the type of its token says nothing about that.
+		if p.edgeAhead() {
+			gd.Edges = append(gd.Edges, p.parseEdge()...)
+			continue
+		}
 		switch t.Type {
 		case TokenAgent:
 			if ad := p.parseAgentDecl(); ad != nil {
@@ -950,9 +957,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 				continue
 			}
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
-				if e := p.parseEdge(); e != nil {
-					gd.Edges = append(gd.Edges, e)
-				}
+				gd.Edges = append(gd.Edges, p.parseEdge()...)
 			} else {
 				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
 				p.next()
@@ -1215,16 +1220,18 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 			}
 			break
 		}
-		switch {
-		case t.Type == TokenIdent && t.Value == "from":
+		// Matched by their text, so the match survives any of the three
+		// words becoming a keyword.
+		switch tokenAsIdent(t) {
+		case "from":
 			p.next()
 			p.expect(TokenColon)
 			ad.From = p.expectStringOrIdent()
-		case t.Type == TokenIdent && t.Value == "timeout":
+		case "timeout":
 			p.next()
 			p.expect(TokenColon)
 			ad.Timeout = p.expectString()
-		case t.Type == TokenIdent && t.Value == "description":
+		case "description":
 			p.next()
 			p.expect(TokenColon)
 			ad.Description = p.expectString()

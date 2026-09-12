@@ -6,8 +6,17 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 // File — root of the AST
 // ---------------------------------------------------------------------------
 
+// DefaultProfile is the syntax profile a file declares by declaring none:
+// today's grammar, frozen (ADR-098).
+const DefaultProfile = 1
+
 // File is the root AST node representing an entire .bot source file.
 type File struct {
+	// Profile is the syntax profile of the file's `dsl: N` header, its
+	// first declaration; 0 when it has none. Read it through
+	// EffectiveProfile: a document built in memory — the studio's, a
+	// test's — has no header and is profile 1, as a file without one is.
+	Profile      int
 	Vars         *VarsBlock          // top-level vars (optional, at most one)
 	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
 	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
@@ -33,6 +42,15 @@ type File struct {
 	Workflows    []*WorkflowDecl     // workflow declarations
 	Comments     []*Comment          // top-level comments (## ...)
 	Span         Span
+}
+
+// EffectiveProfile is the syntax profile the file is read in: its header's,
+// or DefaultProfile when it declares none.
+func (f *File) EffectiveProfile() int {
+	if f.Profile < DefaultProfile {
+		return DefaultProfile
+	}
+	return f.Profile
 }
 
 // GroupDecl is a reusable cluster of nodes + internal edges, parameterised by
@@ -339,7 +357,14 @@ type SecretField struct {
 type PromptDecl struct {
 	Name string
 	Body string // raw text, may contain {{...}} template expressions
-	Span Span
+	// Inline marks a prompt written as the text of the property that
+	// references it (`system: "…"`, `user: |`, `instructions: "…"`) rather
+	// than as a `prompt <name>:` declaration. Its name is derived from its
+	// body (`_inline_<hash>`), so it is stable under a node's rename and two
+	// references to the same text share it. The writer puts it back on its
+	// property, and the save guard compares its body verbatim.
+	Inline bool
+	Span   Span
 }
 
 // ---------------------------------------------------------------------------

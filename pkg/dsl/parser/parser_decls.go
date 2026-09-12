@@ -307,8 +307,9 @@ func (p *parser) parseSecretField() *ast.SecretField {
 		Name: nameT.Value,
 		Span: ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
 	}
-	// Short form: a quoted value on the same line.
-	if p.peek().Type == TokenString {
+	// Short form: the value on the same line — quoted, or one bare word, as
+	// every string-valued property reads.
+	if t := p.peek(); t.Type == TokenString || t.Type == TokenIdent || isKeywordToken(t.Type) {
 		sf.Value = p.expectString()
 	}
 	p.skipNewlines()
@@ -465,6 +466,12 @@ func (p *parser) parsePromptDecl() *ast.PromptDecl {
 		}
 	}
 
+	// Trailing empty lines are the blank lines between the body and the
+	// next declaration — profile 2 emits them, since it keeps a paragraph
+	// break; a body never ends with a newline, in either profile.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	body := strings.Join(lines, "\n")
 
 	return &ast.PromptDecl{
@@ -761,7 +768,7 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 			p.skipNewlines()
 		case "system":
 			p.expect(TokenColon)
-			sd.System = p.expectIdent()
+			sd.System = p.promptRef()
 			p.skipNewlines()
 		case "cooldown":
 			p.expect(TokenColon)

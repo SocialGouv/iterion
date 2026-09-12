@@ -3,6 +3,9 @@
 // the Go side; reload the studio whenever the AST changes.
 
 export interface IterDocument {
+  // The syntax profile of the file's `dsl: N` header (ADR-098); absent
+  // or 0 = profile 1. The server writes the header back on save.
+  profile?: number;
   vars?: VarsBlock;
   presets?: PresetsBlock;
   attachments?: AttachmentsBlock;
@@ -292,6 +295,9 @@ export interface CompactionBlock {
 export interface PromptDecl {
   name: string;
   body: string;
+  // Written inline on the property that references it (`system: "…"`);
+  // named after its body (`_inline_<hash>`), re-inlined by the writer.
+  inline?: boolean;
 }
 
 export interface SchemaDecl {

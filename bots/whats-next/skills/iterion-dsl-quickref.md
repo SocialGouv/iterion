@@ -255,7 +255,7 @@ parser). A name absent from a kind's line is refused with E012 and the
 closest accepted name.
 
 <!-- dsl-spec:begin skill -->
-Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` inline lists · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
+Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
 
 - `prompt` — entries `indented text lines`
 - `schema` — entries `field: string | bool | int | float | json | string[] | file [enum: "a", "b"]`
@@ -290,7 +290,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int
 - `resources` (`resources:` in workflow) — entries `name: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
-- `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool · visibility "bot|project|cross_project|user|org|global"
+- `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool (profile ≤1) · visibility "bot|project|cross_project|user|org|global"
 - `mcp` (`mcp:` in workflow, agent, judge) — autoload_project bool · inherit bool · servers [id] · disable [id]
 - `sandbox` (`sandbox:` in workflow, agent, judge, tool) — mode none|auto|inline · image str · build {sandbox.build} · user str · workspace_folder str · host_state auto|none · post_create str · env map · mounts [str|id] · network {sandbox.network}
 - `sandbox.build` (`build:` in sandbox) — dockerfile str · context str · args map
@@ -322,7 +322,7 @@ Rules:
    (`as fix("{{vars.cap}}")`); a quoted plain int `as fix("2")` is read as
    the int 2, but a quoted non-numeric cap `as fix("two")` is an E002 error.
 2. Conditional edges must be exhaustive (or have an unconditional fallback).
-3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
+3. Edge `with {}` values are strings; an int/bool/float literal (`with { n: 3 }`) is read as its text (`"3"`). Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.
 5. `as <loop>` / `as foreach` cannot originate inside a `fan_out_all`, `fan_out_each`,
    or llm `multi: true` body, or re-enter a body node from the join (**C244**).
@@ -577,11 +577,20 @@ shipped bots, so they are written here:
   block scalar, where it is text** — `# Approve the plan?` in a prompt reaches
   the model as a heading. A literal `{{…}}` example belongs in prose, not in a
   prompt (every reference in a prompt is validated).
-- **A blank line inside a prompt body is dropped.** The lexer skips blank
-  and space-only lines under a prompt header, so a paragraph break reaches
-  the model as a single newline; put a heading or a line of prose where the
-  model must see a break, and a multi-line `{{…}}` value under a heading or
-  inside a ``` fence, or it runs into the line that follows it.
+- **A blank line inside a prompt body is dropped under profile 1, kept
+  under `dsl: 2`.** Without the header the lexer skips blank and space-only
+  lines under a prompt header, so a paragraph break reaches the model as a
+  single newline; with it the break is kept. In both, put a multi-line
+  `{{…}}` value under a heading or inside a ``` fence, or it runs into the
+  line that follows it. A prompt may also sit where it is used —
+  `system: "Review the diff"`, `user: |` with the text below — as an inline
+  prompt named after its body.
+- **Under `dsl: 2` a `"…"` string reads standard escapes** (`\n` is a
+  newline, `\"` a quote, `\\` a backslash); without the header every
+  backslash is kept verbatim. Lists may be `[a, b]` or one `- item` per
+  line; `a -> b -> c` is two edges with the clauses on the last one; a plain
+  bare word is a string value (`backend: claw`); `with { n: 3 }` reads `3`
+  as text. Every one of these holds in both profiles.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
   `-> fail` target carries no code. The engine's own codes are reserved
   (C248 names them: `BUDGET_EXCEEDED`, `TIMEOUT`, … — the list is
@@ -808,7 +817,11 @@ The whats-next pipeline almost never needs to author DSL. If
 
 ### Start from a template
 
-Fill a validated shape rather than writing the graph from the grammar:
+Every new file starts with `dsl: 2` on its first significant line — the
+syntax profile (standard `\n`-style escapes in quoted strings, paragraph
+breaks kept in prompt bodies); the templates and the studio write it, and
+`iterion dsl migrate --to 2 <file>` moves an existing file. Fill a validated
+shape rather than writing the graph from the grammar:
 
 ```sh
 iterion bots templates                       # the gallery, one line per template

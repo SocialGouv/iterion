@@ -27,6 +27,13 @@ const (
 	// Edge clause errors
 	DiagDuplicateEdgeClause DiagCode = "E030" // duplicate when/as/with clause on an edge
 	DiagElseWithWhen        DiagCode = "E031" // an edge cannot carry both when and else
+	DiagClauseBeforeArrow   DiagCode = "E032" // a clause in the middle of a chain `a -> b when x -> c`
+
+	// Header errors (the `dsl: N` syntax profile, ADR-098)
+	DiagUnknownProfile     DiagCode = "E040" // the header names a profile this build does not read, or is not a positive integer
+	DiagMisplacedHeader    DiagCode = "E041" // the header is not the first declaration, or appears twice
+	DiagDirectiveInProfile DiagCode = "E042" // the profile-1 strict-escape directive in a file of profile 2 or later
+	DiagRemovedInProfile   DiagCode = "E043" // a property the file's profile removed (`project_root:` from profile 2)
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -47,6 +54,11 @@ var hints = map[DiagCode]string{
 	DiagInvalidType:         "Types are `string`, `bool`, `int`, `float`, `json` and `string[]` (a schema field may also be `file`).",
 	DiagDuplicateEdgeClause: "Each of `when`/`else`, `as` and `with` may appear once per edge.",
 	DiagElseWithWhen:        "An edge is either guarded (`when`) or the fallback (`else`), never both.",
+	DiagClauseBeforeArrow:   "In a chain `a -> b -> c …` the clauses apply to the LAST segment only; to guard, loop or map an earlier one, write that segment as its own edge line.",
+	DiagUnknownProfile:      "Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: \">= <version>\" }` in the bundle manifest.",
+	DiagMisplacedHeader:     "Move the `dsl:` line above every declaration — after the leading comments, before the first block or node — and keep a single one.",
+	DiagDirectiveInProfile:  "Profile 2 reads standard escapes in every quoted string by default: delete the `strict-escape` directive (a backslash that must stay literal is written `\\\\`).",
+	DiagRemovedInProfile:    "Keep the file in profile 1 (drop the `dsl: 2` header), or redesign the memory scope: `visibility:` is a different axis (C171), not a drop-in replacement for `project_root:`.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is
@@ -64,14 +76,14 @@ func expectedTokenHint(want, got TokenType) string {
 	switch want {
 	case TokenIdent:
 		if got == TokenString {
-			return "This property takes a bare name — a declared `prompt`, `schema` or node — not a quoted string. For `system:`/`user:` declare the text as a prompt (`prompt my_prompt:` with the text below it, then `system: my_prompt`); for `entry:`/`input:`/`output:` just remove the quotes (`entry: a`)."
+			return "This property takes a bare name — a declared `schema` or node — not a quoted string: remove the quotes (`entry: a`, `output: verdict`)."
 		}
 		return "This property takes a bare name (letters, digits, `_`), such as a declared prompt, schema or node."
 	case TokenString:
-		if got == TokenIdent || got == TokenInt || got == TokenFloat {
-			return "Quote this value (`backend: \"claw\"`, `timeout: \"20m\"`) — an unquoted word is read as an identifier."
+		if got == TokenInt || got == TokenFloat {
+			return "Quote this value (`timeout: \"20m\"`, `model: \"gpt-5.5\"`) — a bare value is only read when it is one plain word."
 		}
-		return "This property takes a quoted string (or a backtick raw string, or a `|` block scalar)."
+		return "This property takes a string: quoted, a backtick raw string, a `|` block scalar, or one plain word (`backend: claw`)."
 	case TokenInt:
 		return "This property takes an unquoted integer literal."
 	case TokenIndent:
@@ -79,9 +91,9 @@ func expectedTokenHint(want, got TokenType) string {
 	case TokenColon:
 		return "Write `key: value` — a colon right after the property name — or `src -> dst` for an edge."
 	case TokenLBrack:
-		return "This property takes an inline list on one line: `[a, b]`."
+		return "This property takes a list: an inline list on the property's line (`[a, b]`), or one `- item` per line indented below it."
 	case TokenRBrack:
-		return "Close the list with `]`: comma-separated elements on ONE line, no `- item` lines."
+		return "Close the inline list with `]` (comma-separated elements on ONE line), or write the list as `- item` lines indented below the property."
 	case TokenArrow:
 		return "An edge is `src -> dst`, optionally followed by `when …`, `else`, `as name(N)` or `with { … }`."
 	case TokenNewline:

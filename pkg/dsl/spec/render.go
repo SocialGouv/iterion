@@ -200,9 +200,19 @@ func Table(k Kind) string {
 	var b strings.Builder
 	b.WriteString("| Property | Value | Meaning |\n|---|---|---|\n")
 	for _, p := range k.Properties {
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", p.Name, valueCell(p), escapePipes(p.Doc))
+		fmt.Fprintf(&b, "| `%s` | %s | %s%s |\n", p.Name, valueCell(p), escapePipes(p.Doc), profileNote(p))
 	}
 	return b.String()
+}
+
+// profileNote says which profiles still accept a property the language
+// removed, so a reader of the table is not sent to write a line profile 2
+// refuses.
+func profileNote(p Property) string {
+	if p.Until == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — profile %d only (removed in profile %d)", p.Until, p.Until+1)
 }
 
 func valueCell(p Property) string {
@@ -246,7 +256,7 @@ func anchor(name string) string { return strings.ReplaceAll(name, ".", "") }
 // on every draft.
 func SkillSection() string {
 	var b strings.Builder
-	b.WriteString("Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `\"a|b\"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` inline lists · `map` `{K: \"v\"}` or an indented block · `with{}` a `with { k: \"v\" }` map · `{kind}` an indented block described under that kind.\n\n")
+	b.WriteString("Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `\"a|b\"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: \"v\"}` or an indented block · `with{}` a `with { k: \"v\" }` map · `{kind}` an indented block described under that kind.\n\n")
 	seen := map[string]bool{}
 	for _, k := range Kinds {
 		if seen[k.Name] {
@@ -265,7 +275,11 @@ func SkillSection() string {
 		if len(k.Properties) > 0 {
 			parts := make([]string, 0, len(k.Properties))
 			for _, p := range k.Properties {
-				parts = append(parts, p.Name+" "+shortForm(p))
+				part := p.Name + " " + shortForm(p)
+				if p.Until > 0 {
+					part += fmt.Sprintf(" (profile ≤%d)", p.Until)
+				}
+				parts = append(parts, part)
 			}
 			b.WriteString(" — " + strings.Join(parts, " · "))
 		}

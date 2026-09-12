@@ -48,10 +48,19 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 	}
 }
 
+// lineEnds reports whether t closes the line a property's colon is on: a
+// newline, or a trailing comment — the lexer emits the comment in place of
+// the newline it consumes (scanComment), so a `- item` block may follow
+// either. Every reader that opens the block after the colon asks this, so
+// the two boundaries cannot drift apart again.
+func lineEnds(t Token) bool {
+	return t.Type == TokenNewline || t.Type == TokenComment
+}
+
 // parseNeedsList parses a node's `needs:` value — either a single resource
 // name (`needs: godot`) or a bracketed list (`needs: [godot, blender]`).
 func (p *parser) parseNeedsList() []string {
-	if p.peek().Type == TokenLBrack {
+	if t := p.peek(); t.Type == TokenLBrack || lineEnds(t) {
 		return p.parseIdentList()
 	}
 	id := p.expectIdent()
@@ -61,10 +70,17 @@ func (p *parser) parseNeedsList() []string {
 	return []string{id}
 }
 
-// parseBracketList parses a comma-separated `[elem, elem, ...]` list,
-// calling parseElem for each element. parseElem reports ok=false to skip
-// appending (used by parsers that only accept well-formed elements).
+// parseBracketList parses a list in either of its two written forms — the
+// inline `[elem, elem, ...]`, or the YAML-style `- elem` lines indented
+// under the property (parseDashList) — calling parseElem for each element.
+// parseElem reports ok=false to skip appending (used by parsers that only
+// accept well-formed elements). Both forms yield the same list and are
+// accepted in every profile: the inline form stays valid, so admitting the
+// second changed no text's meaning.
 func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []string {
+	if lineEnds(p.peek()) {
+		return p.parseDashList(parseElem)
+	}
 	p.expect(TokenLBrack)
 	var out []string
 	appendElem := func() {
@@ -83,6 +99,56 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 	}
 	p.expect(TokenRBrack)
 	return out
+}
+
+// parseDashList parses the YAML-style form of a list: after the property's
+// colon and newline, an indented block of `- elem` lines, one element per
+// line, comment lines allowed between them, ending where the indentation
+// falls back. It is the form an author with YAML in their fingers writes
+// first; it used to draw three diagnostics per line (a stray `-`, a missing
+// `[`, an unknown property named after the element).
+func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []string {
+	p.next() // the newline after `key:`, or the trailing comment that took its place
+	p.skipNewlines()
+	if t := p.peek(); t.Type != TokenIndent {
+		p.addErrorHint(DiagExpectedToken, t, "expected a list: `[a, b]` after the colon, or `- item` lines indented below the property", "Write `[]` for an empty list.")
+		return nil
+	}
+	p.next() // INDENT
+	var out []string
+	for {
+		t := p.peek()
+		switch t.Type {
+		case TokenDash:
+			p.next()
+			if n := p.peek(); lineEnds(n) || n.Type == TokenDedent || n.Type == TokenEOF {
+				// A bare `-` is not an empty item: said, and the rest of the
+				// list still read.
+				p.addErrorHint(DiagExpectedToken, n, "expected an element after `-`: a dash with nothing on its line is not an empty item", "Delete the bare `-`, or write the element after it.")
+				continue
+			}
+			if v, ok := parseElem(); ok {
+				out = append(out, v)
+			}
+			if n := p.peek(); n.Type != TokenNewline && n.Type != TokenComment && n.Type != TokenDedent && n.Type != TokenEOF {
+				p.addError(DiagUnexpectedToken, n, "one `- item` per line: nothing may follow the element but a comment")
+				p.skipToNewline()
+			}
+		case TokenNewline, TokenComment:
+			p.next()
+		case TokenDedent:
+			p.next()
+			return out
+		case TokenEOF:
+			return out
+		case TokenIndent:
+			p.addError(DiagBadIndentation, t, "a list item is `- elem` at the list's own indentation; nothing may be indented deeper")
+			p.skipIndentedBlock()
+		default:
+			p.addErrorHint(DiagExpectedToken, t, "expected `- item` in the list, got "+t.Type.String(), "Every line of the list is `- elem`; close the list by outdenting the next property.")
+			p.skipToNewline()
+		}
+	}
 }
 
 func (p *parser) parseIdentList() []string {
@@ -120,6 +186,16 @@ func (p *parser) parseToolList() []string {
 // the lexer does not treat '-' as an identifier part) or a bare dotted ident
 // (e.g. house_style). Empty list [] is allowed.
 func (p *parser) parseSkillList() []string {
+	if lineEnds(p.peek()) {
+		return p.parseDashList(func() (string, bool) {
+			if p.peek().Type == TokenString {
+				v := p.next().Value
+				return v, v != ""
+			}
+			name := p.parseToolRef()
+			return name, name != ""
+		})
+	}
 	p.expect(TokenLBrack)
 	var names []string
 	if p.peek().Type == TokenRBrack {
@@ -169,10 +245,19 @@ func (p *parser) parseToolRef() string {
 	return id
 }
 
+// expectString reads a string value: a quoted string, a raw string, a `|`
+// block scalar — or a bare word (`backend: claw`, `provider: anthropic`),
+// which is the string it spells. The one choke point every string-valued
+// property goes through, so the bare form holds for the whole class; a
+// value that is not one word (`20m`, `a/b`, `x.y`, `two words`) still
+// wants its quotes, and the hint says so.
 func (p *parser) expectString() string {
 	t := p.next()
 	if t.Type == TokenString {
 		return t.Value
+	}
+	if word := tokenAsIdent(t); word != "" {
+		return word
 	}
 	p.expectFailed(t, TokenString, "expected string literal, got "+t.Type.String())
 	if t.Type == TokenError {

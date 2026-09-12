@@ -114,6 +114,7 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
+	Profile      int                     `json:"profile,omitempty"`
 	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
 	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
 	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
@@ -270,8 +271,9 @@ type jsonMemoryBlock struct {
 }
 
 type jsonPromptDecl struct {
-	Name string `json:"name,omitempty"`
-	Body string `json:"body,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Body   string `json:"body,omitempty"`
+	Inline bool   `json:"inline,omitempty"`
 }
 
 type jsonCursorDecl struct {
@@ -832,7 +834,7 @@ func toJSON(f *File) *jsonFile {
 		jf.MCPServers = append(jf.MCPServers, mcpServerToJSON(s))
 	}
 	for _, p := range f.Prompts {
-		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body})
+		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body, Inline: p.Inline})
 	}
 	for _, s := range f.Schemas {
 		jf.Schemas = append(jf.Schemas, schemaToJSON(s))
@@ -928,6 +930,7 @@ func toJSON(f *File) *jsonFile {
 	for _, c := range f.Comments {
 		jf.Comments = append(jf.Comments, &jsonComment{Text: c.Text})
 	}
+	jf.Profile = f.Profile
 
 	return jf
 }
@@ -1657,7 +1660,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	for _, jp := range jf.Prompts {
-		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body})
+		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body, Inline: jp.Inline})
 	}
 
 	for _, js := range jf.Schemas {
@@ -1809,6 +1812,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	for _, jc := range jf.Comments {
 		f.Comments = append(f.Comments, &Comment{Text: jc.Text})
 	}
+	f.Profile = jf.Profile
 
 	return f, nil
 }

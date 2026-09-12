@@ -629,6 +629,18 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
 		return
 	}
+	// A document may not lower the profile of the file it replaces. The
+	// canvas carries the profile it was opened with, so a lower one comes
+	// from a client that dropped the header — an older studio build — and
+	// the file would be rewritten in profile 1, its strings read otherwise
+	// at the next parse, with Verify none the wiser (it holds the text to
+	// the document, never to the file).
+	if current, err := os.ReadFile(absPath); err == nil {
+		if on := parser.ReadPreamble(parser.NormalizeSource(string(current))).Profile; on > f.EffectiveProfile() {
+			httpError(w, http.StatusUnprocessableEntity, "%s is written in dsl profile %d and the document would save it in profile %d: reopen the file in the studio (the document carries no profile — an older client dropped it)", req.Path, on, f.EffectiveProfile())
+			return
+		}
+	}
 	source := unparse.Unparse(f)
 	// The file written must be the document saved: a value the serialiser
 	// could not carry (or a construct it does not know) would otherwise land

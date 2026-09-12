@@ -13,33 +13,34 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
-// Unparse renders an ast.File back to .bot DSL source text.
+// Unparse renders an ast.File back to .bot DSL source text, in the syntax
+// profile the file declares (ast.File.EffectiveProfile): from profile 2 the
+// text opens with the `dsl: N` header and every string has a quoted form
+// (standard escapes, no directive); in profile 1 a value no v1 form can
+// hold switches the whole file to the strict-escape directive.
 func Unparse(f *ast.File) string {
+	profile := f.EffectiveProfile()
+	if profile > ast.DefaultProfile {
+		text, _ := render(f, true, profile)
+		return text
+	}
 	strict := hasStrictEscapeDirective(f.Comments)
-	text, needsStrict := render(f, strict)
+	text, needsStrict := render(f, strict, profile)
 	if needsStrict && !strict {
 		// A value no v1 form can hold (a backtick together with a quote,
 		// a backslash, a newline, or any carriage return): the whole file
 		// switches to strict-escape mode, where every value has a quoted
 		// form.
-		strict = true
-		text, _ = render(f, true)
-	}
-	if strict {
-		// The lexer reads the directive from the file's first 32 lines,
-		// before the first line of code. It goes on line 1 whatever
-		// comment it came from — render skipped its copies in the comment
-		// list — or a directive at comment #35 would be written strict and
-		// read v1.
-		text = "## " + strictEscapeDirective + "\n" + text
+		text, _ = render(f, true, profile)
 	}
 	return text
 }
 
-// strictEscapeDirective is the leading comment that opts a file into
-// standard escape interpretation (pkg/dsl/parser detectStrictEscape).
+// strictEscapeDirective is the leading comment that opts a profile-1 file
+// into standard escape interpretation (parser.ReadPreamble).
 const strictEscapeDirective = "strict-escape: on"
 
 // hasStrictEscapeDirective mirrors the lexer's recognition of the directive
@@ -48,39 +49,36 @@ const strictEscapeDirective = "strict-escape: on"
 // the OUTPUT is read in is what the quoting has to match.
 func hasStrictEscapeDirective(comments []*ast.Comment) bool {
 	for _, c := range comments {
-		if isStrictEscapeDirective(c.Text) {
+		if parser.IsStrictEscapeDirective(c.Text) {
 			return true
 		}
 	}
 	return false
 }
 
-// isStrictEscapeDirective accepts the forms the lexer accepts.
-func isStrictEscapeDirective(text string) bool {
-	switch strings.TrimSpace(text) {
-	case "strict-escape: on", "strict-escape:on", "strict-escape = on":
-		return true
-	}
-	return false
-}
-
 // render writes f in one quoting mode and reports whether a value needed the
-// strict one. In strict mode the directive's own comment lines are skipped:
-// Unparse writes the directive on line 1.
-func render(f *ast.File, strict bool) (string, bool) {
-	w := &fileWriter{b: buf{strict: strict}, skipDirective: strict}
+// strict one. The directive's own comment lines are never copied: in
+// profile 1 the writer places the directive itself (writeHead), and from
+// profile 2 the header replaces it.
+func render(f *ast.File, strict bool, profile int) (string, bool) {
+	w := &fileWriter{
+		b:              buf{strict: strict, inline: inlineBodies(f.Prompts)},
+		profile:        profile,
+		skipDirective:  true,
+		writeDirective: strict && profile <= ast.DefaultProfile,
+	}
 	w.writeFile(f)
 	return w.b.String(), w.b.needsStrict
 }
 
 func (w *fileWriter) writeFile(f *ast.File) {
-	w.writeComments(f.Comments)
+	w.writeHead(f.Comments)
 	w.writeVars(f.Vars)
 	w.writePresets(f.Presets)
 	w.writeAttachments(f.Attachments)
 	w.writeSecrets(f.Secrets)
 	w.writeMCPServers(f.MCPServers)
-	w.writePrompts(f.Prompts)
+	w.writePrompts(declaredPrompts(f.Prompts))
 	w.writeSchemas(f.Schemas)
 	w.writeCursors(f.Cursors)
 	w.writeSupervisors(f.Supervisors)
@@ -115,6 +113,54 @@ type buf struct {
 	// continuation lines indented too, changing the value, so a value with
 	// a newline needs the strict form there.
 	nested bool
+	// inline is the body of each Inline prompt of the file by name: a
+	// property referring to one is written as that text, and the prompt is
+	// not written as a declaration.
+	inline map[string]string
+}
+
+// inlineBodies indexes the Inline prompts of a file by name.
+func inlineBodies(prompts []*ast.PromptDecl) map[string]string {
+	var out map[string]string
+	for _, p := range prompts {
+		if p.Inline {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[p.Name] = p.Body
+		}
+	}
+	return out
+}
+
+// declaredPrompts is the prompts written as `prompt <name>:` declarations —
+// every prompt but the Inline ones, which their referencing property writes.
+func declaredPrompts(prompts []*ast.PromptDecl) []*ast.PromptDecl {
+	out := make([]*ast.PromptDecl, 0, len(prompts))
+	for _, p := range prompts {
+		if !p.Inline {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// writePromptRef writes a prompt-reference property: the text itself,
+// quoted, for an Inline prompt; the name for a declared one.
+func writePromptRef(b *buf, key, name string) {
+	if body, ok := b.inline[name]; ok {
+		writeQuotedProp(b, key, body)
+		return
+	}
+	writeIdentProp(b, key, name)
+}
+
+// QuoteStrict renders v as the `"…"` literal the standard escapes read back
+// as exactly v — the one form every value has under profile 2, and the
+// form a profile-1 literal holding a backslash is re-spelled in when a file
+// migrates.
+func QuoteStrict(v string) string {
+	return strictQuote(v)
 }
 
 // str renders v as a string literal the lexer reads back as exactly v.
@@ -172,7 +218,7 @@ func (w *fileWriter) writeGroups(groups []*ast.GroupDecl) {
 		} else {
 			fmt.Fprintf(&w.b, "group %s:\n", g.Name)
 		}
-		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true}}
+		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true, inline: w.b.inline}}
 		sub.writeAgents(g.Agents)
 		sub.writeJudges(g.Judges)
 		sub.writeRouters(g.Routers)
@@ -226,9 +272,15 @@ func indentBlock(text, indent string) string {
 type fileWriter struct {
 	b         buf
 	needBlank bool
+	// profile is the syntax profile the text is written in; from 2 the
+	// head carries the `dsl: N` header.
+	profile int
 	// skipDirective drops the strict-escape directive from the comment
-	// list: Unparse writes it on line 1 itself.
+	// list: writeHead places it itself, or the header replaces it.
 	skipDirective bool
+	// writeDirective writes the strict-escape directive in the head — a
+	// profile-1 file written strict.
+	writeDirective bool
 }
 
 // ensureBody writes a no-op property under a declaration header that got
@@ -266,17 +318,58 @@ func (w *fileWriter) blankLine() {
 	w.needBlank = true
 }
 
+// writeHead writes the file's head in the order its readers expect: the
+// frontmatter block first (bundle.ParseFrontmatter wants the fence on the
+// first non-blank line), then — a profile-1 file written strict — the
+// escape directive, which the lexer reads among the first 32 lines before
+// the first line of code, then the other comments, then, from profile 2,
+// the `dsl: N` header on the first significant line (parser.ReadPreamble).
+func (w *fileWriter) writeHead(comments []*ast.Comment) {
+	fm := frontmatterLen(comments)
+	w.writeComments(comments[:fm])
+	if w.writeDirective {
+		w.writeComment(strictEscapeDirective)
+	}
+	w.writeComments(comments[fm:])
+	if w.profile > ast.DefaultProfile {
+		if w.b.Len() > 0 {
+			w.b.WriteByte('\n')
+		}
+		fmt.Fprintf(&w.b, "dsl: %d\n", w.profile)
+		w.needBlank = true
+	}
+}
+
+// frontmatterLen is the number of leading comments that form the
+// frontmatter block — the opening `---` fence through the closing one — or
+// 0 when the comments do not open with one.
+func frontmatterLen(comments []*ast.Comment) int {
+	if len(comments) == 0 || strings.TrimSpace(comments[0].Text) != workflowfile.FrontmatterFence {
+		return 0
+	}
+	for i := 1; i < len(comments); i++ {
+		if strings.TrimSpace(comments[i].Text) == workflowfile.FrontmatterFence {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 func (w *fileWriter) writeComments(comments []*ast.Comment) {
 	for _, c := range comments {
-		if w.skipDirective && isStrictEscapeDirective(c.Text) {
+		if w.skipDirective && parser.IsStrictEscapeDirective(c.Text) {
 			continue
 		}
-		w.blankLine()
-		w.needBlank = false // comments don't need blank line between them
-		w.b.WriteString("## ")
-		w.b.WriteString(c.Text)
-		w.b.WriteByte('\n')
+		w.writeComment(c.Text)
 	}
+}
+
+func (w *fileWriter) writeComment(text string) {
+	w.blankLine()
+	w.needBlank = false // comments don't need blank line between them
+	w.b.WriteString("## ")
+	w.b.WriteString(text)
+	w.b.WriteByte('\n')
 }
 
 func (w *fileWriter) writeVars(vars *ast.VarsBlock) {
@@ -347,13 +440,19 @@ func (w *fileWriter) writePrompts(prompts []*ast.PromptDecl) {
 		// carry at all (parser.CheckPromptBody) lands as its nearest form,
 		// de-indented; Verify, which every production caller runs on this
 		// text, refuses it by name.
-		body := parser.CanonicalPromptBody(p.Body)
+		body := parser.CanonicalPromptBodyIn(w.profile, p.Body)
 		if body == "" {
 			// A bare header IS the empty prompt; an indented blank line
 			// would be neither a body nor a valid empty form.
 			continue
 		}
 		for _, line := range strings.Split(body, "\n") {
+			if line == "" {
+				// A paragraph break, which only profile 2's canonical form
+				// holds: written blank, never indented.
+				w.b.WriteByte('\n')
+				continue
+			}
 			w.b.WriteString("  ")
 			w.b.WriteString(line)
 			w.b.WriteByte('\n')
@@ -395,7 +494,7 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 			fmt.Fprintf(&w.b, "  model: %s\n", w.b.str(s.Model))
 		}
 		if s.System != "" {
-			fmt.Fprintf(&w.b, "  system: %s\n", s.System)
+			writePromptRef(&w.b, "system", s.System)
 		}
 		if s.Cooldown != "" {
 			fmt.Fprintf(&w.b, "  cooldown: %s\n", w.b.str(s.Cooldown))
@@ -506,10 +605,10 @@ func (w *fileWriter) writeRouters(routers []*ast.RouterDecl) {
 				writeQuotedProp(&w.b, "provider", r.Provider)
 			}
 			if r.System != "" {
-				writeProp(&w.b, "system", r.System)
+				writePromptRef(&w.b, "system", r.System)
 			}
 			if r.User != "" {
-				writeProp(&w.b, "user", r.User)
+				writePromptRef(&w.b, "user", r.User)
 			}
 			if r.Multi {
 				writeProp(&w.b, "multi", "true")
@@ -571,7 +670,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeQuotedProp(&w.b, "interaction_model", h.InteractionModel)
 		}
 		if h.Instructions != "" {
-			writeProp(&w.b, "instructions", h.Instructions)
+			writePromptRef(&w.b, "instructions", h.Instructions)
 		}
 		if h.MinAnswers > 0 {
 			fmt.Fprintf(&w.b, "  min_answers: %d\n", h.MinAnswers)
@@ -580,7 +679,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeQuotedProp(&w.b, "model", h.Model)
 		}
 		if h.System != "" {
-			writeProp(&w.b, "system", h.System)
+			writePromptRef(&w.b, "system", h.System)
 		}
 		if h.ReviewURL != "" {
 			writeQuotedProp(&w.b, "review_url", h.ReviewURL)
@@ -1365,10 +1464,10 @@ func writeAgentFields(b *buf, f llmFields) {
 	}
 	writeArtifactLabels(b, f.ArtifactLabels, "  ")
 	if f.System != "" {
-		writeIdentProp(b, "system", f.System)
+		writePromptRef(b, "system", f.System)
 	}
 	if f.User != "" {
-		writeIdentProp(b, "user", f.User)
+		writePromptRef(b, "user", f.User)
 	}
 	// Only emit session: when it's non-default. The previous if/else
 	// emitted it unconditionally — both branches called the same

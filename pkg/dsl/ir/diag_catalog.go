@@ -130,6 +130,8 @@ var Catalog = map[DiagCode]DiagInfo{
 
 	DiagEscapedQuoteInShellString: {"Escaped quote in a shell string", "In a `\"…\"` value, remove the backslash-escaped quotes: `\\\"` reaches the shell as a literal quote character. Leave a space-free value unquoted, or wrap a value with spaces in single quotes. In a backtick raw string or a `|` block scalar the sequence is verbatim by design and may be correct — ignore the warning."},
 
+	DiagProfileOneMatters: {"Profile 1 assumed, and it matters", "Run `iterion dsl migrate --to 2 <file>`: it adds the `dsl: 2` header, re-spells every quoted literal so its value is unchanged, and names the prompts whose paragraph breaks will now reach the model. Or keep profile 1 knowingly: a `\\` in a `\"…\"` literal is read verbatim, and a blank line inside a prompt body reaches the model as a single newline."},
+
 	DiagEmptySchema: {"Node references an empty schema", "Give the schema at least one field, or point the node at another schema; an empty schema is a declaration the studio has not filled in yet, not a contract."},
 
 	DiagEmptyGroupUse: {"Use of an empty group", "Give the group at least one node, or drop the `use`; an empty group is a declaration the studio has not filled in yet — or a body that landed at the wrong indentation after a blank line."},

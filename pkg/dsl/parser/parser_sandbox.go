@@ -279,6 +279,12 @@ func (p *parser) parseStringMapBlock() map[string]string {
 // — useful for sandbox.network.rules where authors mix quoted globs
 // like "!**.evil.site" and bare hostnames like github.com.
 func (p *parser) parseStringOrIdentList() []string {
+	if lineEnds(p.peek()) {
+		return p.parseDashList(func() (string, bool) {
+			v := p.expectStringOrIdent()
+			return v, v != ""
+		})
+	}
 	if _, ok := p.expect(TokenLBrack); !ok {
 		return nil
 	}
@@ -308,7 +314,8 @@ func (p *parser) expectStringOrIdent() string {
 		return p.expectString()
 	}
 	if t.Type == TokenIdent || isKeywordToken(t.Type) {
-		return p.expectIdent()
+		// A bare hostname is dotted (`github.com`): read the whole of it.
+		return p.continueDottedRef(p.expectIdent())
 	}
 	p.addError(DiagExpectedToken, t, "expected string or identifier")
 	p.next()

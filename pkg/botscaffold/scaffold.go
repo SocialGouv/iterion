@@ -29,6 +29,9 @@ import (
 	"text/template"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -113,6 +116,26 @@ type Spec struct {
 	// Spec. The list is Shapes(); the studio and the CLI pass it through
 	// from the template they started from.
 	Shape string `json:"shape,omitempty"`
+
+	// EngineFloor is the version the generated manifest requires at least
+	// (`requires.iterion`): the templates are written in dsl profile 2, and
+	// a runner older than the profile would fail at its first parse of a
+	// child. Empty takes this build's own version when it is orderable; a
+	// dev build writes no floor.
+	EngineFloor string `json:"engine_floor,omitempty"`
+}
+
+// defaultEngineFloor is this build's version when it can be ordered
+// (`v3.141.0+abc` → `3.141.0`), "" for a dev build: the manifest then
+// declares no floor, and `iterion validate` asks for one (C252).
+func defaultEngineFloor() string {
+	v := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
+	if _, ok := bundle.CompareVersions(v, "0"); ok {
+		return v
+	}
+	// A dev build has no version to write: the templates are written in
+	// the newest profile, and the release that reads it is their floor.
+	return parser.ProfileSince[parser.MaxProfile]
 }
 
 // WorkflowName is the Slug as a DSL identifier — the DSL grammar has no
@@ -243,6 +266,9 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	if err := s.Validate(); err != nil {
 		return Result{}, err
 	}
+	if s.EngineFloor == "" {
+		s.EngineFloor = defaultEngineFloor()
+	}
 
 	mainBot, annexes, err := renderShape(s)
 	if err != nil {
@@ -339,7 +365,11 @@ func Scaffold(dir string, s Spec) (Result, error) {
 // the gallery shapes alike — renders with.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"quote":    strconv.Quote,
+		// quote renders a .bot string literal — the standard escapes the
+		// profile-2 lexer reads, which Go's %q is not (it emits \x00, \a,
+		// \u… the lexer refuses); yquote is Go's quoting, for the YAML.
+		"quote":    unparse.QuoteStrict,
+		"yquote":   strconv.Quote,
 		"indent":   indentLines,
 		"varValue": varValue,
 	}
@@ -378,7 +408,7 @@ func varValue(v VarSpec) string {
 	def := v.Default
 	switch v.Type {
 	case "string":
-		return strconv.Quote(def)
+		return unparse.QuoteStrict(def)
 	case "int":
 		if def == "" {
 			return "0"
@@ -396,5 +426,5 @@ func varValue(v VarSpec) string {
 		return def
 	}
 	// Unreachable after Validate; keep the value visible if it ever is.
-	return strconv.Quote(def)
+	return unparse.QuoteStrict(def)
 }

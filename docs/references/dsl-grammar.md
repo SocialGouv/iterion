@@ -9,7 +9,9 @@ Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alterna
 ## File declarations
 
 ```ebnf
-file = { top_level_decl } ;
+file = [ dsl_header ] { top_level_decl } ;
+
+dsl_header = "dsl" ":" INT NEWLINE ;   (* the syntax profile, on the first significant line; absent = 1 *)
 
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
@@ -31,7 +33,7 @@ key: |
   with preserved newlines
 ```
 
-Raw strings have no backtick escape. A `# strict-escape: on` line (or `## strict-escape: on`) among the leading comment lines of the file opts quoted strings into standard escape interpretation. Lists are bracketed and comma-separated. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
+Raw strings have no backtick escape. Under `dsl: 2` (the syntax profile, declared on the file's first significant line) a quoted string reads the standard escapes `\"` `\\` `\n` `\t` `\r` `\0`; under profile 1 (no header) every backslash is kept verbatim unless a `# strict-escape: on` line (or `## strict-escape: on`) sits among the first 31 lines of the file (line 32 counts only when it ends the file), before its first line of code — a profile-1 rule frozen as it is; the directive is refused under profile 2 (E042). One plain bare word is also a string value (`backend: claw`). Lists are bracketed and comma-separated, or written one `- item` per line indented under the property; both forms read as the same list in every profile. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
 
 Scalar declaration literals are strings, integers, floats, or booleans. JSON and `string[]` defaults/preset values therefore use a quoted JSON representation.
 
@@ -400,16 +402,16 @@ Block form without `mode` implies `inline`. `image` and `build` are mutually exc
 ## Edges
 
 ```ebnf
-edge = node_ref "->" node_ref { when_or_else | iteration | with_block } ;
+edge = node_ref "->" node_ref { "->" node_ref } { when_or_else | iteration | with_block } ;
 node_ref = IDENT { "." IDENT } | "done" | "fail" ;
 
 when_or_else = "when" ( [ "not" ] IDENT | STRING ) | "else" ;
 iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")"
           | "as foreach" IDENT "(" IDENT "in" STRING ")" ;
-with_block = "with" "{" { IDENT ":" STRING [ "," ] } "}" ;
+with_block = "with" "{" { IDENT ":" ( STRING | INT | FLOAT | BOOL ) [ "," ] } "}" ;
 ```
 
-Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge.
+A chain `a -> b -> c` is one edge per arrow, in order; the clauses belong to the last edge (a clause before a further arrow is E032). A non-string `with` literal is read as its text (`n: 3` maps `"3"`). Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge.
 
 ## Expression language
 

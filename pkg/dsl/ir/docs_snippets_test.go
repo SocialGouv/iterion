@@ -203,6 +203,25 @@ func withSyntheticWorkflow(body string) string {
 	return body + "\nworkflow _snippet:\n  entry: " + m[1] + "\n"
 }
 
+// hoistProfileHeader takes a leading `dsl: N` line off a fragment, to be
+// written ABOVE the synthetic header that wraps the fragment: the profile
+// header must be a file's first significant line, and a wrapped fragment's
+// first line is not.
+func hoistProfileHeader(body string) (header, rest string) {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.HasPrefix(t, "dsl:") {
+			return t + "\n", strings.Join(append(lines[:i:i], lines[i+1:]...), "\n")
+		}
+		break
+	}
+	return "", body
+}
+
 // indentSnippet nests a fragment under a synthetic declaration header.
 func indentSnippet(header, body string) string {
 	var b strings.Builder
@@ -245,15 +264,18 @@ func compileSnippet(s docSnippet) (parseErrs, compileErrs []string, err error) {
 	case tag == "fragment":
 		src = withSyntheticWorkflow(s.body)
 	case tag == "fragment:edges":
-		src = indentSnippet("workflow _snippet:\n  entry: "+firstEdgeSource(s.body), s.body)
+		header, body := hoistProfileHeader(s.body)
+		src = header + indentSnippet("workflow _snippet:\n  entry: "+firstEdgeSource(body), body)
 	case tag == "fragment:workflow":
-		src = indentSnippet("workflow _snippet:", s.body)
+		header, body := hoistProfileHeader(s.body)
+		src = header + indentSnippet("workflow _snippet:", body)
 	case strings.HasPrefix(tag, "fragment:"):
 		kind := strings.TrimPrefix(tag, "fragment:")
 		if !snippetFragmentKinds[kind] {
 			return nil, nil, fmt.Errorf("unknown fragment kind %q", kind)
 		}
-		src = indentSnippet(kind+" _snippet:", s.body)
+		header, body := hoistProfileHeader(s.body)
+		src = header + indentSnippet(kind+" _snippet:", body)
 	default:
 		return nil, nil, fmt.Errorf("unknown fence tag %q — use `iter`, `iter fragment`, `iter fragment:edges`, `iter fragment:workflow`, `iter fragment:<kind>` or `iter invalid` (one word, no spaces)", tag)
 	}
