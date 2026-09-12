@@ -100,26 +100,28 @@ func TestMigrateDSLDryRunAndCheckWriteNothing(t *testing.T) {
 	}
 }
 
-// A refused file fails the run after every other file was handled, and an
-// unorderable build version raises no floor but says what to declare.
-func TestMigrateDSLReportsRefusalsAndAnUnorderableFloor(t *testing.T) {
+// A refused file fails the run, and NOTHING is written — not the sound
+// files planned before it, not a manifest: a tree is migrated whole or not
+// at all.
+func TestMigrateDSLWritesNothingWhenAFileIsRefused(t *testing.T) {
 	dir := writeMigrateBundle(t)
 	bad := filepath.Join(dir, "other.bot")
 	if err := os.WriteFile(bad, []byte("agent a:\n  memory:\n    enabled: true\n    project_root: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "dev"})
-	if err == nil || !strings.Contains(err.Error(), "1 file(s) refused") || !strings.Contains(err.Error(), "project_root") {
+	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"})
+	if err == nil || !strings.Contains(err.Error(), "1 file(s) refused") || !strings.Contains(err.Error(), "nothing was written") || !strings.Contains(err.Error(), "project_root") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(res.Files) != 1 || !res.Files[0].Written {
-		t.Fatalf("the sound file was not migrated: %+v", res.Files)
+	if len(res.Files) != 1 || res.Files[0].Written || !res.Files[0].Changed {
+		t.Fatalf("files: %+v", res.Files)
 	}
-	if len(res.Manifests) != 1 || res.Manifests[0].Written || !strings.Contains(res.Manifests[0].Skipped, "cannot be ordered") {
-		t.Fatalf("manifests: %+v", res.Manifests)
+	if len(res.Manifests) != 0 {
+		t.Fatalf("a manifest was touched: %+v", res.Manifests)
 	}
+	bot, _ := os.ReadFile(filepath.Join(dir, "main.bot"))
 	man, _ := os.ReadFile(filepath.Join(dir, "manifest.yaml"))
-	if string(man) != migrateFixtureManifest {
-		t.Fatalf("manifest changed under an unorderable floor")
+	if string(bot) != migrateFixtureBot || string(man) != migrateFixtureManifest {
+		t.Fatalf("something was written despite the refusal")
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/migrate"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 )
@@ -30,9 +31,10 @@ type MigrateDSLOptions struct {
 	// ShowPrompts lists those prompts in the report.
 	ShowPrompts bool
 	// Floor is the engine version a migrated bundle's manifest must require
-	// at least; "" means this build's own version — the one that reads the
-	// profile. A version that cannot be ordered (a dev build) raises nothing
-	// and says what to declare instead.
+	// at least. Given, it must be orderable, or the run is refused before
+	// anything is planned; "" means this build's own version — the one that
+	// reads the profile — and, on a build with no version to write (dev),
+	// the release that first reads the target profile (parser.ProfileSince).
 	Floor string
 	// Printer receives the report; nil is silent.
 	Printer *Printer
@@ -71,17 +73,30 @@ type MigrateDSLResult struct {
 var ErrWouldChange = errors.New("dsl migrate: a file would change")
 
 // MigrateDSL migrates every `.bot` under opts.Paths to the target profile
-// (pkg/dsl/migrate) and raises the engine floor of every bundle manifest
-// beside a migrated file. A refused file is reported and fails the run once
-// every other file has been handled; nothing is written under DryRun or
-// Check.
+// (pkg/dsl/migrate) and raises the engine floor of every bundle that OWNS a
+// migrated file — the bundle a child under `kids/` belongs to, not the
+// directory beside it. Every file is planned and proven before any is
+// written: one refusal anywhere, and nothing is written anywhere, so a run
+// never leaves a tree half-migrated. Nothing is written under DryRun or
+// Check either.
 func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 	var res MigrateDSLResult
+	floor, err := resolveFloor(opts.Floor, opts.To)
+	if err != nil {
+		return res, err
+	}
 	files, err := collectBotFiles(opts.Paths)
 	if err != nil {
 		return res, err
 	}
 	write := !opts.DryRun && !opts.Check
+
+	// Plan first.
+	type planned struct {
+		path string
+		out  *migrate.Result
+	}
+	var plans []planned
 	bundleDirs := map[string]bool{}
 	for _, path := range files {
 		src, err := os.ReadFile(path)
@@ -93,20 +108,33 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			res.Refused = append(res.Refused, err.Error())
 			continue
 		}
-		mf := MigratedFile{Path: path, Changed: out.Changed, Changes: out.Changes, Prompts: out.Prompts}
-		if out.Changed && write {
-			info, err := os.Stat(path)
+		res.Files = append(res.Files, MigratedFile{Path: path, Changed: out.Changed, Changes: out.Changes, Prompts: out.Prompts})
+		plans = append(plans, planned{path, out})
+		if out.Changed {
+			if dir := owningBundleDir(path); dir != "" {
+				bundleDirs[dir] = true
+			}
+		}
+	}
+	if len(res.Refused) > 0 {
+		reportMigration(opts, res)
+		return res, fmt.Errorf("dsl migrate: %d file(s) refused — nothing was written:\n  %s", len(res.Refused), strings.Join(res.Refused, "\n  "))
+	}
+
+	// Then write.
+	if write {
+		for i, p := range plans {
+			if !p.out.Changed {
+				continue
+			}
+			info, err := os.Stat(p.path)
 			if err != nil {
 				return res, err
 			}
-			if err := os.WriteFile(path, out.Migrated, info.Mode().Perm()); err != nil {
-				return res, fmt.Errorf("dsl migrate: write %s: %w", path, err)
+			if err := os.WriteFile(p.path, p.out.Migrated, info.Mode().Perm()); err != nil {
+				return res, fmt.Errorf("dsl migrate: write %s: %w", p.path, err)
 			}
-			mf.Written = true
-		}
-		res.Files = append(res.Files, mf)
-		if dir := filepath.Dir(path); manifestPath(dir) != "" {
-			bundleDirs[dir] = true
+			res.Files[i].Written = true
 		}
 	}
 
@@ -116,17 +144,24 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 	}
 	sort.Strings(dirs)
 	for _, dir := range dirs {
-		floor, err := raiseManifestFloor(manifestPath(dir), opts.Floor, write)
+		mp := manifestPath(dir)
+		if mp == "" {
+			// A bundle known by its skills/ alone has nowhere to carry the
+			// floor: said here, and asked again by `iterion validate` (C252).
+			res.Manifests = append(res.Manifests, ManifestFloor{
+				Path:    filepath.Join(dir, bundle.ManifestFile),
+				Skipped: "no manifest to carry requires.iterion — create one (`iterion bots create` writes one); until then `iterion validate` asks for the floor (C252)",
+			})
+			continue
+		}
+		mf, err := raiseManifestFloor(mp, floor, write)
 		if err != nil {
 			return res, err
 		}
-		res.Manifests = append(res.Manifests, floor)
+		res.Manifests = append(res.Manifests, mf)
 	}
 
 	reportMigration(opts, res)
-	if len(res.Refused) > 0 {
-		return res, fmt.Errorf("dsl migrate: %d file(s) refused:\n  %s", len(res.Refused), strings.Join(res.Refused, "\n  "))
-	}
 	if opts.Check {
 		for _, f := range res.Files {
 			if f.Changed {
@@ -171,11 +206,11 @@ func collectBotFiles(paths []string) ([]string, error) {
 				return err
 			}
 			if d.IsDir() {
-				switch d.Name() {
-				case ".git", ".iterion", "vendor", "node_modules":
-					if path != p {
-						return filepath.SkipDir
-					}
+				// Hidden trees hold other checkouts (`.claude/worktrees`,
+				// `.works`, `.repos`), the store and the VCS: never rewritten
+				// from a walk, only when named as a path themselves.
+				if path != p && (strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "node_modules") {
+					return filepath.SkipDir
 				}
 				return nil
 			}
@@ -203,15 +238,56 @@ func manifestPath(dir string) string {
 	return ""
 }
 
-// raiseManifestFloor makes a manifest require at least floor (this build's
-// version when floor is ""), through the shared writer that keeps the
-// manifest's comments and validates the result with the strict loader.
+// resolveFloor is the engine version a migrated bundle's manifest must
+// require: the --floor given, refused when it cannot be ordered (an operator
+// who typed a floor asked for one); else this build's version, the one that
+// reads the profile; else — a build with no version to write — the release
+// that first reads the target profile (parser.ProfileSince), "" when none
+// is on record.
+func resolveFloor(flag string, to int) (string, error) {
+	if f := strings.TrimPrefix(strings.TrimSpace(flag), "v"); f != "" {
+		if _, ok := bundle.CompareVersions(f, "0"); !ok {
+			return "", fmt.Errorf("dsl migrate: --floor %q cannot be ordered: give a dotted numeric version (3.141.0), or omit it for this build's", flag)
+		}
+		return f, nil
+	}
+	if v := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v"); v != "" {
+		if _, ok := bundle.CompareVersions(v, "0"); ok {
+			return v, nil
+		}
+	}
+	if to == 0 {
+		to = parser.MaxProfile
+	}
+	return parser.ProfileSince[to], nil
+}
+
+// owningBundleDir is the root of the bundle a workflow file belongs to —
+// the nearest directory up from it that pkg/bundle recognises (a manifest,
+// or a skills/ directory) — or "" for a loose file.
+func owningBundleDir(path string) string {
+	dir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return ""
+	}
+	for {
+		if bundle.DirForMainBot(filepath.Join(dir, bundle.MainBotFile)) != "" {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// raiseManifestFloor makes a manifest require at least floor (resolveFloor),
+// through the shared writer that keeps the manifest's comments and
+// validates the result with the strict loader. A floor already at or above
+// it is kept — lowering a declared floor is never this command's to do.
 func raiseManifestFloor(path, floor string, write bool) (ManifestFloor, error) {
 	out := ManifestFloor{Path: path}
-	if floor == "" {
-		floor = appinfo.Version
-	}
-	floor = strings.TrimPrefix(strings.TrimSpace(floor), "v")
 	m, err := bundle.LoadManifest(path)
 	if err != nil {
 		return out, fmt.Errorf("dsl migrate: %w", err)
@@ -219,8 +295,8 @@ func raiseManifestFloor(path, floor string, write bool) (ManifestFloor, error) {
 	if m != nil && m.Requires != nil {
 		out.From = m.Requires.Iterion
 	}
-	if _, ok := bundle.CompareVersions(floor, "0"); !ok {
-		out.Skipped = fmt.Sprintf("this build's version %q cannot be ordered: declare `requires: { iterion: \">= <the release that reads profile 2>\" }` by hand", floor)
+	if floor == "" {
+		out.Skipped = "this build has no version to write and the profile no release on record: declare `requires: { iterion: \">= <the release that reads the profile>\" }` by hand"
 		return out, nil
 	}
 	if out.From != "" {
