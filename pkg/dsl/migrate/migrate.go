@@ -99,13 +99,17 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 		res.Migrated = src
 		return res, nil
 	}
-	if line := projectRootLine(before.File); line > 0 {
+	toks := parser.NewLexer(name, norm.text).All()
+	if line := projectRootLine(before.File, toks); line > 0 {
 		return nil, fmt.Errorf("%w: %s:%d uses `project_root:`, which profile 2 removed and has no mechanical replacement (`visibility:` is a different axis, C171): keep the file in profile 1, or redesign the memory scope first", ErrRefused, name, line)
 	}
 
-	edits, changes := planEdits(norm.text, name, before.File, to)
+	edits, changes := planEdits(norm.text, toks, before.File, to)
 	res.Changes = changes
-	migratedNorm := applyEdits(norm.text, edits)
+	migratedNorm, err := applyEdits(norm.text, edits)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrRefused, name, err)
+	}
 	res.Migrated = norm.mapBack(src, edits, migratedNorm)
 	res.Changed = !bytes.Equal(res.Migrated, src)
 
@@ -143,39 +147,76 @@ type edit struct {
 	repl       string
 }
 
-// planEdits lists the rewrites: the header, the directive lines, the
-// quoted literals that hold a backslash.
-func planEdits(norm, name string, f *ast.File, to int) ([]edit, []Change) {
+// planEdits lists the rewrites: the header, the directive comments, the
+// quoted literals that hold a backslash. Every edit covers only what it
+// changes — the header's value, a comment's own span, a literal — so no two
+// can overlap: a comment shares its line with the header or with a literal
+// often enough.
+func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, []Change) {
 	var edits []edit
 	var changes []Change
 	lines := lineStarts(norm)
-	toks := parser.NewLexer(name, norm).All()
 	runeToByte := runeByteOffsets(norm)
 
-	// The header: replace an explicit `dsl: 1`, or insert one before the
-	// first significant line.
+	// The header: replace the value of an explicit `dsl: 1` — the number
+	// alone, so a comment after it stays — or insert one before the first
+	// significant line.
 	pre := parser.ReadPreamble(norm)
 	eol := "\n"
 	header := fmt.Sprintf("dsl: %d", to)
 	if pre.HeaderLine > 0 {
 		start, end := lineSpan(norm, lines, pre.HeaderLine)
-		edits = append(edits, edit{start, end, header + eol})
-		changes = append(changes, Change{Kind: "header", Line: pre.HeaderLine, From: strings.TrimRight(norm[start:end], "\n"), To: header})
+		if valueEnd := headerValueEnd(toks, pre.HeaderLine, runeToByte); valueEnd > start {
+			edits = append(edits, edit{start, valueEnd, header})
+			changes = append(changes, Change{Kind: "header", Line: pre.HeaderLine, From: norm[start:valueEnd], To: header})
+		} else {
+			edits = append(edits, edit{start, end, header + eol})
+			changes = append(changes, Change{Kind: "header", Line: pre.HeaderLine, From: strings.TrimRight(norm[start:end], "\n"), To: header})
+		}
 	} else {
 		at, line := firstSignificantLine(norm, lines)
-		edits = append(edits, edit{at, at, header + eol + eol})
+		repl := header + eol + eol
+		if at == len(norm) {
+			// Nothing significant follows: the header closes the file, on
+			// a line of its own even when the last comment has no newline.
+			repl = header + eol
+			if at > 0 && norm[at-1] != '\n' {
+				repl = eol + repl
+			}
+		}
+		edits = append(edits, edit{at, at, repl})
 		changes = append(changes, Change{Kind: "header", Line: line, To: header})
+	}
+
+	// The directive: the top-level comments the parser refuses under
+	// profile 2 (E042) — the same set, so the migrated file parses — and
+	// nothing else: a comment inside a block is never a directive and is
+	// never touched. A comment alone on its line takes the line with it; one
+	// after code leaves the code and its newline in place.
+	for _, c := range f.Comments {
+		if !parser.IsStrictEscapeDirective(c.Text) {
+			continue
+		}
+		lineStart, lineEnd := lineSpan(norm, lines, c.Span.Start.Line)
+		cstart := lineStart + columnByte(norm[lineStart:lineEnd], c.Span.Start.Column)
+		if strings.TrimSpace(norm[lineStart:cstart]) == "" {
+			edits = append(edits, edit{lineStart, lineEnd, ""})
+			changes = append(changes, Change{Kind: "directive", Line: c.Span.Start.Line, From: strings.TrimRight(norm[lineStart:lineEnd], "\n")})
+			continue
+		}
+		for cstart > lineStart && (norm[cstart-1] == ' ' || norm[cstart-1] == '\t') {
+			cstart--
+		}
+		cend := lineEnd
+		if cend > cstart && norm[cend-1] == '\n' {
+			cend--
+		}
+		edits = append(edits, edit{cstart, cend, ""})
+		changes = append(changes, Change{Kind: "directive", Line: c.Span.Start.Line, From: strings.TrimSpace(norm[cstart:cend])})
 	}
 
 	for _, t := range toks {
 		switch t.Type {
-		case parser.TokenComment:
-			if !parser.IsStrictEscapeDirective(t.Value) {
-				continue
-			}
-			start, end := lineSpan(norm, lines, t.Line)
-			edits = append(edits, edit{start, end, ""})
-			changes = append(changes, Change{Kind: "directive", Line: t.Line, From: strings.TrimRight(norm[start:end], "\n")})
 		case parser.TokenString:
 			start, end := runeToByte[t.Offset], runeToByte[t.End]
 			if start >= end || norm[start] != '"' {
@@ -193,17 +234,52 @@ func planEdits(norm, name string, f *ast.File, to int) ([]edit, []Change) {
 	return edits, changes
 }
 
-// applyEdits rewrites text; edits are sorted by start and never overlap.
-func applyEdits(text string, edits []edit) string {
+// applyEdits rewrites text; edits are sorted by start and must not overlap.
+// An overlap is a defect of the planning, reported — never sliced into a
+// file, and never a panic out of a CI gate.
+func applyEdits(text string, edits []edit) (string, error) {
 	var b strings.Builder
 	at := 0
 	for _, e := range edits {
+		if e.start < at || e.end < e.start || e.end > len(text) {
+			return "", fmt.Errorf("overlapping edits at byte %d (the previous one ended at %d): a defect of the migration, not of the file", e.start, at)
+		}
 		b.WriteString(text[at:e.start])
 		b.WriteString(e.repl)
 		at = e.end
 	}
 	b.WriteString(text[at:])
-	return b.String()
+	return b.String(), nil
+}
+
+// headerValueEnd is the byte offset just past the number of the `dsl: N`
+// header on line, 0 when the tokens do not show `dsl`, `:`, an integer there.
+func headerValueEnd(toks []parser.Token, line int, runeToByte []int) int {
+	for i, t := range toks {
+		if t.Type != parser.TokenDSL || t.Line != line {
+			continue
+		}
+		if i+2 < len(toks) && toks[i+1].Type == parser.TokenColon && toks[i+2].Type == parser.TokenInt && toks[i+2].End < len(runeToByte) {
+			return runeToByte[toks[i+2].End]
+		}
+		return 0
+	}
+	return 0
+}
+
+// columnByte is the byte offset within lineText of its 1-based rune column.
+func columnByte(lineText string, column int) int {
+	if column <= 1 {
+		return 0
+	}
+	n := 0
+	for i := range lineText {
+		n++
+		if n == column {
+			return i
+		}
+	}
+	return len(lineText)
 }
 
 // ---- normalisation and the way back to the original bytes ----
@@ -348,13 +424,20 @@ func promptChanges(after, before *ast.File) []PromptChange {
 }
 
 // projectRootLine is the line of the first `project_root:` of the file, 0
-// when none: on an agent's or a judge's memory block, in a group too.
-func projectRootLine(f *ast.File) int {
+// when none: on an agent's or a judge's memory block, in a group too. The
+// block carries no span per property, so the property's own line is the
+// first `project_root` token at or after the block's.
+func projectRootLine(f *ast.File, toks []parser.Token) int {
 	line := func(m *ast.MemoryBlock) int {
-		if m != nil && m.ProjectRoot != nil {
-			return m.Span.Start.Line
+		if m == nil || m.ProjectRoot == nil {
+			return 0
 		}
-		return 0
+		for _, t := range toks {
+			if t.Type == parser.TokenProjectRoot && t.Line >= m.Span.Start.Line {
+				return t.Line
+			}
+		}
+		return m.Span.Start.Line
 	}
 	var agents []*ast.AgentDecl
 	var judges []*ast.JudgeDecl

@@ -115,7 +115,7 @@ func TestMigrationReportsThePromptsWhoseRenderingChanges(t *testing.T) {
 func TestMigrationRefusesWhatItCannotRewrite(t *testing.T) {
 	src := "agent a:\n  memory:\n    enabled: true\n    project_root: true\n\nworkflow w:\n  entry: a\n  a -> done\n"
 	_, err := Bytes("x.bot", []byte(src), Options{})
-	if err == nil || !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "x.bot:2") || !strings.Contains(err.Error(), "keep the file in profile 1") {
+	if err == nil || !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "x.bot:4") || !strings.Contains(err.Error(), "keep the file in profile 1") {
 		t.Fatalf("project_root: %v", err)
 	}
 	_, err = Bytes("x.bot", []byte("agent a:\n  bogus: 1\n"), Options{})
