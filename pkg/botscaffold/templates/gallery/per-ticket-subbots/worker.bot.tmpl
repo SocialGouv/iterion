@@ -1,6 +1,9 @@
 ## worker.bot — the per-ticket child run of <%.Slug%>. Its inputs arrive
 ## through `vars` from the parent's `with { … }` mapping; its output
 ## schema is what the parent reads back.
+
+dsl: 2
+
 vars:
   ticket_id: string = ""
   title: string = ""

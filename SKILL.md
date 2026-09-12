@@ -27,7 +27,11 @@ current references disagree.
 
 ## Start from a template
 
-Fill a validated shape rather than writing the graph from the grammar:
+Every new file starts with `dsl: 2` on its first significant line — the
+syntax profile (standard `\n`-style escapes in quoted strings, paragraph
+breaks kept in prompt bodies); the templates and the studio write it, and
+`iterion dsl migrate --to 2 <file>` moves an existing file. Fill a validated
+shape rather than writing the graph from the grammar:
 
 ```sh
 iterion bots templates                       # the gallery, one line per template
@@ -206,11 +210,20 @@ shipped bots, so they are written here:
   block scalar, where it is text** — `# Approve the plan?` in a prompt reaches
   the model as a heading. A literal `{{…}}` example belongs in prose, not in a
   prompt (every reference in a prompt is validated).
-- **A blank line inside a prompt body is dropped.** The lexer skips blank
-  and space-only lines under a prompt header, so a paragraph break reaches
-  the model as a single newline; put a heading or a line of prose where the
-  model must see a break, and a multi-line `{{…}}` value under a heading or
-  inside a ``` fence, or it runs into the line that follows it.
+- **A blank line inside a prompt body is dropped under profile 1, kept
+  under `dsl: 2`.** Without the header the lexer skips blank and space-only
+  lines under a prompt header, so a paragraph break reaches the model as a
+  single newline; with it the break is kept. In both, put a multi-line
+  `{{…}}` value under a heading or inside a ``` fence, or it runs into the
+  line that follows it. A prompt may also sit where it is used —
+  `system: "Review the diff"`, `user: |` with the text below — as an inline
+  prompt named after its body.
+- **Under `dsl: 2` a `"…"` string reads standard escapes** (`\n` is a
+  newline, `\"` a quote, `\\` a backslash); without the header every
+  backslash is kept verbatim. Lists may be `[a, b]` or one `- item` per
+  line; `a -> b -> c` is two edges with the clauses on the last one; a plain
+  bare word is a string value (`backend: claw`); `with { n: 3 }` reads `3`
+  as text. Every one of these holds in both profiles.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
   `-> fail` target carries no code. The engine's own codes are reserved
   (C248 names them: `BUDGET_EXCEEDED`, `TIMEOUT`, … — the list is

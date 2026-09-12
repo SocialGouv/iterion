@@ -89,6 +89,18 @@ iterion import review.js --dry-run
 
 Import never executes JavaScript. Recognised `agent`/`phase`/loop/routing shapes become DSL; unknown constructs become `## IMPORT` markers. The result is a compile-checked draft and the conversion is intentionally lossy. See [import](import.md).
 
+### `iterion dsl`
+
+```bash
+iterion dsl spec                                  # the property registry, rendered
+iterion dsl spec --write                          # regenerate the committed reference and skill sections
+iterion dsl migrate --to 2 bots/my-bot            # move a bundle to syntax profile 2
+iterion dsl migrate --to 2 --dry-run --show-prompts x.bot
+iterion dsl migrate --check bots/                 # CI: exit non-zero when a file would change
+```
+
+`dsl spec` renders the property registry every kind of the language is described by, or regenerates the committed documents from it (`task dsl:gen`; `task dsl:check` fails on a stale rendering). `dsl migrate` moves `.bot` files to a newer syntax profile ([docs/dsl.md § The syntax profile](dsl.md#file-shape)) by the edits that change meaning between profiles and nothing else — the `dsl: 2` header in, the profile-1 strict-escape directive out, every quoted literal holding a backslash re-spelled from its profile-1 value — and proves the result before writing it: both texts parse, they read as the same document, the file's `## ---` frontmatter is unchanged. Named prompts that keep paragraph breaks they used to lose are reported (`--show-prompts`) and refused on `--strict-prompts`; `project_root:` has no profile-2 form and is refused with the remedy. A bundle's manifest gets `requires.iterion` raised to this build's version — the one that reads the profile — so an older runner refuses it at admission (`--floor` overrides the version; a dev build raises nothing and says what to declare).
+
 ## Run lifecycle
 
 ### `iterion run`

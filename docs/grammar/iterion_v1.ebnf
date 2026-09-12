@@ -10,7 +10,17 @@
    scalar a # is text.
 *)
 
-file = { top_level_decl } ;
+file = [ dsl_header ] { top_level_decl } ;
+
+(* The syntax profile (ADR-098). The header, when present, is the file's
+   first significant line — after blank lines and comments; absent means
+   profile 1, today's grammar, frozen. The profile governs changes of
+   MEANING only: under profile 2 a "…" string reads the standard escapes
+   (\" \\ \n \t \r \0) with no directive, a blank line inside a prompt body
+   is kept as a paragraph break, and the profile-1 `## strict-escape: on`
+   directive and `project_root:` are refused. Every other form below is read
+   the same in both profiles. `iterion dsl migrate --to 2` rewrites a file. *)
+dsl_header = "dsl" ":" INT_LIT NEWLINE ;
 
 top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
                | mcp_server_decl | prompt_decl | schema_decl
@@ -125,7 +135,7 @@ supervisor_decl = "supervisor" IDENT ":" NEWLINE [ INDENT
                   DEDENT ] ;
 supervisor_prop = "watches" ":" ident_list NEWLINE
                 | "model" ":" STRING_LIT NEWLINE
-                | "system" ":" IDENT NEWLINE
+                | "system" ":" prompt_ref NEWLINE
                 | "cooldown" ":" STRING_LIT NEWLINE
                 | "max_evals" ":" INT_LIT NEWLINE
                 | "monitors" ":" string_list NEWLINE ;
@@ -160,8 +170,8 @@ llm_prop = "description" ":" STRING_LIT NEWLINE
          | "output" ":" IDENT NEWLINE
          | "publish" ":" IDENT NEWLINE
          | "artifact_labels" ":" tool_ref_list NEWLINE
-         | "system" ":" IDENT NEWLINE
-         | "user" ":" IDENT NEWLINE
+         | "system" ":" prompt_ref NEWLINE
+         | "user" ":" prompt_ref NEWLINE
          | "session" ":" session_mode NEWLINE
          | "tools" ":" tool_ref_list NEWLINE
          | "tool_policy" ":" tool_ref_list NEWLINE
@@ -221,8 +231,8 @@ router_prop = "description" ":" STRING_LIT NEWLINE
             | "model" ":" STRING_LIT NEWLINE
             | "backend" ":" STRING_LIT NEWLINE
             | "provider" ":" STRING_LIT NEWLINE
-            | "system" ":" IDENT NEWLINE
-            | "user" ":" IDENT NEWLINE
+            | "system" ":" prompt_ref NEWLINE
+            | "user" ":" prompt_ref NEWLINE
             | "multi" ":" BOOL_LIT NEWLINE
             | "reasoning_effort" ":" reasoning_effort NEWLINE
             | "over" ":" STRING_LIT NEWLINE
@@ -239,12 +249,12 @@ human_prop = "description" ":" STRING_LIT NEWLINE
            | "output" ":" IDENT NEWLINE
            | "publish" ":" IDENT NEWLINE
            | "artifact_labels" ":" tool_ref_list NEWLINE
-           | "instructions" ":" IDENT NEWLINE
+           | "instructions" ":" prompt_ref NEWLINE
            | "interaction" ":" interaction_mode NEWLINE
            | "interaction_prompt" ":" IDENT NEWLINE
            | "interaction_model" ":" STRING_LIT NEWLINE
            | "model" ":" STRING_LIT NEWLINE
-           | "system" ":" IDENT NEWLINE
+           | "system" ":" prompt_ref NEWLINE
            | "min_answers" ":" INT_LIT NEWLINE
            | "await" ":" await_mode NEWLINE
            | "review_url" ":" STRING_LIT NEWLINE
@@ -443,7 +453,10 @@ string_map = "{" [ IDENT ":" string_or_ident
 
 (* ---------- Edges ---------- *)
 
-edge = node_ref "->" node_ref { edge_clause } NEWLINE ;
+(* A chain `a -> b -> c` reads as the edges it names; the clauses at the end
+   of the line belong to the LAST segment (a clause before a further arrow
+   is refused, E032). *)
+edge = node_ref "->" node_ref { "->" node_ref } { edge_clause } NEWLINE ;
 edge_clause = when_clause | else_clause | iteration_clause | with_block ;
 when_clause = "when" ( [ "not" ] IDENT | STRING_LIT ) ;
 else_clause = "else" ;
@@ -454,9 +467,15 @@ loop_cap = INT_LIT | STRING_LIT | "unbounded" [ INT_LIT ] ;
 foreach_spec = "foreach" IDENT "(" IDENT "in" STRING_LIT ")" ;
 
 with_block = "with" "{" { with_mapping } "}" ;
-with_mapping = IDENT ":" STRING_LIT [ "," ] [ NEWLINE ] ;
+(* A number or a bool in a with map is the string it spells. *)
+with_mapping = IDENT ":" ( STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ) [ "," ] [ NEWLINE ] ;
 
 node_ref = IDENT { "." IDENT } | "done" | "fail" ;
+
+(* A prompt reference names a declared prompt, or IS the prompt's text: a
+   string — quoted, raw, or a `|` block scalar — becomes an inline prompt of
+   the file, named after its body. *)
+prompt_ref = IDENT | STRING_LIT ;
 
 (* ---------- Embedded expression language ---------- *)
 
@@ -495,12 +514,20 @@ template_namespace = "vars" | "input" | "outputs" | "artifacts"
 
 (* ---------- Lexical forms ---------- *)
 
-ident_list = "[" [ IDENT { "," IDENT } ] "]" ;
-string_list = "[" [ STRING_LIT { "," STRING_LIT } ] "]" ;
-string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } ] "]" ;
-tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } ] "]" ;
+(* Every list may be written inline, or as one `- item` per line indented
+   under the property (comment lines allowed between items); both read as
+   the same list. `[]` is the empty list's only form. *)
+ident_list = "[" [ IDENT { "," IDENT } ] "]"
+           | NEWLINE INDENT { "-" IDENT NEWLINE } DEDENT ;
+string_list = "[" [ STRING_LIT { "," STRING_LIT } ] "]"
+            | NEWLINE INDENT { "-" STRING_LIT NEWLINE } DEDENT ;
+string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } ] "]"
+                     | NEWLINE INDENT { "-" string_or_ident NEWLINE } DEDENT ;
+tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } ] "]"
+              | NEWLINE INDENT { "-" tool_ref_elem NEWLINE } DEDENT ;
 tool_ref_elem = tool_ref | STRING_LIT ;  (* a quoted element is the literal name *)
-skill_ref_list = "[" [ skill_ref { "," skill_ref } ] "]" ;
+skill_ref_list = "[" [ skill_ref { "," skill_ref } ] "]"
+               | NEWLINE INDENT { "-" skill_ref NEWLINE } DEDENT ;
 
 tool_ref = IDENT { "." IDENT } [ "." "*" ] ;
 skill_ref = STRING_LIT | tool_ref ;

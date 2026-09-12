@@ -87,9 +87,19 @@ func TestRunValidate_BareMainBotKeepsTheBundleDirName(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 			t.Fatalf("validate %s: output is not JSON: %v\n%s", target, err, out.String())
 		}
-		if !result.Valid || len(result.BundleDiags) != 0 {
+		// A dev build scaffolds a profile-2 bundle with no engine floor (it
+		// has no orderable version to write), and C252 asks for one — the
+		// subject of another test, not of the name-stability check measured
+		// here.
+		var others []string
+		for _, d := range result.BundleDiags {
+			if !strings.Contains(d, "[C252]") {
+				others = append(others, d)
+			}
+		}
+		if !result.Valid || len(others) != 0 {
 			t.Errorf("validate %s: valid=%v bundle=%v compile=%v; the three names agree, the lint must be silent",
-				target, result.Valid, result.BundleDiags, result.Compile)
+				target, result.Valid, others, result.Compile)
 		}
 	}
 }

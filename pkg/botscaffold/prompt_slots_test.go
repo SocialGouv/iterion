@@ -49,7 +49,9 @@ func TestGalleryPayloadSlotsSurviveTheBlankLineDrop(t *testing.T) {
 	refRe := regexp.MustCompile(`\{\{\s*([^}\s]+)\s*\}\}`)
 	boundary := func(line string) bool {
 		line = strings.TrimSpace(line)
-		return line == "```" || strings.HasPrefix(line, "#")
+		// Under `dsl: 2` — every template — a blank line survives the
+		// lexer and separates the slot from what follows.
+		return line == "" || line == "```" || strings.HasPrefix(line, "#")
 	}
 	seen := 0
 	for _, shape := range Shapes() {
@@ -94,10 +96,10 @@ func TestGalleryPayloadSlotsSurviveTheBlankLineDrop(t *testing.T) {
 					if i > 0 {
 						prev = lines[i-1]
 					}
-					t.Errorf("%s: prompt %s: the value slot %s follows %q, want a heading or a fence (blank lines do not survive the lexer)", shape, p.Name, line, prev)
+					t.Errorf("%s: prompt %s: the value slot %s follows %q, want a heading, a fence or a blank line", shape, p.Name, line, prev)
 				}
 				if i+1 < len(lines) && !boundary(lines[i+1]) {
-					t.Errorf("%s: prompt %s: the value slot %s is followed by %q, want a heading, a fence or the end of the body", shape, p.Name, line, lines[i+1])
+					t.Errorf("%s: prompt %s: the value slot %s is followed by %q, want a heading, a fence, a blank line or the end of the body", shape, p.Name, line, lines[i+1])
 				}
 			}
 		}

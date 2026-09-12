@@ -146,3 +146,40 @@ the syntax that drifted apart are the defect this closes.
 - What this ADR refuses: a version that governs engine capabilities
   (that is the manifest's floor), an implicit directory-wide merge, and a
   second committed source of truth in YAML.
+
+## Amendments (lot 2, 2026-09-12)
+
+Facts the implementation verified, recorded so they are not re-litigated:
+
+1. `delegate:` never existed in the parser — no token, no arm; only the
+   quickref named it to say "do not write it". Its "removal" is doc-only.
+2. `join` was a keyword with no parser rule behind it and no use in the
+   corpus. It goes in every profile, not in profile 2 alone: a dead token
+   becoming an ordinary identifier changes no valid text's meaning.
+3. The migration is a surgical rewrite by spans on the ORIGINAL bytes, not
+   parse → unparse: the parser drops the comments inside a block and the
+   unparser hoists the top-level ones, so a rewrite through them would
+   erase a bot's documentation and reformat every file. The oracle is the
+   span-free JSON mirror of the AST (never vacuous, unlike a comparison of
+   two compilations with no workflow), plus the file's frontmatter read on
+   its original bytes; the paragraph breaks profile 2 keeps are reported
+   by prompt, and refused on request, since the text is identical and the
+   meaning is not.
+4. The command is `iterion dsl migrate`, beside `dsl spec`: `iterion
+   migrate` is the hidden operator root (to-cloud, run-paths, orgs), and
+   moving a `.bot` is an author's gesture.
+5. Tool-name aliases (`Read` → `read_file`) leave the lot: the tool registry
+   already resolves a bare name against a unique MCP tool suffix, so an
+   alias after an exact-match miss changes the meaning of a valid profile-1
+   file, and an alias resolved at runtime does not travel in the AST an
+   older runner compiles. A follow-up ticket carries both constraints.
+6. The engine floor a profile-2 bundle declares is the VERSION OF THE BUILD
+   that wrote it — the migrating binary, the scaffolding binary — never a
+   release number guessed in code: that build reads the profile, so every
+   later one does. `iterion validate` asks for the floor where it is
+   missing (C252) and the push admission refuses without it; a headerless
+   file that profile 2 would read otherwise is told so (C144), while a
+   headerless file both profiles read alike draws nothing.
+7. An inline prompt is named after its body (`_inline_<hash>`), not after
+   the node and property: stable under a node's rename, collision-free
+   across groups, and shared by two references to the same text.
