@@ -206,7 +206,8 @@ func RunValidate(path string, p *Printer) error {
 
 	// The profile the file is read in must be a choice (C144): a headerless
 	// file that profile 2 would read otherwise is told so, with the counts.
-	if pr.File != nil && pr.File.EffectiveProfile() == 1 && len(pr.ProfileReads) > 0 {
+	// An explicit `dsl: 1` IS the choice, and is told nothing.
+	if pr.File != nil && pr.File.Profile == 0 && len(pr.ProfileReads) > 0 {
 		escapes, paragraphs := 0, 0
 		for _, r := range pr.ProfileReads {
 			if r.Kind == "escape" {

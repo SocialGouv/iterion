@@ -557,6 +557,15 @@ func (p *parser) parseDSLHeader(f *ast.File, declared bool) {
 			profile = n
 		}
 	}
+	// The header is the number and nothing else but a comment. The lexer
+	// read the same line as text (ReadPreamble) and took anything more as
+	// no profile at all; the parser must refuse it too, or the file would
+	// carry one profile in its AST and another in its strings.
+	if rest := p.peek(); !lineEnds(rest) && rest.Type != TokenEOF {
+		p.addError(DiagUnknownProfile, rest, "dsl: takes only the profile number, alone on its line (`dsl: 2`), got '"+v.Value+" "+rest.Value+"'")
+		p.skipToNewline()
+		return
+	}
 	switch {
 	case profile < 1:
 		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+v.Value+"'")

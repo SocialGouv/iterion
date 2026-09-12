@@ -87,6 +87,11 @@ func NewLexer(filename, src string) *Lexer {
 	// header the parser will refuse (E040) reads as profile 1 meanwhile.
 	pre := ReadPreamble(src)
 	profile := max(pre.Profile, 1)
+	if profile > MaxProfile {
+		// The parser refuses it (E040); the strings are read as profile 1
+		// meanwhile, never with a profile this build knows nothing of.
+		profile = 1
+	}
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,

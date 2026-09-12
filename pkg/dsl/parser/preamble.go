@@ -88,8 +88,19 @@ func dslHeaderValue(line string) (string, bool) {
 }
 
 // parseProfile turns a header value into a profile number: a positive
-// integer, or -1 for anything else (the parser names the defect).
+// integer written in digits alone, or -1 for anything else (the parser
+// names the defect). Digits alone, because the parser reads the value as
+// one integer token: a sign or a space it would not accept must not be read
+// here as a profile.
 func parseProfile(value string) int {
+	if value == "" {
+		return -1
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return -1
+		}
+	}
 	n, err := strconv.Atoi(value)
 	if err != nil || n < 1 {
 		return -1
