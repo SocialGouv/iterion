@@ -181,5 +181,5 @@ Facts the implementation verified, recorded so they are not re-litigated:
    file that profile 2 would read otherwise is told so (C144), while a
    headerless file both profiles read alike draws nothing.
 7. An inline prompt is named after its body (`_inline_<hash>`), not after
-   the node and property: stable under a node's rename, collision-free
+   the node and property: stable under a node's rename, collision-resolved (a second body under the same twelve-digit prefix takes a longer one)
    across groups, and shared by two references to the same text.
