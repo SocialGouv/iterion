@@ -322,7 +322,7 @@ Rules:
    (`as fix("{{vars.cap}}")`); a quoted plain int `as fix("2")` is read as
    the int 2, but a quoted non-numeric cap `as fix("two")` is an E002 error.
 2. Conditional edges must be exhaustive (or have an unconditional fallback).
-3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
+3. Edge `with {}` values are strings; an int/bool/float literal (`with { n: 3 }`) is read as its text (`"3"`). Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.
 5. `as <loop>` / `as foreach` cannot originate inside a `fan_out_all`, `fan_out_each`,
    or llm `multi: true` body, or re-enter a body node from the join (**C244**).
