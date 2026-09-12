@@ -69,10 +69,13 @@ type Credential struct {
 
 // Executor performs one operation's call.
 type Executor struct {
-	// Client MUST be the guarded client (httpdial.SafeClient): a connector
-	// calls hosts a tenant chose, so an unguarded one is a way to reach a
-	// metadata endpoint from inside the deployment. It is a field rather than
-	// a package default so a test can inject a stub, and nil is refused.
+	// Client is the guarded client the call goes out on: address-checked and
+	// refusing redirects, because a connector reaches hosts a tenant chose and
+	// an unguarded one is a way to the deployment's own metadata endpoint.
+	//
+	// Build it with connection.LocalHTTPClient. Call REFUSES a client that
+	// does not carry the guard mark, so the property is enforced on the value
+	// rather than assumed of whoever wired this field.
 	Client *http.Client
 	// BaseURL is the connection's instance origin, overriding the package's
 	// default. Empty uses the package's.
@@ -332,6 +335,9 @@ func idempotencyKeySent(op spec.Operation, params map[string]any) bool {
 func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operation, params map[string]any, cred Credential) (Result, error) {
 	if e.Client == nil {
 		return Result{}, fmt.Errorf("exec: no HTTP client — a connector must call through the guarded client, never a default one")
+	}
+	if !IsGuarded(e.Client) {
+		return Result{}, fmt.Errorf("exec: this HTTP client carries no guard mark — a connector reaches hosts a tenant chose, so build it with connection.LocalHTTPClient rather than a default client (a test marks its stub with exec.MarkGuarded)")
 	}
 	req, err := e.buildRequest(ctx, pkg, op, params, cred)
 	if err != nil {

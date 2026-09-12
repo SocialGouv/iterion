@@ -112,7 +112,7 @@ func TestAnAmbiguousMutationIsNeverRetriedAutomatically(t *testing.T) {
 	}
 
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	_, err := e.Execute(context.Background(), node, nil)
 	if err == nil {
@@ -202,7 +202,7 @@ func TestRuntimeEnforcesTheActionInvariants(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			touched = false
 			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 			out, err := e.Execute(context.Background(), tc.node, nil)
 			if err == nil {
 				t.Fatalf("the runtime must refuse this node, got output %v", out)
@@ -258,7 +258,7 @@ func TestRuntimeRefusesAnOperationTheResolverShouldNotHaveOffered(t *testing.T) 
 				Params: []ir.ActionParam{{Key: "body", Value: "x"}},
 			}
 			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 			if _, err := e.Execute(context.Background(), node, nil); err == nil {
 				t.Fatal("the runtime must refuse it")
 			} else if !strings.Contains(err.Error(), tc.wantMsg) {
@@ -279,7 +279,7 @@ func TestRuntimeRefusesAnOperationTheResolverShouldNotHaveOffered(t *testing.T) 
 		Params: []ir.ActionParam{{Key: "body", Value: "x"}},
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 	if _, err := e.Execute(context.Background(), node, nil); err != nil {
 		t.Fatalf("a deterministic operation in an experimental package must run: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestNoModelIsConsultedForAnActionEvenWithTheClassifierEnabled(t *testing.T)
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
 		model.WithToolPolicy(policy),
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	if _, err := e.Execute(context.Background(), node, nil); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -372,7 +372,7 @@ func TestTheOperatorsOwnRulesStillApplyToAnAction(t *testing.T) {
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
 		model.WithToolPolicy(policy),
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	if _, err := e.Execute(context.Background(), node, nil); err == nil {
 		t.Fatal("a denied connector action must not execute")
@@ -415,7 +415,7 @@ func TestASecretReferenceReachesTheVendorAsItsVALUE(t *testing.T) {
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
 		model.WithSecretGuard(guard),
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	if _, err := e.Execute(context.Background(), node, nil); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -462,7 +462,7 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 			Connection: "main", RetryPolicy: "5",
 		}
 		e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-			model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+			model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 		if _, err := e.Execute(context.Background(), node, nil); err != nil {
 			t.Fatalf("the third attempt succeeded, so the node must: %v", err)
 		}
@@ -503,7 +503,7 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 			Params: []ir.ActionParam{{Key: "body", Value: "ship it"}},
 		}
 		e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-			model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+			model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 		if _, err := e.Execute(context.Background(), node, nil); err == nil {
 			t.Fatal("a lost answer must fail the node")
 		}
@@ -572,7 +572,7 @@ func TestTheEngineNeverRetriesAnUndecidedMutation(t *testing.T) {
 				Params:     []ir.ActionParam{{Key: "body", Value: "ship it"}},
 			}
 			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 			_, err := e.Execute(context.Background(), node, nil)
 			if err == nil {
 				t.Fatal("the node must fail")
@@ -622,7 +622,7 @@ func TestAnOrdinaryFailureStillRetries(t *testing.T) {
 		Connection: "main",
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	_, err := e.Execute(context.Background(), node, nil)
 	if err == nil {
@@ -726,7 +726,7 @@ func TestParameterValuesReachTheVendorIntact(t *testing.T) {
 				Params: []ir.ActionParam{{Key: "body", Value: tc.value, Refs: refsOf(tc.value)}},
 			}
 			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 			if _, err := e.Execute(context.Background(), node, tc.input); err != nil {
 				t.Fatalf("execute: %v", err)
 			}
@@ -767,7 +767,7 @@ func TestAValueOfTheWrongTypeIsRefused(t *testing.T) {
 				Params: []ir.ActionParam{{Key: "body", Value: tc.value}},
 			}
 			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 			if _, err := e.Execute(context.Background(), node, nil); err == nil {
 				t.Fatal("the node must refuse a value of the wrong type")
 			}
@@ -838,7 +838,7 @@ func TestRetriesDoNotHammerAVendorThatNamedNoDelay(t *testing.T) {
 		Connection: "main", RetryPolicy: "5",
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	if _, err := e.Execute(context.Background(), node, nil); err != nil {
 		t.Fatalf("the third attempt succeeds, so the node must: %v", err)
@@ -894,7 +894,7 @@ func TestARetriedNodeReportsWhatTheVendorActuallyServed(t *testing.T) {
 		RetryPolicy: "3",
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	out, err := e.Execute(context.Background(), node, nil)
 	if err != nil {
@@ -942,7 +942,7 @@ func TestAFailedNodeAlsoReportsWhatTheVendorServed(t *testing.T) {
 		RetryPolicy: "2",
 	}
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
-		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
 
 	_, err := e.Execute(context.Background(), node, nil)
 	if err == nil {

@@ -209,6 +209,9 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if advice := connection.UnreachableBaseURL(context.Background(), conn.BaseURL); advice != "" {
 		fmt.Fprintf(out, "  warning: %s\n", advice)
 	}
+	if advice := connection.CleartextOrigin(conn.BaseURL); advice != "" {
+		fmt.Fprintf(out, "  warning: %s\n", advice)
+	}
 	return nil
 }
 
@@ -237,6 +240,9 @@ func ConnectionsList(storeDir string, out io.Writer) error {
 		fmt.Fprintf(out, "  %s · scheme %s · %s\n", c.ID, c.SchemeID, capabilityNames(c.Capabilities))
 		if c.StatusReason != "" {
 			fmt.Fprintf(out, "  %s\n", c.StatusReason)
+		}
+		if advice := connection.CleartextOrigin(c.BaseURL); advice != "" {
+			fmt.Fprintf(out, "  warning: %s\n", advice)
 		}
 	}
 	return nil

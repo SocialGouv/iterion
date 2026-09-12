@@ -14,6 +14,10 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
+	// Aliased: this file names a local `exec` for the built executor, and the
+	// two reading alike at four lines' distance is how a reader loses track of
+	// which one a call means.
+	connectorexec "github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -372,7 +376,7 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 	// it would be testing a different wiring than the one that ships.
 	if resolver != nil {
 		espec.Connectors = resolver
-		espec.ConnectorClient = client
+		espec.ConnectorClient = connectorexec.MarkGuarded(client)
 	}
 	exec, err := runview.BuildExecutor(espec)
 	if err != nil {

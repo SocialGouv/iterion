@@ -114,11 +114,13 @@ func run(t *testing.T, h http.HandlerFunc) (*exec.Executor, *spec.Package, func(
 	// them would never present the executor with a 3xx, and so could not
 	// catch the reader treating one as success. The stub carries every term
 	// of the real producer except the loopback guard, which is what makes a
-	// test server addressable at all.
+	// test server addressable at all — and MarkGuarded is where that single
+	// exemption is DECLARED, rather than the executor relaxing its rule for
+	// everyone in order to be testable.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	e := &exec.Executor{Client: client, UserAgent: "iterion-test"}
+	e := &exec.Executor{Client: exec.MarkGuarded(client), UserAgent: "iterion-test"}
 	return e, probe(srv.URL), srv.Close
 }
 
@@ -252,7 +254,7 @@ func TestPathEscapingSurvivesTheBaseURLAndTheValues(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			e := &exec.Executor{Client: srv.Client()}
+			e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
 			pkg := probe(srv.URL + tc.basePath)
 			res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
 				map[string]any{"owner": "acme", "repo": tc.repo, "index": 1}, creds())
@@ -830,7 +832,7 @@ func TestACallThatNeverLeftIsNotAnUndecidedMutation(t *testing.T) {
 		{"an opaque failure", errors.New("something went wrong"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &exec.Executor{Client: &http.Client{Transport: failingTransport{err: tc.cause}}}
+			e := &exec.Executor{Client: exec.MarkGuarded(&http.Client{Transport: failingTransport{err: tc.cause}})}
 			pkg := probe("https://git.example.invalid")
 			op := opOf(t, pkg, "probe.issue.comment")
 			args := fullParams("probe.issue.comment")
@@ -888,7 +890,7 @@ func TestALostAnswerIsAmbiguousUnlessTheKeyWasSENT(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), UserAgent: "iterion-test"}
 	pkg := probe(srv.URL)
 	op := opOf(t, pkg, "probe.issue.comment")
 	op.IdempotencyKeyParam = "body"
@@ -1007,7 +1009,7 @@ func TestACredentialNeverAppearsInAnError(t *testing.T) {
 	pkg.Connector.Auth = []spec.AuthScheme{{
 		ID: "token", Kind: spec.AuthAPIKey, In: "query", Name: "access_token",
 	}}
-	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), UserAgent: "iterion-test"}
 
 	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
 		fullParams("probe.issue.get"), exec.Credential{SchemeID: "token", Value: token})
@@ -1692,7 +1694,7 @@ func TestFailureInsideATwoHundredIsAFailure(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			e := &exec.Executor{Client: srv.Client()}
+			e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
 			pkg := slackShaped(srv.URL)
 			op, _ := pkg.Operation("chat.chat.post_message")
 
@@ -1736,7 +1738,7 @@ func TestFormBodyReachesTheWire(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &exec.Executor{Client: srv.Client()}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
 	pkg := slackShaped(srv.URL)
 	op, _ := pkg.Operation("chat.chat.post_message")
 	if _, err := e.Call(context.Background(), pkg, op,
@@ -1772,7 +1774,7 @@ func TestABrokenPredicateIsNotASuccess(t *testing.T) {
 	// happily accept.
 	pkg.Connector.Outcome.SuccessWhen = "body.error"
 
-	e := &exec.Executor{Client: srv.Client()}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
 	op, _ := pkg.Operation("chat.chat.post_message")
 	res, err := e.Call(context.Background(), pkg, op,
 		map[string]any{"channel": "C1"}, exec.Credential{SchemeID: "bearer", Value: "x"})
@@ -1980,7 +1982,7 @@ func TestADeclaredErrorClassSurvivesAnUnmappedVendorCode(t *testing.T) {
 	// code is not in the connector's map.
 	op.Errors = append(op.Errors, spec.ErrorSpec{Status: http.StatusForbidden, Class: spec.ErrRateLimited})
 
-	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), UserAgent: "iterion-test"}
 	res, err := e.Call(context.Background(), pkg, op,
 		map[string]any{"channel": "C1", "text": "hi"},
 		exec.Credential{SchemeID: "bearer", Value: "s3cret"})
@@ -2006,7 +2008,7 @@ func TestADeclaredErrorClassSurvivesAnUnmappedVendorCode(t *testing.T) {
 	pkg2 := slackShaped(srv2.URL)
 	op2 := opOf(t, pkg2, "chat.chat.post_message")
 	op2.Errors = append(op2.Errors, spec.ErrorSpec{Status: http.StatusForbidden, Class: spec.ErrRateLimited})
-	e2 := &exec.Executor{Client: srv2.Client(), UserAgent: "iterion-test"}
+	e2 := &exec.Executor{Client: exec.MarkGuarded(srv2.Client()), UserAgent: "iterion-test"}
 	res2, err := e2.Call(context.Background(), pkg2, op2,
 		map[string]any{"channel": "C1", "text": "hi"},
 		exec.Credential{SchemeID: "bearer", Value: "s3cret"})

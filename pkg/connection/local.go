@@ -300,7 +300,9 @@ func LocalHTTPClient() *http.Client {
 		// would name a variable that is already set.
 		c.Transport = &privateHostHint{base: c.Transport}
 	}
-	return c
+	// Marked LAST, so the mark sits outside every wrapper this function adds
+	// and no later one has to forward it.
+	return exec.MarkGuarded(c)
 }
 
 // markDialFailuresAsNotSent tells the executor that a failed DIAL is a call

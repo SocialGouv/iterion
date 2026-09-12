@@ -34,6 +34,7 @@ package connection
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -297,6 +298,34 @@ func validateBaseURL(id, baseURL string) error {
 		return fmt.Errorf("connection %q: instance URL %q names no host", id, trimmed)
 	}
 	return nil
+}
+
+// CleartextOrigin returns the warning an operator should see when baseURL
+// carries this connection's credential in the clear, and "" when it does not.
+//
+// A warning, not a refusal: a self-hosted instance on a network an operator
+// trusts is a legitimate choice, and the connectors this catalog ships are
+// often exactly that. What is not legitimate is making that choice without
+// being told — the guarded dialer checks an address CLASS and never a scheme,
+// so no other step in the path mentions it, and the credential travels on
+// every call thereafter.
+//
+// Loopback is excluded deliberately: the packet does not leave the machine, so
+// the warning would be noise — and a warning an operator learns to read past
+// stops protecting the case it exists for.
+func CleartextOrigin(baseURL string) string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("%s is plain http — this connection's credential travels unencrypted, and anything on the path can read it. Use https unless the instance sits on a network you trust.", u.Host)
 }
 
 // AuthPlacement is the part of a package's auth scheme that decides where a
