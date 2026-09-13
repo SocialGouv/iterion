@@ -31,6 +31,7 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "target_run_id", Value: 1}, {Key: "state", Value: 1}}, Options: options.Index().SetName("target_active")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "assistant_run_id", Value: 1}, {Key: "state", Value: 1}}, Options: options.Index().SetName("assistant_active")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "target_run_id", Value: 1}}, Options: options.Index().SetName("one_active_owner_target").SetUnique(true).SetPartialFilterExpression(bson.M{"state": WatchActive})},
+		{Keys: bson.D{{Key: "state", Value: 1}, {Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}, Options: options.Index().SetName("active_creation_order")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("runwatch: ensure watch indexes: %w", err)
@@ -113,7 +114,7 @@ func (s *MongoStore) GetWatch(ctx context.Context, id string) (Watch, error) {
 }
 
 func (s *MongoStore) findWatches(ctx context.Context, filter bson.M, limit int64) ([]Watch, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
 	if limit > 0 {
 		opts.SetLimit(limit)
 	}
@@ -137,6 +138,33 @@ func (s *MongoStore) ListActiveByAssistant(ctx context.Context, tenant, id strin
 }
 func (s *MongoStore) ListActive(ctx context.Context, limit int) ([]Watch, error) {
 	return s.findWatches(ctx, bson.M{"state": WatchActive}, int64(limit))
+}
+
+func (s *MongoStore) ActiveWatchUpperBound(ctx context.Context) (*WatchCursor, error) {
+	var w Watch
+	err := s.watches.FindOne(ctx, bson.M{"state": WatchActive}, options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})).Decode(&w)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("runwatch: active watch upper bound: %w", err)
+	}
+	key := watchCursor(w)
+	return &key, nil
+}
+
+func (s *MongoStore) ListActivePage(ctx context.Context, after *WatchCursor, through WatchCursor, limit int) ([]Watch, error) {
+	clauses := bson.A{bson.M{"$or": bson.A{
+		bson.M{"created_at": bson.M{"$lt": through.CreatedAt}},
+		bson.M{"created_at": through.CreatedAt, "_id": bson.M{"$lte": through.ID}},
+	}}}
+	if after != nil {
+		clauses = append(clauses, bson.M{"$or": bson.A{
+			bson.M{"created_at": bson.M{"$gt": after.CreatedAt}},
+			bson.M{"created_at": after.CreatedAt, "_id": bson.M{"$gt": after.ID}},
+		}})
+	}
+	return s.findWatches(ctx, bson.M{"state": WatchActive, "$and": clauses}, int64(limit))
 }
 
 func (s *MongoStore) StopWatch(ctx context.Context, id, tenant string, state WatchState, reason string, now time.Time) error {
@@ -319,7 +347,17 @@ func (s *MongoStore) BlockEpisode(ctx context.Context, id, owner string, now tim
 	return s.finish(ctx, id, owner, EpisodeBlocked, now, msg, false)
 }
 func (s *MongoStore) CompleteEpisode(ctx context.Context, id, owner string, now time.Time) error {
-	return s.finish(ctx, id, owner, EpisodeDone, now, "", true)
+	session, err := s.watches.Database().Client().StartSession()
+	if err != nil {
+		return fmt.Errorf("runwatch: start completion transaction: %w", err)
+	}
+	defer session.EndSession(context.WithoutCancel(ctx))
+	// A retry may run this callback again, but only committed episode/watch
+	// changes survive. The external assistant resume stays outside it.
+	_, err = session.WithTransaction(ctx, func(tx context.Context) (any, error) {
+		return nil, s.finish(tx, id, owner, EpisodeDone, now, "", true)
+	})
+	return err
 }
 
 func (s *MongoStore) finish(ctx context.Context, id, owner string, state EpisodeState, at time.Time, msg string, delivered bool) error {
@@ -336,9 +374,20 @@ func (s *MongoStore) finish(ctx context.Context, id, owner string, state Episode
 		return fmt.Errorf("runwatch: finish episode: %w", err)
 	}
 	if delivered {
-		_, err = s.watches.UpdateOne(ctx, bson.M{"_id": ep.WatchID}, bson.M{"$inc": bson.M{"delivered_episodes": 1}, "$set": bson.M{"last_delivered_at": at, "updated_at": at}})
+		filter := bson.M{"_id": ep.WatchID, "tenant_id": ep.TenantID}
+		if ep.TenantID == "" {
+			// Empty local tenants are omitted by the persisted BSON schema.
+			filter["tenant_id"] = bson.M{"$in": bson.A{"", nil}}
+		}
+		res, err := s.watches.UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"delivered_episodes": 1}, "$max": bson.M{"last_delivered_at": at, "updated_at": at}})
+		if err != nil {
+			return fmt.Errorf("runwatch: record episode delivery: %w", err)
+		}
+		if res.MatchedCount == 0 {
+			return ErrNotFound
+		}
 	}
-	return err
+	return nil
 }
 
 var _ Store = (*MongoStore)(nil)

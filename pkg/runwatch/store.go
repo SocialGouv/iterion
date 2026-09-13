@@ -121,6 +121,18 @@ type Episode struct {
 	DeliveredAt         *time.Time   `json:"delivered_at,omitempty" bson:"delivered_at,omitempty"`
 }
 
+// WatchCursor identifies an immutable position in watch creation order.
+type WatchCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+func watchCursor(w Watch) WatchCursor { return WatchCursor{CreatedAt: w.CreatedAt, ID: w.ID} }
+
+func (c WatchCursor) before(other WatchCursor) bool {
+	return c.CreatedAt.Before(other.CreatedAt) || c.CreatedAt.Equal(other.CreatedAt) && c.ID < other.ID
+}
+
 // Store is purpose-built around the coordinator's claims. ClaimEpisode must
 // be atomic across replicas; CreateWatch must enforce one active watcher per
 // tenant/owner/target tuple.
@@ -144,6 +156,11 @@ type Store interface {
 	ListActiveByTarget(context.Context, string, string) ([]Watch, error)
 	ListActiveByAssistant(context.Context, string, string) ([]Watch, error)
 	ListActive(context.Context, int) ([]Watch, error)
+	// ActiveWatchUpperBound fixes a finite pass boundary; nil means no active watches.
+	ActiveWatchUpperBound(context.Context) (*WatchCursor, error)
+	// ListActivePage returns active watches after the exclusive lower cursor,
+	// through the inclusive upper bound, in (created_at, ID) order.
+	ListActivePage(context.Context, *WatchCursor, WatchCursor, int) ([]Watch, error)
 	StopWatch(context.Context, string, string, WatchState, string, time.Time) error
 	AdvanceObservedEventSeq(context.Context, string, string, int64, time.Time) error
 	InitializeTreeTracking(context.Context, string, string, time.Time, time.Time) (Watch, error)

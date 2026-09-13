@@ -177,7 +177,7 @@ func (s *FSStore) watches(match func(Watch) bool, limit int) ([]Watch, error) {
 			out = append(out, w)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool { return watchCursor(out[i]).before(watchCursor(out[j])) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -198,6 +198,38 @@ func (s *FSStore) ListActive(_ context.Context, limit int) ([]Watch, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.watches(func(w Watch) bool { return w.State == WatchActive }, limit)
+}
+
+func (s *FSStore) ActiveWatchUpperBound(ctx context.Context) (*WatchCursor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	st, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	var upper *WatchCursor
+	for _, w := range st.Watches {
+		key := watchCursor(w)
+		if w.State == WatchActive && (upper == nil || upper.before(key)) {
+			upper = &key
+		}
+	}
+	return upper, nil
+}
+
+func (s *FSStore) ListActivePage(ctx context.Context, after *WatchCursor, through WatchCursor, limit int) ([]Watch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.watches(func(w Watch) bool {
+		key := watchCursor(w)
+		return w.State == WatchActive && (after == nil || after.before(key)) && !through.before(key)
+	}, limit)
 }
 
 func (s *FSStore) StopWatch(_ context.Context, id, tenant string, state WatchState, reason string, now time.Time) error {
@@ -436,10 +468,17 @@ func (s *FSStore) finish(id, owner string, state EpisodeState, at time.Time, msg
 	ep.State, ep.LeaseOwner, ep.LeaseUntil, ep.NextAttemptAt, ep.LastError, ep.UpdatedAt = state, "", nil, at, msg, at
 	if delivered {
 		ep.DeliveredAt = &at
-		w := st.Watches[ep.WatchID]
+		w, exists := st.Watches[ep.WatchID]
+		if !exists || w.TenantID != ep.TenantID {
+			return ErrNotFound
+		}
 		w.DeliveredEpisodes++
-		w.LastDeliveredAt = &at
-		w.UpdatedAt = at
+		if w.LastDeliveredAt == nil || w.LastDeliveredAt.Before(at) {
+			w.LastDeliveredAt = &at
+		}
+		if w.UpdatedAt.Before(at) {
+			w.UpdatedAt = at
+		}
 		st.Watches[w.ID] = w
 	}
 	st.Episodes[id] = ep

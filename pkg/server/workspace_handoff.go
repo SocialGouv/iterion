@@ -145,7 +145,7 @@ func (h *WorkspaceHost) loadWorkspaceHandoffs() {
 			}
 			copy := record
 			h.handoffs[record.ID] = &copy
-			if !record.TicketConsumed && now.Before(record.ExpiresAt) && record.TicketHash != "" {
+			if !record.TicketConsumed && !now.After(record.ExpiresAt) && record.TicketHash != "" {
 				h.handoffTickets[record.TicketHash] = record.ID
 			}
 		}
@@ -259,7 +259,8 @@ func (h *WorkspaceHost) createHandoff(w http.ResponseWriter, r *http.Request, so
 	if req.SourceRunID != "" {
 		unresolved := 0
 		for _, existing := range h.handoffs {
-			if existing.SourceID == sourceID && existing.SourceRunID != "" && existing.DeliveredAt.IsZero() {
+			if existing.SourceID == sourceID && existing.SourceRunID != "" && existing.DeliveredAt.IsZero() &&
+				(existing.TicketConsumed || !now.After(existing.ExpiresAt)) {
 				unresolved++
 			}
 		}

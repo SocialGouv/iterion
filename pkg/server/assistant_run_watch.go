@@ -317,53 +317,81 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
 	started := c.now()
 	c.markSweepStarted(started)
 	ws := c.currentStore()
-	watches, err := ws.ListActive(ctx, 500)
+	upper, err := ws.ActiveWatchUpperBound(ctx)
 	if err != nil {
-		c.server.logWarn("assistant run watch: list active: %v", err)
+		c.server.logWarn("assistant run watch: active watch upper bound: %v", err)
 		return
 	}
-	for _, w := range watches {
-		if c.server.cfg.Mode == "cloud" && w.TenantID == "" {
-			c.server.logWarn("assistant run watch: skip watch %s without cloud tenant", w.ID)
-			continue
+	var after *runwatch.WatchCursor
+	for upper != nil {
+		if ctx.Err() != nil {
+			return
 		}
-		rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
-		target, err := c.runs.LoadRunCtx(rctx, w.TargetRunID)
-		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
-			_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "target_missing", time.Now().UTC())
-			continue
-		}
+		watches, err := ws.ListActivePage(ctx, after, *upper, 500)
 		if err != nil {
-			continue
+			c.server.logWarn("assistant run watch: list active page: %v", err)
+			return
 		}
-		now := time.Now().UTC()
-		started := w.CreatedAt
-		if w.TreeTrackingStartedAt == nil {
-			// Legacy watches baseline their already-existing descendants exactly
-			// once at upgrade. New watches already carry CreatedAt here.
-			started = now
+		if len(watches) == 0 {
+			break
 		}
-		w, err = ws.InitializeTreeTracking(rctx, w.ID, w.TenantID, started, now)
-		if err != nil {
-			c.server.logWarn("assistant run watch: initialize tree tracking watch=%s: %v", w.ID, err)
-			continue
-		}
-		tree := c.loadWatchTree(rctx, target)
-		observations := c.ensureTreeObservations(rctx, w, tree, now)
-		c.observePausedHumanGatesInTree(rctx, w, tree)
-		for _, observed := range tree.runs {
-			if cursor, ok := observations[observed.ID]; ok {
-				c.observeRunHealthInTree(rctx, w, observed, cursor, tree)
+		for _, w := range watches {
+			if ctx.Err() != nil {
+				return
 			}
-			c.observeTerminalStateForWatch(rctx, w, observed, false)
+			if c.server.cfg.Mode == "cloud" && w.TenantID == "" {
+				c.server.logWarn("assistant run watch: skip watch %s without cloud tenant", w.ID)
+				continue
+			}
+			rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
+			target, err := c.runs.LoadRunCtx(rctx, w.TargetRunID)
+			if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+				_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "target_missing", time.Now().UTC())
+				continue
+			}
+			if err != nil {
+				continue
+			}
+			now := time.Now().UTC()
+			started := w.CreatedAt
+			if w.TreeTrackingStartedAt == nil {
+				// Legacy watches baseline their already-existing descendants exactly
+				// once at upgrade. New watches already carry CreatedAt here.
+				started = now
+			}
+			w, err = ws.InitializeTreeTracking(rctx, w.ID, w.TenantID, started, now)
+			if err != nil {
+				c.server.logWarn("assistant run watch: initialize tree tracking watch=%s: %v", w.ID, err)
+				continue
+			}
+			tree := c.loadWatchTree(rctx, target)
+			observations := c.ensureTreeObservations(rctx, w, tree, now)
+			c.observePausedHumanGatesInTree(rctx, w, tree)
+			for _, observed := range tree.runs {
+				if cursor, ok := observations[observed.ID]; ok {
+					c.observeRunHealthInTree(rctx, w, observed, cursor, tree)
+				}
+				c.observeTerminalStateForWatch(rctx, w, observed, false)
+			}
+			assistant, aerr := c.runs.LoadRunCtx(rctx, w.AssistantRunID)
+			if aerr == nil && assistantWatchStopsForStatus(assistant.Status) {
+				_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "assistant_"+string(assistant.Status), time.Now().UTC())
+			}
 		}
-		assistant, aerr := c.runs.LoadRunCtx(rctx, w.AssistantRunID)
-		if aerr == nil && assistantWatchStopsForStatus(assistant.Status) {
-			_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "assistant_"+string(assistant.Status), time.Now().UTC())
+		last := watches[len(watches)-1]
+		after = &runwatch.WatchCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+		if len(watches) < 500 {
+			break
 		}
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	c.reconcileArmedWatches(ctx)
 	c.deliverDue(ctx, 100)
+	if ctx.Err() != nil {
+		return
+	}
 	c.markSweepCompleted(c.now(), c.now().Sub(started))
 }
 
@@ -1017,6 +1045,9 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 	}
 	if err := ws.CompleteEpisode(ctx, ep.ID, c.worker, time.Now().UTC()); err != nil {
 		c.server.logWarn("assistant run watch: mark episode %s delivered: %v", ep.ID, err)
+		// Keep the watch active so a rolled-back completion can be retried
+		// after its lease expires, including a finished target's last episode.
+		return
 	}
 	if eventKind == trigger.KindRunFinished && observedID == w.TargetRunID {
 		_ = c.stopWatch(ctx, w, runwatch.WatchResolved, "target_"+eventKind, time.Now().UTC())
@@ -1292,9 +1323,32 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ident, _ := auth.FromContext(r.Context())
+	if ident.IsSynthetic() {
+		s.httpErrorFor(w, r, http.StatusForbidden, "assistant watches require an authenticated operator")
+		return
+	}
 	owner := ident.UserID
+	if s.cfg.Mode == "cloud" && owner == "" {
+		s.httpErrorFor(w, r, http.StatusForbidden, "assistant watches require an authenticated operator")
+		return
+	}
+	// Local unauthenticated operation retains the run's owner. DisableAuth
+	// supplies a dev identity, but legacy local runs may have no owner at all.
 	if owner == "" {
 		owner = assistant.OwnerID
+	} else if s.cfg.Mode != "cloud" && s.cfg.DisableAuth && assistant.OwnerID == "" {
+		owner = ""
+	} else if assistant.OwnerID != owner {
+		s.httpErrorFor(w, r, http.StatusForbidden, "assistant run belongs to another operator")
+		return
+	}
+	if assistant.TenantID != target.TenantID {
+		s.httpErrorFor(w, r, http.StatusForbidden, "assistant and target runs must belong to the same tenant")
+		return
+	}
+	if _, _, err := s.resolveAssistantChatCapability(r.Context(), assistant); err != nil {
+		s.httpErrorFor(w, r, http.StatusConflict, "assistant is not host-event capable: %v", err)
+		return
 	}
 	if covering, ok := c.findCoveringAncestorWatch(r.Context(), target, owner, assistant.ID); ok {
 		merged := mergeAssistantWatchPolicy(covering, req, requestedCooldown)

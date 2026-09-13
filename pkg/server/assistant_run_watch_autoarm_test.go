@@ -38,6 +38,24 @@ func newArmFixture(t *testing.T, hostEventCapable bool) *armFixture {
 	}
 	svc := newTestRunviewService(t, "", runview.WithStore(rs))
 
+	botsRoot := assistantWatchTestCatalog(t, hostEventCapable)
+
+	ws := runwatch.NewFSStore(t.TempDir())
+	if err := ws.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	srv := &Server{runs: svc, assistantWatches: ws, logger: iterlog.New(iterlog.LevelError, os.Stderr)}
+	srv.cfg.Bots.Paths = []string{botsRoot}
+	return &armFixture{
+		srv:   srv,
+		coord: testAssistantWatchCoordinator(srv, ws, "test"),
+		rs:    rs,
+		ws:    ws,
+	}
+}
+
+func assistantWatchTestCatalog(t *testing.T, hostEventCapable bool) string {
+	t.Helper()
 	botsRoot := t.TempDir()
 	dir := filepath.Join(botsRoot, "chatbot")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -54,18 +72,7 @@ func newArmFixture(t *testing.T, hostEventCapable bool) *armFixture {
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	ws := runwatch.NewFSStore(t.TempDir())
-	if err := ws.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("EnsureSchema: %v", err)
-	}
-	srv := &Server{runs: svc, assistantWatches: ws, logger: iterlog.New(iterlog.LevelError, os.Stderr)}
-	srv.cfg.Bots.Paths = []string{botsRoot}
-	return &armFixture{
-		srv:   srv,
-		coord: testAssistantWatchCoordinator(srv, ws, "test"),
-		rs:    rs,
-		ws:    ws,
-	}
+	return botsRoot
 }
 
 func (f *armFixture) assistant(t *testing.T, id, issueID string) *store.Run {

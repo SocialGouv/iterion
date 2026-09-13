@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,5 +186,97 @@ func TestValidateWorkspaceHandoffReceiptRejectsUnsafeArtifacts(t *testing.T) {
 		if err := validateWorkspaceHandoffReceipt(&candidate); err == nil {
 			t.Fatalf("unsafe receipt accepted: %+v", receipt)
 		}
+	}
+}
+
+func TestWorkspaceHandoffQuotaAfterReload(t *testing.T) {
+	for _, tc := range []struct {
+		name                                string
+		count                               int
+		expired, consumed, delivered, other bool
+		want                                int
+	}{
+		{name: "expired invitations", count: 128, expired: true, want: http.StatusOK},
+		{name: "live invitations", count: 128, want: http.StatusTooManyRequests},
+		{name: "consumed expired work", count: 128, expired: true, consumed: true, want: http.StatusTooManyRequests},
+		{name: "delivered work", count: 128, consumed: true, delivered: true, want: http.StatusOK},
+		{name: "other source", count: 128, other: true, want: http.StatusOK},
+		{name: "last slot", count: 127, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := &projects.Config{Version: 1, CurrentProjectID: "source", RecentProjects: []projects.Project{
+				{ID: "source", Name: "Source", Dir: t.TempDir(), StoreDir: t.TempDir()},
+				{ID: "target", Name: "Target", Dir: t.TempDir(), StoreDir: t.TempDir()},
+			}}
+			// Seed durable records before startup, then exercise the real HTTP quota
+			// against exactly the state a restarted host restores.
+			now := time.Now().UTC()
+			for i := range tc.count {
+				project := registry.RecentProjects[0]
+				if tc.other {
+					project = registry.RecentProjects[1]
+				}
+				expiry := now.Add(time.Hour)
+				if tc.expired {
+					expiry = now.Add(-time.Hour)
+				}
+				record := &workspaceHandoff{Version: workspaceHandoffSchemaVersion, ID: fmt.Sprintf("pending-%03d", i), SourceID: project.ID, SourceStoreDir: project.StoreDir, SourceRunID: "old-chat", TicketHash: fmt.Sprint(i), TicketConsumed: tc.consumed, ExpiresAt: expiry, CreatedAt: now, UpdatedAt: now}
+				if tc.delivered {
+					record.DeliveredAt = now
+				}
+				if err := (&WorkspaceHost{}).persistHandoffLocked(record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			host, err := NewWorkspaceHost(registry, func(project projects.Project) (*Server, error) {
+				return New(Config{WorkDir: project.Dir, StoreDir: project.StoreDir, DisableAuth: true, SkipProjectRegistration: true, RecoveryPassive: true}, iterlog.Nop()), nil
+			}, iterlog.Nop())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := host.Shutdown(ctx); err != nil {
+					t.Error(err)
+				}
+			})
+			if len(host.handoffs) != tc.count {
+				t.Fatalf("restored %d records, want %d", len(host.handoffs), tc.count)
+			}
+			wantTickets := tc.count
+			if tc.expired || tc.consumed {
+				wantTickets = 0
+			}
+			if len(host.handoffTickets) != wantTickets {
+				t.Fatalf("restored %d tickets, want %d", len(host.handoffTickets), wantTickets)
+			}
+			rs := host.runtimes["source"].server.runs.RunStore()
+			run, err := rs.CreateRun(t.Context(), "source-run", "copilot", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.Source = &store.RunSource{Kind: store.RunSourceKindStudioChat, ClientID: "client", ConversationID: "conversation"}
+			if err := rs.SaveRun(t.Context(), run); err != nil {
+				t.Fatal(err)
+			}
+			create := func() *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "/x/source/api/workspace/handoffs", strings.NewReader(`{"destination_project":"target","summary":"continue work","source_run_id":"source-run"}`))
+				req.Header.Set("Origin", "http://iterion.test")
+				req.Host = "iterion.test"
+				rec := httptest.NewRecorder()
+				host.ServeHTTP(rec, req)
+				return rec
+			}
+			response := create()
+			if response.Code != tc.want {
+				t.Fatalf("create=%d %s, want %d", response.Code, response.Body.String(), tc.want)
+			}
+			if tc.count == 127 {
+				if response := create(); response.Code != http.StatusTooManyRequests {
+					t.Fatalf("quota overrun=%d %s", response.Code, response.Body.String())
+				}
+			}
+		})
 	}
 }

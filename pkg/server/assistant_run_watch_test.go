@@ -163,7 +163,7 @@ func TestSameAssistantWatchIntentIgnoresDeliveryProgressAndKindOrder(t *testing.
 func TestCreateAssistantWatchIsIdempotentAndReconfiguresTheSameAssistant(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "target", "target-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "assistant", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "assistant", store.RunStatusPausedWaitingHuman)
 
 	post := func(body string) (int, []byte) {
 		t.Helper()
@@ -217,7 +217,7 @@ func TestCreateAssistantWatchIsIdempotentAndReconfiguresTheSameAssistant(t *test
 		t.Fatalf("watch was not reconfigured in place: %+v", changed)
 	}
 
-	seedRun(t, srv, "other-assistant", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "other-assistant", store.RunStatusPausedWaitingHuman)
 	transferStatus, transferBody := post(
 		`{"assistant_run_id":"other-assistant","mode":"propose","kinds":["run.failed","run.stalled"],"max_episodes":20}`,
 	)
@@ -236,8 +236,8 @@ func TestCreateAssistantWatchIsIdempotentAndReconfiguresTheSameAssistant(t *test
 func TestCreateAssistantWatchRejectsRunningIncumbent(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "target-running-incumbent", "target-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "incumbent-running", "assistant-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "incoming-paused", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "incumbent-running", store.RunStatusRunning)
+	seedAssistantWatchChat(t, srv, "incoming-paused", store.RunStatusPausedWaitingHuman)
 
 	post := func(body string) (int, []byte) {
 		t.Helper()
@@ -266,7 +266,7 @@ func TestCreateAssistantWatchRejectsRunningIncumbent(t *testing.T) {
 func TestCreateAssistantWatchFullResumePolicyPreservesDeliveryLedger(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "target-ledger", "target-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "assistant-ledger", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "assistant-ledger", store.RunStatusPausedWaitingHuman)
 
 	agedUpdatedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
 	lastDeliveredAt := agedUpdatedAt.Add(-time.Minute)
@@ -328,7 +328,7 @@ func TestCreateAssistantWatchFullResumePolicyPreservesDeliveryLedger(t *testing.
 func TestCreateAssistantWatchAcceptsExplicitStalledKind(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "target-stalled", "target-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "assistant-stalled", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "assistant-stalled", store.RunStatusPausedWaitingHuman)
 
 	resp, err := http.Post(
 		hs.URL+"/api/runs/target-stalled/assistant-watches",
@@ -358,7 +358,7 @@ func TestCreateAssistantWatchAcceptsExplicitStalledKind(t *testing.T) {
 func TestCreateAssistantWatchAcceptsExplicitPausedKind(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "target-paused", "target-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "assistant-paused", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "assistant-paused", store.RunStatusPausedWaitingHuman)
 
 	resp, err := http.Post(
 		hs.URL+"/api/runs/target-paused/assistant-watches",
@@ -386,7 +386,7 @@ func TestCreateDescendantWatchWidensAndReturnsCoveringAncestor(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "tree-root", "target-workflow", store.RunStatusRunning)
 	seedRun(t, srv, "tree-child", "target-workflow", store.RunStatusRunning)
-	seedRun(t, srv, "tree-assistant", "assistant-workflow", store.RunStatusPausedWaitingHuman)
+	seedAssistantWatchChat(t, srv, "tree-assistant", store.RunStatusPausedWaitingHuman)
 	child, err := srv.runs.LoadRunCtx(context.Background(), "tree-child")
 	if err != nil {
 		t.Fatal(err)
@@ -474,5 +474,21 @@ func TestCreateDescendantWatchWidensAndReturnsCoveringAncestor(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].ID != root.ID || listed[0].CoveredRunID != "tree-child" {
 		t.Fatalf("child coverage listing = %+v", listed)
+	}
+}
+
+func seedAssistantWatchChat(t *testing.T, srv *Server, id string, status store.RunStatus) {
+	t.Helper()
+	seedRun(t, srv, id, "chatbot", status)
+	if len(srv.cfg.Bots.Paths) == 0 {
+		srv.cfg.Bots.Paths = []string{assistantWatchTestCatalog(t, true)}
+	}
+	run, err := srv.runs.RunStore().LoadRun(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.BotID = "chatbot"
+	if err := srv.runs.RunStore().SaveRun(t.Context(), run); err != nil {
+		t.Fatal(err)
 	}
 }

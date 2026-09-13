@@ -186,9 +186,9 @@ type blockedWatchList struct {
 	once    sync.Once
 }
 
-func (s *blockedWatchList) ListActive(ctx context.Context, limit int) ([]runwatch.Watch, error) {
+func (s *blockedWatchList) ListActivePage(ctx context.Context, after *runwatch.WatchCursor, through runwatch.WatchCursor, limit int) ([]runwatch.Watch, error) {
 	s.once.Do(func() { close(s.entered); <-s.release })
-	return s.Store.ListActive(ctx, limit)
+	return s.Store.ListActivePage(ctx, after, through, limit)
 }
 
 func TestAssistantWatchInFlightProjectSnapshot(t *testing.T) {
