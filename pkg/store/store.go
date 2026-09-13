@@ -164,6 +164,24 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	// never accidentally committed.
 	// Failures (read-only FS, permission, etc.) are non-fatal.
 	_ = ensureGitignore(root)
+	return newFilesystemRunStore(root, opts...), nil
+}
+
+// OpenExisting is the read-only opening path used by native activation
+// inspection/probing. It never creates a store root, runs directory or
+// .gitignore merely because an operator asked for current capabilities.
+func OpenExisting(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("store: %s is not a directory", root)
+	}
+	return newFilesystemRunStore(root, opts...), nil
+}
+
+func newFilesystemRunStore(root string, opts ...StoreOption) *FilesystemRunStore {
 	s := &FilesystemRunStore{
 		root:           root,
 		seq:            make(map[string]int64),
@@ -174,7 +192,7 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
-	return s, nil
+	return s
 }
 
 // ensureGitignore writes a self-ignoring .gitignore at the store root if none

@@ -331,7 +331,11 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	for k, v := range spec.Vars {
 		inputs[k] = v
 	}
-	created, err := s.store.CreateRun(context.Background(), runID, wf.Name, inputs)
+	createCtx := context.Background()
+	if wf.RuntimeSemantics != "" {
+		createCtx = store.WithRuntimeSemantics(createCtx, wf.RuntimeSemantics)
+	}
+	created, err := s.store.CreateRun(createCtx, runID, wf.Name, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("runview: create run: %w", err)
 	}

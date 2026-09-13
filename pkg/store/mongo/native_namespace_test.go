@@ -105,6 +105,10 @@ func TestNativeFileCaptureMongo(t *testing.T) {
 	storetest.RunPortFiles(t, func(t *testing.T) store.RunStore { return nativeNamespaceStore(t) })
 }
 
+func TestNativeActivationMongo(t *testing.T) {
+	storetest.RunPortActivation(t, func(t *testing.T) store.RunStore { return nativeNamespaceStore(t) })
+}
+
 func TestNativeMongoRefusesUnsupportedRecordBeforeMutation(t *testing.T) {
 	s := nativeNamespaceStore(t)
 	base, cancel := mongotest.Ctx(t)

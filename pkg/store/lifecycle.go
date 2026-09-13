@@ -335,6 +335,13 @@ func (s RunStatus) CanOperatorResume() bool {
 		s == RunStatusPausedOperator || s == RunStatusPausedWaitingHuman
 }
 
+// CanNativeResume includes queued runs parked before pickup and excludes
+// legacy human-gate pauses, which the data-graph interpreter cannot answer.
+func (s RunStatus) CanNativeResume() bool {
+	return s == RunStatusFailedResumable || s == RunStatusCancelled ||
+		s == RunStatusPausedOperator || s == RunStatusQueued
+}
+
 // RequiresResumeAnswers: resuming this status needs the pending human
 // interaction answered first (`--answers-file`, the studio form).
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }

@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -152,8 +153,23 @@ func portsTestWorkflow(t testing.TB, source string) *ir.Workflow {
 func portsTestEngine(t *testing.T, newStore portsTestStoreFactory, source string, executor NodeExecutor, opts ...EngineOption) (*Engine, store.RunStore) {
 	t.Helper()
 	s := newStore(t)
+	activatePortsTestStore(t, s)
 	options := append([]EngineOption{WithWorkDir(gittest.SourceRepo(t)), WithSandboxOverride("none")}, opts...)
 	return New(portsTestWorkflow(t, source), s, executor, options...), s
+}
+
+func activatePortsTestStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	scope := store.PortActivationLocal
+	record := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1, Enabled: true, Scope: scope,
+		ProofDigest: strings.Repeat("a", 64), VerifiedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	if s.Root() == "" {
+		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, 15, "isolated disposable test consumer"
+	}
+	record.CapabilityDigest = portsactivation.CapabilityDigest(record.Scope)
+	if err := store.AsPortActivationStore(s).SavePortActivation(context.Background(), 0, record); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func portsTestContext(t *testing.T) context.Context {

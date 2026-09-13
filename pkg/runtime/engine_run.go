@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -68,6 +70,13 @@ func (e *Engine) resolveWorkflowSource() string {
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
 	if e.workflow.RuntimeSemantics != "" || store.IsNativeRunID(runID) {
 		if err := e.checkNativeSemanticIdentity(runID, nil); err != nil {
+			return err
+		}
+		activationScope := store.PortActivationLocal
+		if e.store.Root() == "" {
+			activationScope = store.PortActivationDistributed
+		}
+		if err := store.RequirePortActivationCapability(ctx, e.store, activationScope, portsactivation.CapabilityDigest(activationScope), time.Now()); err != nil {
 			return err
 		}
 		if current, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {

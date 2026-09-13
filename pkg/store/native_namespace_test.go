@@ -44,6 +44,16 @@ func TestNativeFileCaptureFilesystem(t *testing.T) {
 	})
 }
 
+func TestNativeActivationFilesystem(t *testing.T) {
+	storetest.RunPortActivation(t, func(t *testing.T) store.RunStore {
+		s, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	})
+}
+
 func TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation(t *testing.T) {
 	root := t.TempDir()
 	s, err := store.New(root)

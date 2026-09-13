@@ -26,6 +26,9 @@ func (s *Service) enqueuePipeline(parent context.Context, runID string, spec Lau
 		wfName := ""
 		if wf, _, _, cErr := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); cErr == nil {
 			wfName = wf.Name
+			if wf.RuntimeSemantics != "" {
+				parent = store.WithRuntimeSemantics(parent, wf.RuntimeSemantics)
+			}
 		}
 		created, err := qc.CreateQueuedRun(parent, runID, wfName, spec.FilePath, spec.BotID, varsToInputs(spec.Vars))
 		if err != nil {
@@ -109,7 +112,7 @@ func (s *Service) startQueuedRun(it queuedItem) {
 		s.pipelineQueue.slotFreed(it.runID)
 		return
 	}
-	if _, err := s.startInProcess(context.Background(), it.runID, it.spec, false); err != nil {
+	if _, err := s.startInProcess(context.Background(), it.runID, it.spec, false, nil); err != nil {
 		s.logger.Warn("runview: start queued pipeline %s: %v", it.runID, err)
 		s.pipelineQueue.slotFreed(it.runID)
 		ctx := store.WithoutTenantFilter(context.Background())

@@ -1,0 +1,53 @@
+package portsactivation
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+func TestLaunchIdentityAndActivation(t *testing.T) {
+	s, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	legacy, err := MintRunID("")
+	if err != nil || store.IsNativeRunID(legacy) || RequireLaunch(ctx, s, "", legacy) != nil {
+		t.Fatalf("legacy launch changed: %q %v", legacy, err)
+	}
+	native, err := MintRunID(ir.RuntimeSemanticsPortsV1)
+	if err != nil || !strings.HasPrefix(native, store.NativeRunIDPrefix) {
+		t.Fatalf("native ID: %q %v", native, err)
+	}
+	for _, tc := range []struct{ semantics, id string }{
+		{"", native}, {ir.RuntimeSemanticsPortsV1, legacy}, {ir.RuntimeSemanticsPortsV1, "pc2_future"},
+	} {
+		if err := RequireLaunch(ctx, s, tc.semantics, tc.id); !errors.Is(err, store.ErrRunSemantics) {
+			t.Fatalf("identity %q/%q accepted: %v", tc.semantics, tc.id, err)
+		}
+	}
+	if err := RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, native); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("default-off launch accepted: %v", err)
+	}
+	proof, err := ProbeLocal(ctx, s, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ActivateLocal(ctx, s, *proof); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, native); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Disable(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, native); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("rollback allowed native launch: %v", err)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -33,6 +34,12 @@ type LaunchResult struct {
 	// QueuePosition is the 1-based position on the cloud queue at
 	// the moment of submission. Zero when launching in-process.
 	QueuePosition int
+}
+
+type launchCompilation struct {
+	wf     *ir.Workflow
+	hash   string
+	bundle *bundle.Bundle
 }
 
 // LaunchPublisher routes Launch / Resume / Cancel to the cloud
@@ -140,13 +147,23 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
 	}
+	wf, hash, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
+		return nil, err
+	}
 	runID := spec.RunID
 	if runID == "" {
-		generated, err := store.GenerateRunID()
+		generated, err := portsactivation.MintRunID(wf.RuntimeSemantics)
 		if err != nil {
 			return nil, fmt.Errorf("mint run id: %w", err)
 		}
 		runID = generated
+	}
+	if err := portsactivation.RequireLaunch(parent, s.store, wf.RuntimeSemantics, runID); err != nil {
+		return nil, err
 	}
 
 	// Cloud-mode: hand off to the runner pool via the queue. The
@@ -161,13 +178,6 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
 		// the runner applies them after loading the workflow, under its
 		// multitenant cloud ceiling.
-		wf, hash, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
-			return nil, err
-		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
 		if err != nil {
 			return nil, err
@@ -188,9 +198,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// is the honest answer.
 	if blocked, reason := usagePreflightFrom(s.usageCapSource); blocked {
 		// …unless this workflow cannot call a model at all, in which case
-		// the cap guards nothing it could spend. The compile is paid ONLY
-		// on the blocked path, so the common case stays free.
-		if wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
+		// the cap guards nothing it could spend. The source was compiled
+		// once above to establish its semantic identity before launch.
+		if wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
 		}
 	}
@@ -210,14 +220,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if !admitted {
 			return s.enqueuePipeline(parent, runID, spec, pos)
 		}
-		res, startErr := s.startInProcess(parent, runID, spec, true)
+		res, startErr := s.startInProcess(parent, runID, spec, true, &launchCompilation{wf, hash, launchBundle})
 		if startErr != nil {
 			// Release the reserved slot so a failed start can't wedge the queue.
 			s.pipelineQueue.slotFreed(runID)
 		}
 		return res, startErr
 	}
-	return s.startInProcess(parent, runID, spec, true)
+	return s.startInProcess(parent, runID, spec, true, &launchCompilation{wf, hash, launchBundle})
 }
 
 // hookEventObservers builds ExecutorSpec.EventObservers for every
@@ -238,9 +248,16 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // fresh running doc (the normal launch path); false starts against an
 // existing queued doc (the engine's runResolveDoc transitions it
 // queued→running), used when the concurrency gate deferred the launch.
-func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
-	wf, hash, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
-	if err != nil {
+func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool, compiled *launchCompilation) (*LaunchResult, error) {
+	if compiled == nil {
+		wf, hash, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+		if err != nil {
+			return nil, err
+		}
+		compiled = &launchCompilation{wf, hash, launchBundle}
+	}
+	wf, hash, launchBundle := compiled.wf, compiled.hash, compiled.bundle
+	if err := portsactivation.RequireLaunch(parent, s.store, wf.RuntimeSemantics, runID); err != nil {
 		return nil, err
 	}
 	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
@@ -764,6 +781,10 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
+		createCtx := context.Background()
+		if wf.RuntimeSemantics != "" {
+			createCtx = store.WithRuntimeSemantics(createCtx, wf.RuntimeSemantics)
+		}
 		// ParentRunID is part of the launch identity, so persist it in the
 		// SAME create write when the store supports it (ParentedRunCreator).
 		// Otherwise a running child doc would exist between CreateRun and the
@@ -774,17 +795,17 @@ func (s *Service) spawnRun(
 		var createErr error
 		if parentRunID != "" {
 			if pc := store.AsParentedRunCreator(s.store); pc != nil {
-				_, createErr = pc.CreateChildRun(context.Background(), runID, wf.Name, parentRunID, precreateInputs)
+				_, createErr = pc.CreateChildRun(createCtx, runID, wf.Name, parentRunID, precreateInputs)
 			} else {
 				var created *store.Run
-				created, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+				created, createErr = s.store.CreateRun(createCtx, runID, wf.Name, precreateInputs)
 				if createErr == nil {
 					created.ParentRunID = parentRunID
 					createErr = s.store.SaveRun(context.Background(), created)
 				}
 			}
 		} else {
-			_, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+			_, createErr = s.store.CreateRun(createCtx, runID, wf.Name, precreateInputs)
 		}
 		if createErr != nil {
 			s.manager.Deregister(runID)

@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -205,32 +206,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		}
 	}
 
-	runID := opts.RunID
-	if runID == "" {
-		var idErr error
-		runID, idErr = store.GenerateRunID()
-		if idErr != nil {
-			return fmt.Errorf("mint run id: %w", idErr)
-		}
-	}
-
-	telemetry, err := startRunTelemetry(runID, logger)
-	if err != nil {
-		return err
-	}
-	defer telemetry.shutdown()
-
-	engineOpts := []runtime.EngineOption{
-		runtime.WithLogger(logger),
-		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
-	}
-	if telemetry.prometheus != nil {
-		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.prometheus.EventObserver()))
-	}
-	if telemetry.otlp != nil {
-		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.otlp.EventObserver()))
-	}
-
 	// Resolve the workflow source: either via recipe (which may
 	// override prompts/tools/budget) or directly from a .bot file.
 	// Recipe overrides MUST be applied before BuildExecutor — the
@@ -251,6 +226,46 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err != nil {
 		return err
 	}
+	storeDir := runStoreDir(iterFile, opts.StoreDir)
+	runID := opts.RunID
+	if runID == "" {
+		runID, err = portsactivation.MintRunID(wf.RuntimeSemantics)
+		if err != nil {
+			return fmt.Errorf("mint run id: %w", err)
+		}
+	}
+	if wf.RuntimeSemantics != "" {
+		// The store must already have an operator-reviewed activation. An
+		// unactivated run is refused before logs, telemetry or executor setup.
+		activationStore, openErr := store.OpenExisting(storeDir)
+		if openErr != nil {
+			return openErr
+		}
+		if err := portsactivation.RequireLaunch(ctx, activationStore, wf.RuntimeSemantics, runID); err != nil {
+			return err
+		}
+	} else if err := store.ValidateRunID(runID); err != nil {
+		return err
+	} else if store.IsNativeRunID(runID) {
+		return fmt.Errorf("%w: legacy workflow cannot use native run ID %s", store.ErrRunSemantics, runID)
+	}
+
+	telemetry, err := startRunTelemetry(runID, logger)
+	if err != nil {
+		return err
+	}
+	defer telemetry.shutdown()
+
+	engineOpts := []runtime.EngineOption{
+		runtime.WithLogger(logger),
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+	}
+	if telemetry.prometheus != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.prometheus.EventObserver()))
+	}
+	if telemetry.otlp != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.otlp.EventObserver()))
+	}
 
 	// Apply CLI budget overrides AFTER the workflow (and any recipe/preset
 	// budget) is resolved, but BEFORE buildRunExecutor — the executor
@@ -269,7 +284,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	engineOpts = append(engineOpts, runtime.WithBudgetAsk(&opts.Budget))
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
-	storeDir := runStoreDir(iterFile, opts.StoreDir)
 	// Workspace versioning, on the same terms as a studio launch: a run
 	// started from the terminal must capture too, or `iterion rewind`
 	// cannot restore what its nodes produced.

@@ -22,9 +22,7 @@ func (e *Engine) resumePortRun(ctx context.Context, r *store.Run, answers map[st
 	if len(answers) != 0 {
 		return fmt.Errorf("runtime: native resume does not accept legacy gate answers")
 	}
-	switch r.Status {
-	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued:
-	default:
+	if !r.Status.CanNativeResume() {
 		return fmt.Errorf("runtime: native run %s is not resumable (%s)", r.ID, r.Status)
 	}
 	inputs, err := e.nativeRootInputs(r.Inputs)

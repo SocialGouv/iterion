@@ -44,6 +44,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -1812,6 +1813,9 @@ func credentialTierForSlot(bundle secrets.RunBundle, grant *credpool.Grant, slot
 // server's auth middleware) and propagate to both the persisted Run
 // document and the NATS message so the runner can verify isolation.
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (pos int, retErr error) {
+	if err := portsactivation.RequireLaunch(ctx, p.store, wf.RuntimeSemantics, runID); err != nil {
+		return 0, err
+	}
 	// 1. Build the run doc (status=queued + workflow_hash + file_path so
 	//    List endpoints see it instantly and Resume can reload the
 	//    workflow). It is PERSISTED only once everything the queue message
@@ -1882,6 +1886,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// clamped/effective figure is NOT what is stamped — the resume
 		// re-clamps against its own grant.
 		BudgetOverrides: runtime.RunBudgetOverridesOf(spec.Budget),
+	}
+	if wf.RuntimeSemantics != "" {
+		r.RuntimeSemantics = wf.RuntimeSemantics
+		r.FormatVersion = store.NativeRunFormatVersion
 	}
 	// Resolve the same versioned context the local launch authority stamps.
 	// It is persisted before the queued row is published so admission on the

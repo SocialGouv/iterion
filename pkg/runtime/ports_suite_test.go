@@ -1,10 +1,14 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/internal/s3test"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -55,6 +59,37 @@ func TestPortsEngineMongo(t *testing.T) {
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
 	runPortsEngineSuite(t, portsTestMongoStore)
+}
+
+func TestPortsEngineDefaultOffFilesystem(t *testing.T) { testPortsEngineDefaultOff(t, tmpStore) }
+
+func TestPortsEngineDefaultOffMongo(t *testing.T) {
+	if os.Getenv("ITERION_TEST_MONGO_URI") == "" {
+		if os.Getenv("ITERION_TEST_REQUIRED") == "1" {
+			t.Fatal("required default-off Mongo test needs a replica set")
+		}
+		t.Skip("ITERION_TEST_MONGO_URI not set")
+	}
+	testPortsEngineDefaultOff(t, portsTestMongoStore)
+}
+
+func testPortsEngineDefaultOff(t *testing.T, factory portsTestStoreFactory) {
+	s := factory(t)
+	var executed atomic.Bool
+	engine := New(portsTestWorkflow(t, portsMapSource), s, portsExecutorFunc(func(context.Context, ir.Node, map[string]any) (map[string]any, error) {
+		executed.Store(true)
+		return nil, errors.New("unactivated native work reached executor")
+	}), WithSandboxOverride("none"))
+	ctx := portsTestContext(t)
+	if err := engine.Run(ctx, "pc1_default_off", map[string]any{"items": []any{"a"}}); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("native run was not gated: %v", err)
+	}
+	if executed.Load() {
+		t.Fatal("unactivated native work reached executor")
+	}
+	if _, err := s.LoadRun(ctx, "pc1_default_off"); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("default-off gate persisted a run: %v", err)
+	}
 }
 
 func portsTestMongoStore(t *testing.T) store.RunStore {

@@ -22,6 +22,13 @@ type portInterruptedStore struct {
 	fired  atomic.Bool
 }
 
+func (s *portInterruptedStore) LoadPortActivation(ctx context.Context) (*store.PortActivation, error) {
+	return store.AsPortActivationStore(s.RunStore).LoadPortActivation(ctx)
+}
+func (s *portInterruptedStore) SavePortActivation(ctx context.Context, revision uint64, next *store.PortActivation) error {
+	return store.AsPortActivationStore(s.RunStore).SavePortActivation(ctx, revision, next)
+}
+
 func (s *portInterruptedStore) SaveRun(ctx context.Context, r *store.Run) error {
 	match := r.PortExecution != nil && r.PortExecution.Invocations["a"] != nil && r.PortExecution.Invocations["a"].Status == s.status
 	if !match || !s.fired.CompareAndSwap(false, true) {
