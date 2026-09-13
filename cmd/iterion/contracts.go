@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,18 +17,23 @@ var contractsProofFile string
 
 var contractsCmd = &cobra.Command{Use: "contracts", Short: "Inspect and activate public-contract runtime capabilities"}
 
-func contractsLocalStore() (*store.FilesystemRunStore, error) {
+func contractsLocalStore(create bool) (*store.FilesystemRunStore, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	return store.OpenExisting(store.ResolveStoreDir(cwd, contractsStoreDir))
+	root := store.ResolveStoreDir(cwd, contractsStoreDir)
+	opened, err := store.OpenExisting(root)
+	if errors.Is(err, os.ErrNotExist) && create {
+		return store.New(root)
+	}
+	return opened, err
 }
 
 var contractsInspectCmd = &cobra.Command{
 	Use: "inspect", Short: "Show native-runtime capabilities and current activation", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		s, err := contractsLocalStore()
+		s, err := contractsLocalStore(false)
 		if err != nil {
 			return err
 		}
@@ -56,7 +62,10 @@ func activationLabel(a *store.PortActivation) string {
 var contractsProbeCmd = &cobra.Command{
 	Use: "probe", Short: "Produce a reviewable local activation proof", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		s, err := contractsLocalStore()
+		if !contractsExclusiveStore {
+			return fmt.Errorf("contracts probe requires --exclusive-store after checking incompatible local automation")
+		}
+		s, err := contractsLocalStore(true)
 		if err != nil {
 			return err
 		}
@@ -82,7 +91,7 @@ var contractsActivateCmd = &cobra.Command{
 		if err := json.Unmarshal(raw, &proof); err != nil {
 			return err
 		}
-		s, err := contractsLocalStore()
+		s, err := contractsLocalStore(false)
 		if err != nil {
 			return err
 		}
@@ -97,7 +106,7 @@ var contractsActivateCmd = &cobra.Command{
 var contractsDeactivateCmd = &cobra.Command{
 	Use: "deactivate", Short: "Stop new native launches while preserving existing runs", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		s, err := contractsLocalStore()
+		s, err := contractsLocalStore(false)
 		if err != nil {
 			return err
 		}
