@@ -40,7 +40,8 @@
       "TestNATSPermissionsAgreeWithPinnedBroker/safe-only",
       "TestNATSPermissionsAgreeWithPinnedBroker/wildcard-minus-deny",
       "TestNATSPermissionsAgreeWithPinnedBroker/deny-union",
-      "TestNATSPermissionsAgreeWithPinnedBroker/protected-family"
+      "TestNATSPermissionsAgreeWithPinnedBroker/protected-family",
+      "TestNATSConfigOutputLimitAppliesToPipeCopy"
     ]
   }
 }

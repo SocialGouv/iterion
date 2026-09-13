@@ -150,6 +150,13 @@ func testPortsEngineDefaultOff(t *testing.T, factory portsTestStoreFactory) {
 
 func portsTestMongoStore(t *testing.T) store.RunStore {
 	t.Helper()
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		if os.Getenv("ITERION_TEST_REQUIRED") == "1" {
+			t.Fatal("required native Engine Mongo fixture needs ITERION_TEST_MONGO_URI")
+		}
+		t.Skip("ITERION_TEST_MONGO_URI not set")
+	}
 	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	_, gateway := s3test.New(t, "native-engine")
@@ -166,7 +173,7 @@ func portsTestMongoStore(t *testing.T) store.RunStore {
 			t.Error(err)
 		}
 	})
-	s, err := storemongo.New(ctx, storemongo.Config{URI: os.Getenv("ITERION_TEST_MONGO_URI"), Database: "iterion_ports_engine_" + bson.NewObjectID().Hex(), Blob: objects, RunFilesScratchDir: scratch})
+	s, err := storemongo.New(ctx, storemongo.Config{URI: uri, Database: "iterion_ports_engine_" + bson.NewObjectID().Hex(), Blob: objects, RunFilesScratchDir: scratch})
 	if err != nil {
 		t.Fatal(err)
 	}

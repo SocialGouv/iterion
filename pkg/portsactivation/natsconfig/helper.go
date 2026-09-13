@@ -80,13 +80,17 @@ func parseWithExecutable(ctx context.Context, executable string, args []string, 
 	return &result, nil
 }
 
-type boundedBuffer struct{ bytes.Buffer }
+// Do not embed bytes.Buffer: its promoted ReadFrom method would let io.Copy
+// in os/exec bypass Write and the subprocess output limit.
+type boundedBuffer struct{ buffer bytes.Buffer }
+
+func (b *boundedBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if len(p) > MaxMessageBytes-b.Len() {
+	if len(p) > MaxMessageBytes-b.buffer.Len() {
 		return 0, fmt.Errorf("NATS authority parser output exceeds supported size")
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }
 
 // RunHelper is an internal pipe protocol, not an operator verification or

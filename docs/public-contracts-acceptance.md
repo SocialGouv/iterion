@@ -388,3 +388,24 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   the complete protected-API census or an exclusion proof for the deployment.
   The combined parser/permissions manifest passes 39 cases with race detection
   without skips; the package also passes `go vet`.
+- The helper's output limiter uses a private buffer rather than embedding
+  `bytes.Buffer`: an inherited `ReadFrom` method would let `io.Copy` bypass
+  the capped `Write` path. A pipe-copy regression passes with race detection,
+  bringing the combined parser/permission manifest to 40 required cases.
+- A complete `task test` pass initially found two fixture/CI omissions:
+  `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
+  test called a Mongo factory without checking the optional fixture gate.
+  The factory now skips only in ordinary runs without a configured URI and
+  fails in required mode. The Mongo job covers runview and explicitly selects
+  the raw-proof and native process-kill tests. Eight targeted real-Mongo/CI
+  cases pass with race detection, and the subsequent complete `task test`
+  pass succeeds. These fixes change verification coverage, not admission rules.
+
+### Remaining compatibility audit
+
+The current admission capability digest includes the build commit and
+activation-record format. Existing-run recovery also compares that digest.
+A two-build upgrade test is still required to establish whether an admitted
+native run remains resumable by a different but runtime-compatible build;
+current rollback tests exercise disablement within the same build. Do not
+claim that those tests establish compatibility across binary upgrades.

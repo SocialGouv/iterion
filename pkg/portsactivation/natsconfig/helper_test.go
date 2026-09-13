@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -162,6 +163,16 @@ func TestNATSConfigCanceledHelperCleansScratch(t *testing.T) {
 	entries, err = os.ReadDir(scratch)
 	if err != nil || len(entries) != 0 {
 		t.Fatal("killed helper left private source bytes behind")
+	}
+}
+
+func TestNATSConfigOutputLimitAppliesToPipeCopy(t *testing.T) {
+	var output boundedBuffer
+	// A pipe exposes Read, not a string reader's WriteTo fast path. io.Copy
+	// must not discover a promoted bytes.Buffer.ReadFrom that bypasses Write.
+	reader := struct{ io.Reader }{strings.NewReader(strings.Repeat("x", MaxMessageBytes+1))}
+	if _, err := io.Copy(&output, reader); err == nil || len(output.Bytes()) > MaxMessageBytes {
+		t.Fatal("subprocess pipe copy bypassed the output size limit")
 	}
 }
 

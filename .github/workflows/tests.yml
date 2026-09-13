@@ -392,7 +392,7 @@ jobs:
             ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... \
             ./pkg/botsource/... \
-            ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
+            ./pkg/runview/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/...
@@ -406,7 +406,7 @@ jobs:
           ITERION_TEST_REQUIRED: "1"
         run: |
           go test -mod=vendor -v -timeout 5m ./pkg/runtime/... \
-            -run '^TestPorts(EngineMongo|EngineDefaultOffMongo|EngineRollbackPreservesAcceptedMongoRun|FileCaptureMongo)$'
+            -run '^Test(Ports(EngineMongo|EngineDefaultOffMongo|EngineRollbackPreservesAcceptedMongoRun|FileCaptureMongo)|Native(ManualDistributedEvidenceCannotAuthorizeMongo|ProcessKillRecoveryMongo|FileCaptureKillRecoveryMongo))$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
