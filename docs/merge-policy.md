@@ -163,3 +163,25 @@ before enabling the queue.
 
 The ruleset is instantly reversible by an admin:
 `gh api -X DELETE repos/SocialGouv/iterion/rulesets/18857412`.
+
+
+### A job reports inotify “too many open files” (#1198)
+
+`inotify_init` can report `EMFILE` for the process descriptor limit or the
+real user's inotify-instance limit. The latter can be shared by several
+runner containers with the same host UID. Read the job's **Watcher resource
+limits** step and the failing process's `watcher resources` error before
+choosing a remedy. The error retains its original errno and reports the
+real UID, descriptor ceilings, visible process descriptors, an ordinary
+file-open observation and the inotify sysctls. It neither changes a limit
+nor skips the watcher test. Counts are observations at failure time, not an
+atomic inventory of every container on the node.
+
+An ordinary file opening successfully while inotify initialization returns
+`EMFILE`, with descriptors well below `nofile_soft`, points toward the
+per-user instance ceiling. A failed ordinary open and a reached descriptor
+ceiling point toward process FD exhaustion. Confirm with the runner/node
+operator before changing shared limits or concurrency. The configuration
+in `SocialGouv/infra-apps/arc-runners/values.yaml` controls the shared scale
+set; the repository's `CI_SELF_HOSTED=off` switch remains the emergency
+fallback, not a silent automatic response to this error.
