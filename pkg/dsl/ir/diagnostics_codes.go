@@ -196,4 +196,6 @@ const (
 	DiagActionBadParam     DiagCode = "C264" // a duplicate or unnamed `params:` key (error — one of the two could never be addressed)
 	DiagActionBadTimeout   DiagCode = "C265" // `timeout:` / `retry:` is not a value this build can read (error)
 	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:`/`timeout:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
+
+	DiagAsyncBackendUnsupported DiagCode = "C267" // interaction: async on a backend without async question tools (error)
 )
