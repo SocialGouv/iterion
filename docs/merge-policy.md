@@ -185,3 +185,34 @@ operator before changing shared limits or concurrency. The configuration
 in `SocialGouv/infra-apps/arc-runners/values.yaml` controls the shared scale
 set; the repository's `CI_SELF_HOSTED=off` switch remains the emergency
 fallback, not a silent automatic response to this error.
+
+#### Bounded reproduction on the ARC worker
+
+On 2026-09-13 an ARC CI job reported real UID 1001, an identity UID map,
+`RLIMIT_NOFILE=1048576`, `max_user_instances=128` and
+`max_user_watches=228254`. A separate diagnostic Job on
+`worker-nodepool-node-e6dab0` (Linux 5.15.0-134-generic) reproduced that
+128-instance boundary under the previously checked unused UID 2147480000:
+
+```json
+{"uid":2147480000,"max_user_instances":128,"nofile":[1048576,1048576],"child":{"held":128,"errno":24},"other_process_inotify_errno":24,"ordinary_fd":"open_ok"}
+```
+
+One process held all 128 instances; the next call in it and a second process
+failed with `EMFILE`, while `/dev/null` still opened. Closing the descriptors
+immediately restored capacity. The Job added no watches, changed no sysctl
+and was deleted after completion. No runner remained during inspection, so
+this is a reproduction of the shared resource boundary, not a measurement
+of the historical CI peak.
+
+The exact [Job manifest](../scripts/diagnostics/inotify-shared-uid.yaml) is
+retained for operators. Before an approved repeat, choose the node explicitly
+and verify the dedicated UID has no processes/inotify instances on that node;
+never substitute the runner UID. The script refuses ceilings above 512, has
+no retries, and is bounded by a 120-second deadline and 128 MiB memory limit.
+It requires Linux and the pinned image's Python 3. It is an operator diagnostic,
+not a CI step or an automatically deployed resource.
+
+A proposed configurable floor is tracked separately in the infrastructure PR
+linked from #1198. Keep the ticket open until approved activation and
+representative concurrent CI runs demonstrate the result.
