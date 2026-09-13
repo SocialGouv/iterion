@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.1](https://github.com/SocialGouv/iterion/compare/v3.142.0...v3.142.1) (2026-09-13)
+
+### Bug Fixes
+
+* **studio:** restore run deep links after sign-in ([#1176](https://github.com/SocialGouv/iterion/issues/1176)) ([1b001e6](https://github.com/SocialGouv/iterion/commit/1b001e60338c259970b8f6f438620752aa259eb7))
+
 ## [3.142.0](https://github.com/SocialGouv/iterion/compare/v3.141.0...v3.142.0) (2026-09-13)
 
 ### Features
