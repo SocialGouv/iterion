@@ -47,6 +47,27 @@ Keep a compatible binary and its native storage namespace available until
 those admitted runs finish or are deliberately resolved. Deactivation is a
 revisioned storage write, so it does not erase their admission records.
 
+## Rewind an admitted native run
+
+An explicitly selected node can be rewound in a stopped, resumable native
+run. The node and its data descendants are invalidated together; independent
+committed work and the consumed budget remain. This also applies to every
+item of a mapped node, including an empty collection. Captured supplier
+revisions retain dependencies that an edited source may have removed.
+
+```bash
+iterion rewind --run-id pc1_RUN --node render --restore-scope none
+iterion resume --run-id pc1_RUN
+```
+
+Use `resume --force` when deliberately resuming edited source. A rewind
+cannot change the run's runtime semantics or erase unresolved effects.
+Native rewind currently keeps workspace files; immutable output captures
+lose their publication references and cannot satisfy the rerun. Explicit
+workspace restoration and automatic pivot selection are unavailable; a
+worktree run requires `--restore-scope none`. External effects already
+performed are not undone.
+
 ## Distributed activation remains blocked
 
 The current chart defaults to the shared JetStream `$G` account and the

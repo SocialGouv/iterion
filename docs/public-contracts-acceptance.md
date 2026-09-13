@@ -214,10 +214,18 @@ Syntax profiles and runtime semantics are independent.
   recognizes native durable state on an undated redelivery, with a focused
   regression. Neither case substitutes for a real cloud process-kill and
   JetStream redelivery test.
-- The legacy turn-based fork and legacy checkpoint rewind now refuse a native
-  run before mutation. The regression verifies they create no child and leave
-  the native parent unchanged. Native fork and selective rewind remain to be
-  implemented using native publications and descendant identity.
+- Native selective rewind now uses one run-document CAS to invalidate the
+  chosen node and its descendants in both the current graph and captured
+  supplier revisions. Filesystem and real Mongo cases cover mapped batches,
+  empty collections and a dependency removed from edited source; a real
+  Engine resume replays only that suffix, preserving independent work and
+  cumulative usage. Refused scopes, uncertain effects and a concurrent resume
+  leave the checkpoint intact. The workspace remains in place; explicit
+  `--restore-scope none` is required for worktree runs. Automatic native pivot
+  selection, workspace restoration and native forks remain outstanding. The
+  legacy turn-based fork still refuses native state before mutation.
+  The full `pkg/runview` suite and `go vet` pass; the dedicated manifest
+  verifies 12 named cases with race detection and real Mongo, without skips.
 - A raw production Mongo Store refuses a hand-written distributed activation
   record even if its queue version and `consumer_access_evidence` are filled.
   The isolated Engine fixture injects an explicit verifier; a future-dated

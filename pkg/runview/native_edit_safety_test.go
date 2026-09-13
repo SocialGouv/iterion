@@ -8,7 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-func TestLegacyForkAndRewindRefuseNativeStateBeforeMutation(t *testing.T) {
+func TestForkAndRewindRefuseUnadmittedNativeStateBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.New(dir)
 	if err != nil {
@@ -26,8 +26,8 @@ func TestLegacyForkAndRewindRefuseNativeStateBeforeMutation(t *testing.T) {
 	if _, err := svc.Fork(context.Background(), ForkSpec{RunID: id, NodeID: "node"}); !errors.Is(err, store.ErrRunSemantics) {
 		t.Fatalf("legacy turn-based fork accepted native run: %v", err)
 	}
-	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: id, NodeID: "node"}); !errors.Is(err, store.ErrRunSemantics) {
-		t.Fatalf("legacy checkpoint rewind accepted native run: %v", err)
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: id, NodeID: "node"}); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("native checkpoint rewind accepted unadmitted run: %v", err)
 	}
 	ids, err := st.ListRuns(context.Background())
 	if err != nil || len(ids) != 1 || ids[0] != id {

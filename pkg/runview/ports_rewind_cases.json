@@ -1,0 +1,19 @@
+{
+  "scope": "Native Service.Rewind through real Engine runs and filesystem/Mongo stores: mapped suffix invalidation, empty collections, captured dependencies, budget retention, uncertain-effect refusal and CAS contention. Native forks, automatic pivot selection and workspace snapshot restoration remain separate requirements.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/runview": [
+      "TestNativeRewindFilesystem",
+      "TestNativeRewindFilesystem/mapped",
+      "TestNativeRewindFilesystem/empty_collection",
+      "TestNativeRewindFilesystem/captured_dependency_after_edit",
+      "TestNativeRewindMongo",
+      "TestNativeRewindMongo/mapped",
+      "TestNativeRewindMongo/empty_collection",
+      "TestNativeRewindMongo/captured_dependency_after_edit",
+      "TestNativeRewindRefusalsPreserveCheckpoint",
+      "TestNativeRewindCannotEraseUncertainEffect",
+      "TestNativeRewindLosesCASWithoutInvalidating",
+      "TestForkAndRewindRefuseUnadmittedNativeStateBeforeMutation"
+    ]
+  }
+}
