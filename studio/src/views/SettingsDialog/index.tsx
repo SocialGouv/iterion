@@ -2,6 +2,7 @@ import { Dialog, Tabs } from "@/components/ui";
 
 import AppearanceTab from "./AppearanceTab";
 import BackendsTab from "./BackendsTab";
+import AssistantTab from "./AssistantTab";
 import ApiKeysTab from "./ApiKeysTab";
 import ProjectsTab from "./ProjectsTab";
 import UpdatesTab from "./UpdatesTab";
@@ -29,6 +30,7 @@ export default function SettingsDialog({
   const tabItems = [
     { value: "appearance", label: "Appearance" },
     { value: "backends", label: "Backends" },
+    { value: "assistant", label: "Assistant" },
     ...(desktopFeatures ? [{ value: "api-keys", label: "API keys" }] : []),
     ...(desktopFeatures ? [{ value: "projects", label: "Projects" }] : []),
     { value: "storage", label: "Storage" },
@@ -38,6 +40,7 @@ export default function SettingsDialog({
   const panels: Record<string, React.ReactNode> = {
     appearance: <AppearanceTab />,
     backends: <BackendsTab />,
+    assistant: <AssistantTab />,
     storage: <StorageTab />,
     about: <AboutTab desktopFeatures={desktopFeatures} />,
   };

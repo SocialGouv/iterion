@@ -35,6 +35,22 @@ test("run console renders the executed graph, log and outcome", async ({
   await expect(page.getByRole("button", { name: "ui_fixture" })).toBeVisible();
   await expect(page.getByTitle("Finished").first()).toBeVisible();
 
+  // Long graph/log/Steering content must shrink inside the console. A missing
+  // min-w-0 on the central flex column used to make the hidden-overflow root
+  // horizontally scrollable; Chromium then moved it to the right and shifted
+  // the entire run header off-screen.
+  const consoleRoot = page.getByTestId("run-console-root");
+  await expect(consoleRoot).toBeVisible();
+  await expect
+    .poll(() =>
+      consoleRoot.evaluate(
+        // A one-device-pixel border may round scrollWidth above clientWidth;
+        // anything larger is real content overflow.
+        (el) => el.scrollLeft === 0 && el.scrollWidth <= el.clientWidth + 1,
+      ),
+    )
+    .toBe(true);
+
   // Graph: one node per IR node, each carrying the kind the DSL declared
   // and the status the engine persisted. `fail` was never reached, so it
   // must NOT read as finished.

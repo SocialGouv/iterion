@@ -37,6 +37,12 @@ export interface PipelineBoardPendingReview {
   /** When this exact pending turn joined the FIFO review queue. */
   updated_at: string;
   depth: number;
+  /**
+   * Stable identifier for sibling human gates launched by the same fan-out.
+   * Gates carrying the same key can be filled one page at a time and sent
+   * together. Absent for ordinary, unrelated pauses.
+   */
+  batch_key?: string;
 }
 
 // One dispatcher attempt associated with a native task-backed root.
@@ -407,6 +413,7 @@ function normalizePendingReviews(
       ...(text(source.instructions)
         ? { instructions: text(source.instructions) }
         : {}),
+      ...(text(source.batch_key) ? { batch_key: text(source.batch_key) } : {}),
       updated_at: text(source.updated_at) ?? "",
       depth: Math.max(0, intValue(source.depth, 0)),
     };

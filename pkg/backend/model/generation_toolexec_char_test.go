@@ -36,6 +36,113 @@ func charToolResultText(t *testing.T, b api.ContentBlock) string {
 	return b.Content[0].Text
 }
 
+func TestShapeToolOutcome_DiagnosticNonzeroPreservesCapturedOutput(t *testing.T) {
+	r := hooks.NewRunner()
+	var postResult string
+	var failureCount int
+	r.Register(hooks.PostToolUse, func(_ context.Context, h hooks.Context) (hooks.Decision, error) {
+		postResult = h.ToolResult
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+	r.Register(hooks.PostToolUseFailure, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		failureCount++
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	block, err := shapeToolOutcome(context.Background(), r,
+		toolUseBlock{ID: "diagnostic-1", Name: "diagnostic_shell"}, nil,
+		"stdout line\nstderr line", errors.New("command exited with error: exit status 7"))
+	if err != nil {
+		t.Fatalf("shape diagnostic outcome: %v", err)
+	}
+	if block.IsError {
+		t.Fatalf("diagnostic exit result = %+v, want ordinary result with the captured output", block)
+	}
+	got := charToolResultText(t, block)
+	for _, want := range []string{
+		"Diagnostic command failed (command exited with error: exit status 7)",
+		"stdout line",
+		"stderr line",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diagnostic result = %q, missing %q", got, want)
+		}
+	}
+	if postResult != got || failureCount != 0 {
+		t.Errorf("lifecycle post=%q failures=%d, want soft diagnostic result and no failure hook", postResult, failureCount)
+	}
+}
+
+func TestShapeToolOutcome_DiagnosticOnlySoftensKnownCompletedExit(t *testing.T) {
+	cases := []struct {
+		name      string
+		toolName  string
+		output    string
+		err       error
+		wantError bool
+	}{
+		{
+			name:      "empty output",
+			toolName:  "diagnostic_shell",
+			err:       errors.New("command exited with error: exit status 1"),
+			wantError: true,
+		},
+		{
+			name:      "timeout with partial output",
+			toolName:  "diagnostic_shell",
+			output:    "partial",
+			err:       errors.New("command timed out after 30s"),
+			wantError: true,
+		},
+		{
+			name:      "cancelled",
+			toolName:  "diagnostic_shell",
+			output:    "partial",
+			err:       fmt.Errorf("command cancelled: %w", context.Canceled),
+			wantError: true,
+		},
+		{
+			name:      "validation",
+			toolName:  "diagnostic_shell",
+			output:    "",
+			err:       errors.New("bash: 'command' input is required and must be a string"),
+			wantError: true,
+		},
+		{
+			name:      "ordinary bash exit",
+			toolName:  "bash",
+			output:    "stdout should stay hidden",
+			err:       errors.New("command exited with error: exit status 1"),
+			wantError: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			block, err := shapeToolOutcome(context.Background(), hooks.NewRunner(),
+				toolUseBlock{ID: "tool-1", Name: tc.toolName}, nil, tc.output, tc.err)
+			if err != nil {
+				t.Fatalf("shape outcome: %v", err)
+			}
+			if block.IsError != tc.wantError {
+				t.Fatalf("isError = %t, want %t; result=%q", block.IsError, tc.wantError, charToolResultText(t, block))
+			}
+			if tc.toolName == "bash" && strings.Contains(charToolResultText(t, block), tc.output) {
+				t.Errorf("ordinary bash exposed failed output: %q", charToolResultText(t, block))
+			}
+		})
+	}
+}
+
+func TestDiagnosticShellFailureOutputDeclaresPartialOutput(t *testing.T) {
+	got, ok := diagnosticShellFailureOutput("diagnostic_shell", "first bytes\n... [output truncated]", errors.New("command exited with error: exit status 2"))
+	if !ok {
+		t.Fatal("truncated completed diagnostic was not exposed")
+	}
+	if !strings.Contains(got, "Output is partial") || !strings.Contains(got, "[output truncated]") {
+		t.Fatalf("truncated diagnostic result = %q", got)
+	}
+}
+
 // TestExecuteToolsDirect_ResultShapesAndOrder pins the core dispatch loop: a
 // failing tool yields an isError "tool error: ..." result and the loop
 // CONTINUES to later tools; results come back in input order with matching

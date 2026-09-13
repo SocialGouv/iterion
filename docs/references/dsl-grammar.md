@@ -161,6 +161,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `system` | ident | Prompt declaration used as the system prompt |
 | `user` | ident | Prompt declaration used as the user message |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
+| `session_slot` | ident | Named durable session slot; requires session: persist |
 | `tools` | tool list | Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |

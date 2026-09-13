@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,13 +37,15 @@ type openFileRequest struct {
 }
 
 type saveFileRequest struct {
-	Path     string          `json:"path"`
-	Document json.RawMessage `json:"document"`
+	Path       string          `json:"path"`
+	Document   json.RawMessage `json:"document"`
+	CreateOnly bool            `json:"create_only,omitempty"`
 }
 
 type saveFileResponse struct {
-	Path   string `json:"path"`
-	Source string `json:"source"`
+	Path              string `json:"path"`
+	Source            string `json:"source"`
+	ConfirmedDiskPath string `json:"confirmed_disk_path,omitempty"`
 }
 
 // --- Helpers ---
@@ -557,6 +561,10 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := os.ReadFile(absPath)
+	confirmedDiskPath := ""
+	if err == nil {
+		confirmedDiskPath = absPath
+	}
 	if err != nil {
 		// Embedded-recipe fallback: the bot picker sets currentFilePath
 		// to "bots/<name>" (legacy "examples/<name>") after loading a
@@ -595,15 +603,17 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, struct {
-		Source      string          `json:"source"`
-		Document    json.RawMessage `json:"document"`
-		Diagnostics []string        `json:"diagnostics,omitempty"`
-		Path        string          `json:"path"`
+		Source            string          `json:"source"`
+		Document          json.RawMessage `json:"document"`
+		Diagnostics       []string        `json:"diagnostics,omitempty"`
+		Path              string          `json:"path"`
+		ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	}{
-		Source:      string(data),
-		Document:    json.RawMessage(docJSON),
-		Diagnostics: diags,
-		Path:        req.Path,
+		Source:            string(data),
+		Document:          json.RawMessage(docJSON),
+		Diagnostics:       diags,
+		Path:              req.Path,
+		ConfirmedDiskPath: confirmedDiskPath,
 	})
 }
 
@@ -624,18 +634,39 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid path: %v", err)
 		return
 	}
+	if s.isMaterializedBotDependencyPath(absPath) {
+		httpError(w, http.StatusForbidden, "shared bot bundles under .botz are read-only; edit the source bundle and run iterion bots sync")
+		return
+	}
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
 		return
 	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
+		return
+	}
+	locks, err := acquireAuthoringLocalLocks(r.Context(), []string{absPath})
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	defer closeAuthoringLocalLocks(locks)
+	// Revalidate the route's authorized path after a possibly blocked lock.
+	freshPath, err := s.safePath(req.Path)
+	if err != nil || freshPath != absPath {
+		httpError(w, http.StatusConflict, "file path changed while waiting to save")
+		return
+	}
+
 	// A document may not lower the profile of the file it replaces. The
 	// canvas carries the profile it was opened with, so a lower one comes
 	// from a client that dropped the header — an older studio build — and
 	// the file would be rewritten in profile 1, its strings read otherwise
 	// at the next parse, with Verify none the wiser (it holds the text to
 	// the document, never to the file).
-	if current, err := os.ReadFile(absPath); err == nil {
+	if current, _, err := locks[0].parent.read(filepath.Base(absPath), math.MaxInt64-1); err == nil {
 		if on := parser.ReadPreamble(parser.NormalizeSource(string(current))).Profile; on > f.EffectiveProfile() {
 			httpError(w, http.StatusUnprocessableEntity, "%s is written in dsl profile %d and the document would save it in profile %d: reopen the file in the studio (the document carries no profile — an older client dropped it)", req.Path, on, f.EffectiveProfile())
 			return
@@ -649,16 +680,24 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be saved as .bot source without changing it: %v", err)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
-		return
-	}
+	var ignore func(string)
+	s.stateMu.RLock()
 	if s.watcher != nil {
-		s.watcher.IgnorePath(absPath)
+		ignore = s.watcher.IgnorePath
 	}
-	if err := os.WriteFile(absPath, []byte(source), 0o644); err != nil {
-		httpError(w, http.StatusInternalServerError, "write error: %v", err)
+	s.stateMu.RUnlock()
+	writeErr := locks[0].writeEditorFile([]byte(source), req.CreateOnly, ignore)
+	if req.CreateOnly && errors.Is(writeErr, fs.ErrExist) {
+		httpError(w, http.StatusConflict, "file already exists")
 		return
 	}
-	writeJSON(w, saveFileResponse{Path: req.Path, Source: source})
+	if writeErr != nil {
+		httpError(w, http.StatusInternalServerError, "write error: %v", writeErr)
+		return
+	}
+	writeJSON(w, saveFileResponse{
+		Path:              req.Path,
+		Source:            source,
+		ConfirmedDiskPath: absPath,
+	})
 }

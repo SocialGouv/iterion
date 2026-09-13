@@ -111,6 +111,28 @@ func TestMalformedPayloadFailsClosed(t *testing.T) {
 	}
 }
 
+func TestTrustedGrantRoundTripsThroughHook(t *testing.T) {
+	p, err := permission.NewPolicy(permission.ModeDeny, nil, []string{"Bash"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddGrantRule("Bash(git status:*)")
+	encoded, err := EncodePolicy(p.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := decodePolicy(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := rebuilt.Evaluate("Bash", map[string]any{"command": "git status --short"}); got != permission.Allow {
+		t.Errorf("approved command = %v, want Allow", got)
+	}
+	if got, _ := rebuilt.Evaluate("Bash", map[string]any{"command": "git log --oneline"}); got != permission.Ask {
+		t.Errorf("other command = %v, want Ask", got)
+	}
+}
+
 // panickingReader makes Run blow up mid-flight, standing in for the class this
 // guards: a pathological rule or an unanticipated input shape panicking inside
 // the evaluator.

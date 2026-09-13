@@ -162,6 +162,40 @@ func TestPersistVisit1FreshVisit2OwnSlot(t *testing.T) {
 	}
 }
 
+func TestPersistNamedSlotSharesCanonicalSessionAcrossSerialNodes(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "shared_slot", Entry: "draft",
+		Nodes: map[string]ir.Node{
+			"draft":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "draft"}, Session: ir.SessionPersist, SessionSlot: "conversation"},
+			"revise": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "revise"}, Session: ir.SessionPersist, SessionSlot: "conversation"},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "draft", To: "revise"}, {From: "revise", To: "done"}},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+	var inherited string
+	exec := newStubExecutor()
+	exec.on("draft", func(map[string]any) (map[string]any, error) {
+		return map[string]any{
+			delegate.SessionIDKey: "session-draft", delegate.BackendNameKey: "claude_code",
+			delegate.SessionStateBlobKey: []byte("packed-draft"),
+		}, nil
+	})
+	exec.on("revise", func(input map[string]any) (map[string]any, error) {
+		inherited, _ = input[delegate.SessionIDKey].(string)
+		return map[string]any{
+			delegate.SessionIDKey: "session-revised", delegate.BackendNameKey: "claude_code",
+			delegate.SessionStateBlobKey: []byte("packed-revised"),
+		}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "run-shared-slot", nil); err != nil {
+		t.Fatal(err)
+	}
+	if inherited != "session-draft" {
+		t.Fatalf("revise inherited %q, want writer's shared slot", inherited)
+	}
+}
+
 func TestPersistWipedDirBetweenVisitsRunsFresh(t *testing.T) {
 	wf := persistWriterLoopWorkflow()
 	var seen []string

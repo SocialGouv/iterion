@@ -110,6 +110,44 @@ func TestExecutorToolNodeDirectPolicyAllows(t *testing.T) {
 	})
 }
 
+func TestToolNodeCommandStreamsOversizedShellThroughStdin(t *testing.T) {
+	e := &ClawExecutor{}
+	payload := strings.Repeat("x", 100_001)
+	resolved := "printf %s " + shellEscapeValue(payload)
+	cmd := e.toolNodeCommand(context.Background(), resolved, nil)
+	if got := cmd.Args; len(got) != 2 || got[0] != "bash" || got[1] != "-s" {
+		t.Fatalf("oversized command args = %v, want [bash -s]", got)
+	}
+	if cmd.Stdin == nil {
+		t.Fatal("oversized command did not receive stdin script")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("oversized command: %v", err)
+	}
+	if string(out) != payload {
+		t.Fatalf("oversized payload output length=%d, want %d", len(out), len(payload))
+	}
+}
+
+func TestToolNodeCommandKeepsSmallShellOnArgv(t *testing.T) {
+	e := &ClawExecutor{}
+	cmd := e.toolNodeCommand(context.Background(), "printf ok", nil)
+	if got := cmd.Args; len(got) != 3 || got[0] != "bash" || got[1] != "-c" || got[2] != "printf ok" {
+		t.Fatalf("small command args = %v, want [bash -c printf ok]", got)
+	}
+	if cmd.Stdin != nil {
+		t.Fatal("small command unexpectedly received stdin script")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("small command: %v", err)
+	}
+	if string(out) != "ok" {
+		t.Fatalf("small command output = %q, want ok", out)
+	}
+}
+
 // executor_tool.go (carved out of executor.go in commit ab2fa26a) holds
 // the tool-node helpers. End-to-end paths (executeToolNodeShell /
 // executeToolNodeScript) need a ClawExecutor + workspace + sandbox

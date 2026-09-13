@@ -1394,13 +1394,14 @@ func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, 
 }
 
 func (c *Dispatcher) dispatchEnv(entry *runningEntry, spec DispatchSpec) []string {
-	env := []string{
-		"ITERION_ISSUE_ID=" + entry.IssueID,
-		"ITERION_ISSUE_IDENTIFIER=" + entry.Identifier,
-		"ITERION_ISSUE_STATE=" + entry.WorkflowState,
-		"ITERION_RUN_ID=" + spec.RunID,
-		"ITERION_WORKSPACE=" + spec.WorkspacePath,
-	}
+	env := append([]string(nil), c.baseEnv...)
+	env = append(env,
+		"ITERION_ISSUE_ID="+entry.IssueID,
+		"ITERION_ISSUE_IDENTIFIER="+entry.Identifier,
+		"ITERION_ISSUE_STATE="+entry.WorkflowState,
+		"ITERION_RUN_ID="+spec.RunID,
+		"ITERION_WORKSPACE="+spec.WorkspacePath,
+	)
 	if spec.StoreDir != "" {
 		env = append(env, "ITERION_STORE_DIR="+spec.StoreDir)
 	}

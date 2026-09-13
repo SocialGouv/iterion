@@ -683,5 +683,8 @@ func (s *Server) eventsBus() eventbus.Bus {
 	if s.triggerCoord != nil {
 		return s.triggerCoord.Bus()
 	}
+	if s.localEvents != nil {
+		return s.localEvents
+	}
 	return nil
 }

@@ -114,10 +114,19 @@ import (
 // v=14: ExecutionContext carries the resolved run/workspace/workflow/lineage
 // contract to the claiming runner. Dropping it would make cloud admission
 // disagree with local admission, so the wire version is bumped.
-// v=15: loop cap expressions are evaluated at each crossing. A pre-v15
-// runner cannot compile this AST semantics and must reject the envelope before
-// admission; new runners still accept old literal/template messages.
-const SchemaVersion = 15
+// v=15: ModelOverride.Effort and the run-level Permission override from the
+// assistant branch. Stale v14 runners must reject explicit choices they
+// cannot enforce. The branch-local v10/v11 additions are renumbered here.
+// v=16 (2026-08-29): ResumeSpec.HostInputs carries host-attested derived
+// context (currently bounded chat history) to the runner without recording it
+// as operator answers. A stale runner dropping it would accept an assistant
+// turn while silently removing the continuity fallback, so it must reject.
+// v=17 (2026-09-11): mission resume receipts cross the queue and are stamped
+// on run_resumed. A stale runner would execute the mutation but drop its
+// reconciliation identity, so this additive field changes operator intent.
+// v=18: loop cap expressions are evaluated at each crossing. A pre-v18
+// runner cannot compile this AST semantics and must reject before admission.
+const SchemaVersion = 18
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -194,6 +203,10 @@ type RunMessage struct {
 	// precedence level. Empty means the caller expressed nothing and the
 	// pod's ITERION_SUPERVISORS (then the default on) decides.
 	Supervisors string `json:"supervisors,omitempty"`
+	// Permission is the operator's run-level tool-permission-gate override.
+	// It must remain distinct from the workflow permission because it sits
+	// ABOVE node declarations in the precedence chain.
+	Permission string `json:"permission,omitempty"`
 	// BotBundle carries the server-resolved immutable collection in v13.
 	// Legacy refs without a snapshot still resolve a stored row with a version
 	// check. Nil retains the legacy baked/loose-bot resource lookup.
@@ -298,18 +311,24 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+	UnlimitedWorkflow   bool    `json:"unlimited_workflow,omitempty"`
 	CapImposed          bool    `json:"cap_imposed,omitempty"`
 }
 
-// ModelOverride is one launch-time selector→override directive (the wire
-// mirror of store.RunModelOverride, kept local so this schema package
-// stays dependency-free). Selector semantics are the executor's: exact
-// node id, id glob, kind keyword ("agent"|"judge"|…) or "*".
+// ModelOverride is one launch-time retargeting rule: every LLM node matching
+// Selector (a node id, an id glob like "reviewer_*", or a node kind keyword
+// such as "agent"/"judge") runs on the named backend/model/provider/effort
+// instead of its DSL value. The wire mirror of store.RunModelOverride, kept
+// local so this schema package stays dependency-free.
+//
+// Empty fields inherit: a rule carrying only Model retargets the model and
+// leaves the node's backend alone.
 type ModelOverride struct {
 	Selector string `json:"selector"`
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // RunFallbackEntry is one stage of the operator's run-level fallback
@@ -398,8 +417,11 @@ type BackendConfig struct {
 // ResumeSpec is non-nil for resume publishes; the runner threads its
 // fields into `runtime.Engine.Resume`.
 type ResumeSpec struct {
-	Answers map[string]any `json:"answers,omitempty"`
-	Force   bool           `json:"force"`
+	Answers        map[string]any  `json:"answers,omitempty"`
+	HostInputs     map[string]any  `json:"host_inputs,omitempty"`
+	Force          bool            `json:"force"`
+	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
+	ReceiptID      string          `json:"receipt_id,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so

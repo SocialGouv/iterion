@@ -1,12 +1,12 @@
 # whats-next — Nexie, the conversational co-CTO
 
 ONE adaptive agent in a standing chat loop. You talk; Nexie reads the
-board and the repo, recommends (never raw dumps), creates/curates/
-dispatches tickets, verifies whether issues are still relevant against
-the code and git history, and remembers the session (same LLM session
-across turns + a cross-run `CONTEXT_BRIEF.md`).
+board and the repo, recommends (never raw dumps), proposes typed actions to
+create/curate/dispatch tickets, verifies whether issues are still relevant against
+the current code, and remembers the standing conversation through the inherited
+LLM session.
 
-## Shape (v3)
+## Shape (v4)
 
 ```
 seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ done
@@ -16,10 +16,11 @@ seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ do
 ```
 
 - **nexie** — `claude_code` + `${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}`,
-  full board capabilities (`board.read/create/move/assign/label/close/comment`),
+  `board.read` only; writes are typed `assistant_actions` executed by the
+  Studio under the operator's global policies,
   bundled skills via the native Skill tool, `interaction: human` so it
   can `ask_user` mid-turn (with clickable options). Each turn returns
-  `{reply, close, quick_replies, dispatched_ids}`.
+  `{reply, close, quick_replies, dispatched_ids, assistant_actions}`.
 - **chat** — a one-field human node: Nexie's `reply` renders as the
   chat bubble, the answer is the operator's next message. The pause is
   budget-free and can last days — this is the standby home base.
@@ -62,12 +63,13 @@ from a board card, the manifest maps the issue title/body into
 
 ## Guardrails
 
-- Targeted explicit instruction → act immediately; **bulk (≥3) or
-  destructive → dry-run + ask_user confirmation**.
+- Targeted explicit instruction → emit an explicit action immediately;
+  **bulk (≥3) or destructive → dry-run + ask_user confirmation** before the
+  Studio policy is evaluated.
 - Read-only outside the board (no repo edits, no commits — and
   `worktree: none`, so no phantom storage branches).
-- Board writes are capability-gated MCP tools; `set_bot` is the
-  canonical dispatcher selector; dispatch = transition to `ready`.
+- Board reads are capability-gated MCP tools. Board writes are closed,
+  host-validated action requests; dispatch = approved transition to `ready`.
 - Untrusted-input boundary: repo/issue text is data, not instructions.
 
 ## Skills bundled with this bot

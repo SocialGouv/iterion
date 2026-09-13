@@ -66,6 +66,63 @@ func TestLoadFromValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromKeepsPinnedProjectWhenRootIsUnavailable(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "unmounted")
+	storeDir := t.TempDir()
+	content := `{
+		"version": 1,
+		"recent_projects": [
+			{"id": "stable", "name": "offline", "dir": ` + string(mustJSON(t, missingRoot)) + `, "store_dir": ` + string(mustJSON(t, storeDir)) + `, "last_opened": "2026-01-02T03:04:05Z"}
+		],
+		"current_project_id": "stable"
+	}`
+	cfg, err := loadFrom(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.RecentProjects) != 1 || cfg.RecentProjects[0].ID != "stable" {
+		t.Fatalf("pinned unavailable project was pruned: %+v", cfg.RecentProjects)
+	}
+}
+
+func TestRegisterWithStoreCanonicalizesAliasesAndPinsStore(t *testing.T) {
+	root := t.TempDir()
+	storeDir := t.TempDir()
+	rootAlias := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(root, rootAlias); err != nil {
+		t.Fatalf("symlink root: %v", err)
+	}
+	cfg := &Config{Version: schemaVersion}
+	first, created, err := cfg.RegisterWithStore(rootAlias, storeDir, []string{filepath.Join(root, "bots")}, filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !created || first.StoreDir != storeDir || first.Dir != root {
+		t.Fatalf("unexpected first registration: created=%v project=%+v", created, first)
+	}
+	second, created, err := cfg.RegisterWithStore(root, storeDir, nil, "")
+	if err != nil {
+		t.Fatalf("register alias: %v", err)
+	}
+	if created || second.ID != first.ID || len(cfg.RecentProjects) != 1 {
+		t.Fatalf("alias minted another project: created=%v first=%+v second=%+v all=%+v", created, first, second, cfg.RecentProjects)
+	}
+}
+
+func TestRegisterWithStoreRejectsSharedStoreAndMissingStore(t *testing.T) {
+	cfg := &Config{Version: schemaVersion}
+	storeDir := t.TempDir()
+	if _, _, err := cfg.RegisterWithStore(t.TempDir(), storeDir, nil, ""); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	if _, _, err := cfg.RegisterWithStore(t.TempDir(), storeDir, nil, ""); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("shared store error = %v", err)
+	}
+	if _, _, err := cfg.RegisterWithStore(t.TempDir(), filepath.Join(t.TempDir(), "missing"), nil, ""); err == nil || !strings.Contains(err.Error(), "project store") {
+		t.Fatalf("missing store error = %v", err)
+	}
+}
+
 func TestLoadFromUnknownKeysPassThroughExtras(t *testing.T) {
 	path := writeConfigFile(t, `{
 		"version": 1,
@@ -100,6 +157,29 @@ func TestLoadFromUnknownKeysPassThroughExtras(t *testing.T) {
 	}
 	if w.Width != 1280 || w.Height != 800 {
 		t.Errorf("Window round-trip: want 1280x800, got %+v", w)
+	}
+}
+
+func TestRegisterWithStoreCanClearPinnedEnvFile(t *testing.T) {
+	root, storeDir := t.TempDir(), t.TempDir()
+	envFile := filepath.Join(root, ".env")
+	if err := os.WriteFile(envFile, []byte("PROJECT=one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Version: schemaVersion}
+	registered, _, err := cfg.RegisterWithStore(root, storeDir, nil, envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.EnvFile != envFile {
+		t.Fatalf("env file = %q, want %q", registered.EnvFile, envFile)
+	}
+	registered, _, err = cfg.RegisterWithStore(root, storeDir, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.EnvFile != "" {
+		t.Fatalf("env file = %q, want cleared", registered.EnvFile)
 	}
 }
 

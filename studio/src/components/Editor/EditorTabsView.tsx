@@ -33,20 +33,74 @@ export default function EditorTabsView() {
   const tabs = useTabsStore(useShallow(selectEditorTabs));
   const activeTabId = useTabsStore((s) => s.activeEditorTabId);
 
+  // Assign, don't merely open: see the invariant note below.
+  const ensureActive = (id: string) => {
+    if (useTabsStore.getState().activeEditorTabId !== id) {
+      useTabsStore.getState().setActive(id);
+    }
+  };
+
   const fileParam = useMemo(() => {
     const sp = new URLSearchParams(search);
     return sp.get("file") ?? "";
   }, [search]);
 
+  // `?draft=<runId>` — the assistant drafted a `.bot` and proposed opening it
+  // here. A draft has no path (the bot never wrote to the workspace), so it
+  // keys its own tab and hydrates into an unsaved buffer.
+  const draftParam = useMemo(() => {
+    const sp = new URLSearchParams(search);
+    return sp.get("draft") ?? "";
+  }, [search]);
+
   // URL → tab: when `?file=X` is present, ensure the matching editor
-  // tab exists and is active. Idempotent on repeat because openTab
-  // focuses an existing tab with the same params. When the URL is
-  // bare `/editor` and no tabs exist, the empty-state view (below)
-  // takes over and presents the picker instead of an empty editor.
+  // tab exists and is active. Match on the file key alone — a draft tab
+  // that was saved-as carries both `draft` and `file`, and paramsEqual
+  // against `{file}` would miss it and open a duplicate.
   useEffect(() => {
     if (!fileParam) return;
-    useTabsStore.getState().openTab("editor", { file: fileParam });
-  }, [fileParam]);
+    const existing = tabs.find((t) => t.params.file === fileParam);
+    if (existing) {
+      ensureActive(existing.id);
+      return;
+    }
+    ensureActive(useTabsStore.getState().openTab("editor", { file: fileParam }));
+  }, [fileParam, tabs, activeTabId]);
+
+  // Same contract as `?file=`, keyed on `draft` so a tab that has since
+  // been bound to a file (`{draft, file}`) is still THIS draft, not a
+  // second "Draft" tab. Once bound, rewrite the URL to `?file=` so the
+  // file effect owns the rest of the session.
+  useEffect(() => {
+    if (!draftParam || fileParam) return;
+    const existing = tabs.find((t) => t.params.draft === draftParam);
+    if (existing) {
+      ensureActive(existing.id);
+      const file = existing.params.file;
+      if (file) {
+        setLocation(`/editor?file=${encodeURIComponent(file)}`, { replace: true });
+      }
+      return;
+    }
+    ensureActive(
+      useTabsStore.getState().openTab("editor", { draft: draftParam }, "Draft"),
+    );
+  }, [draftParam, fileParam, tabs, activeTabId, setLocation]);
+
+  // The invariant both effects above keep: if the URL names a document, ITS
+  // tab is the one on screen.
+  //
+  // openTab already activates what it opens — but the persist middleware
+  // rehydrates `activeEditorTabId` from localStorage and can land AFTER these
+  // effects, restoring a previously-active tab over the one the URL just
+  // asked for. The operator then reads a stale tab's state as the answer to
+  // the link they clicked (an old draft's "couldn't reload", say) and
+  // concludes the link is broken.
+  //
+  // Re-asserting on every tabs/active change makes the effects self-correcting
+  // whatever the ordering. It cannot fight a manual tab click either: selecting
+  // a tab rewrites the URL first (to `?file=…` or bare `/editor`), so the guard
+  // above returns before reaching here.
 
   // Cold-start restore: the persisted ACTIVE tab rehydrates dormant
   // (hydrated:false) and is never clicked, so without this it shows selected in
@@ -140,7 +194,11 @@ export default function EditorTabsView() {
                 className={`absolute inset-0 ${tab.id === activeTabId ? "block" : "hidden"}`}
                 aria-hidden={tab.id === activeTabId ? undefined : true}
               >
-                <EditorTabHost tabId={tab.id} file={tab.params.file} />
+                <EditorTabHost
+                  tabId={tab.id}
+                  file={tab.params.file}
+                  draft={tab.params.draft}
+                />
               </div>
             ))}
         </div>

@@ -119,9 +119,12 @@ type bakedCatalog struct {
 // botregistry (or one long-lived single-flight walker), both out of scope here.
 func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 	return platformcfg.NewResolverFunc(func(context.Context) (*bakedCatalog, error) {
-		entries, err := botregistry.List(s.botListOptions())
+		entries, diagnostics, err := botregistry.ListWithDiagnostics(s.botListOptions())
 		if err != nil {
 			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %w", err)
+		}
+		if len(diagnostics) > 0 {
+			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %s", diagnostics[0].Error)
 		}
 		out := bakedCatalog{versions: make(map[string]string, len(entries))}
 		for _, e := range entries {

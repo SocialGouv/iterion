@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -107,6 +108,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		SandboxSettings:    platformcfg.NewMemoryStore[platformcfg.Sandbox](),
 		BotVarsSettings:    platformcfg.NewMemoryStore[platformcfg.BotVars](),
 		Store:              runStore,
+		ModelPrefs:         modelprefs.NewMemStore(),
 	}
 
 	s := New(cfg, iterlog.New(iterlog.LevelError, nil))

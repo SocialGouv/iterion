@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
@@ -107,7 +108,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		// fallbacks let `backend: grok` + `permission: deny` compile and run
 		// silently ungated — worse than a loud C176 refusal.
 		if nodeBackend != "" {
-			if reason := ungatedCrossingReason(nodeBackend, effectivePermission, len(w.PermissionAsk) > 0); reason != "" {
+			if reason := UngatedCrossingReasonForAskRules(nodeBackend, effectivePermission, w.PermissionAsk); reason != "" {
 				c.errorfAt(DiagFallbackUnsafeCross, id, "",
 					"%s %q: primary route %s", kind, id, reason)
 			}
@@ -132,7 +133,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
 			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, w.PermissionAsk)
 		}
 	}
 }
@@ -325,7 +326,7 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // node's capabilities, using the same predicates the launch-time
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, hasAskRules bool) {
+func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, askRules []string) {
 	// An env-ref backend is not knowable here; defer to the runtime.
 	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
 		return
@@ -337,7 +338,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := ungatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), hasAskRules); reason != "" {
+	if reason := UngatedCrossingReasonForAskRules(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -379,10 +380,10 @@ func EffectivePermission(nodePermission, workflowPermission string) string {
 	return strings.TrimSpace(workflowPermission)
 }
 
-// ungatedCrossingReason returns why a route may not serve a gated node,
-// or "" when it may. Shared by C176 and the launch-time screen so the
-// two can never disagree.
-func ungatedCrossingReason(routeBackend, permission string, hasAskRules bool) string {
+// UngatedCrossingReason returns why a route may not serve a gated node,
+// or "" when it may. Shared by C176 and every launch-time screen so an
+// operator override cannot reach a crossing the compiler refuses.
+func UngatedCrossingReason(routeBackend, permission string, hasAskRules bool) string {
 	mode := strings.ToLower(strings.TrimSpace(permission))
 	if mode == "" || mode == "off" {
 		return ""
@@ -398,6 +399,32 @@ func ungatedCrossingReason(routeBackend, permission string, hasAskRules bool) st
 	return fmt.Sprintf(
 		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would be UNGATED",
 		routeBackend, permission)
+}
+
+// UngatedCrossingReasonForAskRules is the rules-aware variant used by every
+// workflow admission surface. Kimi and Grok can enforce permission: deny but
+// cannot pause for an ask. A Claw-only alias such as diagnostic_shell cannot
+// be invoked by either CLI at all, so treating that particular ask as
+// reachable would reject a safe route. Unknown, wildcard, MCP and native
+// rule names remain reachable by default: this relaxation is fail-closed.
+func UngatedCrossingReasonForAskRules(routeBackend, permission string, askRules []string) string {
+	return UngatedCrossingReason(routeBackend, permission, askRulesReachableByBackend(routeBackend, askRules))
+}
+
+func askRulesReachableByBackend(routeBackend string, askRules []string) bool {
+	if len(askRules) == 0 {
+		return false
+	}
+	if !externalHookGateBackends[strings.ToLower(strings.TrimSpace(routeBackend))] {
+		return true
+	}
+	for _, rule := range askRules {
+		name, _, _ := strings.Cut(strings.TrimSpace(rule), "(")
+		if !toolcatalog.IsClawOnlyAlias(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolsInversionReason returns why a route may not cross the claw⇄CLI
@@ -433,6 +460,22 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 		return ""
 	}
 	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"
+}
+
+// ToolRestrictionLossReason reports the non-security capability drift the
+// Studio must disclose when an explicit launch override moves a claw node to
+// a CLI backend. Claw enforces the lowercase tools: list; CLI backends running
+// under their native permission mode do not, so the shared permission gate
+// may remain intact while this independent restriction layer disappears.
+//
+// Fallback validation uses the stricter toolsInversionReason because a
+// fallback is automatic. A launch picker may still offer this deliberate
+// crossing, but must never present it as capability-neutral.
+func ToolRestrictionLossReason(nodeBackend, routeBackend string, tools []string) string {
+	if nodeBackend != clawBackendName || routeBackend == clawBackendName || len(tools) == 0 {
+		return ""
+	}
+	return "this claw node's tools: restriction is not enforced by the selected CLI backend; the permission gate remains active, but the backend's full native toolset becomes available"
 }
 
 // sessionContinuityCrossingReason refuses inherit / inherit_if_available /
