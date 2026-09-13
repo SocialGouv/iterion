@@ -235,6 +235,9 @@ func executeWorkspaceGrepWithLimits(input map[string]any, workspace string, limi
 	if err != nil {
 		return "", err
 	}
+	if sensitiveWorkspacePath(rawPath) {
+		return "", fmt.Errorf("grep: %q is excluded as a credential or secret file", rawPath)
+	}
 	searchPath, err := resolveWorkspacePath(workspace, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("grep: %w", err)

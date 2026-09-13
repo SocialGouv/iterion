@@ -1469,6 +1469,11 @@ func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*s
 		if !watchDeliverable(watcher.Status) {
 			continue
 		}
+		// Resolve once per candidate, not once per terminal target. A
+		// non-conversational run cannot receive any watch episode.
+		if _, _, err := c.server.resolveAssistantChatCapability(ctx, watcher); err != nil {
+			continue
+		}
 		watchers = append(watchers, watcher)
 	}
 	return watchers, nil
@@ -1488,13 +1493,6 @@ func (c *assistantWatchCoordinator) armWatchesForTargetFrom(ctx context.Context,
 			continue
 		}
 		if !slices.Contains(watcher.WatchedIssueIDs, issueID) {
-			continue
-		}
-		// A card watched by a NON-conversational run must not open an
-		// episode: nothing would ever be able to deliver it, and the
-		// coordinator would re-attempt it every 20s for the rest of that
-		// run's life. This guard is load-bearing, not cosmetic.
-		if _, _, err := c.server.resolveAssistantChatCapability(ctx, watcher); err != nil {
 			continue
 		}
 		// Replaying a card's history would ambush an operator who armed a

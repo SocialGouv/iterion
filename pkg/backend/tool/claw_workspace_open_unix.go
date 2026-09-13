@@ -3,8 +3,9 @@
 package tool
 
 import (
-	"golang.org/x/sys/unix"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 // Open every component relative to the held directory descriptor. Nonblocking
