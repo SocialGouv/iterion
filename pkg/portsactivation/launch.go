@@ -57,7 +57,7 @@ func AuthorizeLaunch(ctx context.Context, s store.RunStore, semantics, runID str
 	if scope == store.PortActivationDistributed && record.QueueVersion != queue.SchemaVersion {
 		return nil, fmt.Errorf("%w: distributed queue schema %d does not match this binary's %d", store.ErrPortActivation, record.QueueVersion, queue.SchemaVersion)
 	}
-	admission := &store.PortLaunchAdmission{Scope: scope, ProofDigest: record.ProofDigest,
+	admission := &store.PortLaunchAdmission{Scope: scope, StoreIdentity: record.StoreIdentity, ProofDigest: record.ProofDigest,
 		CapabilityDigest: record.CapabilityDigest, ActivationRevision: record.Revision,
 		AdmittedAt: now.Truncate(time.Millisecond), ExpiresAt: record.ExpiresAt.UTC().Truncate(time.Millisecond)}
 	if err := admission.Validate(); err != nil {
@@ -92,7 +92,8 @@ func RequireExistingAdmission(s store.RunStore, r *store.Run) error {
 	if s.Root() == "" {
 		scope = store.PortActivationDistributed
 	}
-	if a.Scope != scope || a.CapabilityDigest != CapabilityDigest(scope) ||
+	identity, err := store.PortStoreIdentity(s)
+	if err != nil || a.Scope != scope || a.StoreIdentity != identity || a.CapabilityDigest != CapabilityDigest(scope) ||
 		r.CreatedAt.Before(a.AdmittedAt) || !r.CreatedAt.Before(a.ExpiresAt) {
 		return fmt.Errorf("%w: native run admission does not match this store, binary or creation time", store.ErrPortActivation)
 	}

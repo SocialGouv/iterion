@@ -3,6 +3,8 @@ package portsactivation
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,6 +46,20 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 	if err := RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, native); err != nil {
 		t.Fatal(err)
 	}
+	other, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	activationBytes, err := os.ReadFile(filepath.Join(s.Root(), "port_activation_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other.Root(), "port_activation_v1.json"), activationBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireLaunch(ctx, other, ir.RuntimeSemanticsPortsV1, native); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("copied activation authorized another store: %v", err)
+	}
 	admittedCtx, err := AdmittedContext(ctx, s, ir.RuntimeSemanticsPortsV1, native)
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +76,9 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 	run, err := s.LoadRun(ctx, native)
 	if err != nil || run.PortLaunch == nil || RequireExistingAdmission(s, run) != nil {
 		t.Fatalf("accepted run lost proof after rollback: %+v %v", run, err)
+	}
+	if err := RequireExistingAdmission(other, run); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("accepted run moved to another store: %v", err)
 	}
 	tampered := *run
 	tampered.PortLaunch = nil

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -29,22 +28,12 @@ type Inspection struct {
 
 func Inspect(ctx context.Context, s store.RunStore) (*Inspection, error) {
 	scope := store.PortActivationLocal
-	identity := s.Root()
-	if identity == "" {
+	if s.Root() == "" {
 		scope = store.PortActivationDistributed
-		if identified, ok := s.(interface{ PortBackendIdentity() string }); ok {
-			identity = identified.PortBackendIdentity()
-		}
-		if identity == "" {
-			return nil, fmt.Errorf("%w: distributed store has no stable backend identity", store.ErrPortActivation)
-		}
 	}
-	if scope == store.PortActivationLocal {
-		var err error
-		identity, err = filepath.EvalSymlinks(identity)
-		if err != nil {
-			return nil, err
-		}
+	identity, err := store.PortStoreIdentity(s)
+	if err != nil {
+		return nil, err
 	}
 	result := &Inspection{Scope: scope, StoreIdentity: identity, CapabilityDigest: CapabilityDigest(scope), QueueVersion: queue.SchemaVersion,
 		HasActivationStore:      store.AsPortActivationStore(s) != nil,
@@ -147,7 +136,7 @@ func ActivateLocal(ctx context.Context, s store.RunStore, proof Proof) (*store.P
 		revision = inspection.Activation.Revision
 	}
 	record := &store.PortActivation{Version: store.PortActivationVersion, Revision: revision + 1, Enabled: true,
-		Scope: proof.Scope, ProofDigest: proof.Digest, CapabilityDigest: proof.CapabilityDigest,
+		Scope: proof.Scope, StoreIdentity: proof.StoreIdentity, ProofDigest: proof.Digest, CapabilityDigest: proof.CapabilityDigest,
 		QueueVersion: proof.QueueVersion, VerifiedAt: proof.VerifiedAt, ExpiresAt: proof.ExpiresAt}
 	if err := activation.SavePortActivation(ctx, revision, record); err != nil {
 		return nil, err

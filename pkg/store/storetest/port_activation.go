@@ -18,15 +18,19 @@ func RunPortActivation(t *testing.T, factory Factory) {
 	}
 	ctx := store.WithoutTenantFilter(context.Background())
 	now := time.Now().UTC()
+	identity, err := store.PortStoreIdentity(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.RequirePortActivation(ctx, s, store.PortActivationLocal, now); !errors.Is(err, store.ErrPortActivation) {
 		t.Fatalf("fresh store allowed native execution: %v", err)
 	}
-	first := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1, Enabled: true, Scope: store.PortActivationLocal,
+	first := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1, Enabled: true, Scope: store.PortActivationLocal, StoreIdentity: identity,
 		ProofDigest: strings.Repeat("a", 64), CapabilityDigest: strings.Repeat("b", 64), VerifiedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := capability.SavePortActivation(ctx, 0, first); err != nil {
 		t.Fatal(err)
 	}
-	admission := &store.PortLaunchAdmission{Scope: store.PortActivationLocal, ProofDigest: first.ProofDigest,
+	admission := &store.PortLaunchAdmission{Scope: store.PortActivationLocal, StoreIdentity: identity, ProofDigest: first.ProofDigest,
 		CapabilityDigest: first.CapabilityDigest, ActivationRevision: first.Revision,
 		AdmittedAt: now.Truncate(time.Millisecond), ExpiresAt: first.ExpiresAt.Truncate(time.Millisecond)}
 	createCtx := store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, admission), store.RuntimeSemanticsPortsV1)

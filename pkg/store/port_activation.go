@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const PortActivationVersion = 1
+const PortActivationVersion = 2
 
 const (
 	PortActivationLocal       = "local"
@@ -31,6 +31,7 @@ type PortActivation struct {
 	Revision               uint64    `json:"revision" bson:"revision"`
 	Enabled                bool      `json:"enabled" bson:"enabled"`
 	Scope                  string    `json:"scope" bson:"scope"`
+	StoreIdentity          string    `json:"store_identity" bson:"store_identity"`
 	ProofDigest            string    `json:"proof_digest" bson:"proof_digest"`
 	CapabilityDigest       string    `json:"capability_digest" bson:"capability_digest"`
 	QueueVersion           int       `json:"queue_version" bson:"queue_version"`
@@ -44,6 +45,7 @@ type PortActivation struct {
 // operator disables new launches, without treating a bare native ID as proof.
 type PortLaunchAdmission struct {
 	Scope              string    `json:"scope" bson:"scope"`
+	StoreIdentity      string    `json:"store_identity" bson:"store_identity"`
 	ProofDigest        string    `json:"proof_digest" bson:"proof_digest"`
 	CapabilityDigest   string    `json:"capability_digest" bson:"capability_digest"`
 	ActivationRevision uint64    `json:"activation_revision" bson:"activation_revision"`
@@ -53,7 +55,7 @@ type PortLaunchAdmission struct {
 
 func (a *PortLaunchAdmission) Validate() error {
 	if a == nil || (a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) ||
-		a.ActivationRevision == 0 || len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
+		a.StoreIdentity == "" || a.ActivationRevision == 0 || len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
 		len(a.CapabilityDigest) != 64 || strings.Trim(a.CapabilityDigest, "0123456789abcdef") != "" ||
 		a.AdmittedAt.IsZero() || !a.AdmittedAt.Before(a.ExpiresAt) {
 		return fmt.Errorf("%w: malformed native run admission", ErrPortActivation)
@@ -63,7 +65,7 @@ func (a *PortLaunchAdmission) Validate() error {
 
 func (a *PortActivation) Validate() error {
 	if a == nil || a.Version != PortActivationVersion || a.Revision == 0 ||
-		(a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) ||
+		(a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) || a.StoreIdentity == "" ||
 		len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
 		len(a.CapabilityDigest) != 64 || strings.Trim(a.CapabilityDigest, "0123456789abcdef") != "" ||
 		a.VerifiedAt.IsZero() || !a.ExpiresAt.After(a.VerifiedAt) {
@@ -78,6 +80,19 @@ func (a *PortActivation) Validate() error {
 type PortActivationStore interface {
 	LoadPortActivation(ctx context.Context) (*PortActivation, error)
 	SavePortActivation(ctx context.Context, expectedRevision uint64, next *PortActivation) error
+}
+
+// PortStoreIdentity names the exact storage boundary an activation can admit.
+// Fail closed for distributed stores that cannot report their backend scope.
+func PortStoreIdentity(s RunStore) (string, error) {
+	if root := s.Root(); root != "" {
+		return filepath.EvalSymlinks(root)
+	}
+	identified, ok := s.(interface{ PortBackendIdentity() string })
+	if !ok || identified.PortBackendIdentity() == "" {
+		return "", fmt.Errorf("%w: distributed store has no stable backend identity", ErrPortActivation)
+	}
+	return identified.PortBackendIdentity(), nil
 }
 
 func AsPortActivationStore(s RunStore) PortActivationStore {
@@ -96,6 +111,10 @@ func RequirePortActivation(ctx context.Context, s RunStore, scope string, now ti
 	}
 	if record == nil || !record.Enabled || record.Scope != scope || !now.Before(record.ExpiresAt) {
 		return fmt.Errorf("%w: no active %s proof", ErrPortActivation, scope)
+	}
+	identity, err := PortStoreIdentity(s)
+	if err != nil || record.StoreIdentity != identity {
+		return fmt.Errorf("%w: store identity changed since activation", ErrPortActivation)
 	}
 	return nil
 }
@@ -119,6 +138,10 @@ func ActivePortActivationCapability(ctx context.Context, s RunStore, scope, capa
 	}
 	if record.CapabilityDigest != capabilityDigest {
 		return nil, fmt.Errorf("%w: binary capability changed since activation", ErrPortActivation)
+	}
+	identity, err := PortStoreIdentity(s)
+	if err != nil || record.StoreIdentity != identity {
+		return nil, fmt.Errorf("%w: store identity changed since activation", ErrPortActivation)
 	}
 	return record, nil
 }
