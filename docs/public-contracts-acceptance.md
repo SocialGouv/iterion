@@ -22,7 +22,7 @@ Syntax profiles and runtime semantics are independent.
 | Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Outstanding |
 | Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Outstanding |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Outstanding |
-| Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing and no-shadow-fallback checks pass on FS/Mongo; old executable tests, workspaces and deployment protection outstanding |
+| Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Outstanding |
 | Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Outstanding |
 | Rollback | New root launches stop; existing compatible executions remain resumable | Outstanding |
@@ -72,10 +72,18 @@ Syntax profiles and runtime semantics are independent.
   evidence that the native scheduler or deployment barrier is implemented.
 - Native store tests pass on filesystem and a real Mongo 8 replica set with
   `ITERION_TEST_REQUIRED=1`, `ITERION_TEST_MONGO_URI` and `go test -race -json`.
-  `scripts/verify-port-tests.mjs` verified all 28 expected cases in
+  `scripts/verify-port-tests.mjs` verified all 30 expected cases in
   `pkg/store/storetest/native_namespaces.json` passed without skips. They cover
   metadata and blob round trips, exact public inputs, descendant namespaces,
   no legacy shadow fallback, unsupported-record refusal and deletion closure.
+- Actual executables built from pinned main `3872f9dd1d1cbf9c18ed338c66c9f55aaaea3fcc`
+  cannot read native runs through their legacy namespace. Their writes,
+  repairs, deletion and pruning preserve native filesystem bytes, Mongo BSON
+  records and S3 objects. Old CLI inspect/fork/rewind reach the missing-run
+  check; old CLI pruning preserves the native directory. Mongo tests use a
+  real replica set and both versions' real S3 clients against a disposable
+  HTTP object fixture. This does not certify old queue consumers or workspace
+  maintenance. Reproduction: [compatibility tests](public-contracts-testing.md).
 - Full `pkg/store` and `pkg/store/blob` suites pass. The real-Mongo shared
   legacy conformance suite passed. The subsequent full Mongo package run
   found a static deletion-inventory parser that did not recognize the new

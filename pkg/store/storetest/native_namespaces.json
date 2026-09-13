@@ -1,5 +1,5 @@
 {
-  "scope": "Storage routing only; runtime, old executable compatibility and UI verification remain separate acceptance requirements.",
+  "scope": "Storage routing and supported old executable confinement; native runtime, workspaces, activation and UI verification remain separate acceptance requirements.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/store": [
       "TestNativeNamespacesFilesystem",
@@ -9,7 +9,8 @@
       "TestNativeNamespacesFilesystem/DescendantNamespace",
       "TestNativeNamespacesFilesystem/MetadataClosure",
       "TestNativeFilesystemNeverFallsBackToLegacyShadow",
-      "TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation"
+      "TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation",
+      "TestNativeOldFilesystemExecutablesCannotMutateNativeClosure"
     ],
     "github.com/SocialGouv/iterion/pkg/store/mongo": [
       "TestNativeNamespacesMongo",
@@ -20,7 +21,8 @@
       "TestNativeNamespacesMongo/MetadataClosure",
       "TestNativeMongoNeverFallsBackToLegacyShadow",
       "TestNativeMongoRefusesUnsupportedRecordBeforeMutation",
-      "TestNativeMongoDeleteRemovesSequenceAndIRClosure"
+      "TestNativeMongoDeleteRemovesSequenceAndIRClosure",
+      "TestNativeOldMongoAndS3ExecutablesCannotMutateNativeClosure"
     ],
     "github.com/SocialGouv/iterion/pkg/store/blob": [
       "TestNativeBlobKeysAreOutsideLegacyFamilies",
