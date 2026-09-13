@@ -273,7 +273,7 @@ func TestClawWorkspaceGrep_BoundsOutputDuringScan(t *testing.T) {
 	}
 
 	const maxOutput = 512
-	out, err := executeWorkspaceGrepWithLimits(
+	out, err := executeWorkspaceGrepWithLimits(t.Context(),
 		map[string]any{"pattern": "needle-", "path": "."},
 		dir,
 		workspaceGrepLimits{maxResults: 100, maxOutputBytes: maxOutput},
@@ -303,7 +303,7 @@ func TestClawWorkspaceGrep_OversizedFirstMatchReportsPartial(t *testing.T) {
 	}
 
 	const maxOutput = 256
-	out, err := executeWorkspaceGrepWithLimits(
+	out, err := executeWorkspaceGrepWithLimits(t.Context(),
 		map[string]any{"pattern": "needle", "path": "."},
 		dir,
 		workspaceGrepLimits{maxResults: 100, maxOutputBytes: maxOutput},
@@ -329,7 +329,7 @@ func TestClawWorkspaceGrep_ReportsInjectedResultLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeWorkspaceGrepWithLimits(
+	out, err := executeWorkspaceGrepWithLimits(t.Context(),
 		map[string]any{"pattern": "needle-", "path": "."},
 		dir,
 		workspaceGrepLimits{maxResults: 2, maxOutputBytes: 512},

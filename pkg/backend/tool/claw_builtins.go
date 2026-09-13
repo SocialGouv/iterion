@@ -86,8 +86,8 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceGlob(ctx, input, workspace)
 		}},
-		{tool: clawtools.GrepTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGrep(input, workspace)
+		{tool: clawtools.GrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGrep(ctx, input, workspace)
 		}},
 		{tool: clawtools.FileEditTool(), exec: clawtools.ExecuteFileEdit},
 		{tool: clawtools.WebFetchTool(), exec: clawtools.ExecuteWebFetch},
@@ -108,8 +108,8 @@ func RegisterClawWorkspaceDiagnostics(reg *Registry, workspace string, bashExtra
 		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
 	}
 	return registerClawSpecs(reg, []clawBuiltinSpec{
-		{tool: workspaceGrepTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGrep(input, workspace)
+		{tool: workspaceGrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return executeWorkspaceGrep(ctx, input, workspace)
 		}},
 		{tool: diagnosticShellTool(), exec: bashExec},
 	})

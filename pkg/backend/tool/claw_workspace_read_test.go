@@ -195,7 +195,7 @@ func TestWorkspaceReadFileChecksBothSymlinkNamesAndTargets(t *testing.T) {
 		if out, err := executeWorkspaceReadFile(map[string]any{"path": path}, root); err == nil || out != "" {
 			t.Fatalf("%s: %q, %v", path, out, err)
 		}
-		if out, err := executeWorkspaceGrep(map[string]any{"path": path, "pattern": "."}, root); err == nil || out != "" {
+		if out, err := executeWorkspaceGrep(t.Context(), map[string]any{"path": path, "pattern": "."}, root); err == nil || out != "" {
 			t.Fatalf("grep %s: %q, %v", path, out, err)
 		}
 	}

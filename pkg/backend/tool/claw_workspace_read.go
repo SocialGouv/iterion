@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -24,21 +23,6 @@ const workspaceReadMaxBytes = 240 * 1024
 // stream it all through the agent's turn. Refuse it with an actionable
 // error — grep and glob still reach it.
 const workspaceReadMaxFileBytes = 64 * 1024 * 1024
-
-const (
-	workspaceGrepMaxResults     = 1000
-	workspaceGrepMaxOutputBytes = 240 * 1024
-)
-
-type workspaceGrepLimits struct {
-	maxResults     int
-	maxOutputBytes int
-}
-
-var defaultWorkspaceGrepLimits = workspaceGrepLimits{
-	maxResults:     workspaceGrepMaxResults,
-	maxOutputBytes: workspaceGrepMaxOutputBytes,
-}
 
 func workspaceReadFileTool() api.Tool {
 	t := clawtools.ReadFileTool()
@@ -222,133 +206,6 @@ func readLineCapped(r *bufio.Reader, limit int) (string, error) {
 	}
 }
 
-func executeWorkspaceGrep(input map[string]any, workspace string) (string, error) {
-	return executeWorkspaceGrepWithLimits(input, workspace, defaultWorkspaceGrepLimits)
-}
-
-func executeWorkspaceGrepWithLimits(input map[string]any, workspace string, limits workspaceGrepLimits) (string, error) {
-	pattern, ok := input["pattern"].(string)
-	if !ok || pattern == "" {
-		return "", fmt.Errorf("grep: 'pattern' input is required and must be a string")
-	}
-	rawPath, err := workspacePathInput(input, "grep")
-	if err != nil {
-		return "", err
-	}
-	if sensitiveWorkspacePath(rawPath) {
-		return "", fmt.Errorf("grep: %q is excluded as a credential or secret file", rawPath)
-	}
-	searchPath, err := resolveWorkspacePath(workspace, rawPath)
-	if err != nil {
-		return "", fmt.Errorf("grep: %w", err)
-	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return "", fmt.Errorf("grep: invalid pattern: %w", err)
-	}
-	globFilter, _ := input["glob"].(string)
-
-	info, err := os.Stat(searchPath)
-	if err != nil {
-		return "", fmt.Errorf("grep: stat path: %w", err)
-	}
-	if limits.maxResults <= 0 || limits.maxOutputBytes <= 0 {
-		return "", fmt.Errorf("grep: result and output limits must be positive")
-	}
-	resultReason := fmt.Sprintf("result limit (%d)", limits.maxResults)
-	outputReason := fmt.Sprintf("output limit (%d bytes)", limits.maxOutputBytes)
-	markerReserve := max(
-		len(workspaceGrepPartialMarker(resultReason)),
-		len(workspaceGrepPartialMarker(outputReason)),
-	)
-	contentBudget := max(0, limits.maxOutputBytes-markerReserve-1)
-	var results []string
-	outputBytes := 0
-	truncated := ""
-	visit := func(path string, info os.FileInfo) error {
-		if sensitiveWorkspacePath(path) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if info.IsDir() {
-			if path != searchPath && ignoredSearchDir(info.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// filepath.Walk lstats, so a symlink is reported here as a plain
-		// non-dir entry — and os.Open below follows it. That re-opened both
-		// guards this tool advertises: a `notes.txt -> ~/.ssh/id_rsa` link
-		// escapes containment, and sensitiveWorkspacePath above judged the
-		// LINK's name rather than the target's. A FIFO in the tree is the
-		// other half: os.Open blocks on it until a writer appears, hanging
-		// the agent's turn. Only regular files are searchable.
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if globFilter != "" {
-			matched, matchErr := filepath.Match(globFilter, filepath.Base(path))
-			if matchErr != nil || !matched {
-				return nil
-			}
-		}
-		matches, consumed, reason, scanErr := grepWorkspaceFile(
-			re,
-			workspace,
-			path,
-			limits.maxResults-len(results),
-			contentBudget-outputBytes,
-			len(results) > 0,
-			resultReason,
-			outputReason,
-		)
-		if scanErr != nil {
-			return nil
-		}
-		results = append(results, matches...)
-		outputBytes += consumed
-		if reason != "" {
-			truncated = reason
-			return filepath.SkipAll
-		}
-		return nil
-	}
-
-	if info.IsDir() {
-		err = filepath.Walk(searchPath, func(path string, fi os.FileInfo, walkErr error) error {
-			if walkErr != nil {
-				return nil
-			}
-			return visit(path, fi)
-		})
-		if err != nil && err != filepath.SkipAll {
-			return "", fmt.Errorf("grep walk: %w", err)
-		}
-	} else if sensitiveWorkspacePath(searchPath) {
-		return "", fmt.Errorf("path is a protected credential file")
-	} else if err := visit(searchPath, info); err != nil && err != filepath.SkipAll {
-		return "", err
-	}
-
-	if len(results) == 0 && truncated == "" {
-		return fmt.Sprintf("No matches found for pattern: %s", pattern), nil
-	}
-	output := strings.Join(results, "\n")
-	if truncated != "" {
-		if output != "" {
-			output += "\n"
-		}
-		output += workspaceGrepPartialMarker(truncated)
-	}
-	return output, nil
-}
-
-func workspaceGrepPartialMarker(reason string) string {
-	return fmt.Sprintf("... [grep partial: stopped at %s; narrow path or glob and continue]", reason)
-}
-
 // workspacePathInput applies the workspace-scoped path contract shared by
 // grep and glob: an omitted or exactly empty path means the active workspace
 // root. Whitespace-only values remain invalid instead of being silently
@@ -370,53 +227,6 @@ func workspacePathInput(input map[string]any, toolName string) (string, error) {
 		return "", fmt.Errorf("%s: 'path' must be a non-empty string when provided", toolName)
 	}
 	return path, nil
-}
-
-func grepWorkspaceFile(
-	re *regexp.Regexp,
-	workspace string,
-	path string,
-	remainingResults int,
-	remainingBytes int,
-	hasPriorResults bool,
-	resultReason string,
-	outputReason string,
-) ([]string, int, string, error) {
-	if remainingResults <= 0 {
-		return nil, 0, resultReason, nil
-	}
-	f, err := openWorkspaceFile(workspace, path)
-	if err != nil {
-		return nil, 0, "", err
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	results := make([]string, 0)
-	consumed := 0
-	for line := 1; scanner.Scan(); line++ {
-		text := scanner.Text()
-		if strings.IndexByte(text, 0) >= 0 {
-			return results, consumed, "", nil
-		}
-		if re.MatchString(text) {
-			candidate := fmt.Sprintf("%s:%d:%s", path, line, text)
-			separator := 0
-			if hasPriorResults || len(results) > 0 {
-				separator = 1
-			}
-			if separator+len(candidate) > remainingBytes-consumed {
-				return results, consumed, outputReason, nil
-			}
-			results = append(results, candidate)
-			consumed += separator + len(candidate)
-			if len(results) >= remainingResults {
-				return results, consumed, resultReason, nil
-			}
-		}
-	}
-	return results, consumed, "", scanner.Err()
 }
 
 // openWorkspaceFile checks aliases before opening and verifies the opened
