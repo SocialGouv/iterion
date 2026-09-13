@@ -122,7 +122,7 @@ exit 7`)
 }
 
 func TestAuthoringGitRejectsBeforePublishing(t *testing.T) {
-	for _, kind := range []string{"hook rejects", "hook stages content", "hook changes mode", "head advances", "head changes branch", "head alias changes", "detached head becomes attached", "index locked", "unsupported cleanup", "signing failure"} {
+	for _, kind := range []string{"hook rejects", "hook stages content", "hook changes mode", "head advances", "head changes branch", "head alias changes", "detached head becomes attached", "index locked", "unsupported cleanup", "invalid signing config", "signing failure"} {
 		t.Run(kind, func(t *testing.T) {
 			root, commit := attestedGitFixture(t)
 			parent := strings.TrimSpace(gitTestRead(t, root, "rev-parse", "HEAD"))
@@ -156,6 +156,8 @@ git update-ref HEAD "$rival"`)
 				writeGitTestFile(t, filepath.Join(root, ".git", "index.lock"), "editor-owned", 0o600)
 			case "unsupported cleanup":
 				gitTestRead(t, root, "config", "commit.cleanup", "invented")
+			case "invalid signing config":
+				gitTestRead(t, root, "config", "commit.gpgsign", "invalid-boolean")
 			case "signing failure":
 				gitTestRead(t, root, "config", "commit.gpgsign", "true")
 				gitTestRead(t, root, "config", "gpg.program", filepath.Join(root, "missing-gpg"))
@@ -305,6 +307,12 @@ func TestAuthoringGitHonorsSSHSigning(t *testing.T) {
 		t.Skip("ssh-keygen unavailable")
 	}
 	root, commit := attestedGitFixture(t)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Git executable: %s; %s; exec-path: %s", gitPath,
+		strings.TrimSpace(gitTestRead(t, root, "--version")), strings.TrimSpace(gitTestRead(t, root, "--exec-path")))
 	key := filepath.Join(t.TempDir(), "signing-key")
 	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
 		t.Fatalf("generate signing key: %v: %s", err, out)
@@ -324,4 +332,25 @@ func TestAuthoringGitHonorsSSHSigning(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitTestRead(t, root, "verify-commit", head)
+}
+
+func TestAuthoringGitBooleanConfig(t *testing.T) {
+	for _, tc := range []struct {
+		value, want string
+	}{
+		{"unset", ""}, {"true", "true"}, {"yes", "true"}, {"on", "true"},
+		{"1", "true"}, {"false", "false"}, {"0", "false"},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			root, _ := attestedGitFixture(t)
+			if tc.value != "unset" {
+				gitTestRead(t, root, "config", "commit.gpgsign", tc.value)
+			}
+			g := authoringGitIndex{root: root, index: filepath.Join(root, ".git", "index")}
+			got, err := g.config(t.Context(), "commit.gpgsign", true)
+			if err != nil || got != tc.want {
+				t.Fatalf("boolean config %q: got %q, %v; want %q", tc.value, got, err, tc.want)
+			}
+		})
+	}
 }

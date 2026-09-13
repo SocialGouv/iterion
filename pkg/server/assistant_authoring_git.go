@@ -40,7 +40,7 @@ func (g authoringGitIndex) run(ctx context.Context, input string, args ...string
 func (g authoringGitIndex) config(ctx context.Context, key string, boolean bool) (string, error) {
 	args := []string{"config", "--get", key}
 	if boolean {
-		args = []string{"config", "--bool", "--get", key}
+		args = []string{"config", "--get", "--bool", key}
 	}
 	out, err := g.run(ctx, "", args...)
 	var exit *exec.ExitError
