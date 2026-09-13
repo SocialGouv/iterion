@@ -72,6 +72,9 @@ though read-only mode restricts it to GET.
 
 | Tool | Access | What it does |
 |------|--------|--------------|
+| `local_contract_spec` | read | Registry-backed public contract and graph syntax by default; one technical kind on request. |
+| `local_contract_read` | read | Public workflow validation and source SHA-256 for a standalone `.bot`; complete technical source only with `include_source:true`. |
+| `local_contract_write` | write | Validate and save a standalone native `.bot` inside the MCP working directory using an expected SHA-256, or `absent` for creation. |
 | `local_validate` | read | Parse/compile/validate a `.bot` or `.botz` (diagnostics JSON; `valid:false` is a normal answer). |
 | `local_bots_list` | read | Discover bots under `bots/`, `examples/` (or given paths). |
 | `local_runs_list` | read | List runs in the store (status/workflow filters, newest first). |
@@ -139,6 +142,16 @@ to log in.
 ## How-to / cookbook
 
 Things to just ask your agent once the server is registered:
+
+**Edit a native public-contract workflow.** Read `local_contract_spec`, then
+`local_contract_read` for the public view and current SHA-256. Request
+`include_source:true` only when the implementation needs editing. Submit the
+complete source and that digest to `local_contract_write`; use `absent` to
+create a new file. The tool validates the staged source before publishing and
+refuses a stale digest. It is scoped to standalone `.bot` files under the
+server's working directory; bundle manifests and multi-file updates need a
+separate workflow. Its hash check coordinates edits through one MCP server;
+independent filesystem writers are not locked by it.
 
 **Launch and babysit a local bot.**
 > "Validate `bots/docs-refresh/main.bot`, launch it with

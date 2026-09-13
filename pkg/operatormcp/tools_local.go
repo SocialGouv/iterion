@@ -19,6 +19,21 @@ import (
 func localTools() []Tool {
 	return []Tool{
 		{
+			Name:        "local_contract_read",
+			Description: "Read a standalone .bot workflow's public validation view and SHA-256 for safe editing. Technical source is hidden by default; pass include_source:true only when editing the implementation. Legacy workflows return an incomplete conversion draft.",
+			ReadOnly:    true,
+			InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "file_path": {"type": "string", "description": "Standalone .bot path inside the MCP server's working directory."},
+    "include_source": {"type": "boolean", "description": "Include complete technical .bot source only when requested."}
+  },
+  "required": ["file_path"],
+  "additionalProperties": false
+}`),
+			handler: handleLocalContractRead,
+		},
+		{
 			Name:        "local_contract_spec",
 			Description: "Read the registry-backed ports-v1 authoring contract. With no arguments, returns only public contract and graph syntax plus executable criteria; pass kind (for example tool, workflow or port_policy) to inspect one technical DSL kind on demand. Read this before authoring a native workflow, then use local_validate for source-located diagnostics.",
 			ReadOnly:    true,
@@ -30,6 +45,21 @@ func localTools() []Tool {
   "additionalProperties": false
 }`),
 			handler: handleLocalContractSpec,
+		},
+		{
+			Name:        "local_contract_write",
+			Description: "Validate and write a standalone ports-v1 .bot source in the local workspace. Read local_contract_spec first. Supply expected_sha256 from the current file, or 'absent' to create a new file. Invalid source and stale edits leave the file unchanged; the result contains the public workflow view.",
+			InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "file_path": {"type": "string", "description": "Standalone .bot path inside the MCP server's working directory."},
+    "source": {"type": "string", "description": "Complete ports-v1 .bot source to validate and write."},
+    "expected_sha256": {"type": "string", "description": "Current file SHA-256, or 'absent' to create without replacing a file."}
+  },
+  "required": ["file_path", "source", "expected_sha256"],
+  "additionalProperties": false
+}`),
+			handler: handleLocalContractWrite,
 		},
 		{
 			Name:        "local_validate",

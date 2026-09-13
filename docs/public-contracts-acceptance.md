@@ -28,7 +28,7 @@ Syntax profiles and runtime semantics are independent.
 | Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and admitted-run continuation pass; distributed rollback outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
-| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local validation draft and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect summarizes native invocation/map/product status and reported usage. Direct Copi editing, full runtime cost visibility and composition outstanding |
+| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local read/write and validation, and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds and complete source on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect summarizes native invocation/map/product status and reported usage. A real Copi authoring session, bundles, full runtime cost visibility and composition remain outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
@@ -134,8 +134,16 @@ Syntax profiles and runtime semantics are independent.
   shared DSL registry. Copi can request one technical kind by name without
   loading all technical configuration. `TestLocalContractSpecLayersRegistryForAuthoring`
   checks that the default view omits technical workflow fields and that an
-  explicit technical lookup works. This is authoring information, not a
-  verified direct Copi source-edit workflow.
+  explicit technical lookup works. `local_contract_read` returns the public
+  view plus SHA-256 by default and complete source only on request;
+  `local_contract_write` validates a staged standalone native `.bot` before
+  publishing it under that digest. The focused tests cover creation,
+  modification, stale writes, escaping paths, hidden technical source and
+  read-only mode. The full `pkg/operatormcp` suite and `go vet` pass. A real
+  `iterion mcp` stdio subprocess also passed the public-spec → write → public
+  read → explicit technical read → ordinary validate round trip. This
+  exercises the MCP authoring seam, not an actual Copi-driven editing session
+  or a transactional bundle conversion.
 - Legacy validation exposes only a provisional `conversion_draft`, with
   candidate variables and node kinds plus unresolved output, binding, effect
   and file questions. API, CLI and `local_validate` share this shape; it never

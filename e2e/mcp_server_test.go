@@ -96,6 +96,76 @@ func toolText(t *testing.T, resp map[string]any) string {
 	return content[0].(map[string]any)["text"].(string)
 }
 
+// TestMCPServer_NativeContractAuthoringRoundTrip crosses the real stdio
+// transport: Copi-style clients can inspect the public schema, write a native
+// draft with an explicit create precondition, read its public view and digest,
+// and request technical source only when editing it.
+func TestMCPServer_NativeContractAuthoringRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping binary-spawning e2e in short mode")
+	}
+	binPath := filepath.Join(t.TempDir(), "iterion")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/iterion")
+	build.Dir = ".."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build iterion: %v\n%s", err, out)
+	}
+	workDir := t.TempDir()
+	p := startMCPProc(t, binPath, workDir, filepath.Join(workDir, ".iterion"))
+	defer p.stop()
+	_ = p.call("initialize", nil)
+	spec := toolText(t, p.call("tools/call", map[string]any{"name": "local_contract_spec", "arguments": map[string]any{}}))
+	if !strings.Contains(spec, `"runtime_semantics":"ports-v1"`) || strings.Contains(spec, `"name":"port_policy"`) {
+		t.Fatalf("public authoring schema missing or technical policy exposed: %s", spec)
+	}
+	const source = `dsl: 2
+contract Result:
+  display_name: "Result"
+  responsibility: "Deliver the result"
+  outputs:
+    value: string
+compute internal:
+  expr:
+    value: "\"private expression\""
+workflow main:
+  runtime_semantics: "ports-v1"
+  contract: Result
+  graph:
+    nodes:
+      deliver:
+        implementation: internal
+        contract: Result
+    exports:
+      value: deliver.value
+    products: ["value"]
+`
+	written := toolText(t, p.call("tools/call", map[string]any{"name": "local_contract_write", "arguments": map[string]any{
+		"file_path": "draft.bot", "source": source, "expected_sha256": "absent",
+	}}))
+	var created struct {
+		Written bool   `json:"written"`
+		SHA256  string `json:"sha256"`
+	}
+	if err := json.Unmarshal([]byte(written), &created); err != nil || !created.Written || len(created.SHA256) != 64 {
+		t.Fatalf("native draft was not written: %v %s", err, written)
+	}
+	public := toolText(t, p.call("tools/call", map[string]any{"name": "local_contract_read", "arguments": map[string]any{"file_path": "draft.bot"}}))
+	if !strings.Contains(public, created.SHA256) || strings.Contains(public, "private expression") || !strings.Contains(public, "graph_identity") {
+		t.Fatalf("public read lost digest, graph or secrecy: %s", public)
+	}
+	technical := toolText(t, p.call("tools/call", map[string]any{"name": "local_contract_read", "arguments": map[string]any{"file_path": "draft.bot", "include_source": true}}))
+	if !strings.Contains(technical, "private expression") {
+		t.Fatalf("explicit technical source was missing: %s", technical)
+	}
+	validated := toolText(t, p.call("tools/call", map[string]any{"name": "local_validate", "arguments": map[string]any{"file_path": "draft.bot"}}))
+	var verdict struct {
+		Valid bool `json:"valid"`
+	}
+	if err := json.Unmarshal([]byte(validated), &verdict); err != nil || !verdict.Valid {
+		t.Fatalf("written source failed normal validation: %s", validated)
+	}
+}
+
 // TestMCPServer_DetachedRunSurvivesServerExit exercises the operator
 // MCP end to end with the real binary: launch a tool-only workflow via
 // local_run, kill the MCP server immediately (the detached runner must
