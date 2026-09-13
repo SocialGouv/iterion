@@ -67,7 +67,7 @@ func (x *groupExpansion) clone(v reflect.Value, owner, field string) reflect.Val
 		return out
 	case reflect.String:
 		s := v.String()
-		if (owner == "ComputeExpr" || owner == "WhenClause") && field == "Expr" || owner == "FallbackDecl" && field == "When" {
+		if (owner == "ComputeExpr" || owner == "WhenClause") && field == "Expr" || owner == "FallbackDecl" && field == "When" || owner == "LoopClause" && field == "MaxIterationsExpr" {
 			s = x.expression(s)
 		} else {
 			s = x.templates(s)
@@ -127,7 +127,8 @@ func (x *groupExpansion) templates(s string) string {
 
 // expression scans authored path tokens without needing to parse unexpanded
 // parameter syntax (a parameter may supply an operator or a function name).
-// Quoted strings and parameter markers are opaque. "outputs" is a reserved
+// Quoted strings and parameter markers are opaque. Whole-reference templates
+// (the legacy loop-cap form) are rewritten too. "outputs" is a reserved
 // namespace: the expression parser rejects it as a lambda parameter.
 func (x *groupExpansion) expression(s string) string {
 	var out strings.Builder
@@ -138,7 +139,13 @@ func (x *groupExpansion) expression(s string) string {
 			if end < 0 {
 				break
 			}
-			i += end + 4
+			end += i + 4
+			if marker := x.templates(s[i:end]); marker != s[i:end] {
+				out.WriteString(s[copied:i])
+				out.WriteString(marker)
+				copied = end
+			}
+			i = end
 			continue
 		}
 		if s[i] == '\'' || s[i] == '"' {

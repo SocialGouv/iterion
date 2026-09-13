@@ -33,6 +33,25 @@ func TestGroupReferenceRewritingPreservesCallerText(t *testing.T) {
 	}
 }
 
+// The loop-cap string supports the existing template form and the expression
+// form added by #1145. Both must bind local members before caller parameters
+// are inserted; strings inside an expression remain literal.
+func TestGroupLoopCapReferenceRewriting(t *testing.T) {
+	x := &groupExpansion{internal: map[string]bool{"gate": true}, prefix: "r1", binds: map[string]string{"cap": "outputs.gate.n"}}
+	for _, tc := range []struct{ src, want string }{
+		{`{{outputs.gate.n}}`, `{{outputs.r1.gate.n}}`},
+		{`outputs.gate.n - 1`, `outputs.r1.gate.n - 1`},
+		{`{{params.cap}} + outputs.gate.n`, `outputs.gate.n + outputs.r1.gate.n`},
+		{`if('outputs.gate' == '{{outputs.gate.n}}', outputs.gate.n, 1)`, `if('outputs.gate' == '{{outputs.gate.n}}', outputs.r1.gate.n, 1)`},
+	} {
+		original := &ast.LoopClause{MaxIterationsExpr: tc.src}
+		cloned := x.clone(reflect.ValueOf(original), "", "").Interface().(*ast.LoopClause)
+		if cloned.MaxIterationsExpr != tc.want || original.MaxIterationsExpr != tc.src {
+			t.Errorf("cap %q became %q, want %q; source=%q", tc.src, cloned.MaxIterationsExpr, tc.want, original.MaxIterationsExpr)
+		}
+	}
+}
+
 func TestGroupExpansionOwnsNestedFieldsAndEveryEdgeClause(t *testing.T) {
 	span := ast.Span{Start: ast.Pos{File: "{{params.label}}.bot", Line: 3, Column: 2}}
 	g := &ast.GroupDecl{Name: "g", Params: []string{"label"}, Agents: []*ast.AgentDecl{{Name: "a", LLMDecl: ast.LLMDecl{
