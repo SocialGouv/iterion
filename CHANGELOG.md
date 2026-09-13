@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.4](https://github.com/SocialGouv/iterion/compare/v3.142.3...v3.142.4) (2026-09-13)
+
+### Bug Fixes
+
+* **runtime:** release pristine worktrees after early refusals ([#1181](https://github.com/SocialGouv/iterion/issues/1181)) ([f176718](https://github.com/SocialGouv/iterion/commit/f1767186eee9f549a7972ca9d6d65ae427684ac2))
+
 ## [3.142.3](https://github.com/SocialGouv/iterion/compare/v3.142.2...v3.142.3) (2026-09-13)
 
 ### Bug Fixes
