@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "./iterLanguage";
 import { tokenizeLines, typeAt } from "./monarchTokenize";
+import { iterDslKeywords, iterDslPropertiesByKind } from "./iterDsl.generated";
 
 // Every assertion below runs monaco's REAL Monarch engine on the shipped
 // definition (see monarchTokenize.ts), so it certifies what the editor
@@ -9,6 +10,50 @@ import { tokenizeLines, typeAt } from "./monarchTokenize";
 const paint = (lines: string[]) => tokenizeLines(ITER_LANGUAGE_ID, iterTokensProvider, lines);
 
 describe("iter tokenizer", () => {
+  it("recognises every lexer keyword from the generated vocabulary", () => {
+    for (const word of iterDslKeywords) {
+      const [line] = paint([word]);
+      expect(typeAt(line, 0), word).toMatch(/keyword|constant|type/);
+    }
+  });
+
+  it("recognises the registered properties of every kind", () => {
+    for (const [kind, properties] of Object.entries(iterDslPropertiesByKind)) {
+      for (const property of properties) {
+        const [line] = paint([`  ${property}: value`]);
+        expect(typeAt(line, 2), `${kind}.${property}`).toContain("keyword");
+      }
+    }
+  });
+
+  it("paints list markers and every arrow in a chain without treating text dashes as syntax", () => {
+    const lines = paint([
+      "agent a:",
+      "  tools:",
+      "    - bash",
+      '    - "read_file"',
+      "  a -> b -> c",
+      "prompt p:",
+      "  - prose inside a prompt",
+    ]);
+    expect(typeAt(lines[2], 4)).toContain("operator");
+    expect(typeAt(lines[3], 4)).toContain("operator");
+    expect(typeAt(lines[3], 7)).toContain("string");
+    expect(typeAt(lines[4], 4)).toContain("operator");
+    expect(typeAt(lines[4], 9)).toContain("operator");
+    expect(typeAt(lines[6], 2)).toContain("string");
+  });
+
+  it("preserves value and type colours while recognising properties with the same spelling", () => {
+    const lines = paint(["human gate:", "  inherit: true", "  session: fresh", "  answer: string", "  gate -> done"]);
+    expect(typeAt(lines[0], 0)).toContain("keyword");
+    expect(typeAt(lines[1], 2)).toContain("keyword");
+    expect(typeAt(lines[1], 11)).toContain("constant");
+    expect(typeAt(lines[2], 11)).toContain("constant");
+    expect(typeAt(lines[3], 10)).toContain("type");
+    expect(typeAt(lines[4], 10)).toContain("type.builtin");
+  });
+
   it("paints a hash comment, a single hash included", () => {
     const [top, inline] = paint(["# top comment", 'agent a: # trailing']);
     expect(typeAt(top, 0)).toContain("comment");
@@ -79,7 +124,7 @@ describe("iter tokenizer", () => {
       '  model: "m"',
     ]);
     expect(typeAt(lines[4], 8)).toContain("string");
-    expect(typeAt(lines[5], 4)).toContain("identifier"); // `policy` — the scalar ended
+    expect(typeAt(lines[5], 4)).toContain("keyword"); // registered `policy` — the scalar ended
     expect(typeAt(lines[6], 2)).toContain("keyword"); // `model`
   });
 

@@ -89,11 +89,12 @@ func Render(what string) (string, error) {
 	return "", fmt.Errorf("dsl-spec region: unknown region %q", what)
 }
 
-// Regenerate rewrites every generated region of the documents under root and
-// returns the files it changed. Every document is read and spliced before
+// Regenerate rewrites the document regions and the Monaco module under root,
+// using lexicalKeywords from parser.Keywords(), and returns the changed files.
+// Every document is read and spliced before
 // any is written, so a document that cannot be regenerated leaves the tree
 // as it was rather than half rewritten.
-func Regenerate(root string) ([]string, error) {
+func Regenerate(root string, lexicalKeywords []string) ([]string, error) {
 	type pending struct {
 		rel, path, body string
 	}
@@ -112,8 +113,19 @@ func Regenerate(root string) ([]string, error) {
 			todo = append(todo, pending{rel, path, fresh})
 		}
 	}
+	monacoPath := filepath.Join(root, MonacoFile)
+	monacoRaw, err := os.ReadFile(monacoPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if fresh := Monaco(lexicalKeywords); fresh != string(monacoRaw) {
+		todo = append(todo, pending{MonacoFile, monacoPath, fresh})
+	}
 	var changed []string
 	for _, p := range todo {
+		if err := os.MkdirAll(filepath.Dir(p.path), 0o755); err != nil {
+			return changed, err
+		}
 		if err := os.WriteFile(p.path, []byte(p.body), 0o644); err != nil {
 			return changed, err
 		}
@@ -122,9 +134,9 @@ func Regenerate(root string) ([]string, error) {
 	return changed, nil
 }
 
-// Stale returns the files under root whose generated regions differ from
-// what the registry renders.
-func Stale(root string) ([]string, error) {
+// Stale returns documents or the Monaco module that differ from the registry
+// and lexicalKeywords (parser.Keywords()). A missing module is stale too.
+func Stale(root string, lexicalKeywords []string) ([]string, error) {
 	var stale []string
 	for _, rel := range Files {
 		raw, err := os.ReadFile(filepath.Join(root, rel))
@@ -138,6 +150,13 @@ func Stale(root string) ([]string, error) {
 		if fresh != string(raw) {
 			stale = append(stale, rel)
 		}
+	}
+	monacoRaw, err := os.ReadFile(filepath.Join(root, MonacoFile))
+	if err != nil && !os.IsNotExist(err) {
+		return stale, err
+	}
+	if string(monacoRaw) != Monaco(lexicalKeywords) {
+		stale = append(stale, MonacoFile)
 	}
 	return stale, nil
 }
