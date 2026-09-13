@@ -535,7 +535,7 @@ func TestAuthoringCreateCommitRechecksTheLiveManifest(t *testing.T) {
 	if err := os.WriteFile(manifestPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.commitAuthoring(req, target, previews, resolved); err == nil || !strings.Contains(err.Error(), "left the live authoring perimeter") {
+	if _, _, err := s.commitAuthoring(req, target, previews, resolved); err == nil || !strings.Contains(err.Error(), "left the live authoring perimeter") {
 		t.Fatalf("commit after declaration removal = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.WorkDir, "scripts", "new.json")); !errors.Is(err, os.ErrNotExist) {
@@ -550,20 +550,31 @@ func TestAuthoringRollbackRestoresReplacementsAndRemovesOnlyUnchangedCreates(t *
 	before := "def answer():\n    return 41\n"
 	after := "def answer():\n    return 42\n"
 	created := "{}\n"
-	if err := os.WriteFile(replacedPath, []byte(after), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(createdPath, []byte(created), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	previews := []authoringPreviewFile{
 		{Scope: "workspace", Path: "scripts/helper.py", Operation: "replace", Before: before, After: after},
 		{Scope: "workspace", Path: "scripts/created.json", Operation: "create", Before: "", After: created},
 	}
-	resolved := []resolvedAuthoringFile{{abs: replacedPath}, {abs: createdPath}}
-	if errs := s.rollbackAuthoring(previews, resolved, []int{0, 1}); len(errs) != 0 {
+	locks, err := acquireAuthoringLocalLocks(t.Context(), []string{replacedPath, createdPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeAuthoringLocalLocks(locks)
+	var transactions []*authoringLocalTransaction
+	for i, preview := range previews {
+		tx, err := prepareAuthoringLocal(locks[i], preview, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.close()
+		if err := tx.publish(); err != nil {
+			t.Fatal(err)
+		}
+		transactions = append(transactions, tx)
+	}
+	if errs := s.rollbackAuthoring(transactions); len(errs) != 0 {
 		t.Fatalf("rollback errors = %v", errs)
 	}
+
 	body, err := os.ReadFile(replacedPath)
 	if err != nil || string(body) != before {
 		t.Fatalf("replacement rollback = %q, err=%v", body, err)
@@ -572,10 +583,19 @@ func TestAuthoringRollbackRestoresReplacementsAndRemovesOnlyUnchangedCreates(t *
 		t.Fatalf("created file survived rollback: %v", err)
 	}
 
+	tx, err := prepareAuthoringLocal(locks[1], previews[1], nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.close()
+	if err := tx.publish(); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := os.WriteFile(createdPath, []byte("changed elsewhere\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	errs := s.rollbackAuthoring(previews[1:], resolved[1:], []int{0})
+	errs := s.rollbackAuthoring([]*authoringLocalTransaction{tx})
 	if len(errs) != 1 || !strings.Contains(errs[0], "rollback refused") {
 		t.Fatalf("changed create rollback errors = %v", errs)
 	}

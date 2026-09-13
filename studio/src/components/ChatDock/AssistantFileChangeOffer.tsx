@@ -15,6 +15,7 @@ import {
   type AssistantAuthoringSnapshot,
   type AssistantAuthoringPreviewFile,
   type AssistantAuthoringValidation,
+  type AssistantAuthoringRecovery,
 } from "@/api/assistantAuthoring";
 import * as api from "@/api/client";
 import * as runsApi from "@/api/runs";
@@ -170,6 +171,7 @@ function authoringSaveReceipt(
   files: readonly AssistantAuthoringPreviewFile[],
   validation?: AssistantAuthoringValidation,
   authoring?: AssistantAuthoringSnapshot,
+  recovery?: readonly AssistantAuthoringRecovery[],
 ) {
   const args = {
     editor_session_id: sessionId,
@@ -184,6 +186,7 @@ function authoringSaveReceipt(
     })),
     ...(validation ? { validation } : {}),
     ...(authoring ? { authoring } : {}),
+    ...(recovery?.length ? { recovery } : {}),
   };
   return {
     action: "editor.files.save",
@@ -209,6 +212,7 @@ export default function AssistantFileChangeOffer({
   const [failureCapReached, setFailureCapReached] = useState(false);
   const [reloadWarning, setReloadWarning] = useState<string | null>(null);
   const [preview, setPreview] = useState<AssistantAuthoringPreviewFile[]>([]);
+  const [recovery, setRecovery] = useState<AssistantAuthoringRecovery[]>([]);
   const [selected, setSelected] = useState<AssistantAuthoringPreviewFile | null>(null);
   const autoStarted = useRef<string | null>(null);
 
@@ -347,6 +351,7 @@ export default function AssistantFileChangeOffer({
       const result = await commitAssistantAuthoring(snapshot, proposal.changes);
       clearAuthoringFailureState(runId, proposal.sessionId, snapshot.editor_path);
       setPreview(result.files);
+      setRecovery(result.recovery ?? []);
       setState("saved");
       if (activeTarget) {
         if (await reloadActiveFile()) {
@@ -384,6 +389,7 @@ export default function AssistantFileChangeOffer({
               result.files,
               result.validation,
               freshAuthoring,
+              result.recovery,
             ),
           )
           .catch(() => undefined);
@@ -440,6 +446,19 @@ export default function AssistantFileChangeOffer({
           </p>
           <p className="mt-0.5 text-caption text-fg-muted">{detail}</p>
           {error && <p className="mt-1 text-caption text-danger-fg">{error}</p>}
+          {state === "saved" && recovery.some((entry) => entry.files.length > 0) && (
+            <details className="mt-2 text-caption text-fg-muted">
+              <summary className="cursor-pointer">Previous files retained for recovery</summary>
+              <p>These files preserve late edits from other editors and are not deleted automatically.</p>
+              {recovery.map((entry) => (
+                <div key={entry.record} className="mt-1 break-all">
+                  <p>{entry.path}</p>
+                  {entry.files.map((file) => <p key={file}><code>{file}</code></p>)}
+                  <p>Recovery record: <code>{entry.record}</code></p>
+                </div>
+              ))}
+            </details>
+          )}
           {preview.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {preview.map((file) => (

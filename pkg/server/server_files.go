@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -46,82 +46,6 @@ type saveFileResponse struct {
 	Path              string `json:"path"`
 	Source            string `json:"source"`
 	ConfirmedDiskPath string `json:"confirmed_disk_path,omitempty"`
-}
-
-type exclusiveWorkflowFile interface {
-	Write([]byte) (int, error)
-	Stat() (os.FileInfo, error)
-	Close() error
-}
-
-type exclusiveWorkflowOpen func(string, int, fs.FileMode) (exclusiveWorkflowFile, error)
-
-func openExclusiveWorkflowFile(path string, flag int, mode fs.FileMode) (exclusiveWorkflowFile, error) {
-	return os.OpenFile(path, flag, mode)
-}
-
-// writeWorkflowFileCreateOnly is the Save As write path. O_EXCL makes the
-// collision decision atomic; the cleanup guard compares file identity before
-// removing a partial write so it can never delete a replacement placed at the
-// same pathname after the exclusive open.
-func writeWorkflowFileCreateOnly(path string, data []byte) error {
-	return writeWorkflowFileCreateOnlyWith(path, data, openExclusiveWorkflowFile, os.Lstat, os.Remove)
-}
-
-func writeWorkflowFileCreateOnlyWith(
-	path string,
-	data []byte,
-	openFile exclusiveWorkflowOpen,
-	lstat func(string) (os.FileInfo, error),
-	remove func(string) error,
-) error {
-	f, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return err
-	}
-	created, statErr := f.Stat()
-	if statErr != nil {
-		closeErr := f.Close()
-		return errors.Join(
-			fmt.Errorf("stat newly created workflow: %w", statErr),
-			closeErr,
-			fmt.Errorf("partial file may remain at %s because ownership could not be verified", path),
-		)
-	}
-
-	written, writeErr := f.Write(data)
-	if writeErr == nil && written != len(data) {
-		writeErr = io.ErrShortWrite
-	}
-	closeErr := f.Close()
-	if writeErr == nil && closeErr == nil {
-		return nil
-	}
-
-	cleanupErr := cleanupCreatedWorkflowFile(path, created, lstat, remove)
-	return errors.Join(writeErr, closeErr, cleanupErr)
-}
-
-func cleanupCreatedWorkflowFile(
-	path string,
-	created os.FileInfo,
-	lstat func(string) (os.FileInfo, error),
-	remove func(string) error,
-) error {
-	current, err := lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("partial file may remain at %s: verify ownership: %w", path, err)
-	}
-	if !os.SameFile(created, current) {
-		return fmt.Errorf("partial file was not removed because ownership changed at %s", path)
-	}
-	if err := remove(path); err != nil {
-		return fmt.Errorf("remove partial file %s: %w", path, err)
-	}
-	return nil
 }
 
 // --- Helpers ---
@@ -719,13 +643,30 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
 		return
 	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
+		return
+	}
+	locks, err := acquireAuthoringLocalLocks(r.Context(), []string{absPath})
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	defer closeAuthoringLocalLocks(locks)
+	// Revalidate the route's authorized path after a possibly blocked lock.
+	freshPath, err := s.safePath(req.Path)
+	if err != nil || freshPath != absPath {
+		httpError(w, http.StatusConflict, "file path changed while waiting to save")
+		return
+	}
+
 	// A document may not lower the profile of the file it replaces. The
 	// canvas carries the profile it was opened with, so a lower one comes
 	// from a client that dropped the header — an older studio build — and
 	// the file would be rewritten in profile 1, its strings read otherwise
 	// at the next parse, with Verify none the wiser (it holds the text to
 	// the document, never to the file).
-	if current, err := os.ReadFile(absPath); err == nil {
+	if current, _, err := locks[0].parent.read(filepath.Base(absPath), math.MaxInt64-1); err == nil {
 		if on := parser.ReadPreamble(parser.NormalizeSource(string(current))).Profile; on > f.EffectiveProfile() {
 			httpError(w, http.StatusUnprocessableEntity, "%s is written in dsl profile %d and the document would save it in profile %d: reopen the file in the studio (the document carries no profile — an older client dropped it)", req.Path, on, f.EffectiveProfile())
 			return
@@ -739,19 +680,13 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be saved as .bot source without changing it: %v", err)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
-		return
-	}
+	var ignore func(string)
+	s.stateMu.RLock()
 	if s.watcher != nil {
-		s.watcher.IgnorePath(absPath)
+		ignore = s.watcher.IgnorePath
 	}
-	var writeErr error
-	if req.CreateOnly {
-		writeErr = writeWorkflowFileCreateOnly(absPath, []byte(source))
-	} else {
-		writeErr = os.WriteFile(absPath, []byte(source), 0o644)
-	}
+	s.stateMu.RUnlock()
+	writeErr := locks[0].writeEditorFile([]byte(source), req.CreateOnly, ignore)
 	if req.CreateOnly && errors.Is(writeErr, fs.ErrExist) {
 		httpError(w, http.StatusConflict, "file already exists")
 		return

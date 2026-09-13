@@ -115,6 +115,7 @@ func TestAssistantWatchCloudTenantIsolation(t *testing.T) {
 	for _, path := range []string{"sweep", "event"} {
 		t.Run(path, func(t *testing.T) {
 			f := newArmFixture(t, true)
+			f.coord.wake = make(chan struct{}, 1)
 			var targets []*store.Run
 			for _, tenant := range []string{"A", "B"} {
 				a := f.assistant(t, "assistant-"+tenant, "shared-card-id")
@@ -154,6 +155,11 @@ func TestAssistantWatchCloudTenantIsolation(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if len(f.coord.wake) != 1 || strict.privilegedLists != 0 || strict.privilegedLoads != 0 {
+					t.Fatal("event callback performed I/O instead of coalescing a wake")
+				}
+				<-f.coord.wake
+				f.coord.sweep(t.Context())
 			}
 			watches, err := f.ws.ListActive(t.Context(), 10)
 			if err != nil || len(watches) != 2 {
@@ -169,11 +175,8 @@ func TestAssistantWatchCloudTenantIsolation(t *testing.T) {
 					t.Fatalf("deliveries: %v", deliveries)
 				}
 			}
-			if path == "sweep" && (strict.privilegedLists != 1 || strict.privilegedLoads != 5) {
+			if strict.privilegedLists != 1 || strict.privilegedLoads != 5 {
 				t.Fatalf("discovery calls: %d lists, %d loads", strict.privilegedLists, strict.privilegedLoads)
-			}
-			if path == "event" && (strict.privilegedLists != 0 || strict.privilegedLoads != 0) {
-				t.Fatal("event processing used global discovery")
 			}
 		})
 	}
@@ -264,6 +267,7 @@ func TestAssistantWatchInFlightProjectSnapshot(t *testing.T) {
 	if err := f.coord.handleEvent(t.Context(), ev); err != nil {
 		t.Fatalf("late old-project event: %v", err)
 	}
+	f.coord.sweep(t.Context())
 	if got, _ := current.store.ListActive(t.Context(), 10); len(got) != 0 {
 		t.Fatal("late event changed the new project")
 	}
@@ -289,8 +293,9 @@ func (s *blockedWatchCreate) CreateWatch(ctx context.Context, w runwatch.Watch) 
 	return nil
 }
 
-func TestAssistantWatchHTTPContinuationKeepsProject(t *testing.T) {
+func TestAssistantWatchHTTPWakeReconcilesSelectedProject(t *testing.T) {
 	f := newArmFixture(t, true)
+	oldRuntime := f.coord.snapshot()
 	a := f.assistant(t, "http-assistant", "card")
 	target := f.target(t, "http-target", "card", a.CreatedAt.Add(time.Minute))
 	blocked := &blockedWatchCreate{Store: f.ws, entered: make(chan struct{}), release: make(chan struct{})}
@@ -329,22 +334,21 @@ func TestAssistantWatchHTTPContinuationKeepsProject(t *testing.T) {
 	if err != nil || len(watches) != 1 {
 		t.Fatalf("old watches: %+v %v", watches, err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		episodes, err := f.ws.ListEpisodesByWatch(t.Context(), watches[0].ID, "", 10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(episodes) == 1 && episodes[0].State == runwatch.EpisodeDone {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("HTTP continuation did not deliver in the old project: %+v", episodes)
-		}
-		time.Sleep(5 * time.Millisecond)
+	f.coord.sweep(t.Context())
+	episodes, err := f.ws.ListEpisodesByWatch(t.Context(), watches[0].ID, "", 10)
+	if err != nil || len(episodes) != 0 {
+		t.Fatalf("old project must remain pending until selected: %+v %v", episodes, err)
 	}
+
 	if got, _ := f.srv.assistantWatches.ListActive(t.Context(), 10); len(got) != 0 {
 		t.Fatal("HTTP continuation wrote into the new project")
+	}
+	// Re-selecting the old coherent runtime resumes its durable work.
+	f.coord.setRuntime(oldRuntime.runs, oldRuntime.store, oldRuntime.botPaths)
+	f.coord.sweep(t.Context())
+	episodes, err = f.ws.ListEpisodesByWatch(t.Context(), watches[0].ID, "", 10)
+	if err != nil || len(episodes) != 1 || episodes[0].State != runwatch.EpisodeDone {
+		t.Fatalf("reselected project did not deliver: %+v %v", episodes, err)
 	}
 }
 

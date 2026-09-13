@@ -105,6 +105,7 @@ type Server struct {
 	assistantWatches       runwatch.Store    // durable target-run watches; deliberately separate from issue watches
 	assistantWatch         *assistantWatchCoordinator
 	assistantWatchCancel   func()
+	assistantWatchDone     <-chan struct{}
 	assistantMissions      assistantmission.Store
 	assistantMission       *assistantMissionCoordinator
 	assistantMissionCancel func()

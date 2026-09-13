@@ -118,6 +118,27 @@ describe("AssistantFileChangeOffer", () => {
     ));
   });
 
+  it("shows retained files and carries recovery locations in the save receipt", async () => {
+    const retainedFile = "/workspace/scripts/.iterion/authoring/operation.before";
+    const record = "/workspace/scripts/.iterion/authoring/operation.record";
+    const recovery = [{
+      scope: "workspace",
+      path: "scripts/helper.py",
+      record,
+      files: [retainedFile],
+    }];
+    authoring.commitAssistantAuthoring.mockResolvedValueOnce({ files: savedFiles, saved: true, recovery });
+    await saveChanges("assistant-recovery");
+    expect(await screen.findByText("Previous files retained for recovery")).toBeTruthy();
+    expect(screen.getByText(retainedFile)).toBeTruthy();
+    expect(screen.getByText(record)).toBeTruthy();
+    await waitFor(() => expect(runs.deliverHostEvent).toHaveBeenCalledWith(
+      "assistant-recovery",
+      "action-completed",
+      expect.objectContaining({ args: expect.objectContaining({ recovery }) }),
+    ));
+  });
+
   it("wakes Copi with a bounded repair perimeter when preview fails", async () => {
     authoring.previewAssistantAuthoring.mockRejectedValueOnce(new Error(
       "changes[1].replacements[0]: before text matched 2 times, want exactly once\nsource-secret",

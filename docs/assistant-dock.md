@@ -269,9 +269,14 @@ is server-owned and survives a browser tab closing or a control-plane restart.
 It is not the native-ticket watch mechanism: a run watch persists a target →
 assistant relation plus one deduplicated episode per actionable outcome.
 
-The fast path consumes the watch's selected outcomes from the shared event bus.
-A periodic cycle-safe tree sweep re-reads active watches, descendants and
-persisted run status, because the bus is lossy by design. Successful child
+The shared event bus and successful watch requests wake one coordinator worker;
+bursts coalesce into one pending sweep. The same cycle-safe tree sweep runs at
+startup and periodically, re-reading active watches, descendants and persisted
+run status because the bus is lossy by design. Shutdown cancels that worker and
+bounds its final join after HTTP draining. On a local project switch, an active
+sweep keeps its original project; queued work belongs to the selected project,
+and the old project's persisted watches resume when that project is selected
+again. Successful child
 completion is internal progress and stays silent; only root Done resolves the
 watch. Episode delivery uses a lease/compare-and-swap, so two cloud replicas
 cannot buy two assistant turns for one failure. Repeated identical failures,
@@ -446,11 +451,31 @@ actions remain restricted to the manifest-declared subset.
 
 The single action **Save assistant authoring changes** defaults to *Always
 ask*. Its confirmation opens a real Monaco diff. A dirty or stale active buffer
-blocks the action. Local multi-file writes are pre-checked together, written
-atomically per file, and rolled back with content-aware guards if a later write
-fails; cloud bundles use their store version CAS. This is not advertised as a
-filesystem transaction. Python or other script tests are not run in V1 and the
-dock says so explicitly.
+blocks the action. Local multi-file writes are validated together under shared
+file locks, also used by Studio and run-worktree file saves. Replacement first
+moves the current file into recovery storage, verifies that displaced file, then
+publishes the candidate only if the destination remains absent. The pathname
+can briefly be absent between those moves. Rollback uses the same no-overwrite
+moves and restores the original inode; it never rewrites captured old text over
+a concurrent edit. Cloud bundles retain their store version CAS.
+
+Local recovery files and a stage journal live under
+`<physical destination parent>/.iterion/authoring/`. The save receipt and dock
+show their concrete locations; failure messages identify the recovery records.
+They are excluded from Git staging and bundle packaging. Displaced inodes are
+retained even after a successful save: another editor holding an old writable
+file descriptor can write there after the save returns. Such late edits remain
+recoverable, but cannot always be detected before reporting success. Recovery
+storage grows with saves; no automatic deletion, expiration, restoration or
+startup replay is performed. Inspect retained files before any manual cleanup.
+An operator-owned `.iterion` symlink can host locks on another disk for ordinary
+in-place saves, but authoring replacement requires recovery on the same
+filesystem and refuses before displacing a file otherwise. Native Linux,
+macOS and Windows moves refuse replacement; Windows sharing violations also
+fail without overwriting. Candidate and journal files are flushed; Windows has
+no directory-flush guarantee here. This is not a multi-file filesystem
+transaction or a power-loss replay protocol. Python or other script tests are
+not run in V1 and the dock says so explicitly.
 
 `scope: workspace` is for project-local bots and is unavailable to a cloud
 botsource unless a repository is connected. Cloud bundle content is not copied

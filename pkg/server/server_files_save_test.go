@@ -177,50 +177,28 @@ func TestSaveFileOrdinarySaveStillOverwrites(t *testing.T) {
 	}
 }
 
-type failingWorkflowFile struct {
-	*os.File
-	writeErr error
-	closeErr error
-}
-
-func (f *failingWorkflowFile) Write(data []byte) (int, error) {
-	if f.writeErr != nil {
-		return 0, f.writeErr
+// Save As prepares the whole file privately before its exclusive publication;
+// a preparation failure must not leave a partial .bot at the live path.
+func TestWriteWorkflowFileCreateOnlyKeepsPreparationPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial.bot")
+	locks, err := acquireAuthoringLocalLocks(t.Context(), []string{path})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return f.File.Write(data)
-}
-
-func (f *failingWorkflowFile) Close() error {
-	err := f.File.Close()
-	return errors.Join(err, f.closeErr)
-}
-
-func TestWriteWorkflowFileCreateOnlyRemovesOwnedPartialFile(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		writeErr error
-		closeErr error
-	}{
-		{name: "write failure", writeErr: errors.New("injected write failure")},
-		{name: "close failure", closeErr: errors.New("injected close failure")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "partial.bot")
-			opener := func(name string, flag int, mode fs.FileMode) (exclusiveWorkflowFile, error) {
-				f, err := os.OpenFile(name, flag, mode)
-				if err != nil {
-					return nil, err
-				}
-				return &failingWorkflowFile{File: f, writeErr: tc.writeErr, closeErr: tc.closeErr}, nil
-			}
-
-			err := writeWorkflowFileCreateOnlyWith(path, []byte("workflow partial:\n"), opener, os.Lstat, os.Remove)
-			if err == nil {
-				t.Fatal("expected injected failure")
-			}
-			if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
-				t.Fatalf("owned partial file remains: %v", statErr)
-			}
-		})
+	defer closeAuthoringLocalLocks(locks)
+	tx, err := prepareAuthoringLocal(locks[0], authoringPreviewFile{Operation: "create", After: "workflow partial:\n"}, nil, func(stage string) error {
+		if stage == "record:prepared" {
+			return errors.New("injected preparation failure")
+		}
+		return nil
+	})
+	if tx != nil {
+		defer tx.close()
+	}
+	if err == nil {
+		t.Fatal("expected injected failure")
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("partial workflow became visible: %v", statErr)
 	}
 }

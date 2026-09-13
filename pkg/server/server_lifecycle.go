@@ -845,9 +845,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.userNotifyCancel != nil {
 		s.userNotifyCancel()
 	}
-	if s.assistantWatchCancel != nil {
-		s.assistantWatchCancel()
-		s.assistantWatchCancel = nil
+	// Take the lifecycle handles once. Cancellation is immediate; never join
+	// while holding stateMu or before draining HTTP requests.
+	s.stateMu.Lock()
+	watchCancel, watchDone := s.assistantWatchCancel, s.assistantWatchDone
+	s.assistantWatchCancel, s.assistantWatchDone = nil, nil
+	s.stateMu.Unlock()
+	if watchCancel != nil {
+		watchCancel()
 	}
 	s.stopAssistantMissions()
 	if s.gateAutofixCancel != nil {
@@ -889,6 +894,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// only requirement is that the PROCESS not exit mid-release, and the
 	// dispatcher drains while HTTP connections wind down.
 	err := s.server.Shutdown(ctx)
+	if watchDone != nil && ctx.Err() == nil {
+		joinCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+		select {
+		case <-watchDone:
+		case <-joinCtx.Done():
+		}
+		cancel()
+	}
 	s.stateMu.RLock()
 	boardDone := s.boardDispDone
 	s.stateMu.RUnlock()

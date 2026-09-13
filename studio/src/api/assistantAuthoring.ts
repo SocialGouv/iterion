@@ -69,11 +69,19 @@ export interface AssistantAuthoringValidation {
   behavioral_tests: "not_run";
 }
 
+export interface AssistantAuthoringRecovery {
+  scope: "bundle" | "workspace";
+  path: string;
+  record: string;
+  files: string[];
+}
+
 export interface AssistantAuthoringResult {
   files: AssistantAuthoringPreviewFile[];
   version?: number;
   saved: boolean;
   validation?: AssistantAuthoringValidation;
+  recovery?: AssistantAuthoringRecovery[];
 }
 
 export interface AssistantAuthoringGitCommitResult {

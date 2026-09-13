@@ -95,6 +95,7 @@ type authoringChangeResponse struct {
 	Version    int                       `json:"version,omitempty"`
 	Saved      bool                      `json:"saved"`
 	Validation authoringValidationResult `json:"validation"`
+	Recovery   []authoringRecovery       `json:"recovery,omitempty"`
 }
 
 type authoringValidationCheck struct {
@@ -391,12 +392,12 @@ func (s *Server) handleAuthoringChange(w http.ResponseWriter, r *http.Request, c
 		writeJSON(w, authoringChangeResponse{Files: previews, Version: target.version, Saved: false, Validation: validation})
 		return
 	}
-	version, err := s.commitAuthoring(r, target, previews, resolved)
+	version, recovery, err := s.commitAuthoring(r, target, previews, resolved)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
 	}
-	writeJSON(w, authoringChangeResponse{Files: previews, Version: version, Saved: true, Validation: validation})
+	writeJSON(w, authoringChangeResponse{Files: previews, Version: version, Saved: true, Validation: validation, Recovery: recovery})
 }
 
 func validateAuthoringChangesShape(changes []authoringFileChange, limits authoringLimits) error {
@@ -986,24 +987,24 @@ func validateChangedAuthoringManifest(files map[string]string, previews []author
 	return nil
 }
 
-func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previews []authoringPreviewFile, _ []resolvedAuthoringFile) (int, error) {
+func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previews []authoringPreviewFile, resolved []resolvedAuthoringFile) (int, []authoringRecovery, error) {
 	if target.files != nil {
 		for _, preview := range previews {
 			if preview.Operation == "create" {
-				return 0, authoringForbiddenError{"file creation is unavailable for cloud bot sources"}
+				return 0, nil, authoringForbiddenError{"file creation is unavailable for cloud bot sources"}
 			}
 		}
 		bs, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), target.teamID), target.teamID, target.slug)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		if bs.Version != target.version {
-			return 0, authoringConflictError{"bot source changed before commit"}
+			return 0, nil, authoringConflictError{"bot source changed before commit"}
 		}
 		files := cloneAuthoringStringMap(bs.Files)
 		for _, p := range previews {
 			if p.Scope != bundle.AuthoringScopeBundle {
-				return 0, errors.New("cloud workspace files are not writable without a connected repository")
+				return 0, nil, errors.New("cloud workspace files are not writable without a connected repository")
 			}
 			files[p.Path] = p.After
 		}
@@ -1011,27 +1012,36 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		bs.Version = target.version
 		bs.UpdatedBy = target.userID
 		if err := bs.Validate(); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		out, err := s.botSources.Update(store.WithTenant(r.Context(), target.teamID), bs)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		s.auditBotSource(r, target.teamID, "updated", out)
-		return out.Version, nil
+		return out.Version, nil, nil
 	}
+	paths := make([]string, len(resolved))
+	for i, file := range resolved {
+		paths[i] = file.abs
+	}
+	locks, err := acquireAuthoringLocalLocks(r.Context(), paths)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer closeAuthoringLocalLocks(locks)
+
 	// Resolve the local editor and live manifest again at commit time. Preview
 	// validation can be slow enough for the authoring perimeter, workdir, or a
 	// destination to change underneath it; never carry those stale path grants
 	// into a write.
 	freshTarget, err := s.resolveAuthoringTarget(r, target.editorPath)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if freshTarget.files != nil {
-		return 0, authoringForbiddenError{"local authoring target changed source kind before commit"}
+		return 0, nil, authoringForbiddenError{"local authoring target changed source kind before commit"}
 	}
-	freshResolved := make([]resolvedAuthoringFile, len(previews))
 	for i, preview := range previews {
 		var declared bundle.AuthoringEditableFile
 		var ok bool
@@ -1041,108 +1051,97 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 			declared, ok = freshTarget.replaceable(preview.Scope, preview.Path)
 		}
 		if !ok {
-			return 0, authoringForbiddenError{fmt.Sprintf("%s:%s left the live authoring perimeter before commit", preview.Scope, preview.Path)}
+			return 0, nil, authoringForbiddenError{fmt.Sprintf("%s:%s left the live authoring perimeter before commit", preview.Scope, preview.Path)}
 		}
 		file, content, available, reason, err := freshTarget.readDeclared(declared)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		if preview.Operation == "create" {
 			if available {
-				return 0, authoringFileExistsError{fmt.Sprintf("%s:%s already exists", preview.Scope, preview.Path)}
+				return 0, nil, authoringFileExistsError{fmt.Sprintf("%s:%s already exists", preview.Scope, preview.Path)}
 			}
 			if reason != "declared_missing_local_file" {
-				return 0, authoringForbiddenError{fmt.Sprintf("%s:%s is not a declared missing local file", preview.Scope, preview.Path)}
+				return 0, nil, authoringForbiddenError{fmt.Sprintf("%s:%s is not a declared missing local file", preview.Scope, preview.Path)}
 			}
 			if err := freshTarget.validateCreateDestination(declared, file.abs); err != nil {
-				return 0, err
+				return 0, nil, err
 			}
 		} else {
 			if !available || content != preview.Before {
-				return 0, authoringConflictError{fmt.Sprintf("%s:%s changed before commit", preview.Scope, preview.Path)}
+				return 0, nil, authoringConflictError{fmt.Sprintf("%s:%s changed before commit", preview.Scope, preview.Path)}
 			}
 		}
-		freshResolved[i] = file
+		if filepath.Clean(file.abs) != locks[i].path {
+			return 0, nil, authoringConflictError{"authoring destination changed while acquiring its lock"}
+		}
+		if err := locks[i].verify(); err != nil {
+			return 0, nil, err
+		}
 	}
 	if _, err := freshTarget.validateChanges(r.Context(), previews); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	// Re-read every destination once more immediately before the first write,
-	// after compilation and syntax checks, to close that validation-time race.
+	// Prepare every candidate before exposing any bytes. Publication moves the
+	// current inode into recovery and checks that actual displaced object;
+	// no read-then-unconditional-overwrite remains at the live destination.
+	var ignore func(string)
+	s.stateMu.RLock()
+	if s.watcher != nil {
+		ignore = s.watcher.IgnorePath
+	}
+	s.stateMu.RUnlock()
+	transactions := make([]*authoringLocalTransaction, 0, len(previews))
+	defer func() {
+		for _, tx := range transactions {
+			tx.close()
+		}
+	}()
+	recovery := func() []authoringRecovery {
+		out := make([]authoringRecovery, 0, len(transactions))
+		for _, tx := range transactions {
+			out = append(out, tx.recovery())
+		}
+		return out
+	}
+	failure := func(err error) (int, []authoringRecovery, error) {
+		locations := make([]string, 0, len(transactions))
+		for _, tx := range transactions {
+			locations = append(locations, tx.recovery().Record)
+		}
+		return 0, recovery(), fmt.Errorf("%w; recovery records (retained without automatic replay): %s", err, strings.Join(locations, "; "))
+	}
 	for i, preview := range previews {
-		if preview.Operation == "create" {
-			if err := freshTarget.validateCreateDestination(freshResolved[i].spec, freshResolved[i].abs); err != nil {
-				return 0, err
-			}
-			continue
+		tx, err := prepareAuthoringLocal(locks[i], preview, ignore, nil)
+		if tx != nil {
+			transactions = append(transactions, tx)
 		}
-		body, err := os.ReadFile(freshResolved[i].abs) // #nosec G304 -- resolved live manifest path
 		if err != nil {
-			return 0, err
-		}
-		if string(body) != preview.Before {
-			return 0, authoringConflictError{fmt.Sprintf("%s:%s changed before commit", preview.Scope, preview.Path)}
+			return failure(err)
 		}
 	}
-	resolved := freshResolved
-	attempted := make([]int, 0, len(previews))
-	for i, p := range previews {
-		if s.watcher != nil {
-			s.watcher.IgnorePath(resolved[i].abs)
-		}
-		attempted = append(attempted, i)
-		var err error
-		if p.Operation == "create" {
-			err = store.WriteFileAtomicNew(resolved[i].abs, []byte(p.After), 0o644)
-			if errors.Is(err, os.ErrExist) {
-				// The colliding inode belongs to another writer. It was never part
-				// of this transaction, even if its bytes happen to match ours.
-				attempted = attempted[:len(attempted)-1]
-				err = authoringFileExistsError{fmt.Sprintf("%s:%s already exists", p.Scope, p.Path)}
-			}
-		} else {
-			err = store.WriteFileAtomic(resolved[i].abs, []byte(p.After), 0o644)
+	for _, tx := range transactions {
+		err := r.Context().Err()
+		if err == nil {
+			err = tx.publish()
 		}
 		if err != nil {
-			rollbackErrs := s.rollbackAuthoring(previews, resolved, attempted)
+			rollbackErrs := s.rollbackAuthoring(transactions)
 			if len(rollbackErrs) > 0 {
-				return 0, fmt.Errorf("write %s:%s failed: %w; rollback also failed: %s", p.Scope, p.Path, err, strings.Join(rollbackErrs, "; "))
+				return failure(fmt.Errorf("write %s:%s failed: %w; rollback incomplete: %s", tx.preview.Scope, tx.preview.Path, err, strings.Join(rollbackErrs, "; ")))
 			}
-			return 0, fmt.Errorf("write %s:%s failed: %w; earlier files were rolled back", p.Scope, p.Path, err)
+			return failure(fmt.Errorf("write %s:%s failed: %w; earlier files were rolled back", tx.preview.Scope, tx.preview.Path, err))
 		}
 	}
-	return 0, nil
+	return 0, recovery(), nil
 }
 
-func (s *Server) rollbackAuthoring(previews []authoringPreviewFile, resolved []resolvedAuthoringFile, attempted []int) []string {
-	rollbackErrs := make([]string, 0)
-	for j := len(attempted) - 1; j >= 0; j-- {
-		idx := attempted[j]
-		preview := previews[idx]
-		path := resolved[idx].abs
-		body, err := os.ReadFile(path) // #nosec G304 -- resolved manifest path
-		if errors.Is(err, os.ErrNotExist) && preview.Operation == "create" {
-			continue
-		}
-		if err != nil {
-			rollbackErrs = append(rollbackErrs, fmt.Sprintf("%s:%s: inspect rollback target: %v", preview.Scope, preview.Path, err))
-			continue
-		}
-		if contentSHA256(string(body)) != contentSHA256(preview.After) {
-			rollbackErrs = append(rollbackErrs, fmt.Sprintf("%s:%s: content changed after write; rollback refused", preview.Scope, preview.Path))
-			continue
-		}
-		if s.watcher != nil {
-			s.watcher.IgnorePath(path)
-		}
-		if preview.Operation == "create" {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				rollbackErrs = append(rollbackErrs, fmt.Sprintf("%s:%s: %v", preview.Scope, preview.Path, err))
-			}
-			continue
-		}
-		if err := store.WriteFileAtomic(path, []byte(preview.Before), 0o644); err != nil {
-			rollbackErrs = append(rollbackErrs, fmt.Sprintf("%s:%s: %v", preview.Scope, preview.Path, err))
+func (s *Server) rollbackAuthoring(transactions []*authoringLocalTransaction) []string {
+	var rollbackErrs []string
+	for i := len(transactions) - 1; i >= 0; i-- {
+		tx := transactions[i]
+		if err := tx.rollback(); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Sprintf("%s:%s: %v", tx.preview.Scope, tx.preview.Path, err))
 		}
 	}
 	return rollbackErrs
