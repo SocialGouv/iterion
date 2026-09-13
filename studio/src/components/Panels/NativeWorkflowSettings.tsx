@@ -1,34 +1,12 @@
 import { useMemo, useState } from "react";
-import type { IterDocument, PortGraphDecl, WorkflowDecl } from "@/api/types";
+import type { PortGraphDecl, WorkflowDecl } from "@/api/types";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { Button } from "@/components/ui";
 import { CommittedTextField, SelectField, TextField } from "./forms/FormField";
 import PublicContractPanel from "@/components/Inspector/PublicContractPanel";
 import PublicContractEditor from "@/components/Inspector/PublicContractEditor";
-import { effectiveNativePortTypes } from "@/lib/nativePorts";
-
-type Endpoint = { name: string; type: string };
-
-function outputEndpoints(doc: IterDocument, wf: WorkflowDecl): Endpoint[] {
-  const contracts = new Map((doc.contracts ?? []).map(contract => [contract.name, contract]));
-  const effective = effectiveNativePortTypes(wf, doc.contracts ?? []);
-  const root = contracts.get(wf.contract ?? "");
-  return [
-    ...(root?.inputs ?? []).map(port => ({ name: `input.${port.name}`, type: effective.get(`input.${port.name}`) ?? port.type })),
-    ...(wf.graph?.nodes ?? []).flatMap(node => (contracts.get(node.contract)?.outputs ?? [])
-      .map(port => ({ name: `${node.name}.${port.name}`, type: effective.get(`${node.name}.${port.name}`) ?? port.type }))),
-  ];
-}
-
-function inputEndpoints(doc: IterDocument, wf: WorkflowDecl): Endpoint[] {
-  const contracts = new Map((doc.contracts ?? []).map(contract => [contract.name, contract]));
-  return (wf.graph?.nodes ?? []).flatMap(node => (contracts.get(node.contract)?.inputs ?? [])
-    .map(port => ({ name: `${node.name}.${port.name}`, type: port.type })));
-}
-
-const compatible = (source: string, target: string) => source === target ||
-  (source.endsWith("[]") && source.slice(0, -2) === target);
+import { nativeBindingCanBeAdded, nativePortCanSupply, nativePortEndpoints } from "@/lib/nativePorts";
 
 /** Native authoring keeps the graph, public contract and technical policy distinct. */
 export default function NativeWorkflowSettings({ workflow }: { workflow: WorkflowDecl }) {
@@ -44,14 +22,16 @@ export default function NativeWorkflowSettings({ workflow }: { workflow: Workflo
   const [exportSource, setExportSource] = useState("");
   const graph = workflow.graph ?? {};
   const publicContract = document?.contracts?.find(contract => contract.name === workflow.contract);
-  const sources = useMemo(() => document ? outputEndpoints(document, workflow) : [], [document, workflow]);
-  const targets = useMemo(() => document ? inputEndpoints(document, workflow) : [], [document, workflow]);
+  const { sources, targets } = useMemo(() => nativePortEndpoints(workflow, document?.contracts ?? []), [document, workflow]);
   const targetEndpoint = targets.find(endpoint => endpoint.name === target) ?? targets[0];
-  const availableSources = targetEndpoint ? sources.filter(endpoint => compatible(endpoint.type, targetEndpoint.type)) : [];
+  const currentBinding = graph.bindings?.find(binding => binding.to === targetEndpoint?.name);
+  const availableSources = targetEndpoint ? sources.filter(endpoint =>
+    currentBinding ? endpoint.name === currentBinding.from :
+      nativeBindingCanBeAdded(workflow, document?.contracts ?? [], endpoint.name, targetEndpoint.name)) : [];
   const selectedSource = availableSources.find(endpoint => endpoint.name === source) ?? availableSources[0];
   const rootOutputs = publicContract?.outputs ?? [];
   const selectedOutput = rootOutputs.find(port => port.name === exportName) ?? rootOutputs[0];
-  const availableExportSources = selectedOutput ? sources.filter(endpoint => endpoint.type === selectedOutput.type) : [];
+  const availableExportSources = selectedOutput ? sources.filter(endpoint => nativePortCanSupply(endpoint, selectedOutput, false)) : [];
   const selectedExportSource = availableExportSources.find(endpoint => endpoint.name === exportSource) ?? availableExportSources[0];
   const implementations = [
     ...(document?.agents ?? []), ...(document?.judges ?? []), ...(document?.tools ?? []),
@@ -108,7 +88,9 @@ export default function NativeWorkflowSettings({ workflow }: { workflow: Workflo
         <SelectField label="Input to supply" value={targetEndpoint?.name ?? ""} onChange={setTarget}
           options={targets.map(endpoint => ({ value: endpoint.name, label: `${endpoint.name}: ${endpoint.type}` }))} />
         <SelectField label="Source output" value={selectedSource?.name ?? ""} onChange={setSource}
+          allowEmpty={!availableSources.length} emptyLabel="No compatible output"
           options={availableSources.map(endpoint => ({ value: endpoint.name, label: `${endpoint.name}: ${endpoint.type}` }))} />
+        {currentBinding && <p className="text-caption text-fg-subtle mt-1">Already supplied by {currentBinding.from}. Select its connection to change it.</p>}
         <Button size="sm" onClick={addBinding} disabled={!targetEndpoint || !selectedSource ||
           (graph.bindings ?? []).some(binding => binding.to === targetEndpoint.name)}>Bind ports</Button>
         {selectedSource?.type.endsWith("[]") && selectedSource.type.slice(0, -2) === targetEndpoint?.type &&
@@ -123,6 +105,7 @@ export default function NativeWorkflowSettings({ workflow }: { workflow: Workflo
         <SelectField label="Public output" value={selectedOutput?.name ?? ""} onChange={setExportName}
           options={rootOutputs.map(port => ({ value: port.name, label: `${port.name}: ${port.type}` }))} />
         <SelectField label="Produced by" value={selectedExportSource?.name ?? ""} onChange={setExportSource}
+          allowEmpty={!availableExportSources.length} emptyLabel="No compatible output"
           options={availableExportSources.map(endpoint => ({ value: endpoint.name, label: `${endpoint.name}: ${endpoint.type}` }))} />
         <Button size="sm" onClick={addExport} disabled={!selectedOutput || !selectedExportSource ||
           (graph.exports ?? []).some(item => item.name === selectedOutput.name)}>Export output</Button>

@@ -37,6 +37,15 @@ Syntax profiles and runtime semantics are independent.
 
 ## Evidence recorded during implementation
 
+- Studio's native connection picker now excludes known contradictions in
+  requiredness, nullability, array bounds and file media types, plus duplicate
+  suppliers, self/dependency cycles and a second inferred map axis. Existing
+  connections remain visible. The compiler remains authoritative for resolved
+  schema equivalence and full graph validation. Fourteen targeted frontend
+  tests pass, including a real editor-store binding action; TypeScript and
+  scoped ESLint pass. The rebuilt real-server Chromium native-contract test
+  passes without skips, preserving the public edit and technical source.
+
 - Go `1.26.2` and Node `24.12.0` verified through `devbox run` in the
   repository-pinned devbox container.
 - `go test ./pkg/dsl/ast ./pkg/dsl/parser ./pkg/dsl/unparse`: passing.
