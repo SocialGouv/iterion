@@ -77,6 +77,49 @@ func TestLoopCapExpressionsResolveAtEveryCrossing(t *testing.T) {
 	}
 }
 
+func TestLoopCapExpressionReadsDottedGroupOutput(t *testing.T) {
+	const source = `dsl: 2
+schema out:
+  cap: int
+group g():
+  agent work:
+    model: "test-model"
+    output: out
+use g as r1
+agent repeat:
+  model: "test-model"
+  output: out
+workflow w:
+  entry: r1.work
+  worktree: none
+  r1.work -> repeat
+  repeat -> repeat as retry("outputs.r1.work.cap - 1")
+  repeat -> done
+`
+	wf := loopCapWorkflow(t, source)
+	exec := newStubExecutor()
+	exec.on("r1.work", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"cap": 2}, nil
+	})
+	calls := 0
+	exec.on("repeat", func(map[string]any) (map[string]any, error) {
+		calls++
+		return map[string]any{"cap": 50}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "dotted-cap", nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("repeat executions=%d, want 2", calls)
+	}
+	for _, invalid := range []string{"outputs.r1.work.missing - 1", "outputs.r1.missing.cap - 1"} {
+		bad := compileBot(t, strings.Replace(source, "outputs.r1.work.cap - 1", invalid, 1))
+		if !bad.HasErrors() {
+			t.Fatalf("invalid cap %q accepted", invalid)
+		}
+	}
+}
+
 func TestLoopCapExpressionUsesRaisedVarsOnFreshResume(t *testing.T) {
 	src := strings.Replace(runtimeLoopCapSource, "workflow w:", `schema answer:
   again: bool
