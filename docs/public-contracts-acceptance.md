@@ -28,11 +28,11 @@ Syntax profiles and runtime semantics are independent.
 | Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and admitted-run continuation pass; distributed rollback outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
-| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local read/write and validation, and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds and complete source on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect summarizes native invocation/map/product status and reported usage. A real Copi authoring session, bundles, full runtime cost visibility and composition remain outstanding |
+| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local read/write and validation, and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds and complete source on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect and MCP run get summarize native invocation/map/product status and reported usage, with unknown cost called out. A real Copi authoring session, bundles, full runtime cost attribution and composition remain outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store, 70 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store, 72 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
@@ -155,7 +155,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the effect did not occur allows replay. Unknown or empty
   evidence leaves the invocation uncertain. A default executor without the
   capability refuses admission before dispatch. The final race JSON manifest
-  verifies 70 store and 70 Engine cases without skips.
+  verifies 70 store and 72 Engine cases without skips.
 - `TestNativeProcessKillRecoveryFilesystem` and its Mongo counterpart kill a
   separate test process after the effect-dispatched checkpoint. After an
   explicit supervisor-equivalent status transition, resume refuses to replay
@@ -188,12 +188,36 @@ Syntax profiles and runtime semantics are independent.
   products and reported usage without printing technical source identities.
   JSON inspection still carries the complete persisted run for technical
   analysis. The focused CLI checks and `go vet` pass.
+- `local_run_get` now projects native invocation counts, ordered map summaries,
+  required product publication status and reported usage without technical
+  identities or active reservation keys. `total_cost_known` is false when the
+  run contains unpriced nodes. A Store-backed MCP test checks the projection;
+  this is reported usage, not a proof that every provider has supplied a price.
+- A declared paid effect that returns no cost is now counted as unpriced even
+  when it reports zero tokens. The focused Engine case passes on filesystem
+  and real Mongo with race detection; later finite-cost admissions remain
+  blocked by the existing unpriced-usage guard. The runtime manifest includes
+  this case on both stores.
+- Studio's source picker and edge hint now lift a mapped producer's declared
+  scalar output into its effective array type, so a downstream whole-array
+  input can select it. The complete `task studio:check` passes 155 files and
+  1,369 tests. The real Chromium native-contract scenario passes and checks
+  that `render.text` appears as `string[]` for `collect.texts`.
+- The Mongo file-recovery fault wrapper now forwards its backend identity.
+  Previously its recovery test failed activation before it could inject a
+  corrupt or transient file read. Both cases pass with race detection after
+  forwarding the identity; this was a test-fixture defect, not a changed
+  production file-recovery path.
 - The dispatcher's local orphan promotion now uses `PortExecution` as a
   recovery point, matching the Studio service; its native regression and
   full `pkg/dispatcher` suite pass. The runner's workspace-reset audit also
   recognizes native durable state on an undated redelivery, with a focused
   regression. Neither case substitutes for a real cloud process-kill and
   JetStream redelivery test.
+- The legacy turn-based fork and legacy checkpoint rewind now refuse a native
+  run before mutation. The regression verifies they create no child and leave
+  the native parent unchanged. Native fork and selective rewind remain to be
+  implemented using native publications and descendant identity.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
