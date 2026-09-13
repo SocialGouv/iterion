@@ -171,6 +171,10 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 // artifact persistence is the caller's concern (compute's postValidate hook).
 func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]any, error) {
 	nodeInput := e.buildNodeInputRS(nodeID, sc)
+	return e.computeOutputWithInput(rs, nodeID, cn, sc, nodeInput)
+}
+
+func (e *Engine) computeOutputWithInput(rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope, nodeInput map[string]any) (map[string]any, error) {
 	output := make(map[string]any, len(cn.Exprs))
 	exprCtx := e.exprContextScoped(rs, sc, nodeInput)
 	for _, ce := range cn.Exprs {

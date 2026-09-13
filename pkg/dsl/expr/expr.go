@@ -38,8 +38,10 @@
 package expr
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"sort"
 	"strconv"
@@ -1238,6 +1240,12 @@ func toInt(v any) (int64, bool) {
 	// (float64) when the value is fractional; for exact-int float
 	// inputs we still report ok so `truthy(2.0)` matches `truthy(2)`.
 	switch t := v.(type) {
+	case json.Number:
+		number, ok := new(big.Rat).SetString(string(t))
+		if !ok || !number.IsInt() || !number.Num().IsInt64() {
+			return 0, false
+		}
+		return number.Num().Int64(), true
 	case int:
 		return int64(t), true
 	case int8:
@@ -1280,6 +1288,15 @@ func toInt(v any) (int64, bool) {
 
 func toFloat(v any) (float64, bool) {
 	switch t := v.(type) {
+	case json.Number:
+		// Never turn an out-of-range exact integer into an approximate
+		// float just because the integer arithmetic path refused it.
+		number, ok := new(big.Rat).SetString(string(t))
+		if !ok || (number.IsInt() && !number.Num().IsInt64()) {
+			return 0, false
+		}
+		value, err := t.Float64()
+		return value, err == nil && !math.IsNaN(value) && !math.IsInf(value, 0)
 	case int:
 		return float64(t), true
 	case int8:

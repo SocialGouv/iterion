@@ -15,15 +15,15 @@ Syntax profiles and runtime semantics are independent.
 | --- | --- | --- |
 | Four views in one source model | AST, source/JSON/unparse round trips; every field retained | DSL/AST round trips pass; full interface round trips outstanding |
 | Public inputs, outputs, files, effects, criteria | Resolved contracts, deterministic validators, actionable diagnostics | AST, parser, resolved types and deterministic value/criterion validators pass; runtime publication outstanding |
-| Multiple typed inputs and explicit public/product exports | Supplier, type, optional/default/null/empty and product validation cases | Compiler cases pass; runtime cases outstanding |
-| Native acyclic data graph, including crossed diamonds | Compiled graph inspection and runtime dependency traces | Crossed DAG compilation and cycle rejection pass; runtime traces outstanding |
-| Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Map inference, shared-axis reuse, whole-array typing and ambiguous-axis rejection pass; execution outstanding |
-| Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Outstanding |
+| Multiple typed inputs and explicit public/product exports | Supplier, type, optional/default/null/empty and product validation cases | Compiled contracts and Engine value publication pass on FS/Mongo, including connected optional absence; physical files outstanding |
+| Native acyclic data graph, including crossed diamonds | Compiled graph inspection and runtime dependency traces | Crossed DAG and committed-producer waiting pass through the actual Engine on FS/Mongo |
+| Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Compiler cases and Engine 0/1/N, broadcast, whole-array collection, limits and order pass on FS/Mongo; file outputs outstanding |
+| Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root value scheduling, iteration reservation and strict cancellation pass; paid bounds, resource/effect completeness and nested admissions outstanding |
 | Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable native file capture and scratch-shadow isolation pass on FS/Mongo/S3; runtime provenance, file schemas and required product completion outstanding |
-| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Native checkpoint CAS, atomic publication/reservation transitions and lost-acknowledgment cases pass on FS/Mongo; Engine and physical file validation outstanding |
-| Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Outstanding |
+| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine value publication/acknowledgment fault injection pass on FS/Mongo; physical file validation and actual process termination outstanding |
+| Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Engine pause/cancel/resume, selective source invalidation, interrupted CAS and manual/idempotent effect decisions pass on FS/Mongo; verifier execution, file recovery and complete source closure outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
-| Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Outstanding |
+| Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Engine refuses interpreter changes before mutation, including forced resume; queue version/consumers outstanding |
 | Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Outstanding |
 | Rollback | New root launches stop; existing compatible executions remain resumable | Outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Outstanding |
@@ -32,7 +32,7 @@ Syntax profiles and runtime semantics are independent.
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Storage and Engine manifests pass with required real Mongo; browser and complete feature acceptance outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
@@ -120,6 +120,31 @@ Syntax profiles and runtime semantics are independent.
   declared file properties remains outstanding.
 
 ## Verification rules
+
+The runtime value layer now has 60 mandatory named cases in
+`pkg/runtime/ports_cases.json`, all passing with `-race` against the actual
+filesystem store and Mongo 8 replica set. Its Mongo artifact client is a real
+S3 client connected to a disposable HTTP object fixture. These cases execute
+the parser, compiler and Engine, rather than replaying individual executors.
+They cover map 0/1/4, reverse completion order, multi-input readiness, crossed
+dependencies, connected optional absence, root iteration reservations,
+correction before publication and exact integer arithmetic above 2^53.
+Recovery covers pause, cancellation winning against finalization/admission,
+unchanged successes, selective invalidation after a technical source change,
+and manual/idempotent effect decisions tied to an exact attempt.
+Six injected commit boundaries run on both stores, including lost acknowledgment
+after successful publication. These are injected Store errors, not process kills.
+
+The existing correction, compute, compiler and native-store transition tests
+also pass after the shared seam changes. Full `pkg/dsl/expr`, `pkg/dsl/ir` and
+`pkg/backend/model` pass with race detection. The full legacy corpus and final
+repository checks remain outstanding.
+
+The native runtime remains incomplete: output-file capture is not wired into
+invocation execution, verifier policies are not executed, paid upper bounds and
+nested root admission are incomplete, and the activation gate and product
+surfaces are not yet wired. Passing these tests does not authorize deployment
+or finish #1165.
 
 Run Go 1.26 and Node 24 through the repository's `devbox run` environment.
 Use deterministic executors and declared fake effects; no paid model call is

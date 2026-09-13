@@ -65,7 +65,16 @@ const (
 // a process restart therefore resumes the same budget instead of starting a
 // fresh watcher-triggered loop.
 func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState, nodeID string, node ir.Node, output map[string]any) (map[string]any, error) {
-	validationErr := e.validateNodeOutput(nodeID, node, output)
+	return e.correctOutputWithValidation(ctx, rs, nodeID, node, output, func(value map[string]any) error {
+		return e.validateNodeOutput(nodeID, node, value)
+	})
+}
+
+// Native public validation shares the correction ledger, usage accounting
+// and bounded retry policy with legacy schema validation. Its validator also
+// checks public criteria and cannot be disabled by the legacy validation flag.
+func (e *Engine) correctOutputWithValidation(ctx context.Context, rs *runState, nodeID string, node ir.Node, output map[string]any, validate func(map[string]any) error) (map[string]any, error) {
+	validationErr := validate(output)
 	if validationErr == nil {
 		return output, nil
 	}
@@ -229,7 +238,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		}
 		candidate = preserveCorrectionMetadata(current, candidate, correctionUsage)
 
-		candidateErr := e.validateNodeOutput(nodeID, node, candidate)
+		candidateErr := validate(candidate)
 		candidateFP := correctionSemanticFingerprint(candidate)
 		candidateViolationFP := ""
 		if candidateErr != nil {

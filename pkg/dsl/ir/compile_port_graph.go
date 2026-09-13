@@ -34,6 +34,7 @@ func (c *compiler) compilePortWorkflow(w *Workflow, decl *ast.WorkflowDecl, cont
 		return
 	}
 	rootPolicy := &PortPolicy{}
+	rootPolicy.Identity = publicDigest(rootPolicy)
 	if decl.PortPolicy != "" {
 		if p := policies[decl.PortPolicy]; p != nil {
 			rootPolicy = p
@@ -423,7 +424,11 @@ func (c *compiler) resolveInstancePortPolicy(root *PortPolicy, decl *ast.PortNod
 	return effective
 }
 
-func clonePortNode(node Node, id string) (Node, error) {
+func clonePortNode(node Node, id string) (Node, error) { return ClonePortNode(node, id) }
+
+// ClonePortNode gives an invocation its own execution identity while retaining
+// the immutable compiled technical configuration and public schema references.
+func ClonePortNode(node Node, id string) (Node, error) {
 	switch n := node.(type) {
 	case *AgentNode:
 		copy := *n

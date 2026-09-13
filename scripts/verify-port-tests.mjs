@@ -18,7 +18,7 @@ for (const file of results) {
       const statuses = observed.get(key) ?? new Set();
       statuses.add(event.Action);
       observed.set(key, statuses);
-      if (event.Test.startsWith('TestNative') && event.Action === 'skip') problems.push(`skipped: ${key}`);
+      if ((event.Test.startsWith('TestNative') || event.Test.startsWith('TestPortsEngine')) && event.Action === 'skip') problems.push(`skipped: ${key}`);
     }
   }
 }
@@ -35,4 +35,4 @@ for (const [pkg, cases] of Object.entries(packages)) {
 }
 if (required === 0) problems.push('manifest contains no required cases');
 if (problems.length) throw new Error(problems.join('\n'));
-console.log(`${required} required port-storage cases passed without skips`);
+console.log(`${required} required public-contract cases passed without skips`);

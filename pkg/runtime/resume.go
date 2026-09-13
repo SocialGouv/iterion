@@ -77,6 +77,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	if r.RuntimeSemantics != "" || e.workflow.RuntimeSemantics != "" {
+		if err := e.checkNativeSemanticIdentity(runID, r); err != nil {
+			return err
+		}
+		return e.resumePortRun(ctx, r, answers)
+	}
 	// Re-run the same context admission before any resume claim, workspace
 	// restoration or answer side effect. A denial leaves the resumable status
 	// untouched so the operator can repair the declaration and retry.

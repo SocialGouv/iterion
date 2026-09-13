@@ -32,3 +32,18 @@ These checks establish store namespace isolation and native checkpoint CAS
 behavior, not scheduler correctness, physical output-file validation, queue
 compatibility, fleet activation or safe workspace maintenance. Those
 remain separate entries in the [acceptance matrix](public-contracts-acceptance.md).
+
+The Engine suite uses the same deterministic scenarios against filesystem and
+a real Mongo replica set. It needs no older executable and makes no model calls:
+
+```bash
+ITERION_TEST_REQUIRED=1 \
+ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
+devbox run -- go test -race -json -count=1 ./pkg/runtime -run '^TestPortsEngine' > /tmp/iterion-port-runtime.jsonl
+devbox run -- node scripts/verify-port-tests.mjs pkg/runtime/ports_cases.json /tmp/iterion-port-runtime.jsonl
+```
+
+All 60 named cases must execute without skips. They cover value scheduling and
+recovery; physical file provenance, effect verifiers, nested resource/budget
+sharing, deployment activation and full authoring surfaces remain outstanding.
+Commit fault injection is not a claim that an operating-system process was killed.

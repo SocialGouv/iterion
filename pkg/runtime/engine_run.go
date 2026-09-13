@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -65,9 +66,39 @@ func (e *Engine) resolveWorkflowSource() string {
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
+	if e.workflow.RuntimeSemantics != "" || store.IsNativeRunID(runID) {
+		if err := e.checkNativeSemanticIdentity(runID, nil); err != nil {
+			return err
+		}
+		if current, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
+			if err := e.checkNativeSemanticIdentity(runID, current); err != nil {
+				return err
+			}
+			if current.PortExecution != nil {
+				return fmt.Errorf("runtime: native run %s has a checkpoint; use resume", runID)
+			}
+		} else if !errors.Is(loadErr, store.ErrRunNotFound) {
+			return loadErr
+		}
+		inputs, err = e.nativeRootInputs(inputs)
+		if err != nil {
+			return err
+		}
+		ctx = store.WithRuntimeSemantics(ctx, ir.RuntimeSemanticsPortsV1)
+	}
 	run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
 		return err
+	}
+	if e.workflow.RuntimeSemantics == ir.RuntimeSemanticsPortsV1 {
+		defer func() {
+			if err != nil {
+				// Setup/publication failures must not strand a native root
+				// before its coordinator can finalize it. Preserve operator
+				// statuses and a concurrent executor's completed transition.
+				_, _ = e.store.UpdateRunStatusIf(context.WithoutCancel(ctx), runID, store.RunStatusFailedResumable, err.Error(), []store.RunStatus{store.RunStatusRunning})
+			}
+		}()
 	}
 
 	// Admission is deliberately before attachment promotion, workspace
@@ -227,7 +258,12 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	rs := e.runInitState(ctx, runID, inputs)
 
-	loopErr := e.execLoop(ctx, rs, e.workflow.Entry)
+	var loopErr error
+	if e.workflow.RuntimeSemantics == ir.RuntimeSemanticsPortsV1 {
+		loopErr = e.execPortGraph(ctx, rs)
+	} else {
+		loopErr = e.execLoop(ctx, rs, e.workflow.Entry)
+	}
 	e.evictRunSessions(runID, loopErr)
 
 	return loopErr
@@ -241,6 +277,11 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (*store.Run, error) {
 	var run *store.Run
 	if existing, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
+		if e.workflow.RuntimeSemantics != "" || store.IsNativeRunID(runID) {
+			if err := e.checkNativeSemanticIdentity(runID, existing); err != nil {
+				return nil, err
+			}
+		}
 		// Pickup path: the doc already exists.
 		//   - queued: cloudpublisher pre-created the row before
 		//     publishing on JetStream; transition to running here.
@@ -268,6 +309,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = existing
 	} else {
+		if store.IsNativeRunID(runID) && !errors.Is(loadErr, store.ErrRunNotFound) {
+			return nil, loadErr
+		}
 		// Direct path: no doc yet, create one. CreateRun is strict
 		// (InsertOne) so a parallel pickup would lose this race —
 		// acceptable: the only callers here are the CLI and tests, both

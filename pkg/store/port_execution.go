@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
@@ -69,6 +70,7 @@ type PortInvocation struct {
 	EffectDispatched bool                  `json:"effect_dispatched,omitempty" bson:"effect_dispatched,omitempty"`
 	RecoveryDecision string                `json:"recovery_decision,omitempty" bson:"recovery_decision,omitempty"`
 	RecoveryAttempt  int                   `json:"recovery_attempt,omitempty" bson:"recovery_attempt,omitempty"`
+	Resources        map[string]string     `json:"resources,omitempty" bson:"resources,omitempty"`
 }
 
 // A collection lists stable invocation IDs in input order. Complete is valid
@@ -113,8 +115,11 @@ type PortBudgetAmount struct {
 }
 
 type PortBudgetState struct {
-	Consumed     PortBudgetAmount            `json:"consumed" bson:"consumed"`
-	Reservations map[string]PortBudgetAmount `json:"reservations" bson:"reservations"`
+	Consumed       PortBudgetAmount            `json:"consumed" bson:"consumed"`
+	Reservations   map[string]PortBudgetAmount `json:"reservations" bson:"reservations"`
+	ElapsedNS      int64                       `json:"elapsed_ns,omitempty" bson:"elapsed_ns,omitempty"`
+	UnpricedTokens int64                       `json:"unpriced_tokens,omitempty" bson:"unpriced_tokens,omitempty"`
+	UnpricedNodes  int64                       `json:"unpriced_nodes,omitempty" bson:"unpriced_nodes,omitempty"`
 }
 
 func PortValueFingerprint(data json.RawMessage) (string, error) {
@@ -181,7 +186,7 @@ func (s *PortExecution) Clone() (*PortExecution, error) {
 // existing atomic compare-and-swap. It does not retry a stale coordinator
 // decision. A lost acknowledgment may be retried with the identical snapshot;
 // callers must reload on a conflict and recompute their transition.
-func SavePortExecution(ctx context.Context, s RunStore, id string, expected uint64, next *PortExecution) error {
+func SavePortExecution(ctx context.Context, s RunStore, id string, expected uint64, next *PortExecution, allowedStatuses ...RunStatus) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -191,6 +196,9 @@ func SavePortExecution(ctx context.Context, s RunStore, id string, expected uint
 	}
 	if run.RuntimeSemantics != RuntimeSemanticsPortsV1 || next == nil {
 		return fmt.Errorf("store: native checkpoint requires ports-v1 run: %w", ErrRunSemantics)
+	}
+	if len(allowedStatuses) > 0 && !slices.Contains(allowedStatuses, run.Status) {
+		return fmt.Errorf("store: native admission requires an executable root status, got %s: %w", run.Status, ErrRunConflict)
 	}
 	canonical, err := next.Clone()
 	if err != nil {
@@ -320,7 +328,7 @@ func ValidatePortExecution(s *PortExecution) error {
 			return invalidPortState("export %s references unpublished result", name)
 		}
 	}
-	if !validPortBudgetAmount(s.Budget.Consumed) {
+	if !validPortBudgetAmount(s.Budget.Consumed) || s.Budget.ElapsedNS < 0 || s.Budget.UnpricedTokens < 0 || s.Budget.UnpricedNodes < 0 {
 		return invalidPortState("invalid consumed budget")
 	}
 	for id, amount := range s.Budget.Reservations {
@@ -367,7 +375,7 @@ func checkPortExecutionTransition(previous, next *PortExecution) error {
 	if next.Revision != previous.Revision+1 || next.RootRunID != previous.RootRunID || next.Generation < previous.Generation || next.Generation > previous.Generation+1 {
 		return invalidPortState("non-monotonic revision/generation or changed root")
 	}
-	if next.Budget.Consumed.Tokens < previous.Budget.Consumed.Tokens || next.Budget.Consumed.CostUSD < previous.Budget.Consumed.CostUSD || next.Budget.Consumed.Iterations < previous.Budget.Consumed.Iterations {
+	if next.Budget.Consumed.Tokens < previous.Budget.Consumed.Tokens || next.Budget.Consumed.CostUSD < previous.Budget.Consumed.CostUSD || next.Budget.Consumed.Iterations < previous.Budget.Consumed.Iterations || next.Budget.ElapsedNS < previous.Budget.ElapsedNS || next.Budget.UnpricedTokens < previous.Budget.UnpricedTokens || next.Budget.UnpricedNodes < previous.Budget.UnpricedNodes {
 		return invalidPortState("consumed root budget cannot decrease, including during recovery")
 	}
 	if next.Generation != previous.Generation {
