@@ -32,7 +32,7 @@ Syntax profiles and runtime semantics are independent.
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store, 72 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store, 73 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
@@ -155,7 +155,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the effect did not occur allows replay. Unknown or empty
   evidence leaves the invocation uncertain. A default executor without the
   capability refuses admission before dispatch. The final race JSON manifest
-  verifies 70 store and 72 Engine cases without skips.
+  verifies 70 store and 73 Engine cases without skips.
 - `TestNativeProcessKillRecoveryFilesystem` and its Mongo counterpart kill a
   separate test process after the effect-dispatched checkpoint. After an
   explicit supervisor-equivalent status transition, resume refuses to replay
@@ -218,6 +218,12 @@ Syntax profiles and runtime semantics are independent.
   run before mutation. The regression verifies they create no child and leave
   the native parent unchanged. Native fork and selective rewind remain to be
   implemented using native publications and descendant identity.
+- A raw production Mongo Store refuses a hand-written distributed activation
+  record even if its queue version and `consumer_access_evidence` are filled.
+  The isolated Engine fixture injects an explicit verifier; a future-dated
+  proof is rejected. The full race-instrumented Engine manifest passes 73
+  cases on filesystem and real Mongo without skips. This is a fail-closed
+  seam, not a positive deployment census.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
