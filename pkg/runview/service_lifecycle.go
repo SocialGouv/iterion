@@ -156,8 +156,8 @@ func (s *Service) sandboxContainerReapable(ctx context.Context, runID string) bo
 // status writer is not.
 //
 // Logic per orphan:
-//   - has Checkpoint  → failed_resumable (user can iterion resume)
-//   - no Checkpoint   → failed           (no recovery point; restart)
+//   - has legacy Checkpoint or native PortExecution → failed_resumable
+//   - neither checkpoint                         → failed (no recovery point)
 //
 // We use the lock as the liveness probe: a non-blocking flock that
 // succeeds proves no other process holds the run. Held runs are left
@@ -267,7 +267,7 @@ func (s *Service) reconcileOrphans(parent context.Context) {
 			continue
 		}
 		newStatus := store.RunStatusFailed
-		if r2.Checkpoint != nil {
+		if r2.Checkpoint != nil || r2.PortExecution != nil {
 			newStatus = store.RunStatusFailedResumable
 		}
 		if err := s.store.UpdateRunStatusCoded(ctx, id, newStatus, ReasonProcessOrphaned, store.FailureProcessOrphaned); err != nil {

@@ -52,8 +52,10 @@ remain outstanding. In addition to commit fault injection, two cases kill an
 actual child process after durable effect dispatch, on filesystem and Mongo.
 Two more kill a child after the file store has read one byte of a declared
 output, before its snapshot or publication completes. Recovery must publish
-only a fresh verified file. The tests simulate a supervisor's orphan-status
-transition before resuming; they do not certify production orphan detection.
+only a fresh verified file. These Engine tests explicitly simulate the
+orphan-status transition before resuming. The local Studio boot scan separately
+tests native checkpoint classification; cloud NATS lease adoption remains
+outside this harness.
 
 The ordinary legacy route has an independent executable comparison. Build the
 current CLI from this checkout, then run the same committed `.bot` fixture

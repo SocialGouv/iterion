@@ -52,6 +52,23 @@ func TestReconcileOrphans(t *testing.T) {
 		t.Fatalf("save checkpoint: %v", err)
 	}
 
+	// A native run has no legacy Checkpoint. Its durable PortExecution is
+	// equally a recovery point; the boot scan must not mark it terminal.
+	const nativeID = "pc1_orphan_port"
+	if _, err := seed.CreateRun(store.WithRuntimeSemantics(context.Background(), store.RuntimeSemanticsPortsV1), nativeID, "wf", nil); err != nil {
+		t.Fatalf("create native orphan: %v", err)
+	}
+	identity := store.PortExecutionIdentity{Source: "fixture", Graph: "fixture", Contract: "fixture", Policy: "fixture", Inputs: "fixture"}
+	if err := store.SavePortExecution(context.Background(), seed, nativeID, 0, &store.PortExecution{
+		Version: store.PortExecutionVersion, Revision: 1, Generation: 1, RootRunID: nativeID, Identity: identity,
+	}); err != nil {
+		t.Fatalf("save native checkpoint: %v", err)
+	}
+	const nativeNoStateID = "pc1_orphan_no_state"
+	if _, err := seed.CreateRun(store.WithRuntimeSemantics(context.Background(), store.RuntimeSemanticsPortsV1), nativeNoStateID, "wf", nil); err != nil {
+		t.Fatalf("create native run without checkpoint: %v", err)
+	}
+
 	// run-finished: should be untouched
 	if _, err := seed.CreateRun(context.Background(), "run-finished", "wf", nil); err != nil {
 		t.Fatalf("create finished: %v", err)
@@ -71,7 +88,7 @@ func TestReconcileOrphans(t *testing.T) {
 	// The scan only judges runs older than the grace window — backdate the
 	// seeds so they look like leftovers of a previous process, which is the
 	// scenario this scan exists for.
-	for _, id := range []string{"run-orphan-no-cp", "run-orphan-cp", "run-finished", "run-paused"} {
+	for _, id := range []string{"run-orphan-no-cp", "run-orphan-cp", nativeID, nativeNoStateID, "run-finished", "run-paused"} {
 		backdateRun(t, seed, id)
 	}
 
@@ -100,6 +117,8 @@ func TestReconcileOrphans(t *testing.T) {
 	}{
 		{"run-orphan-no-cp", store.RunStatusFailed},
 		{"run-orphan-cp", store.RunStatusFailedResumable},
+		{nativeID, store.RunStatusFailedResumable},
+		{nativeNoStateID, store.RunStatusFailed},
 		{"run-finished", store.RunStatusFinished},
 		{"run-paused", store.RunStatusPausedWaitingHuman},
 		{"run-fresh", store.RunStatusRunning},
@@ -120,7 +139,7 @@ func TestReconcileOrphans(t *testing.T) {
 	// router) reads a reaped orphan as a run that simply stopped
 	// mid-flight, with no code and no reason, when only the document says
 	// what happened.
-	for _, id := range []string{"run-orphan-no-cp", "run-orphan-cp"} {
+	for _, id := range []string{"run-orphan-no-cp", "run-orphan-cp", nativeID, nativeNoStateID} {
 		events, err := verify.LoadEvents(context.Background(), id)
 		if err != nil {
 			t.Errorf("LoadEvents %s: %v", id, err)

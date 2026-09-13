@@ -20,7 +20,7 @@ Syntax profiles and runtime semantics are independent.
 | Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Compiler cases and Engine 0/1/N, broadcast, whole-array collection, limits and order pass on FS/Mongo; native file outputs are separately captured and validated |
 | Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root scheduling, iteration reservation, file handling, strict cancellation and verifier capability refusal pass; nested root admission and production verifier wiring outstanding |
 | Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable file capture, scratch-shadow isolation and runtime freshness/declared-file checks pass on FS/Mongo/S3; real process kill after the first captured byte leaves no published file and recovers on FS/Mongo |
-| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine publication/acknowledgment fault injection pass on FS/Mongo; real child-process SIGKILL after effect dispatch passes on both stores, with a simulated supervisor status transition; automatic orphan detection remains outstanding |
+| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine publication/acknowledgment fault injection pass on FS/Mongo; real child-process SIGKILL after effect dispatch and during file capture passes on both stores. The local orphan scan recognizes native checkpoints; cloud lease adoption remains to be proven end to end |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Engine pause/cancel/resume, selective source and corrupt-file invalidation, interrupted CAS and manual/idempotent/verified effect decisions pass on FS/Mongo; real process-kill recovery passes on both stores after the explicit orphan status transition; complete child source closure remains outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume; complete consumer inventory outstanding |
@@ -158,7 +158,15 @@ Syntax profiles and runtime semantics are independent.
   before its private snapshot is complete. No file reference is published.
   After the explicit orphan-status transition, resume retries the producer
   and publishes only a verified attempt-2 file; both cases pass with race
-  detection. Automatic orphan detection remains an open integration item.
+  detection. The separate local boot-scan test covers native checkpoint
+  classification; cloud lease adoption remains an open integration item.
+- `TestReconcileOrphans` now covers a native run with `PortExecution` and a
+  native run without it. The local Service boot scan marks only the former
+  `failed_resumable`, using its existing cross-process run lock. Previously
+  it looked only for a legacy `Checkpoint` and classified every native crash
+  as terminal `failed`. The full `pkg/runview` suite passes. This is local
+  liveness classification; the cloud runner uses NATS lease/redelivery and
+  needs its own native process-kill integration proof.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
