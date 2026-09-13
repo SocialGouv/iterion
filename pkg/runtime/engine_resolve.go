@@ -802,6 +802,7 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 	}
 	return &model.TemplateData{
 		Outputs:            sc.outputs,
+		Nodes:              e.workflow.Nodes,
 		LoopCounters:       runStateIterationCounters(rs),
 		LoopMaxIterations:  loopMax,
 		LoopPreviousOutput: loopPreviousOutputView(rs),
