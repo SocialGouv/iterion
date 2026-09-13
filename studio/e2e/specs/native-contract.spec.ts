@@ -11,6 +11,8 @@ test("native public graph and technical configuration survive a Studio edit", as
   await expect(page.getByText("map each (dynamic)")).toBeVisible();
   await expect(page.getByTestId("public-contract")).toContainText("Render a batch");
   await expect(page.getByText("results ← collect.texts · product")).toBeVisible();
+  await page.getByLabel("Input to supply").selectOption("collect.texts");
+  await expect(page.getByLabel("Source output").locator('option[value="render.text"]')).toHaveText("render.text: string[]");
 
   await page.getByTestId("rf__node-render").click();
   await expect(page.getByTestId("public-contract")).toContainText("Prefix one item");

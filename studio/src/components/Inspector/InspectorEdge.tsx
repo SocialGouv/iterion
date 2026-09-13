@@ -8,6 +8,7 @@ import EdgeForm from "@/components/Panels/forms/EdgeForm";
 import { CheckboxField, CommittedTextField } from "@/components/Panels/forms/FormField";
 import { IconButton } from "@/components/ui";
 import { TrashIcon } from "@radix-ui/react-icons";
+import { effectiveNativePortTypes } from "@/lib/nativePorts";
 
 interface EdgeMatch {
   edge: Edge;
@@ -39,25 +40,29 @@ function bindingHint(
   const source = lookup(binding.from, "output");
   const target = lookup(binding.to, "input");
   if (!source || !target) return "Validate the workflow to resolve this connection's cardinality.";
-  const mapped = source.type.endsWith("[]") && source.type.slice(0, -2) === target.type;
+  const effective = effectiveNativePortTypes(workflow, contracts);
+  const sourceType = effective.get(binding.from) ?? source.type;
+  const mapped = sourceType.endsWith("[]") && sourceType.slice(0, -2) === target.type;
   if (mapped) {
-    const range = source.max_items === undefined
+    const lifted = sourceType !== source.type;
+    const range = lifted ? "item count is dynamic" : source.max_items === undefined
       ? source.min_items === undefined ? "item count is dynamic" : `at least ${source.min_items} invocations; maximum unknown`
       : `${source.min_items ?? 0}–${source.max_items} invocations`;
     const targetNode = endpoint(binding.to)?.node;
     const paid = contractFor(targetNode ?? "")?.effects?.some(effect => effect.paid);
     return `One invocation per array element (${range}); ready items may run in parallel within the workflow limit.${paid ? " Paid effect cost is unknown until execution." : ""}`;
   }
-  if (source.type === target.type && source.type.endsWith("[]")) {
+  if (sourceType === target.type && sourceType.endsWith("[]")) {
     return "The complete array is passed as one value; this connection does not expand the node.";
   }
-  if (source.type !== target.type) return "The declared port types differ; validate the workflow before execution.";
+  if (sourceType !== target.type) return "The declared port types differ; validate the workflow before execution.";
   const targetNode = endpoint(binding.to)?.node;
   const siblingMap = (graph?.bindings ?? []).some(item => {
     if (item.to === binding.to || endpoint(item.to)?.node !== targetNode) return false;
     const supplied = lookup(item.from, "output");
     const consumed = lookup(item.to, "input");
-    return !!supplied && !!consumed && supplied.type.endsWith("[]") && supplied.type.slice(0, -2) === consumed.type;
+    const suppliedType = effective.get(item.from) ?? supplied?.type;
+    return !!suppliedType && !!consumed && suppliedType.endsWith("[]") && suppliedType.slice(0, -2) === consumed.type;
   });
   return siblingMap ? "This value is broadcast to every mapped invocation of the node." : "The value is delivered after its supplier commits.";
 }

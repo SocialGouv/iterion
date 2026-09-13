@@ -6,16 +6,18 @@ import { Button } from "@/components/ui";
 import { CommittedTextField, SelectField, TextField } from "./forms/FormField";
 import PublicContractPanel from "@/components/Inspector/PublicContractPanel";
 import PublicContractEditor from "@/components/Inspector/PublicContractEditor";
+import { effectiveNativePortTypes } from "@/lib/nativePorts";
 
 type Endpoint = { name: string; type: string };
 
 function outputEndpoints(doc: IterDocument, wf: WorkflowDecl): Endpoint[] {
   const contracts = new Map((doc.contracts ?? []).map(contract => [contract.name, contract]));
+  const effective = effectiveNativePortTypes(wf, doc.contracts ?? []);
   const root = contracts.get(wf.contract ?? "");
   return [
-    ...(root?.inputs ?? []).map(port => ({ name: `input.${port.name}`, type: port.type })),
+    ...(root?.inputs ?? []).map(port => ({ name: `input.${port.name}`, type: effective.get(`input.${port.name}`) ?? port.type })),
     ...(wf.graph?.nodes ?? []).flatMap(node => (contracts.get(node.contract)?.outputs ?? [])
-      .map(port => ({ name: `${node.name}.${port.name}`, type: port.type }))),
+      .map(port => ({ name: `${node.name}.${port.name}`, type: effective.get(`${node.name}.${port.name}`) ?? port.type }))),
   ];
 }
 
