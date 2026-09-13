@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	storemongo "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -28,11 +29,19 @@ func run() error {
 	root := flag.String("root", "", "isolated filesystem store / scratch root")
 	id := flag.String("id", "", "run ID")
 	action := flag.String("action", "", "read, list, write, repair, delete or prune")
+	message := flag.String("message", "", "queue JSON to decode before touching any store")
 	uri := flag.String("mongo", "", "test Mongo URI")
 	database := flag.String("database", "", "test Mongo database")
 	endpoint := flag.String("s3", "", "test S3 HTTP endpoint")
 	bucket := flag.String("bucket", "", "test S3 bucket")
 	flag.Parse()
+	if *action == "queue-check" {
+		var m queue.RunMessage
+		if err := json.Unmarshal([]byte(*message), &m); err != nil {
+			return err
+		}
+		return m.Validate()
+	}
 	ctx, cancel := context.WithTimeout(store.WithoutTenantFilter(context.Background()), 30*time.Second)
 	defer cancel()
 	var s store.RunStore
