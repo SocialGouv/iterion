@@ -98,6 +98,12 @@ func ValidateRunSemantics(r *Run) error {
 		}
 	}
 	if IsNativeRunID(r.ID) {
+		if r.PortExecution != nil && r.RuntimeSemantics != RuntimeSemanticsPortsV1 {
+			return fmt.Errorf("store: adapter cannot carry a native coordinator: %w", ErrRunSemantics)
+		}
+		if err := ValidatePortExecution(r.PortExecution); err != nil {
+			return err
+		}
 		for _, child := range r.SubbotChildren {
 			if err := ValidateNativeChild(r.ID, child); err != nil {
 				return err
@@ -107,7 +113,7 @@ func ValidateRunSemantics(r *Run) error {
 			(r.RuntimeSemantics != RuntimeSemanticsPortsV1 && r.RuntimeSemantics != RuntimeSemanticsLegacyAdapterV1) {
 			return fmt.Errorf("store: native run %s requires explicit supported semantics and format: %w", r.ID, ErrRunSemantics)
 		}
-	} else if r.RuntimeSemantics != "" {
+	} else if r.RuntimeSemantics != "" || r.PortExecution != nil {
 		return fmt.Errorf("store: run %s requires a native ID for %s: %w", r.ID, r.RuntimeSemantics, ErrRunSemantics)
 	}
 	return nil
@@ -136,7 +142,10 @@ func CheckRunSemanticIdentity(current, next *Run) error {
 		(IsNativeRunID(current.ID) && current.FormatVersion != next.FormatVersion) {
 		return fmt.Errorf("store: cannot change semantics of run %s: %w", current.ID, ErrRunSemantics)
 	}
-	return nil
+	if IsNativeRunID(current.ID) && current.CASVersion != next.CASVersion {
+		return fmt.Errorf("store: run %s changed during native update: %w", current.ID, ErrRunConflict)
+	}
+	return checkPortExecutionTransition(current.PortExecution, next.PortExecution)
 }
 
 func (s *FilesystemRunStore) guardNativeRun(id string) error {

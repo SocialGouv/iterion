@@ -1,5 +1,5 @@
 {
-  "scope": "Storage routing and supported old executable confinement; native runtime, workspaces, activation and UI verification remain separate acceptance requirements.",
+  "scope": "Storage routing, old executable confinement and durable native checkpoint CAS; Engine scheduling, file validation, workspaces, activation and UI remain separate acceptance requirements.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/store": [
       "TestNativeNamespacesFilesystem",
@@ -10,7 +10,21 @@
       "TestNativeNamespacesFilesystem/MetadataClosure",
       "TestNativeFilesystemNeverFallsBackToLegacyShadow",
       "TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation",
-      "TestNativeOldFilesystemExecutablesCannotMutateNativeClosure"
+      "TestNativeOldFilesystemExecutablesCannotMutateNativeClosure",
+      "TestNativeExecutionStateFilesystem",
+      "TestNativeExecutionStateFilesystem/AtomicPublicationAndLostAcknowledgment",
+      "TestNativeExecutionStateFilesystem/ConcurrentCoordinatorsCannotOverwrite",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss",
+      "TestNativeExecutionStateFilesystem/UncertainEffectsRequireRecoveryDecision",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/future_format",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/unfinished_producer",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/invented_success",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/unpublished_export",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/tampered_input",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/unknown_effect_outcome",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/identity_replacement",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/reservation_without_admission",
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/partial_collection"
     ],
     "github.com/SocialGouv/iterion/pkg/store/mongo": [
       "TestNativeNamespacesMongo",
@@ -22,7 +36,21 @@
       "TestNativeMongoNeverFallsBackToLegacyShadow",
       "TestNativeMongoRefusesUnsupportedRecordBeforeMutation",
       "TestNativeMongoDeleteRemovesSequenceAndIRClosure",
-      "TestNativeOldMongoAndS3ExecutablesCannotMutateNativeClosure"
+      "TestNativeOldMongoAndS3ExecutablesCannotMutateNativeClosure",
+      "TestNativeExecutionStateMongo",
+      "TestNativeExecutionStateMongo/AtomicPublicationAndLostAcknowledgment",
+      "TestNativeExecutionStateMongo/ConcurrentCoordinatorsCannotOverwrite",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss",
+      "TestNativeExecutionStateMongo/UncertainEffectsRequireRecoveryDecision",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/future_format",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/unfinished_producer",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/invented_success",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/unpublished_export",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/tampered_input",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/unknown_effect_outcome",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/identity_replacement",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/reservation_without_admission",
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/partial_collection"
     ],
     "github.com/SocialGouv/iterion/pkg/store/blob": [
       "TestNativeBlobKeysAreOutsideLegacyFamilies",

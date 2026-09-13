@@ -545,6 +545,10 @@ type Run struct {
 	FormatVersion    int    `json:"format_version" bson:"format_version"`
 	ID               string `json:"id" bson:"_id"`
 	RuntimeSemantics string `json:"runtime_semantics,omitempty" bson:"runtime_semantics,omitempty"`
+	// PortExecution is the authoritative native checkpoint. Invocation state,
+	// publications and reservations commit together through the run CAS. Events
+	// and artifact files alone never establish native consumer readiness.
+	PortExecution *PortExecution `json:"port_execution,omitempty" bson:"port_execution,omitempty"`
 	// ExecutionContext is the versioned launch contract. It is optional so
 	// runs written before the reliability contract remain readable and keep
 	// their legacy behaviour on resume.

@@ -46,8 +46,8 @@ func (s *Store) runFilesScratchDir(runID string) string {
 // per-run local scratch dir (the sandbox bind-mount source). Loosens the
 // perms like the filesystem store so the in-container user (uid 1000)
 // can write into a host-owned mount. Idempotent.
-func (s *Store) EnsureRunFilesDir(_ context.Context, runID string) (string, error) {
-	if err := store.ValidateRunID(runID); err != nil {
+func (s *Store) EnsureRunFilesDir(ctx context.Context, runID string) (string, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return "", err
 	}
 	if s.runFilesScratch == "" {

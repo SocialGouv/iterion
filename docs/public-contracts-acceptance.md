@@ -20,7 +20,7 @@ Syntax profiles and runtime semantics are independent.
 | Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Map inference, shared-axis reuse, whole-array typing and ambiguous-axis rejection pass; execution outstanding |
 | Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Outstanding |
 | Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Outstanding |
-| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Outstanding |
+| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Native checkpoint CAS, atomic publication/reservation transitions and lost-acknowledgment cases pass on FS/Mongo; Engine and physical file validation outstanding |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Outstanding |
@@ -72,7 +72,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the native scheduler or deployment barrier is implemented.
 - Native store tests pass on filesystem and a real Mongo 8 replica set with
   `ITERION_TEST_REQUIRED=1`, `ITERION_TEST_MONGO_URI` and `go test -race -json`.
-  `scripts/verify-port-tests.mjs` verified all 30 expected cases in
+  `scripts/verify-port-tests.mjs` verified all 58 expected cases in
   `pkg/store/storetest/native_namespaces.json` passed without skips. They cover
   metadata and blob round trips, exact public inputs, descendant namespaces,
   no legacy shadow fallback, unsupported-record refusal and deletion closure.
@@ -84,11 +84,28 @@ Syntax profiles and runtime semantics are independent.
   real replica set and both versions' real S3 clients against a disposable
   HTTP object fixture. This does not certify old queue consumers or workspace
   maintenance. Reproduction: [compatibility tests](public-contracts-testing.md).
-- Full `pkg/store` and `pkg/store/blob` suites pass. The real-Mongo shared
-  legacy conformance suite passed. The subsequent full Mongo package run
-  found a static deletion-inventory parser that did not recognize the new
-  namespace selector; that guard was updated to require routed collections
-  and its focused rerun passed. Final broader verification remains required.
+- The native checkpoint persists captured identities, invocation attempts,
+  ordered collections, exact public values, file references and root budget
+  reservations in the existing run CAS. Mongo native reads/writes explicitly
+  use majority read/write concern with journaling. FS uses the existing
+  fsynced temporary-file, rename and directory-fsync commit.
+- `TestNativeExecutionStateFilesystem` and `TestNativeExecutionStateMongo`
+  pass with race detection. Injected loss immediately before the store commit
+  leaves staged artifacts unpublished; loss after commit permits an identical
+  acknowledgment retry without another budget charge. Competing coordinators
+  cannot overwrite each other. Native values survive ordinary metadata writes
+  without numeric coercion or whitespace/HTML-escaping identity changes.
+  An uncertain effect requires recovery evidence tied to its exact attempt.
+  These tests exercise the storage boundary; they do not yet exercise Engine
+  scheduling, external effects, physical file validation or actual process
+  termination inside a filesystem/Mongo write.
+- Full `pkg/store`, `pkg/store/blob` and real-Mongo `pkg/store/mongo`
+  suites pass with `-race -json -count=1`, including shared legacy
+  conformance and the deletion-inventory guard. The manifest verified all
+  58 required native cases without skips. A subsequent narrow change made
+  Mongo scratch-directory creation check native record compatibility before
+  mutation; the FS/Mongo unsupported-record cases passed again with race
+  detection. `go vet` passed for the store, storetest and Mongo packages.
 
 ## Verification rules
 

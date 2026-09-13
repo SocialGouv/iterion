@@ -10,6 +10,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 const NativeSchemaVersion = 2
@@ -63,7 +65,12 @@ func (s *Store) guardNativeRun(ctx context.Context, id string) error {
 // existence-based fallback can redirect a native ID to a legacy collection.
 func (s *Store) collectionForRun(id string, legacy *mongo.Collection) *mongo.Collection {
 	if store.IsNativeRunID(id) {
-		return s.db.Collection(legacy.Name() + "_ports_v1")
+		// A native publication acknowledgment must survive primary failover.
+		// Readers may schedule consumers only from majority-committed state.
+		journal := true
+		return s.db.Collection(legacy.Name()+"_ports_v1", options.Collection().
+			SetWriteConcern(&writeconcern.WriteConcern{W: "majority", Journal: &journal}).
+			SetReadConcern(readconcern.Majority()))
 	}
 	if store.RunDataDirectory(id) != "runs" {
 		return s.db.Collection(legacy.Name() + "_unsupported_ports")

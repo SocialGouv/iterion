@@ -5,6 +5,56 @@ documents and collections rather than reproducing the directory layout. The
 current Go structs and constants under [`pkg/store/`](../pkg/store/) are the
 authoritative schema; readers must tolerate additive fields and event types.
 
+Native `ports-v1` execution has a separate, explicitly versioned namespace
+described below. Tolerance of additive legacy metadata does not authorize
+executing an unknown native state or rewriting it with an older interpreter.
+
+## Native public-contract records
+
+Native IDs start with `pc1_`; they route exclusively to
+`<store-root>/port_runs_v1/<id>/run.ports-v1.json`. The run uses
+`format_version: 2` and an explicit `runtime_semantics`. Mongo uses the same
+Store and database, with collection names suffixed `_ports_v1` and schema
+version `v: 2`. Native blob keys start with `ports-v1/`. There is no lookup
+fallback to legacy data, including when an older writer creates a shadow
+record with the same textual ID.
+
+`port_execution` is the authoritative native checkpoint for a `ports-v1`
+run. The internal `legacy-adapter-v1` interpreter retains legacy checkpoint
+semantics inside the protected native namespace. Its descendants remain in
+that namespace too.
+
+| Native checkpoint field | Meaning |
+| --- | --- |
+| `version` | Native checkpoint format, currently 1; unknown versions are refused before mutation |
+| `revision` | Monotonic native coordinator commit; the enclosing run CAS also excludes races with metadata writers |
+| `generation` | Explicit recovery/invalidation generation; cannot advance while work or effects remain unresolved |
+| `identity` | Captured source, graph, contract, policy, inputs and dependency identities |
+| `invocations` | Stable node/item identities, attempts, bound input revisions, statuses, outputs and effect recovery evidence |
+| `collections` | Stable item order and atomically committed complete collection outputs |
+| `publications` | Exact JSON values, fingerprints and immutable captured-file references |
+| `exports`, `products` | Published workflow output references and explicit product declarations |
+| `budget` | Consumed root budget and reservations belonging to active invocations |
+
+Missing inputs have no reference. JSON `null` and `[]` are distinct values.
+Canonicalization sorts object keys and normalizes whitespace and string
+escaping while preserving numeric precision and spelling. Duplicate JSON
+members are rejected. Mongo stores public payloads as JSON bytes to avoid
+BSON numeric coercion.
+
+A successful invocation, its validated publications and reservation settlement
+commit in one run-document CAS. Filesystem commits use file fsync, atomic
+rename and parent-directory fsync; native Mongo collections use majority
+read/write concern and journaled writes. Staged artifact bytes or events alone
+never establish consumer readiness. An identical retry after a lost commit
+acknowledgment is accepted; a competing checkpoint revision is a conflict.
+
+An `uncertain_effect` invocation needs recovery evidence tied to its exact
+attempt. A decision about an earlier attempt cannot authorize a later retry.
+This is not an exactly-once guarantee. Workflow-schema checks, physical file
+validation, scheduling and activation belong to runtime integration; track
+implementation and executed tests in the [acceptance matrix](public-contracts-acceptance.md).
+
 ## Filesystem layout
 
 ```text

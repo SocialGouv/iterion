@@ -24,6 +24,16 @@ func TestNativeNamespacesFilesystem(t *testing.T) {
 	})
 }
 
+func TestNativeExecutionStateFilesystem(t *testing.T) {
+	storetest.RunPortExecutionState(t, func(t *testing.T) store.RunStore {
+		s, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	})
+}
+
 func TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation(t *testing.T) {
 	root := t.TempDir()
 	s, err := store.New(root)
@@ -47,6 +57,7 @@ func TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation(t *testing.T) {
 	}
 	checks := []func() error{
 		func() error { _, err := s.LoadRun(ctx, id); return err },
+		func() error { _, err := s.EnsureRunFilesDir(ctx, id); return err },
 		func() error { _, err := s.AppendEvent(ctx, id, store.Event{Type: store.EventNodeStarted}); return err },
 		func() error { return s.WriteArtifact(ctx, &store.Artifact{RunID: id, NodeID: "node", Version: 1}) },
 		func() error { return s.UpdateRunStatus(ctx, id, store.RunStatusFinished, "") },

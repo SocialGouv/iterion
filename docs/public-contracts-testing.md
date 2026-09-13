@@ -28,6 +28,7 @@ and configuration directories and require no provider credentials.
 
 Required mode fails when a binary or integration prerequisite is missing.
 The manifest verifier also fails if any expected case is absent or skipped.
-These checks establish store namespace isolation, not scheduler correctness,
-queue compatibility, fleet activation or safe workspace maintenance. Those
+These checks establish store namespace isolation and native checkpoint CAS
+behavior, not scheduler correctness, physical output-file validation, queue
+compatibility, fleet activation or safe workspace maintenance. Those
 remain separate entries in the [acceptance matrix](public-contracts-acceptance.md).

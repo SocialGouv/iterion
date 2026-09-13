@@ -39,6 +39,10 @@ func nativeNamespaceStore(t *testing.T) *Store {
 	return s
 }
 
+func TestNativeExecutionStateMongo(t *testing.T) {
+	storetest.RunPortExecutionState(t, func(t *testing.T) store.RunStore { return nativeNamespaceStore(t) })
+}
+
 func TestNativeMongoRefusesUnsupportedRecordBeforeMutation(t *testing.T) {
 	s := nativeNamespaceStore(t)
 	base, cancel := mongotest.Ctx(t)
@@ -54,6 +58,7 @@ func TestNativeMongoRefusesUnsupportedRecordBeforeMutation(t *testing.T) {
 	}
 	checks := []func() error{
 		func() error { _, err := s.LoadRun(ctx, id); return err },
+		func() error { _, err := s.EnsureRunFilesDir(ctx, id); return err },
 		func() error { _, err := s.AppendEvent(ctx, id, store.Event{Type: store.EventNodeStarted}); return err },
 		func() error { return s.WriteArtifact(ctx, &store.Artifact{RunID: id, NodeID: "node", Version: 1}) },
 		func() error { return s.UpdateRunStatus(ctx, id, store.RunStatusFinished, "") },

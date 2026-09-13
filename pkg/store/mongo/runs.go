@@ -227,7 +227,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	tomb := bson.M{"$set": bson.M{"deleted_at": now, "status": "deleted", "updated_at": now},
 		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
-			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "", "ports_inputs_json": ""}}
+			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "", "ports_inputs_json": "", "port_execution": ""}}
 	if _, err := s.collectionForRun(id, s.runs).UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), versionRunUpdate(tomb)); err != nil {
 		return fmt.Errorf("store/mongo: tombstone run %s: %w", id, err)
 	}
