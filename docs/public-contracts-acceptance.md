@@ -30,7 +30,7 @@ Syntax profiles and runtime semantics are independent.
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
 | Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local validation draft and real Chromium save pass; direct Copi authoring, runtime cost visibility and composition outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
-| Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces; broader project-specific legacy trace corpus remains outstanding |
+| Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
 | Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store and 68 Engine cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
@@ -156,12 +156,13 @@ Syntax profiles and runtime semantics are independent.
   without skips. This fixture is a deterministic compatibility sentinel, not
   a substitute for before/after traces of every project workflow.
 - Read-only `iterion validate --json` comparisons used the actual pinned-main
-  and branch CLIs against the version-3 reference sources in Shorts
-  (`units.bot`), Town (`epic-acceptance-review.bot`) and Tabarria
-  (`animal-range.bot`). All six invocations exited successfully; each pair
-  returned `valid: true` with byte-equivalent normalized diagnostics (5, 2
-  and 1 respectively). This verifies parsing and diagnostics for those exact
-  files, not their execution or full project bundles.
+  and branch CLIs against all 117 `.bot` sources found in Shorts (27), Town
+  (40) and Tabarria (50). Every invocation returned success and `valid: true`;
+  each old/current pair had identical normalized diagnostics, with zero
+  mismatches. The source set's sorted relative-path/SHA-256 manifest hashes to
+  `e18fa9e27e6cbd0293471130c015d697e0e845c6f76f95dcf58dc49b4ff8d2a6`.
+  The three version-3 reference files retain their separately frozen hashes.
+  This verifies parsing and diagnostics, not execution or bundle resolution.
 - A real Chromium e2e case edits a native responsibility, saves the `.bot`,
   and reloads it with graph bindings and technical policy intact. The source
   equivalence check ignores diagnostic spans and JSON formatting while
