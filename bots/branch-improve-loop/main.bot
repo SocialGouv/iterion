@@ -217,6 +217,8 @@ vars:
   ## or no connection covering the repo) means the question cannot be asked,
   ## which is never read as a closure.
   forge_pr_state_url: string = ""
+  ## Read-only proof of the runtime token permission before any analysis.
+  forge_delivery_preflight_url: string = ""
 
   ## ─── Plan phase ───────────────────────────────────────────────
   ## The plan phase itself — the AUTHORED triage plan the campaign fixes
@@ -1340,6 +1342,114 @@ print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + 
 "`
   output: workspace_probe_state
 
+## Before any plan or campaign, prove the capability of the token that will
+## deliver this branch. A permission advertised on the installation is not
+## evidence about its narrower runtime token. Unknown is a typed refusal.
+schema delivery_probe_state:
+  ok: bool
+  code: string
+  reason: string
+
+tool delivery_probe:
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} PR={{vars.pr_url}} CHECK_URL={{vars.forge_delivery_preflight_url}} CHECK_AUTH={{vars.forge_publish_token}} TOKEN_PATH={{secrets.forge_token.path}} python3 -c "
+import os, subprocess, json, sys, re, hashlib, urllib.request, urllib.parse
+ws = os.environ.get('WS', '').strip()
+base = os.environ.get('BASE', '').strip()
+pr = os.environ.get('PR', '').strip()
+def emit(ok, reason):
+    code = '' if ok else 'FORGE_PERMISSION_DENIED'
+    if not ok:
+        sys.stderr.write(code + ': ' + reason + chr(10))
+    print(json.dumps({'ok': ok, 'code': code, 'reason': reason}))
+    raise SystemExit(0)
+def git(*args):
+    p = subprocess.run(['git', '-C', ws] + list(args), capture_output=True, timeout=30)
+    if p.returncode:
+        emit(False, 'workflows:write preflight could not inspect the delivery diff; fix the checkout and relaunch')
+    return p.stdout
+try:
+    ref = ''
+    for candidate in (base, 'refs/remotes/origin/' + base):
+        p = subprocess.run(['git', '-C', ws, 'rev-parse', '--verify', '-q', candidate + '^{commit}'], capture_output=True, timeout=30)
+        if p.returncode == 0:
+            ref = candidate
+            break
+    if not ref:
+        emit(False, 'workflows:write preflight requires a reachable base_ref')
+    changed = git('diff', '--no-renames', '--name-only', '-z', ref + '...HEAD')
+    # Include changes later reverted within the branch: Git pushes commits,
+    # not only the final net diff. Keep both sides of renames as delete/add.
+    changed += git('log', '--format=', '--no-renames', '--name-only', '-z', ref + '..HEAD')
+    changed += git('diff', '--no-renames', '--name-only', '-z', 'HEAD')
+    changed += git('ls-files', '--others', '--exclude-standard', '-z')
+    if not any(p.lstrip(b'\n').startswith(b'.github/workflows/') for p in changed.split(b'\x00')):
+        emit(True, 'delivery diff has no GitHub workflows')
+    origin = git('remote', 'get-url', 'origin').decode().strip()
+    parsed = urllib.parse.urlsplit(origin)
+    if parsed.scheme in ('https', 'http', 'ssh'):
+        host, repo = parsed.hostname or '', parsed.path.strip('/')
+    else:
+        m = re.match(r'(?:[^@/:]+@)?([^/:]+):(.+)', origin)
+        host, repo = (m.group(1), m.group(2)) if m else ('', '')
+    repo = repo[:-4] if repo.endswith('.git') else repo
+    pr_parts = urllib.parse.urlsplit(pr)
+    if '/-/merge_requests/' in pr_parts.path:
+        emit(True, 'GitLab merge request; GitHub workflows permission does not apply')
+    is_github = host.lower() == 'github.com' or bool(re.search(r'/pull/[0-9]+/?$', pr_parts.path))
+    if not is_github:
+        emit(False, 'workflows:write preflight cannot identify the forge; provide the GitHub pull request URL')
+    if pr and (pr_parts.hostname != host or pr_parts.path.rsplit('/pull/', 1)[0].strip('/') != repo):
+        emit(False, 'workflows:write preflight refuses a PR and push origin that name different repositories')
+    token = ''
+    for path in (os.environ.get('TOKEN_PATH', ''), '/run/iterion/secrets/forge_token'):
+        if path and os.path.isfile(path):
+            with open(path) as f:
+                token = f.read().strip()
+            if token:
+                break
+    if not token:
+        for name in ('GH_TOKEN', 'GITHUB_TOKEN'):
+            token = os.environ.get(name, '').strip()
+            if token:
+                break
+    if not token:
+        emit(False, 'workflows:write cannot be verified: no runtime forge token is mounted; connect a delivery-capable credential and relaunch')
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    opener = urllib.request.build_opener(NoRedirect())
+    # Classic PAT/OAuth scopes can be read from the actual token's API
+    # response. Installation and fine-grained tokens have no such header.
+    if token.startswith(('ghp_', 'gho_')):
+        api = 'https://api.github.com' if host.lower() == 'github.com' else 'https://' + host + '/api/v3'
+        request = urllib.request.Request(api + '/user', headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'})
+        with opener.open(request, timeout=10) as response:
+            scopes = {s.strip() for s in response.headers.get('X-OAuth-Scopes', '').split(',')}
+        if 'workflow' in scopes and ('repo' in scopes or 'public_repo' in scopes):
+            emit(True, 'runtime token confirms workflow and repository scopes')
+        emit(False, 'workflows:write is missing or unverified on the runtime token (classic scope: workflow)')
+    url = os.environ.get('CHECK_URL', '').strip()
+    auth = os.environ.get('CHECK_AUTH', '').strip()
+    if not url or not auth or not pr:
+        emit(False, 'workflows:write cannot be verified: no scoped delivery preflight service is available; update the server, refresh the App token and relaunch')
+    payload = json.dumps({'pr_url': pr, 'credential_sha256': hashlib.sha256(token.encode()).hexdigest()}).encode()
+    request = urllib.request.Request(url, data=payload, headers={'X-Iterion-Run': auth, 'Content-Type': 'application/json'})
+    with opener.open(request, timeout=10) as response:
+        verdict = json.loads(response.read(8192))
+    if verdict.get('ok') is True and verdict.get('code') == '':
+        emit(True, verdict.get('reason', 'runtime token delivery permission confirmed'))
+    emit(False, verdict.get('reason') or 'workflows:write is missing or unverified on the runtime token')
+except Exception:
+    # Never echo a token, callback grant or upstream response in a refusal.
+    emit(False, 'workflows:write preflight could not establish delivery permission; verify the credential and preflight service, then relaunch')
+"`
+  output: delivery_probe_state
+
+fail delivery_permission_denied:
+  code: FORGE_PERMISSION_DENIED
+  message: "{{outputs.delivery_probe.reason}}"
+  resumable: false
+
 ## plan_topology lifts the plan_phase switch into a bool so the entry
 ## edges use the C012-exhaustive simple form. No LLM. This gate is the
 ## PHASE (on by default); whether a cross-model peer reviews the authored
@@ -2054,9 +2164,9 @@ compute mr_gate:
 ## actually happen. python3 for safe JSON + no quote clashes (mirrors
 ## verify_run); read-only, idempotent probes.
 tool forge_auth_probe:
-  command: `python3 -c "
+  command: `TOKEN_PATH={{secrets.forge_token.path}} python3 -c "
 import os, subprocess, json
-tok = '/run/iterion/secrets/forge_token'
+tok = os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token'
 try:
     if os.path.isfile(tok) and os.path.getsize(tok) > 0:
         print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
@@ -2079,9 +2189,9 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 ## (a graph node is a unique instance, so the open_mr and push_back paths
 ## each carry their own probe). Same contract as forge_auth_probe.
 tool push_auth_probe:
-  command: `python3 -c "
+  command: `TOKEN_PATH={{secrets.forge_token.path}} python3 -c "
 import os, subprocess, json
-tok = '/run/iterion/secrets/forge_token'
+tok = os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token'
 try:
     if os.path.isfile(tok) and os.path.getsize(tok) > 0:
         print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
@@ -2127,7 +2237,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool push_back_tool:
-  command: `PUSH_BRANCH={{vars.push_branch}} PR_URL={{vars.pr_url}} PR_STATE_URL={{vars.forge_pr_state_url}} PR_STATE_TOKEN={{vars.forge_publish_token}} python3 -c "
+  command: `TOKEN_PATH={{secrets.forge_token.path}} PUSH_BRANCH={{vars.push_branch}} PR_URL={{vars.pr_url}} PR_STATE_URL={{vars.forge_pr_state_url}} PR_STATE_TOKEN={{vars.forge_publish_token}} python3 -c "
 import os, subprocess, json, re, urllib.request, urllib.error, urllib.parse
 branch = os.environ.get('PUSH_BRANCH', '').strip()
 out = {'pushed': False, 'superseded': False, 'reason': '', 'banked_branch': '', 'how_to_take': ''}
@@ -2143,7 +2253,7 @@ def sha(rev):
     r = run('git', 'rev-parse', rev)
     return (r.stdout or '').strip() if r.returncode == 0 else ''
 tok = ''
-p = '/run/iterion/secrets/forge_token'
+p = os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token'
 try:
     if os.path.isfile(p) and os.path.getsize(p) > 0:
         tok = open(p).read().strip()
@@ -2499,7 +2609,9 @@ workflow branch_improve_loop:
 
   ## Precondition: nothing LLM runs on a workspace with no repository
   ## (or with an unreachable base_ref).
-  workspace_probe -> plan_topology when ok
+  workspace_probe -> delivery_probe when ok
+  delivery_probe -> plan_topology when ok
+  delivery_probe -> delivery_permission_denied when not ok
   workspace_probe -> workspace_not_a_repo when not ok
 
   ## Plan phase: on by default; plan_phase off → straight to the reserve,

@@ -213,12 +213,16 @@ func TestCampaignWorkspacePrecondition(t *testing.T) {
 				}
 			}
 			var toGate, toFail bool
+			nextGate := "plan_topology"
+			if bot == "branch-improve-loop" {
+				nextGate = "delivery_probe"
+			}
 			for _, e := range wf.Edges {
 				if e.From != "workspace_probe" {
 					continue
 				}
 				switch {
-				case e.To == "plan_topology" && e.Condition == "ok" && !e.Negated:
+				case e.To == nextGate && e.Condition == "ok" && !e.Negated:
 					toGate = true
 				case e.To == "workspace_not_a_repo" && e.Condition == "ok" && e.Negated:
 					toFail = true

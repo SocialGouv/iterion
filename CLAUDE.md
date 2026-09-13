@@ -2078,6 +2078,8 @@ sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
 (`auto_fix_on_gate_failure`) where a red gate launches the repo's fixer once per
 head sha, off by default so the developer keeps the choice.
 
+**GitHub workflow delivery preflight** — Billy checks the runtime token’s actual `workflows:write` proof before analyzing a workflow-changing diff. `FORGE_PERMISSION_DENIED` requires credential configuration and a new launch; installation grants alone are not proof. See [docs/revi-billy-loop.md](docs/revi-billy-loop.md).
+
 **Revi → Billy is the habit on this repo.** When Revi leaves findings on a PR
 here, comment **`/billy`** on the PR and let the fixer work — don't hand-fix
 the findings in a session. The command seeds Billy with Revi's review

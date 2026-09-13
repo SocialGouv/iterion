@@ -159,3 +159,41 @@ loop on ourselves.
 The 2026-09-03 run on the watchdog PR (#646) is the reference for the
 banked-chain delivery and the weekly-cap wall:
 [bot-runs/branch-improve-loop.md](bot-runs/branch-improve-loop.md).
+
+
+## Workflow delivery permission preflight (#999)
+
+Billy 1.8 checks the branch before any planning or campaign analysis. A
+GitHub diff touching `.github/workflows/` (including rename sources,
+intermediate changes subsequently reverted, staged changes and untracked
+files) requires proof that the runtime token carries `workflows:write` and
+`contents:write`. Other diffs proceed normally. GitLab merge requests are
+outside this GitHub permission check.
+
+The App mint response supplies the actual permission set. The server stores
+it with the sealed managed token, its full SHA256 identity and expiry;
+rotation replaces both together. The installation grant and the diagnostic
+last-minted-per-installation cache never authorize the check. The run sends
+only its token digest to the read-only, repository/team/host-scoped
+`POST /api/v1/forge/delivery-preflight` callback under its existing run grant.
+No permission is added to the App automatically.
+
+A missing, expired, rotated or narrower proof refuses the run with
+`FORGE_PERMISSION_DENIED` before analysis. The operator can deliberately
+approve delivery permissions on the App, refresh its managed token and
+launch a new run. Classic PAT/OAuth tokens can instead prove `workflow` plus
+repository scopes through the actual token's GitHub `/user` response.
+Fine-grained PATs and external App tokens without managed mint evidence
+remain unverified; their permission cannot be inferred from token syntax.
+A missing callback on an older server fails closed for workflow changes;
+ordinary code changes retain their path. This uses existing bot variables
+and a deterministic tool, so no queue-version change is required.
+
+The check is an admission snapshot, not a guarantee against later credential
+revocation or newly authored workflow files. A later push/bank refusal still
+requires the bank failure alert tracked in #885 (PR #1194).
+
+Proof: `TestFixerWorkflowDiffRefusesBeforeAnalysis` runs the compiled catalog
+workflow and real shell tools while counting forbidden analysis calls;
+`TestForgeDeliveryPreflightUsesActualTokenProof` covers the callback's scope
+and token binding. No live App permission was changed during validation.

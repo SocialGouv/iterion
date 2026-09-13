@@ -40,6 +40,9 @@ type GenericSecret struct {
 	// intersected — never broadened — with any binding/workflow host policy
 	// downstream (IntersectHosts / model.effectiveSecretHosts).
 	AllowedHosts []string `bson:"allowed_hosts,omitempty" json:"allowed_hosts,omitempty"`
+	// Written with the sealed token by the forge minter/refresh worker.
+	// A changed plaintext invalidates it even if a writer retains the field.
+	ForgeTokenProof *TokenPermissionProof `bson:"forge_token_proof,omitempty" json:"forge_token_proof,omitempty"`
 }
 
 type GenericSecretStore interface {
