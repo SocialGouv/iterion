@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -127,17 +128,29 @@ func TestRunLogWriter_TickerFlushAndCloseFlush(t *testing.T) {
 }
 
 func TestRunLogWriter_SizeThresholdFlushes(t *testing.T) {
-	fs := &fakeRunLogStore{}
-	w := newRunLogWriter(context.Background(), fs, "r1", 0, iterlog.Nop())
-	defer w.Close()
+	synctest.Test(t, func(t *testing.T) {
+		fs := &fakeRunLogStore{}
+		w := newRunLogWriter(context.Background(), fs, "r1", 0, iterlog.Nop())
+		defer w.Close()
 
-	big := bytes.Repeat([]byte("x"), runLogFlushBytes+1)
-	if _, err := w.Write(big); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	// Must flush well before the 500ms ticker.
-	waitForCondition(t, 300*time.Millisecond, "size-threshold flush", func() bool {
-		return len(fs.assembled()) == len(big)
+		// Wait lets the flusher run without advancing the bubble's clock:
+		// the ticker cannot satisfy either assertion, even on a loaded host.
+		below := bytes.Repeat([]byte("x"), runLogFlushBytes-1)
+		if _, err := w.Write(below); err != nil {
+			t.Fatalf("Write below threshold: %v", err)
+		}
+		synctest.Wait()
+		if got := fs.assembled(); got != "" {
+			t.Fatalf("flushed %d bytes below the size threshold", len(got))
+		}
+
+		if _, err := w.Write([]byte("y")); err != nil {
+			t.Fatalf("Write at threshold: %v", err)
+		}
+		synctest.Wait()
+		if got, want := fs.assembled(), string(below)+"y"; got != want {
+			t.Fatalf("size-threshold flush = %d bytes, want %d with matching content before any ticker or Close flush", len(got), len(want))
+		}
 	})
 }
 
