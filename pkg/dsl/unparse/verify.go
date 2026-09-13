@@ -29,8 +29,38 @@ import (
 // and is refused by name before anything is compared.
 func Verify(f *ast.File, text string) error {
 	for _, p := range f.Prompts {
+		if p.Inline {
+			continue // written as a quoted string: every body has that form
+		}
 		if err := parser.CheckPromptBody(p.Body); err != nil {
 			return fmt.Errorf("prompt %q cannot be written as .bot source: %v", p.Name, err)
+		}
+	}
+	// A fallback route is written under its name; one with no name — the
+	// canvas's route before it is named — has no written form, and the
+	// writer leaves it out, which the comparison below would report as a
+	// node that differs. Said by name instead.
+	for _, a := range f.Agents {
+		if err := checkFallbackNames(a.Fallbacks); err != nil {
+			return fmt.Errorf("agent %q cannot be written as .bot source: %v", a.Name, err)
+		}
+	}
+	for _, j := range f.Judges {
+		if err := checkFallbackNames(j.Fallbacks); err != nil {
+			return fmt.Errorf("judge %q cannot be written as .bot source: %v", j.Name, err)
+		}
+	}
+	// A group's members go through the same writers.
+	for _, g := range f.Groups {
+		for _, a := range g.Agents {
+			if err := checkFallbackNames(a.Fallbacks); err != nil {
+				return fmt.Errorf("group %q, agent %q cannot be written as .bot source: %v", g.Name, a.Name, err)
+			}
+		}
+		for _, j := range g.Judges {
+			if err := checkFallbackNames(j.Fallbacks); err != nil {
+				return fmt.Errorf("group %q, judge %q cannot be written as .bot source: %v", g.Name, j.Name, err)
+			}
 		}
 	}
 	f = canonicalPrompts(f)
@@ -48,6 +78,12 @@ func Verify(f *ast.File, text string) error {
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("the serialised source does not parse: %s", strings.Join(errs, "; "))
+	}
+	// The profile is not program — the same AST compiles the same in
+	// either — so SameProgram cannot see it lost: a document saved in the
+	// wrong profile would read its strings and its prompts otherwise.
+	if got, want := pr.File.EffectiveProfile(), f.EffectiveProfile(); got != want {
+		return fmt.Errorf("the serialised source reads as dsl profile %d, the document is profile %d", got, want)
 	}
 	ca, cb := ir.Compile(f), ir.Compile(pr.File)
 	if why := ir.SameProgram(ca, cb); why != "" {
@@ -91,6 +127,16 @@ func sourceFile(f *ast.File) string {
 	return ""
 }
 
+// checkFallbackNames reports the first fallback route with no name.
+func checkFallbackNames(fbs []*ast.FallbackDecl) error {
+	for i, fb := range fbs {
+		if fb == nil || strings.TrimSpace(fb.Name) == "" {
+			return fmt.Errorf("fallback route %d has no name; every route is written under its name", i+1)
+		}
+	}
+	return nil
+}
+
 // canonicalPrompts is a shallow copy of f whose prompt bodies are in the
 // lexer's canonical form — the form the writer emits and the re-parse
 // yields. The document itself is left as it came.
@@ -98,8 +144,14 @@ func canonicalPrompts(f *ast.File) *ast.File {
 	cp := *f
 	cp.Prompts = make([]*ast.PromptDecl, len(f.Prompts))
 	for i, p := range f.Prompts {
+		if p.Inline {
+			// Written as a quoted string, which carries the body verbatim:
+			// compared as it is.
+			cp.Prompts[i] = p
+			continue
+		}
 		q := *p
-		q.Body = parser.CanonicalPromptBody(p.Body)
+		q.Body = parser.CanonicalPromptBodyIn(f.EffectiveProfile(), p.Body)
 		cp.Prompts[i] = &q
 	}
 	return &cp

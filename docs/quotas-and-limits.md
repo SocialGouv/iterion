@@ -269,15 +269,87 @@ definitive for that attempt, so it has to be visible.
 iterion remote usage --by-credential
 # GET /api/teams/{id}/credentials/usage
 
+# A past month, on either route
+iterion remote usage --by-credential --month 2026-08
+iterion remote api GET "/api/admin/credentials/usage?month=2026-08"
+
 # The platform tier across every tenant it served (super-admin)
 iterion remote api GET /api/admin/credentials/usage
 # ?tier=team|pool|platform — or ?fingerprint=<fp> for one credential,
 # whose rows live under each tenant that drew on it.
 ```
 
+**The admin route answers for ONE tier, and the default is `platform`.** A
+team forfait's spend is metered on a `team` row and is therefore absent from
+the unfiltered listing — by design, since no tenant view can show the
+platform tier and that is the question this route exists for. Every response
+now carries a `scope` object naming what was applied (`tier`, `fingerprint`,
+`repo`, `team_id`), because a listing that does not say what it left out
+reads as "everything", and a credential missing from "everything" reads as a
+credential that spent nothing:
+
+```json
+{ "month": "2026-09", "scope": { "tier": "platform" }, "credentials": [ … ] }
+```
+
+Both routes take `?month=YYYY-MM`, and **refuse a value they cannot parse**
+(400) rather than fall back to the current month — the response is labelled
+with a month, so serving another one under that label is a wrong answer, not
+a partial one. Two readings of this endpoint made without either property
+were what opened #1087 against a counter that was recording normally: a
+`?month=` the server ignored returned the current month twice, and the
+platform-tier default hid the team row the run had actually charged.
+
 Metering is best effort throughout, like the org bucket: a missing counter,
 an unattributable route or a store failure leave the observation on the
 floor rather than turn a finished run into a failed one.
+
+### The repository dimension
+
+The meter also keys on the **repository** a run targeted — `repo_id`, the
+forge slug (`owner/repo`, `group/sub/project`) the launch surfaces already
+stamp on the run as `ProjectPath` and the studio already groups runs by, not
+a second identity derived from a clone URL. It is what makes "one busy
+repository is eating the shared subscription" a question with an answer.
+
+```sh
+# What this team spent on one repository this month
+iterion remote usage --by-credential --repo SocialGouv/iterion
+
+# The same repository across every tenant and credential (super-admin)
+iterion remote api GET "/api/admin/credentials/usage?repo=SocialGouv/iterion"
+# ?fingerprint= and ?repo= are REFUSED together (400): one credential across
+# repositories and one repository across credentials are different questions,
+# and answering whichever the code checked first returns a figure nobody
+# asked for.
+```
+
+Four properties are worth knowing, because each is a way to misread the
+numbers:
+
+- **Every listing that predates the dimension sums the repositories back
+  together**, so `--by-credential` without `--repo` reports exactly what it
+  always did. The alternative — one row per repository — would have made a
+  credential appear several times with no total anywhere.
+- **A row with no repository is not "all repositories".** Local runs, CLI
+  runs and non-webhook cloud launches target none, and neither does any row
+  written before this existed. `--repo` therefore never reaches them: a
+  repository's bill must not quietly include the deployment's unattributed
+  runs. The document id omits an empty repo entirely, which is what lets
+  those rows keep accumulating instead of restarting from zero at the deploy.
+- **A repository's spend spans tenants.** Two teams can serve one repo with
+  their own credentials, so the admin view sums both; the team view returns
+  only that team's share.
+- **A run whose repository cannot be read meters without one.** Same rule as
+  the route attribution: charged to the credential, attributed to nobody —
+  never guessed.
+
+Enforcement is a separate promise. This is the accounting subject a per-repo
+quota needs; the quota itself, and the budget FLOORS that would reserve
+capacity for a workload rather than cap it, are not built — see
+[#950](https://github.com/SocialGouv/iterion/issues/950), whose finding is
+that every budget mechanism in iterion today is a ceiling and none is a
+floor.
 
 ## Reading usage
 

@@ -5,12 +5,13 @@ import (
 	"strings"
 )
 
-// CanonicalPromptBody is the body the lexer settles on for a prompt written
-// with body under its header — whatever the author, or a canvas textarea,
-// put there. It is the one definition of what the v1 syntax carries in a
-// prompt body, read by the writer (which writes this form) and by the save
-// guard (which compares against it), and pinned to the lexer itself by
-// TestCanonicalPromptBodyIsWhereTheLexerSettles.
+// CanonicalPromptBody is the body the profile-1 lexer settles on for a
+// prompt written with body under its header — whatever the author, or a
+// canvas textarea, put there. It is the one definition of what the v1
+// syntax carries in a prompt body, read by the writer (which writes this
+// form) and by the save guard (which compares against it), and pinned to
+// the lexer itself by TestCanonicalPromptBodyIsWhereTheLexerSettles.
+// CanonicalPromptBodyIn is the same definition for a given profile.
 //
 // The facts of the v1 lexer it restates:
 //   - a CR before a newline is folded away with it (CRLF becomes LF before
@@ -37,6 +38,45 @@ func CanonicalPromptBody(body string) string {
 	lines := make([]string, len(kept))
 	for i, k := range kept {
 		lines[i] = stripSpaces(k.text, base)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// CanonicalPromptBodyIn is CanonicalPromptBody for a syntax profile. The
+// profiles differ in exactly one fact: from profile 2 a blank or
+// space-only line BETWEEN two kept lines survives as an empty line — the
+// paragraph break reaches the model — while leading and trailing blank
+// lines are still dropped, a body still never ends with a newline, and the
+// first kept line still sets the indentation. Pinned to the profile-2
+// lexer by TestCanonicalPromptBodyInProfileTwoIsWhereTheLexerSettles.
+func CanonicalPromptBodyIn(profile int, body string) string {
+	if profile < 2 {
+		return CanonicalPromptBody(body)
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.Trim(line, " ") == "" {
+			line = ""
+		}
+		lines[i] = line
+	}
+	start, end := 0, len(lines)
+	for start < end && lines[start] == "" {
+		start++
+	}
+	for end > start && lines[end-1] == "" {
+		end--
+	}
+	lines = lines[start:end]
+	if len(lines) == 0 {
+		return ""
+	}
+	base := leadingSpaces(lines[0])
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = stripSpaces(line, base)
+		}
 	}
 	return strings.Join(lines, "\n")
 }

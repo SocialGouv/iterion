@@ -110,7 +110,7 @@ func (s *Store) migrateStateLocked(from, to, reason string) (int, error) {
 		if err := s.writeIssueLocked(next); err != nil {
 			return touched, fmt.Errorf("native store: write %s during state migration: %w", id, err)
 		}
-		s.index[id] = next
+		s.setIndexLocked(id, next)
 		if err := s.emitPostCommitEvent(Event{
 			Type:    EvtIssueState,
 			IssueID: id,

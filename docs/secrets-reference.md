@@ -168,8 +168,8 @@ only. The `codex` OAuth flow has no equivalent restriction.
 | `iwh_…` | Inbound webhook bearer | `webhook_configs.token_hash` | shown once at create / rotate |
 | `iap_…` | Personal access token | `pat.token_hash` | shown once at mint |
 | `iar_…` | Password-reset link | `password_resets.token_hash` | sent by email; 60-minute TTL |
-| (no prefix) | Refresh JWT | `sessions` (hashed) | the `iterion_refresh` cookie |
-| (no prefix) | Access JWT (HS256) | not stored — signed at issue | the `iterion_auth` cookie / `Authorization: Bearer` |
+| (no prefix) | Refresh JWT | `sessions` (hashed) | the `__Host-iterion_refresh` cookie |
+| (no prefix) | Access JWT (HS256) | not stored — signed at issue | the `__Host-iterion_auth` cookie / `Authorization: Bearer` |
 
 All four `i…_` tokens use the same primitive
 ([pkg/auth/password.go:GenerateRandomToken](../pkg/auth/password.go) +

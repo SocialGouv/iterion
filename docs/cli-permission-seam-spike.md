@@ -255,11 +255,10 @@ directories, unchanged.
 C176 screens **fallback routes** only. A **primary** backend that cannot enforce
 the gate is not screened at all — this compiles clean today:
 
-```
+```iter fragment
 agent runner:
   backend: "grok"
   model: "grok-4.5"
-  …
 workflow main:
   permission: deny
   deny: ["Bash"]

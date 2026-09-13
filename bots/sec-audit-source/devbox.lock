@@ -1,0 +1,221 @@
+{
+  "lockfile_version": "1",
+  "packages": {
+    "github:NixOS/nixpkgs/nixpkgs-unstable": {
+      "last_modified": "2026-09-09T19:38:03Z",
+      "resolved": "github:NixOS/nixpkgs/5052d7ccbcfb7e4ae1586cb2ecf95a2e3707dce9?lastModified=1788982683&narHash=sha256-PJCTsE4I20CrJJPcye9%2Fz6brRFysG5%2Baygr%2FdZK097k%3D"
+    },
+    "gitleaks@8.30.1": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#gitleaks",
+      "source": "devbox-search",
+      "version": "8.30.1",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/va2rvnpijbkwfnf1kf1l14b17vv7y64s-gitleaks-8.30.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/va2rvnpijbkwfnf1kf1l14b17vv7y64s-gitleaks-8.30.1"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/p2qqb151lvf86rv6k2mjw2vyrk50qpc7-gitleaks-8.30.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/p2qqb151lvf86rv6k2mjw2vyrk50qpc7-gitleaks-8.30.1"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/v5x4dkl13y4nxhcaq4xmrwkidy44gv9p-gitleaks-8.30.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/v5x4dkl13y4nxhcaq4xmrwkidy44gv9p-gitleaks-8.30.1"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/jyv71l8qlgpkh9z5q97fwb4f5bpkgc53-gitleaks-8.30.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/jyv71l8qlgpkh9z5q97fwb4f5bpkgc53-gitleaks-8.30.1"
+        }
+      }
+    },
+    "gosec@2.28.0": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#gosec",
+      "source": "devbox-search",
+      "version": "2.28.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/88x8cik2axg9yb6ww9raq4w5zp7jd46p-gosec-2.28.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/88x8cik2axg9yb6ww9raq4w5zp7jd46p-gosec-2.28.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/s1h72wlcgna29pa9apll0h6xzif7ga2w-gosec-2.28.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/s1h72wlcgna29pa9apll0h6xzif7ga2w-gosec-2.28.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/v8j1jbl538x023qh1maq8psgx8v9f54p-gosec-2.28.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/v8j1jbl538x023qh1maq8psgx8v9f54p-gosec-2.28.0"
+        }
+      }
+    },
+    "ripgrep@15.2.0": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#ripgrep",
+      "source": "devbox-search",
+      "version": "15.2.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/lmrkq2dixahzmvb7gb9ivr8hdlj9w7cy-ripgrep-15.2.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/lmrkq2dixahzmvb7gb9ivr8hdlj9w7cy-ripgrep-15.2.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/l02znzqak7gnap7jh95d794gxcwbc2il-ripgrep-15.2.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/l02znzqak7gnap7jh95d794gxcwbc2il-ripgrep-15.2.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/zc6fy62c341aibk36p4ywff7rf9wn4wx-ripgrep-15.2.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/zc6fy62c341aibk36p4ywff7rf9wn4wx-ripgrep-15.2.0"
+        }
+      }
+    },
+    "semgrep@1.172.0": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#semgrep",
+      "source": "devbox-search",
+      "version": "1.172.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/ppisc0d2212vp4amqqmm8c75q14aidqc-python3.14-semgrep-1.172.0",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/arfvmzbkbqghxzgl1mpcy64mh1zz4vi0-python3.14-semgrep-1.172.0-dist"
+            }
+          ],
+          "store_path": "/nix/store/ppisc0d2212vp4amqqmm8c75q14aidqc-python3.14-semgrep-1.172.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/jww1w7ks3hwcayc4386pwhbvf0briql3-python3.14-semgrep-1.172.0",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/qmxc7b36g9z1h2i2sm9hp97yg3g359lx-python3.14-semgrep-1.172.0-dist"
+            }
+          ],
+          "store_path": "/nix/store/jww1w7ks3hwcayc4386pwhbvf0briql3-python3.14-semgrep-1.172.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/asdgc3mlw66220xwwafy8vxpk9pwqa8y-python3.14-semgrep-1.172.0",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/zvn5mfvknr4fniqh9xvq19hqr9g10dfy-python3.14-semgrep-1.172.0-dist"
+            }
+          ],
+          "store_path": "/nix/store/asdgc3mlw66220xwwafy8vxpk9pwqa8y-python3.14-semgrep-1.172.0"
+        }
+      }
+    },
+    "trivy@0.74.0": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#trivy",
+      "source": "devbox-search",
+      "version": "0.74.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/x4wzkxdl9iq18cvxjqmgfk153pv8qda5-trivy-0.74.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/x4wzkxdl9iq18cvxjqmgfk153pv8qda5-trivy-0.74.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/7hdm6jdvfjqcffmhqhmnzfc1ddn0261n-trivy-0.74.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/7hdm6jdvfjqcffmhqhmnzfc1ddn0261n-trivy-0.74.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/y2bs43cy44ndnwx9aqd0z9hl9cchhpnp-trivy-0.74.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/y2bs43cy44ndnwx9aqd0z9hl9cchhpnp-trivy-0.74.0"
+        }
+      }
+    }
+  }
+}

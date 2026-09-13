@@ -153,3 +153,56 @@ func (c *compiler) attachPositions() {
 		return a.Message < b.Message
 	})
 }
+
+// workflowSpan is the source span of the workflow declaration named `name`
+// — its `workflow <name>:` header, since the declaration keeps no
+// per-property position — for a diagnostic raised from the compiled
+// Workflow, where the AST is out of reach. Zero when the compiler has no
+// file: the diagnostic then carries no position, as a global one does.
+func (c *compiler) workflowSpan(name string) ast.Span {
+	if c.file == nil {
+		return ast.Span{}
+	}
+	for _, wf := range c.file.Workflows {
+		if wf.Name == name {
+			return wf.Span
+		}
+	}
+	return ast.Span{}
+}
+
+// errorfAtScope attributes a diagnostic to the declaration a validator
+// names as (scope, id): the workflow's header when the scope is the
+// workflow, the node's own line otherwise.
+func (c *compiler) errorfAtScope(code DiagCode, scope, id string, format string, args ...any) {
+	if scope == "workflow" {
+		c.errorfAtSpan(code, c.workflowSpan(id), format, args...)
+		return
+	}
+	c.errorfAt(code, id, "", format, args...)
+}
+
+// warnfAtScope is the warning counterpart to errorfAtScope.
+func (c *compiler) warnfAtScope(code DiagCode, scope, id string, format string, args ...any) {
+	if scope == "workflow" {
+		c.warnfAtSpan(code, c.workflowSpan(id), format, args...)
+		return
+	}
+	c.warnfAt(code, id, "", format, args...)
+}
+
+// mcpServerSpan is the source span of the top-level `mcp_server <name>:`
+// declaration, for a diagnostic raised on a compiled server. Zero when the
+// compiler has no file or the server was declared inline (an `mcp:` block's
+// own entry), which keeps no span of its own.
+func (c *compiler) mcpServerSpan(name string) ast.Span {
+	if c.file == nil {
+		return ast.Span{}
+	}
+	for _, d := range c.file.MCPServers {
+		if d.Name == name {
+			return d.Span
+		}
+	}
+	return ast.Span{}
+}

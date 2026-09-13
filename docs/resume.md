@@ -113,6 +113,30 @@ cloud runner's `classifyExecResult` and its redelivery disposition, the
 CLI's `--auto-resume` gate, and the dispatcher's retry ladder. Every code
 the engine declares has a row, guarded against drift by a conformance test.
 
+**`AMBIGUOUS_EFFECT` sits in that table for the opposite reason.** Every
+other deterministic code is parked because a second attempt would reach the
+same verdict; this one is parked because a second attempt might reach a
+*different* one — it may duplicate a mutation that already landed. It is
+raised when a call that changes remote state loses its answer with no
+idempotency key to make a repeat safe: the request left, the vendor may have
+committed it, and nothing available to iterion can say which. Recovery
+refuses to retry it on any attempt
+([`AmbiguousEffectRecipe`](../pkg/runtime/recovery/recovery.go)), and the
+producer declares the ambiguity through the `runtime.AmbiguousEffect`
+interface rather than by type, so the engine never learns what a connector
+is. **Reconcile the remote state before resuming** — a resume re-executes
+the failing node, which here means performing the call again.
+
+*The request left* is the load-bearing half of that sentence, and it is
+checked rather than assumed. A call can fail before a byte is written — the
+SSRF guard refusing a private host (the default for a self-hosted instance),
+a name that does not resolve, a connection refused, a header net/http will
+not send — and none of those leaves anything to reconcile. Those are
+ordinary transport failures: retryable, `EXECUTION_FAILED`, on the
+auto-resume list. The downgrade fires only on a cause that PROVES nothing was
+sent; an unrecognised failure stays ambiguous, because guessing in that
+direction is what duplicates a mutation.
+
 The bar for *deterministic* is deliberately high: a resume **re-executes
 the failing node** on freshly resolved inputs, so anything an LLM decided
 — a `SCHEMA_VALIDATION` on an agent's output, a `NO_OUTGOING_EDGE` chosen
@@ -150,6 +174,16 @@ iterion resume --run-id RUN_ID --answer music=@./theme.mp3
 # Resume after deliberately changing the workflow source.
 iterion resume --run-id RUN_ID --file workflow.bot --force
 ```
+
+One mismatch is accepted rather than refused: a run launched from a bundle's
+`main.bot` before the bundle's `prompts/*.md` and `presets/*.md` entered the
+workflow digest recorded the digest of the source bytes alone. A resume that
+finds that bare digest accepts it — and the artifacts the run published under
+that revision, as `--force` would — logs it, and goes on; nothing in the
+source changed, so no `--force` is asked for. The run keeps the digest it
+recorded (rewriting the document outside the engine's claim would race its
+other writers), so the acceptance is logged on every resume of such a run.
+Any other mismatch stays a refusal.
 
 `--answer` is repeatable and carries strings; the runtime coerces them to the
 paused node's output schema. `--answers-file` preserves JSON types. Explicit

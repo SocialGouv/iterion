@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 
@@ -12,9 +14,17 @@ import (
 )
 
 // newFSWatcher is the seam through which a test can make the host refuse
-// a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Production
-// always gets fsnotify's own constructor.
-var newFSWatcher = fsnotify.NewWatcher
+// a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Atomic
+// like every seam in this package — see fireSeam.
+var newFSWatcher atomic.Pointer[func() (*fsnotify.Watcher, error)]
+
+// fsWatcherCtor is fsnotify's own constructor unless a test installed one.
+func fsWatcherCtor() func() (*fsnotify.Watcher, error) {
+	if f := newFSWatcher.Load(); f != nil {
+		return *f
+	}
+	return fsnotify.NewWatcher
+}
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
 // out-of-process writers (typically the `iterion __mcp-board` stdio
@@ -54,7 +64,7 @@ type indexWatcher struct {
 // environment); the Store still works, it just can't see out-of-
 // process writes — same as before this watcher existed.
 func startIndexWatcher(s *Store) (*indexWatcher, error) {
-	w, err := newFSWatcher()
+	w, err := fsWatcherCtor()()
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +82,12 @@ func startIndexWatcher(s *Store) (*indexWatcher, error) {
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}
+	// Published on the store BEFORE the loop starts: the loop may report
+	// the watch lost within its first tick, and watchLost only acts on the
+	// watcher the store holds.
+	s.mu.Lock()
+	s.watcher = iw
+	s.mu.Unlock()
 	go iw.loop(s, issuesPath)
 	return iw, nil
 }
@@ -93,10 +109,31 @@ func (iw *indexWatcher) Close() error {
 	return iw.closeErr
 }
 
-// lost is called when a channel closed under the loop. Close closes the
-// stop channel BEFORE it closes the fsnotify watcher, so a closed channel
-// with no stop pending is a watch that went away on its own: hand the
-// store over to the fallback net.
+// defaultWatchCheckInterval is how often the loop asks fsnotify whether
+// its watch still exists. The kernel drops an inotify watch when the
+// watched directory is removed, renamed or unmounted (IN_IGNORED), and
+// fsnotify then forgets it WITHOUT closing a channel or sending an error —
+// the loop would sit forever on a watch that no longer exists. The
+// question costs one mutex and a map lookup.
+const defaultWatchCheckInterval = 5 * time.Second
+
+// watchCheckIntervalOverride lets a test tighten the check. Atomic like
+// every seam in this package — and this is the one the race detector
+// catches first, since loop() reads it on the watcher's own goroutine.
+var watchCheckIntervalOverride atomic.Pointer[time.Duration]
+
+func watchCheckInterval() time.Duration {
+	if d := watchCheckIntervalOverride.Load(); d != nil {
+		return *d
+	}
+	return defaultWatchCheckInterval
+}
+
+// lost is called when the loop has established that its watch is gone:
+// fsnotify forgot it (the directory went away), or a channel closed
+// without a Close pending — Close closes the stop channel BEFORE it closes
+// the fsnotify watcher, so a closed channel with no stop pending is not a
+// Close. Hand the store over to the fallback net.
 func (iw *indexWatcher) lost(s *Store) {
 	select {
 	case <-iw.stop:
@@ -110,10 +147,27 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 	defer close(iw.done)
 	var mu sync.Mutex // guards seenErr only — store mutex covers index access.
 	var seenErr bool
+	check := time.NewTicker(watchCheckInterval())
+	defer check.Stop()
+	misses := 0 // consecutive empty watch lists: two before the watch is declared lost
 	for {
 		select {
 		case <-iw.stop:
 			return
+		case <-check.C:
+			// Two consecutive empty answers before the hand-over: on Linux
+			// the list empties only when the kernel dropped the watch, and
+			// a second look costs one tick; on a backend where the list
+			// could read empty for an instant, one look would demote a live
+			// watch to the rescan net for good.
+			if len(iw.w.WatchList()) == 0 {
+				if misses++; misses >= 2 {
+					iw.lost(s)
+					return
+				}
+				continue
+			}
+			misses = 0
 		case ev, ok := <-iw.w.Events:
 			if !ok {
 				iw.lost(s)
@@ -136,18 +190,20 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			// signal: events were DROPPED, and nothing will resend
 			// them. The watcher stays alive and the index is rebuilt
 			// from disk — the second lossy carrier gets the same net
-			// as a refused watch. Log once per session so a host that
-			// overflows every second does not flood the log. Wrap the
-			// flag in a tiny mutex because the events + errors selects
-			// run on the same goroutine but the linter cannot prove that.
+			// as a refused watch — on another goroutine: this one must
+			// keep draining the unbuffered event channel, or the queue
+			// that just overflowed fills again during the repair. Log
+			// once per session so a host that overflows every second
+			// does not flood the log. Wrap the flag in a tiny mutex
+			// because the events + errors selects run on the same
+			// goroutine but the linter cannot prove that.
 			mu.Lock()
 			first := !seenErr
 			seenErr = true
 			mu.Unlock()
 			if errors.Is(err, fsnotify.ErrEventOverflow) {
-				if rerr := s.Reconcile(); rerr != nil {
-					s.getLogger().Error("native index watcher: kernel event queue overflowed and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", rerr)
-				} else if first {
+				s.rebuildAsync("kernel event queue overflowed")
+				if first {
 					s.getLogger().Warn("native index watcher: kernel event queue overflowed; index rebuilt from disk (further overflows rebuild silently this session)")
 				}
 				continue
@@ -204,8 +260,12 @@ func idFromIssuePath(eventPath, issuesPath string) string {
 func applyEvent(s *Store, id string, op fsnotify.Op) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Every mutation here is marked dirty like an in-process write: an
+	// overflow-triggered rebuild scans the disk with the mutex released
+	// while this loop keeps draining the backlog, and its swap must not
+	// revert what the events applied after the scan read those files.
 	if op&fsnotify.Remove == fsnotify.Remove {
-		delete(s.index, id)
+		s.dropIndexLocked(id)
 		return
 	}
 	iss, err := s.readIssueFromDisk(id)
@@ -219,9 +279,9 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 		// which does not wrap fs.ErrNotExist — matching on the latter
 		// never fires and leaves the tombstone in the index.
 		if errors.Is(err, tracker.ErrNotFound) {
-			delete(s.index, id)
+			s.dropIndexLocked(id)
 		}
 		return
 	}
-	s.index[id] = iss
+	s.setIndexLocked(id, iss)
 }

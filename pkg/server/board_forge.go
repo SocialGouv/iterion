@@ -720,7 +720,12 @@ func (s *Server) handleListIntegrationHooks(w http.ResponseWriter, r *http.Reque
 	}
 	admin, err := s.forgeAdminFor(r.Context(), conn)
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "admin client: %v", err)
+		// forgeAdminFor is network-free in BOTH branches — the App client is
+		// constructed and cached (tokens are minted later, on use) and the
+		// token branch only unseals — so a failure here never reached the
+		// forge. 502 would send the operator to the provider's status page
+		// for our own outage.
+		httpError(w, http.StatusInternalServerError, "admin client: %v", err)
 		return
 	}
 	hooks, err := admin.ListHooks(r.Context(), ri.RepoFullName)
@@ -837,7 +842,8 @@ func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID
 	}
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "admin client: %v", err)
+		// Network-free failure — see the sibling note above; 500, not 502.
+		httpError(w, http.StatusInternalServerError, "admin client: %v", err)
 		return nil, forge.Connection{}, false
 	}
 	return admin, conn, true

@@ -1,0 +1,2945 @@
+schema_version: 1
+connector: forgejo
+domain: user
+operations:
+- id: forgejo.user.add_email
+  source_operation_id: userAddEmail
+  summary: Add an email addresses to the current user's account
+  resource: user
+  verb: add_email
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/emails
+    request_body: json
+  params:
+  - key: emails
+    name: emails
+    in: body
+    type: array
+    items: string
+    description: email addresses to add
+  results:
+  - status: 201
+    schema_ref: Email
+    array: true
+    description: EmailList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.user.block_user
+  source_operation_id: userBlockUser
+  summary: Blocks a user from the doer
+  resource: user
+  verb: block_user
+  tags:
+  - user
+  http:
+    method: PUT
+    path: /user/block/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.user.check_following
+  source_operation_id: userCheckFollowing
+  summary: Check if one user is following another user
+  resource: user
+  verb: check_following
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/following/{target}
+  params:
+  - key: target
+    name: target
+    in: path
+    type: string
+    required: true
+    description: username of followed user
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of following user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.check_quota
+  source_operation_id: userCheckQuota
+  summary: Check if the authenticated user is over quota for a given subject
+  resource: user
+  verb: check_quota
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/quota/check
+  params:
+  - key: subject
+    name: subject
+    in: query
+    type: string
+    required: true
+    description: subject of the quota
+  results:
+  - status: 200
+    description: Returns true if the action is accepted.
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.user.create_hook
+  source_operation_id: userCreateHook
+  summary: Create a hook
+  resource: user
+  verb: create_hook
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/hooks
+    request_body: json
+  params:
+  - key: active
+    name: active
+    in: body
+    type: boolean
+    default: false
+  - key: authorization_header
+    name: authorization_header
+    in: body
+    type: string
+  - key: branch_filter
+    name: branch_filter
+    in: body
+    type: string
+  - key: config
+    name: config
+    in: body
+    type: object
+    required: true
+    schema_ref: CreateHookOptionConfig
+  - key: events
+    name: events
+    in: body
+    type: array
+    items: string
+  - key: type
+    name: type
+    in: body
+    type: string
+    enum:
+    - forgejo
+    - dingtalk
+    - discord
+    - gitea
+    - gogs
+    - msteams
+    - slack
+    - telegram
+    - feishu
+    - wechatwork
+    - packagist
+    required: true
+  results:
+  - status: 201
+    schema_ref: Hook
+    description: Hook
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.create_oauth2_application
+  source_operation_id: userCreateOAuth2Application
+  summary: Creates a new OAuth2 application
+  resource: user
+  verb: create_oauth2_application
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/applications/oauth2
+    request_body: json
+  params:
+  - key: confidential_client
+    name: confidential_client
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+  - key: redirect_uris
+    name: redirect_uris
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 201
+    schema_ref: OAuth2Application
+    description: OAuth2Application
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.create_token
+  source_operation_id: userCreateToken
+  summary: Generate an access token for the specified user
+  resource: user
+  verb: create_token
+  tags:
+  - user
+  http:
+    method: POST
+    path: /users/{username}/tokens
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+  - key: repositories
+    name: repositories
+    in: body
+    type: array
+    items: object
+    description: If provided and not-empty, creates an access token with access only
+      to specified repositories.
+    schema_ref: RepoTargetOption
+  - key: scopes
+    name: scopes
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 201
+    schema_ref: AccessToken
+    description: AccessToken represents an API access token.
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.create_user_variable
+  source_operation_id: createUserVariable
+  summary: Create a user-level variable
+  resource: user
+  verb: create_user_variable
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/actions/variables/{variablename}
+    request_body: json
+  params:
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  - key: value
+    name: value
+    in: body
+    type: string
+    required: true
+    description: Value of the variable to create. Special characters will be retained.
+      Line endings will be normalized to LF to
+  results:
+  - status: 201
+    description: response when creating a variable
+  - status: 204
+    description: response when creating a variable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.current_activity_pub_follow
+  source_operation_id: userCurrentActivityPubFollow
+  summary: Follow a remote activitypub account
+  resource: user
+  verb: current_activity_pub_follow
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/activitypub/follow
+    request_body: json
+  params:
+  - key: target
+    name: target
+    in: body
+    type: string
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.current_check_following
+  source_operation_id: userCurrentCheckFollowing
+  summary: Check whether a user is followed by the authenticated user
+  resource: user
+  verb: current_check_following
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/following/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of followed user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_check_starring
+  source_operation_id: userCurrentCheckStarring
+  summary: Whether the authenticated is starring the repo
+  resource: user
+  verb: current_check_starring
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/starred/{owner}/{repo}
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_delete_follow
+  source_operation_id: userCurrentDeleteFollow
+  summary: Unfollow a user
+  resource: user
+  verb: current_delete_follow
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/following/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to unfollow
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.current_delete_gpgkey
+  source_operation_id: userCurrentDeleteGPGKey
+  summary: Remove a GPG public key from current user's account
+  resource: user
+  verb: current_delete_gpgkey
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/gpg_keys/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of key to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.current_delete_key
+  source_operation_id: userCurrentDeleteKey
+  summary: Delete a public key
+  resource: user
+  verb: current_delete_key
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/keys/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of key to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.current_delete_star
+  source_operation_id: userCurrentDeleteStar
+  summary: Unstar the given repo
+  resource: user
+  verb: current_delete_star
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/starred/{owner}/{repo}
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo to unstar
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo to unstar
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.current_get_gpgkey
+  source_operation_id: userCurrentGetGPGKey
+  summary: Get a GPG key
+  resource: user
+  verb: current_get_gpgkey
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/gpg_keys/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of key to get
+  results:
+  - status: 200
+    schema_ref: GPGKey
+    description: GPGKey
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_get_key
+  source_operation_id: userCurrentGetKey
+  summary: Get a public key
+  resource: user
+  verb: current_get_key
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/keys/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of key to get
+  results:
+  - status: 200
+    schema_ref: PublicKey
+    description: PublicKey
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_followers
+  source_operation_id: userCurrentListFollowers
+  summary: List the authenticated user's followers
+  resource: user
+  verb: current_list_followers
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/followers
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_following
+  source_operation_id: userCurrentListFollowing
+  summary: List the users that the authenticated user is following
+  resource: user
+  verb: current_list_following
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/following
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_gpgkeys
+  source_operation_id: userCurrentListGPGKeys
+  summary: List the authenticated user's GPG keys
+  resource: user
+  verb: current_list_gpgkeys
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/gpg_keys
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: GPGKey
+    array: true
+    description: GPGKeyList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_keys
+  source_operation_id: userCurrentListKeys
+  summary: List the authenticated user's public keys
+  resource: user
+  verb: current_list_keys
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/keys
+  params:
+  - key: fingerprint
+    name: fingerprint
+    in: query
+    type: string
+    description: fingerprint of the key
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: PublicKey
+    array: true
+    description: PublicKeyList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_repos
+  source_operation_id: userCurrentListRepos
+  summary: List the repos that the authenticated user owns
+  resource: user
+  verb: current_list_repos
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/repos
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: order_by
+    name: order_by
+    in: query
+    type: string
+    enum:
+    - name
+    - id
+    - newest
+    - oldest
+    - recentupdate
+    - leastupdate
+    - reversealphabetically
+    - alphabetically
+    - reversesize
+    - size
+    - reversegitsize
+    - gitsize
+    - reverselfssize
+    - lfssize
+    - moststars
+    - feweststars
+    - mostforks
+    - fewestforks
+    description: order the repositories
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_starred
+  source_operation_id: userCurrentListStarred
+  summary: The repos that the authenticated user has starred
+  resource: user
+  verb: current_list_starred
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/starred
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_list_subscriptions
+  source_operation_id: userCurrentListSubscriptions
+  summary: List repositories watched by the authenticated user
+  resource: user
+  verb: current_list_subscriptions
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/subscriptions
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.current_post_gpgkey
+  source_operation_id: userCurrentPostGPGKey
+  summary: Add a GPG public key to current user's account
+  resource: user
+  verb: current_post_gpgkey
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/gpg_keys
+    request_body: json
+  params:
+  - key: armored_public_key
+    name: armored_public_key
+    in: body
+    type: string
+    required: true
+    description: An armored GPG key to add
+  - key: armored_signature
+    name: armored_signature
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: GPGKey
+    description: GPGKey
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.user.current_post_key
+  source_operation_id: userCurrentPostKey
+  summary: Create a public key
+  resource: user
+  verb: current_post_key
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/keys
+    request_body: json
+  params:
+  - key: key
+    name: key
+    in: body
+    type: string
+    required: true
+    description: An armored SSH key to add
+  - key: read_only
+    name: read_only
+    in: body
+    type: boolean
+    description: Describe if the key has only read access or read/write
+  - key: title
+    name: title
+    in: body
+    type: string
+    required: true
+    description: Title of the key to add
+  results:
+  - status: 201
+    schema_ref: PublicKey
+    description: PublicKey
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.user.current_put_follow
+  source_operation_id: userCurrentPutFollow
+  summary: Follow a user
+  resource: user
+  verb: current_put_follow
+  tags:
+  - user
+  http:
+    method: PUT
+    path: /user/following/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to follow
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.current_put_star
+  source_operation_id: userCurrentPutStar
+  summary: Star the given repo
+  resource: user
+  verb: current_put_star
+  tags:
+  - user
+  http:
+    method: PUT
+    path: /user/starred/{owner}/{repo}
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo to star
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo to star
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.current_tracked_times
+  source_operation_id: userCurrentTrackedTimes
+  summary: List the current user's tracked times
+  resource: user
+  verb: current_tracked_times
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/times
+  params:
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: Only show times updated before the given time. This is a timestamp
+      in RFC 3339 format
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: Only show times updated after the given time. This is a timestamp
+      in RFC 3339 format
+  results:
+  - status: 200
+    schema_ref: TrackedTime
+    array: true
+    description: TrackedTimeList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.delete_access_token
+  source_operation_id: userDeleteAccessToken
+  summary: Delete an access token from the specified user's account
+  resource: user
+  verb: delete_access_token
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /users/{username}/tokens/{token}
+  params:
+  - key: token
+    name: token
+    in: path
+    type: string
+    required: true
+    description: token to be deleted, identified by ID and if not available by name
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIError is error format response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_avatar
+  source_operation_id: userDeleteAvatar
+  summary: Delete avatar of the current user. It will be replaced by a default one
+  resource: user
+  verb: delete_avatar
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/avatar
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_email
+  source_operation_id: userDeleteEmail
+  summary: Delete email addresses from the current user's account
+  resource: user
+  verb: delete_email
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/emails
+    request_body: json
+  params:
+  - key: emails
+    name: emails
+    in: body
+    type: array
+    items: string
+    description: email addresses to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_hook
+  source_operation_id: userDeleteHook
+  summary: Delete a hook
+  resource: user
+  verb: delete_hook
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/hooks/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_oauth2_application
+  source_operation_id: userDeleteOAuth2Application
+  summary: Delete an OAuth2 application
+  resource: user
+  verb: delete_oauth2_application
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/applications/oauth2/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: token to be deleted
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_user_runner
+  source_operation_id: deleteUserRunner
+  summary: Delete a particular user-level runner
+  resource: user
+  verb: delete_user_runner
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/actions/runners/{runner_id}
+  params:
+  - key: runner_id
+    name: runner_id
+    in: path
+    type: string
+    required: true
+    description: ID of the runner
+  results:
+  - status: 204
+    description: runner has been deleted
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_user_secret
+  source_operation_id: deleteUserSecret
+  summary: Delete a secret in a user scope
+  resource: user
+  verb: delete_user_secret
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/actions/secrets/{secretname}
+  params:
+  - key: secretname
+    name: secretname
+    in: path
+    type: string
+    required: true
+    description: name of the secret
+  results:
+  - status: 204
+    description: delete one secret of the user
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.delete_user_variable
+  source_operation_id: deleteUserVariable
+  summary: Delete a user-level variable which is created by current doer
+  resource: user
+  verb: delete_user_variable
+  tags:
+  - user
+  http:
+    method: DELETE
+    path: /user/actions/variables/{variablename}
+  params:
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  results:
+  - status: 201
+    description: response when deleting a variable
+  - status: 204
+    description: response when deleting a variable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.user.edit_hook
+  source_operation_id: userEditHook
+  summary: Update a hook
+  resource: user
+  verb: edit_hook
+  tags:
+  - user
+  http:
+    method: PATCH
+    path: /user/hooks/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to update
+  - key: active
+    name: active
+    in: body
+    type: boolean
+  - key: authorization_header
+    name: authorization_header
+    in: body
+    type: string
+  - key: branch_filter
+    name: branch_filter
+    in: body
+    type: string
+  - key: config
+    name: config
+    in: body
+    type: object
+  - key: events
+    name: events
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 200
+    schema_ref: Hook
+    description: Hook
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.get
+  source_operation_id: userGet
+  summary: Get a user
+  resource: user
+  verb: get
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to get
+  results:
+  - status: 200
+    schema_ref: User
+    description: User
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_current
+  source_operation_id: userGetCurrent
+  summary: Get the authenticated user
+  resource: user
+  verb: get_current
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user
+  results:
+  - status: 200
+    schema_ref: User
+    description: User
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_heatmap_data
+  source_operation_id: userGetHeatmapData
+  summary: Get a user's heatmap
+  resource: user
+  verb: get_heatmap_data
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/heatmap
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to get
+  results:
+  - status: 200
+    schema_ref: UserHeatmapData
+    array: true
+    description: UserHeatmapData
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_hook
+  source_operation_id: userGetHook
+  summary: Get a hook
+  resource: user
+  verb: get_hook
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/hooks/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to get
+  results:
+  - status: 200
+    schema_ref: Hook
+    description: Hook
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_oauth2_application
+  source_operation_id: userGetOAuth2Application
+  summary: Get an OAuth2 application
+  resource: user
+  verb: get_oauth2_application
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/applications/oauth2/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: Application ID to be found
+  results:
+  - status: 200
+    schema_ref: OAuth2Application
+    description: OAuth2Application
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_oauth2_applications
+  source_operation_id: userGetOAuth2Applications
+  summary: List the authenticated user's oauth2 applications
+  resource: user
+  verb: get_oauth2_applications
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/applications/oauth2
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: OAuth2Application
+    array: true
+    description: OAuth2ApplicationList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_quota
+  source_operation_id: userGetQuota
+  summary: Get quota information for the authenticated user
+  resource: user
+  verb: get_quota
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/quota
+  results:
+  - status: 200
+    schema_ref: QuotaInfo
+    description: QuotaInfo
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_runner_registration_token
+  source_operation_id: userGetRunnerRegistrationToken
+  summary: Get the user's runner registration token
+  description: This operation has been deprecated in Forgejo 15. Use the web UI or
+    [`/user/actions/runners`](#/user/registerUserRunner) instead.
+  resource: user
+  verb: get_runner_registration_token
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/actions/runners/registration-token
+  results:
+  - status: 200
+    schema_ref: RegistrationToken
+    description: RegistrationToken is a string used to register a runner with a server
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_stop_watches
+  source_operation_id: userGetStopWatches
+  summary: Get list of all existing stopwatches
+  resource: user
+  verb: get_stop_watches
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/stopwatches
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: StopWatch
+    array: true
+    description: StopWatchList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_tokens
+  source_operation_id: userGetTokens
+  summary: List the specified user's access tokens
+  resource: user
+  verb: get_tokens
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/tokens
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: AccessToken
+    array: true
+    description: AccessTokenList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_user_runner
+  source_operation_id: getUserRunner
+  summary: Get a particular runner that belongs to the user
+  resource: user
+  verb: get_user_runner
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/actions/runners/{runner_id}
+  params:
+  - key: runner_id
+    name: runner_id
+    in: path
+    type: string
+    required: true
+    description: ID of the runner
+  results:
+  - status: 200
+    schema_ref: ActionRunner
+    description: ActionRunner represents a runner
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_user_runners
+  source_operation_id: getUserRunners
+  summary: Get the user's runners
+  resource: user
+  verb: get_user_runners
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/actions/runners
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: visible
+    name: visible
+    in: query
+    type: boolean
+    description: whether to include all visible runners (true) or only those that
+      are directly owned by the user (false)
+  results:
+  - status: 200
+    schema_ref: ActionRunner
+    array: true
+    description: ActionRunnerList is a list of Forgejo Action runners
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_user_settings
+  source_operation_id: getUserSettings
+  summary: Get current user's account settings
+  resource: user
+  verb: get_user_settings
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/settings
+  results:
+  - status: 200
+    schema_ref: UserSettings
+    description: UserSettings
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_user_variable
+  source_operation_id: getUserVariable
+  summary: Get a user-level variable which is created by current doer
+  resource: user
+  verb: get_user_variable
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/actions/variables/{variablename}
+  params:
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  results:
+  - status: 200
+    schema_ref: ActionVariable
+    description: ActionVariable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_user_variables_list
+  source_operation_id: getUserVariablesList
+  summary: Get the user-level list of variables which is created by current doer
+  resource: user
+  verb: get_user_variables_list
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/actions/variables
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: ActionVariable
+    array: true
+    description: VariableList
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.get_verification_token
+  source_operation_id: getVerificationToken
+  summary: Get a Token to verify
+  resource: user
+  verb: get_verification_token
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/gpg_key_token
+  results:
+  - status: 200
+    description: APIString is a string response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_activity_feeds
+  source_operation_id: userListActivityFeeds
+  summary: List a user's activity feeds
+  resource: user
+  verb: list_activity_feeds
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/activities/feeds
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: date
+    name: date
+    in: query
+    type: string
+    format: date
+    description: the date of the activities to be found
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: only-performed-by
+    name: only-performed-by
+    in: query
+    type: boolean
+    description: if true, only show actions performed by the requested user
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Activity
+    array: true
+    description: ActivityFeedsList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_blocked_users
+  source_operation_id: userListBlockedUsers
+  summary: List the authenticated user's blocked users
+  resource: user
+  verb: list_blocked_users
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/list_blocked
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: BlockedUser
+    array: true
+    description: BlockedUserList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_emails
+  source_operation_id: userListEmails
+  summary: List all email addresses of the current user
+  resource: user
+  verb: list_emails
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/emails
+  results:
+  - status: 200
+    schema_ref: Email
+    array: true
+    description: EmailList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_followers
+  source_operation_id: userListFollowers
+  summary: List the given user's followers
+  resource: user
+  verb: list_followers
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/followers
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_following
+  source_operation_id: userListFollowing
+  summary: List the users that the given user is following
+  resource: user
+  verb: list_following
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/following
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_gpgkeys
+  source_operation_id: userListGPGKeys
+  summary: List the given user's GPG keys
+  resource: user
+  verb: list_gpgkeys
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/gpg_keys
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: GPGKey
+    array: true
+    description: GPGKeyList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_hooks
+  source_operation_id: userListHooks
+  summary: List the authenticated user's webhooks
+  resource: user
+  verb: list_hooks
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/hooks
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Hook
+    array: true
+    description: HookListWithoutPagination - Hooks without pagination headers
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_keys
+  source_operation_id: userListKeys
+  summary: List the given user's public keys
+  resource: user
+  verb: list_keys
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/keys
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: fingerprint
+    name: fingerprint
+    in: query
+    type: string
+    description: fingerprint of the key
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: PublicKey
+    array: true
+    description: PublicKeyList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_quota_artifacts
+  source_operation_id: userListQuotaArtifacts
+  summary: List the artifacts affecting the authenticated user's quota
+  resource: user
+  verb: list_quota_artifacts
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/quota/artifacts
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: QuotaUsedArtifactList
+    description: QuotaUsedArtifactList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_quota_attachments
+  source_operation_id: userListQuotaAttachments
+  summary: List the attachments affecting the authenticated user's quota
+  resource: user
+  verb: list_quota_attachments
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/quota/attachments
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: QuotaUsedAttachmentList
+    description: QuotaUsedAttachmentList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_quota_packages
+  source_operation_id: userListQuotaPackages
+  summary: List the packages affecting the authenticated user's quota
+  resource: user
+  verb: list_quota_packages
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/quota/packages
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: QuotaUsedPackageList
+    description: QuotaUsedPackageList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_repos
+  source_operation_id: userListRepos
+  summary: List the repos owned by the given user
+  resource: user
+  verb: list_repos
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/repos
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_starred
+  source_operation_id: userListStarred
+  summary: The repos that the given user has starred
+  resource: user
+  verb: list_starred
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/starred
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_subscriptions
+  source_operation_id: userListSubscriptions
+  summary: List the repositories watched by a user
+  resource: user
+  verb: list_subscriptions
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/{username}/subscriptions
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.list_teams
+  source_operation_id: userListTeams
+  summary: List all the teams a user belongs to
+  resource: user
+  verb: list_teams
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/teams
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Team
+    array: true
+    description: TeamList
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.register_user_runner
+  source_operation_id: registerUserRunner
+  summary: Register a new user-level runner
+  resource: user
+  verb: register_user_runner
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/actions/runners
+    request_body: json
+  params:
+  - key: description
+    name: description
+    in: body
+    type: string
+    description: Description of the runner to register.
+  - key: ephemeral
+    name: ephemeral
+    in: body
+    type: boolean
+    description: Register as ephemeral runner https://forgejo.org/docs/latest/admin/actions/security/#ephemeral-runner
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+    description: Name of the runner to register. The name of the runner does not have
+      to be unique.
+  results:
+  - status: 201
+    schema_ref: RegisterRunnerResponse
+    description: RegisterRunnerResponse contains the details of the just registered
+      runner.
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.search
+  source_operation_id: userSearch
+  summary: Search for users
+  resource: user
+  verb: search
+  tags:
+  - user
+  http:
+    method: GET
+    path: /users/search
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: q
+    name: q
+    in: query
+    type: string
+    description: keyword
+  - key: sort
+    name: sort
+    in: query
+    type: string
+    enum:
+    - oldest
+    - newest
+    - alphabetically
+    - reversealphabetically
+    - recentupdate
+    - leastupdate
+    description: sort order of results
+  - key: uid
+    name: uid
+    in: query
+    type: integer
+    format: int64
+    description: ID of the user to search for
+  results:
+  - status: 200
+    description: SearchResults of a successful search
+  effect: read
+  deterministic: true
+- id: forgejo.user.search_run_jobs
+  source_operation_id: userSearchRunJobs
+  summary: Search for user's action jobs according filter conditions
+  resource: user
+  verb: search_run_jobs
+  tags:
+  - user
+  http:
+    method: GET
+    path: /user/actions/runners/jobs
+  params:
+  - key: labels
+    name: labels
+    in: query
+    type: string
+    description: a comma separated list of run job labels to search for
+  results:
+  - status: 200
+    schema_ref: ActionRunJob
+    array: true
+    description: RunJobList is a list of action run jobs
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.user.unblock_user
+  source_operation_id: userUnblockUser
+  summary: Unblocks a user from the doer
+  resource: user
+  verb: unblock_user
+  tags:
+  - user
+  http:
+    method: PUT
+    path: /user/unblock/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.user.update_avatar
+  source_operation_id: userUpdateAvatar
+  summary: Update avatar of the current user
+  resource: user
+  verb: update_avatar
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/avatar
+    request_body: json
+  params:
+  - key: image
+    name: image
+    in: body
+    type: string
+    description: image must be base64 encoded
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: create
+  deterministic: true
+- id: forgejo.user.update_oauth2_application
+  source_operation_id: userUpdateOAuth2Application
+  summary: Update an OAuth2 application, this includes regenerating the client secret
+  resource: user
+  verb: update_oauth2_application
+  tags:
+  - user
+  http:
+    method: PATCH
+    path: /user/applications/oauth2/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: application to be updated
+  - key: confidential_client
+    name: confidential_client
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+  - key: redirect_uris
+    name: redirect_uris
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 200
+    schema_ref: OAuth2Application
+    description: OAuth2Application
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.update_user_secret
+  source_operation_id: updateUserSecret
+  summary: Create or Update a secret value in a user scope
+  resource: user
+  verb: update_user_secret
+  tags:
+  - user
+  http:
+    method: PUT
+    path: /user/actions/secrets/{secretname}
+    request_body: json
+  params:
+  - key: secretname
+    name: secretname
+    in: path
+    type: string
+    required: true
+    description: name of the secret
+  - key: data
+    name: data
+    in: body
+    type: string
+    required: true
+    description: Data of the secret. Special characters will be retained. Line endings
+      will be normalized to LF to match the
+  results:
+  - status: 201
+    description: response when creating a secret
+  - status: 204
+    description: response when updating a secret
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.update_user_settings
+  source_operation_id: updateUserSettings
+  summary: Update settings in current user's account
+  resource: user
+  verb: update_user_settings
+  tags:
+  - user
+  http:
+    method: PATCH
+    path: /user/settings
+    request_body: json
+  params:
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: diff_view_style
+    name: diff_view_style
+    in: body
+    type: string
+  - key: enable_repo_unit_hints
+    name: enable_repo_unit_hints
+    in: body
+    type: boolean
+  - key: full_name
+    name: full_name
+    in: body
+    type: string
+  - key: hide_activity
+    name: hide_activity
+    in: body
+    type: boolean
+  - key: hide_email
+    name: hide_email
+    in: body
+    type: boolean
+    description: Privacy
+  - key: hide_pronouns
+    name: hide_pronouns
+    in: body
+    type: boolean
+  - key: language
+    name: language
+    in: body
+    type: string
+  - key: location
+    name: location
+    in: body
+    type: string
+  - key: pronouns
+    name: pronouns
+    in: body
+    type: string
+  - key: theme
+    name: theme
+    in: body
+    type: string
+  - key: website
+    name: website
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: UserSettings
+    description: UserSettings
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.update_user_variable
+  source_operation_id: updateUserVariable
+  summary: Update a user-level variable which is created by current doer
+  resource: user
+  verb: update_user_variable
+  tags:
+  - user
+  http:
+    method: PUT
+    path: /user/actions/variables/{variablename}
+    request_body: json
+  params:
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  - key: name
+    name: name
+    in: body
+    type: string
+    description: New name for the variable. If the field is empty, the variable name
+      won't be updated. Forgejo will convert it to
+  - key: value
+    name: value
+    in: body
+    type: string
+    required: true
+    description: Value of the variable to update. Special characters will be retained.
+      Line endings will be normalized to LF to
+  results:
+  - status: 201
+    description: response when updating a variable
+  - status: 204
+    description: response when updating a variable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.user.verify_gpgkey
+  source_operation_id: userVerifyGPGKey
+  summary: Verify a GPG key
+  resource: user
+  verb: verify_gpgkey
+  tags:
+  - user
+  http:
+    method: POST
+    path: /user/gpg_key_verify
+    request_body: json
+  params:
+  - key: armored_signature
+    name: armored_signature
+    in: body
+    type: string
+  - key: key_id
+    name: key_id
+    in: body
+    type: string
+    required: true
+    description: An Signature for a GPG key token
+  results:
+  - status: 201
+    schema_ref: GPGKey
+    description: GPGKey
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true

@@ -120,6 +120,16 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if childBundle != nil && childBundle.Manifest != nil {
 			bundleName = childBundle.Manifest.Name
 		}
+		// A subbot is a run of its own and resolves its own `action:` nodes:
+		// the child's catalog is the SERVICE's workspace, not the child
+		// bundle's directory, since the project tier belongs to the checkout
+		// the operator is acting on.
+		childConnectors, childConnectorClient, cerr := s.localConnectors(childWf, "")
+		if cerr != nil {
+			releaseChild()
+			return nil, cerr
+		}
+
 		childExec, err := BuildExecutor(ExecutorSpec{
 			Ctx:      managedCtx,
 			Workflow: childWf,
@@ -135,11 +145,13 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// to the child WORKFLOW's name, and the same subbot bundle ends up
 			// with two memory spaces depending on which surface launched the
 			// parent.
-			BotID:          ResolveBotID("", bundleName, childPath),
-			BoardRegister:  s.boardRegister,
-			LocalSecrets:   s.localSecrets,
-			LocalSealer:    s.localSealer,
-			UsageCapSource: s.usageCapSource,
+			BotID:           ResolveBotID("", bundleName, childPath),
+			BoardRegister:   s.boardRegister,
+			LocalSecrets:    s.localSecrets,
+			LocalSealer:     s.localSealer,
+			Connectors:      childConnectors,
+			ConnectorClient: childConnectorClient,
+			UsageCapSource:  s.usageCapSource,
 		})
 		if err != nil {
 			releaseChild()
@@ -172,7 +184,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			ExecutionContext: childContextSeed,
 		}, childWf, hash, s.executionContextPolicy, s.workDir)
 		childContext.LaunchSurface = "runview-subbot"
-		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{})
+		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{}, childBundle)
 		// The child works in the parent's EFFECTIVE workdir (its worktree when
 		// it swapped to one), not the service's repo root: that is the tree
 		// the parent's sandbox mounts and the parent's gate judges.

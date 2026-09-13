@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	iserver "github.com/SocialGouv/iterion/pkg/server"
 )
 
 const (
@@ -29,12 +31,14 @@ const (
 	// OS keychain: "cloud_refresh:<connID>".
 	cloudRefreshKeyPrefix = "cloud_refresh:"
 
-	// Cookie names the cloud sets on every auth response. Mirror of
-	// pkg/server/middleware.go's authCookieName / refreshCookieName — the
-	// native client harvests the refresh token from the Set-Cookie header
-	// (it is deliberately NOT echoed in the JSON body).
-	cloudAuthCookieName    = "iterion_auth"
-	cloudRefreshCookieName = "iterion_refresh"
+	// Cookie names the cloud sets on every auth response. Taken FROM the
+	// server rather than mirrored as literals: the client harvests the
+	// refresh token out of Set-Cookie (it is deliberately not echoed in the
+	// JSON body), so a name it does not recognise is a token it silently
+	// fails to rotate. Recognition goes through iserver.SessionCookieMatches,
+	// because a deployment may emit either spelling.
+	cloudAuthCookieName    = iserver.AuthCookieName
+	cloudRefreshCookieName = iserver.RefreshCookieName
 
 	// cloudHTTPTimeout bounds a single auth request. Login/refresh are
 	// small round-trips; a generous ceiling covers a slow remote.
@@ -429,11 +433,17 @@ func stripSetCookies(resp *http.Response, names ...string) {
 	resp.Header["Set-Cookie"] = kept
 }
 
-// harvestRefreshCookie returns the value of the iterion_refresh cookie, or
-// "" if absent (a refresh call may not rotate it on every hop).
+// harvestRefreshCookie returns the value of the refresh cookie, or "" if
+// absent (a refresh call may not rotate it on every hop).
+//
+// Matching goes through SessionCookieMatches, never a literal: the server
+// emits the `__Host-` spelling wherever it can, and a miss here does not
+// fail — it returns "", which seed() reads as "not rotated this hop" and
+// keeps the previous token. The next hop replays it, the server reads a
+// replay as token theft, and every session that user holds is revoked.
 func harvestRefreshCookie(cookies []*http.Cookie) string {
 	for _, c := range cookies {
-		if c.Name == cloudRefreshCookieName {
+		if iserver.SessionCookieMatches(c.Name, cloudRefreshCookieName) {
 			return c.Value
 		}
 	}

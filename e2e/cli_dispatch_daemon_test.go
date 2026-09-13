@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -90,6 +92,130 @@ func waitHealthy(t *testing.T, base string, done <-chan error) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("daemon never became healthy on /healthz")
+}
+
+// TestDispatchDaemonRefusesCrossOriginWrites pins the browser-facing guard on
+// the dispatcher daemon's own mux.
+//
+// It builds that mux by hand rather than through Server.routes(), so it used
+// to reach none of the studio's protections: a page the operator had open
+// could POST a board card cross-origin, transition it into the
+// dispatcher-eligible state and force the poll — which launches a workflow,
+// with tools, on the host. Loopback-bound is not a defence when the browser is
+// on the host. Found by adversarial review, which drove the whole chain live.
+//
+// Content-Type text/plain makes it a CORS "simple request": no preflight, and
+// the JSON decoders never inspect Content-Type.
+func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
+	// Deliberately NOT t.Parallel(). TestDispatchDaemonBootsServesAndStopsOnSignal
+	// exercises the daemon's SIGTERM path by signalling the TEST PROCESS
+	// (syscall.Kill(syscall.Getpid(), …)) — the daemon-SIGTERM aliasing this
+	// file's header already warns about. A parallel daemon here catches that
+	// signal too and exits cleanly mid-test, which reads as
+	// "daemon exited before serving: <nil>". Running in the sequential phase
+	// means this finishes before the parallel batch resumes.
+	dir := t.TempDir()
+	cfgPath := writeDispatchConfig(t, dir)
+	port := reserveLoopbackPort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// Absorb SIGTERM for this test's lifetime. Registered FIRST so its cleanup
+	// runs LAST (t.Cleanup is LIFO), i.e. after the daemon is already down.
+	//
+	// This is what removes the CLASS rather than the instance. The stop below
+	// signals the process, and each previous round of this test tried to prove
+	// by reasoning that the signal could never land after RunDispatch had
+	// unregistered its own handler — first by checking a channel waitHealthy
+	// drains, then by checking one closed a moment too late. With an absorber
+	// registered, a SIGTERM nothing else is listening for is swallowed instead
+	// of killing the test binary, so the check below no longer has to be
+	// perfect in order to be safe.
+	absorb := make(chan os.Signal, 1)
+	signal.Notify(absorb, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(absorb) })
+
+	done := make(chan error, 1)
+	// Closed, not a value on `done`: waitHealthy receives from `done` on its
+	// own failure path, and `done` is written exactly once, so a check against
+	// it reads empty forever afterwards.
+	exited := make(chan struct{})
+	go func() {
+		err := cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
+			ConfigPath: cfgPath,
+			StoreDir:   filepath.Join(dir, "store"),
+			Port:       port,
+		})
+		// Close BEFORE publishing. waitHealthy fails the test the instant it
+		// reads `done`, which runs the cleanup below — so anything able to
+		// observe `done` must already be able to observe `exited`. Publishing
+		// first left a window in which the cleanup read "still running".
+		close(exited)
+		done <- err
+	}()
+	// Registered BEFORE the first assertion, not after the last one. Every
+	// t.Fatalf between here and the end — waitHealthy timing out, the post
+	// helper hitting a transport error under CI load — would otherwise skip
+	// the stop and re-leak the daemon, and it would do so exactly on runs
+	// that are already failing, where the descriptor cascade then buries the
+	// original failure under every later test in the package.
+	t.Cleanup(func() {
+		select {
+		case <-exited:
+			// Already returned — it never started (bind race, bad config), or
+			// a sibling's signal reached it. There is nothing to stop, and
+			// signalling now would be worse than doing nothing: RunDispatch
+			// registers its handler with signal.NotifyContext + defer cancel,
+			// so once it returns nothing catches SIGTERM and the default
+			// disposition kills the whole test binary — turning one readable
+			// failure into "signal: terminated" for the entire package.
+			return
+		default:
+		}
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+			t.Errorf("signal daemon: %v", err)
+			return
+		}
+		select {
+		case <-exited:
+		case <-time.After(30 * time.Second):
+			t.Error("RunDispatch did not return within 30s of SIGTERM — the daemon is still holding its watches")
+		}
+	})
+	waitHealthy(t, base, done)
+
+	post := func(path, origin, body string) int {
+		req, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer res.Body.Close()
+		_, _ = io.Copy(io.Discard, res.Body)
+		return res.StatusCode
+	}
+
+	for _, path := range []string{"/api/v1/native/issues", "/api/v1/dispatcher/refresh"} {
+		if got := post(path, "https://evil.example", `{"title":"csrf"}`); got != http.StatusForbidden {
+			t.Errorf("POST %s cross-origin = %d; want 403 — a drive-by page can drive the dispatcher", path, got)
+		}
+	}
+
+	// The board UI is served from this same origin and must keep working, as
+	// must a non-browser caller (curl, a script) that sends no Origin at all.
+	if got := post("/api/v1/native/issues", base, `{"title":"same-origin"}`); got == http.StatusForbidden {
+		t.Error("same-origin POST was refused; the board UI would be broken")
+	}
+	if got := post("/api/v1/native/issues", "", `{"title":"no-origin"}`); got == http.StatusForbidden {
+		t.Error("POST with no Origin was refused; that is the CLI/script caller")
+	}
+
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {

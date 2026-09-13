@@ -100,7 +100,17 @@ func TestApplyDevboxProvisioning_BotOnly(t *testing.T) {
 // a missing binary the operator reads as an agent bug. The decision must
 // be visible instead: no snippet, no PATH entry, and the event names the
 // declined source and why.
-func TestApplyDevboxProvisioning_BotSourceDeclinedWhenTheBundleIsNotMounted(t *testing.T) {
+// A driver with no bundle mount is where bots actually run: the cloud
+// one, whose workspace is a copy inside a pod. Declining there — what this
+// did until 2026-09-10 — made `devbox.json`, the documented and durable
+// way for a bot to declare the binaries its steps need, work on a laptop
+// and be inert in production, with nothing failing except the step that
+// needed the tool.
+//
+// The bundle cannot be READ from in there; its config can be CARRIED
+// there. This pins that: the snippet materialises the config and installs
+// it, and PATH carries the profile the install populates.
+func TestApplyDevboxProvisioning_BotSourceTravelsWhenTheBundleIsNotMounted(t *testing.T) {
 	f := newDevboxFixture(t, false, true)
 	emit := func(ev store.EventType, data map[string]any) error {
 		f.events = append(f.events, ev)
@@ -109,36 +119,33 @@ func TestApplyDevboxProvisioning_BotSourceDeclinedWhenTheBundleIsNotMounted(t *t
 	}
 	applyDevboxProvisioning(f.spec, f.params, "", emit, iterlog.Nop())
 
-	if strings.Contains(f.spec.PostCreate, botDevboxDir) || strings.Contains(f.spec.PostCreate, "devbox install") {
-		t.Errorf("a snippet was baked for a bundle the container never had:\n%s", f.spec.PostCreate)
+	if !strings.Contains(f.spec.PostCreate, "devbox install -c "+botDevboxDir) {
+		t.Fatalf("no install for the bot source on a driver with no bundle mount:\n%s", f.spec.PostCreate)
 	}
-	if p := f.spec.Env["PATH"]; strings.Contains(p, botDevboxDir) {
-		t.Errorf("PATH promises %s, a directory nothing will ever populate: %q", botDevboxDir, p)
+	// The CONTENT has to be in the snippet — an install pointed at an
+	// empty directory succeeds and installs nothing, which is the silent
+	// shape this whole change exists to remove.
+	if !strings.Contains(f.spec.PostCreate, "go-containerregistry@latest") {
+		t.Errorf("the config's packages never reached the snippet, so the install would run on an empty directory:\n%s", f.spec.PostCreate)
 	}
-	if len(f.events) != 1 || f.events[0] != store.EventSandboxDevboxProvisioned {
-		t.Fatalf("want a single %s event naming the decline, got %v", store.EventSandboxDevboxProvisioned, f.events)
+	if !strings.Contains(f.spec.PostCreate, "mkdir -p "+botDevboxDir) {
+		t.Errorf("nothing creates %s before writing into it:\n%s", botDevboxDir, f.spec.PostCreate)
 	}
-	data := f.eventData[0]
-	sources, _ := data["skipped_sources"].([]string)
-	if len(sources) != 1 || sources[0] != "bot" {
-		t.Fatalf("skipped_sources = %v, want [bot]", data["skipped_sources"])
+	if p := f.spec.Env["PATH"]; !strings.Contains(p, botDevboxDir) {
+		t.Errorf("PATH does not carry the bot profile the install populates: %q", p)
 	}
-	configs, _ := data["skipped_configs"].([]string)
-	if len(configs) != 1 || !strings.HasPrefix(configs[0], f.params.BundleHostDir) {
-		t.Errorf("skipped_configs = %v, want the bot's own devbox.json path", data["skipped_configs"])
-	}
-	reasons, _ := data["skipped_reasons"].([]string)
-	if len(reasons) != 1 || reasons[0] != devboxSkipNoBundleMount {
-		t.Errorf("skipped_reasons = %v, want [%s]", data["skipped_reasons"], devboxSkipNoBundleMount)
-	}
-	if got, _ := data["reason"].(string); got != devboxSkipNoBundleMount {
-		t.Errorf("reason = %q, want %q", got, devboxSkipNoBundleMount)
+	// Nothing was declined, so the event must not report a skip.
+	for _, data := range f.eventData {
+		if sources, _ := data["skipped_sources"].([]string); len(sources) != 0 {
+			t.Errorf("skipped_sources = %v, want none — the source was installed", sources)
+		}
 	}
 }
 
-// Both sources declined, for DIFFERENT reasons: the event must say which
-// is which, or an operator reads one decision and chases the other.
-func TestApplyDevboxProvisioning_TwoDeclinesKeepTheirOwnReasons(t *testing.T) {
+// The repo declined and the bot installed: two sources, two different
+// fates, in one run. An event that reported both as declined — or dropped
+// the bot's install — would send an operator chasing the wrong one.
+func TestApplyDevboxProvisioning_RepoDeclinedBotStillTravels(t *testing.T) {
 	f := newDevboxFixture(t, true, true)
 	f.params.RepoDevboxOverride = "off"
 	emit := func(ev store.EventType, data map[string]any) error {
@@ -154,11 +161,100 @@ func TestApplyDevboxProvisioning_TwoDeclinesKeepTheirOwnReasons(t *testing.T) {
 	data := f.eventData[0]
 	sources, _ := data["skipped_sources"].([]string)
 	reasons, _ := data["skipped_reasons"].([]string)
-	if len(sources) != 2 || sources[0] != "repo" || sources[1] != "bot" {
-		t.Fatalf("skipped_sources = %v, want [repo bot]", data["skipped_sources"])
+	if len(sources) != 1 || sources[0] != "repo" {
+		t.Fatalf("skipped_sources = %v, want [repo] — only the repo was declined", data["skipped_sources"])
 	}
-	if len(reasons) != 2 || reasons[0] != devboxSkipRepoOff || reasons[1] != devboxSkipNoBundleMount {
-		t.Fatalf("skipped_reasons = %v, want [%s %s]", data["skipped_reasons"], devboxSkipRepoOff, devboxSkipNoBundleMount)
+	if len(reasons) != 1 || reasons[0] != devboxSkipRepoOff {
+		t.Fatalf("skipped_reasons = %v, want [%s]", data["skipped_reasons"], devboxSkipRepoOff)
+	}
+	if !strings.Contains(f.spec.PostCreate, "devbox install -c "+botDevboxDir) {
+		t.Errorf("the bot source was dropped along with the repo one:\n%s", f.spec.PostCreate)
+	}
+	if strings.Contains(f.spec.PostCreate, "go@1.26") {
+		t.Errorf("the declined repo config reached the snippet anyway:\n%s", f.spec.PostCreate)
+	}
+}
+
+// A config carrying a `%` must arrive byte-for-byte. `printf <content>`
+// reads its first argument as a FORMAT string, so the naive form rewrites
+// the very file it is placing — and a devbox.json is JSON an operator
+// wrote, which may legitimately contain one.
+func TestApplyDevboxProvisioning_InlineConfigIsNotReadAsAPrintfFormat(t *testing.T) {
+	f := newDevboxFixture(t, false, true)
+	body := `{"packages":["foo@1.0"],"env":{"PCT":"100%s%d done"}}`
+	if err := os.WriteFile(filepath.Join(f.params.BundleHostDir, devboxConfigName), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	applyDevboxProvisioning(f.spec, f.params, "", func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+
+	if !strings.Contains(f.spec.PostCreate, body) {
+		t.Fatalf("the config was mangled on its way into the snippet.\nwant it to carry: %s\ngot:\n%s", body, f.spec.PostCreate)
+	}
+	if !strings.Contains(f.spec.PostCreate, "printf %s ") {
+		t.Errorf("the write does not go through `printf %%s`, so a %% in the config is a format directive:\n%s", f.spec.PostCreate)
+	}
+}
+
+// The lock travels with the config when the bundle ships one: an unlocked
+// install re-resolves `@latest` at run time, which is exactly the
+// reproducibility hole the lock exists to close.
+func TestApplyDevboxProvisioning_InlineCarriesTheLockWhenPresent(t *testing.T) {
+	f := newDevboxFixture(t, false, true)
+	lock := `{"lockfile_version":"1","packages":{"foo@1.0":{"resolved":"github:NixOS/nixpkgs/abc#foo"}}}`
+	if err := os.WriteFile(filepath.Join(f.params.BundleHostDir, devboxLockName), []byte(lock), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	applyDevboxProvisioning(f.spec, f.params, "", func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+
+	if !strings.Contains(f.spec.PostCreate, lock) {
+		t.Fatalf("the lock did not travel, so the install re-resolves at run time:\n%s", f.spec.PostCreate)
+	}
+	if !strings.Contains(f.spec.PostCreate, devboxLockName) {
+		t.Errorf("nothing writes %s next to the config:\n%s", devboxLockName, f.spec.PostCreate)
+	}
+}
+
+// A config too large to carry is DECLINED and said, never installed from a
+// directory it never reached. The ceiling exists because the snippet
+// becomes the container's post-create command.
+func TestApplyDevboxProvisioning_OversizedInlineConfigIsDeclinedAloud(t *testing.T) {
+	f := newDevboxFixture(t, false, true)
+	huge := `{"packages":["` + strings.Repeat("x", maxInlineDevboxBytes+1) + `"]}`
+	if err := os.WriteFile(filepath.Join(f.params.BundleHostDir, devboxConfigName), []byte(huge), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	emit := func(ev store.EventType, data map[string]any) error {
+		f.events = append(f.events, ev)
+		f.eventData = append(f.eventData, data)
+		return nil
+	}
+	applyDevboxProvisioning(f.spec, f.params, "", emit, iterlog.Nop())
+
+	if strings.Contains(f.spec.PostCreate, "devbox install") {
+		t.Errorf("an oversized config was installed anyway:\n%s", f.spec.PostCreate[:min(400, len(f.spec.PostCreate))])
+	}
+	if len(f.events) != 1 {
+		t.Fatalf("want one event naming the decline, got %v", f.events)
+	}
+	reasons, _ := f.eventData[0]["skipped_reasons"].([]string)
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "ceiling") {
+		t.Errorf("skipped_reasons = %v, want one naming the size ceiling", reasons)
+	}
+}
+
+// The snippet is part of the spec, and a spec that differs run to run for
+// identical inputs defeats every hash and cache downstream of it.
+func TestApplyDevboxProvisioning_InlineSnippetIsDeterministic(t *testing.T) {
+	build := func() string {
+		f := newDevboxFixture(t, false, true)
+		if err := os.WriteFile(filepath.Join(f.params.BundleHostDir, devboxLockName), []byte(`{"lockfile_version":"1"}`), 0o644); err != nil {
+			t.Fatalf("write lock: %v", err)
+		}
+		applyDevboxProvisioning(f.spec, f.params, "", func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+		return f.spec.PostCreate
+	}
+	if a, b := build(), build(); a != b {
+		t.Fatalf("the prologue is not stable across identical inputs:\n%s\n--- vs ---\n%s", a, b)
 	}
 }
 
@@ -300,21 +396,23 @@ func TestApplyDevboxProvisioning_PostCreateIsPrependedNotReplaced(t *testing.T) 
 	}
 }
 
-// TestApplyDevboxProvisioning_BotDevboxNeedsBundleMount: with no bundle
-// bind-mount (a driver with no host filesystem, or a bare .bot with no
-// bundle), the bot's devbox.json is unreachable in-container and must be
-// skipped rather than producing a `cp` from a path that does not exist.
-func TestApplyDevboxProvisioning_BotDevboxNeedsBundleMount(t *testing.T) {
-	f := newDevboxFixture(t, false, true)
+// A bare `.bot` carries no bundle at all, so there is no config to find
+// and nothing to install — distinct from a bundle whose config exists and
+// cannot be mounted, which now travels. The cost of the feature stays
+// opt-in by file presence: a run that declares nothing adds nothing to
+// PostCreate and pays none of devbox's cold-install latency.
+func TestApplyDevboxProvisioning_NoBundleAtAllInstallsNothing(t *testing.T) {
+	f := newDevboxFixture(t, false, false)
+	f.params.BundleHostDir = ""
 	emit := func(store.EventType, map[string]any) error { return nil }
 
 	applyDevboxProvisioning(f.spec, f.params, "", emit, iterlog.Nop())
 
 	if f.spec.PostCreate != "" {
-		t.Errorf("bot devbox needs the bundle mount; PostCreate must stay empty, got:\n%s", f.spec.PostCreate)
+		t.Errorf("nothing was declared; PostCreate must stay empty, got:\n%s", f.spec.PostCreate)
 	}
 	if _, ok := f.spec.Env["PATH"]; ok {
-		t.Errorf("PATH must stay untouched without the bundle mount, got %q", f.spec.Env["PATH"])
+		t.Errorf("PATH must stay untouched when nothing is installed, got %q", f.spec.Env["PATH"])
 	}
 }
 

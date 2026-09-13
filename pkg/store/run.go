@@ -235,6 +235,33 @@ const (
 	BotSourceTierBaked = "baked"
 )
 
+// The credential-resolution tiers a run can be FUNDED by, persisted on
+// Run.CredentialTiers. Same rule as the bot tiers above: the vocabulary
+// lives beside the field, so the publisher that computes it and the log
+// line an operator already greps cannot drift apart.
+//
+// These are the publisher's own five tiers, not credusage.Tier's four —
+// that package merges a tenant's key and its subscription into "team",
+// because it meters money and the two spend the same tenant's budget.
+// Here they stay apart, because the question is who to TALK to when a run
+// is refused, and a dead API key and a shut forfait window are two
+// different conversations.
+const (
+	// CredentialTierBYOK — an API key the run's own tenant stored.
+	CredentialTierBYOK = "byok"
+	// CredentialTierOAuthForfait — a subscription the run's own tenant or
+	// its user connected.
+	CredentialTierOAuthForfait = "oauth-forfait"
+	// CredentialTierOrg — the parent org's shared credential, lent to the
+	// teams its CredentialAudience admits.
+	CredentialTierOrg = "org"
+	// CredentialTierPool — a contributor's credential lent through the
+	// mutualised pool: the spend is the DONOR's.
+	CredentialTierPool = "pool"
+	// CredentialTierPlatform — the deployment's own DB-backed fallback.
+	CredentialTierPlatform = "platform"
+)
+
 // Run is the top-level metadata for a single workflow invocation.
 //
 // bson tags mirror the json tags exactly (same snake_case names) so a
@@ -528,6 +555,8 @@ type RunCredStamp struct {
 	// Fingerprints replaces Run.CredFingerprints wholesale; nil or empty
 	// clears it (a re-resolution that sealed nothing holds no slot).
 	Fingerprints []string
+	// Tiers replaces Run.CredentialTiers wholesale, on the same terms.
+	Tiers []string
 	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
 	SkippedReopensAt *time.Time
 }
@@ -562,6 +591,20 @@ type Run struct {
 	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
 	// runs through this field.
 	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
+	// CredentialTiers names which resolution tiers funded this run
+	// (CredentialTier* above), sorted and deduplicated. Stamped with
+	// CredFingerprints, as one unit, at launch and at every resume —
+	// a resume can be funded by a different tier than the launch, and a
+	// field recording only the first answer would be worse than none.
+	//
+	// PLURAL because a run is: one attempt can spend a team forfait on its
+	// implementer and the platform's codex key on its plan review, and a
+	// single "the tier" would have to pick one and be wrong about the
+	// other. It carries no slot names — CredFingerprints does not either,
+	// and the pair answers the operator's question ("who funded this, who
+	// do I talk to") without becoming a second copy of the publisher's
+	// GRANTED log line.
+	CredentialTiers []string `json:"credential_tiers,omitempty" bson:"credential_tiers,omitempty"`
 	// SkippedCredReopensAt is the earliest instant a credential the
 	// resolution PASSED OVER reopens — a refused window's reset, a reached
 	// cap's reset — or nil when nothing usable was skipped. Stamped with
@@ -1466,7 +1509,19 @@ type Checkpoint struct {
 	// existed — the resolver then falls back to "every incoming edge
 	// whose source has produced output".
 	SelectedIncoming map[string][]IncomingEdge `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
-	Vars             map[string]any            `json:"vars" bson:"vars"` // resolved workflow variables
+	// SettledIncoming records, per convergence node, the incoming edges a
+	// fan-out invocation stabilized on whose source produced no output —
+	// every branch failed, or the collection fanned over was empty. It has
+	// to survive the checkpoint because that failure is exactly what parks
+	// the run: a resume restarts AT the convergence node without replaying
+	// the fan-out, so a volatile marker would be gone at the one moment it
+	// is needed. Kept apart from SelectedIncoming, which a loop head's
+	// back-edge replaces on re-entry. Each edge is revalidated against the
+	// current graph at resolve time, so a `resume --force` against an
+	// edited .bot drops the identities that no longer match rather than
+	// the whole set.
+	SettledIncoming map[string][]IncomingEdge `json:"settled_incoming,omitempty" bson:"settled_incoming,omitempty"`
+	Vars            map[string]any            `json:"vars" bson:"vars"` // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
@@ -1597,10 +1652,13 @@ type BranchCheckpoint struct {
 	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
 	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
 	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
-	JoinNodeID         string                         `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
-	TerminalNodeID     string                         `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
-	Completed          bool                           `json:"completed,omitempty" bson:"completed,omitempty"`
-	TerminatedAtDone   bool                           `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	// SettledIncoming is the branch-private twin of Checkpoint.SettledIncoming:
+	// the floor a NESTED fan-out left on a convergence inside this branch.
+	SettledIncoming  map[string][]IncomingEdge `json:"settled_incoming,omitempty" bson:"settled_incoming,omitempty"`
+	JoinNodeID       string                    `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
+	TerminalNodeID   string                    `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
+	Completed        bool                      `json:"completed,omitempty" bson:"completed,omitempty"`
+	TerminatedAtDone bool                      `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
 	// CostUSD is this branch's cumulative LLM spend for the current
 	// invocation. The daily spend cap records per-branch spend under a
 	// monotonic-max ledger key, so a resumed branch must restart its

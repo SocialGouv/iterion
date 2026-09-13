@@ -63,6 +63,10 @@ type fakeCloud struct {
 	badExpAt       bool // send empty expires_at (force JWT fallback)
 	lastRefIn      string
 	lastStartQuery string
+	// cookiePrefix reproduces what a real deployment emits. Production sets
+	// `__Host-`; leaving this empty is the legacy spelling. The client must
+	// harvest either, so tests that care run both.
+	cookiePrefix string
 }
 
 func (f *fakeCloud) handler() http.Handler {
@@ -123,8 +127,8 @@ func (f *fakeCloud) writeAuth(w http.ResponseWriter) {
 	rev := f.rev
 	f.mu.Unlock()
 	refresh := "refresh-tok-" + itoa(rev)
-	http.SetCookie(w, &http.Cookie{Name: cloudRefreshCookieName, Value: refresh, Path: "/api/auth", HttpOnly: true})
-	http.SetCookie(w, &http.Cookie{Name: cloudAuthCookieName, Value: "access-cookie", Path: "/", HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: f.cookiePrefix + cloudRefreshCookieName, Value: refresh, Path: "/api/auth", HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: f.cookiePrefix + cloudAuthCookieName, Value: "access-cookie", Path: "/", HttpOnly: true})
 	exp := time.Now().Add(15 * time.Minute)
 	body := map[string]any{
 		"user":           map[string]any{"id": "u1", "email": "a@b.io", "name": "Alice", "is_super_admin": false},

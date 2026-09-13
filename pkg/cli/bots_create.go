@@ -135,7 +135,11 @@ func BotsCreate(opts BotsCreateOptions, p *Printer) error {
 		p.Blank()
 	}
 	p.Line("  Next steps:")
-	p.Line("    1. Write the mission (the `mission` prompt block):")
+	if spec.Shape == "" {
+		p.Line("    1. Write the mission (the `mission` prompt block):")
+	} else {
+		p.Line("    1. Fill the shape in — its header comment says what (the mission, the vars, the edges):")
+	}
 	p.Line("         $EDITOR %s", mainBot)
 	p.Line("    2. Run it (it is validated first):")
 	p.Line("         iterion run %s", mainBot)

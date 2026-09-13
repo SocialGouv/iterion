@@ -97,13 +97,24 @@ RUN case "$(uname -m)" in \
 # whether deepsec is actually callable.
 # ---------------------------------------------------------------------
 ARG DEEPSEC_VERSION=latest
+# CODEX_VERSION is pinned SEPARATELY from deepsec on purpose. deepsec
+# bundles a codex of its own, and that one trails: measured 2026-09-10,
+# the image carried codex-cli 0.145.0 while the model asked for was gated
+# at >= 0.153. codex does not refuse there — it reports "Model metadata
+# not found", falls back, and the audit silently runs on a model nobody
+# chose. Pinning it here is what makes the served model the requested one.
+#
+# `deepsec` reads CODEX_REAL_BIN (it is on its own env allowlist), which
+# is how a caller points it at this binary rather than its bundled one.
+ARG CODEX_VERSION=0.154.0
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     --mount=type=cache,target=/root/.npm \
     { rm -f /etc/apt/apt.conf.d/docker-clean \
         && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
-        && npm install -g "deepsec@${DEEPSEC_VERSION}" ; } \
+        && npm install -g "deepsec@${DEEPSEC_VERSION}" \
+        && npm install -g "@openai/codex@${CODEX_VERSION}" ; } \
     || echo "deepsec Layer 4 setup did not complete — run_deepsec_scanner will degrade gracefully (enable_deepsec=true users should rebuild with a Node 22+ base or pre-install deepsec)."
 
 # ---------------------------------------------------------------------

@@ -25,9 +25,10 @@ import (
 // presence of body fields when not declared explicitly: the parser
 // sets Mode="inline" so the IR compiler routes it through the
 // driver-spec converter rather than the devcontainer.json reader.
-func (p *parser) parseSandboxBlock() *ast.SandboxBlock {
+func (p *parser) parseSandboxBlock(host string) *ast.SandboxBlock {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "sandbox"
-	p.expect(TokenColon)
+	colon, _ := p.expect(TokenColon)
 
 	sb := &ast.SandboxBlock{Span: ast.Span{Start: p.pos(start)}}
 
@@ -42,10 +43,12 @@ func (p *parser) parseSandboxBlock() *ast.SandboxBlock {
 		return sb
 	}
 
-	// Block form. Skip newlines and expect an indent.
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		// Empty block — not legal but recover gracefully.
+	// Block form.
+	switch p.blockBodyAfter(colon) {
+	case headerFailed:
+		return sb // reported; the node still parses
+	case headerEmpty:
+		sb.Mode = "inline" // the block form with nothing in it
 		return sb
 	}
 	for {
@@ -79,7 +82,7 @@ func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 	}
 	name := propTok.Value
 	p.next() // consume the property identifier
-	p.expect(TokenColon)
+	colon, _ := p.expect(TokenColon)
 
 	switch name {
 	case "mode":
@@ -103,14 +106,14 @@ func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 		// consumed by the parseSandboxProp prologue above, so we
 		// pass the propTok span directly to keep diagnostics
 		// pointing at the right position.
-		sb.Network = p.parseSandboxNetworkBody(propTok)
+		sb.Network = p.parseSandboxNetworkBody(propTok, colon)
 	case "build":
 		// V2-6: Dockerfile-based image build. Mutually exclusive with
 		// `image:` (enforced at IR compile time, not the parser).
-		sb.Build = p.parseSandboxBuildBody(propTok)
+		sb.Build = p.parseSandboxBuildBody(propTok, colon)
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown sandbox property '"+name+"'")
-		p.skipToNewline()
+		p.unknownProperty("sandbox", propTok, name)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -120,12 +123,14 @@ func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 // consumed by parseSandboxProp; we go straight to the indent + body
 // loop. Recognised properties: dockerfile (string), context (string),
 // args (string map). Unknown properties produce DiagUnknownProperty.
-func (p *parser) parseSandboxBuildBody(startTok Token) *ast.SandboxBuildBlock {
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
+func (p *parser) parseSandboxBuildBody(startTok, colon Token) *ast.SandboxBuildBlock {
 	bb := &ast.SandboxBuildBlock{Span: ast.Span{Start: p.pos(startTok)}}
+	switch p.blockBodyAfter(colon) {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return bb
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -152,8 +157,8 @@ func (p *parser) parseSandboxBuildBody(startTok Token) *ast.SandboxBuildBlock {
 		case "args":
 			bb.Args = p.parseStringMapBlock()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown sandbox.build property '"+name+"'")
-			p.skipToNewline()
+			p.unknownProperty("sandbox.build", t, name)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -167,13 +172,14 @@ func (p *parser) parseSandboxBuildBody(startTok Token) *ast.SandboxBuildBlock {
 //
 // startTok is the original "network" keyword token, used only to
 // anchor the Span on the returned struct.
-func (p *parser) parseSandboxNetworkBody(startTok Token) *ast.SandboxNetworkBlock {
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
+func (p *parser) parseSandboxNetworkBody(startTok, colon Token) *ast.SandboxNetworkBlock {
 	nb := &ast.SandboxNetworkBlock{Span: ast.Span{Start: p.pos(startTok)}}
+	switch p.blockBodyAfter(colon) {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return nb
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -206,8 +212,8 @@ func (p *parser) parseSandboxNetworkBody(startTok Token) *ast.SandboxNetworkBloc
 		case "rules":
 			nb.Rules = p.parseStringOrIdentList()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown sandbox.network property '"+name+"'")
-			p.skipToNewline()
+			p.unknownProperty("sandbox.network", t, name)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -273,6 +279,12 @@ func (p *parser) parseStringMapBlock() map[string]string {
 // — useful for sandbox.network.rules where authors mix quoted globs
 // like "!**.evil.site" and bare hostnames like github.com.
 func (p *parser) parseStringOrIdentList() []string {
+	if lineEnds(p.peek()) {
+		return p.parseDashList(func() (string, bool) {
+			v := p.expectStringOrIdent()
+			return v, v != ""
+		})
+	}
 	if _, ok := p.expect(TokenLBrack); !ok {
 		return nil
 	}
@@ -302,7 +314,8 @@ func (p *parser) expectStringOrIdent() string {
 		return p.expectString()
 	}
 	if t.Type == TokenIdent || isKeywordToken(t.Type) {
-		return p.expectIdent()
+		// A bare hostname is dotted (`github.com`): read the whole of it.
+		return p.continueDottedRef(p.expectIdent())
 	}
 	p.addError(DiagExpectedToken, t, "expected string or identifier")
 	p.next()

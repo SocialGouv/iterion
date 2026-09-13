@@ -52,7 +52,7 @@ func TestMemoryOAuthStoreUpsertGetDelete(t *testing.T) {
 	if _, err := store.Get(ctx, "alice", OAuthKindCodex); !errors.Is(err, ErrOAuthNotFound) {
 		t.Fatalf("expected ErrOAuthNotFound, got %v", err)
 	}
-	if err := store.Delete(ctx, "alice", OAuthKindClaudeCode); err != nil {
+	if err := store.Delete(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0)); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := store.Get(ctx, "alice", OAuthKindClaudeCode); !errors.Is(err, ErrOAuthNotFound) {
@@ -67,7 +67,7 @@ func TestMemoryOAuthStoreUpsertGetDelete(t *testing.T) {
 func TestMemoryOAuthStoreSetAccountLabel(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryOAuthStore()
-	if err := store.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "alice perso"); !errors.Is(err, ErrOAuthNotFound) {
+	if err := store.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), "alice perso"); !errors.Is(err, ErrOAuthNotFound) {
 		t.Fatalf("SetAccountLabel on a missing record = %v, want ErrOAuthNotFound", err)
 	}
 	if err := store.Upsert(ctx, OAuthRecord{
@@ -76,7 +76,7 @@ func TestMemoryOAuthStoreSetAccountLabel(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "alice perso"); err != nil {
+	if err := store.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), "alice perso"); err != nil {
 		t.Fatalf("SetAccountLabel: %v", err)
 	}
 	got, err := store.Get(ctx, "alice", OAuthKindClaudeCode)
@@ -86,7 +86,7 @@ func TestMemoryOAuthStoreSetAccountLabel(t *testing.T) {
 	if got.AccountLabel != "alice perso" || string(got.SealedPayload) != "sealed" || got.Fingerprint != "fp-1" {
 		t.Fatalf("after rename: %+v", got)
 	}
-	if err := store.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, ""); err != nil {
+	if err := store.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), ""); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if got, _ = store.Get(ctx, "alice", OAuthKindClaudeCode); got.AccountLabel != "" {

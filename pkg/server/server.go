@@ -84,8 +84,10 @@ type Server struct {
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
-	currentProjectID       string
-	cfg                    Config
+	currentProjectID string
+	cfg              Config
+	// extraOrigins are allowed environment origins resolved at construction.
+	extraOrigins           []string
 	logger                 *iterlog.Logger
 	mux                    *recordingMux // records routes → GET /api/openapi.json
 	handler                http.Handler  // mux wrapped with auth middleware
@@ -623,6 +625,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	}
 	s := &Server{
 		cfg:                 cfg,
+		extraOrigins:        loadExtraAllowedOrigins(logger),
 		logger:              logger,
 		mux:                 newRecordingMux(),
 		addrReady:           make(chan struct{}),
@@ -948,8 +951,13 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// route pattern rather than the URL. Identity middleware unless
 	// SENTRY_TRACES_SAMPLE_RATE turned tracing on, so the chain below
 	// is untouched on a deployment that did not ask for it.
-	s.handler = errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
-		s.authMiddleware(s.mux),
+	// securityHeaders sits outermost so the headers ride EVERY response,
+	// including the ones the layers below short-circuit (a 401 from the auth
+	// gate, a 403 from the origin gate, a panic recovered by errtrack).
+	s.handler = securityHeaders(
+		errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
+			s.authMiddleware(s.mux),
+		),
 	)
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Bind, fmt.Sprintf("%d", cfg.Port)),

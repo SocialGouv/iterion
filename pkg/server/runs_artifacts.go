@@ -219,17 +219,28 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", artifactFileContentType(info.Path))
+	contentType := artifactFileContentType(info.Path)
+	w.Header().Set("Content-Type", contentType)
+	// nosniff so the declared type is the type: without it a browser may
+	// re-interpret bytes as markup whatever we say they are.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if info.Size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	}
-	// Disposition: `inline` by default lets browsers preview .md /
-	// .json / images directly; `?download=1` switches to `attachment`
-	// for the studio's Download button (the HTML5 `download` attribute
-	// alone is unreliable across embedded WebViews + same-origin
-	// previewable types). Filename hint is the basename of the path.
+	// Disposition: `inline` for the types the studio previews (.md / .json /
+	// images / media); `?download=1` switches to `attachment` for the
+	// studio's Download button (the HTML5 `download` attribute alone is
+	// unreliable across embedded WebViews + same-origin previewable types).
+	// Filename hint is the basename of the path.
+	//
+	// Anything outside that list — .html and .svg above all — is forced to a
+	// download. These bytes are whatever an agent wrote, and serving them
+	// inline makes them a DOCUMENT on the studio's own origin, able to drive
+	// every /api/ endpoint the operator's session reaches. The review-scope
+	// endpoint next door already refused them for exactly this reason; the
+	// rule was written once and applied at one of the two sites.
 	disposition := "inline"
-	if r.URL.Query().Get("download") == "1" {
+	if r.URL.Query().Get("download") == "1" || !inlineSafeArtifactType(contentType) {
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(info.Path)))

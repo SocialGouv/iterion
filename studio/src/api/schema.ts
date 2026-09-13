@@ -5865,6 +5865,9 @@ export interface components {
             selected_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
+            settled_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
             start_node_id: string;
             terminal_node_id?: string;
             terminated_at_done?: boolean;
@@ -5959,6 +5962,9 @@ export interface components {
                 [key: string]: number;
             };
             selected_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
+            settled_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
             vars: {
@@ -6486,6 +6492,7 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             cred_fingerprints?: string[];
+            credential_tiers?: string[];
             /** Format: date-time */
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,6 +38,13 @@ func (s *Server) registerOAuthForfaitRoutes() {
 // OAuthRecord. Plaintext / sealed payload never leave the server.
 type oauthConnectionView struct {
 	Kind string `json:"kind"`
+	// Rank is which link of the owner's chain for this kind this is: 0 the
+	// primary, 1 and up the fallbacks tried in order. Not omitempty — a
+	// listing where the primary alone has no rank would be read as a
+	// different KIND of entry, and this value is exactly what every write
+	// takes as `?rank=`, so withholding it makes a chain unmanageable
+	// through the API that reports it.
+	Rank int `json:"rank"`
 	// AccountLabel is the operator's name for the account behind this
 	// credential ("jothedev"). Empty on records connected before labels
 	// existed — rename them with PATCH.
@@ -61,6 +69,7 @@ type oauthConnectionView struct {
 func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
 	return oauthConnectionView{
 		Kind:                 string(r.Kind),
+		Rank:                 r.Rank,
 		AccountLabel:         r.AccountLabel,
 		Fingerprint:          r.Fingerprint,
 		Scopes:               r.Scopes,
@@ -108,6 +117,43 @@ func (s *Server) handleRenameOAuth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteOAuth(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	s.deleteOAuthForOwner(w, r, id.UserID, secrets.OAuthKind(r.PathValue("kind")))
+}
+
+// oauthRankParam reads the `rank` query parameter: which link of the owner's
+// credential chain for this kind the request addresses. Absent means 0, the
+// primary — so every caller written before chains existed keeps its meaning.
+func oauthRankParam(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("rank"))
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("rank must be a non-negative integer, got %q", raw)
+	}
+	return n, nil
+}
+
+// resolveOAuthRecord returns the record at `rank` in this owner's chain for
+// `kind`. It exists because the four write paths address a record by id now:
+// (owner, kind) stopped being unique the day a chain became possible, and a
+// handler that still keyed on it would land on the primary whatever rank the
+// operator asked for — renaming, refreshing or deleting the wrong credential
+// while reporting success.
+func (s *Server) resolveOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, rank int) (secrets.OAuthRecord, error) {
+	if rank == 0 {
+		return s.oauthStore.Get(ctx, ownerKey, kind)
+	}
+	recs, err := s.oauthStore.ListByUser(ctx, ownerKey)
+	if err != nil {
+		return secrets.OAuthRecord{}, err
+	}
+	for _, rec := range recs {
+		if rec.Kind == kind && rec.Rank == rank {
+			return rec, nil
+		}
+	}
+	return secrets.OAuthRecord{}, secrets.ErrOAuthNotFound
 }
 
 // ---- owner-keyed helpers (shared by /me and /teams) ----
@@ -274,6 +320,15 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	// Which link of the chain this upload occupies. Absent = 0 = the
+	// primary, so connecting a first credential is unchanged; a fallback is
+	// an explicit `?rank=1`, never something an operator lands on by
+	// accident.
+	rank, err := oauthRankParam(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	pending, err := s.oauthPending.Take(r.Context(), ownerKey, kind)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "no pending authorization (expired? restart the connect)")
@@ -301,7 +356,7 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusInternalServerError, "build credentials: %v", err)
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, accountLabel, credentialServerBuilt)
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, accountLabel, credentialServerBuilt, rank)
 	if err != nil {
 		if s.refuseOAuthCredential(w, r, ownerKey, kind, "browser", err) {
 			return
@@ -335,7 +390,12 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, accountLabel, credentialPasted)
+	rank, err := oauthRankParam(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, accountLabel, credentialPasted, rank)
 	if err != nil {
 		if s.refuseOAuthCredential(w, r, ownerKey, kind, "paste", err) {
 			return
@@ -417,13 +477,15 @@ func (s *Server) refuseOAuthCredential(w http.ResponseWriter, r *http.Request, o
 // Shared by the browser flow and the paste path; accountLabel arrives
 // already normalized by the handler. Every refusal of the blob's SHAPE is
 // a *secrets.ShapeError; anything else is a parse, seal or store failure.
-func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string, origin credentialOrigin) (secrets.OAuthRecord, error) {
+func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string, origin credentialOrigin, rank int) (secrets.OAuthRecord, error) {
 	now := time.Now().UTC()
 	rec := secrets.OAuthRecord{
-		// ID is derived in the OAuth store's Upsert (memory + Mongo
-		// agree on `<ownerKey>|<kind>`), so we leave it empty here.
+		// ID is derived in the OAuth store's Upsert (memory + Mongo agree
+		// on `<ownerKey>|<kind>`, plus `|<rank>` past the primary), so we
+		// leave it empty here.
 		UserID:    ownerKey,
 		Kind:      kind,
+		Rank:      rank,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -575,7 +637,10 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// listing shows no name.
 	rec.AccountLabel = accountLabel
 	if rec.AccountLabel == "" {
-		if prev, err := s.oauthStore.Get(ctx, ownerKey, kind); err == nil && prev.Fingerprint == rec.Fingerprint {
+		// The link being replaced, not the primary: comparing a fallback's
+		// fingerprint against rank 0's never matches, so rotating a named
+		// fallback would drop its name on every rotation.
+		if prev, err := s.resolveOAuthRecord(ctx, ownerKey, kind, rank); err == nil && prev.Fingerprint == rec.Fingerprint {
 			rec.AccountLabel = prev.AccountLabel
 		}
 	}
@@ -597,10 +662,19 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusBadRequest, "unknown oauth kind")
 		return
 	}
-	rec, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	// Which link of the chain to renew. A refresh is the write where reading
+	// the primary regardless costs the most: the provider RETIRES the refresh
+	// token it is handed, so renewing "the fallback" would spend the primary's
+	// and leave the fallback to expire anyway.
+	rank, rerr := oauthRankParam(r)
+	if rerr != nil {
+		httpError(w, http.StatusBadRequest, "%s", rerr.Error())
+		return
+	}
+	rec, err := s.resolveOAuthRecord(r.Context(), ownerKey, kind, rank)
 	if err != nil {
 		if errors.Is(err, secrets.ErrOAuthNotFound) {
-			httpError(w, http.StatusNotFound, "no oauth connection of kind %s", kind)
+			httpError(w, http.StatusNotFound, "no %s connection at rank %d", kind, rank)
 			return
 		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
@@ -618,19 +692,19 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	now := time.Now().UTC()
-	claimed, err := s.oauthStore.ClaimRefresh(r.Context(), ownerKey, kind, owner, now, now.Add(secrets.RefreshClaimTTL))
+	claimed, err := s.oauthStore.ClaimRefresh(r.Context(), rec.ID, owner, now, now.Add(secrets.RefreshClaimTTL))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
 	if !claimed {
-		httpError(w, http.StatusConflict, "%s", s.refreshClaimRefusal(r.Context(), ownerKey, kind))
+		httpError(w, http.StatusConflict, "%s", s.refreshClaimRefusal(r.Context(), ownerKey, kind, rank))
 		return
 	}
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
 		// Give the claim back so the sweep is not held off by a failed
 		// attempt; a claim already superseded has nothing to release.
-		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), ownerKey, kind, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
+		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), rec.ID, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
 			s.logger.Warn("oauth: release refresh claim %s/%s: %v", ownerKey, kind, rerr)
 		}
 		if errors.Is(err, secrets.ErrNotRefreshable) {
@@ -640,7 +714,7 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 			if !rec.NotRefreshable {
 				// Partial write: the flag is all this path learned, and a
 				// rename may have landed since the Get above.
-				if uerr := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
+				if uerr := s.oauthStore.UpdateTokens(r.Context(), rec.ID, secrets.OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
 					s.logger.Warn("oauth: mark not-refreshable %s/%s: %v", ownerKey, kind, uerr)
 				}
 			}
@@ -655,7 +729,7 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 	// by the claim, so a re-connect that landed during the exchange (which
 	// clears the claim) keeps the credential the operator just uploaded
 	// instead of being overwritten by a refresh of the session it replaced.
-	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
+	if err := s.oauthStore.UpdateTokens(r.Context(), rec.ID, secrets.OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
 		if errors.Is(err, secrets.ErrRefreshClaimLost) {
 			httpError(w, http.StatusConflict, "this connection was replaced while the refresh was in flight — the refreshed tokens were discarded")
 			return
@@ -665,8 +739,9 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 	}
 	// Re-read rather than render the in-hand copy, for the same reason:
 	// the stored record is the truth about the fields this write did not
-	// touch.
-	fresh, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	// touch. At the same rank, which is the record just written — nothing
+	// renumbers a chain, so a link's rank is stable for its lifetime.
+	fresh, err := s.resolveOAuthRecord(r.Context(), ownerKey, kind, rank)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -687,9 +762,9 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 // instant, with no owner), so only the stored record can tell them apart.
 // Best-effort: a read that fails falls back to the generic answer rather
 // than turning a 409 into a 500.
-func (s *Server) refreshClaimRefusal(ctx context.Context, ownerKey string, kind secrets.OAuthKind) string {
+func (s *Server) refreshClaimRefusal(ctx context.Context, ownerKey string, kind secrets.OAuthKind, rank int) string {
 	const inFlight = "a refresh of this connection is already in flight — retry in a moment"
-	cur, err := s.oauthStore.Get(ctx, ownerKey, kind)
+	cur, err := s.resolveOAuthRecord(ctx, ownerKey, kind, rank)
 	if err != nil || cur.RefreshClaimOwner != "" || cur.RefreshNotBefore == nil {
 		return inFlight
 	}
@@ -735,7 +810,21 @@ func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 	// Store-level metadata write, not Get → Upsert: the latter would carry
 	// the sealed payload this handler read back over whatever a concurrent
 	// refresh committed in between.
-	if err := s.oauthStore.SetAccountLabel(r.Context(), ownerKey, kind, label); err != nil {
+	rank, rerr := oauthRankParam(r)
+	if rerr != nil {
+		httpError(w, http.StatusBadRequest, "%s", rerr.Error())
+		return
+	}
+	target, err := s.resolveOAuthRecord(r.Context(), ownerKey, kind, rank)
+	if err != nil {
+		if errors.Is(err, secrets.ErrOAuthNotFound) {
+			httpError(w, http.StatusNotFound, "no %s connection at rank %d", kind, rank)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if err := s.oauthStore.SetAccountLabel(r.Context(), target.ID, label); err != nil {
 		if errors.Is(err, secrets.ErrOAuthNotFound) {
 			httpError(w, http.StatusNotFound, "no %s connection", kind)
 			return
@@ -743,7 +832,10 @@ func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	rec, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	// Re-read the link that was written, not the primary: this record is what
+	// the audit line names and what the response describes, so reading the
+	// wrong one credits the rename to a credential nobody touched.
+	rec, err := s.resolveOAuthRecord(r.Context(), ownerKey, kind, rank)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -774,7 +866,21 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 			s.logger.Warn("credential pool: could not withdraw %s's %s contribution on disconnect: %v (it is parked at the next acquisition)", ownerKey, kind, err)
 		}
 	}
-	if err := s.oauthStore.Delete(r.Context(), ownerKey, kind); err != nil {
+	rank, rerr := oauthRankParam(r)
+	if rerr != nil {
+		httpError(w, http.StatusBadRequest, "%s", rerr.Error())
+		return
+	}
+	victim, verr := s.resolveOAuthRecord(r.Context(), ownerKey, kind, rank)
+	if verr != nil {
+		if errors.Is(verr, secrets.ErrOAuthNotFound) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", verr.Error())
+		return
+	}
+	if err := s.oauthStore.Delete(r.Context(), victim.ID); err != nil {
 		if errors.Is(err, secrets.ErrOAuthNotFound) {
 			w.WriteHeader(http.StatusNoContent)
 			return

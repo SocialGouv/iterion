@@ -186,6 +186,95 @@ func runCounterConformance(t *testing.T, c Counter) {
 	if rows, _ := c.List(ctx, sept, "team-a"); len(rows) != 4 {
 		t.Fatalf("List(team-a) = %d rows after the invalid spends, want 4", len(rows))
 	}
+
+	// --- the repository dimension ---
+	//
+	// A repo-attributed spend is its own stored row. The listings that
+	// predate the dimension therefore have to SUM the repositories back
+	// together, or every figure an operator reads would drop on the day
+	// their runs started naming a repo — a reporting outage that looks
+	// exactly like a quiet month.
+	const repoA, repoB = "SocialGouv/iterion", "SocialGouv/other"
+	repoKey := func(repo string) Key {
+		return Key{Fingerprint: "fp-team", Provider: "anthropic", Tier: TierTeam, TenantID: "team-a", RepoID: repo}
+	}
+	add(repoKey(repoA), NatureMetered, "claude_code", 1.0, 100, 20, sept)
+	add(repoKey(repoB), NatureMetered, "claw", 0.5, 50, 10, sept)
+
+	// The unattributed row is untouched: Usage addresses ONE row, and its
+	// key names no repository.
+	if own, _ := c.Usage(ctx, sept, teamKey); own.CostUSD != 2.0 || own.Runs != 2 {
+		t.Fatalf("the repo-less row moved to $%.2f / %d runs when repo spend was recorded beside it", own.CostUSD, own.Runs)
+	}
+	if withRepo, _ := c.Usage(ctx, sept, repoKey(repoA)); withRepo.CostUSD != 1.0 || withRepo.RepoID != repoA {
+		t.Fatalf("Usage(repo row) = $%.2f repo=%q, want $1.00 on %q", withRepo.CostUSD, withRepo.RepoID, repoA)
+	}
+
+	rows, err = c.List(ctx, sept, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("List(team-a) = %d rows, want the same 4 — repositories are summed into their credential, not listed beside it", len(rows))
+	}
+	var teamRow *MonthlyUsage
+	for i := range rows {
+		if rows[i].Fingerprint == "fp-team" && rows[i].Tier == TierTeam {
+			teamRow = &rows[i]
+		}
+	}
+	if teamRow == nil {
+		t.Fatal("List(team-a) lost the fp-team/team row")
+	}
+	if teamRow.CostUSD != 3.5 {
+		t.Fatalf("summed fp-team = $%.2f, want $3.50 ($2.00 unattributed + $1.00 + $0.50)", teamRow.CostUSD)
+	}
+	if teamRow.Runs != 4 || teamRow.InputTokens != 1650 || teamRow.OutputTokens != 330 {
+		t.Fatalf("summed fp-team = %d runs / %d in / %d out, want 4 / 1650 / 330", teamRow.Runs, teamRow.InputTokens, teamRow.OutputTokens)
+	}
+	if teamRow.RepoID != "" {
+		t.Fatalf("a summed row named repo %q — it is the total of several, so naming one of them is a wrong answer", teamRow.RepoID)
+	}
+	if len(teamRow.Backends) != 2 || teamRow.Backends[0] != "claude_code" || teamRow.Backends[1] != "claw" {
+		t.Fatalf("summed backends = %v, want [claude_code claw] — the union, sorted", teamRow.Backends)
+	}
+
+	// The new query: one repository's month, rows kept apart.
+	byRepo, err := c.ListByRepo(ctx, sept, repoA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRepo) != 1 || byRepo[0].CostUSD != 1.0 || byRepo[0].RepoID != repoA {
+		t.Fatalf("ListByRepo(%q) = %+v, want one $1.00 row carrying the repo", repoA, byRepo)
+	}
+	// An empty repo returns NOTHING rather than every unattributed row: a
+	// caller asking a repository's spend must never be handed the
+	// deployment's.
+	if n, err := c.ListByRepo(ctx, sept, ""); err != nil || len(n) != 0 {
+		t.Fatalf("ListByRepo(\"\") = %v, %v; want nothing", n, err)
+	}
+	if n, _ := c.ListByRepo(ctx, sept, "SocialGouv/never-ran"); len(n) != 0 {
+		t.Fatalf("ListByRepo(unknown repo) = %v, want nothing", n)
+	}
+
+	// A second credential on the same repository joins it there, which is
+	// what makes the row a REPO's bill rather than a credential's.
+	add(Key{Fingerprint: "fp-plat", Provider: "openai", Tier: TierPlatform, TenantID: "team-a", RepoID: repoA},
+		NatureEstimate, "codex", 0.25, 10, 2, sept)
+	if byRepo, _ = c.ListByRepo(ctx, sept, repoA); len(byRepo) != 2 {
+		t.Fatalf("ListByRepo(%q) = %d rows, want 2 (both credentials that served it)", repoA, len(byRepo))
+	}
+
+	// Order is deterministic: the summed sequence is what a client diffs
+	// between two polls, and a map iteration would reshuffle ties.
+	first, _ := c.List(ctx, sept, "team-a")
+	second, _ := c.List(ctx, sept, "team-a")
+	for i := range first {
+		if first[i].Fingerprint != second[i].Fingerprint || first[i].Tier != second[i].Tier {
+			t.Fatalf("two identical List calls disagreed at %d: %s/%s vs %s/%s",
+				i, first[i].Fingerprint, first[i].Tier, second[i].Fingerprint, second[i].Tier)
+		}
+	}
 }
 
 func TestMemoryCounter_Conformance(t *testing.T) {

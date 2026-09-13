@@ -110,6 +110,13 @@ type routeTotals struct {
 	aggregateTokens int64
 }
 
+// tokens is everything the route consumed. The three counters are disjoint —
+// a delegate that cannot split its total fills only aggregateTokens — so a sum
+// that omits it reports 0 for every claude_code route.
+func (t routeTotals) tokens() int64 {
+	return t.inputTokens + t.outputTokens + t.aggregateTokens
+}
+
 func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
 	return &metricsEmitter{
 		inner:          inner,

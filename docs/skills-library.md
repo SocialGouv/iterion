@@ -52,7 +52,7 @@ No sealing: a skill is public guidance text, not a secret.
 
 Add a `skills:` list to an `agent`/`judge` node, or a workflow-level default:
 
-```
+```iter fragment
 agent draft:
   model: "anthropic/claude-sonnet-4-6"
   skills: ["changelog-writer", "semver-bump"]

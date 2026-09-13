@@ -425,6 +425,15 @@
             },
             "type": "object"
           },
+          "settled_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
           "start_node_id": {
             "type": "string"
           },
@@ -642,6 +651,15 @@
             "type": "object"
           },
           "selected_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "settled_incoming": {
             "additionalProperties": {
               "items": {
                 "$ref": "#/components/schemas/IncomingEdge"
@@ -2393,6 +2411,12 @@
             "type": "string"
           },
           "cred_fingerprints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "credential_tiers": {
             "items": {
               "type": "string"
             },

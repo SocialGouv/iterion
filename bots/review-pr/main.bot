@@ -1208,12 +1208,19 @@ agent converge:
   ## declares `publish:` — without this the hand-off resolves to nothing, and
   ## a missing seed is indistinguishable from "this PR was never reviewed".
   publish: review_findings
-  backend: "claude_code"
+  ## Overridable like every other route here, because this node is on
+  ## EVERY path: `mono_family` picks which reviewer judges, never who
+  ## merges. Pinned to one backend, it made the gpt family a half
+  ## promise — the review ran, then the merge died on the Anthropic
+  ## weekly cap, so a deployment whose Claude window is spent could not
+  ## review at all despite having a second family credentialed.
+  backend: "${ITERION_VIBE_BACKEND_EMIT:-claude_code}"
   ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
   ## REVIEWER): in mono the merge is near-mechanical — dedupe is a
   ## no-op, then threshold, cap, report — so it defaults to a cheaper
   ## model than the judging pass. Flip back per deployment with
-  ## ITERION_VIBE_MODEL_EMIT=claude-opus-5.
+  ## ITERION_VIBE_MODEL_EMIT=claude-opus-5, or off the wire entirely
+  ## with ITERION_VIBE_BACKEND_EMIT=claw ITERION_VIBE_MODEL_EMIT=openai/gpt-5.6-sol.
   model: "${ITERION_VIBE_MODEL_EMIT:-claude-sonnet-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   output: emit_output

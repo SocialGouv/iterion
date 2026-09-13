@@ -36,7 +36,35 @@ func (p *parser) continueDottedRef(head string) string {
 	return head
 }
 
-func (p *parser) parseEdge() *ast.Edge {
+// edgeAhead reports whether the next tokens form an edge — a node reference,
+// dotted or not (`r1.check`), followed by `->` — without consuming anything.
+// The two containers of edges, a workflow and a group, ask it BEFORE
+// dispatching on the token's type: a node named like one of their
+// properties or declarations (`entry`, `budget`, `mcp`, `agent`, …) is then
+// read as the edge source it is, instead of as the property or declaration
+// its keyword would open.
+func (p *parser) edgeAhead() bool {
+	at := p.lex.ti
+	defer func() { p.lex.ti = at }()
+	if tokenAsIdent(p.next()) == "" {
+		return false
+	}
+	for p.peek().Type == TokenDot {
+		p.next()
+		if tokenAsIdent(p.next()) == "" {
+			return false
+		}
+	}
+	return p.peek().Type == TokenArrow
+}
+
+// parseEdge parses one edge line: `a -> b`, or a chain `a -> b -> c …`
+// read as the edges it names, each with its own source position. The
+// optional clauses at the end of the line belong to the LAST segment —
+// `a -> b -> c when ok` is `a -> b` and `b -> c when ok`, exactly what the
+// explicit lines would say — and a clause before a further arrow is
+// refused by name (E032) rather than attached to a segment by guesswork.
+func (p *parser) parseEdge() []*ast.Edge {
 	fromT := p.next()
 	from := p.continueDottedRef(tokenAsIdent(fromT))
 	if from == "" {
@@ -50,19 +78,28 @@ func (p *parser) parseEdge() *ast.Edge {
 		return nil
 	}
 
-	toT := p.next()
-	to := p.continueDottedRef(tokenAsIdent(toT))
-	if to == "" {
-		p.addError(DiagExpectedToken, toT, "expected target node name in edge")
-		p.skipToNewline()
-		return nil
+	var edges []*ast.Edge
+	srcT, src := fromT, from
+	for {
+		toT := p.next()
+		to := p.continueDottedRef(tokenAsIdent(toT))
+		if to == "" {
+			p.addError(DiagExpectedToken, toT, "expected target node name in edge")
+			p.skipToNewline()
+			return nil
+		}
+		edges = append(edges, &ast.Edge{
+			From: src,
+			To:   to,
+			Span: ast.Span{Start: p.pos(srcT)},
+		})
+		if p.peek().Type != TokenArrow {
+			break
+		}
+		p.next() // the next arrow of the chain
+		srcT, src = toT, to
 	}
-
-	edge := &ast.Edge{
-		From: from,
-		To:   to,
-		Span: ast.Span{Start: p.pos(fromT)},
-	}
+	edge := edges[len(edges)-1]
 
 	// Optional clauses: when|else, as, with (in any order before
 	// newline). Reject duplicates — `... when foo when not bar` used to
@@ -126,13 +163,19 @@ func (p *parser) parseEdge() *ast.Edge {
 				edge.With = parsed
 			}
 			sawWith = true
+		case TokenArrow:
+			// Only reachable after a clause: the chain's arrows were all
+			// consumed above. The line is dropped with one diagnostic.
+			p.addError(DiagClauseBeforeArrow, t, "a clause before a further arrow: the clauses of a chain apply to its last segment")
+			p.skipToNewline()
+			return nil
 		default:
 			goto done
 		}
 	}
 done:
 	p.skipNewlines()
-	return edge
+	return edges
 }
 
 // parseWhenClause parses a `when ...` edge clause. Two forms:
@@ -187,8 +230,9 @@ func (p *parser) parseForeachClause() *ast.ForeachClause {
 	if fc.Item == "" {
 		p.addError(DiagExpectedToken, p.peek(), "expected element binding identifier in 'foreach "+fc.Name+"(<item> in ...)'")
 	}
-	// `in` is a bare identifier (not a keyword) between the item and the collection.
-	if in := p.peek(); in.Type == TokenIdent && in.Value == "in" {
+	// `in` is the bare word between the item and the collection — matched
+	// by its text, so the match survives `in` becoming a keyword.
+	if in := p.peek(); tokenAsIdent(in) == "in" {
 		p.next()
 	} else {
 		p.addError(DiagExpectedToken, in, "expected 'in' after the foreach element binding")
@@ -286,8 +330,12 @@ func (p *parser) parseWithEntry() *ast.WithEntry {
 	}
 	p.expect(TokenColon)
 	valT := p.next()
-	if valT.Type != TokenString {
-		p.addError(DiagExpectedToken, valT, "expected string value in with block")
+	switch valT.Type {
+	case TokenString, TokenInt, TokenFloat, TokenTrue, TokenFalse:
+		// A number or a bool is the string it spells: the map carries text
+		// into the target's input, and `n: 3` means what `n: "3"` means.
+	default:
+		p.addError(DiagExpectedToken, valT, "expected a value in the with block — a quoted string, a number or a bool — got "+valT.Type.String())
 		p.skipToNewline() // recover to avoid cascading mis-parse of the rest of the line
 		return nil
 	}

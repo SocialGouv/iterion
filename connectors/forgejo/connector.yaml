@@ -1,0 +1,59 @@
+schema_version: 1
+id: forgejo
+display_name: Forgejo API
+description: This documentation describes the Forgejo API.
+version: 0.1.0
+provenance:
+  spec_format: swagger2
+  spec_version: 16.0.0-dev-714-11075108+gitea-1.22.0
+  spec_license: MIT
+  redistributable: true
+  generated_at: "2026-09-10T12:40:10Z"
+  generated_by: iterion dev
+base_url:
+  path_prefix: /api/v1
+  operator_supplied: true
+auth:
+- id: token
+  kind: api_key
+  display_name: AuthorizationHeaderToken
+  description: API tokens must be prepended with "token" followed by a space.
+  in: header
+  name: Authorization
+  value_prefix: 'token '
+- id: basic
+  kind: basic
+  display_name: BasicAuth
+- id: token_2
+  kind: api_key
+  display_name: SudoHeader
+  description: Sudo API request as the user provided as the key. Admin privileges
+    are required.
+  in: header
+  name: Sudo
+- id: token_3
+  kind: api_key
+  display_name: SudoParam
+  description: Sudo API request as the user provided as the key. Admin privileges
+    are required.
+  in: query
+  name: sudo
+- id: token_4
+  kind: api_key
+  display_name: TOTPHeader
+  description: Must be used in combination with BasicAuth if two-factor authentication
+    is enabled.
+  in: header
+  name: X-FORGEJO-OTP
+maturity: experimental
+default_security:
+- terms:
+  - scheme: basic
+- terms:
+  - scheme: token
+- terms:
+  - scheme: token_3
+- terms:
+  - scheme: token_2
+- terms:
+  - scheme: token_4

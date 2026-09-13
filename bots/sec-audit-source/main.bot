@@ -54,6 +54,20 @@ vars:
   ## the truncation explicitly. Raise it for exhaustive small-repo runs;
   ## lower it on a tighter-context model.
   findings_cap_per_file: int    = 50
+  ## Transport for the capped findings, in BYTES. 0 (the default) means
+  ## triage opens the scanner JSON itself through json_paths — the cheapest
+  ## route, because it lets triage grep and read selectively.
+  ##
+  ## That route requires triage to share a filesystem with the tool nodes,
+  ## which holds only on a sandbox-routed backend (claude_code). `claw` is
+  ## in-process and never enters the sandbox; `codex` refuses to run inside
+  ## one at all. On either, json_paths point at files that cannot be opened,
+  ## and the pass renders an EMPTY triage that reads as a clean repository.
+  ## Set a byte budget (524288 is a reasonable start) to carry the findings
+  ## in the envelope instead, which makes the node backend-independent. It
+  ## costs context: the whole payload lands in the prompt whether or not
+  ## triage would have read all of it.
+  triage_inline_max_bytes: int  = 0
   ## Anti-façade smoke gate. The always-on generic scanners (gitleaks,
   ## trivy, semgrep --config=auto) MUST each write a JSON file on any repo
   ## when they actually run — a missing file means the tool crashed or was
@@ -168,6 +182,16 @@ vars:
   ## json_paths.deepsec when enable_deepsec=true. The directory part
   ## doubles as the `.deepsec/` workspace target for init.
   deepsec_out:         string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan/deepsec.json"
+  ## Byte budget for bank_deepsec_findings — how much of the export is
+  ## carried OUT of the pod inside the published artifact, so a pass that
+  ## dies later (triage, jury, usage cap) does not take the findings with
+  ## it. Truncation drops whole findings and reports both counts, so a
+  ## raise here is the difference between a partial bank and a complete
+  ## one on a large audit. A non-positive value floors back to 524288.
+  ## Approximate rather than exact: the size is summed from per-finding
+  ## json.dumps LENGTHS (characters, not bytes), so an export heavy in
+  ## non-ASCII can overshoot the number set here.
+  deepsec_bank_max_bytes: int  = 524288
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial
   ## "disprove" voters; majority vote drives the final verdict
@@ -287,6 +311,19 @@ schema scanner_output:
   finding_count:  int
   errors:         json
 
+## The deep scanner writes its findings to a file inside the sandbox, and the
+## pod is destroyed with the run: a pass that dies after it — at triage, at the
+## jury, on a usage cap — takes its whole contribution with it. Measured
+## 2026-09-10: 88 minutes of investigation lost that way, twice in one day.
+## deepsec_bank carries the findings THEMSELVES out of the pod, capped by a
+## byte budget, with the two counts that make truncation visible.
+schema deepsec_bank:
+  findings:   json
+  embedded:   int
+  total:      int
+  truncated:  bool
+  note:       string
+
 schema lang_input:
   langs:  json
 
@@ -310,6 +347,15 @@ schema findings_budget_output:
   truncated:     bool
   per_file_cap:  int
   per_scanner:   json
+  ## The capped findings THEMSELVES, when vars.triage_inline_max_bytes > 0.
+  ## Empty list otherwise, which is the signal to read json_paths instead.
+  ## A list of {file, array, findings}. The two counts make a budget cut
+  ## visible the same way the deepsec bank does: whole findings are dropped,
+  ## never truncated mid-object, and the gap is a subtraction.
+  inline:            json
+  inline_embedded:   int
+  inline_total:      int
+  inline_truncated:  bool
 
 ## scan_health emits the scanner-coverage signal so a broken toolchain
 ## (scanners that crashed / are absent in the sandbox and produced no
@@ -1051,7 +1097,18 @@ prompt triage_system:
   - vuln-matchers-guide.md    (when fields surprise you)
 
   Your job:
-  1. Read every scanner JSON listed in *.json_paths.
+  1. Obtain the raw scanner findings. There are TWO transports; take the
+     first that yields anything:
+     a. `findings_budget.inline` — when non-empty it CARRIES the findings
+        themselves, already severity-sorted and trimmed, as a list of
+        {file, array, findings}. Use it and do not open json_paths. This is
+        the transport used when you run on a backend that shares no
+        filesystem with the scanners.
+     b. Otherwise read every scanner JSON listed in *.json_paths.
+     If neither yields a single finding while `findings_budget.total_kept`
+     is above zero, your input is unreadable — not a clean repository. Say
+     so in `stats.input_error` and emit no candidates rather than an empty
+     list that would read as a clean bill of health.
   2. For each raw finding, emit one candidate object with:
        id                    — sequential C-001, C-002, …
        finding_type          — one of finding-taxonomy.md (REQUIRED)
@@ -2315,7 +2372,35 @@ tool run_generic_scanners:
   ## and .works (sibling worktrees on the self-host) so the scanners
   ## don't traverse accumulated repo copies. sh -c is dash on some
   ## hosts, bash inside devbox — keep POSIX-compatible.
-  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; printf '{"scanner":"generic","subscanners":["gitleaks","trivy","semgrep-auto"],"json_paths":{"gitleaks":"%s/gitleaks.json","trivy":"%s/trivy.json","semgrep":"%s/semgrep-auto.json"},"finding_count":0,"errors":["%s"]}\n' {{vars.scan_dir}} {{vars.scan_dir}} {{vars.scan_dir}} "$ERRS"`
+  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; SCAN_DIR={{vars.scan_dir}} GEN_ERRS="$ERRS" python3 -c '
+import json, os
+scan_dir = os.environ["SCAN_DIR"]
+failed = os.environ.get("GEN_ERRS", "").split()
+# (subscanner id, envelope key, output file). A subscanner that FAILED must
+# not leave its output file behind: scan_health judges coverage by file
+# presence, so a half-written or empty artifact from a crashed tool reads as
+# "scanned, nothing found" — full coverage over a broken toolchain. Dropping
+# the phantom path is what run_lang_scanners already does for this exact
+# reason; the two nodes now behave alike.
+TOOLS = [("gitleaks", "gitleaks", "gitleaks.json"), ("trivy", "trivy", "trivy.json"), ("semgrep-auto", "semgrep", "semgrep-auto.json")]
+paths, errs = {}, []
+for tid, key, fname in TOOLS:
+    op = os.path.join(scan_dir, fname)
+    if tid not in failed:
+        paths[key] = op
+        continue
+    note = "%s failed" % tid
+    if os.path.exists(op):
+        try:
+            os.remove(op)
+            note += "; dropped its output file so it cannot read as a clean scan"
+        except OSError as e:
+            note += "; COULD NOT drop its output file (%s), which will read as a clean scan" % e
+    errs.append(note)
+# errors is a real list. It was ["%s"] fed by an often-empty ERRS, so every
+# run carried one empty string and no consumer could use it as a signal.
+print(json.dumps({"scanner": "generic", "subscanners": ["gitleaks", "trivy", "semgrep-auto"], "json_paths": paths, "finding_count": 0, "errors": errs}))
+'`
   output: scanner_output
 
 ## run_lang_scanners — skill-driven, DETERMINISTIC (no LLM in the path).
@@ -2617,18 +2702,78 @@ fi
 # bash -c single-quoted string, so a stray apostrophe silently breaks shell
 # parsing (exit 2) while iterion validate still passes.
 CLAUDE_BIN="$(command -v claude 2>/dev/null)"
+# Same idea on the codex side: deepsec resolves its own bundled codex,
+# which trails the models it is asked for. CODEX_REAL_BIN is on its env
+# allowlist, so it is the supported way to hand it another one -- the
+# pinned install from the image, or the npm bootstrap in the sandbox
+# block when the image predates it. Only set when that binary exists, so
+# an image without it keeps deepsec on its bundled fallback rather than
+# pointing at a path nothing populated.
+for _cb in "$HOME/.npm-global/bin/codex" /usr/local/bin/codex; do
+  if [ -x "$_cb" ]; then CODEX_REAL_BIN="$_cb"; export CODEX_REAL_BIN; break; fi
+done
+echo "[codex] CODEX_REAL_BIN=${CODEX_REAL_BIN:-unset} version=$( "${CODEX_REAL_BIN:-codex}" --version 2>/dev/null | head -1 )" >>"$LOG_DIR/env.log"
+unset _cb
 # timeout bounds a network HANG: a mid-process connection loss leaves the
 # claude-agent-sdk waiting on a dead socket (it does NOT self-recover) and
 # would stall the whole node until the run timeout. 2400s is ~2x a legit
 # large-repo process; on timeout (124) the retry below re-runs it (network
 # back by then). This catches the hang case the exit-only retry cannot.
-_dsproc() { ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout 2400 deepsec process --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS ); }
+#
+# -k is not optional. Bare timeout sends SIGTERM ONLY, and the node process
+# deepsec runs under ignores it. Measured 2026-09-10 on this node: a 240s
+# bound returned after 27 minutes 39. Without the kill-after escalation the
+# bound is advisory — a limit that reads as enforced and is not.
+# The optional first argument is a deepsec run id. Passing it RESUMES that
+# run, so the retry re-investigates only the batches the first attempt did not
+# finish; without it the retry opens a fresh run and pays for the whole pass a
+# second time, under the same bound that just expired. Two explicit branches
+# rather than a brace-plus-alternate parameter form, which the DSL expands at
+# LAUNCH with the server environment instead of leaving to the shell.
+_dsproc() {
+  _rid="$1"
+  if [ -n "$_rid" ]; then
+    ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout -k 60 2400 deepsec process --run-id "$_rid" --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS )
+  else
+    ( cd "$DSW" && CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN" timeout -k 60 2400 deepsec process --concurrency "$CONC" $PROC_ARGS $AGENT_ARGS )
+  fi
+}
+
+# deepsec prints "Processing complete. Run: <id>" BEFORE it exits 1 on errored
+# batches, so the id is readable from a FAILED attempt -- which is the only
+# time it is wanted. Strips the ANSI colouring the CLI wraps it in. Empty when
+# the line never appeared, which is the honest input to "start fresh".
+_dsrunid() {
+  grep -a "Processing complete" "$LOG_DIR/process.log" 2>/dev/null | tail -1 \
+    | tr -d "\033" | sed -e "s/.*Run: //" -e "s/\[[0-9;]*m//g" -e "s/[^A-Za-z0-9_.-].*//"
+}
+
+# A quota wall does not heal in twenty seconds. Retrying one buys a second
+# full pass that cannot succeed and spends the remaining wall-clock proving
+# it. deepsec names this failure itself rather than leaving it to be inferred
+# from a provider message: "Stopped: <source> exhausted" (quota-message.ts).
+_dsquota() { grep -qa "Stopped:.*exhausted" "$LOG_DIR/process.log" 2>/dev/null; }
+
 # deepsec process drives its OWN claude LLM calls (outside iterion network
-# retry). A transient blip (rate-limit / quota / network) here drops the
-# whole deepsec contribution and silently thins the audit. Retry once after a
-# short backoff; degrade-with-report only if BOTH attempts fail. Diagnosed: a
-# real run lost all deepsec findings to one such blip.
-_dsproc >"$LOG_DIR/process.log" 2>&1 || { echo "[deepsec] process failed; retrying once after 20s (transient LLM blip)" >>"$LOG_DIR/process.log"; sleep 20; _dsproc >>"$LOG_DIR/process.log" 2>&1; } || ERRS="$ERRS process"
+# retry). A transient blip (rate-limit / network) here drops the whole deepsec
+# contribution and silently thins the audit. Retry once after a short backoff;
+# degrade-with-report only if BOTH attempts fail. Diagnosed: a real run lost
+# all deepsec findings to one such blip.
+if _dsproc "" >"$LOG_DIR/process.log" 2>&1; then
+  :
+elif _dsquota; then
+  echo "[deepsec] quota exhausted: no retry, a quota wall does not clear in 20s. What was investigated before it stays exported." >>"$LOG_DIR/process.log"
+  ERRS="$ERRS process"
+else
+  _RID=$(_dsrunid)
+  if [ -n "$_RID" ]; then
+    echo "[deepsec] process failed; resuming run $_RID in 20s (batches already investigated are not redone)" >>"$LOG_DIR/process.log"
+  else
+    echo "[deepsec] process failed; no run id in the log, the retry starts a fresh pass" >>"$LOG_DIR/process.log"
+  fi
+  sleep 20
+  _dsproc "$_RID" >>"$LOG_DIR/process.log" 2>&1 || ERRS="$ERRS process"
+fi
 
 ( cd "$DSW" && deepsec export --format json --out "$OUT_JSON" ) >"$LOG_DIR/export.log" 2>&1 || ERRS="$ERRS export"
 
@@ -2640,15 +2785,158 @@ if [ -f "$OUT_JSON" ]; then
   FCNT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d) if isinstance(d,list) else len(d.get(\"findings\",[])) if isinstance(d,dict) else 0)" "$OUT_JSON" 2>/dev/null || echo 0)
 fi
 
-ERR_JSON=$(printf "%s" "$ERRS" | python3 -c "import json,sys; e=sys.stdin.read().strip().split(); print(json.dumps([\"step failed: \"+x for x in e]))")
-printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":{\"deepsec\":\"%s\"},\"finding_count\":%s,\"errors\":%s}\n" "$OUT_JSON" "$FCNT" "$ERR_JSON"
+# A step failed AND nothing came out: whatever sits at OUT_JSON is not a scan
+# result. Leaving it there is the measured facade — scan_health judges
+# coverage by file presence, so an empty export from a deepsec that never ran
+# reads as full coverage, missing:[] and healthy:true, with no banner on the
+# report. Drop the file and stop claiming the path; the unavailable branch
+# above already emits json_paths:{} and triage only reads what json_paths
+# lists, so this is the shape both already handle.
+PATHS_JSON=$(printf "{\"deepsec\":\"%s\"}" "$OUT_JSON")
+if [ -n "$ERRS" ] && [ "$FCNT" = "0" ]; then
+  rm -f "$OUT_JSON"
+  PATHS_JSON="{}"
+  ERRS="$ERRS export_unusable"
+fi
+
+# The envelope carries the LOG, not just the name of the step that failed.
+# Every log this node writes lives under LOG_DIR inside the sandbox, and the
+# pod is destroyed when the run ends: an operator reading "step failed:
+# process" afterwards has no way to learn why. Measured 2026-09-10: four
+# consecutive launches reported a failed step and nothing else, and the cause
+# (an unauthenticated agent answering "Not logged in") was only found once the
+# tail travelled in the envelope.
+#
+# The file name is NOT derived from the token alone. A token may be more
+# specific than its log (a preflight_unreachable token against preflight.log),
+# so several names are tried; and when none answers, the message says which
+# ones were tried and what the directory actually holds. A diagnostic that
+# fails must name what it saw, never just "unreadable".
+ERR_JSON=$(printf "%s" "$ERRS" | LOG_DIR="$LOG_DIR" python3 -c "
+import json, os, sys
+e = sys.stdin.read().strip().split()
+out = [\"step failed: \" + x for x in e]
+log_dir = os.environ.get(\"LOG_DIR\", \"\")
+try:
+    present = sorted(os.listdir(log_dir))
+except OSError as ex:
+    present = [\"<listdir failed: \" + type(ex).__name__ + \">\"]
+for step in e:
+    names = [step + \".log\", step.split(\"_\")[0] + \".log\"]
+    for n in names:
+        try:
+            body = open(os.path.join(log_dir, n), errors=\"replace\").read()[-1500:]
+        except OSError:
+            continue
+        out.append(\"log tail \" + step + \" (\" + n + \"): \" + body)
+        break
+    else:
+        out.append(\"log tail \" + step + \": none of \" + \",\".join(names)
+                   + \" — \" + log_dir + \" holds: \" + \",\".join(present))
+# env.log carries the credential and transport verdicts this node writes at
+# startup. They are what tells a degraded pass from a broken one, and they die
+# with the pod unless they travel here.
+try:
+    out.append(\"env.log: \" + open(os.path.join(log_dir, \"env.log\"), errors=\"replace\").read()[-1500:])
+except OSError as ex:
+    out.append(\"env.log: unreadable (\" + type(ex).__name__ + \")\")
+print(json.dumps(out))
+")
+printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s,\"finding_count\":%s,\"errors\":%s}\n" "$PATHS_JSON" "$FCNT" "$ERR_JSON"
 '`
   output: scanner_output
   publish: deepsec_scan_artifact
 
+## bank_deepsec_findings — the findings leave the pod, or they do not exist.
+##
+## Beside the triage path in DATA, on it in CONTROL — the distinction sets the
+## blast radius, so read it before editing the body below.
+##
+## In data it is beside: scan_join keeps referencing run_deepsec_scanner, so
+## the banked findings are NOT copied into the triage prompt (the whole point
+## of json_paths is that triage reads the file itself). This node exists for
+## the operator reading a run that died later.
+##
+## In control it is ON the path — the edges route the run through it
+## (run_deepsec_scanner -> bank_deepsec_findings -> scan_join). So a non-zero
+## exit here does not merely lose the bank: it strands scan_join and takes the
+## generic, per-language and custom scanner results with it. That is why the
+## body can only ever exit 0, and why every guard below reports rather than
+## raises.
+##
+## Always exits 0 and always emits its envelope: an export that is absent,
+## unreadable, or valid JSON in an unrecognisable shape is a fact to report
+## (the scanner was skipped, or its output was dropped as unusable), never a
+## reason to fail the run.
+tool bank_deepsec_findings:
+  command: `DEEPSEC_OUT={{vars.deepsec_out}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -c '
+import json, os
+
+out = os.environ["DEEPSEC_OUT"]
+try:
+    budget = int(os.environ.get("MAX_BYTES") or 0)
+except ValueError:
+    budget = 0
+if budget <= 0:
+    budget = 524288
+
+def emit(findings, embedded, total, truncated, note):
+    print(json.dumps({"findings": findings, "embedded": embedded,
+                      "total": total, "truncated": truncated, "note": note}))
+
+if not os.path.isfile(out):
+    emit([], 0, 0, False,
+         "no deepsec export at " + out + ": the scanner was skipped, or its output was dropped as unusable")
+    raise SystemExit(0)
+
+try:
+    with open(out, encoding="utf-8", errors="replace") as fh:
+        doc = json.load(fh)
+except Exception as e:
+    emit([], 0, 0, False,
+         "deepsec export at " + out + " could not be read: " + type(e).__name__ + ": " + str(e)[:200])
+    raise SystemExit(0)
+
+# A valid JSON export is not necessarily a CONTAINER: null, a bare number and a
+# bare string all parse, and calling .get on one raises outside the try above —
+# which exited non-zero, emitted nothing, and stranded scan_join with it. The
+# sibling parser reading this same file guards isinstance(d,dict) for exactly
+# this reason. An unrecognisable shape is an empty bank, never a dead run — and
+# it says so, because "banked 0 of 0" would read as a clean scan, which is the
+# same facade the export_unusable guard above exists to refuse.
+if isinstance(doc, list):
+    items = doc
+elif isinstance(doc, dict):
+    items = doc.get("findings") or []
+else:
+    emit([], 0, 0, False,
+         "deepsec export at " + out + " is not a findings container but a " + type(doc).__name__ + ": nothing to bank")
+    raise SystemExit(0)
+if not isinstance(items, list):
+    emit([], 0, 0, False,
+         "deepsec export at " + out + " carries a findings field that is a " + type(items).__name__ + ", not a list: nothing to bank")
+    raise SystemExit(0)
+
+# Truncation drops WHOLE findings and reports both counts, so a partial bank
+# is still parseable JSON and the gap is a subtraction, not a guess.
+kept, size = [], 0
+for it in items:
+    chunk = len(json.dumps(it, ensure_ascii=False))
+    if kept and size + chunk > budget:
+        break
+    kept.append(it)
+    size += chunk
+
+emit(kept, len(kept), len(items), len(kept) < len(items),
+     "banked " + str(len(kept)) + " of " + str(len(items)) + " findings from " + out)
+'`
+  output: deepsec_bank
+  publish: deepsec_findings_bank
+
 ## scan_join collects the five scanner outputs into one record for
 ## triage. The scanners run as a single sequential branch (generic →
-## … → custom → [deepsec_gate → run_deepsec_scanner?] → scan_join),
+## … → custom → [deepsec_gate → run_deepsec_scanner →
+## bank_deepsec_findings?] → scan_join),
 ## so this is a plain collector, not a convergence point — each output
 ## is carried forward along the chain. A scanner that no-ops or fails
 ## (each command ends in `|| true`) shows up empty in its slot and the
@@ -2675,6 +2963,14 @@ compute scan_join:
 ## "nothing found" from "nothing ran". Partial gaps (some language
 ## scanners missing) pass but are surfaced to report_card as a coverage
 ## banner. Runs BEFORE cap_findings, which truncates the files in place.
+##
+## PRESENCE IS ONLY AS HONEST AS THE PRODUCERS. This node reads the
+## filesystem, so a scanner that runs, FAILS, and still leaves a parseable
+## (empty) artifact reads here as full coverage. That is why every scanner
+## node drops the output file of a subscanner that failed, and stops
+## claiming its json_paths entry — run_lang_scanners, run_generic_scanners
+## and run_deepsec_scanner all do it. Keep that invariant when adding a
+## scanner: a file left behind by a failed tool defeats this gate silently.
 tool scan_health:
   command: `SCAN_DIR={{vars.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
 import os, sys, json, re
@@ -2860,7 +3156,7 @@ if generic_present < min_generic:
 ## emitted so triage surfaces the truncation in the report. Security signal
 ## is bounded, never silently dropped.
 tool cap_findings:
-  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} python3 -c "
+  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} python3 -c "
 import os, json, glob
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -2870,6 +3166,12 @@ except ValueError:
     cap = 50
 if cap < 1:
     cap = 50
+try:
+    inline_max = int(os.environ.get('INLINE_MAX', '0') or '0')
+except ValueError:
+    inline_max = 0
+if inline_max < 0:
+    inline_max = 0
 
 FINDING_KEYS = ['results', 'Issues', 'findings', 'matches', 'vulnerabilities', 'Vulns', 'alerts']
 SEV = {'critical': 5, 'blocker': 5, 'high': 4, 'error': 4, 'major': 4, 'medium': 3, 'warning': 3, 'moderate': 3, 'minor': 2, 'low': 2, 'info': 1, 'note': 1, 'unknown': 0}
@@ -2912,12 +3214,26 @@ def trim(item):
     return item
 
 per_scanner = []
+harvest = []
 total_raw = total_kept = total_capped = 0
 for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
     try:
         with open(jf, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
     except (OSError, ValueError):
+        continue
+    if isinstance(data, list):
+        # An ARRAY-shaped export -- deepsec writes one (JSON.stringify of a
+        # findings array) -- carries no findings KEY to rewrite, so it never
+        # enters the capping path below and reaches triage whole through
+        # json_paths. That is fine while triage can open the file. It is not
+        # fine for the inline transport: skipping a document by its SHAPE
+        # would drop the deepest scanner from the payload with no signal at
+        # all. Harvest it for the envelope; leave the file itself untouched.
+        if not data:
+            continue
+        ranked = sorted(data, key=sev_rank, reverse=True)[:cap]
+        harvest.append({'file': os.path.basename(jf), 'array': '', 'findings': [trim(x) for x in ranked]})
         continue
     if not isinstance(data, dict):
         continue
@@ -2943,6 +3259,31 @@ for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
     total_kept += len(kept)
     total_capped += capped
     per_scanner.append({'file': os.path.basename(jf), 'array': key, 'raw': raw, 'kept': len(kept), 'capped': capped})
+    harvest.append({'file': os.path.basename(jf), 'array': key, 'findings': data[key]})
+
+# The findings travel in the envelope only when asked for, because the
+# payload lands in the triage prompt whole. Whole findings are dropped at the
+# budget, never truncated mid-object, so a cut payload still parses and the
+# gap is a subtraction rather than a guess — the same contract as the deepsec
+# bank, for the same reason.
+inline = []
+inline_embedded = 0
+inline_total = sum(len(g['findings']) for g in harvest)
+if inline_max > 0:
+    size = 0
+    for grp in harvest:
+        kept_here = []
+        for it in grp['findings']:
+            chunk = len(json.dumps(it, ensure_ascii=False))
+            if (inline_embedded or kept_here) and size + chunk > inline_max:
+                break
+            kept_here.append(it)
+            size += chunk
+        if kept_here:
+            inline.append({'file': grp['file'], 'array': grp['array'], 'findings': kept_here})
+            inline_embedded += len(kept_here)
+        if size >= inline_max:
+            break
 
 print(json.dumps({
     'total_raw': total_raw,
@@ -2951,6 +3292,10 @@ print(json.dumps({
     'truncated': total_capped > 0,
     'per_file_cap': cap,
     'per_scanner': per_scanner,
+    'inline': inline,
+    'inline_embedded': inline_embedded,
+    'inline_total': inline_total,
+    'inline_truncated': inline_max > 0 and inline_embedded < inline_total,
 }))
 "`
   output: findings_budget_output
@@ -4518,6 +4863,30 @@ workflow sec_audit_source:
   ## (isolation, claude CLI, host-state mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
+    ## codex at a version deepsec can actually drive. The image ships one
+    ## bundled with deepsec itself, and it trails: measured 2026-09-10,
+    ## codex-cli 0.145.0 in the image against a model gated at >= 0.153,
+    ## which fails as "Model metadata not found" and falls back — an
+    ## audit that runs on a model nobody chose.
+    ##
+    ## devbox is the declared way to add a binary, and it stays the first
+    ## choice; nixpkgs simply trails npm here (0.149 vs 0.154 the same
+    ## day). So devbox supplies the toolchain it HAS, and npm supplies
+    ## this one — the image already ships Node, so nothing is installed
+    ## to get npm itself.
+    ##
+    ## --prefix is not optional: the global prefix is root-owned and the
+    ## sandbox runs unprivileged, so a bare `npm install -g` dies on
+    ## EACCES. Idempotent, and best-effort like every other bootstrap
+    ## step: a failure prints what is consequently unavailable and lets
+    ## the run proceed, because deepsec is off by default and the rest of
+    ## the audit does not need codex at all.
+    ##
+    ## No backslash-escaped quotes: a `"…"` string is lexed in legacy escape
+    ## mode, which keeps \X verbatim, so the backslash reaches the shell and
+    ## \" becomes a LITERAL quote character (C143). Nothing here needs
+    ## quoting — no value has a space — and the message uses single quotes.
+    post_create: "set -u; want=0.154.0; pfx=$HOME/.npm-global; if ! $pfx/bin/codex --version 2>/dev/null | grep -q $want; then npm install -g --prefix $pfx @openai/codex@$want >/dev/null 2>&1 || echo 'iterion: could not install @openai/codex — deepsec falls back to the codex bundled in the image, which may be too old for the model requested' >&2; fi"
 
   ## An audit READS the repository it is pointed at. The mid-run workspace
   ## checkpoint would `git add -A` the pod's tree — this bot's own
@@ -4629,7 +4998,8 @@ workflow sec_audit_source:
 
   deepsec_gate -> run_deepsec_scanner when enabled
   deepsec_gate -> scan_join when not enabled
-  run_deepsec_scanner -> scan_join
+  run_deepsec_scanner -> bank_deepsec_findings
+  bank_deepsec_findings -> scan_join
 
   scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}"}
   scan_health -> cap_findings

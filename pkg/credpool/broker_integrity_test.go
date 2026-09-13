@@ -645,7 +645,7 @@ func TestMarkUnhealthy_doesNotResurrectAWithdrawnPledge(t *testing.T) {
 	if err := h.pledges.Delete(ctx, p.ID); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
-	if err := h.oauth.Delete(ctx, "alice", secrets.OAuthKindClaudeCode); err != nil {
+	if err := h.oauth.Delete(ctx, secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0)); err != nil {
 		t.Fatalf("disconnect: %v", err)
 	}
 

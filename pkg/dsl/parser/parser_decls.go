@@ -26,13 +26,13 @@ func (p *parser) parseBool() *bool {
 
 func (p *parser) parseVarsBlock() *ast.VarsBlock {
 	start := p.next() // consume "vars"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	vb := &ast.VarsBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return vb
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -93,13 +93,13 @@ func (p *parser) parseVarField() *ast.VarField {
 
 func (p *parser) parsePresetsBlock() *ast.PresetsBlock {
 	start := p.next() // consume "presets"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	pb := &ast.PresetsBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return pb
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -170,13 +170,13 @@ func (p *parser) parsePresetEntry() *ast.Preset {
 
 func (p *parser) parseAttachmentsBlock() *ast.AttachmentsBlock {
 	start := p.next() // consume "attachments"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	ab := &ast.AttachmentsBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return ab
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -249,8 +249,8 @@ func (p *parser) parseAttachmentField() *ast.AttachmentField {
 		case "required":
 			af.Required = p.parseBool()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown attachment property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("attachment", t, propName)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -261,13 +261,13 @@ func (p *parser) parseAttachmentField() *ast.AttachmentField {
 // parseVarsBlock's INDENT/DEDENT loop; each field is a SecretField.
 func (p *parser) parseSecretsBlock() *ast.SecretsBlock {
 	start := p.next() // consume "secrets"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	sb := &ast.SecretsBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return sb
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -307,8 +307,9 @@ func (p *parser) parseSecretField() *ast.SecretField {
 		Name: nameT.Value,
 		Span: ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
 	}
-	// Short form: a quoted value on the same line.
-	if p.peek().Type == TokenString {
+	// Short form: the value on the same line — quoted, or one bare word, as
+	// every string-valued property reads.
+	if t := p.peek(); t.Type == TokenString || t.Type == TokenIdent || isKeywordToken(t.Type) {
 		sf.Value = p.expectString()
 	}
 	p.skipNewlines()
@@ -354,8 +355,8 @@ func (p *parser) parseSecretField() *ast.SecretField {
 		case "description":
 			sf.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown secret property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("secret", t, propName)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -465,6 +466,12 @@ func (p *parser) parsePromptDecl() *ast.PromptDecl {
 		}
 	}
 
+	// Trailing empty lines are the blank lines between the body and the
+	// next declaration — profile 2 emits them, since it keeps a paragraph
+	// break; a body never ends with a newline, in either profile.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	body := strings.Join(lines, "\n")
 
 	return &ast.PromptDecl{
@@ -633,8 +640,8 @@ func (p *parser) parseCursorDecl() *ast.CursorDecl {
 		case "bands":
 			cd.Bands = p.parseCursorBands()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown cursor property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("cursor", t, propName)
+			p.skipUnknownProperty()
 		}
 	}
 	return cd
@@ -761,7 +768,7 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 			p.skipNewlines()
 		case "system":
 			p.expect(TokenColon)
-			sd.System = p.expectIdent()
+			sd.System = p.promptRef()
 			p.skipNewlines()
 		case "cooldown":
 			p.expect(TokenColon)
@@ -776,8 +783,8 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 			sd.Monitors = p.parseStringList()
 			p.skipNewlines()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown supervisor property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("supervisor", t, propName)
+			p.skipUnknownProperty()
 		}
 	}
 	return sd
@@ -790,15 +797,15 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 // resolved by the runtime.
 func (p *parser) parseCursorsBlock() *ast.CursorBlock {
 	start := p.next() // consume "cursors"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	cb := &ast.CursorBlock{
 		Enabled: true, // default: an explicit block opts in
 		Span:    ast.Span{Start: p.pos(start), End: p.pos(start)},
+	}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return cb
 	}
 
 	for {

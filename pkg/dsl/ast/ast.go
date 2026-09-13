@@ -6,8 +6,17 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 // File — root of the AST
 // ---------------------------------------------------------------------------
 
+// DefaultProfile is the syntax profile a file declares by declaring none:
+// today's grammar, frozen (ADR-098).
+const DefaultProfile = 1
+
 // File is the root AST node representing an entire .bot source file.
 type File struct {
+	// Profile is the syntax profile of the file's `dsl: N` header, its
+	// first declaration; 0 when it has none. Read it through
+	// EffectiveProfile: a document built in memory — the studio's, a
+	// test's — has no header and is profile 1, as a file without one is.
+	Profile      int
 	Vars         *VarsBlock          // top-level vars (optional, at most one)
 	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
 	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
@@ -33,6 +42,15 @@ type File struct {
 	Workflows    []*WorkflowDecl     // workflow declarations
 	Comments     []*Comment          // top-level comments (## ...)
 	Span         Span
+}
+
+// EffectiveProfile is the syntax profile the file is read in: its header's,
+// or DefaultProfile when it declares none.
+func (f *File) EffectiveProfile() int {
+	if f.Profile < DefaultProfile {
+		return DefaultProfile
+	}
+	return f.Profile
 }
 
 // GroupDecl is a reusable cluster of nodes + internal edges, parameterised by
@@ -339,7 +357,14 @@ type SecretField struct {
 type PromptDecl struct {
 	Name string
 	Body string // raw text, may contain {{...}} template expressions
-	Span Span
+	// Inline marks a prompt written as the text of the property that
+	// references it (`system: "…"`, `user: |`, `instructions: "…"`) rather
+	// than as a `prompt <name>:` declaration. Its name is derived from its
+	// body (`_inline_<hash>`), so it is stable under a node's rename and two
+	// references to the same text share it. The writer puts it back on its
+	// property, and the save guard compares its body verbatim.
+	Inline bool
+	Span   Span
 }
 
 // ---------------------------------------------------------------------------
@@ -671,11 +696,28 @@ type HumanDecl struct {
 // workspace and executed by the interpreter named by `Language`).
 // Setting both is a validation error; setting neither is also an error.
 type ToolNodeDecl struct {
-	Name           string
-	Description    string        // optional human-readable node label (surfaced in the run console)
-	Command        string        // command to execute, may contain ${...} env refs and {{...}} template refs
-	Script         string        // script body for higher-level interpreters (mutually exclusive with Command)
-	Language       string        // interpreter selector for Script: js | py | sh | bash. Defaults to sh when empty.
+	Name        string
+	Description string // optional human-readable node label (surfaced in the run console)
+	Command     string // command to execute, may contain ${...} env refs and {{...}} template refs
+	Script      string // script body for higher-level interpreters (mutually exclusive with Command)
+	Language    string // interpreter selector for Script: js | py | sh | bash. Defaults to sh when empty.
+
+	// Connector action (ADR-098) — the THIRD recipe, exclusive with the two
+	// above. `action:` names an operation of a connector package
+	// (`forgejo.issue.comment`), `connection:` the binding that authenticates
+	// it, and `params:` the arguments, each of which may carry `{{...}}`
+	// template refs like a command does.
+	//
+	// It is a recipe of `tool` rather than a node of its own because `tool`
+	// already IS the deterministic node: publish, needs, await, permission
+	// and the schema fields all mean the same thing here, and a second node
+	// type would duplicate every one of them across the parser, the IR, the
+	// unparser, the diagram and the studio.
+	Action         string
+	Connection     string
+	Params         []ActionParam
+	Retry          string        // max attempts / policy name; empty inherits the package default
+	Timeout        string        // per-call bound, e.g. "30s"
 	Input          string        // optional input schema reference name
 	Output         string        // schema reference name
 	Publish        string        // persistent artifact name (empty if not set)
@@ -701,6 +743,17 @@ type ToolNodeDecl struct {
 	// its writes. Default false = conservatively mutating (serialized fan-out).
 	ParallelSafe bool
 	Span         Span
+}
+
+// ActionParam is one argument of a connector action.
+//
+// A SLICE rather than a map, so the order the author wrote survives into the
+// unparser: a `.bot` is meant to be read and diffed, and a map would reshuffle
+// its own arguments on every round trip.
+type ActionParam struct {
+	Key   string
+	Value string // may contain {{...}} template refs
+	Span  Span
 }
 
 // RecoveryBlock configures the bounded recovery rungs of a Verified Action
@@ -927,7 +980,7 @@ type SandboxNetworkBlock struct {
 	Mode    string   // "allowlist" | "denylist" | "open" | ""
 	Preset  string   // "iterion-default" or named preset
 	Rules   []string // glob patterns + "!exclusions"
-	Inherit string   // "merge" | "replace" | "append" — node scope only
+	Inherit string   // "" (merge, the default) | "replace" | "append" — node scope only; the word merge is not a value
 	Span    Span
 }
 

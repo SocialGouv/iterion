@@ -129,7 +129,15 @@ var Catalog = map[DiagCode]DiagInfo{
 
 	DiagInvalidWorkspaceCheckpoint: {"Invalid workspace_checkpoint value", "Use `on` or `off`, or drop the field to inherit. The default is `on`, so a typo keeps pushing the run's tree to the repository it was pointed at."},
 
+	DiagEscapedQuoteInShellString: {"Escaped quote in a shell string", "In a `\"…\"` value, remove the backslash-escaped quotes: `\\\"` reaches the shell as a literal quote character. Leave a space-free value unquoted, or wrap a value with spaces in single quotes. In a backtick raw string or a `|` block scalar the sequence is verbatim by design and may be correct — ignore the warning."},
+
+	DiagProfileOneMatters: {"Profile 1 assumed, and it matters", "Run `iterion dsl migrate --to 2 <file>`: it adds the `dsl: 2` header, re-spells every quoted literal so its value is unchanged, and names the prompts whose paragraph breaks will now reach the model. Or keep profile 1 knowingly: a `\\` in a `\"…\"` literal is read verbatim, and a blank line inside a prompt body reaches the model as a single newline."},
+
 	DiagEmptySchema: {"Node references an empty schema", "Give the schema at least one field, or point the node at another schema; an empty schema is a declaration the studio has not filled in yet, not a contract."},
+
+	DiagEmptyGroupUse: {"Use of an empty group", "Give the group at least one node, or drop the `use`; an empty group is a declaration the studio has not filled in yet — or a body that landed at the wrong indentation after a blank line."},
+
+	DiagInvalidWorktree: {"Invalid worktree value", "Use `auto` (a fresh git worktree per run, finalised into a branch) or `none` (run in place), or drop the field for `auto`. Any other word ran in place, in the operator's own checkout, without a word."},
 
 	// Verified actions (ADR-044).
 	DiagInvalidPolicy:        {"Invalid policy", "Use `required`, `recover` or `best_effort`."},
@@ -194,6 +202,17 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagInvalidFailCode:       {"Malformed fail code", "Use an UPPER_SNAKE identifier: `code: PLAN_BUDGET_EXHAUSTED`."},
 	DiagReservedFailCode:      {"Fail code collides with an engine code", "Pick a code of the bot's own (`BUDGET_EXCEEDED`, `TIMEOUT`, `USAGE_LIMIT_BLOCKED`, ... are the engine's)."},
 	DiagDuplicateFanOutTarget: {"Duplicate fan-out target", "Remove the duplicate edge; use a `fan_out_each` router when the intent is N executions of one node."},
+
+	// Connector actions (ADR-098). Each entry names what the refusal protects:
+	// an action node reaches a third-party API with no LLM deciding the
+	// operation, the arguments or the reading of the answer.
+	DiagActionMalformedID:  {"Malformed action id", "Write `action: <connector>.<resource>.<verb>`, e.g. `forgejo.issue.comment` — the id is what addresses the operation."},
+	DiagActionNoConnection: {"Action without a connection", "Add `connection: <alias>`, written as the literal alias and not as a `{{…}}` template: a connector call with no credential is not a call iterion can make, and the alias is not rendered."},
+	DiagActionRecovery:     {"Recovery on a deterministic action", "Drop `recovery:` / `policy: recover` — its ladder ends in an LLM repairing the call, which an action node promises does not happen."},
+	DiagActionPostcond:     {"Postcondition on a deterministic action", "Drop `postcondition:` — the operation's typed result is its success oracle, and a shell exit code would overrule what the vendor answered."},
+	DiagActionBadParam:     {"Malformed action parameter", "Give every `params:` entry a name, and declare each one once — a duplicate would send a value the author did not write."},
+	DiagActionBadTimeout:   {"Malformed action timeout or retry", "Write `timeout:` as a duration (30s, 2m) and `retry:` as a count of extra attempts (3) — a duration is refused there, the delay between attempts being the vendor's Retry-After to name."},
+	DiagActionOnlyProperty: {"Connector property without an action", "Remove it, or add the `action:` it belongs to — on its own the property is inert, which reads as configured."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has

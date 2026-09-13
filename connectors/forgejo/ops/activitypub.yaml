@@ -1,0 +1,262 @@
+schema_version: 1
+connector: forgejo
+domain: activitypub
+operations:
+- id: forgejo.activitypub.instance_actor
+  source_operation_id: activitypubInstanceActor
+  summary: Returns the instance's Actor
+  resource: activitypub
+  verb: instance_actor
+  tags:
+  - activitypub
+  http:
+    method: GET
+    path: /activitypub/actor
+  results:
+  - status: 200
+    schema_ref: ActivityPub
+    description: ActivityPub
+  effect: read
+  deterministic: true
+- id: forgejo.activitypub.instance_actor_inbox
+  source_operation_id: activitypubInstanceActorInbox
+  summary: Send to the inbox
+  resource: activitypub
+  verb: instance_actor_inbox
+  tags:
+  - activitypub
+  http:
+    method: POST
+    path: /activitypub/actor/inbox
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  effect: create
+  deterministic: true
+- id: forgejo.activitypub.instance_actor_outbox
+  source_operation_id: activitypubInstanceActorOutbox
+  summary: Display the outbox (always empty)
+  resource: activitypub
+  verb: instance_actor_outbox
+  tags:
+  - activitypub
+  http:
+    method: POST
+    path: /activitypub/actor/outbox
+  results:
+  - status: 200
+    schema_ref: ForgeOutbox
+    description: Outbox
+  effect: create
+  deterministic: true
+- id: forgejo.activitypub.person
+  source_operation_id: activitypubPerson
+  summary: Returns the Person actor for a user
+  resource: activitypub
+  verb: person
+  tags:
+  - activitypub
+  http:
+    method: GET
+    path: /activitypub/user-id/{user-id}
+  params:
+  - key: user-id
+    name: user-id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: user ID of the user
+  results:
+  - status: 200
+    schema_ref: ActivityPub
+    description: ActivityPub
+  effect: read
+  deterministic: true
+- id: forgejo.activitypub.person_activity
+  source_operation_id: activitypubPersonActivity
+  summary: Get a specific activity of the user
+  resource: activitypub
+  verb: person_activity
+  tags:
+  - activitypub
+  http:
+    method: GET
+    path: /activitypub/user-id/{user-id}/activities/{activity-id}/activity
+  params:
+  - key: activity-id
+    name: activity-id
+    in: path
+    type: integer
+    required: true
+    description: activity ID of the sought activity
+  - key: user-id
+    name: user-id
+    in: path
+    type: integer
+    required: true
+    description: user ID of the user
+  results:
+  - status: 200
+    schema_ref: ActivityPub
+    description: ActivityPub
+  effect: read
+  deterministic: true
+- id: forgejo.activitypub.person_activity_note
+  source_operation_id: activitypubPersonActivityNote
+  summary: Get a specific activity object of the user
+  resource: activitypub
+  verb: person_activity_note
+  tags:
+  - activitypub
+  http:
+    method: GET
+    path: /activitypub/user-id/{user-id}/activities/{activity-id}
+  params:
+  - key: activity-id
+    name: activity-id
+    in: path
+    type: integer
+    required: true
+    description: activity ID of the sought activity
+  - key: user-id
+    name: user-id
+    in: path
+    type: integer
+    required: true
+    description: user ID of the user
+  results:
+  - status: 200
+    schema_ref: ActivityPub
+    description: ActivityPub
+  effect: read
+  deterministic: true
+- id: forgejo.activitypub.person_feed
+  source_operation_id: activitypubPersonFeed
+  summary: List the user's recorded activity
+  resource: activitypub
+  verb: person_feed
+  tags:
+  - activitypub
+  http:
+    method: GET
+    path: /activitypub/user-id/{user-id}/outbox
+  params:
+  - key: user-id
+    name: user-id
+    in: path
+    type: integer
+    required: true
+    description: user ID of the user
+  results:
+  - status: 200
+    schema_ref: ForgeOutbox
+    description: Outbox
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.activitypub.person_inbox
+  source_operation_id: activitypubPersonInbox
+  summary: Send to the inbox
+  resource: activitypub
+  verb: person_inbox
+  tags:
+  - activitypub
+  http:
+    method: POST
+    path: /activitypub/user-id/{user-id}/inbox
+  params:
+  - key: user-id
+    name: user-id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: user ID of the user
+  results:
+  - status: 202
+    description: APIEmpty is an empty response
+    pending: true
+  effect: create
+  deterministic: true
+- id: forgejo.activitypub.repository
+  source_operation_id: activitypubRepository
+  summary: Returns the Repository actor for a repo
+  resource: activitypub
+  verb: repository
+  tags:
+  - activitypub
+  http:
+    method: GET
+    path: /activitypub/repository-id/{repository-id}
+  params:
+  - key: repository-id
+    name: repository-id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: repository ID of the repo
+  results:
+  - status: 200
+    schema_ref: ActivityPub
+    description: ActivityPub
+  effect: read
+  deterministic: true
+- id: forgejo.activitypub.repository_inbox
+  source_operation_id: activitypubRepositoryInbox
+  summary: Send to the inbox
+  resource: activitypub
+  verb: repository_inbox
+  tags:
+  - activitypub
+  http:
+    method: POST
+    path: /activitypub/repository-id/{repository-id}/inbox
+    request_body: json
+  params:
+  - key: repository-id
+    name: repository-id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: repository ID of the repo
+  - key: body
+    name: body
+    in: body
+    whole_body: true
+    type: object
+    schema_ref: ForgeLike
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  effect: create
+  deterministic: true
+- id: forgejo.activitypub.repository_outbox
+  source_operation_id: activitypubRepositoryOutbox
+  summary: Display the outbox
+  resource: activitypub
+  verb: repository_outbox
+  tags:
+  - activitypub
+  http:
+    method: POST
+    path: /activitypub/repository-id/{repository-id}/outbox
+  params:
+  - key: repository-id
+    name: repository-id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: repository ID of the repo
+  results:
+  - status: 200
+    schema_ref: ForgeOutbox
+    description: Outbox
+  effect: create
+  deterministic: true

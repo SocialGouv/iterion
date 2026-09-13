@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 func minimalSpec() Spec {
@@ -103,6 +104,17 @@ func TestScaffold_SpecMatrix(t *testing.T) {
 				if d.Severity == parser.SeverityError {
 					t.Errorf("parse: %s", d.Error())
 				}
+			}
+			// The bundle's prompts/*.md reach the workflow the way they do
+			// at a launch — through the bundle loader and the runtime's own
+			// merge — so a shape whose prompts live there is judged as it
+			// will run, and a stem nothing ships is refused here too.
+			b, err := bundle.OpenDir(dir)
+			if err != nil {
+				t.Fatalf("OpenDir: %v", err)
+			}
+			if err := runview.MergeBundlePrompts(pr.File, b); err != nil {
+				t.Fatalf("MergeBundlePrompts: %v", err)
 			}
 			cr := ir.Compile(pr.File)
 			for _, d := range cr.Diagnostics {

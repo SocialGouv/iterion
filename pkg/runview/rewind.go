@@ -400,7 +400,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if sourcePath == "" {
 		return nil, fmt.Errorf("runview: rewind: run %s has no workflow source path — pass one explicitly", spec.RunID)
 	}
-	wf, currentRevision, err := CompileWorkflowWithHash(sourcePath)
+	wf, currentRevision, _, err := CompileWorkflowPath(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
@@ -734,10 +734,13 @@ func retireOutputCorrections(run *store.Run, invalidated []string, retiredAt tim
 //     stays exhausted; grant more with resume's --max-iterations.
 //   - LoopPreviousOutput / LoopCurrentOutput: the pivot may legitimately
 //     read {{loop.<name>.previous_output}} on its first re-execution.
-//   - SelectedIncoming of the PIVOT: the last visit's selected edges are
-//     what the re-execution should rebuild from. Downstream keys are
-//     cleared with the dropped nodes. A graph edit that invalidates the
-//     pivot's identities is handled at resolve time (untracked fallback).
+//   - SelectedIncoming and SettledIncoming of the PIVOT: the last visit's
+//     selected edges — and the floor a stabilized fan-out left it — are what
+//     the re-execution should rebuild from. Every INVALIDATED node below it
+//     is cleared, including the ones that never produced an output and so
+//     never appear in `dropped`. A graph edit that invalidates the pivot's
+//     identities is handled at resolve time (untracked fallback for the
+//     selection, per-edge revalidation for the floor).
 func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, invalidated []string) {
 	cp.NodeID = nodeID
 	// From this point the checkpoint's (possibly empty) revision map is an
@@ -746,8 +749,18 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	if cp.ArtifactVersions == nil {
 		cp.ArtifactVersions = map[string]int{}
 	}
-	for _, id := range dropped {
+	// `invalidated`, not `dropped`, and never the pivot. `dropped` is the
+	// REPORTING set — it is filtered on "has an output" and it always
+	// contains the pivot, so using it here did the exact opposite of what
+	// the contract above promises: it erased the pivot's own incoming state
+	// (which the re-execution rebuilds from) while leaving behind the state
+	// of every downstream node the run never reached.
+	for _, id := range invalidated {
+		if id == nodeID {
+			continue
+		}
 		delete(cp.SelectedIncoming, id)
+		delete(cp.SettledIncoming, id)
 	}
 	if !cp.ArtifactsKnown {
 		cp.Artifacts = make(map[string]map[string]any)

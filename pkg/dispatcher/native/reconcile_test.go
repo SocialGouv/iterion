@@ -5,19 +5,29 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
+// setSeam installs a package seam for one test and puts the previous
+// value back afterwards. Every seam is an atomic (see fireSeam) because
+// the goroutines that read them belong to a Store and outlive the test
+// that made it — a bare assignment here races the watcher loop of a store
+// an earlier test left running.
+func setSeam[T any](t *testing.T, p *atomic.Pointer[T], v T) {
+	t.Helper()
+	prev := p.Swap(&v)
+	t.Cleanup(func() { p.Store(prev) })
+}
+
 // setRescanInterval pins the fallback net's interval for one test; 0
 // disables the net.
 func setRescanInterval(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := rescanIntervalOverride
-	rescanIntervalOverride = &d
-	t.Cleanup(func() { rescanIntervalOverride = prev })
+	setSeam(t, &rescanIntervalOverride, d)
 }
 
 // TestReconcile_DoesNotRevertAWriteThatRacedTheScan pins the two
@@ -41,8 +51,16 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 
 	var duringScan, afterScan *Issue
 	var scanningOnce, scannedOnce sync.Once
-	prevScanning, prevScanned := reconcileScanning, reconcileScanned
-	reconcileScanning = func() {
+	// Both seams check the store: a seam is a PACKAGE hook, and any other
+	// store alive in the binary — one an earlier test left ticking its own
+	// 2s net — fires it too. Unguarded, that store's scan would spend the
+	// sync.Once, this store's scan would find both hooks already used, and
+	// the test would fail on duringScan == nil naming a mutex bug that is
+	// not there. Every other seam in the package is guarded the same way.
+	setSeam(t, &reconcileScanning, func(st *Store) {
+		if st != s {
+			return
+		}
 		scanningOnce.Do(func() {
 			// From another goroutine, bounded: a Create that cannot take
 			// the lock while the scan runs is the failure named.
@@ -62,8 +80,11 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 				t.Fatal("a Create blocked while Reconcile was scanning: the scan holds the store mutex across its disk I/O")
 			}
 		})
-	}
-	reconcileScanned = func() {
+	})
+	setSeam(t, &reconcileScanned, func(st *Store) {
+		if st != s {
+			return
+		}
 		scannedOnce.Do(func() {
 			iss, err := s.Create(Issue{Title: "Landed after the scan, before the swap", State: "backlog"})
 			if err != nil {
@@ -71,8 +92,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 			}
 			afterScan = iss
 		})
-	}
-	t.Cleanup(func() { reconcileScanning, reconcileScanned = prevScanning, prevScanned })
+	})
 
 	if err := s.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -98,8 +118,9 @@ func TestWatcher_ReconcilesOnKernelQueueOverflow(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); the overflow path needs one", s.watcherErr)
+	w, _, werr := s.watchState()
+	if w == nil {
+		t.Skipf("this host refused a watch (%v); the overflow path needs one", werr)
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -122,7 +143,7 @@ func TestWatcher_ReconcilesOnKernelQueueOverflow(t *testing.T) {
 	delete(s.index, iss.ID)
 	s.mu.Unlock()
 
-	s.watcher.w.Errors <- fsnotify.ErrEventOverflow
+	w.w.Errors <- fsnotify.ErrEventOverflow
 
 	waitForIndex(t, s, func() bool {
 		_, ok := s.index[iss.ID]

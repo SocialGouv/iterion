@@ -42,6 +42,10 @@ type branchResult struct {
 	// fired into each node it executed (or the join it stopped at).
 	// Concurrent branches must not write the trunk runState map.
 	selectedIncoming map[string][]store.IncomingEdge
+	// settledIncoming is the same privacy for the floor a NESTED fan-out
+	// left on a convergence inside this branch. The trunk's own floor is
+	// never read here — a branch does not execute the trunk's join.
+	settledIncoming map[string][]store.IncomingEdge
 	// costUSD is the branch's cumulative LLM spend for this invocation,
 	// seeded from the durable branch cursor so a resumed pass keeps
 	// growing the same monotonic-max daily-cap ledger entry.
@@ -348,6 +352,11 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 		artifactRevisions: make(map[string]store.ArtifactRevisionRef),
 		artifactVersions:  branchArtifactVersions,
 		selectedIncoming:  make(map[string][]store.IncomingEdge),
+		// Always allocated: newBranchRunState ALIASES it onto the branch
+		// runState, and a map created lazily on first write would replace
+		// that alias instead of writing through it — the floor would then
+		// never reach the checkpoint.
+		settledIncoming: make(map[string][]store.IncomingEdge),
 	}
 	if cp != nil {
 		result.outputs = copyOutputs(cp.Outputs)
@@ -372,6 +381,9 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 		}
 		if incoming := cloneIncoming(cp.SelectedIncoming); incoming != nil {
 			result.selectedIncoming = incoming
+		}
+		if settled := cloneIncoming(cp.SettledIncoming); settled != nil {
+			result.settledIncoming = settled
 		}
 		result.costUSD = cp.CostUSD
 	}
@@ -398,6 +410,10 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	}
 	local.artifactVersions = result.artifactVersions
 	local.selectedIncoming = result.selectedIncoming
+	// Aliased, not copied: a nested fan-out settling a floor inside this
+	// branch writes through to the result, which is what the branch cursor
+	// persists. Never the parent's map — concurrent branches would race it.
+	local.settledIncoming = result.settledIncoming
 	local.loopCounters = make(map[string]int)
 	local.loopPreviousOutput = make(map[string]map[string]any)
 	local.loopCurrentOutput = make(map[string]map[string]any)
@@ -447,6 +463,7 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 		LoopCurrentOutput:  copyOutputs(rs.loopCurrentOutput),
 		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
 		SelectedIncoming:   cloneIncoming(result.selectedIncoming),
+		SettledIncoming:    cloneIncoming(result.settledIncoming),
 		JoinNodeID:         result.joinNodeID,
 		TerminalNodeID:     result.terminalNodeID,
 		Completed:          completed,

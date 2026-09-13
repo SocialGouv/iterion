@@ -362,6 +362,40 @@ This version also carries `ModelOverride.Effort`. The assistant branch's
 former v10/v11 additions are renumbered to v15 when integrated with main's
 v14 contract, so existing main runners reject choices they cannot enforce.
 
+## Checklist: v17 → v18 (connector packages) — NOT YET BUMPED
+
+v18 will carry the connector packages a run resolved at launch
+(`ConnectorRefs`), so a runner materialises the same immutable package the
+publisher compiled against. See [ADR-098](adr/098-connector-catalog.md).
+
+**Nothing is bumped yet**, and this entry exists so the ordering is decided
+before it is rather than discovered during a deploy. The trap to avoid is
+specific: `SchemaVersion` is stamped on **every** message, so the moment the
+server emits v18, a fleet of digest-pinned v17 runners rejects *all* new
+messages — connector runs and ordinary ones alike. That parks the whole
+queue, not one feature.
+
+- [ ] `ConnectorRefs` added to `RunMessage`, carrying an immutable
+      content-addressed package reference (never the package bytes: Forgejo
+      is 651 KiB and GitHub 4.8 MiB, so the payload goes out of band beside
+      the IR's own offload — ADR-075).
+- [ ] `MinSchemaVersion` stays **10**. The addition is additive from a new
+      runner's point of view, so new runners keep consuming v17 for the whole
+      window.
+- [ ] **Runners first, then the server** — the inverse of the default order,
+      and legitimately so per the rule above: nothing below
+      `MinSchemaVersion(new)` exists, so rolling runners first parks nothing.
+      The runner is digest-pinned, so this is an explicit values bump, not a
+      restart.
+- [ ] Only after the runner fleet reports v18-capable: let the server publish
+      v18. A rollback then re-publishes v17, which the new runners still
+      accept.
+- [ ] A package referenced by a queued or resumable run is **retained**. A
+      reference plus a drift guard cannot retrieve a package replaced after
+      the message was published — that turns a resumable run into a
+      permanently failed one, which is why the packages are content-addressed
+      rather than fetched-by-slug-and-version.
+
 ## If something went wrong
 
 - **Runs stuck `queued` after a rollout**: check the DLQ (they parked there

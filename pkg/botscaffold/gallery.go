@@ -32,6 +32,23 @@ func TemplateByID(id string) (Template, bool) {
 	return Template{}, false
 }
 
+// shapeVarTypes is the type each var of the template carrying shape
+// declares, by name — the contract the shape's expressions are typed
+// against — or nil when no template carries the shape.
+func shapeVarTypes(shape string) map[string]string {
+	for _, t := range Templates() {
+		if t.Spec.Shape != shape {
+			continue
+		}
+		out := make(map[string]string, len(t.Spec.Vars))
+		for _, v := range t.Spec.Vars {
+			out[v.Name] = v.Type
+		}
+		return out
+	}
+	return nil
+}
+
 // TemplateIDs lists the gallery's entry IDs, in display order.
 func TemplateIDs() []string {
 	tpls := Templates()
@@ -103,6 +120,12 @@ func Templates() []Template {
 			Description: "Start from scratch: one agent, your instructions.",
 			Spec: Spec{
 				Instructions: "You are a helpful engineering agent. Describe your mission here:\nwhat to investigate, what to produce, and how to verify it before\nreporting mission_complete=true.",
+				// Isolated by default: a blank agent carries the full native
+				// toolset and may edit and commit, so its run gets a per-run
+				// worktree and a storage branch — `none` is the opt-out an
+				// author picks (a digest that must land in the checkout, a
+				// reviewer of pending changes, a triager that writes nothing).
+				Worktree: true,
 			},
 		},
 		{
@@ -129,7 +152,7 @@ func Templates() []Template {
 			Spec: Spec{
 				Description:  "Reviews the working tree / branch diff and reports findings.",
 				WhenToUse:    "Use to review pending changes before a merge — read-only, no fixes.",
-				Instructions: "Review this repository's pending changes for CORRECTNESS: run\n`git add -N . && git diff HEAD` (or `git diff {{vars.base}}` when a base\nis given) and hunt for real bugs — logic errors, missed edge cases,\nsecurity issues, races. Read enough surrounding code to judge each\nfinding; discard style nits. Report each confirmed finding with\nfile:line, the failure scenario, and a suggested fix. Do NOT edit any\nfile: you are read-only.",
+				Instructions: "Review this repository's pending changes for CORRECTNESS: read\n`git diff HEAD` (or `git diff {{vars.base}}` when a base is given) and\nthe files git does not track yet with `git ls-files --others\n--exclude-standard -z | xargs -0 -I{} git diff --no-index -- /dev/null {}`\n(exit 1 per file and 123 for the batch mean there is a diff, not a\nfailure), and hunt for real bugs — logic errors, missed edge cases,\nsecurity issues, races. Read enough surrounding code to judge each\nfinding; discard style nits. Report each confirmed finding with\nfile:line, the failure scenario, and a suggested fix. Do NOT edit any\nfile and write nothing to the index: you are read-only, in the\noperator's checkout.",
 				Vars: []VarSpec{
 					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
 				},
@@ -163,6 +186,137 @@ func Templates() []Template {
 					{Name: "inbox_state", Type: "string", Default: "inbox", Description: "Board state holding untriaged cards."},
 				},
 				Capabilities: []string{"board.read", "board.label", "board.assign", "board.comment", "board.move"},
+			},
+		},
+		// The SHAPES: each renders a complete, commented workflow of the
+		// named form from templates/gallery/<shape>/ (Spec.Shape) — the
+		// forms the catalog bots are made of, at a size an author can read
+		// whole and fill in. TestGalleryShapes holds each to its form.
+		{
+			ID:          "campaign-loop",
+			Icon:        "🔁",
+			Name:        "Campaign with a verify gate",
+			Description: "One agent works in passes; the repo's own checks gate; a bounded loop with a typed failure.",
+			Spec: Spec{
+				Shape:        "campaign-loop",
+				Description:  "Carries a mission to completion in verified, committed passes. The verifier needs jq: the bundle pins it in devbox.json (installed on any image that ships devbox), and every iterion sandbox image ships it.",
+				WhenToUse:    "Use for work that must converge on a deterministic check (build, tests) rather than an opinion.",
+				Instructions: "Describe the campaign: what to change, where, and what \"done\" means.\nThe agent works in passes and commits each unit; after every pass the\nverifier runs {{vars.verify_command}} and its exit code is the verdict.",
+				Vars: []VarSpec{
+					{Name: "verify_command", Type: "string", Default: "", Description: "REQUIRED: the repository's own build+test, run by bash -c after every pass; its exit code is the verdict. Left empty, the run refuses at entry (CAMPAIGN_MISCONFIGURED) before any pass — a verifier that checks nothing would make every verdict green."},
+					{Name: "max_passes", Type: "int", Default: "4", Description: "Upper bound on passes before the run fails PASSES_EXHAUSTED (resumable: raise it and resume); under 1 the run refuses at entry."},
+				},
+				// The campaign commits in stride: isolated by default, and the
+				// dial's opt-out commits on the checked-out branch directly.
+				Worktree: true,
+			},
+		},
+		{
+			// The reviewers read and never write: the permission dial is ON
+			// (deny mode, an allow list of read-only tools in the template).
+			ID:          "review-fanout",
+			Icon:        "🔀",
+			Name:        "Reviewer fan-out",
+			Description: "Two read-only reviewers in parallel, a deterministic convergence, a typed blocked verdict.",
+			Spec: Spec{
+				Shape:        "review-fanout",
+				Description:  "Reviews pending changes under several lenses at once and folds the verdicts without an LLM.",
+				WhenToUse:    "Use for a merge decision that needs independent lenses (correctness, security, …) on one diff.",
+				Instructions: "You review this repository's pending changes for a merge decision. Judge\nthe code, not the style; every finding names a file:line and a failure\nscenario. You are read-only.",
+				Vars: []VarSpec{
+					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
+				},
+				// Read-only by construction: the permission gate is ON in deny
+				// mode, with the template's allow list of read-only tools.
+				Permission: "deny",
+			},
+		},
+		{
+			ID:          "plan-gate-implement",
+			Icon:        "🚦",
+			Name:        "Plan, human gate, implement",
+			Description: "A read-only plan, a human approval (bounded re-plan), then the implementation in a worktree.",
+			Spec: Spec{
+				Shape:        "plan-gate-implement",
+				Description:  "Implements a change only after a human approved the plan.",
+				WhenToUse:    "Use when the operator wants to read the plan before any file is touched.",
+				Instructions: "Describe the change to plan and then implement: the goal, the\nconstraints, and how to verify the result.",
+				// The implementer commits: isolated by default, opt-out honoured.
+				Worktree: true,
+			},
+		},
+		{
+			ID:          "scheduled-digest",
+			Icon:        "📆",
+			Name:        "Scheduled digest",
+			Description: "Collect with a tool, digest with an agent, verify the artifact — with the cron in the manifest.",
+			Spec: Spec{
+				Shape:        "scheduled-digest",
+				Description:  "Posts a periodic digest of repository activity. The collector needs jq: the bundle pins it in devbox.json (installed on any image that ships devbox), and every iterion sandbox image ships it.",
+				WhenToUse:    "Use for a recurring, read-only summary that a schedule launches.",
+				Instructions: "Produce a concise digest of what changed in this repository: read the\ncollected commit log, group by theme, lead with the most impactful\nchange, keep it under one screen.",
+				Vars: []VarSpec{
+					{Name: "window", Type: "string", Default: "24.hours", Description: "Lookback handed to git log --since, in git's own syntax (24.hours, 1.week)."},
+					{Name: "report_path", Type: "string", Default: "digest.md", Description: "Where the digest lands, relative to the workspace."},
+				},
+				ScheduleCron: "0 7 * * 1-5",
+			},
+		},
+		{
+			ID:          "per-ticket-subbots",
+			Icon:        "🎫",
+			Name:        "One subbot per ticket",
+			Description: "List the work, fan out one isolated child run per item, collect when all are done.",
+			Spec: Spec{
+				Shape:        "per-ticket-subbots",
+				Description:  "Handles a list of tickets in parallel child runs.",
+				WhenToUse:    "Use when each work item deserves its own run and they are independent.",
+				Instructions: "Describe what handling ONE ticket means; the child run receives the\nticket's id and title as vars.",
+			},
+		},
+		{
+			ID:          "verified-action",
+			Icon:        "🛡️",
+			Name:        "Verified action",
+			Description: "An agent prepares, then a tool acts under goal + postcondition + policy so it self-heals.",
+			Spec: Spec{
+				Shape:        "verified-action",
+				Description:  "Prepares a release and tags it through a verified action.",
+				WhenToUse:    "Use when one brittle shell action (a tag, a push, a publish) must end in a checked state.",
+				Instructions: "Describe the release preparation: what the changelog entry covers and\nwhat to check before committing.",
+				Vars: []VarSpec{
+					{Name: "tag", Type: "string", Default: "", Description: "REQUIRED, per run: the annotated tag the verified action creates on HEAD. Git tags live in the repository's shared ref store and outlive the run's worktree, so a fixed name meets its own previous tag on the next run; left empty, the run refuses at entry (TAG_UNSET)."},
+				},
+				// The preparation commits: isolated by default, opt-out honoured.
+				Worktree: true,
+			},
+		},
+		{
+			ID:          "async-questions",
+			Icon:        "❓",
+			Name:        "Async questions",
+			Description: "The agent asks the operator and keeps working; one deterministic sync point before the finalizer.",
+			Spec: Spec{
+				Shape:        "async-questions",
+				Description:  "Drafts while the operator answers, then finalizes.",
+				WhenToUse:    "Use when a few details only the operator knows must not block the rest of the work.",
+				Instructions: "Describe the deliverable and which details only the operator can decide;\nthe agent asks those first and works on the rest while the answers\narrive.",
+				// No backend pinned: ask_user_async / await_answers reach
+				// claude_code through iterion's ask-user MCP server, claw
+				// in-process, and pi through its extension (ADR-081), so
+				// the shape auto-detects like the others.
+			},
+		},
+		{
+			ID:          "multi-file",
+			Icon:        "🗂️",
+			Name:        "Multi-file bundle",
+			Description: "The graph in main.bot, the prompts in prompts/*.md, the knowledge in skills/.",
+			Spec: Spec{
+				Shape:        "multi-file",
+				Description:  "A bundle that keeps its prompts and its skills out of the workflow file.",
+				WhenToUse:    "Use when the prompts outgrow the workflow file, or when the bot ships its own skills.",
+				Instructions: "Describe the mission; it is written to prompts/mission.md, next to the\nhouse style in prompts/kickoff.md and skills/house-style.md.",
 			},
 		},
 	}

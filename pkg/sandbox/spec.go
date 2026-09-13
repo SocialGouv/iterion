@@ -264,7 +264,7 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("sandbox.network: invalid mode %q (want allowlist, denylist, or open)", s.Network.Mode)
 		}
 		if !s.Network.Inherit.IsValid() {
-			return fmt.Errorf("sandbox.network: invalid inherit %q (want merge, replace, or append)", s.Network.Inherit)
+			return fmt.Errorf("sandbox.network: invalid inherit %q (want replace or append; omit it to merge, the default)", s.Network.Inherit)
 		}
 	}
 	if s.WorkspaceFolder != "" && !strings.HasPrefix(s.WorkspaceFolder, "/") {

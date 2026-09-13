@@ -188,6 +188,7 @@ type Engine struct {
 	forceResume              bool                                 // when true, skip workflow hash check on resume
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
+	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume
 	artifactResumePreflight  *ArtifactResumePreflight             // same-run snapshot from the synchronous in-process resume boundary
 	workDir                  string                               // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
@@ -441,6 +442,14 @@ type runState struct {
 	// cannot race this map; the trunk copies the join union at
 	// processConvergence. Re-seeded at resume from Checkpoint.SelectedIncoming.
 	selectedIncoming map[string][]store.IncomingEdge
+	// settledIncoming records, per convergence node, the edges a fan-out
+	// invocation stabilized on whose source produced no output — every
+	// branch failed, or the collection fanned over was empty. Kept apart
+	// from selectedIncoming because a join may be a loop head, whose
+	// selection the back-edge REPLACES on re-entry; the floor is a
+	// forward-pass base that has to survive that. Re-seeded at resume from
+	// Checkpoint.SettledIncoming.
+	settledIncoming map[string][]store.IncomingEdge
 	// parallel is non-nil while the trunk is parked on a fan-out router.
 	// Branch goroutines mutate it only through its mutex-protected helpers;
 	// the trunk clears/replaces it at router invocation boundaries.

@@ -30,7 +30,7 @@ func (s *Store) applyFieldRewriteLocked(
 		if err := s.writeIssueLocked(next); err != nil {
 			return touched, fmt.Errorf("native store: write %s during %s: %w", id, reason, err)
 		}
-		s.index[id] = next
+		s.setIndexLocked(id, next)
 		if err := s.emitPostCommitEvent(Event{
 			Type:    EvtIssueUpdated,
 			IssueID: id,

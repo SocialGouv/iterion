@@ -77,6 +77,15 @@ func Open(path, cacheRoot string) (*Bundle, func() error, error) {
 			return nil, nil, err
 		}
 	}
+	// The extracted bundle's prompts/ live under this root, and a prompt's
+	// {{include}} resolves only beside an ABSOLUTELY named file (C055
+	// otherwise): the root is made absolute here, once, so no caller's
+	// relative spelling of it can reach that refusal.
+	absRoot, err := filepath.Abs(cacheRoot)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bundle: resolve cache root %s: %w", cacheRoot, err)
+	}
+	cacheRoot = absRoot
 	if err := os.MkdirAll(cacheRoot, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("bundle: mkdir cache %s: %w", cacheRoot, err)
 	}

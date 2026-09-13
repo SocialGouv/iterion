@@ -469,7 +469,18 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// gap between nodes). Gated on the RUN ctx being done, so a node's
 		// own internal Canceled error with a live run ctx still takes the
 		// normal recovery path below.
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		//
+		// …EXCEPT when the node's own failure says its remote effect is
+		// UNDECIDED. The teardown is then the very thing that produced the
+		// ambiguity — a drain, an operator cancel or a `--timeout` landing
+		// while a mutating call was in flight — and every code this handler
+		// can reach is one something re-drives: `interrupted` is redelivered
+		// to a fresh pod, `TIMEOUT` is on the in-process auto-resume
+		// allow-list. The resume re-executes the node and re-sends a call
+		// that may already have taken effect. So an undecided effect keeps
+		// its own classification and its own terminal code, and the run
+		// stops for a human, which is what that code is for.
+		if ctxErr := ctx.Err(); ctxErr != nil && !IsAmbiguousEffect(execErr) {
 			e.recordFailedNodeSpend(rs, currentNodeID, output)
 			return nil, false, e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
 		}

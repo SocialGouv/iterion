@@ -1033,6 +1033,7 @@ func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, 
 		return err
 	}
 	r.CredFingerprints = stamp.Fingerprints
+	r.CredentialTiers = stamp.Tiers
 	r.SkippedCredReopensAt = stamp.SkippedReopensAt
 	r.LLMIdleSince = nil
 	return s.SaveRun(ctx, r)

@@ -1,0 +1,291 @@
+schema_version: 1
+connector: forgejo
+domain: package
+operations:
+- id: forgejo.package.delete_package
+  source_operation_id: deletePackage
+  summary: Delete a package
+  resource: package
+  verb: delete_package
+  tags:
+  - package
+  http:
+    method: DELETE
+    path: /packages/{owner}/{type}/{name}/{version}
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the package
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the package
+  - key: type
+    name: type
+    in: path
+    type: string
+    required: true
+    description: type of the package
+  - key: version
+    name: version
+    in: path
+    type: string
+    required: true
+    description: version of the package
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.package.get_package
+  source_operation_id: getPackage
+  summary: Gets a package
+  resource: package
+  verb: get_package
+  tags:
+  - package
+  http:
+    method: GET
+    path: /packages/{owner}/{type}/{name}/{version}
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the package
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the package
+  - key: type
+    name: type
+    in: path
+    type: string
+    required: true
+    description: type of the package
+  - key: version
+    name: version
+    in: path
+    type: string
+    required: true
+    description: version of the package
+  results:
+  - status: 200
+    schema_ref: Package
+    description: Package
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.package.link_package
+  source_operation_id: linkPackage
+  summary: Link a package to a repository
+  resource: package
+  verb: link_package
+  tags:
+  - package
+  http:
+    method: POST
+    path: /packages/{owner}/{type}/{name}/-/link/{repo_name}
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the package
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the package
+  - key: repo_name
+    name: repo_name
+    in: path
+    type: string
+    required: true
+    description: name of the repository to link.
+  - key: type
+    name: type
+    in: path
+    type: string
+    required: true
+    description: type of the package
+  results:
+  - status: 201
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.package.list_package_files
+  source_operation_id: listPackageFiles
+  summary: Gets all files of a package
+  resource: package
+  verb: list_package_files
+  tags:
+  - package
+  http:
+    method: GET
+    path: /packages/{owner}/{type}/{name}/{version}/files
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the package
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the package
+  - key: type
+    name: type
+    in: path
+    type: string
+    required: true
+    description: type of the package
+  - key: version
+    name: version
+    in: path
+    type: string
+    required: true
+    description: version of the package
+  results:
+  - status: 200
+    schema_ref: PackageFile
+    array: true
+    description: PackageFileList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.package.list_packages
+  source_operation_id: listPackages
+  summary: Gets all packages of an owner
+  resource: package
+  verb: list_packages
+  tags:
+  - package
+  http:
+    method: GET
+    path: /packages/{owner}
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the packages
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: q
+    name: q
+    in: query
+    type: string
+    description: name filter
+  - key: type
+    name: type
+    in: query
+    type: string
+    enum:
+    - alpine
+    - cargo
+    - chef
+    - composer
+    - conan
+    - conda
+    - container
+    - cran
+    - debian
+    - generic
+    - go
+    - helm
+    - maven
+    - npm
+    - nuget
+    - pub
+    - pypi
+    - rpm
+    - rubygems
+    - swift
+    - vagrant
+    description: package type filter
+  results:
+  - status: 200
+    schema_ref: Package
+    array: true
+    description: PackageList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.package.unlink_package
+  source_operation_id: unlinkPackage
+  summary: Unlink a package from a repository
+  resource: package
+  verb: unlink_package
+  tags:
+  - package
+  http:
+    method: POST
+    path: /packages/{owner}/{type}/{name}/-/unlink
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the package
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the package
+  - key: type
+    name: type
+    in: path
+    type: string
+    required: true
+    description: type of the package
+  results:
+  - status: 201
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true

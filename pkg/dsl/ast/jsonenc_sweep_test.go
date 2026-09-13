@@ -34,6 +34,7 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		{RouterDecl{}, jsonRouterDecl{}, nil},
 		{HumanDecl{}, jsonHumanDecl{}, nil},
 		{ToolNodeDecl{}, jsonToolNodeDecl{}, nil},
+		{ActionParam{}, jsonActionParam{}, nil},
 		{ComputeDecl{}, jsonComputeDecl{}, nil},
 		{ComputeExpr{}, jsonComputeExpr{}, nil},
 		{SubbotDecl{}, jsonSubbotDecl{}, nil},

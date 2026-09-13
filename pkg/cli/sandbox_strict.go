@@ -567,5 +567,8 @@ func loadWorkflowForDoctor(path string) (*ir.Workflow, error) {
 		wf, _, cErr := runview.CompileBundleWorkflow(iterPath, b)
 		return wf, cErr
 	}
-	return runview.CompileWorkflow(path)
+	// openBundleOrFile promoted nothing, so this is a loose file; the
+	// shared helper keeps the two compiles one.
+	wf, _, _, cErr := runview.CompileWorkflowPath(path)
+	return wf, cErr
 }

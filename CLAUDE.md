@@ -291,6 +291,37 @@ the hours this one spent.
   `purpose: security_read`, which is what keeps the refresh worker from
   minting it a runtime token (that mint would 422 → degrade → withdraw the
   token it exists to supply) and keeps the publish resolver from picking it.
+- [docs/browser-security.md](docs/browser-security.md) — what protects the
+  studio from the BROWSER side: which cross-origin requests are accepted, what
+  makes a session cookie unforgeable, what the CSP allows. Read it before
+  touching `authMiddleware`, the auth cookies, the origin allowlist, or
+  anything that adds a response header. Its load-bearing fact is that the two
+  public hosts do NOT have the same properties: `gouv.fr` is a public suffix,
+  so `iterion.fabrique.social.gouv.fr` is same-site with ~47 sibling hosts and
+  `SameSite=Lax` buys nothing there — which is why the CSRF boundary is a
+  single **origin gate** in `authMiddleware` (state-changing `/api` + a
+  foreign `Origin` ⇒ 403; an absent Origin is the CLI/runner/webhook and
+  passes) rather than the per-handler `requireSafeOrigin` that had drifted to
+  70 of 247 routes. Covers the two things that do NOT protect a POST (a
+  `text/plain` body is never preflighted; withholding ACAO only stops the
+  attacker READING the response), the `__Host-` cookie prefix and why it is
+  conditional (a browser DISCARDS one whose terms are unmet, so emitting it on
+  a plaintext studio locks everyone out), the measured CSP (`script-src
+  'self'` holds; `style-src` needs `'unsafe-inline'` for the CSS-in-JS), why
+  HSTS is the ingress's job, and the no-CDN rule for the SPA. Read it also
+  when a client is being **refused and you cannot see why**: the gate logs one
+  **`INFO`** per refusal naming method/path/Origin — grep at `info`, not
+  `warn`, or you reproduce the very false negative the line exists to kill
+  ("nothing is being wrongly refused" and "we cannot see one" were the same
+  empty grep). `warn` is deliberately NOT used: it would ride errtrack's hook
+  into Sentry's 100-entry breadcrumb ring, and the gate runs before auth, so a
+  stranger could evict everyone's error context. Also
+  `ITERION_ALLOWED_ORIGINS`, which names extra hosts so a multi-host mount
+  stops depending on the ingress forwarding `Host` unchanged — the
+  proportionate widening next to `ITERION_REQUIRE_ORIGIN=0`, which switches the
+  gate off. It is a **first-party** trust grant, though: the same list also
+  governs WebSocket upgrades and ACAO reflection, so a partner origin does not
+  belong in it.
 - [docs/platform-bots.md](docs/platform-bots.md) — iterating on any bot
   (incl. natives) on a cloud instance WITHOUT an image rollout: the
   platform bot-override tier (`iterion remote admin bots push bots/<slug>`,
@@ -317,7 +348,18 @@ the hours this one spent.
   by TRANSFER and routes the card by `DecideStuckCard`, the
   terminal-state sink + operator `Reopen`, and the two-release
   expand/contract rollout. Read it when a native-board card is stuck
-  `in_progress` with a dead owner, or before enabling the reaper.
+  `in_progress` with a dead owner, or before enabling the reaper. Read it
+  also on the OTHER native-board silence — **a card written on disk that
+  `/board` and the dispatcher never show**: the store's index rides an
+  inotify watch, and inotify is lossy by construction (`ENOSPC` at
+  `fs.inotify.max_user_watches`, `EMFILE` at `max_user_instances`,
+  `ErrEventOverflow` on a full kernel queue, a watch silently dropped when
+  the directory is removed or renamed). Each of those used to freeze the
+  index until the daemon restarted; each now falls back to a full
+  `issues/` rescan every `ITERION_NATIVE_INDEX_RESCAN` (default `2s`,
+  `off` to disable), taken outside the store mutex. The log names which
+  mode a store is in — that line, not the board, is what tells you the
+  fast path is gone.
 - [docs/github-board-sync.md](docs/github-board-sync.md) — making a GitHub
   **Projects v2** board and the native board the same tickets (ADR-097): the
   permissions (App `organization_projects`, PAT `project`), `iterion issue
@@ -340,7 +382,13 @@ the hours this one spent.
   caps, the shared-credential audience, and the **team lifecycle**
   (`iterion remote teams update|status|delete|add-member` — rename, suspend,
   delete an empty team, and place an account that already exists instead of
-  emailing it an invitation). Plus its original subject: plugging tracker
+  emailing it an invitation). Read *Moving a repo to another team* before
+  splitting a tenant: the provisioner rebuilds the managed forge secret and its
+  `forge_token` binding on the target, and **nothing else keyed on `Team.ID`
+  follows** — an operator secret, a `tracker_token` binding, a config-share, a
+  schedule, `sync_issues_enabled`. The launch that needed one fails mute, since
+  a missing binding reads exactly like a feature nobody configured. Plus its
+  original subject: plugging tracker
   tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
   verifies the PR delivers what the ticket asks: the team wiring (team
   secret → `tracker_token` binding with `allowed_hosts` → per-repo
@@ -500,6 +548,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `types/` — Shared enums (transports, field types, session/router/await/interaction modes)
   - `expr/` — Expression evaluator for `compute` nodes and `when` conditions
   - `workflowfile/` — Workflow source-file loading + hash computation (used by `iterion resume` change detection)
+  - `spec/` — The declarative **property registry** (a leaf): every kind's accepted properties with value shape and one-line doc. Held to the parser by a black-box conformance test in BOTH directions (a property added to one side without the other fails CI) and to the EBNF's `*_prop` productions. Feeds E012's remedy (closest name, the block a name belongs to, the kind's list — `parser.unknownProperty`, the one choke point), and renders `docs/references/dsl-properties.md`, the grammar's tables and the skills' property section (`iterion dsl spec --write` / `task dsl:gen`; `task dsl:check` fails on a stale rendering). The parser's `isKeywordToken` is derived from the lexer's keyword table for the same reason: the hand-kept copy drifted twice
 - `pkg/backend/` — Execution stack (LLM + tools)
   - `model/` — Executor registry (`ClawExecutor`), schema validation, event hooks
   - `delegate/` — Backend interface and CLI delegates (`claude_code`, `codex`, `pi`, `kimi`, `grok`); `claw` implements the same interface in-process under `model/`
@@ -1578,6 +1627,17 @@ the resulting tools on `PATH` for every node of the run. The same applies
 to a `devbox.json` at the root of the TARGET repo: iterion loads that one
 too, so a bot inherits the toolchain the repo itself declares.
 
+**On every driver, the pod backend included.** A bundle reaches a
+container as a host bind mount and the kubernetes driver has none, so
+there the config is not read from in-container — it is CARRIED there,
+written out by the install prologue before `devbox install` runs. Worth
+knowing because it was a decline until 2026-09-10, and that shape is the
+one to watch for in its whole class: the feature worked on a laptop and
+was inert on the driver bots actually run on, with nothing failing except
+the step that needed the tool. Ceiling: the config+lock pair must stay
+under 512 KiB, and a pair over it is declined by name, never installed
+from a directory it never reached.
+
 This is the supported way, and the alternatives are all worse:
 
 - **Curling a binary in `post_create`** — unpinned, undeclared, and
@@ -1718,6 +1778,7 @@ above is the standing baseline, not an open-work list).
 
 ```
 iterion validate <file.bot>            # Parse and validate workflow
+iterion dsl spec [--region reference|skill|'table <kind>'] [--write]  # Render the DSL property registry, or regenerate the committed reference/tables/skill sections (task dsl:gen)
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
 iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --skill, --model, --backend, --effort-for, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events

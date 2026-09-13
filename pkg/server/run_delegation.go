@@ -88,7 +88,11 @@ func inferRunBotOrigin(run *store.Run) (*store.BotOrigin, error) {
 		Kind: "git", ProjectID: projectID, RepoRoot: p.RepoRoot, Commit: p.Commit,
 		TreeHash: p.TreeHash, WorkflowPath: rel, Package: strings.Split(rel, "/")[0], Dirty: p.Dirty,
 	}
-	if b := runview.ResolveBundleFromFilePath(run.FilePath); b != nil && b.SourcePath != "" {
+	b, err := bundle.OpenForWorkflow(run.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("workflow bundle is unavailable: %w", err)
+	}
+	if b != nil && b.SourcePath != "" {
 		if installed, ierr := botinstall.ReadOrigin(b.SourcePath); ierr == nil {
 			origin.Kind = "installed_package"
 			origin.InstallSource = installed.Source

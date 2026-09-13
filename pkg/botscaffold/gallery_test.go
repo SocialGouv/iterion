@@ -18,6 +18,33 @@ func TestSpecFromTemplate_DefaultsToBlank(t *testing.T) {
 	}
 }
 
+// TestBlankTemplateIsolatesByDefault: the blank bot — one adaptive agent
+// with the full native toolset, free to edit and commit — scaffolds with
+// the worktree dial ON, the engine's own posture (no bot dirties the live
+// checkout unless its author says so). The single-agent templates whose
+// deliverable must land in the checkout (a digest file), or that read
+// pending changes, or write nothing (a triager), keep the dial off.
+func TestBlankTemplateIsolatesByDefault(t *testing.T) {
+	blank, ok := TemplateByID(DefaultTemplateID)
+	if !ok || !blank.Spec.Worktree {
+		t.Fatalf("the blank template does not isolate by default: %+v", blank.Spec)
+	}
+	// The shapes that commit default the dial ON too, and honour the
+	// opt-out like every other template (no shape hardcodes `auto`).
+	for _, id := range []string{"campaign-loop", "plan-gate-implement", "verified-action"} {
+		tpl, ok := TemplateByID(id)
+		if !ok || !tpl.Spec.Worktree {
+			t.Errorf("%s: the dial is off by default; the shape commits", id)
+		}
+	}
+	for _, id := range []string{"daily-digest", "code-reviewer", "issue-triager"} {
+		tpl, ok := TemplateByID(id)
+		if !ok || tpl.Spec.Worktree {
+			t.Errorf("%s: the dial is on; its deliverable belongs in the checkout (or it writes nothing)", id)
+		}
+	}
+}
+
 func TestSpecFromTemplate_UnknownIDListsAvailable(t *testing.T) {
 	_, err := SpecFromTemplate("nope", Overrides{Slug: "b"})
 	if err == nil {

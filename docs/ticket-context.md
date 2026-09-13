@@ -177,3 +177,41 @@ which is why `orgs add-member` exists as its org-admin twin, and why the two
 are a pair. Without it the round trip was merely moved one level up: a user
 with no org at all stayed reachable only by email. For an account that does
 not exist **yet**, the email invitation remains the path.
+
+### Moving a repo to another team — what does NOT follow it
+
+There is no transfer route: a repo changes team by `DELETE
+/api/teams/<src>/forge/repo-bots/<iid>` then `POST` on the target, which
+recreates the webhook and the managed forge secret. That much is automatic —
+the `forge_github_*` / `forge_gitlab_*` secret and its `forge_token` binding
+are rebuilt on the target team by the provisioner.
+
+**Everything else keyed on `Team.ID` stays behind**, and the launch that needs
+it fails with no diagnostic, because a missing binding is indistinguishable
+from a feature that was never configured. Measured on a real migration: a repo
+kept its `tracker_api_base` / `tracker_user` launch vars — replayed with care —
+while the `tracker_token` binding they address stayed on the source team, so
+ticket conformance went quiet.
+
+Walk the class before calling a move done:
+
+| Endpoint | Follows the repo? |
+|---|---|
+| `/forge/repo-bots` | yes — that is the move |
+| `/secrets` (`forge_*` managed) | yes, rebuilt by the provisioner |
+| `/bots/{bot}/bindings` (`forge_token`) | yes, rebuilt |
+| `/secrets` (operator-owned) | **no** |
+| `/bots/{bot}/bindings` (`tracker_token`, …) | **no** |
+| `/config-shares` · `/schedules` | **no** |
+| `/plugin-sources` · `/bot-sources` · `/api-keys` | **no** |
+| `sync_issues_enabled` | **no** — not a provisioning field, re-`PATCH` it |
+
+Recreating an operator secret on the target is only correct if it is the SAME
+credential: compare the `fingerprint` (and `last4`) the API returns against the
+source's before trusting the new binding — a lookalike token authenticates
+until it silently does not.
+
+And a source team emptied of repos is not necessarily inert: it may still own
+the schedules, config-shares and connections of the bots that were never
+repo-scoped. Check `/schedules` and `/config-shares` before treating it as a
+shell.

@@ -1,0 +1,181 @@
+schema_version: 1
+connector: forgejo
+
+# The AUTHORED half of the Forgejo package. Everything under ops/ is generated
+# from https://codeberg.org/swagger.v1.json (MIT, "for the purpose of
+# interoperability") and is disposable — regenerate and get the same bytes.
+# This file is what a human maintains, and it exists because the description
+# cannot state any of the following.
+
+display_name: Forgejo
+description: Forgejo and Gitea — issues, pull requests, repositories and releases.
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+# The description declares FIVE security definitions, and only two of them are
+# credentials a connection can hold. `Sudo` / `sudo` are an admin
+# impersonation MODIFIER and `X-FORGEJO-OTP` is a second factor used alongside
+# BasicAuth — offering any of the three in a connection wizard would ask an
+# operator to authenticate with something that is not an identity. Replacing
+# the derived list is the only way to say so, which is why the overlay
+# REPLACES auth rather than merging into it.
+#
+# The `token ` prefix WAS derived, out of the description's own prose ("API
+# tokens must be prepended with \"token\" followed by a space"). It is restated
+# here because it is load-bearing and one sentence away from disappearing in a
+# vendor's next docs edit: without it every call answers 401, which reads as a
+# bad credential rather than a missing word.
+auth:
+  - id: token
+    kind: api_key
+    display_name: Access token
+    description: A Forgejo/Gitea access token, from Settings → Applications.
+    in: header
+    name: Authorization
+    value_prefix: "token "
+  - id: basic
+    kind: basic
+    display_name: Username and password
+    description: Only for an instance with no token support; prefer a token.
+
+# Replacing auth orphans the derived requirements that named the three dropped
+# schemes, so they are restated too — the merge refuses a requirement pointing
+# at a scheme the package no longer declares, which is the check doing its job.
+default_security:
+  - terms:
+      - scheme: token
+  - terms:
+      - scheme: basic
+
+# ---------------------------------------------------------------------------
+# Operations
+# ---------------------------------------------------------------------------
+# Two things happen here, and they are different.
+#
+# The `id:` lines are IDENTITY PINS. A derived id is stable until the vendor
+# adds an endpoint that derives the same name and sorts earlier, at which point
+# it would take the id and an unchanged .bot would address something else.
+# Pinning the ones a workflow is meant to quote is what makes that impossible.
+#
+# The `mcp: true` lines are CURATION. 506 tools would bury an agent's context;
+# these are the ones worth offering by name. Everything else stays reachable
+# through the facade's search_operations / call_operation pair.
+operations:
+  # --- issues ---
+  forgejo.issue.list_issues:
+    id: forgejo.issue.list
+    summary: List a repository's issues, newest first.
+    mcp: true
+    pagination:
+      style: page_number
+      page_param: page
+      size_param: limit
+      default_size: 50
+      # A repository with 40 000 issues would otherwise spend a run's budget
+      # walking them. The walk stops here and says so rather than looking
+      # complete.
+      max_pages: 20
+
+  forgejo.issue.get_issue:
+    id: forgejo.issue.get
+    mcp: true
+
+  forgejo.issue.create_issue:
+    id: forgejo.issue.create
+    summary: Open an issue. Returns the created issue, including its number.
+    mcp: true
+
+  forgejo.issue.edit_issue:
+    id: forgejo.issue.update
+    summary: Change an issue's title, body, state, assignees or milestone.
+    mcp: true
+
+  forgejo.issue.create_comment:
+    id: forgejo.issue.comment
+    summary: Add a comment to an issue or pull request.
+    mcp: true
+
+  forgejo.issue.get_comments:
+    id: forgejo.issue.list_comments
+    mcp: true
+    # No pagination block: the upstream description declares only `before` and
+    # `since` on this endpoint, and the four other paginated operations here
+    # DO carry `page` and `limit` — so their absence is the vendor's answer,
+    # not a gap in the generator. The block that used to sit here named both,
+    # and `CallPaged` writes a position parameter into the very map the request
+    # builder validates, so every paginated call was refused with "operation
+    # does not declare page, limit" — blaming the caller for keys the package
+    # wrote.
+    #
+    # If a live instance does accept them, the fix is to declare the two
+    # parameters here and restore the block; that has to be verified against a
+    # running Forgejo, which is why it is not done blind.
+
+  forgejo.issue.add_label:
+    id: forgejo.issue.add_labels
+    summary: Add labels to an issue. Existing labels are kept.
+    mcp: true
+
+  # --- pull requests ---
+  forgejo.repository.list_pull_requests:
+    id: forgejo.pull_request.list
+    mcp: true
+    pagination:
+      style: page_number
+      page_param: page
+      size_param: limit
+      default_size: 50
+      max_pages: 20
+
+  forgejo.repository.get_pull_request:
+    id: forgejo.pull_request.get
+    mcp: true
+
+  forgejo.repository.create_pull_request:
+    id: forgejo.pull_request.create
+    summary: Open a pull request from one branch onto another.
+    mcp: true
+
+  # --- repositories ---
+  forgejo.repository.get:
+    id: forgejo.repository.get
+    mcp: true
+
+  forgejo.repository.get_contents:
+    id: forgejo.repository.get_file
+    summary: Read a file's contents at a ref. The body is base64 in `content`.
+    mcp: true
+
+  # A GET, so the derivation already reads it as a read; what the overlay adds
+  # is the pagination and the pin, since `search` is a name a later endpoint
+  # could plausibly derive too.
+  #
+  # The only paginated operation here that does NOT answer a bare array: this
+  # one wraps it in `{ok, data}`, so the walk has to be told where the items
+  # live. Validation refuses the omission rather than walking empty pages.
+  forgejo.repository.search:
+    id: forgejo.repository.search
+    mcp: true
+    pagination:
+      style: page_number
+      page_param: page
+      size_param: limit
+      items_field: data
+      default_size: 50
+      max_pages: 10
+
+  # --- releases ---
+  forgejo.repository.list_releases:
+    id: forgejo.release.list
+    mcp: true
+    pagination:
+      style: page_number
+      page_param: page
+      size_param: limit
+      default_size: 50
+      max_pages: 10
+
+  forgejo.repository.create_release:
+    id: forgejo.release.create
+    mcp: true

@@ -154,7 +154,7 @@ auto-memory of its own (`~/.claude/projects/<cwd>/memory/`), and claw and pi
 maintain one from a prompt section plus their ordinary file tools.
 `auto_memory:` is the switch for that mechanism.
 
-```
+```iter fragment
 workflow main:
   auto_memory: off          # workflow default
 

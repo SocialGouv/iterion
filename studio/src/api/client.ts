@@ -262,9 +262,14 @@ export async function unparse(document: IterDocument): Promise<string> {
   return res.source;
 }
 
+/** validate compiles the document server-side. `path` is the workspace
+ *  file it was opened from, when known: a main.bot inside a bundle is then
+ *  validated with the bundle's prompts/*.md in scope, the way a launch
+ *  compiles it, instead of refusing every prompt the bundle ships. */
 export async function validate(
   document: IterDocument,
   signal?: AbortSignal,
+  path?: string | null,
 ): Promise<{
   diagnostics: string[];
   warnings: string[];
@@ -272,7 +277,7 @@ export async function validate(
 }> {
   return request("/validate", {
     method: "POST",
-    body: JSON.stringify({ document }),
+    body: JSON.stringify(path ? { document, path } : { document }),
     signal,
   });
 }

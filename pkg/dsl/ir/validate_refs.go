@@ -120,6 +120,21 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Location: fmt.Sprintf("tool node %q script", t.ID),
 				})
 			}
+			// The third recipe's arguments, for the reason the script comment
+			// above gives — and it is the same omission repeated: a new
+			// recipe was added without walking every pass that reads the
+			// other two. An unvalidated `{{outputs.typo.field}}` in an action
+			// param renders empty and is SENT, so the vendor receives a
+			// silently wrong argument instead of the author receiving C029.
+			for _, p := range t.Params {
+				for _, ref := range p.Refs {
+					out = append(out, refContext{
+						Ref:      ref,
+						NodeID:   t.ID,
+						Location: fmt.Sprintf("tool node %q action param %q", t.ID, p.Key),
+					})
+				}
+			}
 		}
 	}
 

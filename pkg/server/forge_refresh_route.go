@@ -37,9 +37,12 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusBadRequest, "refresh applies to GitHub-App connections only")
 		return
 	}
-	cfg, _, hasApp := s.githubAppConfigForConnection(r.Context(), conn)
-	if !hasApp {
-		httpError(w, http.StatusBadGateway, "no github app available for this connection")
+	cfg, _, appErr := s.githubAppConfigForConnection(r.Context(), conn)
+	if appErr != nil {
+		// Never 502 here: resolving the App reads iterion's own store and
+		// unseals its own key — no socket is opened, so blaming the forge
+		// would send the operator to GitHub's status page for our outage.
+		httpError(w, http.StatusInternalServerError, "%v", appErr)
 		return
 	}
 	inst, err := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),

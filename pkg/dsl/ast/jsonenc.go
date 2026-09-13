@@ -115,6 +115,7 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
+	Profile      int                     `json:"profile,omitempty"`
 	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
 	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
 	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
@@ -271,8 +272,9 @@ type jsonMemoryBlock struct {
 }
 
 type jsonPromptDecl struct {
-	Name string `json:"name,omitempty"`
-	Body string `json:"body,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Body   string `json:"body,omitempty"`
+	Inline bool   `json:"inline,omitempty"`
 }
 
 type jsonCursorDecl struct {
@@ -473,6 +475,11 @@ type jsonToolNodeDecl struct {
 	Command        string             `json:"command,omitempty"`
 	Script         string             `json:"script,omitempty"`
 	Language       string             `json:"language,omitempty"`
+	Action         string             `json:"action,omitempty"`
+	Connection     string             `json:"connection,omitempty"`
+	Params         []jsonActionParam  `json:"params,omitempty"`
+	Retry          string             `json:"retry,omitempty"`
+	Timeout        string             `json:"timeout,omitempty"`
 	Input          string             `json:"input,omitempty"`
 	Output         string             `json:"output,omitempty"`
 	Publish        string             `json:"publish,omitempty"`
@@ -487,6 +494,14 @@ type jsonToolNodeDecl struct {
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
 	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
+}
+
+// jsonActionParam is the JSON form of an ast.ActionParam. A LIST rather than
+// an object, so the author's order survives the round trip — a JSON object's
+// key order is not guaranteed, and the studio renders these in order.
+type jsonActionParam struct {
+	Key   string `json:"key"`
+	Value string `json:"value,omitempty"`
 }
 
 // jsonRecoveryBlock is the JSON form of an ast.RecoveryBlock (ADR-044).
@@ -596,8 +611,24 @@ func sandboxBlockFromJSON(j *jsonSandboxBlock) *SandboxBlock {
 	if j == nil {
 		return nil
 	}
+	// `sandbox: {}` — a block the canvas created and did not fill in — has
+	// no mode, which no .bot text can express (the block form is inline,
+	// the short form names a mode) and means what its absence means:
+	// inherit. It is read as absent, so the document saves and reads back
+	// the same.
+	if j.Mode == "" && j.Image == "" && j.Build == nil && j.User == "" && j.WorkspaceFolder == "" &&
+		j.HostState == "" && j.PostCreate == "" && len(j.Env) == 0 && len(j.Mounts) == 0 && j.Network == nil {
+		return nil
+	}
+	// A block with fields but no mode is the block form, which the parser
+	// reads as inline — the transport reads it the same way, so a document
+	// and its re-parse agree on the mode.
+	mode := j.Mode
+	if mode == "" {
+		mode = "inline"
+	}
 	return &SandboxBlock{
-		Mode:            j.Mode,
+		Mode:            mode,
 		Image:           j.Image,
 		Build:           sandboxBuildBlockFromJSON(j.Build),
 		User:            j.User,
@@ -700,7 +731,11 @@ type jsonWorkflowDecl struct {
 	Skills         []string              `json:"skills,omitempty"`
 	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
 	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
-	Resources      map[string]int        `json:"resources,omitempty"`
+	// Resources is a pointer so the EMPTY block travels: a bare `resources:`
+	// (a block the canvas created and did not fill in, or a plain file's) is
+	// `{}`, an absent block is no key — with a plain map, omitempty would
+	// drop the empty one and a studio open → save would delete the header.
+	Resources *map[string]int `json:"resources,omitempty"`
 	// ResourceMembers carries the named-instance pools (`godot: [s1, s2]`):
 	// Resources keeps every resource's capacity (a pool's is its size), this
 	// map the member ids a lease hands out one at a time. Absent for a
@@ -802,7 +837,7 @@ func toJSON(f *File) *jsonFile {
 		jf.MCPServers = append(jf.MCPServers, mcpServerToJSON(s))
 	}
 	for _, p := range f.Prompts {
-		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body})
+		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body, Inline: p.Inline})
 	}
 	for _, s := range f.Schemas {
 		jf.Schemas = append(jf.Schemas, schemaToJSON(s))
@@ -898,6 +933,7 @@ func toJSON(f *File) *jsonFile {
 	for _, c := range f.Comments {
 		jf.Comments = append(jf.Comments, &jsonComment{Text: c.Text})
 	}
+	jf.Profile = f.Profile
 
 	return jf
 }
@@ -929,6 +965,11 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Command:        t.Command,
 		Script:         t.Script,
 		Language:       t.Language,
+		Action:         t.Action,
+		Connection:     t.Connection,
+		Params:         actionParamsToJSON(t.Params),
+		Retry:          t.Retry,
+		Timeout:        t.Timeout,
 		Input:          t.Input,
 		Output:         t.Output,
 		Publish:        t.Publish,
@@ -944,6 +985,28 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Needs:          t.Needs,
 		ParallelSafe:   t.ParallelSafe,
 	}
+}
+
+func actionParamsToJSON(in []ActionParam) []jsonActionParam {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]jsonActionParam, len(in))
+	for i, p := range in {
+		out[i] = jsonActionParam{Key: p.Key, Value: p.Value}
+	}
+	return out
+}
+
+func actionParamsFromJSON(in []jsonActionParam) []ActionParam {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ActionParam, len(in))
+	for i, p := range in {
+		out[i] = ActionParam{Key: p.Key, Value: p.Value}
+	}
+	return out
 }
 
 func computeToJSON(c *ComputeDecl) *jsonComputeDecl {
@@ -1434,8 +1497,12 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxIterations:       w.Budget.MaxIterations,
 		}
 	}
-	if w.Resources != nil && len(w.Resources.Capacities) > 0 {
-		jw.Resources = w.Resources.Capacities
+	if w.Resources != nil {
+		caps := w.Resources.Capacities
+		if caps == nil {
+			caps = map[string]int{} // the empty block is `{}`, never absent
+		}
+		jw.Resources = &caps
 		if len(w.Resources.Members) > 0 {
 			jw.ResourceMembers = w.Resources.Members
 		}
@@ -1598,7 +1665,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	for _, jp := range jf.Prompts {
-		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body})
+		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body, Inline: jp.Inline})
 	}
 
 	for _, js := range jf.Schemas {
@@ -1750,6 +1817,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	for _, jc := range jf.Comments {
 		f.Comments = append(f.Comments, &Comment{Text: jc.Text})
 	}
+	f.Profile = jf.Profile
 
 	return f, nil
 }
@@ -1789,6 +1857,11 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Command:        jt.Command,
 		Script:         jt.Script,
 		Language:       jt.Language,
+		Action:         jt.Action,
+		Connection:     jt.Connection,
+		Params:         actionParamsFromJSON(jt.Params),
+		Retry:          jt.Retry,
+		Timeout:        jt.Timeout,
 		Input:          jt.Input,
 		Output:         jt.Output,
 		Publish:        jt.Publish,
@@ -2225,8 +2298,12 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxIterations:       jw.Budget.MaxIterations,
 		}
 	}
-	if len(jw.Resources) > 0 {
-		w.Resources = &ResourcesBlock{Capacities: jw.Resources}
+	if jw.Resources != nil {
+		caps := *jw.Resources
+		if caps == nil {
+			caps = map[string]int{}
+		}
+		w.Resources = &ResourcesBlock{Capacities: caps}
 		if len(jw.ResourceMembers) > 0 {
 			w.Resources.Members = jw.ResourceMembers
 		}

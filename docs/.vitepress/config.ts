@@ -166,6 +166,15 @@ const sidebar = [
     ],
   },
   {
+    text: 'Comparisons',
+    items: [
+      { text: 'Choose an architecture', link: '/comparisons/' },
+      { text: 'Feature matrix', link: '/comparisons/feature-matrix' },
+      { text: 'Iterion feature inventory', link: '/comparisons/feature-inventory' },
+      { text: 'Methodology and sources', link: '/comparisons/methodology' },
+    ],
+  },
+  {
     text: 'Author .bot workflows',
     items: [
       { text: 'DSL guide', link: '/dsl' },
@@ -348,6 +357,7 @@ export default withMermaid(
       search: { provider: 'local' },
       nav: [
         { text: 'Why Iterion?', link: '/why-iterion' },
+        { text: 'Comparisons', link: '/comparisons/' },
         {
           text: 'Get started',
           items: [

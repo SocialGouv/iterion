@@ -66,3 +66,17 @@ Environment references use `${...}`. Tool commands distinguish shell-escaped
 Parsing only builds the AST. Cross-reference checks, group expansion, graph
 validation, capability checks, routing safety, diagnostics, and IR generation
 remain compiler responsibilities under [`../../pkg/dsl/ir/`](../../pkg/dsl/ir/).
+
+## Syntax profiles (ADR-098)
+
+The grammar file keeps its name: one grammar describes both profiles, and
+the `dsl: N` header selects how a few forms are READ. Absent means profile 1,
+the reading above, frozen. Profile 2 changes four readings — standard escapes
+in `"…"` strings with no directive, paragraph breaks kept in prompt bodies,
+the `strict-escape` directive refused, `project_root:` retired — and nothing
+else: the `- item` list form, the chain of arrows, the inline prompt string,
+the bare word as a string value and the bare literals in a `with` map are
+accepted in every profile, because a text that was invalid becoming valid
+changes no valid text's meaning. `iterion dsl migrate --to 2` moves a file;
+`iterion validate` says when a headerless file is one the two profiles read
+differently (C144).

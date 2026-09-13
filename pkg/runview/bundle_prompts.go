@@ -33,37 +33,45 @@ func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
 	if err != nil {
 		return fmt.Errorf("bundle: read prompts dir %s: %w", b.PromptsDir, err)
 	}
-	declared := make(map[string]struct{}, len(f.Prompts))
-	for _, p := range f.Prompts {
-		declared[p.Name] = struct{}{}
-	}
+	files := make(map[string]string, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		// Only a .md becomes a prompt: skip everything else BEFORE any I/O,
+		// so a stray entry in prompts/ (a broken symlink `notes.txt`, a
+		// fifo, a .DS_Store on a mounted share) cannot fail a launch, nor
+		// blind the studio's live validation with a 422. MergePromptFiles
+		// keeps its own filter as the rule's; this one guards the I/O.
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
 			continue
 		}
-		name := entry.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".md") {
-			continue
-		}
-		stem := strings.TrimSuffix(name, filepath.Ext(name))
-		if _, exists := declared[stem]; exists {
-			// Workflow-declared prompt wins on name collision.
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(b.PromptsDir, name))
+		// A .md IS a prompt the bundle promised, so one that cannot be read
+		// fails the merge by name — and one that is not a regular file is
+		// refused BEFORE the read rather than read: os.ReadFile on a fifo
+		// blocks until a writer shows up, an unbounded wait inside an HTTP
+		// handler. Stat follows a symlink, so a linked prompt file stays one.
+		p := filepath.Join(b.PromptsDir, entry.Name())
+		info, err := os.Stat(p)
 		if err != nil {
-			return fmt.Errorf("bundle: read prompt %s: %w", name, err)
+			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
 		}
-		// The declaration's origin is the markdown file: a diagnostic on a
-		// reference inside the body then points there (line 1 — the file
-		// IS the body), not at the main.bot line of the node that consumes
-		// the prompt, which contains no reference at all.
-		f.Prompts = append(f.Prompts, &ast.PromptDecl{
-			Name: stem,
-			Body: string(body),
-			Span: ast.Span{Start: ast.Pos{File: filepath.Join(b.PromptsDir, name), Line: 1, Column: 1}},
-		})
-		declared[stem] = struct{}{}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("bundle: prompt %s is not a regular file (mode %s)", entry.Name(), info.Mode().Type())
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
+		}
+		files[bundle.DirPrompts+"/"+entry.Name()] = string(body)
 	}
+	// The origin is derived from PromptsDir, not Dir: a diagnostic inside a
+	// prompt names the file on disk whichever way the bundle was assembled.
+	MergePromptFiles(f, files, filepath.Dir(b.PromptsDir))
 	return nil
+}
+
+// MergePromptFiles is the ONE rule every surface merges bundle prompts by;
+// it lives in pkg/bundle (a leaf) so the scaffold and the server reach it
+// without importing the run engine. Kept here as the name the run-side
+// callers use.
+func MergePromptFiles(f *ast.File, files map[string]string, originDir string) {
+	bundle.MergePromptFiles(f, files, originDir)
 }

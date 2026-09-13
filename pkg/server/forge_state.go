@@ -114,9 +114,9 @@ func appendQueryParam(path, key, val string) string {
 // path has no redirect and skips it). Mirrors clearForgeAgentBindingCookie.
 func (s *Server) setForgeAgentBindingCookie(w http.ResponseWriter, binding string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     forgeAgentBindingCookie,
+		Name:     s.authCookieWriteName(forgeAgentBindingCookie),
 		Value:    binding,
-		Path:     "/api/forge/",
+		Path:     s.agentBindingCookiePath("/api/forge/"),
 		Domain:   s.cfg.CookieDomain,
 		HttpOnly: true,
 		Secure:   s.cfg.CookieSecure,
@@ -126,6 +126,8 @@ func (s *Server) setForgeAgentBindingCookie(w http.ResponseWriter, binding strin
 }
 
 func clearForgeAgentBindingCookie(w http.ResponseWriter, domain string, secure bool) {
+	// Both spellings: a flow started before the migration holds the bare name,
+	// and a single-use cookie that is not cleared is a replayable one.
 	http.SetCookie(w, &http.Cookie{
 		Name:     forgeAgentBindingCookie,
 		Value:    "",
@@ -133,6 +135,16 @@ func clearForgeAgentBindingCookie(w http.ResponseWriter, domain string, secure b
 		Domain:   domain,
 		HttpOnly: true,
 		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:  hostCookiePrefix + forgeAgentBindingCookie,
+		Value: "",
+		// A __Host- deletion is only honoured on the terms of its write.
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

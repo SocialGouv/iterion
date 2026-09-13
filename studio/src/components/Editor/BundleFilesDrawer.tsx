@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import Editor from "@monaco-editor/react";
+import Editor from "@/lib/monaco";
 import { FileIcon, PlusIcon, TrashIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 

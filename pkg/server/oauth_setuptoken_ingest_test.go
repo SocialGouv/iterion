@@ -122,7 +122,7 @@ func TestOAuthCredentialIngestion_SetupTokenPathKeepsTheTypedRefusals(t *testing
 		{"an API key, not an OAuth token", "sk-ant-api03-whatever", "is not a JSON object"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+			_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 			code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, tc.blob)
 			if code != http.StatusBadRequest {
 				t.Fatalf("upload = %d body=%s, want 400", code, body)

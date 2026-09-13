@@ -1,0 +1,2065 @@
+schema_version: 1
+connector: forgejo
+domain: admin
+operations:
+- id: forgejo.admin.add_rule_to_quota_group
+  source_operation_id: adminAddRuleToQuotaGroup
+  summary: Adds a rule to a quota group
+  resource: admin
+  verb: add_rule_to_quota_group
+  tags:
+  - admin
+  http:
+    method: PUT
+    path: /admin/quota/groups/{quotagroup}/rules/{quotarule}
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to add a rule to
+  - key: quotarule
+    name: quotarule
+    in: path
+    type: string
+    required: true
+    description: the name of the quota rule to add to the group
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 409
+    class: conflict
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.admin.add_user_to_quota_group
+  source_operation_id: adminAddUserToQuotaGroup
+  summary: Add a user to a quota group
+  resource: admin
+  verb: add_user_to_quota_group
+  tags:
+  - admin
+  http:
+    method: PUT
+    path: /admin/quota/groups/{quotagroup}/users/{username}
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to add the user to
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user to add to the quota group
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 409
+    class: conflict
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.admin.adopt_repository
+  source_operation_id: adminAdoptRepository
+  summary: Adopt unadopted files as a repository
+  resource: admin
+  verb: adopt_repository
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/unadopted/{owner}/{repo}
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_hook
+  source_operation_id: adminCreateHook
+  summary: Create a hook
+  resource: admin
+  verb: create_hook
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/hooks
+    request_body: json
+  params:
+  - key: active
+    name: active
+    in: body
+    type: boolean
+    default: false
+  - key: authorization_header
+    name: authorization_header
+    in: body
+    type: string
+  - key: branch_filter
+    name: branch_filter
+    in: body
+    type: string
+  - key: config
+    name: config
+    in: body
+    type: object
+    required: true
+    schema_ref: CreateHookOptionConfig
+  - key: events
+    name: events
+    in: body
+    type: array
+    items: string
+  - key: type
+    name: type
+    in: body
+    type: string
+    enum:
+    - forgejo
+    - dingtalk
+    - discord
+    - gitea
+    - gogs
+    - msteams
+    - slack
+    - telegram
+    - feishu
+    - wechatwork
+    - packagist
+    required: true
+  results:
+  - status: 201
+    schema_ref: Hook
+    description: Hook
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_org
+  source_operation_id: adminCreateOrg
+  summary: Create an organization
+  resource: admin
+  verb: create_org
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users/{username}/orgs
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user that will own the created organization
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: email
+    name: email
+    in: body
+    type: string
+  - key: full_name
+    name: full_name
+    in: body
+    type: string
+  - key: location
+    name: location
+    in: body
+    type: string
+  - key: repo_admin_change_team_access
+    name: repo_admin_change_team_access
+    in: body
+    type: boolean
+  - key: body_username
+    name: username
+    in: body
+    type: string
+    required: true
+  - key: visibility
+    name: visibility
+    in: body
+    type: string
+    enum:
+    - public
+    - limited
+    - private
+    description: possible values are `public` (default), `limited` or `private`
+  - key: website
+    name: website
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: Organization
+    description: Organization
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_public_key
+  source_operation_id: adminCreatePublicKey
+  summary: Add an SSH public key to user's account
+  resource: admin
+  verb: create_public_key
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users/{username}/keys
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  - key: key
+    name: key
+    in: body
+    type: string
+    required: true
+    description: An armored SSH key to add
+  - key: read_only
+    name: read_only
+    in: body
+    type: boolean
+    description: Describe if the key has only read access or read/write
+  - key: title
+    name: title
+    in: body
+    type: string
+    required: true
+    description: Title of the key to add
+  results:
+  - status: 201
+    schema_ref: PublicKey
+    description: PublicKey
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_quota_group
+  source_operation_id: adminCreateQuotaGroup
+  summary: Create a new quota group
+  resource: admin
+  verb: create_quota_group
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/quota/groups
+    request_body: json
+  params:
+  - key: name
+    name: name
+    in: body
+    type: string
+    description: Name of the quota group to create
+  - key: rules
+    name: rules
+    in: body
+    type: array
+    items: object
+    description: Rules to add to the newly created group.
+    schema_ref: CreateQuotaRuleOptions
+  results:
+  - status: 201
+    schema_ref: QuotaGroup
+    description: QuotaGroup
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 409
+    class: conflict
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_quota_rule
+  source_operation_id: adminCreateQuotaRule
+  summary: Create a new quota rule
+  resource: admin
+  verb: create_quota_rule
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/quota/rules
+    request_body: json
+  params:
+  - key: limit
+    name: limit
+    in: body
+    type: integer
+    format: int64
+    description: The limit set by the rule
+  - key: name
+    name: name
+    in: body
+    type: string
+    description: Name of the rule to create
+  - key: subjects
+    name: subjects
+    in: body
+    type: array
+    items: string
+    description: The subjects affected by the rule
+  results:
+  - status: 201
+    schema_ref: QuotaRuleInfo
+    description: QuotaRuleInfo
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 409
+    class: conflict
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_repo
+  source_operation_id: adminCreateRepo
+  summary: Create a repository on behalf of a user
+  resource: admin
+  verb: create_repo
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users/{username}/repos
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user. This user will own the created repository
+  - key: auto_init
+    name: auto_init
+    in: body
+    type: boolean
+    description: Whether the repository should be auto-initialized?
+  - key: default_branch
+    name: default_branch
+    in: body
+    type: string
+    description: DefaultBranch of the repository (used when initializes and in template)
+  - key: description
+    name: description
+    in: body
+    type: string
+    description: Description of the repository to create
+  - key: gitignores
+    name: gitignores
+    in: body
+    type: string
+    description: Gitignores to use, separated by commas
+  - key: issue_labels
+    name: issue_labels
+    in: body
+    type: string
+    description: Label-Set to use
+  - key: license
+    name: license
+    in: body
+    type: string
+    description: License to use
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+    description: Name of the repository to create
+  - key: object_format_name
+    name: object_format_name
+    in: body
+    type: string
+    enum:
+    - sha1
+    - sha256
+    description: ObjectFormatName of the underlying git repository
+  - key: private
+    name: private
+    in: body
+    type: boolean
+    description: Whether the repository is private
+  - key: readme
+    name: readme
+    in: body
+    type: string
+    description: Readme of the repository to create
+  - key: template
+    name: template
+    in: body
+    type: boolean
+    description: Whether the repository is template
+  - key: trust_model
+    name: trust_model
+    in: body
+    type: string
+    enum:
+    - default
+    - collaborator
+    - committer
+    - collaboratorcommitter
+    description: TrustModel of the repository
+  results:
+  - status: 201
+    schema_ref: Repository
+    description: Repository
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 409
+    class: conflict
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_user
+  source_operation_id: adminCreateUser
+  summary: Create a user account
+  resource: admin
+  verb: create_user
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users
+    request_body: json
+  params:
+  - key: created_at
+    name: created_at
+    in: body
+    type: string
+    format: date-time
+    description: For explicitly setting the user creation timestamp. Useful when users
+      are
+  - key: email
+    name: email
+    in: body
+    type: string
+    format: email
+    required: true
+  - key: full_name
+    name: full_name
+    in: body
+    type: string
+  - key: login_name
+    name: login_name
+    in: body
+    type: string
+  - key: must_change_password
+    name: must_change_password
+    in: body
+    type: boolean
+  - key: password
+    name: password
+    in: body
+    type: string
+  - key: restricted
+    name: restricted
+    in: body
+    type: boolean
+  - key: send_notify
+    name: send_notify
+    in: body
+    type: boolean
+  - key: source_id
+    name: source_id
+    in: body
+    type: integer
+    format: int64
+  - key: username
+    name: username
+    in: body
+    type: string
+    required: true
+  - key: visibility
+    name: visibility
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: User
+    description: User
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.create_user_access_token
+  source_operation_id: adminCreateUserAccessToken
+  summary: Create an access token for the specified user
+  resource: admin
+  verb: create_user_access_token
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users/{username}/tokens
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+  - key: repositories
+    name: repositories
+    in: body
+    type: array
+    items: object
+    description: If provided and not-empty, creates an access token with access only
+      to specified repositories.
+    schema_ref: RepoTargetOption
+  - key: scopes
+    name: scopes
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 201
+    schema_ref: AccessToken
+    description: AccessToken represents an API access token.
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.admin.cron_list
+  source_operation_id: adminCronList
+  summary: List cron tasks
+  resource: admin
+  verb: cron_list
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/cron
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Cron
+    array: true
+    description: CronList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.cron_run
+  source_operation_id: adminCronRun
+  summary: Run cron task
+  resource: admin
+  verb: cron_run
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/cron/{task}
+  params:
+  - key: task
+    name: task
+    in: path
+    type: string
+    required: true
+    description: task to run
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.admin.delete_admin_runner
+  source_operation_id: deleteAdminRunner
+  summary: Delete a particular runner, no matter whether it is a global runner or
+    scoped to an organization, user, or repository
+  resource: admin
+  verb: delete_admin_runner
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/actions/runners/{runner_id}
+  params:
+  - key: runner_id
+    name: runner_id
+    in: path
+    type: string
+    required: true
+    description: ID of the runner
+  results:
+  - status: 204
+    description: runner has been deleted
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_hook
+  source_operation_id: adminDeleteHook
+  summary: Delete a hook
+  resource: admin
+  verb: delete_hook
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/hooks/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_quota_group
+  source_operation_id: adminDeleteQuotaGroup
+  summary: Delete a quota group
+  resource: admin
+  verb: delete_quota_group
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/quota/groups/{quotagroup}
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_quota_rule
+  source_operation_id: adminDeleteQuotaRule
+  summary: Deletes a quota rule
+  resource: admin
+  verb: delete_quota_rule
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/quota/rules/{quotarule}
+  params:
+  - key: quotarule
+    name: quotarule
+    in: path
+    type: string
+    required: true
+    description: quota rule to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_unadopted_repository
+  source_operation_id: adminDeleteUnadoptedRepository
+  summary: Delete unadopted files
+  resource: admin
+  verb: delete_unadopted_repository
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/unadopted/{owner}/{repo}
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_user
+  source_operation_id: adminDeleteUser
+  summary: Delete user account
+  resource: admin
+  verb: delete_user
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/users/{username}
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to delete
+  - key: purge
+    name: purge
+    in: query
+    type: boolean
+    description: purge the user from the system completely
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_user_access_token
+  source_operation_id: adminDeleteUserAccessToken
+  summary: Delete an access token for the specified user
+  resource: admin
+  verb: delete_user_access_token
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/users/{username}/tokens/{token}
+  params:
+  - key: token
+    name: token
+    in: path
+    type: string
+    required: true
+    description: token to be deleted, identified by ID and if not available by name
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIError is error format response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_user_emails
+  source_operation_id: adminDeleteUserEmails
+  summary: Delete email addresses from a user's account
+  resource: admin
+  verb: delete_user_emails
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/users/{username}/emails
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to delete email addresses from
+  - key: emails
+    name: emails
+    in: body
+    type: array
+    items: string
+    description: email addresses to delete
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.delete_user_public_key
+  source_operation_id: adminDeleteUserPublicKey
+  summary: Remove a public key from user's account
+  resource: admin
+  verb: delete_user_public_key
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/users/{username}/keys/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the key to delete
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.edit_hook
+  source_operation_id: adminEditHook
+  summary: Update a hook
+  resource: admin
+  verb: edit_hook
+  tags:
+  - admin
+  http:
+    method: PATCH
+    path: /admin/hooks/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to update
+  - key: active
+    name: active
+    in: body
+    type: boolean
+  - key: authorization_header
+    name: authorization_header
+    in: body
+    type: string
+  - key: branch_filter
+    name: branch_filter
+    in: body
+    type: string
+  - key: config
+    name: config
+    in: body
+    type: object
+  - key: events
+    name: events
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 200
+    schema_ref: Hook
+    description: Hook
+  effect: update
+  deterministic: true
+- id: forgejo.admin.edit_quota_rule
+  source_operation_id: adminEditQuotaRule
+  summary: Change an existing quota rule
+  resource: admin
+  verb: edit_quota_rule
+  tags:
+  - admin
+  http:
+    method: PATCH
+    path: /admin/quota/rules/{quotarule}
+    request_body: json
+  params:
+  - key: quotarule
+    name: quotarule
+    in: path
+    type: string
+    required: true
+    description: Quota rule to change
+  - key: limit
+    name: limit
+    in: body
+    type: integer
+    format: int64
+    description: The limit set by the rule
+  - key: subjects
+    name: subjects
+    in: body
+    type: array
+    items: string
+    description: The subjects affected by the rule
+  results:
+  - status: 200
+    schema_ref: QuotaRuleInfo
+    description: QuotaRuleInfo
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.admin.edit_user
+  source_operation_id: adminEditUser
+  summary: Edit an existing user
+  resource: admin
+  verb: edit_user
+  tags:
+  - admin
+  http:
+    method: PATCH
+    path: /admin/users/{username}
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to edit
+  - key: active
+    name: active
+    in: body
+    type: boolean
+  - key: admin
+    name: admin
+    in: body
+    type: boolean
+  - key: allow_create_organization
+    name: allow_create_organization
+    in: body
+    type: boolean
+  - key: allow_git_hook
+    name: allow_git_hook
+    in: body
+    type: boolean
+  - key: allow_import_local
+    name: allow_import_local
+    in: body
+    type: boolean
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: email
+    name: email
+    in: body
+    type: string
+    format: email
+  - key: full_name
+    name: full_name
+    in: body
+    type: string
+  - key: hide_email
+    name: hide_email
+    in: body
+    type: boolean
+  - key: location
+    name: location
+    in: body
+    type: string
+  - key: login_name
+    name: login_name
+    in: body
+    type: string
+  - key: max_repo_creation
+    name: max_repo_creation
+    in: body
+    type: integer
+    format: int64
+  - key: must_change_password
+    name: must_change_password
+    in: body
+    type: boolean
+  - key: password
+    name: password
+    in: body
+    type: string
+  - key: prohibit_login
+    name: prohibit_login
+    in: body
+    type: boolean
+  - key: pronouns
+    name: pronouns
+    in: body
+    type: string
+  - key: restricted
+    name: restricted
+    in: body
+    type: boolean
+  - key: source_id
+    name: source_id
+    in: body
+    type: integer
+    format: int64
+  - key: visibility
+    name: visibility
+    in: body
+    type: string
+  - key: website
+    name: website
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: User
+    description: User
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.admin.get_action_run_jobs
+  source_operation_id: adminGetActionRunJobs
+  summary: Get action run jobs
+  resource: admin
+  verb: get_action_run_jobs
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/actions/runners/jobs
+  params:
+  - key: labels
+    name: labels
+    in: query
+    type: string
+    description: a comma separated list of labels to search for
+  results:
+  - status: 200
+    schema_ref: ActionRunJob
+    array: true
+    description: RunJobList is a list of action run jobs
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_admin_runner
+  source_operation_id: getAdminRunner
+  summary: Get a particular runner, no matter whether it is a global runner or scoped
+    to an organization, user, or repository
+  resource: admin
+  verb: get_admin_runner
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/actions/runners/{runner_id}
+  params:
+  - key: runner_id
+    name: runner_id
+    in: path
+    type: string
+    required: true
+    description: ID of the runner
+  results:
+  - status: 200
+    schema_ref: ActionRunner
+    description: ActionRunner represents a runner
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_admin_runners
+  source_operation_id: getAdminRunners
+  summary: Get all runners, no matter whether they are global runners or scoped to
+    an organization, user, or repository
+  resource: admin
+  verb: get_admin_runners
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/actions/runners
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: visible
+    name: visible
+    in: query
+    type: boolean
+    description: whether to include all visible runners (true) or only those that
+      are directly owned by the instance (false)
+  results:
+  - status: 200
+    schema_ref: ActionRunner
+    array: true
+    description: ActionRunnerList is a list of Forgejo Action runners
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_all_emails
+  source_operation_id: adminGetAllEmails
+  summary: List all users' email addresses
+  resource: admin
+  verb: get_all_emails
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/emails
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Email
+    array: true
+    description: EmailList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_all_orgs
+  source_operation_id: adminGetAllOrgs
+  summary: List all organizations
+  resource: admin
+  verb: get_all_orgs
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/orgs
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Organization
+    array: true
+    description: OrganizationList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_hook
+  source_operation_id: adminGetHook
+  summary: Get a hook
+  resource: admin
+  verb: get_hook
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/hooks/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to get
+  results:
+  - status: 200
+    schema_ref: Hook
+    description: Hook
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_quota_group
+  source_operation_id: adminGetQuotaGroup
+  summary: Get information about the quota group
+  resource: admin
+  verb: get_quota_group
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/quota/groups/{quotagroup}
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to query
+  results:
+  - status: 200
+    schema_ref: QuotaGroup
+    description: QuotaGroup
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_quota_rule
+  source_operation_id: adminGetQuotaRule
+  summary: Get information about a quota rule
+  resource: admin
+  verb: get_quota_rule
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/quota/rules/{quotarule}
+  params:
+  - key: quotarule
+    name: quotarule
+    in: path
+    type: string
+    required: true
+    description: quota rule to query
+  results:
+  - status: 200
+    schema_ref: QuotaRuleInfo
+    description: QuotaRuleInfo
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_registration_token
+  source_operation_id: adminGetRegistrationToken
+  summary: Get a runner registration token for registering global runners
+  description: This operation has been deprecated in Forgejo 15. Use the web UI or
+    [`/admin/actions/runners`](#/admin/registerAdminRunner) instead.
+  resource: admin
+  verb: get_registration_token
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/runners/registration-token
+  results:
+  - status: 200
+    schema_ref: RegistrationToken
+    description: RegistrationToken is a string used to register a runner with a server
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_runner_registration_token
+  source_operation_id: adminGetRunnerRegistrationToken
+  summary: Get a runner registration token for registering global runners
+  description: This operation has been deprecated in Forgejo 15. Use the web UI or
+    [`/admin/actions/runners`](#/admin/registerAdminRunner) instead.
+  resource: admin
+  verb: get_runner_registration_token
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/actions/runners/registration-token
+  results:
+  - status: 200
+    schema_ref: RegistrationToken
+    description: RegistrationToken is a string used to register a runner with a server
+  effect: read
+  deterministic: true
+- id: forgejo.admin.get_user_quota
+  source_operation_id: adminGetUserQuota
+  summary: Get the user's quota info
+  resource: admin
+  verb: get_user_quota
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/users/{username}/quota
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to query
+  results:
+  - status: 200
+    schema_ref: QuotaInfo
+    description: QuotaInfo
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.admin.list_hooks
+  source_operation_id: adminListHooks
+  summary: List global (system) webhooks
+  resource: admin
+  verb: list_hooks
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/hooks
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Hook
+    array: true
+    description: HookListWithoutPagination - Hooks without pagination headers
+  effect: read
+  deterministic: true
+- id: forgejo.admin.list_quota_groups
+  source_operation_id: adminListQuotaGroups
+  summary: List the available quota groups
+  resource: admin
+  verb: list_quota_groups
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/quota/groups
+  results:
+  - status: 200
+    schema_ref: QuotaGroupList
+    description: QuotaGroupList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.list_quota_rules
+  source_operation_id: adminListQuotaRules
+  summary: List the available quota rules
+  resource: admin
+  verb: list_quota_rules
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/quota/rules
+  results:
+  - status: 200
+    schema_ref: QuotaRuleInfo
+    array: true
+    description: QuotaRuleInfoList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.list_user_access_tokens
+  source_operation_id: adminListUserAccessTokens
+  summary: List the specified user's access tokens
+  resource: admin
+  verb: list_user_access_tokens
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/users/{username}/tokens
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: AccessToken
+    array: true
+    description: AccessTokenList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.list_user_emails
+  source_operation_id: adminListUserEmails
+  summary: List all email addresses for a user
+  resource: admin
+  verb: list_user_emails
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/users/{username}/emails
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user to get email addresses of
+  results:
+  - status: 200
+    schema_ref: Email
+    array: true
+    description: EmailList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.list_users_in_quota_group
+  source_operation_id: adminListUsersInQuotaGroup
+  summary: List users in a quota group
+  resource: admin
+  verb: list_users_in_quota_group
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/quota/groups/{quotagroup}/users
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to list members of
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.register_admin_runner
+  source_operation_id: registerAdminRunner
+  summary: Register a new global runner
+  resource: admin
+  verb: register_admin_runner
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/actions/runners
+    request_body: json
+  params:
+  - key: description
+    name: description
+    in: body
+    type: string
+    description: Description of the runner to register.
+  - key: ephemeral
+    name: ephemeral
+    in: body
+    type: boolean
+    description: Register as ephemeral runner https://forgejo.org/docs/latest/admin/actions/security/#ephemeral-runner
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+    description: Name of the runner to register. The name of the runner does not have
+      to be unique.
+  results:
+  - status: 201
+    schema_ref: RegisterRunnerResponse
+    description: RegisterRunnerResponse contains the details of the just registered
+      runner.
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.admin.remove_rule_from_quota_group
+  source_operation_id: adminRemoveRuleFromQuotaGroup
+  summary: Removes a rule from a quota group
+  resource: admin
+  verb: remove_rule_from_quota_group
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/quota/groups/{quotagroup}/rules/{quotarule}
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to remove a rule from
+  - key: quotarule
+    name: quotarule
+    in: path
+    type: string
+    required: true
+    description: the name of the quota rule to remove from the group
+  results:
+  - status: 201
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.remove_user_from_quota_group
+  source_operation_id: adminRemoveUserFromQuotaGroup
+  summary: Remove a user from a quota group
+  resource: admin
+  verb: remove_user_from_quota_group
+  tags:
+  - admin
+  http:
+    method: DELETE
+    path: /admin/quota/groups/{quotagroup}/users/{username}
+  params:
+  - key: quotagroup
+    name: quotagroup
+    in: path
+    type: string
+    required: true
+    description: quota group to remove a user from
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user to remove from the quota group
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.admin.rename_user
+  source_operation_id: adminRenameUser
+  summary: Rename a user
+  resource: admin
+  verb: rename_user
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users/{username}/rename
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: existing username of user
+  - key: new_username
+    name: new_username
+    in: body
+    type: string
+    required: true
+    description: New username for this user. This name cannot be in use yet by any
+      other user.
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.search_emails
+  source_operation_id: adminSearchEmails
+  summary: Search users' email addresses
+  resource: admin
+  verb: search_emails
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/emails/search
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: q
+    name: q
+    in: query
+    type: string
+    description: keyword
+  results:
+  - status: 200
+    schema_ref: Email
+    array: true
+    description: EmailList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.search_run_jobs
+  source_operation_id: adminSearchRunJobs
+  summary: Search action jobs according to filter conditions
+  description: This operation has been deprecated in Forgejo 15. Use [`/admin/actions/runners/jobs`](#/admin/adminGetActionRunJobs)
+    instead.
+  resource: admin
+  verb: search_run_jobs
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/runners/jobs
+  params:
+  - key: labels
+    name: labels
+    in: query
+    type: string
+    description: a comma separated list of run job labels to search for
+  results:
+  - status: 200
+    schema_ref: ActionRunJob
+    array: true
+    description: RunJobList is a list of action run jobs
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.search_users
+  source_operation_id: adminSearchUsers
+  summary: Search users according filter conditions
+  resource: admin
+  verb: search_users
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/users
+  params:
+  - key: is_2fa_enabled
+    name: is_2fa_enabled
+    in: query
+    type: boolean
+    description: whether or not to filter users with the 2fa enabled
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: login_name
+    name: login_name
+    in: query
+    type: string
+    description: user's login name to search for
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: sort
+    name: sort
+    in: query
+    type: string
+    enum:
+    - oldest
+    - newest
+    - alphabetically
+    - reversealphabetically
+    - recentupdate
+    - leastupdate
+    description: sort order of results
+  - key: source_id
+    name: source_id
+    in: query
+    type: integer
+    format: int64
+    description: ID of the user's login source to search for
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.admin.set_user_quota_groups
+  source_operation_id: adminSetUserQuotaGroups
+  summary: Set the user's quota groups to a given list.
+  resource: admin
+  verb: set_user_quota_groups
+  tags:
+  - admin
+  http:
+    method: POST
+    path: /admin/users/{username}/quota/groups
+    request_body: json
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user to modify the quota groups from
+  - key: groups
+    name: groups
+    in: body
+    type: array
+    items: string
+    required: true
+    description: Quota groups the user shall have
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.admin.unadopted_list
+  source_operation_id: adminUnadoptedList
+  summary: List unadopted repositories
+  resource: admin
+  verb: unadopted_list
+  tags:
+  - admin
+  http:
+    method: GET
+    path: /admin/unadopted
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: pattern
+    name: pattern
+    in: query
+    type: string
+    description: pattern of repositories to search for
+  results:
+  - status: 200
+    array: true
+    description: StringSlice
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true

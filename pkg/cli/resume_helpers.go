@@ -67,9 +67,15 @@ func resumeOpenWorkflow(r *store.Run, iterFile string, force bool) (*ir.Workflow
 			return wf, hash, bundleWorkflowPath, bundleHandle, cleanup, nil
 		}
 	}
-	wf, hash, compileErr := runview.CompileWorkflowWithHash(iterFile)
+	// A bare <bundle>/main.bot named by --file is promoted to its bundle the
+	// way every other surface promotes it, so the hash compared against the
+	// run's is the bundle's, and the engine gets the handle for its skills.
+	wf, hash, promoted, compileErr := runview.CompileWorkflowPath(iterFile)
 	if compileErr != nil {
 		return nil, "", iterFile, nil, cleanup, compileErr
+	}
+	if promoted != nil {
+		return wf, hash, promoted.IterPath, promoted, cleanup, nil
 	}
 	return wf, hash, iterFile, nil, cleanup, nil
 }
@@ -134,6 +140,10 @@ func buildResumeExecutor(
 	if err != nil {
 		return nil, err
 	}
+	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger)
+	if err != nil {
+		return nil, err
+	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Workflow: wf,
 		Vars:     nil,
@@ -165,6 +175,12 @@ func buildResumeExecutor(
 		ModelOverrides: modelOverrides,
 		LocalSecrets:   localStore,
 		LocalSealer:    localSealer,
+		// A resume rebuilds the resolver from scratch, like every other
+		// launch-time resource: the connection a run used may have been
+		// rotated, narrowed or revoked while it was parked, and re-reading is
+		// what makes the resume honour that rather than the state at launch.
+		Connectors:      connectors,
+		ConnectorClient: connectorClient,
 	})
 	if err != nil {
 		return nil, err

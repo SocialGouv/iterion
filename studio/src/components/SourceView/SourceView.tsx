@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import Editor, { type Monaco } from "@monaco-editor/react";
+import Editor, { type Monaco } from "@/lib/monaco";
 import { useDocumentStore } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import * as api from "@/api/client";

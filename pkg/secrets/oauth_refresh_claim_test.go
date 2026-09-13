@@ -243,18 +243,18 @@ func TestMemoryOAuthStore_RefreshClaimIsFencedAndSelfHealing(t *testing.T) {
 	}
 	now := time.Now().UTC()
 
-	ok, err := st.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-a", now, now.Add(2*time.Minute))
+	ok, err := st.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-a", now, now.Add(2*time.Minute))
 	if err != nil || !ok {
 		t.Fatalf("first claim: ok=%v err=%v, want acquired", ok, err)
 	}
-	ok, err = st.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-b", now, now.Add(2*time.Minute))
+	ok, err = st.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-b", now, now.Add(2*time.Minute))
 	if err != nil || ok {
 		t.Fatalf("second claim: ok=%v err=%v, want refused while owner-a holds it", ok, err)
 	}
-	if err := st.ReleaseRefreshClaim(ctx, "alice", OAuthKindCodex, "owner-b", nil); !errors.Is(err, ErrRefreshClaimLost) {
+	if err := st.ReleaseRefreshClaim(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-b", nil); !errors.Is(err, ErrRefreshClaimLost) {
 		t.Fatalf("release by a non-owner = %v, want ErrRefreshClaimLost: it must not free owner-a's claim", err)
 	}
-	if err := st.UpdateTokens(ctx, "alice", OAuthKindCodex,
+	if err := st.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0),
 		OAuthTokenUpdate{SealedPayload: []byte("from-owner-b")}.WithClaim("owner-b")); !errors.Is(err, ErrRefreshClaimLost) {
 		t.Fatalf("commit by a non-owner = %v, want ErrRefreshClaimLost", err)
 	}
@@ -266,11 +266,11 @@ func TestMemoryOAuthStore_RefreshClaimIsFencedAndSelfHealing(t *testing.T) {
 	// owner-a dies without releasing: the lease expiring is what unblocks
 	// the record, so nothing needs a janitor.
 	later := now.Add(3 * time.Minute)
-	ok, err = st.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-c", later, later.Add(2*time.Minute))
+	ok, err = st.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-c", later, later.Add(2*time.Minute))
 	if err != nil || !ok {
 		t.Fatalf("claim after the lease expired: ok=%v err=%v, want acquired", ok, err)
 	}
-	if err := st.UpdateTokens(ctx, "alice", OAuthKindCodex,
+	if err := st.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0),
 		OAuthTokenUpdate{SealedPayload: []byte("from-owner-c")}.WithClaim("owner-c")); err != nil {
 		t.Fatalf("commit by the holder: %v", err)
 	}
@@ -297,13 +297,18 @@ func TestOAuthTokenUpdateWrite_FencesOnTheClaim(t *testing.T) {
 	now := time.Now().UTC()
 	cool := now.Add(time.Hour)
 
-	filter, update := oauthTokenUpdateWrite("alice", OAuthKindCodex,
+	id := OAuthRecordID("alice", OAuthKindCodex, 1)
+	filter, update := oauthTokenUpdateWrite(id,
 		OAuthTokenUpdate{SealedPayload: []byte("sealed-v2"), RefreshNotBefore: &cool}.WithClaim("owner-a"), now)
-	if got := filter["user_id"]; got != "alice" {
-		t.Fatalf("filter user_id = %v, want alice", got)
+	// The write addresses ONE record by its id. A filter that still keyed on
+	// (user_id, kind) would match the chain's PRIMARY whatever link the
+	// refresh was called for — renewing rank 0 forever while the fallback it
+	// held a claim on expired, with every claim test still green.
+	if got := filter["_id"]; got != id {
+		t.Fatalf("filter _id = %v, want %v (the record the refresh claimed)", got, id)
 	}
-	if got := filter["kind"]; got != OAuthKindCodex {
-		t.Fatalf("filter kind = %v, want %v", got, OAuthKindCodex)
+	if _, keyedOnPair := filter["user_id"]; keyedOnPair {
+		t.Fatal("filter still carries user_id — that pair stopped identifying one record when a chain became possible")
 	}
 	if got := filter["refresh_claim_owner"]; got != "owner-a" {
 		t.Fatalf("fenced commit filter refresh_claim_owner = %v, want owner-a — without it a superseded "+
@@ -325,7 +330,7 @@ func TestOAuthTokenUpdateWrite_FencesOnTheClaim(t *testing.T) {
 
 	// The unfenced shape (the self-heal, which takes no claim) must neither
 	// fence on a claim it does not hold nor clear the holder's.
-	filter, update = oauthTokenUpdateWrite("alice", OAuthKindCodex, OAuthTokenUpdate{NotRefreshable: true}, now)
+	filter, update = oauthTokenUpdateWrite(OAuthRecordID("alice", OAuthKindCodex, 0), OAuthTokenUpdate{NotRefreshable: true}, now)
 	if _, fenced := filter["refresh_claim_owner"]; fenced {
 		t.Fatalf("unfenced write filtered on a claim: %v", filter)
 	}

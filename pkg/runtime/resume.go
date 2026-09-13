@@ -101,7 +101,10 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// directly), so it repeats the policy-aware physical guard used by
 	// runview's synchronous preflight. Enforce checks every exact revision,
 	// including in-flight parallel branches; report/legacy remain non-blocking.
-	checkpointArtifacts, preflightMatches := e.artifactResumePreflight.consume(r, e.workflow, e.workflowHash, e.forceResume)
+	// A legacy digest accepted above waives the revision the run's artifacts
+	// were published under, exactly as --force would — nothing else changed.
+	waiveRevision := e.forceResume || e.legacyDigestAccepted
+	checkpointArtifacts, preflightMatches := e.artifactResumePreflight.consume(r, e.workflow, e.workflowHash, waiveRevision)
 	// The handoff is one-shot on both match and mismatch. consume also clears
 	// the shared payload so aliases outside Engine cannot retain artifact bodies.
 	e.artifactResumePreflight = nil
@@ -118,7 +121,7 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		checkpointArtifacts = make(map[artifactRevisionKey]*store.Artifact)
 	}
 	if !preflightMatches && !e.artifactContractsChecked {
-		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts, false); err != nil {
+		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, waiveRevision, nil, true, checkpointArtifacts, false); err != nil {
 			// Refuse before claiming the checkpoint or touching the workspace.
 			if errors.Is(err, ErrArtifactContractUnavailable) {
 				return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
@@ -206,6 +209,20 @@ func (e *Engine) checkWorkflowHash(ctx context.Context, r *store.Run) error {
 	workflowChanged := r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash
 	workflowErr := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, false)
 	_, bundleErr := ResolveResumeBundleWorkflow(r, e.bundle, e.filePath, false)
+	// Accept legacy bare-source digests only when the bundle identity still
+	// matches; a shared dependency change must retain its explicit force gate.
+	legacyPath := e.filePath
+	if legacyPath == "" && e.bundle != nil {
+		legacyPath = e.bundle.IterPath
+	}
+	if workflowErr != nil && bundleErr == nil && e.bundle != nil && LegacyBareDigestMatches(r, legacyPath) {
+		e.legacyDigestAccepted = true
+		workflowErr = nil
+		workflowChanged = false
+		if e.logger != nil {
+			e.logger.Warn("run %q recorded a legacy bare-source digest; accepting unchanged workflow with its bundle resources", r.ID)
+		}
+	}
 	if !e.forceResume {
 		if workflowErr != nil {
 			return workflowErr
@@ -963,7 +980,7 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 	artifactRevisions := artifactState.revisions
 	artifacts := artifactState.artifacts
 	artifactOwners := artifactState.owners
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp.SelectedIncoming)
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp)
 	if err != nil {
 		return err
 	}
@@ -1248,7 +1265,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, outputs, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef, selectedIncoming map[string][]store.IncomingEdge) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, outputs, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef, cp *store.Checkpoint) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
 		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
@@ -1259,9 +1276,29 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	if artifactRevisions == nil {
 		artifactRevisions = make(map[string]store.ArtifactRevisionRef)
 	}
+	if cp == nil {
+		cp = &store.Checkpoint{}
+	}
+	// The contract is computed from a state built BY HAND here, and the
+	// artifact refs it records now depend on how the settled floor RESOLVES
+	// — a conflict between two alternatives is decided on values, not on
+	// edge identities alone. So this state has to carry the same namespaces
+	// the node's input was built from, or the two callers of
+	// settledFloorMappings hand it different worlds and it answers them
+	// differently: two mappings disagreeing only through `{{vars.x}}` would
+	// read nil == nil here, agree, and record as REQUIRED an artifact the
+	// collector never consumed — which a later resume can refuse over.
+	// Sharing a function is not sharing an answer; both callers now read the
+	// same checkpoint.
 	contractState := &runState{
 		outputs: outputs, artifacts: artifacts, artifactVersions: artifactVersions,
-		artifactRevisions: artifactRevisions, selectedIncoming: cloneIncoming(selectedIncoming),
+		artifactRevisions:  artifactRevisions,
+		selectedIncoming:   cloneIncoming(cp.SelectedIncoming),
+		settledIncoming:    cloneIncoming(cp.SettledIncoming),
+		vars:               cp.Vars,
+		loopCounters:       cp.LoopCounters,
+		loopPreviousOutput: cp.LoopPreviousOutput,
+		loopCurrentOutput:  cp.LoopCurrentOutput,
 	}
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]

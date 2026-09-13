@@ -29,6 +29,23 @@ type PolicyContext struct {
 	ToolName string
 	Input    json.RawMessage // nil when unavailable
 	Vars     map[string]any  // workflow vars, read-only
+
+	// Deterministic marks a call whose admission MUST be decided without a
+	// model — a connector action (ADR-098), whose whole promise is that the
+	// operation, its arguments and the reading of its answer are decided by
+	// data.
+	//
+	// A checker that consults an LLM must, when this is set, fall through to
+	// its deterministic base instead. The operator's own allow/deny rules
+	// still apply in full: what is refused here is a MODEL deciding, not a
+	// policy deciding.
+	//
+	// It exists because the promise was false in a way nothing announced:
+	// `ITERION_LLM_CLASSIFIER_MODEL` chains an LLM classifier over the shared
+	// tool-node policy check, and every recipe goes through that check — so a
+	// deployment setting the variable put a model call in front of every
+	// action node, on a path documented as having none.
+	Deterministic bool
 }
 
 // ---------------------------------------------------------------------------

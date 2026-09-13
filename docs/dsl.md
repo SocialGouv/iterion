@@ -4,7 +4,7 @@
 
 Source files end in `.bot`; deterministic bundles end in `.botz`.
 
-This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth.
+This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [property reference](references/dsl-properties.md) (every kind's properties, generated from the parser's own registry), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth; an unknown property (E012) names the closest accepted one and the block it belongs to, from that same registry.
 
 A `.bot` file travels through a fixed pipeline before it runs:
 
@@ -29,7 +29,9 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first). `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
+**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: today's grammar, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one that is not the first declaration is E041.
+
+Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first); a `use` of an empty group draws C141. A block header — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:` — may stand bare the same way and declares an empty block, kept as the author wrote it: a nested one ends at its parent's dedent or before a blank line and a sibling; a top-level one, having no dedent to end it, needs the blank line (or the end of the file). What an empty block means is the compiler's call: an empty `mcp:` wires nothing (a tool name it cannot resolve stays the error it was), a bare `sandbox:` is the inline block form, which C044 refuses until it carries an `image:` or `build:`. Two things do not follow the rule: `fallbacks:` must name at least one route (a bare header is refused, by name — a chain with no route is not a chain, and a route with no name has no written form either: the studio refuses it at save), and a property spelled the same in a block and in its parent (`user:` in a sandbox and on an agent), written at the parent's level after a blank line, is the parent's — the blank line is the author's signal, as for declarations. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, `|` block scalars, and one plain bare word (`backend: claw`) where the grammar expects a string; a value that is not one word (`20m`, `gpt-5.5`) keeps its quotes. A list is written inline (`tools: [bash, grep]`) or as one `- item` per line indented under the property, comment lines allowed between items; both read as the same list, and `[]` is the empty list's only form. A `with { n: 3, ok: true }` map reads a number or a bool as the string it spells.
 
 ## Inputs and reusable values
 
@@ -99,11 +101,13 @@ prompt review_user:
   Previous result: {{outputs.prior.summary}}
 ```
 
-A prompt body is the indented text under the header, its lines joined by single newlines. The first line's indentation is the body's: a deeper line keeps its extra indentation, and no later line can be shallower than the first (the body ends there — the studio refuses such a body at save, naming the line). A **blank or space-only line inside the body is skipped** — a paragraph break reaches the model as a single newline, and a body never ends with one; write a heading or a line of prose where the model must see a break. A carriage return before a newline is folded away with it. That canonical form is the only one the syntax carries: the studio's save writes a document's prompts in it, and its save guard compares them in it.
+A prompt body is the indented text under the header, its lines joined by single newlines. The first line's indentation is the body's: a deeper line keeps its extra indentation, and no later line can be shallower than the first (the body ends there — the studio refuses such a body at save, naming the line). Under profile 1 a **blank or space-only line inside the body is skipped** — a paragraph break reaches the model as a single newline; under `dsl: 2` it is **kept** as an empty line, the paragraph break the author wrote. In both profiles leading and trailing blank lines are dropped and a body never ends with a newline. A carriage return before a newline is folded away with it. That canonical form, per profile, is the only one the syntax carries: the studio's save writes a document's prompts in it, and its save guard compares them in it.
+
+A prompt may also be written where it is used: `system: "Review the diff"`, `user: |` with the text below, `instructions:` on a human node, `system:` on a router or a supervisor. The string — quoted, raw or a `|` block scalar, whose paragraph breaks and trailing newline it keeps in either profile — becomes an inline prompt of the file, named after its body (`_inline_<hash>`), so the same text on two nodes is one prompt and a node's rename changes nothing; the studio writes it back inline. A bare name still refers to a declared prompt.
 
 `{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the file that contains the include — the `.bot` for a prompt declared in it, a bundle's `prompts/` directory for a `prompts/*.md` — may not escape that directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates. On a cloud launch the includes are resolved into the prompt bodies by the server before the run is queued, so the runner never needs the files; a `.bot` uploaded inline (`iterion remote runs launch x.bot`, a studio launch of a loose file) has no files beside it, and an include in it is refused at publish — launch such a bot as a bundle.
 
-What an include resolves against is the prompt's **source file**, never the working directory of the process compiling it. A prompt whose source is not a file on this host — a document validated from the studio canvas (JSON, no positions), an AST that reached a runner with a marker still in it, a source compiled inline (the studio's run-from-editor, an API payload) — is refused with C055; the studio still saves such a document, marker intact, and the next parse of the file on disk resolves it beside that file. To use an include, run the file itself (`iterion run path/to/main.bot`, or the bundle on cloud).
+What an include resolves against is the prompt's **source file**, named in full, never the working directory of the process compiling it. A prompt whose source is not a file on this host — a document validated from the studio canvas (JSON, no positions), an AST that reached a runner with a marker still in it, a source compiled inline (the studio's run-from-editor, an API payload), a file named by a relative path (which a server started from a bot's directory could otherwise resolve against its own) — is refused with C055; the studio still saves such a document, marker intact, and the next parse of the file on disk resolves it beside that file. To use an include, run the file itself (`iterion run path/to/main.bot`, or the bundle on cloud).
 
 ### Schemas
 
@@ -326,6 +330,35 @@ tool deploy:
 ```
 
 `parallel_safe: true` is a narrowly scoped assertion for `fan_out_each`: concurrent replays must write only to disjoint item-keyed targets. It does not make a tool generally read-only.
+
+**The third recipe: `action:`** ([ADR-098](adr/098-connector-catalog.md)). A tool node calls a connector operation instead of a shell:
+
+```iter fragment
+tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+    owner: "{{vars.owner}}"
+    repo: "{{vars.repo}}"
+    index: "{{outputs.pick.number}}"
+    body: "{{outputs.draft.text}}"
+  timeout: 30s
+  output: comment_result
+```
+
+`command:`, `script:` and `action:` are mutually exclusive — a node has exactly one answer to "how does this do its work". `action:` names an operation of a connector package (`<connector>.<resource>.<verb>`), `connection:` the binding that authenticates it, and each `params:` value renders the same `{{...}}` namespaces a command does, then coerces to the type the operation declares (so `"{{outputs.pick.number}}"` reaches an integer field as a number, not as `"42"`).
+
+A parameter's name is the **vendor's**, not iterion's, so quote the ones that are not identifiers — `"user-id": 1`, `"status-types": "pull"`. The Forgejo package ships 22 of them, two of which are required path parameters.
+
+**The output** is `{status, pending, data}`, plus `{items, complete}` when the operation paginates. Read `complete`: a walk that stopped at its declared ceiling looks exactly like one that finished. Read `pending`: a `202` means the vendor accepted the work, not that it happened.
+
+**What an action node refuses, and why.** Its offer is that *no LLM decides the operation, builds the arguments or reads the answer* — so the two properties that could reintroduce one are compile errors: `recovery:` / `policy: recover` ([C262](references/diagnostics.md), whose ladder ends in an LLM repairing the call) and `postcondition:` ([C263](references/diagnostics.md), a shell exit code that would overrule the vendor's own typed answer). A failure is a node failure carrying its error class (`not_found`, `rate_limited`, `unauthorized`, …); branch on it with a `when` edge rather than expecting the node to return one.
+
+**`unknown_outcome` is a first-class result.** When a mutating operation's request goes out and its answer is lost, and the vendor offers no idempotency key, iterion reports that it cannot tell whether the call happened — and never retries it automatically. Repeating might duplicate a comment, a release, a payment; reporting success would be a lie. A call that never LEFT is not that case and is not reported as one: a refused dial, a name that does not resolve, a header that cannot be sent — nothing reached the vendor, so they are ordinary retryable transport failures. Only a cause that *proves* nothing was sent is treated that way; an unrecognised failure stays undecided, because guessing in that direction is what duplicates an effect.
+
+**Reaching a self-hosted instance.** Every connector call goes out on the guarded dialer, which refuses a private, loopback or link-local address — the guard that keeps a workflow from fetching `http://169.254.169.254/` on the machine an operator is signed into. A self-hosted Forgejo or GitLab is exactly the legitimate case for it, so the exception is deployment-controlled and greppable: **`ITERION_CONNECTOR_ALLOW_PRIVATE=1`** opens the guard for the process. The refusal names the variable, and `iterion connections add` warns at once when a `--base-url` will be refused, rather than leaving the first run to discover it.
+
+**Where packages are read from.** An operator's own tier is `<iterion home>/connectors/<id>`, and it is the one consulted by default. A project tier — `<workspace>/connectors/<id>`, where `iterion connectors gen` writes by default — outranks it, and is consulted **only** with **`ITERION_CONNECTOR_PROJECT_CATALOG=1`**. That default is deliberate: the workspace is the repository a run acts on, a connection pins the host its credential may reach and the place in the request it travels in, and nothing pins *what the operation does* — so a repository shipping `connectors/forgejo/` could keep the connector id, the scheme and the placement while redefining `forgejo.issue.comment` as a `DELETE`. Granting the tier is a deliberate act for your own project; a bot pointed at somebody else's repository never makes it. A project catalog that exists while the grant is closed says so when a connector fails to resolve, rather than reading as absent.
 
 ### `compute`
 
@@ -842,10 +875,18 @@ A declined source is **reported, not dropped** — the
 with the config and the reason it declined
 (`skipped_configs` / `skipped_reasons`), and the run logs it. Without
 that, the only trace of the decision would be a binary missing later,
-which reads as an agent bug. The same channel reports the other decline:
-a **bot's** `devbox.json` on a driver with no host bind mounts, where its
-bundle cannot reach the container at all
+which reads as an agent bug. The same channel reports what remains
+declinable on the bot's side: a `devbox.json` that cannot be read, or one
+too large to carry into a sandbox with no bundle mount
 ([sandbox.md](sandbox.md#best-effort-never-silent)).
+
+A bot's `devbox.json` is honoured on **every** driver, including the ones
+whose workspace is a copy inside a pod. There the bundle cannot be *read*
+from in-container, so its config is *carried* there: the install prologue
+writes it out before running `devbox install`. That matters because the
+pod driver is where bots actually run — declining there (as iterion did
+until 2026-09-10) made the documented way for a bot to declare its
+binaries work on a laptop and go silently inert in production.
 
 The override does **not** travel onto the cloud queue: what a cloud runner
 needs is the *workflow's* declaration, which rides the `.bot` itself. So a
@@ -919,7 +960,7 @@ src -> dst with {
 }
 ```
 
-Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once each. `else` is the explicit fallback when no sibling guard matched. A quoted `when` uses the bounded expression language. In a `with` mapping, `{{input.field}}` is the source node's output (C034 checks that output schema); `{{vars.name}}` is a workflow variable; `{{outputs.node.field}}` names any prior node. There is no silent fallback from `input` to run-level inputs.
+A chain `a -> b -> c` reads as the edges it names (`a -> b`, `b -> c`), and the clauses at the end of the line belong to the last segment: `a -> b -> c when ok` guards `b -> c` only; a clause before a further arrow is refused (E032) — write that segment on its own line. Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once each. `else` is the explicit fallback when no sibling guard matched. A quoted `when` uses the bounded expression language. In a `with` mapping, `{{input.field}}` is the source node's output (C034 checks that output schema); `{{vars.name}}` is a workflow variable; `{{outputs.node.field}}` names any prior node. There is no silent fallback from `input` to run-level inputs.
 
 Quoted `when` expressions are evaluated in parallel branch bodies as well as on the trunk, against that branch's private outputs, artifacts, loop state, and shared run variables. Migration note: older runtimes skipped expression-form edges inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branches, so an existing workflow may now take a guarded route that previously fell through to `else` or an unconditional edge.
 
@@ -954,6 +995,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session: persist` in a fan-out body), C244 (bounded iteration crossing a parallel-branch boundary), and C245 (trunk-only human mode in a parallel branch); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
 - [Readable grammar](references/dsl-grammar.md)
+- [Property reference](references/dsl-properties.md) (generated)
 - [Formal EBNF](grammar/iterion_v1.ebnf)
 - [Router semantics](routers.md)
 - [Composition, iteration, resources, and sub-bots](groups-iteration-subbots.md)

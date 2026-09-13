@@ -36,6 +36,7 @@ import (
 type RunOptions struct {
 	File          string               // .bot file path or .botz bundle path
 	Recipe        string               // recipe JSON file path (alternative to File)
+	BundleDir     string               // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
 	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
@@ -583,6 +584,12 @@ func buildRunExecutor(
 	}
 	execSpec.LocalSecrets = localStore
 	execSpec.LocalSealer = localSealer
+	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger)
+	if err != nil {
+		return nil, err
+	}
+	execSpec.Connectors = connectors
+	execSpec.ConnectorClient = connectorClient
 	if exporter != nil {
 		execSpec.ExtraHooks = append(execSpec.ExtraHooks, exporter.EventHooks())
 	}
@@ -839,7 +846,9 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		if !workflowfile.IsWorkflowFile(filePath) {
 			return nil, "", "", "", nil, cleanup, fmt.Errorf("recipe workflow path %q must end in .bot", filePath)
 		}
-		raw, h, compileErr := runview.CompileWorkflowWithHash(filePath)
+		// A recipe's `--file` may be a bare <bundle>/main.bot: promoted to
+		// its bundle, handle included, so its skills/ reach the run.
+		raw, h, promoted, compileErr := runview.CompileWorkflowPath(filePath)
 		if compileErr != nil {
 			return nil, "", "", "", nil, cleanup, compileErr
 		}
@@ -847,7 +856,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		if applyErr != nil {
 			return nil, "", "", "", nil, cleanup, fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, applyErr)
 		}
-		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", nil, cleanup, nil
+		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", promoted, cleanup, nil
 	}
 	if opts.File == "" {
 		return nil, "", "", "", nil, cleanup, fmt.Errorf("provide a .bot file, .botz bundle, or --recipe")
@@ -855,6 +864,27 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	resolved := ResolveRecipePath(opts.File)
 	if existErr := requireWorkflowPathExists(resolved); existErr != nil {
 		return nil, "", "", "", nil, cleanup, existErr
+	}
+	if opts.BundleDir != "" {
+		// The file is a copy of a bundle's main.bot that is NOT at its
+		// bundle's path — the studio materialises the editor buffer under
+		// the store as `<hash>-main.bot`, a name no promotion recognises —
+		// and the caller names the bundle it was admitted against, so this
+		// compile (prompts/*.md merged, the bundle's digest, the handle for
+		// its skills) is the one the pre-flight ran.
+		opened, openErr := bundle.OpenDir(opts.BundleDir)
+		if openErr != nil {
+			return nil, "", "", "", nil, cleanup, fmt.Errorf("bundle dir %s: %w", opts.BundleDir, openErr)
+		}
+		raw, h, compileErr := runview.CompileBundleWorkflow(resolved, opened)
+		if compileErr != nil {
+			return nil, "", "", "", opened, cleanup, compileErr
+		}
+		display := raw.Name
+		if name := opened.Name(); name != "" {
+			display = name + " (" + raw.Name + ")"
+		}
+		return raw, h, resolved, display, opened, cleanup, nil
 	}
 	opened, iterPath, _, c, openErr := openBundleOrFile(resolved)
 	if openErr != nil {
@@ -872,47 +902,14 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		}
 		return raw, h, iterPath, display, opened, cleanup, nil
 	}
-	// F-NEW-4: when the operator points at a bare `main.bot` file whose
-	// parent directory looks like a bundle (has skills/ or
-	// manifest.yaml), promote to KindBundleDir on the parent so the
-	// runtime mirrors the bundled skills/ into .claude/skills/ at run
-	// time (as <name>/SKILL.md — the directory form claude_code's Skill
-	// tool discovers). Without this promotion, nodes that invoke a skill
-	// silently get nothing on bare-file launches — observed with
-	// bots/whats-next/main.bot whose nodes invoke skills like repo-survey.
-	if parent := bundleParentOf(resolved); parent != "" {
-		opened, openErr := bundle.OpenDir(parent)
-		if openErr == nil {
-			raw, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
-			if compileErr != nil {
-				return nil, "", "", "", opened, cleanup, compileErr
-			}
-			display := raw.Name
-			if opened.Manifest != nil && opened.Manifest.Name != "" {
-				display = opened.Manifest.Name + " (" + raw.Name + ")"
-			}
-			return raw, h, opened.IterPath, display, opened, cleanup, nil
-		}
-		// On openErr, fall through to bare-file compile — better than
-		// failing outright; the parent merely "looked like" a bundle.
-	}
+	// A bare main.bot whose parent is a bundle was promoted to that bundle
+	// by openBundleOrFile (the skills/ mirrored into .claude/skills/, the
+	// prompts/*.md merged) — the same promotion every other surface gets.
 	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved)
 	if compileErr != nil {
 		return nil, "", "", "", nil, cleanup, compileErr
 	}
 	return raw, h, resolved, raw.Name, nil, cleanup, nil
-}
-
-// bundleParentOf returns the absolute path of `path`'s parent directory
-// when that parent is a bundle and `path` is its main.bot. Returns "" when
-// no promotion is warranted.
-//
-// Conservative on purpose — promoting an arbitrary `*.bot` inside a
-// folder with a sibling `skills/` could surprise operators who
-// intentionally split bundle vs. one-off bots. What counts as a bundle is
-// pkg/bundle's to define, not this package's.
-func bundleParentOf(path string) string {
-	return bundle.DirForMainBot(path)
 }
 
 // enrichPausedResult loads checkpoint and interaction details from the store
@@ -969,10 +966,7 @@ func ParseAnswersFile(path string) (map[string]any, error) {
 // extracted into a cache slot named after its CONTENT HASH, so the path would
 // key this bot's memory on a name that changes with every edit to the bundle.
 func bundleManifestName(b *bundle.Bundle) string {
-	if b == nil {
-		return ""
-	}
-	return b.Manifest.Name
+	return b.Name()
 }
 
 // runModelOverrideRows converts parsed CLI override directives into the

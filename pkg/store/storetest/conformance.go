@@ -223,6 +223,13 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 			"historic": {NodeID: "planner", Version: 0, ValueFromRevision: true},
 		},
 		ArtifactRevisionsKnown: true,
+		// The floor a stabilized fan-out left on a convergence node. It
+		// rides the checkpoint precisely because the failure that creates
+		// it is what parks the run, so a store that drops it resumes the
+		// join with none of its incoming mappings (#559).
+		SettledIncoming: map[string][]store.IncomingEdge{
+			"collect": {{From: "work", To: "collect"}, {From: "review", To: "collect", IsElse: true}},
+		},
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
 			InvocationKey:               "dispatch@outer=2",
@@ -286,6 +293,10 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if !r.Checkpoint.ArtifactRevisions["historic"].ValueFromRevision {
 		t.Fatalf("historical artifact value reference was lost in store round-trip: %+v", r.Checkpoint.ArtifactRevisions)
+	}
+	settled := r.Checkpoint.SettledIncoming["collect"]
+	if len(settled) != 2 || settled[0].From != "work" || settled[1].From != "review" || !settled[1].IsElse {
+		t.Fatalf("settled floor after round-trip = %+v — a join whose fan-out produced nothing resumes with no incoming mapping at all when this is lost", settled)
 	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]
@@ -2844,6 +2855,46 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	}
 	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.SkippedCredReopensAt != nil {
 		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v (%v)", got.SkippedCredReopensAt, err)
+	}
+
+	// Which TIERS funded the run ride the same stamp, and are replaced
+	// wholesale by it (#991). A resume can be funded by a different tier
+	// than the launch — the platform key withdrawn, a pool pledge taking
+	// over — so a stamp that appended, or that left the launch's answer in
+	// place, would report a payer that no longer pays.
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{
+		Fingerprints: []string{"fp-zai"},
+		Tiers:        []string{store.CredentialTierOAuthForfait, store.CredentialTierPlatform},
+	}); err != nil {
+		t.Fatalf("stamp with tiers: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil {
+		t.Fatalf("LoadRun fp_run1: %v", err)
+	}
+	if len(got.CredentialTiers) != 2 ||
+		got.CredentialTiers[0] != store.CredentialTierOAuthForfait ||
+		got.CredentialTiers[1] != store.CredentialTierPlatform {
+		t.Fatalf("CredentialTiers = %v, want [oauth-forfait platform] — a run funded by two tiers reports both",
+			got.CredentialTiers)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{
+		Fingerprints: []string{"fp-zai"},
+		Tiers:        []string{store.CredentialTierPool},
+	}); err != nil {
+		t.Fatalf("re-stamp with a different tier: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil {
+		t.Fatalf("LoadRun fp_run1: %v", err)
+	}
+	if len(got.CredentialTiers) != 1 || got.CredentialTiers[0] != store.CredentialTierPool {
+		t.Fatalf("CredentialTiers after re-stamp = %v, want [pool] alone — the previous resolution's tiers must not survive it",
+			got.CredentialTiers)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+		t.Fatalf("re-stamp with no tier: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || len(got.CredentialTiers) != 0 {
+		t.Fatalf("a resolution that sealed nothing must clear CredentialTiers, got %v (%v)", got.CredentialTiers, err)
 	}
 
 	// The model-idle marker: a running run executing no model-calling node

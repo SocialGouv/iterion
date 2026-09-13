@@ -354,7 +354,8 @@ func TestValkeyCrossReplica_ForgeOAuthStartedOnACompletesOnB(t *testing.T) {
 	}
 	var binding *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == forgeAgentBindingCookie {
+		// Either spelling: the server prefixes it where it can.
+		if SessionCookieMatches(c.Name, forgeAgentBindingCookie) {
 			binding = c
 		}
 	}

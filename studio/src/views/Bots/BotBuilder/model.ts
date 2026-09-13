@@ -40,6 +40,10 @@ export interface BuilderDraft {
   maxCostUsd: string;
   maxDuration: string;
   scheduleCron: string;
+  // The gallery graph the bundle is rendered from (botscaffold.Spec.shape);
+  // carried from the template so the server renders the shape picked, not
+  // the single-agent default in silence.
+  shape: string;
 }
 
 // Setter shape shared by the form-section cards: shallow-merge a partial
@@ -60,12 +64,13 @@ export function emptyDraft(): BuilderDraft {
     backend: "",
     skills: [],
     vars: [],
-    worktree: false,
+    worktree: true,
     sandbox: false,
     permission: "off",
     maxCostUsd: "",
     maxDuration: "",
     scheduleCron: "",
+    shape: "",
   };
 }
 
@@ -109,6 +114,7 @@ export function draftFromTemplate(t: BotTemplate): BuilderDraft {
     maxCostUsd: s.max_cost_usd != null ? String(s.max_cost_usd) : "",
     maxDuration: s.max_duration ?? "",
     scheduleCron: s.schedule_cron ?? "",
+    shape: s.shape ?? "",
   };
 }
 
@@ -163,5 +169,6 @@ export function buildCreateSpec(
     ...(draft.maxCostUsd.trim() !== "" ? { max_cost_usd: Number(draft.maxCostUsd) } : {}),
     ...(draft.maxDuration.trim() !== "" ? { max_duration: draft.maxDuration.trim() } : {}),
     ...(draft.scheduleCron.trim() !== "" ? { schedule_cron: draft.scheduleCron.trim() } : {}),
+    ...(draft.shape ? { shape: draft.shape } : {}),
   };
 }

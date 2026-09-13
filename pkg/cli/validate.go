@@ -158,7 +158,12 @@ func RunValidate(path string, p *Printer) error {
 		// by the per-bot-memory stability check) is the archive's stem.
 		bundleDir = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	case bundle.KindBundleDir:
-		bundleDir = filepath.Base(path)
+		// The bundle's OWN root, never the path the operator typed: a bare
+		// main.bot promoted to its bundle by openBundleOrFile would else
+		// name the FILE, and the per-bot-memory name-stability check (C230)
+		// would refuse `validate bots/x/main.bot` on a bundle whose three
+		// names agree — while `validate bots/x` passes.
+		bundleDir = filepath.Base(bundleHandle.Dir)
 	}
 	path = iterPath
 
@@ -174,8 +179,14 @@ func RunValidate(path string, p *Printer) error {
 		BundleVersion: bundleVersion,
 	}
 
-	// Parse.
-	pr := parser.Parse(path, string(src))
+	// Parse — under the path in full: an include resolves beside the file
+	// so named, and the compiler refuses a relative name rather than read
+	// beside whatever the process sits in.
+	parsePath := path
+	if abs, err := filepath.Abs(path); err == nil {
+		parsePath = abs
+	}
+	pr := parser.Parse(parsePath, string(src))
 	for _, d := range pr.Diagnostics {
 		result.ParseDiagnostics = append(result.ParseDiagnostics, d.Error())
 		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
@@ -191,6 +202,30 @@ func RunValidate(path string, p *Printer) error {
 		if d.Severity == parser.SeverityError {
 			result.Valid = false
 		}
+	}
+
+	// The profile the file is read in must be a choice (C144): a headerless
+	// file that profile 2 would read otherwise is told so, with the counts.
+	// An explicit `dsl: 1` IS the choice, and is told nothing.
+	if pr.File != nil && pr.File.Profile == 0 && len(pr.ProfileReads) > 0 {
+		escapes, paragraphs := 0, 0
+		for _, r := range pr.ProfileReads {
+			if r.Kind == "escape" {
+				escapes++
+			} else {
+				paragraphs++
+			}
+		}
+		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+			Source:   "parse",
+			Code:     string(ir.DiagProfileOneMatters),
+			Severity: "warning",
+			File:     parsePath,
+			Line:     pr.ProfileReads[0].Line,
+			Message: fmt.Sprintf("no `dsl:` header: read as profile 1, and profile 2 would read this file otherwise — %d quoted literal(s) hold a backslash, %d blank line(s) sit inside prompt bodies (first at line %d)",
+				escapes, paragraphs, pr.ProfileReads[0].Line),
+			Hint: ir.HintFor(ir.DiagProfileOneMatters),
+		})
 	}
 
 	// Bundle prompts must merge into the AST before ir.Compile validates
@@ -253,8 +288,11 @@ func RunValidate(path string, p *Printer) error {
 	// Bundle consistency: cross-check the manifest against the compiled
 	// workflow (var maps, forge secret, capabilities, per-bot-memory name
 	// stability). Only runs for bundles; plain .bot files have no manifest.
-	if bundleHandle != nil && bundleHandle.Manifest != nil && cr.Workflow != nil {
+	if bundleHandle != nil && cr.Workflow != nil {
+		syntaxProfile, profileDeclaredBy, profileUnread := bundle.MaxSyntaxProfileDir(bundleHandle.Dir)
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
+			// nil for a bundle known by its skills/ alone: the profile checks
+			// still run, the manifest-side ones are skipped.
 			Manifest:    bundleHandle.Manifest,
 			Workflow:    cr.Workflow,
 			Frontmatter: bundle.ParseFrontmatter(src), // reuse the bytes already read
@@ -264,6 +302,11 @@ func RunValidate(path string, p *Printer) error {
 			// author's local half of the guard the push admission and the
 			// runner apply on a deployment.
 			EngineBuild: appinfo.FullVersion(),
+			// The syntax profile of the executable sources (C252): a profile
+			// above 1 asks for a declared floor.
+			SyntaxProfile:     syntaxProfile,
+			ProfileDeclaredBy: profileDeclaredBy,
+			ProfileUnread:     profileUnread,
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
@@ -281,6 +324,23 @@ func RunValidate(path string, p *Printer) error {
 			if d.Severity == bundlelint.SeverityError {
 				result.Valid = false
 			}
+		}
+	}
+	// A file named like a manifest beside a loose main.bot that did NOT
+	// mark it — a typo in its only distinctive key, a file the parser
+	// cannot read — leaves the file validated alone, and the verdict says
+	// why (C223): the one outcome that would otherwise be silent.
+	if bundleHandle == nil {
+		if m, why := bundle.ForeignManifestBeside(path); m != "" {
+			msg := filepath.Base(m) + " beside main.bot was not read as this bundle's manifest: it " + why + " — the file was validated alone, without the prompts, presets and skills beside it"
+			result.BundleDiagnostics = append(result.BundleDiagnostics, "warning ["+string(bundlelint.DiagManifestNotRead)+"]: "+msg)
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "bundle",
+				Code:     string(bundlelint.DiagManifestNotRead),
+				Severity: "warning",
+				Message:  msg,
+				Hint:     "if it is this bot's manifest, fix it (the reason names the keys); a manifest of another tool beside a loose main.bot needs nothing",
+			})
 		}
 	}
 

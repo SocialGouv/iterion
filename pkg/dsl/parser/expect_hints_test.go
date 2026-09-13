@@ -14,10 +14,10 @@ func TestExpectedTokenHintsNameTheWantedShape(t *testing.T) {
 	cases := []struct {
 		name, src, want string
 	}{
-		{"quoted string where a prompt name belongs", "agent a:\n  system: \"Review the diff\"\n", "bare name"},
-		{"bare word where a string belongs", "agent a:\n  backend: claw\n", "Quote this value"},
+		{"quoted string where a node name belongs", "workflow w:\n  entry: \"a\"\n", "bare name"},
+		{"number where a string belongs", "agent a:\n  timeout: 20m\n", "Quote this value"},
 		{"header without its block", "agent a:\nworkflow w:\n  entry: a\n", "indented block"},
-		{"YAML list where an inline list belongs", "agent a:\n  tools:\n    - bash\n", "inline list"},
+		{"bare word where a list belongs", "agent a:\n  tools: bash\n", "inline list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

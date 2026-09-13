@@ -66,7 +66,7 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := botscaffold.Scaffold(dir, spec); err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: scaffold: %v", err)
+		s.httpErrorFor(w, r, scaffoldStatus(err), "bots: scaffold: %v", err)
 		return
 	}
 	s.regenCatalog(spec.Slug, "create")
@@ -114,7 +114,7 @@ func (s *Server) handleBotCreateCloud(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = os.RemoveAll(tmp) }()
 	dir := filepath.Join(tmp, spec.Slug)
 	if _, err := botscaffold.Scaffold(dir, spec); err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: scaffold: %v", err)
+		s.httpErrorFor(w, r, scaffoldStatus(err), "bots: scaffold: %v", err)
 		return
 	}
 	files, err := readAllBundleFiles(dir)
@@ -137,6 +137,20 @@ func (s *Server) handleBotCreateCloud(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: created %q but discovery does not see it", spec.Slug)
+}
+
+// scaffoldStatus maps a Scaffold failure to its HTTP status: a generated
+// workflow the compiler refuses is the OPERATOR's input to fix (a
+// `{{vars.x}}` in the mission with no such var, a var row the shape needs
+// removed from the form), so it is a 422 carrying the diagnostic; anything
+// else (a write failure, a template the build cannot render) is the
+// server's.
+func scaffoldStatus(err error) int {
+	var generated *botscaffold.GeneratedError
+	if errors.As(err, &generated) {
+		return http.StatusUnprocessableEntity
+	}
+	return http.StatusInternalServerError
 }
 
 // readAllBundleFiles walks a bundle directory into a slash-keyed files map,

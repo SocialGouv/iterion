@@ -17,6 +17,13 @@ This index describes the current repository state. Guides and references below a
 
 For the architectural trade-off against prompt-only orchestration, read [why-not-prompt-orchestration.md](why-not-prompt-orchestration.md). [asymptote-bench.md](asymptote-bench.md) and [thinking-metrics.md](thinking-metrics.md) cover workflow-quality measurement, and [improvement-ratchet.md](improvement-ratchet.md) names what carries a gain from one run to the next.
 
+## Comparisons
+
+- [Iterion and alternatives](comparisons/index.md) — agent workflow architectures, developer experience and decision criteria.
+- [Feature matrix](comparisons/feature-matrix.md) — 21 features across 10 products, with sources and conditions.
+- [Iterion feature inventory](comparisons/feature-inventory.md) — 140 criteria across 16 categories.
+- [Methodology and sources](comparisons/methodology.md) — capability scope and proposed integrations.
+
 ## Author `.bot` workflows
 
 ### Language and graph construction
@@ -25,6 +32,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [dsl.md](dsl.md) | Language guide and map of every declaration, node family, edge form, and workflow control. |
 | [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar derived from the parser surface. |
+| [references/dsl-properties.md](references/dsl-properties.md) | Every kind's properties, value shapes and meaning — generated from the parser's registry (`task dsl:gen`), held to the parser by a conformance test. |
 | [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF counterpart. |
 | [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) | Living boundary of the additively evolved V1 grammar and AST. |
 | [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 plus async C240–C242, and bundle checks C200–C234. |
@@ -62,6 +70,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | Required reading for code-mutating workflows: anti-façade and anti-Goodhart rules. |
 | [references/patterns.md](references/patterns.md) | Reusable graph patterns. |
+| [references/dsl-authoring-probe.md](references/dsl-authoring-probe.md) | The protocol that measures whether an agent writes a correct bot on the first draft (three specs, what to record, the baseline and the targets). |
 | [references/productive-session-patterns.md](references/productive-session-patterns.md) | Minimal-framing patterns learned from productive agent sessions. |
 | [references-bootstrap.md](references-bootstrap.md) | Building grounded reference packs for bot skills. |
 

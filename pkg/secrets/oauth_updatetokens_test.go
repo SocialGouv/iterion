@@ -27,7 +27,7 @@ func TestMemoryOAuthStore_UpdateTokensKeepsAConcurrentRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "jothedev"); err != nil {
+	if err := s.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), "jothedev"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	// …then the refresh lands.
@@ -36,7 +36,7 @@ func TestMemoryOAuthStore_UpdateTokensKeepsAConcurrentRename(t *testing.T) {
 	stale.SealedPayload = []byte("sealed-v2")
 	stale.AccessTokenExpiresAt = &exp
 	stale.LastRefreshedAt = &last
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdateFrom(stale)); err != nil {
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), OAuthTokenUpdateFrom(stale)); err != nil {
 		t.Fatalf("UpdateTokens: %v", err)
 	}
 	got, err := s.Get(ctx, "alice", OAuthKindClaudeCode)
@@ -64,7 +64,7 @@ func TestMemoryOAuthStore_UpdateTokensNilPayloadKeepsTheBlob(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindCodex, OAuthTokenUpdate{NotRefreshable: true}); err != nil {
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), OAuthTokenUpdate{NotRefreshable: true}); err != nil {
 		t.Fatalf("UpdateTokens: %v", err)
 	}
 	got, err := s.Get(ctx, "alice", OAuthKindCodex)
@@ -81,7 +81,7 @@ func TestMemoryOAuthStore_UpdateTokensNilPayloadKeepsTheBlob(t *testing.T) {
 
 func TestMemoryOAuthStore_UpdateTokensMissingRecord(t *testing.T) {
 	s := NewMemoryOAuthStore()
-	if err := s.UpdateTokens(context.Background(), "nobody", OAuthKindClaudeCode, OAuthTokenUpdate{}); !errors.Is(err, ErrOAuthNotFound) {
+	if err := s.UpdateTokens(context.Background(), OAuthRecordID("nobody", OAuthKindClaudeCode, 0), OAuthTokenUpdate{}); !errors.Is(err, ErrOAuthNotFound) {
 		t.Fatalf("UpdateTokens on a missing record = %v, want ErrOAuthNotFound", err)
 	}
 }
@@ -98,13 +98,13 @@ func TestOAuthRefreshWorker_RenameDuringTheRoundTripSurvives(t *testing.T) {
 	}
 	st := NewMemoryOAuthStore()
 	seedRecord(t, st, sealer, "alice", OAuthKindClaudeCode, time.Now().Add(5*time.Minute))
-	if err := st.SetAccountLabel(context.Background(), "alice", OAuthKindClaudeCode, "old name"); err != nil {
+	if err := st.SetAccountLabel(context.Background(), OAuthRecordID("alice", OAuthKindClaudeCode, 0), "old name"); err != nil {
 		t.Fatalf("seed label: %v", err)
 	}
 
 	// The provider hop is where the operator renames the connection.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if err := st.SetAccountLabel(context.Background(), "alice", OAuthKindClaudeCode, "jothedev"); err != nil {
+		if err := st.SetAccountLabel(context.Background(), OAuthRecordID("alice", OAuthKindClaudeCode, 0), "jothedev"); err != nil {
 			t.Errorf("concurrent rename: %v", err)
 		}
 		w.WriteHeader(http.StatusOK)

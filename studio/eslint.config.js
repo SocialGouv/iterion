@@ -91,6 +91,37 @@ export default tseslint.config(
     },
   },
   {
+    // Monaco boundary. Two ways to lose what src/lib/monaco.tsx buys:
+    //  - importing @monaco-editor/react directly re-arms its default loader,
+    //    which fetches the editor from cdn.jsdelivr.net at runtime;
+    //  - importing ./monacoInstance directly pulls ~4.2 MB onto that module's
+    //    critical path instead of the React.lazy boundary.
+    // Both compile, ship, and are invisible to every test.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/lib/monaco.tsx", "src/lib/monacoInstance.ts", "src/lib/monaco.stub.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@monaco-editor/react",
+              message:
+                "Import Editor / DiffEditor from @/lib/monaco instead: importing the library directly re-arms its CDN loader (cdn.jsdelivr.net).",
+            },
+          ],
+          patterns: [
+            {
+              group: ["**/monacoInstance", "@/lib/monacoInstance"],
+              message:
+                "Import from @/lib/monaco instead: monacoInstance is eager, and a static import puts the whole editor on your module's critical path.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Anti-cookie-leak boundary for the shell-less config-share editor.
     // Views under src/views/ConfigShare/** MUST NOT import the shared API
     // client — see the doc-comment at the top of src/api/configShare.ts.

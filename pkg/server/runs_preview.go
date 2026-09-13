@@ -174,7 +174,17 @@ func (s *Server) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 			"cross-origin-opener-policy",
 			"cross-origin-embedder-policy",
 			"cross-origin-resource-policy",
-			"set-cookie":
+			"set-cookie",
+			// The upstream is attacker-influenced (a run picks the target),
+			// and these are Added, not Set — so a hostile value arrives
+			// ALONGSIDE the one securityHeaders wrote, and the browser
+			// resolves the pair in the sender's favour: a second
+			// `Permissions-Policy: camera=*` defeats our `camera=()`, and a
+			// second `Referrer-Policy: unsafe-url` leaks the full preview URL
+			// to a third party. Drop them and keep ours.
+			"referrer-policy",
+			"permissions-policy",
+			"x-content-type-options":
 			continue
 		}
 		for _, v := range vs {

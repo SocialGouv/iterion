@@ -75,7 +75,7 @@ func TestMongoOAuth_EmptyLabelClearsThroughUpsert(t *testing.T) {
 // caller's copy of the record is stale.
 func TestMongoOAuth_SetAccountLabelIsMetadataOnly(t *testing.T) {
 	s, ctx := mongoOAuthStore(t)
-	if err := s.SetAccountLabel(ctx, "alice", OAuthKindCodex, "x"); !errors.Is(err, ErrOAuthNotFound) {
+	if err := s.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "x"); !errors.Is(err, ErrOAuthNotFound) {
 		t.Fatalf("SetAccountLabel on a missing record = %v, want ErrOAuthNotFound", err)
 	}
 	if err := s.Upsert(ctx, OAuthRecord{UserID: "alice", Kind: OAuthKindCodex, SealedPayload: []byte("sealed-v1"), Fingerprint: "fp-1"}); err != nil {
@@ -85,7 +85,7 @@ func TestMongoOAuth_SetAccountLabelIsMetadataOnly(t *testing.T) {
 	if err := s.Upsert(ctx, OAuthRecord{UserID: "alice", Kind: OAuthKindCodex, SealedPayload: []byte("sealed-v2"), Fingerprint: "fp-1"}); err != nil {
 		t.Fatalf("refresh upsert: %v", err)
 	}
-	if err := s.SetAccountLabel(ctx, "alice", OAuthKindCodex, "alice@openai"); err != nil {
+	if err := s.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "alice@openai"); err != nil {
 		t.Fatalf("SetAccountLabel: %v", err)
 	}
 	got, err := s.Get(ctx, "alice", OAuthKindCodex)
@@ -98,7 +98,7 @@ func TestMongoOAuth_SetAccountLabelIsMetadataOnly(t *testing.T) {
 	if string(got.SealedPayload) != "sealed-v2" || got.Fingerprint != "fp-1" {
 		t.Fatalf("rename disturbed the credential: payload=%q fp=%q", got.SealedPayload, got.Fingerprint)
 	}
-	if err := s.SetAccountLabel(ctx, "alice", OAuthKindCodex, ""); err != nil {
+	if err := s.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), ""); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if got, _ = s.Get(ctx, "alice", OAuthKindCodex); got.AccountLabel != "" {
@@ -113,7 +113,7 @@ func TestMongoOAuth_SetAccountLabelIsMetadataOnly(t *testing.T) {
 // only Mongo can prove the $set body.)
 func TestMongoOAuth_UpdateTokensIsRefreshOnly(t *testing.T) {
 	s, ctx := mongoOAuthStore(t)
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdate{}); !errors.Is(err, ErrOAuthNotFound) {
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), OAuthTokenUpdate{}); !errors.Is(err, ErrOAuthNotFound) {
 		t.Fatalf("UpdateTokens on a missing record = %v, want ErrOAuthNotFound", err)
 	}
 	if err := s.Upsert(ctx, OAuthRecord{
@@ -124,12 +124,12 @@ func TestMongoOAuth_UpdateTokensIsRefreshOnly(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 	// The operator renames while the refresh is out at the provider.
-	if err := s.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "jothedev"); err != nil {
+	if err := s.SetAccountLabel(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), "jothedev"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	exp := time.Now().Add(8 * time.Hour).UTC().Truncate(time.Millisecond)
 	last := time.Now().UTC().Truncate(time.Millisecond)
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdate{
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), OAuthTokenUpdate{
 		SealedPayload:        []byte("sealed-v2"),
 		AccessTokenExpiresAt: &exp,
 		LastRefreshedAt:      &last,
@@ -165,7 +165,7 @@ func TestMongoOAuth_UpdateTokensIsRefreshOnly(t *testing.T) {
 	}
 
 	// The self-heal shape: one flag, nothing else disturbed.
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdate{NotRefreshable: true}); err != nil {
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindClaudeCode, 0), OAuthTokenUpdate{NotRefreshable: true}); err != nil {
 		t.Fatalf("self-heal: %v", err)
 	}
 	got, err = s.Get(ctx, "alice", OAuthKindClaudeCode)
@@ -197,20 +197,20 @@ func TestMongoOAuth_RefreshClaimIsFencedOnTheWire(t *testing.T) {
 	now := time.Now().UTC()
 
 	// A record nobody has claimed carries no cool-down, so the CAS matches.
-	ok, err := s.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-a", now, now.Add(2*time.Minute))
+	ok, err := s.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-a", now, now.Add(2*time.Minute))
 	if err != nil || !ok {
 		t.Fatalf("first claim: ok=%v err=%v, want acquired", ok, err)
 	}
 	// While it stands, nobody else may exchange.
-	ok, err = s.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-b", now, now.Add(2*time.Minute))
+	ok, err = s.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-b", now, now.Add(2*time.Minute))
 	if err != nil || ok {
 		t.Fatalf("competing claim: ok=%v err=%v, want refused", ok, err)
 	}
 	// Neither may they release it or commit through it.
-	if err := s.ReleaseRefreshClaim(ctx, "alice", OAuthKindCodex, "owner-b", nil); !errors.Is(err, ErrRefreshClaimLost) {
+	if err := s.ReleaseRefreshClaim(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-b", nil); !errors.Is(err, ErrRefreshClaimLost) {
 		t.Fatalf("release by a non-owner = %v, want ErrRefreshClaimLost", err)
 	}
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindCodex,
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0),
 		OAuthTokenUpdate{SealedPayload: []byte("sealed-from-b")}.WithClaim("owner-b")); !errors.Is(err, ErrRefreshClaimLost) {
 		t.Fatalf("commit by a non-owner = %v, want ErrRefreshClaimLost", err)
 	}
@@ -237,7 +237,7 @@ func TestMongoOAuth_RefreshClaimIsFencedOnTheWire(t *testing.T) {
 		t.Fatalf("re-connect left claim owner=%q not_before=%v, want both cleared on the wire",
 			got.RefreshClaimOwner, got.RefreshNotBefore)
 	}
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindCodex,
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0),
 		OAuthTokenUpdate{SealedPayload: []byte("sealed-from-a")}.WithClaim("owner-a")); !errors.Is(err, ErrRefreshClaimLost) {
 		t.Fatalf("commit after a re-connect = %v, want ErrRefreshClaimLost", err)
 	}
@@ -247,17 +247,17 @@ func TestMongoOAuth_RefreshClaimIsFencedOnTheWire(t *testing.T) {
 
 	// A holder that dies costs one sweep: the lease expiring is what makes
 	// the record claimable again, so nothing has to reap it.
-	ok, err = s.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-c", now, now.Add(time.Minute))
+	ok, err = s.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-c", now, now.Add(time.Minute))
 	if err != nil || !ok {
 		t.Fatalf("claim after the re-connect cleared it: ok=%v err=%v", ok, err)
 	}
 	later := now.Add(2 * time.Minute)
-	ok, err = s.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-d", later, later.Add(time.Minute))
+	ok, err = s.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-d", later, later.Add(time.Minute))
 	if err != nil || !ok {
 		t.Fatalf("claim once the lease expired: ok=%v err=%v, want acquired", ok, err)
 	}
 	// The holder's own commit lands AND releases the claim in one write.
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindCodex,
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0),
 		OAuthTokenUpdate{SealedPayload: []byte("sealed-from-d"), Fingerprint: "fp-2"}.WithClaim("owner-d")); err != nil {
 		t.Fatalf("commit by the holder: %v", err)
 	}
@@ -284,11 +284,11 @@ func TestMongoOAuth_CoolDownSurvivesAndUnfencedWritesLeaveItAlone(t *testing.T) 
 		t.Fatalf("upsert: %v", err)
 	}
 	now := time.Now().UTC()
-	if ok, err := s.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-a", now, now.Add(2*time.Minute)); err != nil || !ok {
+	if ok, err := s.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-a", now, now.Add(2*time.Minute)); err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 	cool := now.Add(time.Hour).Truncate(time.Millisecond)
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindCodex, OAuthTokenUpdate{
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), OAuthTokenUpdate{
 		SealedPayload: []byte("sealed-v2"), RefreshNotBefore: &cool,
 	}.WithClaim("owner-a")); err != nil {
 		t.Fatalf("commit with a cool-down: %v", err)
@@ -304,11 +304,11 @@ func TestMongoOAuth_CoolDownSurvivesAndUnfencedWritesLeaveItAlone(t *testing.T) 
 		t.Fatalf("claim owner = %q, want released beside the cool-down", got.RefreshClaimOwner)
 	}
 	// The cool-down holds the CAS off until it passes.
-	if ok, err := s.ClaimRefresh(ctx, "alice", OAuthKindCodex, "owner-b", now, now.Add(time.Minute)); err != nil || ok {
+	if ok, err := s.ClaimRefresh(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), "owner-b", now, now.Add(time.Minute)); err != nil || ok {
 		t.Fatalf("claim during the cool-down: ok=%v err=%v, want refused", ok, err)
 	}
 	// The self-heal writes no claim, so it must leave the cool-down as it is.
-	if err := s.UpdateTokens(ctx, "alice", OAuthKindCodex, OAuthTokenUpdate{NotRefreshable: true}); err != nil {
+	if err := s.UpdateTokens(ctx, OAuthRecordID("alice", OAuthKindCodex, 0), OAuthTokenUpdate{NotRefreshable: true}); err != nil {
 		t.Fatalf("unfenced self-heal: %v", err)
 	}
 	got, err = s.Get(ctx, "alice", OAuthKindCodex)

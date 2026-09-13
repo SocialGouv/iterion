@@ -34,6 +34,15 @@ func (c *compiler) expandGroups() {
 			c.errorf(DiagUseUnknownGroup, "use references unknown group %q", use.Group)
 			continue
 		}
+		// A group with no node expands to nothing, and nothing else says so
+		// unless a node of the instance is referenced: the group is a
+		// declaration the studio has not filled in yet, or its body landed
+		// at the wrong indentation after a blank line.
+		if len(g.Agents)+len(g.Judges)+len(g.Routers)+len(g.Humans)+len(g.Tools)+len(g.Computes) == 0 {
+			c.warnfAtSpan(DiagEmptyGroupUse, use.Span,
+				"use %q as %q expands an empty group: %q declares no node, so the instance is nothing",
+				use.Group, use.Prefix, use.Group)
+		}
 		// Two `use` blocks with one prefix would expand to the same node
 		// ids; reported HERE, on the repeated `use` line — the line to
 		// change — rather than as duplicate ids positioned on the group
@@ -115,6 +124,32 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		nt.Script = subst(t.Script)
 		nt.Goal = subst(t.Goal)
 		nt.Postcondition = subst(t.Postcondition)
+		// The connector recipe's fields, substituted like every other one —
+		// a group whose whole purpose is to be instantiated per target has to
+		// be able to parameterise which operation it calls, over which
+		// connection, with which arguments.
+		nt.Action = subst(t.Action)
+		nt.Connection = subst(t.Connection)
+		// Substituted like every other field, because the omission had no
+		// reason behind it: a group instantiated per target may well want a
+		// different bound or a different attempt count per instance, and
+		// leaving these two out meant `{{params.deadline}}` reached the
+		// compiler as literal text and failed C265 as "not a duration".
+		nt.Retry = subst(t.Retry)
+		nt.Timeout = subst(t.Timeout)
+		// DEEP-copied, unlike the scalars above: `nt := *t` shares the Params
+		// slice with the group template, so substituting in place would write
+		// the FIRST instantiation's values into the template and every later
+		// `use` of the same group would inherit them. The Computes branch
+		// below copies for exactly this reason.
+		if len(t.Params) > 0 {
+			nt.Params = make([]ast.ActionParam, len(t.Params))
+			for i, p := range t.Params {
+				np := p
+				np.Value = subst(p.Value)
+				nt.Params[i] = np
+			}
+		}
 		c.file.Tools = append(c.file.Tools, &nt)
 	}
 	for _, cd := range g.Computes {

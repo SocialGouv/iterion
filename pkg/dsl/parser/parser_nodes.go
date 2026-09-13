@@ -55,10 +55,10 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.ArtifactLabels = p.parseToolList()
 	case TokenSystem:
 		p.expect(TokenColon)
-		d.System = p.expectIdent()
+		d.System = p.promptRef()
 	case TokenUser:
 		p.expect(TokenColon)
-		d.User = p.expectIdent()
+		d.User = p.promptRef()
 	case TokenSession:
 		p.expect(TokenColon)
 		d.Session = p.parseSessionMode()
@@ -97,10 +97,10 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 			p.expect(TokenColon)
 			d.SessionSlot = p.expectIdent()
 		case "fallbacks":
-			d.Fallbacks = p.parseFallbacksBlock(propTok)
+			d.Fallbacks = p.parseFallbacksBlock(propTok, kind)
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty(kind, propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	case TokenReadonly:
 		p.expect(TokenColon)
@@ -117,7 +117,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Images = p.parseStringList()
 	case TokenMCP:
 		p.backup()
-		d.MCP = p.parseMCPConfigBlock()
+		d.MCP = p.parseMCPConfigBlock(kind)
 	case TokenBackend:
 		p.expect(TokenColon)
 		d.Backend = p.expectString()
@@ -153,19 +153,19 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Await = p.parseAwaitMode()
 	case TokenCompaction:
 		p.backup()
-		d.Compaction = p.parseCompactionBlock()
+		d.Compaction = p.parseCompactionBlock(kind)
 	case TokenMemory:
 		p.backup()
-		d.Memory = p.parseMemoryBlock()
+		d.Memory = p.parseMemoryBlock(kind)
 	case TokenSandbox:
 		p.backup()
-		d.Sandbox = p.parseSandboxBlock()
+		d.Sandbox = p.parseSandboxBlock(kind)
 	case TokenCursors:
 		p.backup()
 		d.Cursors = p.parseCursorsBlock()
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty(kind, propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -239,11 +239,11 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 		case TokenSystem:
 			p.next()
 			p.expect(TokenColon)
-			rd.System = p.expectIdent()
+			rd.System = p.promptRef()
 		case TokenUser:
 			p.next()
 			p.expect(TokenColon)
-			rd.User = p.expectIdent()
+			rd.User = p.promptRef()
 		case TokenMulti:
 			p.next()
 			p.expect(TokenColon)
@@ -282,14 +282,14 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 				p.expect(TokenColon)
 				rd.Description = p.expectString()
 			} else {
-				p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
+				p.unknownProperty("router", t, t.Value)
 				p.next()
-				p.skipToNewline()
+				p.skipUnknownProperty()
 			}
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
+			p.unknownProperty("router", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -374,7 +374,7 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 		hd.ArtifactLabels = p.parseToolList()
 	case TokenInstructions:
 		p.expect(TokenColon)
-		hd.Instructions = p.expectIdent()
+		hd.Instructions = p.promptRef()
 	case TokenInteraction:
 		p.expect(TokenColon)
 		hd.Interaction = p.parseInteractionMode()
@@ -389,7 +389,7 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 		hd.Model = p.expectString()
 	case TokenSystem:
 		p.expect(TokenColon)
-		hd.System = p.expectIdent()
+		hd.System = p.promptRef()
 	case TokenAwait:
 		p.expect(TokenColon)
 		hd.Await = p.parseAwaitMode()
@@ -417,12 +417,12 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 			p.expect(TokenColon)
 			hd.MaxTurns = p.expectInt()
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown human property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty("human", propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown human property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("human", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -506,7 +506,7 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 		td.Await = p.parseAwaitMode()
 	case TokenSandbox:
 		p.backup()
-		td.Sandbox = p.parseSandboxBlock()
+		td.Sandbox = p.parseSandboxBlock("tool")
 	case TokenCompress:
 		p.expect(TokenColon)
 		td.Compress = p.expectIdent()
@@ -535,18 +535,43 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			td.Policy = p.expectIdent()
 		case "recovery":
 			td.Recovery = p.parseRecoveryBlock(propTok)
+		// Connector action (ADR-098). Plain identifiers rather than reserved
+		// keywords, like the ADR-044 quad above: reserving `action` or
+		// `params` would break every existing bot that used either as a
+		// schema field or a node name.
+		case "action":
+			p.expect(TokenColon)
+			td.Action = p.expectActionID()
+		case "connection":
+			p.expect(TokenColon)
+			td.Connection = p.expectConnectionAlias()
+		case "params":
+			// APPENDED, not assigned. A second `params:` block otherwise
+			// replaced the first entirely and in silence — sending a value the
+			// author did not write, which is the exact collision C264 refuses
+			// INSIDE one block ("silently keeping one would send a value the
+			// author did not write, with nothing to notice it"). Appending
+			// hands the duplicate to that same check instead of resolving it
+			// here, so both spellings of the mistake get the same diagnostic.
+			td.Params = append(td.Params, p.parseActionParamsBlock()...)
+		case "retry":
+			p.expect(TokenColon)
+			td.Retry = p.expectScalarText("retry")
+		case "timeout":
+			p.expect(TokenColon)
+			td.Timeout = p.expectScalarText("timeout")
 		case "parallel_safe":
 			p.expect(TokenColon)
 			if v := p.parseBool(); v != nil {
 				td.ParallelSafe = *v
 			}
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty("tool", propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("tool", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -562,11 +587,10 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 //	  model: "anthropic/claude-sonnet-4-6"
 //	  agent_tools: [bash, read_file]
 func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
-	p.expect(TokenColon)
 	rb := &ast.RecoveryBlock{Span: ast.Span{Start: p.pos(propTok)}}
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		// Empty block — recover gracefully.
+	if p.parseBlockBody() != headerBody {
+		// Empty: the bare header IS the empty block. Failed: reported;
+		// the block is kept so the node still parses.
 		return rb
 	}
 	for {
@@ -597,8 +621,8 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 		case "agent_tools":
 			rb.AgentTools = p.parseToolList()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown recovery property '"+name+"'")
-			p.skipToNewline()
+			p.unknownProperty("recovery", t, name)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -622,11 +646,17 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 // Reached from parseLLMProp's TokenIdent arm, so `fallbacks` stays a
 // plain identifier — making it a reserved keyword would break any bot
 // with a node, prompt or schema of that name.
-func (p *parser) parseFallbacksBlock(propTok Token) []*ast.FallbackDecl {
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		// Empty block — recover gracefully; the IR validator reports it.
+func (p *parser) parseFallbacksBlock(propTok Token, host string) []*ast.FallbackDecl {
+	defer p.enterBlock(host)()
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		// A chain with no route is not a chain, and the AST has no way to
+		// carry an empty one (a nil list is "no fallbacks"), so the bare
+		// header is refused by name — not read as nothing, and not the
+		// E002 about indentation it used to draw.
+		p.addError(DiagExpectedToken, propTok, "fallbacks: declares no route — a fallback chain needs at least one named route (drop the block if there is none)")
 		return nil
 	}
 	var out []*ast.FallbackDecl
@@ -713,8 +743,8 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			// A quoted expr over vars, like a compute `expr:` value.
 			fd.When = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown fallback property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("fallback", t, propName)
+			p.skipUnknownProperty()
 		}
 		fd.Span.End = p.pos(t)
 		p.skipNewlines()
@@ -778,12 +808,12 @@ func (p *parser) parseComputeProp(cd *ast.ComputeDecl, propTok Token) {
 			p.expect(TokenColon)
 			cd.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty("compute", propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("compute", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -884,6 +914,13 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 			}
 			break
 		}
+		// A member named like a declaration keyword (`agent`, `tool`, …)
+		// is the source of an internal edge when an arrow follows its
+		// reference; the type of its token says nothing about that.
+		if p.edgeAhead() {
+			gd.Edges = append(gd.Edges, p.parseEdge()...)
+			continue
+		}
 		switch t.Type {
 		case TokenAgent:
 			if ad := p.parseAgentDecl(); ad != nil {
@@ -912,10 +949,20 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 		case TokenComment:
 			p.next()
 		default:
+			if isTopLevelKeyword(t.Type) && p.declHeaderAhead() {
+				// A declaration a group cannot hold (an emit, a prompt, a
+				// workflow…): say so, rather than read its keyword as the
+				// source of an edge and ask for the arrow; its body goes
+				// with it. A node NAMED like a keyword is still an edge
+				// endpoint — that shape has no `<name>:` after the keyword.
+				p.addErrorHint(DiagUnexpectedToken, t, "'"+t.Value+"' cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
+					"Move the `"+t.Value+"` declaration to the top level, outside the group.")
+				p.next()
+				p.skipUnknownProperty()
+				continue
+			}
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
-				if e := p.parseEdge(); e != nil {
-					gd.Edges = append(gd.Edges, e)
-				}
+				gd.Edges = append(gd.Edges, p.parseEdge()...)
 			} else {
 				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
 				p.next()
@@ -1000,9 +1047,9 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.expect(TokenColon)
 			sd.Needs = p.parseNeedsList()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown subbot property '"+t.Value+"'")
+			p.unknownProperty("subbot", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return sd
@@ -1043,9 +1090,9 @@ func (p *parser) parseEmitDecl() *ast.EmitDecl {
 			p.expect(TokenColon)
 			ed.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown emit property '"+t.Value+"'")
+			p.unknownProperty("emit", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return ed
@@ -1090,9 +1137,9 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 			p.expect(TokenColon)
 			wd.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown wait property '"+t.Value+"'")
+			p.unknownProperty("wait", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return wd
@@ -1149,9 +1196,9 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 			p.expect(TokenColon)
 			fd.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown fail property '"+t.Value+"'")
+			p.unknownProperty("fail", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return fd
@@ -1178,23 +1225,25 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 			}
 			break
 		}
-		switch {
-		case t.Type == TokenIdent && t.Value == "from":
+		// Matched by their text, so the match survives any of the three
+		// words becoming a keyword.
+		switch tokenAsIdent(t) {
+		case "from":
 			p.next()
 			p.expect(TokenColon)
 			ad.From = p.expectStringOrIdent()
-		case t.Type == TokenIdent && t.Value == "timeout":
+		case "timeout":
 			p.next()
 			p.expect(TokenColon)
 			ad.Timeout = p.expectString()
-		case t.Type == TokenIdent && t.Value == "description":
+		case "description":
 			p.next()
 			p.expect(TokenColon)
 			ad.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown await_answers property '"+t.Value+"'")
+			p.unknownProperty("await_answers", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return ad

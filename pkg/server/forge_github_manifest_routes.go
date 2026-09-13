@@ -111,8 +111,8 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if pending.AgentBinding != "" {
-		c, cerr := r.Cookie(forgeAgentBindingCookie)
-		if cerr != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(pending.AgentBinding)) != 1 {
+		cVal := s.sessionCookie(r, forgeAgentBindingCookie, false)
+		if subtle.ConstantTimeCompare([]byte(cVal), []byte(pending.AgentBinding)) != 1 {
 			httpError(w, http.StatusBadRequest, "agent binding mismatch")
 			return
 		}

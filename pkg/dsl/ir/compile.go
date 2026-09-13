@@ -216,6 +216,11 @@ func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args 
 	c.emit(SeverityError, code, "", "", sp, "", format, args...)
 }
 
+// warnfAtSpan is the warning counterpart to errorfAtSpan.
+func (c *compiler) warnfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
+	c.emit(SeverityWarning, code, "", "", sp, "", format, args...)
+}
+
 // errorfAtNodeSpan attributes a diagnostic to a node AND to a specific span —
 // for a node that has more than one declaration, where the id alone would
 // resolve to the first one while the line to edit is the other.
@@ -254,8 +259,18 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	}
 	switch blk.Mode {
 	case "", "none", "auto", "inline":
+	case "open", "allowlist", "denylist":
+		// A network mode written on the sandbox: the one name the two
+		// blocks share, so the mistake is naming the right block — an
+		// author who wrote `mode: allowlist` under `sandbox:` (or whose
+		// `network:` body sat de-indented after a blank line) meant the
+		// network's.
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+			"%s %q has invalid sandbox mode %q: that is a network: mode — write it as `network:` + `mode: %s` under `sandbox:` (the sandbox's own modes are \"none\", \"auto\" and \"inline\")",
+			scope, name, blk.Mode, blk.Mode)
+		return nil
 	default:
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
 			scope, name, blk.Mode)
 		return nil
@@ -264,10 +279,41 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	switch blk.HostState {
 	case "", "auto", "none":
 	default:
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox.host_state %q (want \"\", \"auto\", or \"none\")",
 			scope, name, blk.HostState)
 		return nil
+	}
+
+	// A `"..."` DSL string is lexed in legacy escape mode unless the file opts
+	// into `## strict-escape: on`, and legacy mode keeps every \X VERBATIM. So
+	// a backslash-escaped quote written here survives into the shell, which
+	// reads \" as a LITERAL quote character — the argument then carries quotes
+	// instead of being quoted by them.
+	//
+	// Measured 2026-09-10 on a post_create that installed a pinned CLI:
+	//   npm error code EINVALIDPACKAGENAME
+	//   Invalid package name """ of package ""@openai/codex@0.154.0""
+	// The step is best-effort, so the bootstrap had never once run and the
+	// sandbox silently kept an older binary while the run reported success.
+	//
+	// A WARNING, not an error, and deliberately so. The tempting argument —
+	// "under strict escape the lexer would have decoded \", so seeing it here
+	// proves no unescaping happened" — is FALSE: expectString accepts a
+	// TokenString from three scanners and only scanString consults
+	// strictEscape. A backtick raw string and a `|` block scalar keep \"
+	// verbatim BY DESIGN, and \" inside a shell double-quoted region is then a
+	// correct escape (bots/wiki-gen writes JSON that way). The compiler cannot
+	// tell the three apart here, so it cannot prove the defect — only point at
+	// the shape. Refusing would break a working bundle at launch, including
+	// ones stored outside this tree.
+	if strings.Contains(blk.PostCreate, `\"`) {
+		c.warnfAt(DiagEscapedQuoteInShellString, name, "",
+			"%s %q: sandbox.post_create contains a backslash-escaped quote (\\\"). In a \"…\" value the backslash is kept "+
+				"verbatim and the shell reads \\\" as a LITERAL quote character, so the command runs with quotes inside its "+
+				"arguments instead of around them — drop the quotes when the value has no space, or use single quotes when it "+
+				"does. In a backtick raw string or a `|` block scalar, \\\" is verbatim by design and this is likely correct.",
+			scope, name)
 	}
 
 	spec := &SandboxSpec{
@@ -288,6 +334,26 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		spec.Mounts = append([]string(nil), blk.Mounts...)
 	}
 	if blk.Network != nil {
+		// The driver refuses these at prepare time (pkg/sandbox Spec.Validate),
+		// long after `iterion validate` said OK: refuse them here, where the
+		// author is. The inherit modes are the sandbox package's: merge is the
+		// empty value, never a word.
+		switch blk.Network.Mode {
+		case "", "open", "allowlist", "denylist":
+		default:
+			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+				"%s %q has invalid sandbox.network mode %q (want \"open\", \"allowlist\" or \"denylist\")",
+				scope, name, blk.Network.Mode)
+			return nil
+		}
+		switch blk.Network.Inherit {
+		case "", "replace", "append":
+		default:
+			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+				"%s %q has invalid sandbox.network inherit %q (want \"replace\" or \"append\"; omit it to merge, the default)",
+				scope, name, blk.Network.Inherit)
+			return nil
+		}
 		spec.Network = &SandboxNetwork{
 			Mode:    blk.Network.Mode,
 			Preset:  blk.Network.Preset,
@@ -313,13 +379,13 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// error out at Driver.Prepare time. Surface it as a compile-time
 	// diagnostic so the user fixes the workflow source.
 	if spec.Mode == "inline" && spec.Image == "" && spec.Build == nil {
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has sandbox mode=inline but no image: declare an image or build, or use mode=auto with a .devcontainer/devcontainer.json",
 			scope, name)
 		return nil
 	}
 	if spec.Image != "" && spec.Build != nil {
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has both sandbox.image and sandbox.build set; they are mutually exclusive (use image: for a pre-built ref or build: for a Dockerfile)",
 			scope, name)
 		return nil
@@ -586,7 +652,7 @@ func (c *compiler) compile() *Workflow {
 		Cursors:             cursors,
 		Supervisors:         supervisors,
 		Interaction:         interaction,
-		Worktree:            defaultWorktreeMode(wf.Worktree),
+		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
@@ -757,12 +823,31 @@ func defaultWorktreeMode(raw string) string {
 	case "":
 		return "auto"
 	default:
-		// Unknown values flow through untouched. Validation already
-		// rejects them at the AST surface (the parser only accepts
-		// idents and the doctor flags strangers); preserving the raw
-		// value here keeps any future strict diagnostic actionable.
+		// Unknown values flow through (canonicalised) so the IR carries
+		// what worktreeMode refused, never a silent default.
 		return v
 	}
+}
+
+// worktreeMode canonicalises a workflow's `worktree:` and refuses a value
+// that is neither auto nor none (C142), naming what was WRITTEN and where
+// (the workflow's span — the declaration keeps no per-property position).
+// The runtime compares the canonical value to `auto` and nothing else, so a
+// mistyped auto ran the workflow in place, in the operator's own checkout,
+// with every commit landing there, without a word. A refused value reaches
+// the IR as the DEFAULT, auto: every launch surface refuses a workflow with
+// an error, and one that did not would then isolate the run rather than
+// run it in place — the hazard the check exists to close, closed twice.
+func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string {
+	mode := defaultWorktreeMode(raw)
+	switch mode {
+	case "auto", "none":
+		return mode
+	}
+	c.errorfAtSpan(DiagInvalidWorktree, at,
+		"workflow %q has invalid worktree %q; valid values are auto, none",
+		workflow, raw)
+	return "auto"
 }
 
 // canAutoResolveBackend reports whether the detect package can pick a
@@ -875,26 +960,26 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 	}
 
 	return LLMFields{
-		Model:           model,
-		Backend:         d.Backend,
-		Provider:        d.Provider,
-		Command:         d.Command,
-		SystemPrompt:    d.System,
-		UserPrompt:      d.User,
-		MaxTokens:       d.MaxTokens,
-		ReasoningEffort: d.ReasoningEffort,
-		Timeout:         d.Timeout,
-		Readonly:        d.Readonly,
-		FullAccess:      d.FullAccess,
-		Images:          d.Images,
-	}, SchemaFields{
-		InputSchema:  d.Input,
-		OutputSchema: d.Output,
-	}, InteractionFields{
-		Interaction:       interaction,
-		InteractionPrompt: d.InteractionPrompt,
-		InteractionModel:  d.InteractionModel,
-	}, true
+			Model:           model,
+			Backend:         d.Backend,
+			Provider:        d.Provider,
+			Command:         d.Command,
+			SystemPrompt:    d.System,
+			UserPrompt:      d.User,
+			MaxTokens:       d.MaxTokens,
+			ReasoningEffort: d.ReasoningEffort,
+			Timeout:         d.Timeout,
+			Readonly:        d.Readonly,
+			FullAccess:      d.FullAccess,
+			Images:          d.Images,
+		}, SchemaFields{
+			InputSchema:  d.Input,
+			OutputSchema: d.Output,
+		}, InteractionFields{
+			Interaction:       interaction,
+			InteractionPrompt: d.InteractionPrompt,
+			InteractionModel:  d.InteractionModel,
+		}, true
 }
 
 func (c *compiler) compileAgents() {
@@ -1191,16 +1276,26 @@ func (c *compiler) compileTools() {
 			c.validateSchemaRef(t.Name, "input", t.Input)
 		}
 
-		// command and script are mutually exclusive; exactly one must be set.
+		// A tool node has exactly ONE recipe: a shell command, a script body,
+		// or a connector action. They are exclusive because each answers "how
+		// does this node do its work" and two answers is not a choice the
+		// runtime may make on the author's behalf.
+		recipes := 0
+		for _, declared := range []bool{t.Command != "", t.Script != "", t.Action != ""} {
+			if declared {
+				recipes++
+			}
+		}
 		switch {
-		case t.Command == "" && t.Script == "":
-			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: must declare either `command:` or `script:`", t.Name)
-		case t.Command != "" && t.Script != "":
-			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `command:` and `script:` are mutually exclusive", t.Name)
+		case recipes == 0:
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: must declare one of `command:`, `script:` or `action:`", t.Name)
+		case recipes > 1:
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `command:`, `script:` and `action:` are mutually exclusive", t.Name)
 		case t.Script == "" && t.Language != "":
 			// language without script makes no sense.
 			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `language:` is only valid alongside `script:`", t.Name)
 		}
+		actionParams := c.compileToolAction(t)
 
 		var cmdRefs []*Ref
 		if t.Command != "" {
@@ -1284,6 +1379,11 @@ func (c *compiler) compileTools() {
 			Script:        t.Script,
 			ScriptRefs:    scriptRefs,
 			Language:      t.Language,
+			Action:        t.Action,
+			Connection:    t.Connection,
+			Params:        actionParams,
+			RetryPolicy:   t.Retry,
+			CallTimeout:   t.Timeout,
 			Publish:       t.Publish,
 			PublishLabels: t.ArtifactLabels,
 			AwaitMode:     t.Await,

@@ -13,33 +13,34 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
-// Unparse renders an ast.File back to .bot DSL source text.
+// Unparse renders an ast.File back to .bot DSL source text, in the syntax
+// profile the file declares (ast.File.EffectiveProfile): from profile 2 the
+// text opens with the `dsl: N` header and every string has a quoted form
+// (standard escapes, no directive); in profile 1 a value no v1 form can
+// hold switches the whole file to the strict-escape directive.
 func Unparse(f *ast.File) string {
+	profile := f.EffectiveProfile()
+	if profile > ast.DefaultProfile {
+		text, _ := render(f, true, profile)
+		return text
+	}
 	strict := hasStrictEscapeDirective(f.Comments)
-	text, needsStrict := render(f, strict)
+	text, needsStrict := render(f, strict, profile)
 	if needsStrict && !strict {
 		// A value no v1 form can hold (a backtick together with a quote,
 		// a backslash, a newline, or any carriage return): the whole file
 		// switches to strict-escape mode, where every value has a quoted
 		// form.
-		strict = true
-		text, _ = render(f, true)
-	}
-	if strict {
-		// The lexer reads the directive from the file's first 32 lines,
-		// before the first line of code. It goes on line 1 whatever
-		// comment it came from — render skipped its copies in the comment
-		// list — or a directive at comment #35 would be written strict and
-		// read v1.
-		text = "## " + strictEscapeDirective + "\n" + text
+		text, _ = render(f, true, profile)
 	}
 	return text
 }
 
-// strictEscapeDirective is the leading comment that opts a file into
-// standard escape interpretation (pkg/dsl/parser detectStrictEscape).
+// strictEscapeDirective is the leading comment that opts a profile-1 file
+// into standard escape interpretation (parser.ReadPreamble).
 const strictEscapeDirective = "strict-escape: on"
 
 // hasStrictEscapeDirective mirrors the lexer's recognition of the directive
@@ -48,39 +49,36 @@ const strictEscapeDirective = "strict-escape: on"
 // the OUTPUT is read in is what the quoting has to match.
 func hasStrictEscapeDirective(comments []*ast.Comment) bool {
 	for _, c := range comments {
-		if isStrictEscapeDirective(c.Text) {
+		if parser.IsStrictEscapeDirective(c.Text) {
 			return true
 		}
 	}
 	return false
 }
 
-// isStrictEscapeDirective accepts the forms the lexer accepts.
-func isStrictEscapeDirective(text string) bool {
-	switch strings.TrimSpace(text) {
-	case "strict-escape: on", "strict-escape:on", "strict-escape = on":
-		return true
-	}
-	return false
-}
-
 // render writes f in one quoting mode and reports whether a value needed the
-// strict one. In strict mode the directive's own comment lines are skipped:
-// Unparse writes the directive on line 1.
-func render(f *ast.File, strict bool) (string, bool) {
-	w := &fileWriter{b: buf{strict: strict}, skipDirective: strict}
+// strict one. The directive's own comment lines are never copied: in
+// profile 1 the writer places the directive itself (writeHead), and from
+// profile 2 the header replaces it.
+func render(f *ast.File, strict bool, profile int) (string, bool) {
+	w := &fileWriter{
+		b:              buf{strict: strict, inline: inlineBodies(f.Prompts)},
+		profile:        profile,
+		skipDirective:  true,
+		writeDirective: strict && profile <= ast.DefaultProfile,
+	}
 	w.writeFile(f)
 	return w.b.String(), w.b.needsStrict
 }
 
 func (w *fileWriter) writeFile(f *ast.File) {
-	w.writeComments(f.Comments)
+	w.writeHead(f.Comments)
 	w.writeVars(f.Vars)
 	w.writePresets(f.Presets)
 	w.writeAttachments(f.Attachments)
 	w.writeSecrets(f.Secrets)
 	w.writeMCPServers(f.MCPServers)
-	w.writePrompts(f.Prompts)
+	w.writePrompts(declaredPrompts(f.Prompts))
 	w.writeSchemas(f.Schemas)
 	w.writeCursors(f.Cursors)
 	w.writeSupervisors(f.Supervisors)
@@ -115,6 +113,54 @@ type buf struct {
 	// continuation lines indented too, changing the value, so a value with
 	// a newline needs the strict form there.
 	nested bool
+	// inline is the body of each Inline prompt of the file by name: a
+	// property referring to one is written as that text, and the prompt is
+	// not written as a declaration.
+	inline map[string]string
+}
+
+// inlineBodies indexes the Inline prompts of a file by name.
+func inlineBodies(prompts []*ast.PromptDecl) map[string]string {
+	var out map[string]string
+	for _, p := range prompts {
+		if p.Inline {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[p.Name] = p.Body
+		}
+	}
+	return out
+}
+
+// declaredPrompts is the prompts written as `prompt <name>:` declarations —
+// every prompt but the Inline ones, which their referencing property writes.
+func declaredPrompts(prompts []*ast.PromptDecl) []*ast.PromptDecl {
+	out := make([]*ast.PromptDecl, 0, len(prompts))
+	for _, p := range prompts {
+		if !p.Inline {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// writePromptRef writes a prompt-reference property: the text itself,
+// quoted, for an Inline prompt; the name for a declared one.
+func writePromptRef(b *buf, key, name string) {
+	if body, ok := b.inline[name]; ok {
+		writeQuotedProp(b, key, body)
+		return
+	}
+	writeIdentProp(b, key, name)
+}
+
+// QuoteStrict renders v as the `"…"` literal the standard escapes read back
+// as exactly v — the one form every value has under profile 2, and the
+// form a profile-1 literal holding a backslash is re-spelled in when a file
+// migrates.
+func QuoteStrict(v string) string {
+	return strictQuote(v)
 }
 
 // str renders v as a string literal the lexer reads back as exactly v.
@@ -172,7 +218,7 @@ func (w *fileWriter) writeGroups(groups []*ast.GroupDecl) {
 		} else {
 			fmt.Fprintf(&w.b, "group %s:\n", g.Name)
 		}
-		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true}}
+		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true, inline: w.b.inline}}
 		sub.writeAgents(g.Agents)
 		sub.writeJudges(g.Judges)
 		sub.writeRouters(g.Routers)
@@ -226,9 +272,15 @@ func indentBlock(text, indent string) string {
 type fileWriter struct {
 	b         buf
 	needBlank bool
+	// profile is the syntax profile the text is written in; from 2 the
+	// head carries the `dsl: N` header.
+	profile int
 	// skipDirective drops the strict-escape directive from the comment
-	// list: Unparse writes it on line 1 itself.
+	// list: writeHead places it itself, or the header replaces it.
 	skipDirective bool
+	// writeDirective writes the strict-escape directive in the head — a
+	// profile-1 file written strict.
+	writeDirective bool
 }
 
 // ensureBody writes a no-op property under a declaration header that got
@@ -238,6 +290,20 @@ type fileWriter struct {
 func (w *fileWriter) ensureBody(mark int) {
 	if w.b.Len() == mark {
 		w.b.WriteString("  description: \"\"\n")
+	}
+}
+
+// endBlock closes a block whose header was written at mark: when no
+// property followed, a blank line separates the bare header from what
+// comes next, which is how the parser tells an empty block from a body at
+// the wrong indentation. An empty block is written, never omitted: the
+// text carries the document as the author declared it, and whether an
+// empty block changes the program is the compiler's call, not the
+// writer's — today a `recovery:` block's presence is read by the
+// verified-action checks, the others compile as their absence does.
+func endBlock(b *buf, mark int) {
+	if b.Len() == mark {
+		b.WriteByte('\n')
 	}
 }
 
@@ -252,21 +318,62 @@ func (w *fileWriter) blankLine() {
 	w.needBlank = true
 }
 
-func (w *fileWriter) writeComments(comments []*ast.Comment) {
-	for _, c := range comments {
-		if w.skipDirective && isStrictEscapeDirective(c.Text) {
-			continue
+// writeHead writes the file's head in the order its readers expect: the
+// frontmatter block first (bundle.ParseFrontmatter wants the fence on the
+// first non-blank line), then — a profile-1 file written strict — the
+// escape directive, which the lexer reads among the first 32 lines before
+// the first line of code, then the other comments, then, from profile 2,
+// the `dsl: N` header on the first significant line (parser.ReadPreamble).
+func (w *fileWriter) writeHead(comments []*ast.Comment) {
+	fm := frontmatterLen(comments)
+	w.writeComments(comments[:fm])
+	if w.writeDirective {
+		w.writeComment(strictEscapeDirective)
+	}
+	w.writeComments(comments[fm:])
+	if w.profile > ast.DefaultProfile {
+		if w.b.Len() > 0 {
+			w.b.WriteByte('\n')
 		}
-		w.blankLine()
-		w.needBlank = false // comments don't need blank line between them
-		w.b.WriteString("## ")
-		w.b.WriteString(c.Text)
-		w.b.WriteByte('\n')
+		fmt.Fprintf(&w.b, "dsl: %d\n", w.profile)
+		w.needBlank = true
 	}
 }
 
+// frontmatterLen is the number of leading comments that form the
+// frontmatter block — the opening `---` fence through the closing one — or
+// 0 when the comments do not open with one.
+func frontmatterLen(comments []*ast.Comment) int {
+	if len(comments) == 0 || strings.TrimSpace(comments[0].Text) != workflowfile.FrontmatterFence {
+		return 0
+	}
+	for i := 1; i < len(comments); i++ {
+		if strings.TrimSpace(comments[i].Text) == workflowfile.FrontmatterFence {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func (w *fileWriter) writeComments(comments []*ast.Comment) {
+	for _, c := range comments {
+		if w.skipDirective && parser.IsStrictEscapeDirective(c.Text) {
+			continue
+		}
+		w.writeComment(c.Text)
+	}
+}
+
+func (w *fileWriter) writeComment(text string) {
+	w.blankLine()
+	w.needBlank = false // comments don't need blank line between them
+	w.b.WriteString("## ")
+	w.b.WriteString(text)
+	w.b.WriteByte('\n')
+}
+
 func (w *fileWriter) writeVars(vars *ast.VarsBlock) {
-	if vars == nil || len(vars.Fields) == 0 {
+	if vars == nil {
 		return
 	}
 	w.blankLine()
@@ -274,7 +381,7 @@ func (w *fileWriter) writeVars(vars *ast.VarsBlock) {
 }
 
 func (w *fileWriter) writePresets(presets *ast.PresetsBlock) {
-	if presets == nil || len(presets.Entries) == 0 {
+	if presets == nil {
 		return
 	}
 	w.blankLine()
@@ -282,7 +389,7 @@ func (w *fileWriter) writePresets(presets *ast.PresetsBlock) {
 }
 
 func (w *fileWriter) writeAttachments(att *ast.AttachmentsBlock) {
-	if att == nil || len(att.Fields) == 0 {
+	if att == nil {
 		return
 	}
 	w.blankLine()
@@ -290,7 +397,7 @@ func (w *fileWriter) writeAttachments(att *ast.AttachmentsBlock) {
 }
 
 func (w *fileWriter) writeSecrets(secrets *ast.SecretsBlock) {
-	if secrets == nil || len(secrets.Fields) == 0 {
+	if secrets == nil {
 		return
 	}
 	w.blankLine()
@@ -333,13 +440,19 @@ func (w *fileWriter) writePrompts(prompts []*ast.PromptDecl) {
 		// carry at all (parser.CheckPromptBody) lands as its nearest form,
 		// de-indented; Verify, which every production caller runs on this
 		// text, refuses it by name.
-		body := parser.CanonicalPromptBody(p.Body)
+		body := parser.CanonicalPromptBodyIn(w.profile, p.Body)
 		if body == "" {
 			// A bare header IS the empty prompt; an indented blank line
 			// would be neither a body nor a valid empty form.
 			continue
 		}
 		for _, line := range strings.Split(body, "\n") {
+			if line == "" {
+				// A paragraph break, which only profile 2's canonical form
+				// holds: written blank, never indented.
+				w.b.WriteByte('\n')
+				continue
+			}
 			w.b.WriteString("  ")
 			w.b.WriteString(line)
 			w.b.WriteByte('\n')
@@ -381,7 +494,7 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 			fmt.Fprintf(&w.b, "  model: %s\n", w.b.str(s.Model))
 		}
 		if s.System != "" {
-			fmt.Fprintf(&w.b, "  system: %s\n", s.System)
+			writePromptRef(&w.b, "system", s.System)
 		}
 		if s.Cooldown != "" {
 			fmt.Fprintf(&w.b, "  cooldown: %s\n", w.b.str(s.Cooldown))
@@ -492,10 +605,10 @@ func (w *fileWriter) writeRouters(routers []*ast.RouterDecl) {
 				writeQuotedProp(&w.b, "provider", r.Provider)
 			}
 			if r.System != "" {
-				writeProp(&w.b, "system", r.System)
+				writePromptRef(&w.b, "system", r.System)
 			}
 			if r.User != "" {
-				writeProp(&w.b, "user", r.User)
+				writePromptRef(&w.b, "user", r.User)
 			}
 			if r.Multi {
 				writeProp(&w.b, "multi", "true")
@@ -557,7 +670,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeQuotedProp(&w.b, "interaction_model", h.InteractionModel)
 		}
 		if h.Instructions != "" {
-			writeProp(&w.b, "instructions", h.Instructions)
+			writePromptRef(&w.b, "instructions", h.Instructions)
 		}
 		if h.MinAnswers > 0 {
 			fmt.Fprintf(&w.b, "  min_answers: %d\n", h.MinAnswers)
@@ -566,7 +679,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeQuotedProp(&w.b, "model", h.Model)
 		}
 		if h.System != "" {
-			writeProp(&w.b, "system", h.System)
+			writePromptRef(&w.b, "system", h.System)
 		}
 		if h.ReviewURL != "" {
 			writeQuotedProp(&w.b, "review_url", h.ReviewURL)
@@ -606,6 +719,54 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		}
 		if t.Language != "" {
 			writeProp(&w.b, "language", t.Language)
+		}
+		// Connector action (ADR-098), written in the order an author reads it:
+		// what is called, with what credential, with which arguments.
+		// Both through the quoting path, like every other name-shaped field:
+		// the AST is also built programmatically (the JSON round trip, the
+		// studio editor, a refactoring tool), where nothing stops a space or a
+		// dot-less word landing in either. Written bare, `action: "forgejo
+		// issue comment"` came back out as three tokens — `Action` truncated
+		// to "forgejo" and `issue` read as an unknown tool property — so a
+		// save turned one C260 into a mangled node plus a diagnostic about
+		// text the author never wrote.
+		if t.Action != "" {
+			writeActionIDProp(&w.b, "action", t.Action)
+		}
+		if t.Connection != "" {
+			writeIdentProp(&w.b, "connection", t.Connection)
+		}
+		if len(t.Params) > 0 {
+			w.b.WriteString("  params:\n")
+			for _, p := range t.Params {
+				// The AUTHORED order, not a sorted one: a `.bot` is read and
+				// diffed by humans, and reshuffling an author's arguments on
+				// every round trip would make every regeneration a diff.
+				//
+				// The KEY is quoted when it is not an identifier, like the
+				// value beside it. A parameter key is the vendor's wire name —
+				// `user-id`, `status-types`, 22 of them in the shipped Forgejo
+				// package — and written bare it came back out as `user-id: "1"`,
+				// which re-parses as a param named `user` with value `id` plus
+				// two diagnostics. unparse.Verify then refuses the save naming
+				// generated text rather than the field. The AST also arrives
+				// from the JSON transport, where nothing constrains the shape.
+				writeQuotedProp(&w.b, "  "+identOrStr(&w.b, p.Key), p.Value)
+			}
+		}
+		// Quoted when they are not a bare scalar, for the same reason
+		// `action:` and `connection:` above are: the AST also arrives from the
+		// JSON transport, where nothing constrains either field. Written bare,
+		// `timeout: {{vars.t}}` re-parsed to the empty string (the value LOST)
+		// and `retry: 3 times` truncated to `3` — a save that either changes
+		// the value in silence or is refused by unparse.Verify pointing at
+		// generated text. `30s` and `3` stay bare: they are what an author
+		// writes, and quoting them would move every diff for no change.
+		if t.Retry != "" {
+			writeScalarTextProp(&w.b, "retry", t.Retry)
+		}
+		if t.Timeout != "" {
+			writeScalarTextProp(&w.b, "timeout", t.Timeout)
 		}
 		if t.Input != "" {
 			writeProp(&w.b, "input", t.Input)
@@ -656,6 +817,7 @@ func writeRecoveryBlock(b *buf, r *ast.RecoveryBlock, indent string) {
 		return
 	}
 	fmt.Fprintf(b, "%srecovery:\n", indent)
+	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if r.MaxRepairAttempts > 0 {
 		fmt.Fprintf(b, "%smax_repair_attempts: %d\n", inner, r.MaxRepairAttempts)
@@ -820,10 +982,13 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "workflow %s:\n", wf.Name)
 
-		if wf.Vars != nil && len(wf.Vars.Fields) > 0 {
+		// Written when present, empty or not — the same rule as the
+		// top-level blocks (an omitted empty block would be deleted from
+		// the file by a save of an unrelated field).
+		if wf.Vars != nil {
 			writeVarsBlock(&w.b, wf.Vars, "  ")
 		}
-		if wf.Attachments != nil && len(wf.Attachments.Fields) > 0 {
+		if wf.Attachments != nil {
 			writeAttachmentsBlock(&w.b, wf.Attachments, "  ")
 		}
 		if wf.MCP != nil {
@@ -929,12 +1094,73 @@ func writeQuotedProp(b *buf, key, value string) {
 // with a cryptic lexer error far away from the offending field. Quote
 // the fallback so the malformed value at least round-trips into a
 // TokenString the parser can complain about precisely.
+// writeActionIDProp is writeIdentProp for an operation id, which is DOTTED
+// (`forgejo.issue.comment`) and so is not a bare identifier. Each segment has
+// to be one; anything else is quoted, which the parser reads back as the
+// literal id — deliberately, so an author who writes it quoted is not
+// corrected for being unambiguous.
+func writeActionIDProp(b *buf, key, value string) {
+	for _, seg := range strings.Split(value, ".") {
+		if !isBareIdent(seg) {
+			writeQuotedProp(b, key, value)
+			return
+		}
+	}
+	writeProp(b, key, value)
+}
+
 func writeIdentProp(b *buf, key, value string) {
 	if isBareIdent(value) {
 		writeProp(b, key, value)
 		return
 	}
 	writeQuotedProp(b, key, value)
+}
+
+// writeScalarTextProp emits a property the parser reads with
+// expectScalarText — a bare scalar (`30s`, `3`, `never`) or a quoted string.
+// Bare is kept for the shapes that re-read as themselves, so a duration does
+// not gain quotes on every save; anything else is quoted, because bare it
+// would come back TRUNCATED at the first space or, for a `{{…}}` template,
+// not at all.
+func writeScalarTextProp(b *buf, key, value string) {
+	if isBareScalarText(value) {
+		writeProp(b, key, value)
+		return
+	}
+	writeQuotedProp(b, key, value)
+}
+
+// isBareScalarText reports whether value re-parses to itself unquoted: an
+// identifier, or a number optionally carrying an adjacent unit — the two
+// forms expectScalarText reassembles (`30s` reaches it as an int and an
+// ident the lexer split at a boundary with no space in it).
+func isBareScalarText(s string) bool {
+	if isBareIdent(s) {
+		return true
+	}
+	rs := []rune(s)
+	i := 0
+	for i < len(rs) && unicode.IsDigit(rs[i]) {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	if i < len(rs) && rs[i] == '.' {
+		j := i + 1
+		for j < len(rs) && unicode.IsDigit(rs[j]) {
+			j++
+		}
+		if j == i+1 {
+			return false // `3.` is not a float the lexer produces
+		}
+		i = j
+	}
+	if i == len(rs) {
+		return true
+	}
+	return isBareIdent(string(rs[i:]))
 }
 
 // writeArtifactLabels renders `artifact_labels: [a, b]` — the labels a
@@ -993,6 +1219,7 @@ func writeReasoningEffortProp(b *buf, value string) {
 
 func writeVarsBlock(b *buf, vars *ast.VarsBlock, indent string) {
 	fmt.Fprintf(b, "%svars:\n", indent)
+	defer endBlock(b, b.Len())
 	for _, v := range vars.Fields {
 		b.WriteString(indent)
 		b.WriteString("  ")
@@ -1026,6 +1253,7 @@ func writeEnumConstraint(b *buf, vals []string) {
 
 func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 	fmt.Fprintf(b, "%ssecrets:\n", indent)
+	defer endBlock(b, b.Len())
 	for _, s := range sb.Fields {
 		// Short form when only a value is set; block form when egress
 		// hosts, file materialisation, env wiring, or a description
@@ -1065,6 +1293,7 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 
 func writePresetsBlock(b *buf, pb *ast.PresetsBlock, indent string) {
 	fmt.Fprintf(b, "%spresets:\n", indent)
+	defer endBlock(b, b.Len())
 	// Sort preset names alphabetically for deterministic output.
 	names := make([]string, 0, len(pb.Entries))
 	byName := make(map[string]*ast.Preset, len(pb.Entries))
@@ -1088,6 +1317,7 @@ func writePresetsBlock(b *buf, pb *ast.PresetsBlock, indent string) {
 
 func writeAttachmentsBlock(b *buf, ab *ast.AttachmentsBlock, indent string) {
 	fmt.Fprintf(b, "%sattachments:\n", indent)
+	defer endBlock(b, b.Len())
 	for _, f := range ab.Fields {
 		// Short form when no extra props are set.
 		hasProps := f.Description != "" || len(f.AcceptMIME) > 0 || f.Required != nil
@@ -1134,6 +1364,7 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 
 func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 	b.WriteString("  auth:\n")
+	defer endBlock(b, b.Len())
 	if auth.Type != "" {
 		fmt.Fprintf(b, "    type: %s\n", b.str(auth.Type))
 	}
@@ -1156,6 +1387,7 @@ func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 
 func writeMCPConfigBlock(b *buf, cfg *ast.MCPConfigDecl, indent string) {
 	fmt.Fprintf(b, "%smcp:\n", indent)
+	defer endBlock(b, b.Len())
 	if cfg.AutoloadProject != nil {
 		fmt.Fprintf(b, "%s  autoload_project: %t\n", indent, *cfg.AutoloadProject)
 	}
@@ -1233,10 +1465,10 @@ func writeAgentFields(b *buf, f llmFields) {
 	}
 	writeArtifactLabels(b, f.ArtifactLabels, "  ")
 	if f.System != "" {
-		writeIdentProp(b, "system", f.System)
+		writePromptRef(b, "system", f.System)
 	}
 	if f.User != "" {
-		writeIdentProp(b, "user", f.User)
+		writePromptRef(b, "user", f.User)
 	}
 	// Only emit session: when it's non-default. The previous if/else
 	// emitted it unconditionally — both branches called the same
@@ -1379,7 +1611,7 @@ func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
 	if sb == nil {
 		return false
 	}
-	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" {
+	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" || sb.HostState != "" {
 		return false
 	}
 	if len(sb.Env) > 0 || len(sb.Mounts) > 0 {
@@ -1393,6 +1625,7 @@ func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
 
 func writeSandboxBuildBlock(b *buf, bb *ast.SandboxBuildBlock, indent string) {
 	fmt.Fprintf(b, "%sbuild:\n", indent)
+	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if bb.Dockerfile != "" {
 		fmt.Fprintf(b, "%sdockerfile: %s\n", inner, b.str(bb.Dockerfile))
@@ -1410,6 +1643,7 @@ func writeSandboxBuildBlock(b *buf, bb *ast.SandboxBuildBlock, indent string) {
 
 func writeSandboxNetworkBlock(b *buf, n *ast.SandboxNetworkBlock, indent string) {
 	fmt.Fprintf(b, "%snetwork:\n", indent)
+	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if n.Mode != "" {
 		fmt.Fprintf(b, "%smode: %s\n", inner, n.Mode)
@@ -1439,6 +1673,7 @@ func writeCompaction(b *buf, compaction *ast.CompactionBlock, indent string, lea
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(b, "%scompaction:\n", indent)
+	defer endBlock(b, b.Len())
 	if compaction.Threshold != nil {
 		fmt.Fprintf(b, "%s  threshold: %g\n", indent, *compaction.Threshold)
 	}
@@ -1452,6 +1687,7 @@ func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(b, "%smemory:\n", indent)
+	defer endBlock(b, b.Len())
 	if m.Enabled != nil {
 		fmt.Fprintf(b, "%s  enabled: %t\n", indent, *m.Enabled)
 	}
@@ -1511,6 +1747,7 @@ func writeCursorDecl(b *buf, c *ast.CursorDecl) {
 // implicit shape the parser assumes.
 func writeCursorsBlock(b *buf, cb *ast.CursorBlock, indent string) {
 	fmt.Fprintf(b, "%scursors:\n", indent)
+	defer endBlock(b, b.Len())
 	if !cb.Enabled {
 		fmt.Fprintf(b, "%s  enabled: false\n", indent)
 	}
@@ -1531,7 +1768,18 @@ func writeCursorsBlock(b *buf, cb *ast.CursorBlock, indent string) {
 // edit through parse → unparse, so an unserialised block is DELETED from
 // the .bot the next time anyone touches an unrelated field.
 func writeFallbacksBlock(b *buf, fbs []*ast.FallbackDecl, indent string) {
-	if len(fbs) == 0 {
+	// A header with no route under it does not parse (a chain with no
+	// route is refused by name), and a route with no name cannot be
+	// written — so the header goes only when a route will follow it.
+	// Verify refuses the nameless route before this is reached on the
+	// save path; here the header simply stays out.
+	writable := 0
+	for _, fb := range fbs {
+		if fb != nil && strings.TrimSpace(fb.Name) != "" {
+			writable++
+		}
+	}
+	if writable == 0 {
 		return
 	}
 	fmt.Fprintf(b, "%sfallbacks:\n", indent)
@@ -1588,6 +1836,7 @@ func isCursorValueBareIdent(s string) bool {
 
 func writeBudget(b *buf, budget *ast.BudgetBlock) {
 	b.WriteString("\n  budget:\n")
+	defer endBlock(b, b.Len())
 	if budget.MaxParallelBranches > 0 {
 		fmt.Fprintf(b, "    max_parallel_branches: %d\n", budget.MaxParallelBranches)
 	}
@@ -1611,10 +1860,11 @@ func writeBudget(b *buf, budget *ast.BudgetBlock) {
 // writeResources serializes the workflow `resources:` block. Names are
 // emitted in sorted order for deterministic, round-trip-stable output.
 func writeResources(b *buf, res *ast.ResourcesBlock) {
-	if res == nil || len(res.Capacities) == 0 {
+	if res == nil {
 		return
 	}
 	b.WriteString("\n  resources:\n")
+	defer endBlock(b, b.Len())
 	names := make([]string, 0, len(res.Capacities))
 	for name := range res.Capacities {
 		names = append(names, name)

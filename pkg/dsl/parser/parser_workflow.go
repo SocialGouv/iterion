@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"fmt"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -34,6 +36,14 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			break
 		}
 
+		// A node named like a workflow property (`entry`, `budget`, `mcp`,
+		// …) is the source of an edge when an arrow follows its reference;
+		// the type of its token says nothing about that.
+		if p.edgeAhead() {
+			wd.Edges = append(wd.Edges, p.parseEdge()...)
+			continue
+		}
+
 		switch t.Type {
 		case TokenVars:
 			wd.Vars = p.parseVarsBlock()
@@ -42,7 +52,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Attachments = p.parseAttachmentsBlock()
 
 		case TokenMCP:
-			wd.MCP = p.parseMCPConfigBlock()
+			wd.MCP = p.parseMCPConfigBlock("workflow")
 
 		case TokenEntry:
 			p.next() // consume "entry"
@@ -59,7 +69,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Resources = p.parseResourcesBlock()
 
 		case TokenCompaction:
-			wd.Compaction = p.parseCompactionBlock()
+			wd.Compaction = p.parseCompactionBlock("workflow")
 
 		case TokenWorktree:
 			p.next() // consume "worktree"
@@ -122,7 +132,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.skipNewlines()
 
 		case TokenSandbox:
-			wd.Sandbox = p.parseSandboxBlock()
+			wd.Sandbox = p.parseSandboxBlock("workflow")
 			p.skipNewlines()
 
 		case TokenDefaultBackend:
@@ -160,12 +170,19 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.next() // skip workflow-level comments
 
 		default:
-			// Must be an edge: IDENT -> IDENT ...
+			// Must be an edge: IDENT -> IDENT ... — unless a colon follows the
+			// name: then it is a property the workflow does not have, and the
+			// author is told so (with the registry's remedy) rather than
+			// "expected ->", which is the edge parser's reading of it.
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
-				edge := p.parseEdge()
-				if edge != nil {
-					wd.Edges = append(wd.Edges, edge)
+				p.next()
+				if p.peek().Type == TokenColon {
+					p.unknownProperty("workflow", t, t.Value)
+					p.skipUnknownProperty() // a misspelt block header: its body is not a run of strays
+					continue
 				}
+				p.backup()
+				wd.Edges = append(wd.Edges, p.parseEdge()...)
 			} else {
 				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in workflow")
 				p.next()
@@ -177,13 +194,13 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 
 func (p *parser) parseBudgetBlock() *ast.BudgetBlock {
 	start := p.next() // consume "budget"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	bb := &ast.BudgetBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return bb
+	}
 
 	for {
 		p.skipNewlines()
@@ -221,8 +238,8 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 		p.expect(TokenColon)
 		bb.MaxIterations = p.expectInt()
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown budget property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("budget", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -231,15 +248,15 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 // name is an arbitrary identifier (the resource), each value its slot count.
 func (p *parser) parseResourcesBlock() *ast.ResourcesBlock {
 	start := p.next() // consume "resources"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	rb := &ast.ResourcesBlock{
 		Capacities: make(map[string]int),
 		Span:       ast.Span{Start: p.pos(start)},
+	}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return rb
 	}
 
 	for {
@@ -265,8 +282,9 @@ func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
 		return
 	}
 	p.expect(TokenColon)
-	if p.peek().Type == TokenLBrack {
-		// Named-instance pool (lease form): godot: ["godot-s1", "godot-s2", ...].
+	if t := p.peek(); t.Type == TokenLBrack || lineEnds(t) {
+		// Named-instance pool (lease form): godot: ["godot-s1", "godot-s2", ...],
+		// or the same members one `- item` per line under the name.
 		// Capacity = number of members; each acquire leases a distinct id. Ids
 		// are quoted strings (not bare idents) so they may carry hyphens/slashes
 		// — e.g. MCP server names or worktree paths.
@@ -283,15 +301,16 @@ func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
 	p.skipNewlines()
 }
 
-func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
+func (p *parser) parseCompactionBlock(host string) *ast.CompactionBlock {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "compaction"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	cb := &ast.CompactionBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return cb
+	}
 
 	for {
 		p.skipNewlines()
@@ -309,15 +328,16 @@ func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
 
 // parseMemoryBlock parses a `memory:` sub-block on an agent or
 // judge node. All fields are optional; IR compile applies defaults.
-func (p *parser) parseMemoryBlock() *ast.MemoryBlock {
+func (p *parser) parseMemoryBlock(host string) *ast.MemoryBlock {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "memory"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	mb := &ast.MemoryBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return mb
+	}
 
 	for {
 		p.skipNewlines()
@@ -345,8 +365,8 @@ func (p *parser) parseCompactionProp(cb *ast.CompactionBlock, propTok Token) {
 		v := p.expectInt()
 		cb.PreserveRecent = &v
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown compaction property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("compaction", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -383,7 +403,14 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 		}
 	case TokenProjectRoot:
 		p.expect(TokenColon)
-		if v := p.parseBool(); v != nil {
+		// Removed from profile 2 (ADR-098): refused by name, the value
+		// still consumed so the line draws one diagnostic, and not set —
+		// the program of a profile-2 file has no project_root.
+		removed := p.lex.Profile() > ast.DefaultProfile
+		if removed {
+			p.addError(DiagRemovedInProfile, propTok, fmt.Sprintf("`project_root:` was removed from dsl profile %d", p.lex.Profile()))
+		}
+		if v := p.parseBool(); v != nil && !removed {
 			mb.ProjectRoot = v
 		}
 	case TokenVisibility:
@@ -391,8 +418,8 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 		v := p.expectString()
 		mb.Visibility = &v
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown memory property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("memory", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }

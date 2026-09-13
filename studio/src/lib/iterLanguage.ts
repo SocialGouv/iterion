@@ -28,6 +28,8 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     // Top-level / declaration kinds
     "vars", "prompt", "schema", "agent", "judge", "router", "human", "tool", "compute", "workflow",
     "mcp_server",
+    // The syntax-profile header that may open a file (`dsl: 2`)
+    "dsl",
     // Workflow + node fields
     "entry", "default_backend", "budget", "compaction", "mcp", "worktree",
     "model", "backend", "input", "output", "publish", "system", "user", "session",

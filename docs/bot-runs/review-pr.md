@@ -8,6 +8,63 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-11 — the gpt family carried a whole review for the first time, and named what still pinned it to Claude (runs 01a092b2 + 01a092c3, PR #1150)
+
+- Status: **validated** — `revi/review` posted `success` from a run in which
+  Claude never executed.
+- Versions: bot review-pr 0.9.0 · engine v3.140.0 (deployment) · reviewer
+  `claw` + `openai/gpt-5.6-sol`.
+- Method: `runs launch --bot review-pr --var mono_family=gpt --var
+  review_mode=mono --var pr_url=… --var post_to_board=false`, with
+  `--model-overrides '[{"selector":"judge",…},{"selector":"agent",…}]'` moving
+  every LLM node onto claw. Occasion: the deployment's Anthropic seven-day
+  window crossed the 95% hard cap at ~20:30Z, and every claude_code run on the
+  repo — 4 reviews and 2 fixer runs — parked `failed_resumable`, so no PR could
+  satisfy its required check.
+- Result: converged, `finished` in ~5m30. `gpt_ran=true`, `claude_ran=false`.
+  Verdict: 0 findings, and a summary naming the five changed areas by file plus
+  the tests it ran — including which broader suite it could NOT finish inside
+  its 30s limit. Not a façade: the honest gap is reported rather than absorbed.
+
+### What blocked it, in the order the run met it
+
+1. **`mono_family` switches the REVIEWER, never the graph.** `agent converge`
+   carried a hardcoded `backend: "claude_code"`, so the gpt review completed and
+   the merge step then died on the cap. A family switch that still requires the
+   other family is a half promise — the shape CLAUDE.md's parity doctrine calls
+   a defect. Fixed here: `${ITERION_VIBE_BACKEND_EMIT:-claude_code}`, the form
+   its own siblings already use.
+2. **The admission pre-flight refused the whole run.** `AnthropicWireReachable`
+   exists precisely to spare a run pinned off that wire (#668, a fully pinned
+   rite frozen five days) and it does read the launch's overrides — but it is
+   STATIC: the untaken `reviewer_claude*` nodes and `converge` were enough to
+   make the wire "reachable", whatever `mono_family` would route at run time.
+   Covered by two KIND selectors (`judge`, `agent`) rather than by naming
+   sites — the routers are `condition`/`fan_out_all`, so those two cover every
+   LLM node by construction.
+3. **A CLI launch gets no checkout.** `POST /api/runs` accepts `repo_url` /
+   `repo_ref` / `connection_id` (`pkg/server/runs_launch.go`), and the webhook
+   path sets them; `iterion remote runs launch` exposes none of the three. The
+   reviewer opened on `fatal: not a git repository` and re-derived the diff
+   through the forge API. It recovered and still reviewed well, but the local
+   checkout the node is written for was never there.
+
+### Lessons for next run
+
+- To run Revi off the Anthropic wire, overriding the reviewer is not enough:
+  override by KIND so the pre-flight sees no anthropic route at all. The
+  per-run form needs no bot edit and is the mechanism the pre-flight was
+  built to read.
+- `resume` cannot carry `--model-overrides`; only a fresh launch can. A run
+  parked by the cap therefore cannot be re-aimed at another family in place —
+  worth knowing before spending a reviewer pass twice.
+- A run parked on a usage window will be re-driven when the window reopens.
+  Cancel a superseded one, or a second verdict lands on the same gate days
+  later.
+- Verify the binary before trusting a local `validate`: a v3.69 CLI reported
+  `E002` on a bot the v3.140 build compiles cleanly, on the UNMODIFIED file —
+  the control that separated "my edit broke it" from "my tool is stale".
+
 ## 2026-09-09 — forge-native ticket context: the first `covered` verdict, and the [high] the feature found in itself (run 01a085b8, PR #1017)
 
 - Status: **validated locally**; the cloud half arrives on its own once 0.9.0 is baked.

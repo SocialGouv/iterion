@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
@@ -54,6 +56,20 @@ var remoteAuditCmd = &cobra.Command{
 // counter cannot answer because it charges every tier to one org key.
 var remoteUsageByCredential bool
 
+// remoteUsageRepo narrows that ledger to ONE repository — the forge slug the
+// run targeted ("owner/repo"). Spend a run attributed to no repository is
+// unreachable through it by construction, which is the point: a repository's
+// bill must never quietly include the deployment's unattributed runs.
+var remoteUsageRepo string
+
+// remoteUsageMonth reads a PAST month of that ledger. The endpoint keys its
+// rows by month and only the current one was reachable from here, so
+// answering "what did this key cost in August" meant querying the raw API —
+// and a hand-written `?month=` was silently ignored, which is how a probe
+// came to read September's numbers as August's and call a live counter
+// frozen (#1087).
+var remoteUsageMonth string
+
 var remoteUsageCmd = &cobra.Command{
 	Use:   "usage",
 	Short: "Org monthly usage (alias of `orgs usage`); --by-credential for the per-credential ledger",
@@ -65,7 +81,18 @@ var remoteUsageCmd = &cobra.Command{
 				if err != nil {
 					return err
 				}
-				return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/teams/"+team+"/credentials/usage")
+				q := url.Values{}
+				if repo := strings.TrimSpace(remoteUsageRepo); repo != "" {
+					q.Set("repo", repo)
+				}
+				if month := strings.TrimSpace(remoteUsageMonth); month != "" {
+					q.Set("month", month)
+				}
+				path := "/api/teams/" + team + "/credentials/usage"
+				if len(q) > 0 {
+					path += "?" + q.Encode()
+				}
+				return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 			})(cmd, args)
 		}
 		// True alias: same body as `orgs usage`.
@@ -215,6 +242,10 @@ func init() {
 	remoteUsageCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (with --by-credential; default: switched/active team)")
 	remoteUsageCmd.Flags().BoolVar(&remoteUsageByCredential, "by-credential", false,
 		"Per-credential ledger for the team instead of the org bucket (each amount typed metered|estimate)")
+	remoteUsageCmd.Flags().StringVar(&remoteUsageRepo, "repo", "",
+		"With --by-credential: only what the team spent on this repository (forge slug, e.g. owner/repo)")
+	remoteUsageCmd.Flags().StringVar(&remoteUsageMonth, "month", "",
+		"With --by-credential: which month to read (YYYY-MM; default: the current one)")
 	remoteLimitsCmd.Flags().StringVar(&remoteLimitsData, "data", "", "Override JSON (literal or @file)")
 
 	for _, c := range []*cobra.Command{remoteMemoryDocsCmd, remoteMemoryDocCmd, remoteMemoryExportCmd, remoteMemoryImportCmd} {

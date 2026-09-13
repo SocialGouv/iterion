@@ -27,6 +27,10 @@ var skipPatterns = []string{
 	".iterion",
 	"__pycache__",
 	".DS_Store",
+	// `devbox install` in the bot's directory (the way its devbox.lock is
+	// generated) writes a .devbox/ profile of symlinks into /nix/store,
+	// which the packer refuses.
+	".devbox",
 }
 
 // skipSuffixes matches filename suffixes the packer never includes.

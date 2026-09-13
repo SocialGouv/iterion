@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -142,26 +144,58 @@ type OAuthRecord struct {
 	// documented on AccountLabel. Clearing has to travel on the wire.
 	RefreshClaimOwner string     `bson:"refresh_claim_owner" json:"-"`
 	RefreshNotBefore  *time.Time `bson:"refresh_not_before" json:"-"`
-	CreatedAt         time.Time  `bson:"created_at" json:"created_at"`
-	UpdatedAt         time.Time  `bson:"updated_at" json:"updated_at"`
+	// Rank orders the credentials an owner holds for ONE kind, lowest first.
+	// Rank 0 is the primary — what a reader means by "the tenant's Claude
+	// forfait" — and the higher ranks are its fallbacks, tried in order when
+	// a provider window is closed.
+	//
+	// It exists because the store used to hold exactly one record per
+	// (owner, kind), which made the credential chain no deeper than the
+	// tiers themselves: an operator with four Claude subscriptions could
+	// wire two (their org's and the deployment's) and had no way to say
+	// "try these in this order". Measured 2026-09-08, that ceiling stopped
+	// every claude_code run on a deployment for three hours.
+	//
+	// No bson omitempty: the Mongo store writes through $set, and an
+	// omitted key leaves the OLD value in place — the trap already
+	// documented on AccountLabel. A record demoted to rank 0 has to say so
+	// on the wire. Records written before ranks existed carry no field at
+	// all, which Mongo does not match against 0; EnsureSchema backfills
+	// them once.
+	Rank      int       `bson:"rank" json:"rank"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // OAuthStore is the persistence interface for sealed OAuth records.
 type OAuthStore interface {
 	Upsert(ctx context.Context, rec OAuthRecord) error
+	// Get returns the PRIMARY record (rank 0) for the pair — what every
+	// reader means by "this owner's Claude forfait". The fallbacks behind it
+	// are reached through ListByUser, which is what the publisher walks.
 	Get(ctx context.Context, userID string, kind OAuthKind) (OAuthRecord, error)
+	// ListByUser returns every record the owner holds, ordered by kind then
+	// RANK — so a caller that iterates gets the chain in the order it is
+	// meant to be tried, without knowing ranks exist.
 	ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error)
-	Delete(ctx context.Context, userID string, kind OAuthKind) error
+	// Delete removes ONE record, addressed by its id. Missing → ErrOAuthNotFound.
+	Delete(ctx context.Context, id string) error
 	// ExpiringBefore returns records whose access token is set and
 	// expires before t — used by the background refresh worker.
 	ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error)
+	// The four writers below address ONE record by its id, not by
+	// (owner, kind): that pair stopped being unique when a chain became
+	// possible, and a writer that still keyed on it would silently land
+	// on the primary — a refresh renewing rank 0 forever while the
+	// fallback it was called for expired. Every record a caller holds
+	// carries its id, so nothing has to be looked up to write it.
 	// SetAccountLabel writes ONLY the label (and updated_at) of an existing
 	// record; "" clears it. A rename must not travel through Upsert: that
 	// rewrites the whole record, sealed payload included, so a refresh
 	// committed between the caller's Get and its Upsert would be reverted
 	// to a token the provider may already have rotated out. Missing record
 	// → ErrOAuthNotFound.
-	SetAccountLabel(ctx context.Context, userID string, kind OAuthKind, label string) error
+	SetAccountLabel(ctx context.Context, id string, label string) error
 	// UpdateTokens writes ONLY the keys a token refresh owns — the mirror
 	// of SetAccountLabel on the other side of the same race. A refresh
 	// reads a record, spends a round trip at the provider, then persists;
@@ -176,7 +210,7 @@ type OAuthStore interface {
 	// since a claim is all a fenced write can ask about (the Mongo twin
 	// reads one MatchedCount for both). ErrOAuthNotFound stays the answer
 	// for an unclaimed write, which is the shape the self-heal uses.
-	UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error
+	UpdateTokens(ctx context.Context, id string, upd OAuthTokenUpdate) error
 	// ClaimRefresh elects the ONE holder allowed to exchange this record's
 	// refresh token, by compare-and-swap: it succeeds only while nobody
 	// holds a live claim (RefreshNotBefore absent or already past), and
@@ -184,14 +218,14 @@ type OAuthStore interface {
 	// when someone else holds it; that caller must not touch the provider.
 	// A crashed holder's claim is re-claimable as soon as `until` passes,
 	// so nothing has to release it. Missing record → false, no error.
-	ClaimRefresh(ctx context.Context, userID string, kind OAuthKind, owner string, now, until time.Time) (bool, error)
+	ClaimRefresh(ctx context.Context, id string, owner string, now, until time.Time) (bool, error)
 	// ReleaseRefreshClaim hands the claim back without writing tokens — the
 	// path a FAILED exchange takes, so the next sweep may retry at once
 	// instead of waiting the lease out. Conditional on still owning the
 	// claim (ErrRefreshClaimLost otherwise), so a slow holder can never
 	// free its successor's. notBefore sets the cool-down the sweep must
 	// respect afterwards; nil clears it.
-	ReleaseRefreshClaim(ctx context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error
+	ReleaseRefreshClaim(ctx context.Context, id string, owner string, notBefore *time.Time) error
 }
 
 // ErrRefreshClaimLost is the outcome of a refresh whose claim no longer
@@ -716,28 +750,59 @@ func NewMemoryOAuthStore() *MemoryOAuthStore {
 	return &MemoryOAuthStore{m: make(map[string]OAuthRecord)}
 }
 
-func mkOAuthKey(userID string, kind OAuthKind) string {
-	return userID + "|" + string(kind)
+// mkOAuthKey builds a record's stable identity.
+//
+// Rank 0 keeps the historical two-part form, so every record written before
+// ranks existed keeps the `_id` it already has — no migration of primary
+// keys, and an operator's existing forfait stays the primary by construction.
+// Only the fallbacks an operator adds deliberately carry the third part.
+// sortOAuthChain orders records the way they are meant to be TRIED: by kind,
+// then by rank. Callers walk the slice and take the first that serves, which
+// is what makes a chain a chain without any of them knowing ranks exist.
+func sortOAuthChain(recs []OAuthRecord) {
+	sort.SliceStable(recs, func(i, j int) bool {
+		if recs[i].Kind != recs[j].Kind {
+			return recs[i].Kind < recs[j].Kind
+		}
+		return recs[i].Rank < recs[j].Rank
+	})
+}
+
+// OAuthRecordID is the identity a caller addresses a record by. Exported
+// because the write paths take an id now, and every caller that knows an
+// (owner, kind, rank) must be able to name the record without re-deriving
+// the format — a format duplicated in three places is a format that drifts.
+func OAuthRecordID(userID string, kind OAuthKind, rank int) string {
+	return mkOAuthKey(userID, kind, rank)
+}
+
+func mkOAuthKey(userID string, kind OAuthKind, rank int) string {
+	key := userID + "|" + string(kind)
+	if rank > 0 {
+		key += "|" + strconv.Itoa(rank)
+	}
+	return key
 }
 
 func (s *MemoryOAuthStore) Upsert(_ context.Context, rec OAuthRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rec.ID == "" {
-		rec.ID = mkOAuthKey(rec.UserID, rec.Kind)
+		rec.ID = mkOAuthKey(rec.UserID, rec.Kind, rec.Rank)
 	}
-	s.m[mkOAuthKey(rec.UserID, rec.Kind)] = rec
+	s.m[rec.ID] = rec
 	return nil
 }
 
 func (s *MemoryOAuthStore) Get(_ context.Context, userID string, kind OAuthKind) (OAuthRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r, ok := s.m[mkOAuthKey(userID, kind)]
-	if !ok {
-		return OAuthRecord{}, ErrOAuthNotFound
+	for _, r := range s.m {
+		if r.UserID == userID && r.Kind == kind && r.Rank == 0 {
+			return r, nil
+		}
 	}
-	return r, nil
+	return OAuthRecord{}, ErrOAuthNotFound
 }
 
 func (s *MemoryOAuthStore) ListByUser(_ context.Context, userID string) ([]OAuthRecord, error) {
@@ -749,10 +814,11 @@ func (s *MemoryOAuthStore) ListByUser(_ context.Context, userID string) ([]OAuth
 			out = append(out, r)
 		}
 	}
+	sortOAuthChain(out)
 	return out, nil
 }
 
-func (s *MemoryOAuthStore) Delete(_ context.Context, userID string, kind OAuthKind) error {
+func (s *MemoryOAuthStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Report ErrOAuthNotFound for a missing key, matching MongoOAuthStore
@@ -760,11 +826,10 @@ func (s *MemoryOAuthStore) Delete(_ context.Context, userID string, kind OAuthKi
 	// the outcome — e.g. auditing a delete only when something was actually
 	// removed — is correct against Mongo but silently wrong under the memory
 	// store used by tests and local mode.
-	key := mkOAuthKey(userID, kind)
-	if _, ok := s.m[key]; !ok {
+	if _, ok := s.m[id]; !ok {
 		return ErrOAuthNotFound
 	}
-	delete(s.m, key)
+	delete(s.m, id)
 	return nil
 }
 
@@ -780,25 +845,23 @@ func (s *MemoryOAuthStore) ExpiringBefore(_ context.Context, t time.Time) ([]OAu
 	return out, nil
 }
 
-func (s *MemoryOAuthStore) SetAccountLabel(_ context.Context, userID string, kind OAuthKind, label string) error {
+func (s *MemoryOAuthStore) SetAccountLabel(_ context.Context, id string, label string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := mkOAuthKey(userID, kind)
-	r, ok := s.m[key]
+	r, ok := s.m[id]
 	if !ok {
 		return ErrOAuthNotFound
 	}
 	r.AccountLabel = label
 	r.UpdatedAt = time.Now().UTC()
-	s.m[key] = r
+	s.m[id] = r
 	return nil
 }
 
-func (s *MemoryOAuthStore) ClaimRefresh(_ context.Context, userID string, kind OAuthKind, owner string, now, until time.Time) (bool, error) {
+func (s *MemoryOAuthStore) ClaimRefresh(_ context.Context, id string, owner string, now, until time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := mkOAuthKey(userID, kind)
-	r, ok := s.m[key]
+	r, ok := s.m[id]
 	if !ok {
 		return false, nil
 	}
@@ -808,15 +871,14 @@ func (s *MemoryOAuthStore) ClaimRefresh(_ context.Context, userID string, kind O
 	u := until.UTC()
 	r.RefreshClaimOwner = owner
 	r.RefreshNotBefore = &u
-	s.m[key] = r
+	s.m[id] = r
 	return true, nil
 }
 
-func (s *MemoryOAuthStore) ReleaseRefreshClaim(_ context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error {
+func (s *MemoryOAuthStore) ReleaseRefreshClaim(_ context.Context, id string, owner string, notBefore *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := mkOAuthKey(userID, kind)
-	r, ok := s.m[key]
+	r, ok := s.m[id]
 	// A record that vanished under the holder is the claim-lost outcome,
 	// not a lookup failure — same verdict the Mongo twin's MatchedCount
 	// gives, and the caller acts on it identically.
@@ -825,7 +887,7 @@ func (s *MemoryOAuthStore) ReleaseRefreshClaim(_ context.Context, userID string,
 	}
 	r.RefreshClaimOwner = ""
 	r.RefreshNotBefore = copyTimePtr(notBefore)
-	s.m[key] = r
+	s.m[id] = r
 	return nil
 }
 
@@ -837,11 +899,10 @@ func copyTimePtr(t *time.Time) *time.Time {
 	return &c
 }
 
-func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
+func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, id string, upd OAuthTokenUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := mkOAuthKey(userID, kind)
-	r, ok := s.m[key]
+	r, ok := s.m[id]
 	if upd.ClaimOwner != "" {
 		// A fenced commit reads its verdict off the fence, exactly like
 		// ReleaseRefreshClaim: a record that vanished under the holder is
@@ -872,7 +933,7 @@ func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, userID string, kind O
 	}
 	r.NotRefreshable = upd.NotRefreshable
 	r.UpdatedAt = time.Now().UTC()
-	s.m[key] = r
+	s.m[id] = r
 	return nil
 }
 
@@ -887,9 +948,51 @@ func NewMongoOAuthStore(db *mongo.Database) *MongoOAuthStore {
 	return &MongoOAuthStore{coll: db.Collection(OAuthCollectionName)}
 }
 
+// isIndexMissing reports the DropOne outcomes that are not failures. Both
+// mean the same thing: there is no legacy index here to remove.
+//
+//   - IndexNotFound (27) — the collection exists and the index is already
+//     gone, which is the steady state after the first pass;
+//   - NamespaceNotFound (26) — the COLLECTION does not exist yet, i.e. every
+//     brand-new deployment. Without this arm EnsureSchema fails on a fresh
+//     database: an install with nothing to migrate refused by the migration.
+//
+// The second arm is invisible to `task check`, which skips every Mongo-gated
+// suite; the mongo-conformance harness is what surfaces it.
+//
+// The driver may also surface either as a plain message on older servers, so
+// the text is read as a fallback.
+func isIndexMissing(err error) bool {
+	var ce mongo.CommandError
+	if errors.As(err, &ce) && (ce.Code == 27 || ce.Code == 26) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "index not found") || strings.Contains(msg, "ns not found")
+}
+
 func (s *MongoOAuthStore) EnsureSchema(ctx context.Context) error {
+	// Records written before ranks existed carry no `rank` field, and Mongo
+	// does not match a missing field against 0 — so Get(primary) would stop
+	// finding them, and the unique index below would admit a SECOND rank-0
+	// record beside each. Backfill first, idempotently: after the first pass
+	// this matches nothing.
+	if _, err := s.coll.UpdateMany(ctx,
+		bson.M{"rank": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"rank": 0}},
+	); err != nil {
+		return fmt.Errorf("secrets: backfill oauth rank: %w", err)
+	}
+	// The old (user_id, kind) unique index IS the ceiling this change
+	// removes: it has to go, not gain a sibling, or a second credential for
+	// one kind is still refused. An absent index is the steady state after
+	// the first pass, so only an unexpected failure propagates.
+	if err := s.coll.Indexes().DropOne(ctx, "user_kind_unique"); err != nil &&
+		!isIndexMissing(err) {
+		return fmt.Errorf("secrets: drop legacy oauth index: %w", err)
+	}
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}}, Options: options.Index().SetUnique(true).SetName("user_kind_unique")},
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}, {Key: "rank", Value: 1}}, Options: options.Index().SetUnique(true).SetName("user_kind_rank_unique")},
 		{Keys: bson.D{{Key: "access_token_expires_at", Value: 1}}, Options: options.Index().SetName("access_expiry_partial").SetPartialFilterExpression(bson.M{"access_token_expires_at": bson.M{"$exists": true}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
@@ -900,7 +1003,7 @@ func (s *MongoOAuthStore) EnsureSchema(ctx context.Context) error {
 
 func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 	if rec.ID == "" {
-		rec.ID = mkOAuthKey(rec.UserID, rec.Kind)
+		rec.ID = mkOAuthKey(rec.UserID, rec.Kind, rec.Rank)
 	}
 	rec.UpdatedAt = time.Now().UTC()
 	if rec.CreatedAt.IsZero() {
@@ -915,7 +1018,7 @@ func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 
 	_, err = s.coll.UpdateOne(
 		ctx,
-		bson.M{"user_id": rec.UserID, "kind": rec.Kind},
+		bson.M{"_id": rec.ID},
 		bson.M{
 			"$set":         setBody,
 			"$setOnInsert": bson.M{"_id": rec.ID},
@@ -929,23 +1032,31 @@ func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 }
 
 func (s *MongoOAuthStore) Get(ctx context.Context, userID string, kind OAuthKind) (OAuthRecord, error) {
-	return mongoutil.FindOne[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: get oauth")
+	return mongoutil.FindOne[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID, "kind": kind, "rank": 0}, ErrOAuthNotFound, "secrets: get oauth")
 }
 
 func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error) {
-	return mongoutil.FindAllSorted[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID}, "kind",
+	recs, err := mongoutil.FindAllSorted[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID}, "kind",
 		"secrets: list oauth", "secrets: decode oauth")
+	if err != nil {
+		return nil, err
+	}
+	// The chain order is (kind, rank); Mongo sorted the first half, and the
+	// second is settled here rather than in a compound sort so both stores
+	// answer with one shared comparator.
+	sortOAuthChain(recs)
+	return recs, nil
 }
 
-func (s *MongoOAuthStore) Delete(ctx context.Context, userID string, kind OAuthKind) error {
-	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: delete oauth")
+func (s *MongoOAuthStore) Delete(ctx context.Context, id string) error {
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrOAuthNotFound, "secrets: delete oauth")
 }
 
-func (s *MongoOAuthStore) SetAccountLabel(ctx context.Context, userID string, kind OAuthKind, label string) error {
+func (s *MongoOAuthStore) SetAccountLabel(ctx context.Context, id string, label string) error {
 	// A literal $set of the two keys, never the struct: the sealed payload
 	// and the fingerprint stay whatever the last connect/refresh wrote.
 	res, err := s.coll.UpdateOne(ctx,
-		bson.M{"user_id": userID, "kind": kind},
+		bson.M{"_id": id},
 		bson.M{"$set": bson.M{"account_label": label, "updated_at": time.Now().UTC()}},
 	)
 	if err != nil {
@@ -961,9 +1072,9 @@ func (s *MongoOAuthStore) SetAccountLabel(ctx context.Context, userID string, ki
 // stands (refresh_not_before absent, null, or already past — `nil` matches
 // the first two in Mongo), so the first replica to stamp its owner wins and
 // the rest get (false, nil). One refresher per record, no leader.
-func (s *MongoOAuthStore) ClaimRefresh(ctx context.Context, userID string, kind OAuthKind, owner string, now, until time.Time) (bool, error) {
+func (s *MongoOAuthStore) ClaimRefresh(ctx context.Context, id string, owner string, now, until time.Time) (bool, error) {
 	res, err := s.coll.UpdateOne(ctx,
-		bson.M{"user_id": userID, "kind": kind, "$or": []bson.M{
+		bson.M{"_id": id, "$or": []bson.M{
 			{"refresh_not_before": nil},
 			{"refresh_not_before": bson.M{"$lte": now.UTC()}},
 		}},
@@ -978,7 +1089,7 @@ func (s *MongoOAuthStore) ClaimRefresh(ctx context.Context, userID string, kind 
 	return res.MatchedCount > 0, nil
 }
 
-func (s *MongoOAuthStore) ReleaseRefreshClaim(ctx context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error {
+func (s *MongoOAuthStore) ReleaseRefreshClaim(ctx context.Context, id string, owner string, notBefore *time.Time) error {
 	// updated_at is deliberately NOT touched here, nor in ClaimRefresh:
 	// taking or dropping the lock changes no credential, and the field is
 	// rendered to operators as when this connection last changed. A refresh
@@ -988,7 +1099,7 @@ func (s *MongoOAuthStore) ReleaseRefreshClaim(ctx context.Context, userID string
 		"refresh_not_before":  notBeforeValue(notBefore),
 	}
 	res, err := s.coll.UpdateOne(ctx,
-		bson.M{"user_id": userID, "kind": kind, "refresh_claim_owner": owner},
+		bson.M{"_id": id, "refresh_claim_owner": owner},
 		bson.M{"$set": set},
 	)
 	if err != nil {
@@ -1024,7 +1135,7 @@ func notBeforeValue(t *time.Time) any {
 //   - the filter arrives as a RETURNED value, so a call site that passes a
 //     literal instead leaves it unused and does not compile. Built in place,
 //     it was "used" by its own map-index assignments and compiled fine.
-func oauthTokenUpdateWrite(userID string, kind OAuthKind, upd OAuthTokenUpdate, now time.Time) (bson.M, bson.M) {
+func oauthTokenUpdateWrite(id string, upd OAuthTokenUpdate, now time.Time) (bson.M, bson.M) {
 	// A literal $set of the refresh-owned keys, never the struct: the
 	// account label — and anything else a future writer owns — stays
 	// whatever its own endpoint last wrote.
@@ -1032,7 +1143,7 @@ func oauthTokenUpdateWrite(userID string, kind OAuthKind, upd OAuthTokenUpdate, 
 		"not_refreshable": upd.NotRefreshable,
 		"updated_at":      now.UTC(),
 	}
-	filter := bson.M{"user_id": userID, "kind": kind}
+	filter := bson.M{"_id": id}
 	if upd.ClaimOwner != "" {
 		// Fenced commit: the tokens land only while this holder still owns
 		// the claim, and the claim is released by the same write. A lost
@@ -1061,8 +1172,8 @@ func oauthTokenUpdateWrite(userID string, kind OAuthKind, upd OAuthTokenUpdate, 
 	return filter, bson.M{"$set": set}
 }
 
-func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
-	filter, update := oauthTokenUpdateWrite(userID, kind, upd, time.Now())
+func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, id string, upd OAuthTokenUpdate) error {
+	filter, update := oauthTokenUpdateWrite(id, upd, time.Now())
 	res, err := s.coll.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("secrets: update oauth tokens: %w", err)

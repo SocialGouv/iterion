@@ -30,7 +30,7 @@ projection, we make that injected text statically unreachable.
 
 The reviewer's input schema is `review_isolation_input`:
 
-```
+```iter fragment
 schema review_isolation_input:
   file:     string    # path to the file (workspace-relative)
   line:     json      # [start, end] line range from the finding

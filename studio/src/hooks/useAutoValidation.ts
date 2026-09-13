@@ -4,6 +4,9 @@ import * as api from "@/api/client";
 
 export function useAutoValidation() {
   const document = useDocumentStore((s) => s.document);
+  // The file the document came from: a main.bot inside a bundle is
+  // validated with the bundle's prompts/*.md in scope (see api.validate).
+  const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const abortRef = useRef<AbortController>(undefined);
@@ -17,7 +20,7 @@ export function useAutoValidation() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const result = await api.validate(document, controller.signal);
+        const result = await api.validate(document, controller.signal, currentFilePath);
         if (!controller.signal.aborted) {
           setDiagnostics(result.diagnostics, result.warnings, result.issues);
         }
@@ -33,5 +36,5 @@ export function useAutoValidation() {
       }
     }, 1500);
     return () => clearTimeout(timerRef.current);
-  }, [document, setDiagnostics]);
+  }, [document, currentFilePath, setDiagnostics]);
 }

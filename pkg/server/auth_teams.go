@@ -369,7 +369,7 @@ func (s *Server) handleInvitationAcceptForLoggedIn(w http.ResponseWriter, r *htt
 	if !ok {
 		// Try to extract from cookie/bearer manually since it's a
 		// public route.
-		bearer := extractBearer(r)
+		bearer := s.extractBearer(r)
 		if bearer == "" || s.signer == nil {
 			httpError(w, http.StatusUnauthorized, "login required to accept")
 			return

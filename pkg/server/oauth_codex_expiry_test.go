@@ -202,7 +202,7 @@ func TestOAuthRefresh_ManualRefreshIsFencedByTheSameClaim(t *testing.T) {
 
 	// Somebody else (a sweep, another operator) holds the claim.
 	now := time.Now().UTC()
-	ok, err := store.ClaimRefresh(t.Context(), "jo", secrets.OAuthKindClaudeCode, "someone-else", now, now.Add(secrets.RefreshClaimTTL))
+	ok, err := store.ClaimRefresh(t.Context(), secrets.OAuthRecordID("jo", secrets.OAuthKindClaudeCode, 0), "someone-else", now, now.Add(secrets.RefreshClaimTTL))
 	if err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
@@ -219,7 +219,7 @@ func TestOAuthRefresh_ManualRefreshIsFencedByTheSameClaim(t *testing.T) {
 	// in flight: the record it is about to write no longer exists. The
 	// re-connect (Upsert) clears the claim, which is what makes the commit
 	// fail closed.
-	if err := store.ReleaseRefreshClaim(t.Context(), "jo", secrets.OAuthKindClaudeCode, "someone-else", nil); err != nil {
+	if err := store.ReleaseRefreshClaim(t.Context(), secrets.OAuthRecordID("jo", secrets.OAuthKindClaudeCode, 0), "someone-else", nil); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	reconnected, err := secrets.SealOAuthPayload(srv.sealer, "jo", secrets.OAuthKindClaudeCode,
@@ -290,11 +290,11 @@ func TestOAuthRefresh_ACoolDownIsNotReportedAsARefreshInFlight(t *testing.T) {
 
 	// The state an undatable refresh leaves: no owner, a cool-down an hour out.
 	now := time.Now().UTC()
-	if ok, err := store.ClaimRefresh(t.Context(), "jo", secrets.OAuthKindCodex, "previous-sweep", now, now.Add(secrets.RefreshClaimTTL)); err != nil || !ok {
+	if ok, err := store.ClaimRefresh(t.Context(), secrets.OAuthRecordID("jo", secrets.OAuthKindCodex, 0), "previous-sweep", now, now.Add(secrets.RefreshClaimTTL)); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
 	cool := now.Add(time.Hour).Truncate(time.Second)
-	if err := store.ReleaseRefreshClaim(t.Context(), "jo", secrets.OAuthKindCodex, "previous-sweep", &cool); err != nil {
+	if err := store.ReleaseRefreshClaim(t.Context(), secrets.OAuthRecordID("jo", secrets.OAuthKindCodex, 0), "previous-sweep", &cool); err != nil {
 		t.Fatalf("seed cool-down: %v", err)
 	}
 
@@ -321,7 +321,7 @@ func TestOAuthRefresh_ACoolDownIsNotReportedAsARefreshInFlight(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
-	if ok, err := store.ClaimRefresh(t.Context(), "jo", secrets.OAuthKindCodex, "someone-else", now, now.Add(secrets.RefreshClaimTTL)); err != nil || !ok {
+	if ok, err := store.ClaimRefresh(t.Context(), secrets.OAuthRecordID("jo", secrets.OAuthKindCodex, 0), "someone-else", now, now.Add(secrets.RefreshClaimTTL)); err != nil || !ok {
 		t.Fatalf("seed live claim: ok=%v err=%v", ok, err)
 	}
 	code, body = oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/refresh", jo, "")

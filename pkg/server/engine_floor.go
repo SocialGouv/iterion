@@ -118,6 +118,33 @@ func orderableBuild(v string) bool {
 // write already produces.
 func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Request, bs botsource.BotSource) (warning string, ok bool) {
 	m := bs.Manifest()
+	// A bundle written in a syntax profile above 1 needs a floor at or above
+	// the release that reads the profile (bundle.CheckProfileFloor, shared
+	// with `validate`'s C252): the main workflow reaches a runner as an AST,
+	// but a subbot child is re-parsed as text by the runner's own binary, and
+	// a build older than the profile fails at that parse — after admission,
+	// on a pod. A floor declared but lower admits exactly those builds.
+	// Refused here instead, unless forced.
+	if profile, by, _ := bundle.MaxSyntaxProfile(bs.Files); profile >= 2 {
+		if pf := bundle.CheckProfileFloor(m, profile); !pf.OK {
+			need := pf.Need
+			if need == "" {
+				need = "<the release that reads the profile>"
+			}
+			gap := "declares no requires.iterion"
+			if pf.Declared != "" {
+				gap = fmt.Sprintf("declares requires.iterion %q, below %s (the release that reads the profile)", pf.Declared, need)
+			}
+			if forceRequested(r) {
+				return fmt.Sprintf("FORCED past the profile-floor guard: %q is written in dsl profile %d (%s) and %s — a runner older than the profile will fail at its first parse of a child",
+					bs.Slug, profile, strings.Join(by, ", "), gap), true
+			}
+			s.httpErrorFor(w, r, http.StatusConflict,
+				"bot %q is written in dsl profile %d (%s) but its manifest %s: declare `requires: { iterion: \">= %s\" }` (`iterion dsl migrate` writes it), or push anyway with --force",
+				bs.Slug, profile, strings.Join(by, ", "), gap, need)
+			return "", false
+		}
+	}
 	if m == nil || m.Requires == nil || strings.TrimSpace(m.Requires.Iterion) == "" {
 		return "", true
 	}

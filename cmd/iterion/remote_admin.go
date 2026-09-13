@@ -138,6 +138,10 @@ var (
 	// remoteLLMAccountLabel names the ACCOUNT behind a forfait, so a
 	// listing says "jothedev" instead of a bare fingerprint.
 	remoteLLMAccountLabel string
+	// remoteLLMRank selects which link of the tier's credential CHAIN a
+	// command addresses: 0 (the default) is the primary, 1 and up are the
+	// fallbacks tried in order when the one before it cannot serve.
+	remoteLLMRank int
 )
 
 var remoteAdminLLMCmd = &cobra.Command{
@@ -204,7 +208,11 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 var remoteAdminLLMOAuthCmd = &cobra.Command{
 	Use:   "oauth [set|connect|name|refresh|delete] [kind]",
 	Short: "Platform OAuth-forfait: list connections (default) or act on one kind (claude_code|codex)",
-	Args:  cobra.MaximumNArgs(2),
+	Long: "The platform tier's forfait connections. Each kind may hold a CHAIN:\n" +
+		"--rank 0 (the default) is the primary, --rank 1 and up are the fallbacks\n" +
+		"tried in order when the link before them cannot serve. Every action\n" +
+		"addresses exactly the link --rank names — including delete.",
+	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
 			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/oauth/connections")
@@ -232,9 +240,9 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			path := "/api/admin/llm/oauth/" + kind + "/credentials"
-			if lbl := strings.TrimSpace(remoteLLMAccountLabel); lbl != "" {
-				path += "?account_label=" + url.QueryEscape(lbl)
+			path, err := cli.OAuthPath("/api/admin/llm/oauth/"+kind+"/credentials", remoteLLMAccountLabel, remoteLLMRank)
+			if err != nil {
+				return err
 			}
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", path, blob)
 		case "connect":
@@ -243,7 +251,7 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if len(args) == 2 {
 				kind = args[1]
 			}
-			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind, strings.TrimSpace(remoteLLMAccountLabel))
+			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind, strings.TrimSpace(remoteLLMAccountLabel), remoteLLMRank)
 		case "name":
 			// Names the ACCOUNT behind a platform forfait. The listing
 			// prints only kind + fingerprint otherwise, and a fingerprint
@@ -263,19 +271,33 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", "/api/admin/llm/oauth/"+kind, body)
+			// The label travels in the body here, so only the rank goes in
+			// the query.
+			path, err := cli.OAuthPath("/api/admin/llm/oauth/"+kind, "", remoteLLMRank)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", path, body)
 		case "refresh":
 			kind, err := needKind()
 			if err != nil {
 				return err
 			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+kind+"/refresh", nil)
+			path, err := cli.OAuthPath("/api/admin/llm/oauth/"+kind+"/refresh", "", remoteLLMRank)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", path, nil)
 		case "delete":
 			kind, err := needKind()
 			if err != nil {
 				return err
 			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/oauth/"+kind, nil)
+			path, err := cli.OAuthPath("/api/admin/llm/oauth/"+kind, "", remoteLLMRank)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", path, nil)
 		default:
 			return fmt.Errorf("unknown oauth action %q (want set|connect|name|refresh|delete)", action)
 		}
@@ -780,6 +802,7 @@ func init() {
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name for create")
 	remoteAdminLLMKeysCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make the created key the provider's default")
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
+	remoteAdminLLMOAuthCmd.Flags().IntVar(&remoteLLMRank, "rank", 0, "Which link of the platform credential chain to address (0 = primary, 1+ = fallbacks tried in order)")
 	remoteAdminLLMOAuthCmd.Flags().StringVar(&remoteLLMAccountLabel, "account-label", "", "Name the account behind this forfait (with `set`/`connect`, or alone with `name`; `name --account-label \"\"` clears it)")
 	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import Editor from "@monaco-editor/react";
+import Editor from "@/lib/monaco";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button, Dialog, Spinner } from "@/components/ui";

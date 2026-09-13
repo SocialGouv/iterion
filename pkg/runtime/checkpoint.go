@@ -41,6 +41,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		ArtifactRevisions:      artifactRevisions,
 		ArtifactRevisionsKnown: true,
 		SelectedIncoming:       cloneIncoming(rs.selectedIncoming),
+		SettledIncoming:        cloneIncoming(rs.settledIncoming),
 		Vars:                   rs.vars,
 		NodeAttempts:           serializeNodeAttempts(rs.nodeAttempts),
 		// Persist run-scoped accounting so resume continues from consumed
@@ -354,11 +355,22 @@ func restoreLoopSnapshots(rs *runState, cp *store.Checkpoint) {
 // would have on the first attempt. A missing field (legacy checkpoint)
 // leaves the empty map newRunState allocated: incomingFor then reports
 // untracked and the resolver falls back to source-output presence.
+//
+// It rehydrates the settled floor in the same breath, because the two are
+// only useful together: a run parked ON a convergence node whose fan-out
+// produced nothing restarts from that very node without replaying the
+// fan-out, so a floor left behind here would go missing on the resume
+// after surviving the first attempt.
 func restoreSelectedIncoming(rs *runState, cp *store.Checkpoint) {
-	if cp == nil || len(cp.SelectedIncoming) == 0 {
+	if cp == nil {
 		return
 	}
-	rs.selectedIncoming = cloneIncoming(cp.SelectedIncoming)
+	if len(cp.SelectedIncoming) > 0 {
+		rs.selectedIncoming = cloneIncoming(cp.SelectedIncoming)
+	}
+	if len(cp.SettledIncoming) > 0 {
+		rs.settledIncoming = cloneIncoming(cp.SettledIncoming)
+	}
 }
 
 // restoreNodeAttempts is the inverse of serializeNodeAttempts: it rebuilds
