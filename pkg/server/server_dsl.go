@@ -93,6 +93,8 @@ type validateResponse struct {
 	EdgeCount   int             `json:"edge_count,omitempty"`
 	// Native public interface and data flow, without technical node settings.
 	PublicView *ir.PublicWorkflowView `json:"public_view,omitempty"`
+	// Legacy extraction aid. It is always incomplete and never executable.
+	ConversionDraft *ir.LegacyConversionDraft `json:"conversion_draft,omitempty"`
 }
 
 // --- Handlers ---
@@ -246,6 +248,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		resp.NodeCount = len(cr.Workflow.Nodes)
 		resp.EdgeCount = len(cr.Workflow.Edges)
 		resp.PublicView = cr.Workflow.PublicView()
+		resp.ConversionDraft = cr.Workflow.ConversionDraft()
 	}
 
 	writeJSON(w, resp)

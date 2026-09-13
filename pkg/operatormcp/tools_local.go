@@ -20,7 +20,7 @@ func localTools() []Tool {
 	return []Tool{
 		{
 			Name:        "local_validate",
-			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns structured diagnostics and, for a valid native workflow, its public contract, typed node inputs/outputs, bindings, products and graph identity in public_view. The public view excludes technical implementation details; valid:false is a normal outcome, not a tool error.",
+			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns structured diagnostics; native workflows expose public contracts, typed ports, bindings and products in public_view without technical settings. Legacy workflows expose an explicitly incomplete conversion_draft with candidate inputs and unresolved mappings, effects and guarantees. valid:false is a normal outcome, not a tool error.",
 			ReadOnly:    true,
 			InputSchema: json.RawMessage(`{
   "type": "object",

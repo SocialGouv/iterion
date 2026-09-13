@@ -122,6 +122,37 @@ workflow main:
 	}
 }
 
+func TestValidateLegacyWorkflowReturnsIncompleteConversionDraft(t *testing.T) {
+	_, hs := newTestServer(t)
+	const source = `tool publish:
+  command: "echo hi"
+workflow main:
+  vars:
+    outline: json
+  entry: publish
+  publish -> done
+`
+	doc := parseDocument(t, hs.URL, source)
+	resp := postDSLJSON(t, hs.URL+"/api/validate", `{"document":`+string(doc)+`}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d; body=%s", resp.StatusCode, mustReadBody(t, resp))
+	}
+	var out validateResponse
+	decodeJSONResp(t, resp, &out)
+	if !out.Valid || out.PublicView != nil || out.ConversionDraft == nil ||
+		out.ConversionDraft.Status != "incomplete" || len(out.ConversionDraft.CandidateInputs) != 1 ||
+		out.ConversionDraft.CandidateInputs[0].LegacyType != "json" {
+		t.Fatalf("legacy conversion status missing: %+v", out)
+	}
+	foundOutputGap := false
+	for _, gap := range out.ConversionDraft.Unresolved {
+		foundOutputGap = foundOutputGap || gap.Kind == "workflow_outputs"
+	}
+	if !foundOutputGap {
+		t.Fatalf("draft incorrectly certifies output mapping: %+v", out.ConversionDraft)
+	}
+}
+
 // TestParse_UnparseableSource proves the parser diagnostic channel is
 // wired: an obviously invalid source must produce at least one
 // non-empty diagnostic string.

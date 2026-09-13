@@ -1466,6 +1466,94 @@
         ],
         "type": "object"
       },
+      "LegacyConversionDraft": {
+        "properties": {
+          "candidate_inputs": {
+            "items": {
+              "$ref": "#/components/schemas/LegacyInputCandidate"
+            },
+            "type": "array"
+          },
+          "candidate_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/LegacyNodeCandidate"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "unresolved": {
+            "items": {
+              "$ref": "#/components/schemas/LegacyConversionGap"
+            },
+            "type": "array"
+          },
+          "workflow_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "workflow_name",
+          "candidate_inputs",
+          "candidate_nodes",
+          "unresolved"
+        ],
+        "type": "object"
+      },
+      "LegacyConversionGap": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "action"
+        ],
+        "type": "object"
+      },
+      "LegacyInputCandidate": {
+        "properties": {
+          "legacy_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "legacy_type",
+          "required"
+        ],
+        "type": "object"
+      },
+      "LegacyNodeCandidate": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "type": "object"
+      },
       "LineageContext": {
         "properties": {
           "parent_node_id": {
@@ -4333,6 +4421,9 @@
       },
       "validateResponse": {
         "properties": {
+          "conversion_draft": {
+            "$ref": "#/components/schemas/LegacyConversionDraft"
+          },
           "diagnostics": {
             "items": {
               "type": "string"

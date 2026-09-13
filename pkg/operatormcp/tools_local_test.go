@@ -48,13 +48,16 @@ func TestLocalValidate(t *testing.T) {
 		t.Fatalf("valid file flagged as tool error: %s", text)
 	}
 	var res struct {
-		Valid        bool   `json:"valid"`
-		WorkflowName string `json:"workflow_name"`
+		Valid           bool   `json:"valid"`
+		WorkflowName    string `json:"workflow_name"`
+		ConversionDraft struct {
+			Status string `json:"status"`
+		} `json:"conversion_draft"`
 	}
 	if err := json.Unmarshal([]byte(text), &res); err != nil {
 		t.Fatalf("decode: %v\n%s", err, text)
 	}
-	if !res.Valid || res.WorkflowName != "main" {
+	if !res.Valid || res.WorkflowName != "main" || res.ConversionDraft.Status != "incomplete" {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 

@@ -6112,6 +6112,27 @@ export interface components {
             /** Format: date-time */
             not_before?: string;
         };
+        LegacyConversionDraft: {
+            candidate_inputs: components["schemas"]["LegacyInputCandidate"][];
+            candidate_nodes: components["schemas"]["LegacyNodeCandidate"][];
+            status: string;
+            unresolved: components["schemas"]["LegacyConversionGap"][];
+            workflow_name: string;
+        };
+        LegacyConversionGap: {
+            action: string;
+            kind: string;
+            node_id?: string;
+        };
+        LegacyInputCandidate: {
+            legacy_type: string;
+            name: string;
+            required: boolean;
+        };
+        LegacyNodeCandidate: {
+            id: string;
+            kind: string;
+        };
         LineageContext: {
             parent_node_id?: string;
             parent_run_id?: string;
@@ -6976,6 +6997,7 @@ export interface components {
             path?: string;
         };
         validateResponse: {
+            conversion_draft?: components["schemas"]["LegacyConversionDraft"];
             diagnostics?: string[];
             edge_count?: number;
             issues?: components["schemas"]["DiagnosticDTO"][];
