@@ -19,7 +19,7 @@ Syntax profiles and runtime semantics are independent.
 | Native acyclic data graph, including crossed diamonds | Compiled graph inspection and runtime dependency traces | Crossed DAG and committed-producer waiting pass through the actual Engine on FS/Mongo |
 | Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Compiler cases and Engine 0/1/N, broadcast, whole-array collection, limits and order pass on FS/Mongo; native file outputs are separately captured and validated |
 | Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root scheduling, iteration reservation, file handling, strict cancellation and verifier capability refusal pass; nested root admission and production verifier wiring outstanding |
-| Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable file capture, scratch-shadow isolation and runtime freshness/declared-file checks pass on FS/Mongo/S3; a process kill specifically during file capture remains untested |
+| Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable file capture, scratch-shadow isolation and runtime freshness/declared-file checks pass on FS/Mongo/S3; real process kill after the first captured byte leaves no published file and recovers on FS/Mongo |
 | Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine publication/acknowledgment fault injection pass on FS/Mongo; real child-process SIGKILL after effect dispatch passes on both stores, with a simulated supervisor status transition; automatic orphan detection remains outstanding |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Engine pause/cancel/resume, selective source and corrupt-file invalidation, interrupted CAS and manual/idempotent/verified effect decisions pass on FS/Mongo; real process-kill recovery passes on both stores after the explicit orphan status transition; complete child source closure remains outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
@@ -32,7 +32,7 @@ Syntax profiles and runtime semantics are independent.
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store and 68 Engine cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store, 70 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
@@ -117,7 +117,8 @@ Syntax profiles and runtime semantics are independent.
   The native manifest verifies 70 cases without skips; the focused rerun also
   covers ordinary run-file uploading, S3 client round trips and deletion
   collection coverage. Separate Engine cases now check fresh producer
-  provenance and declared file properties; file capture during SIGKILL remains open.
+  provenance and declared file properties; separate process-kill cases now
+  cover an interrupted capture before publication.
 
 - Native activation records and immutable admissions are bound to the
   canonical filesystem root or Mongo backend identity. Copying proof or an
@@ -146,12 +147,18 @@ Syntax profiles and runtime semantics are independent.
   evidence that the effect did not occur allows replay. Unknown or empty
   evidence leaves the invocation uncertain. A default executor without the
   capability refuses admission before dispatch. The final race JSON manifest
-  verifies 70 store and 68 Engine cases without skips.
+  verifies 70 store and 70 Engine cases without skips.
 - `TestNativeProcessKillRecoveryFilesystem` and its Mongo counterpart kill a
   separate test process after the effect-dispatched checkpoint. After an
   explicit supervisor-equivalent status transition, resume refuses to replay
   without an attempt-bound decision and completes exactly once after it. The
   tests do not certify automatic orphan detection by a production supervisor.
+- `TestNativeFileCaptureKillRecoveryFilesystem` and its Mongo counterpart kill
+  a separate process after the Store reads the first byte of a declared file,
+  before its private snapshot is complete. No file reference is published.
+  After the explicit orphan-status transition, resume retries the producer
+  and publishes only a verified attempt-2 file; both cases pass with race
+  detection. Automatic orphan detection remains an open integration item.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
@@ -181,7 +188,7 @@ Syntax profiles and runtime semantics are independent.
 
 ## Verification rules
 
-The runtime value layer now has 68 mandatory named cases in
+The runtime value layer now has 70 mandatory named cases in
 `pkg/runtime/ports_cases.json`, all passing with `-race` against the actual
 filesystem store and Mongo 8 replica set. Its Mongo artifact client is a real
 S3 client connected to a disposable HTTP object fixture. These cases execute
@@ -194,8 +201,9 @@ unchanged successes, selective invalidation after a technical source change,
 and manual/idempotent/verified effect decisions tied to an exact attempt.
 Six injected commit boundaries run on both stores, including lost acknowledgment
 after successful publication. Separate tests also kill a real process after
-durable effect dispatch on both stores; neither method alone proves automatic
-orphan detection or a crash during file capture.
+durable effect dispatch and during private file capture on both stores. The
+tests require an explicit orphan-status transition; they do not prove
+automatic production orphan detection.
 
 The existing correction, compute, compiler and native-store transition tests
 also pass after the shared seam changes. Full `pkg/dsl/expr`, `pkg/dsl/ir` and

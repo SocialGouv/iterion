@@ -28,30 +28,7 @@ func TestNativeProcessKillChild(t *testing.T) {
 	if os.Getenv("ITERION_PORT_KILL_CHILD") != "1" {
 		return
 	}
-	var s store.RunStore
-	if uri := os.Getenv("ITERION_PORT_KILL_MONGO_URI"); uri != "" {
-		ctx := context.Background()
-		objects, err := blob.NewS3(ctx, blob.Config{Bucket: "native-kill", Region: "us-east-1",
-			Endpoint: os.Getenv("ITERION_PORT_KILL_S3_ENDPOINT"), UsePathStyle: true,
-			AccessKeyID: "fixture", SecretAccessKey: "fixture"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		mongoStore, err := storemongo.New(ctx, storemongo.Config{URI: uri,
-			Database: os.Getenv("ITERION_PORT_KILL_MONGO_DB"), Blob: objects,
-			RunFilesScratchDir: os.Getenv("ITERION_PORT_KILL_SCRATCH")})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer mongoStore.Close(ctx)
-		s = mongoStore
-	} else {
-		local, err := store.OpenExisting(os.Getenv("ITERION_PORT_KILL_STORE"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		s = local
-	}
+	s := nativeKillChildStore(t)
 	executor := portsExecutorFunc(func(ctx context.Context, _ ir.Node, _ map[string]any) (map[string]any, error) {
 		if err := os.WriteFile(os.Getenv("ITERION_PORT_KILL_MARKER"), []byte("effect started"), 0o600); err != nil {
 			return nil, err
@@ -69,6 +46,35 @@ func TestNativeProcessKillChild(t *testing.T) {
 	t.Fatal("child completed before SIGKILL")
 }
 
+func nativeKillChildStore(t *testing.T) store.RunStore {
+	t.Helper()
+	var s store.RunStore
+	if uri := os.Getenv("ITERION_PORT_KILL_MONGO_URI"); uri != "" {
+		ctx := context.Background()
+		objects, err := blob.NewS3(ctx, blob.Config{Bucket: "native-kill", Region: "us-east-1",
+			Endpoint: os.Getenv("ITERION_PORT_KILL_S3_ENDPOINT"), UsePathStyle: true,
+			AccessKeyID: "fixture", SecretAccessKey: "fixture"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mongoStore, err := storemongo.New(ctx, storemongo.Config{URI: uri,
+			Database: os.Getenv("ITERION_PORT_KILL_MONGO_DB"), Blob: objects,
+			RunFilesScratchDir: os.Getenv("ITERION_PORT_KILL_SCRATCH")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = mongoStore.Close(context.Background()) })
+		s = mongoStore
+	} else {
+		local, err := store.OpenExisting(os.Getenv("ITERION_PORT_KILL_STORE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s = local
+	}
+	return s
+}
+
 func TestNativeProcessKillRecoveryFilesystem(t *testing.T) {
 	testNativeProcessKillRecovery(t, tmpStore, nil)
 }
@@ -81,6 +87,12 @@ func TestNativeProcessKillRecoveryMongo(t *testing.T) {
 		}
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
+	factory, childEnv := nativeProcessKillMongoFixture(t, uri)
+	testNativeProcessKillRecovery(t, factory, childEnv)
+}
+
+func nativeProcessKillMongoFixture(t *testing.T, uri string) (portsTestStoreFactory, func() []string) {
+	t.Helper()
 	_, gateway := s3test.New(t, "native-kill")
 	database := "iterion_native_kill_" + bson.NewObjectID().Hex()
 	scratch := filepath.Join(t.TempDir(), "runfiles")
@@ -108,14 +120,14 @@ func TestNativeProcessKillRecoveryMongo(t *testing.T) {
 		})
 		return s
 	}
-	testNativeProcessKillRecovery(t, factory, func() []string {
+	return factory, func() []string {
 		return []string{
 			"ITERION_PORT_KILL_MONGO_URI=" + uri,
 			"ITERION_PORT_KILL_MONGO_DB=" + database,
 			"ITERION_PORT_KILL_S3_ENDPOINT=" + gateway.URL,
 			"ITERION_PORT_KILL_SCRATCH=" + scratch,
 		}
-	})
+	}
 }
 
 func testNativeProcessKillRecovery(t *testing.T, factory portsTestStoreFactory, extraChildEnv func() []string) {
