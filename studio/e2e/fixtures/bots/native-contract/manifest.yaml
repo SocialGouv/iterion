@@ -1,0 +1,5 @@
+name: native-contract
+display_name: Native Contract Fixture
+description: Typed public contracts and native map graph for the Studio browser suite.
+version: 0.1.0
+enabled: true

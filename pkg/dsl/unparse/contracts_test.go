@@ -111,10 +111,17 @@ func TestPublicContractsSurviveSourceAndEditorRoundTrips(t *testing.T) {
 		edited.Profile = profile
 		expected := contractWire(t, edited)
 		source := unparse.Unparse(edited)
+		if err := unparse.Verify(edited, source); err != nil {
+			t.Fatalf("profile %d refused editor save: %v", profile, err)
+		}
 		restored := contractWire(t, parseContractDocument(t, source))
 		if !bytes.Equal(expected, restored) {
 			t.Fatalf("profile %d changed the complete document\nwant %s\ngot %s\nsource:\n%s", profile, expected, restored, source)
 		}
+	}
+	edited.Contracts[0].Responsibility = "A changed public responsibility"
+	if err := unparse.Verify(edited, unparse.Unparse(edited)); err != nil {
+		t.Fatalf("public-only editor change was refused: %v", err)
 	}
 	ports := edited.Contracts[0].Inputs
 	if ports[2].Default != nil || string(ports[3].Default) != "null" || string(ports[4].Default) != "[]" {

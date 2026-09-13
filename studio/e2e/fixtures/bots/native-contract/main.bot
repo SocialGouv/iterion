@@ -1,0 +1,55 @@
+dsl: 2
+contract Batch:
+  display_name: "Render a batch"
+  responsibility: "Publish all rendered values"
+  inputs:
+    items: string[]
+      min_items: 0
+      max_items: 4
+    prefix: string
+      required: false
+      default: "item-"
+  outputs:
+    results: string[]
+contract Render:
+  display_name: "Render an item"
+  responsibility: "Prefix one item"
+  inputs:
+    item: string
+    prefix: string
+  outputs:
+    text: string
+contract Collect:
+  display_name: "Collect results"
+  responsibility: "Receive the complete batch"
+  inputs:
+    texts: string[]
+  outputs:
+    texts: string[]
+port_policy limited:
+  max_map_items: 4
+compute render_impl:
+  expr:
+    text: "input.prefix + input.item"
+compute collect_impl:
+  expr:
+    texts: "input.texts"
+workflow batch:
+  runtime_semantics: "ports-v1"
+  contract: Batch
+  port_policy: limited
+  graph:
+    nodes:
+      render:
+        implementation: render_impl
+        contract: Render
+      collect:
+        implementation: collect_impl
+        contract: Collect
+    bindings:
+      input.items -> render.item
+      input.prefix -> render.prefix
+      render.text -> collect.texts
+    exports:
+      results: collect.texts
+    products: ["results"]

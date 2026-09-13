@@ -1,6 +1,8 @@
 package ir
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -26,10 +28,94 @@ func SameProgram(a, b *CompileResult) string {
 		}
 		return ""
 	}
-	if reflect.DeepEqual(a.Workflow, b.Workflow) {
+	left, right := withoutPortSerializationDetails(a.Workflow), withoutPortSerializationDetails(b.Workflow)
+	if reflect.DeepEqual(left, right) {
 		return ""
 	}
-	return firstWorkflowDifference(a.Workflow, b.Workflow)
+	return firstWorkflowDifference(left, right)
+}
+
+// Source positions explain diagnostics; they do not change behavior. JSON
+// defaults also retain their syntax's whitespace and key order, neither of
+// which changes their value. Normalize copies so the editor's transport and
+// reparsed .bot source compare as the same program without altering the IR.
+func withoutPortSerializationDetails(w *Workflow) *Workflow {
+	if w == nil || w.Ports == nil {
+		return w
+	}
+	copy := *w
+	canonicalJSON := func(raw json.RawMessage) json.RawMessage {
+		if raw == nil {
+			return nil
+		}
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return raw
+		}
+		canonical, err := json.Marshal(value)
+		if err != nil {
+			return raw
+		}
+		return canonical
+	}
+	cleanPorts := func(ports []PublicPort) []PublicPort {
+		clean := append([]PublicPort(nil), ports...)
+		for i := range clean {
+			clean[i].Source = PortSource{}
+			clean[i].Default = canonicalJSON(clean[i].Default)
+		}
+		return clean
+	}
+	stripContract := func(contract *PublicContract) *PublicContract {
+		if contract == nil {
+			return nil
+		}
+		clean := *contract
+		clean.Source = PortSource{}
+		clean.Inputs = cleanPorts(contract.Inputs)
+		clean.Outputs = cleanPorts(contract.Outputs)
+		clean.Criteria = append([]PublicCriterion(nil), contract.Criteria...)
+		for i := range clean.Criteria {
+			clean.Criteria[i].Source = PortSource{}
+			clean.Criteria[i].Params = canonicalJSON(clean.Criteria[i].Params)
+		}
+		clean.Effects = append([]PublicEffect(nil), contract.Effects...)
+		for i := range clean.Effects {
+			clean.Effects[i].Source = PortSource{}
+		}
+		return &clean
+	}
+	copy.PublicContract = stripContract(w.PublicContract)
+	graph := *w.Ports
+	graph.Nodes = make(map[string]*PortInstance, len(w.Ports.Nodes))
+	for name, instance := range w.Ports.Nodes {
+		if instance == nil {
+			graph.Nodes[name] = nil
+			continue
+		}
+		clean := *instance
+		clean.Source = PortSource{}
+		clean.Contract = stripContract(instance.Contract)
+		graph.Nodes[name] = &clean
+	}
+	graph.Bindings = append([]PortBinding(nil), w.Ports.Bindings...)
+	for i := range graph.Bindings {
+		graph.Bindings[i].Source = PortSource{}
+	}
+	copy.Ports = &graph
+	copy.Schemas = make(map[string]*Schema, len(w.Schemas))
+	for name, schema := range w.Schemas {
+		if schema == nil || !schema.NativePorts {
+			copy.Schemas[name] = schema
+			continue
+		}
+		clean := *schema
+		clean.PublicPorts = cleanPorts(schema.PublicPorts)
+		copy.Schemas[name] = &clean
+	}
+	return &copy
 }
 
 func diagnosticCodes(cr *CompileResult) []string {
@@ -85,6 +171,13 @@ func firstWorkflowDifference(a, b *Workflow) string {
 		{"resources", a.Resources, b.Resources},
 	} {
 		if !reflect.DeepEqual(part.x, part.y) {
+			if part.name == "schemas" {
+				for name, schema := range a.Schemas {
+					if !reflect.DeepEqual(schema, b.Schemas[name]) {
+						return fmt.Sprintf("schema %q differs", name)
+					}
+				}
+			}
 			return part.name + " differ"
 		}
 	}
