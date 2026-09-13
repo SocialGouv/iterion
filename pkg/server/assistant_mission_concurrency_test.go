@@ -127,7 +127,7 @@ type blockedMissionSweepStore struct {
 	entered chan context.Context
 }
 
-func (s *blockedMissionSweepStore) ListReconcileCandidates(ctx context.Context, _ time.Time, _ int) ([]assistantmission.Mission, error) {
+func (s *blockedMissionSweepStore) ListReconcileCandidates(ctx context.Context, _ string, _ time.Time, _ int) ([]assistantmission.Mission, error) {
 	s.entered <- ctx
 	<-ctx.Done()
 	return nil, ctx.Err()

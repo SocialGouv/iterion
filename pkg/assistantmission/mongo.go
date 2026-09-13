@@ -25,6 +25,9 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "operator_id", Value: 1}, {Key: "invocation_key", Value: 1}}, Options: options.Index().SetName("mission_invocation").SetUnique(true)},
 		{Keys: bson.D{{Key: "active_target_key", Value: 1}}, Options: options.Index().SetName("one_active_target").SetUnique(true).SetPartialFilterExpression(bson.M{"active_target_key": bson.M{"$type": "string"}})},
 		{Keys: bson.D{{Key: "state", Value: 1}, {Key: "lease_until", Value: 1}, {Key: "updated_at", Value: 1}}, Options: options.Index().SetName("mission_reconcile")},
+		// The state/lease index cannot supply this order across its range
+		// predicates. Keep limited sweeps from sorting the entire backlog.
+		{Keys: bson.D{{Key: "updated_at", Value: 1}, {Key: "_id", Value: 1}}, Options: options.Index().SetName("mission_reconcile_order")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("assistantmission: ensure indexes: %w", err)
@@ -78,8 +81,8 @@ func (s *MongoStore) GetByInvocation(ctx context.Context, scope Scope, key strin
 	return mongoutil.FindOne[Mission](ctx, s.missions, filter, ErrNotFound, "assistantmission: get invocation")
 }
 
-func (s *MongoStore) find(ctx context.Context, filter bson.M, limit int) ([]Mission, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+func (s *MongoStore) find(ctx context.Context, filter bson.M, order bson.D, limit int) ([]Mission, error) {
+	opts := options.Find().SetSort(order)
 	if limit > 0 {
 		opts.SetLimit(int64(limit))
 	}
@@ -96,17 +99,22 @@ func (s *MongoStore) find(ctx context.Context, filter bson.M, limit int) ([]Miss
 }
 
 func (s *MongoStore) List(ctx context.Context, scope Scope, limit int) ([]Mission, error) {
-	return s.find(ctx, mongoScope(scope), limit)
+	return s.find(ctx, mongoScope(scope), bson.D{{Key: "created_at", Value: -1}}, limit)
 }
 
-func (s *MongoStore) ListReconcileCandidates(ctx context.Context, _ time.Time, limit int) ([]Mission, error) {
-	return s.find(ctx, bson.M{"state": bson.M{"$nin": bson.A{StateCompleted, StateExpired, StateStopped, StateExhausted}}}, limit)
+func (s *MongoStore) ListReconcileCandidates(ctx context.Context, owner string, now time.Time, limit int) ([]Mission, error) {
+	return s.find(ctx, mongoClaimable(owner, now), bson.D{{Key: "updated_at", Value: 1}, {Key: "_id", Value: 1}}, limit)
+}
+
+func mongoClaimable(owner string, now time.Time) bson.M {
+	return bson.M{"state": bson.M{"$nin": bson.A{StateCompleted, StateExpired, StateStopped, StateExhausted}}, "$or": bson.A{
+		bson.M{"lease_until": bson.M{"$lte": now}}, bson.M{"lease_until": nil}, bson.M{"lease_until": bson.M{"$exists": false}}, bson.M{"lease_owner": owner},
+	}}
 }
 
 func (s *MongoStore) Claim(ctx context.Context, id, owner string, now time.Time, lease time.Duration) (Mission, bool, error) {
-	filter := bson.M{"_id": id, "state": bson.M{"$nin": bson.A{StateCompleted, StateExpired, StateStopped, StateExhausted}}, "$or": bson.A{
-		bson.M{"lease_until": bson.M{"$lte": now}}, bson.M{"lease_until": nil}, bson.M{"lease_until": bson.M{"$exists": false}}, bson.M{"lease_owner": owner},
-	}}
+	filter := mongoClaimable(owner, now)
+	filter["_id"] = id
 	until := now.Add(lease)
 	update := bson.M{"$set": bson.M{"lease_owner": owner, "lease_until": until, "updated_at": now}, "$inc": bson.M{"lease_epoch": 1, "revision": 1}}
 	var out Mission

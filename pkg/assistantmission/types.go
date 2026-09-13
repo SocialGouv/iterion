@@ -156,7 +156,9 @@ type Store interface {
 	Get(context.Context, Scope, string) (Mission, error)
 	GetByInvocation(context.Context, Scope, string) (Mission, error)
 	List(context.Context, Scope, int) ([]Mission, error)
-	ListReconcileCandidates(context.Context, time.Time, int) ([]Mission, error)
+	// ListReconcileCandidates returns claimable work for owner, oldest updated
+	// first (then ID). Listing is advisory: Claim still fences every attempt.
+	ListReconcileCandidates(context.Context, string, time.Time, int) ([]Mission, error)
 	Claim(context.Context, string, string, time.Time, time.Duration) (Mission, bool, error)
 	UpdateClaimed(context.Context, Mission, string) (Mission, error)
 	RequestStop(context.Context, Scope, string, string, time.Time) (Mission, error)

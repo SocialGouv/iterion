@@ -154,7 +154,7 @@ func (c *assistantMissionCoordinator) sweep(ctx context.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	missions, err := c.missions.ListReconcileCandidates(ctx, now, assistantMissionPageSize)
+	missions, err := c.missions.ListReconcileCandidates(ctx, c.worker, now, assistantMissionPageSize)
 	if err != nil {
 		c.server.logWarn("assistant mission: list reconcile candidates: %v", err)
 		return

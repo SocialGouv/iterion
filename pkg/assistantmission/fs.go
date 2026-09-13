@@ -152,15 +152,20 @@ func (s *FSStore) List(ctx context.Context, scope Scope, limit int) ([]Mission, 
 	return out, err
 }
 
-func (s *FSStore) ListReconcileCandidates(ctx context.Context, _ time.Time, limit int) ([]Mission, error) {
+func (s *FSStore) ListReconcileCandidates(ctx context.Context, owner string, now time.Time, limit int) ([]Mission, error) {
 	var out []Mission
 	err := s.withState(ctx, false, func(st *fsState) error {
 		for _, m := range st.Missions {
-			if !m.State.Terminal() {
+			if !m.State.Terminal() && (m.LeaseUntil == nil || !m.LeaseUntil.After(now) || m.LeaseOwner == owner) {
 				out = append(out, m)
 			}
 		}
-		sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.Before(out[j].UpdatedAt) })
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+				return out[i].ID < out[j].ID
+			}
+			return out[i].UpdatedAt.Before(out[j].UpdatedAt)
+		})
 		if limit > 0 && len(out) > limit {
 			out = out[:limit]
 		}

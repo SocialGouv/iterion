@@ -124,6 +124,40 @@ func TestValidateMissionProposalRejectsWatchAndSourceMutation(t *testing.T) {
 	}
 }
 
+func TestAssistantMissionSweepExpiresOwnLeaseBeforeLoadingTarget(t *testing.T) {
+	ctx := t.Context()
+	st := assistantmission.NewFSStore(t.TempDir())
+	now := time.Now().UTC()
+	until := now.Add(time.Hour)
+	for _, owner := range []string{"worker", "other-worker"} {
+		m := assistantmission.Mission{
+			Version: 1, ID: owner, InvocationKey: owner, TenantID: "t", OperatorID: "o",
+			TargetRunID: owner, State: assistantmission.StateActive,
+			Policy:    assistantmission.Policy{ExpiresAt: now.Add(-time.Minute)},
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+			LeaseOwner: owner, LeaseUntil: &until,
+		}
+		if _, _, err := st.CreateOrGet(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No run service: TTL expiry must happen before any target access.
+	c := &assistantMissionCoordinator{server: &Server{}, missions: st, worker: "worker"}
+	c.sweep(ctx)
+	for _, tc := range []struct {
+		id   string
+		want assistantmission.State
+	}{{"worker", assistantmission.StateExpired}, {"other-worker", assistantmission.StateActive}} {
+		m, err := st.Get(ctx, assistantmission.Scope{TenantID: "t", OperatorID: "o"}, tc.id)
+		if err != nil || m.State != tc.want {
+			t.Fatalf("mission %s: state=%s err=%v, want %s", tc.id, m.State, err, tc.want)
+		}
+		if tc.want.Terminal() && (m.TerminalAt == nil || m.LeaseUntil != nil || m.LeaseOwner != "") {
+			t.Fatalf("expired mission kept lease or lacks terminal time: %#v", m)
+		}
+	}
+}
+
 func TestAssistantMissionCoordinatorExecutesOnlyPersistedRewindProposal(t *testing.T) {
 	srv, _ := newTestServer(t)
 	ctx := context.Background()

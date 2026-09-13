@@ -14,29 +14,9 @@ import (
 )
 
 func TestMongoStoreMissionUniquenessAndClaimFence(t *testing.T) {
-	uri := os.Getenv("ITERION_TEST_MONGO_URI")
-	if uri == "" {
-		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo assistant mission suite")
-	}
+	st := newTestMongoMissionStore(t)
 	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := make([]byte, 4)
-	_, _ = rand.Read(nonce)
-	db := client.Database("iterion_assistantmission_" + hex.EncodeToString(nonce))
-	t.Cleanup(func() {
-		drop, stop := mongotest.TeardownCtx()
-		defer stop()
-		_ = db.Drop(drop)
-		_ = client.Disconnect(drop)
-	})
-	st := NewMongoStore(db)
-	if err := st.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	first := testMission(now)
 	if _, fresh, err := st.CreateOrGet(ctx, first); err != nil || !fresh {
@@ -66,4 +46,33 @@ func TestMongoStoreMissionUniquenessAndClaimFence(t *testing.T) {
 	if err != nil || fresh || got.ID != first.ID || got.State != StateStopped {
 		t.Fatalf("terminal reattach = %#v fresh=%v err=%v", got, fresh, err)
 	}
+}
+
+func newTestMongoMissionStore(t *testing.T) *MongoStore {
+	t.Helper()
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo assistant mission suite")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_assistantmission_" + hex.EncodeToString(nonce))
+	t.Logf("Mongo mission database: %s", db.Name())
+	t.Cleanup(func() {
+		drop, stop := mongotest.TeardownCtx()
+		defer stop()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	st := NewMongoStore(db)
+	if err := st.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
