@@ -32,6 +32,15 @@ human node — a human node IS the blocking question). `await_answers`
 requires a positive `timeout:` (C241); a `from:` naming a missing or
 non-async node warns C242 (the await could only ever time out).
 
+Supported backends are **claw**, **claude_code**, and **pi using RPC**.
+A statically selected `codex`, `kimi`, or `grok` backend on an async node
+is refused at compile time with **C267**, including explicit fallbacks.
+When the route is resolved at runtime (`auto`, environment configuration,
+or a fallback), the selected backend must advertise async question support
+before it is called. Otherwise the node fails with **CAPABILITY_UNSUPPORTED**;
+automatic retries are disabled until the backend or transport is changed.
+Custom backends can opt in through `delegate.AsyncQuestionBackend`.
+
 Runnable demo: [examples/async-questions/main.bot](../examples/async-questions/main.bot).
 
 ## The tools (identical on claw, claude_code and pi)
@@ -79,7 +88,8 @@ decisions stay in Go: the extension reports to iterion, which owns the
 interaction store and is the only side that can suspend a run. The text
 the model reads back after posting comes from iterion too, so the
 prompting is identical to the other two backends. RPC transport only: a
-print-mode pi node has no control channel and gets none of this.
+print-mode pi node has no control channel, so `interaction: async` is
+refused before starting its CLI.
 
 ## Semantics & guarantees
 

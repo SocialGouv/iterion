@@ -180,6 +180,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | runtime.cancel | cancellation produces a cancelled status with a checkpoint | runtime | covered-deterministic | TestCancelProducesCancelledStatus (pkg/runtime/hardening_test.go) | |
 | runtime.timeout | outer deadline produces a TIMEOUT failure | runtime | covered-deterministic | TestTimeoutProducesFailedStatus (pkg/runtime/hardening_test.go) | |
 | runtime.interaction-modes | human `interaction:` llm / llm_or_human / async escalation | runtime | covered-deterministic | TestInteractionLLMOrHumanEscalation (pkg/runtime/engine_test.go), TestInteractionLLMAutoRespond (pkg/runtime/engine_test.go) | |
+| runtime.async-backend-capability | async nodes refuse incapable primary/fallback routes and Pi print transport before dispatch, without retries | runtime | covered-deterministic | pkg/dsl/ir/async_backend_test.go, pkg/backend/model/async_backend_test.go, TestCapabilityUnsupportedDoesNotRetry (pkg/runtime/recovery/capability_test.go) | |
 | runtime.ask-user-conversation | ask_user relays prior Q/A and persists the conversation | runtime | covered-deterministic | TestInteractionAskUserPersistsConversation (pkg/runtime/engine_test.go) | |
 | runtime.worktree-finalize | `worktree: auto` creates a branch and fast-forwards the checkout | runtime | covered-deterministic | pkg/runtime/worktree_test.go | |
 | runtime.rewind | `iterion rewind` re-anchors a run and invalidates downstream state | runtime | covered-deterministic | TestRewindThenResume_SkipsUpstreamNodes (e2e/rewind_resume_test.go) | |

@@ -104,6 +104,9 @@ const (
 	// fixing the schema (or the backend that cannot read it), then
 	// resuming.
 	FailureSchemaUnusable FailureCode = "SCHEMA_UNUSABLE"
+	// The selected backend cannot serve a declared node capability. A
+	// configuration change is needed before the same run can make progress.
+	FailureCapabilityUnsupported FailureCode = "CAPABILITY_UNSUPPORTED"
 
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
@@ -228,6 +231,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureAuthFailed,
 	FailureModelUnavailable,
 	FailureSchemaUnusable,
+	FailureCapabilityUnsupported,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,
