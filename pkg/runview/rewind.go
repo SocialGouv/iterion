@@ -525,6 +525,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("claim run for rewind: %w", err)
 	}
+	if err := runtime.RestoreReclaimedWorktree(ctx, s.store, run); err != nil {
+		return nil, err
+	}
 
 	scope := spec.RestoreScope
 	if spec.KeepFiles {

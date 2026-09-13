@@ -1,5 +1,11 @@
 # Iterion `.bot` property reference
 
+The same `iterion dsl spec --write` command generates Monaco's lexical
+keywords and properties per kind in
+[`iterDsl.generated.ts`](../../studio/src/lib/iterDsl.generated.ts).
+The lexer supplies its keyword table; this registry supplies the properties.
+`task dsl:check` verifies that module alongside this reference.
+
 Every declaration kind, node kind and block of the DSL, with the properties
 each accepts, the shape of every value and one line on what it means. This
 page is **generated** from the parser's property registry

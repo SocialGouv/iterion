@@ -152,7 +152,7 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// deterministic gates read the workspace as "no repo" and return wrong
 	// verdicts. Refuse loudly before claiming the run — the status stays
 	// resumable and the operator sees the real cause.
-	if r.Worktree {
+	if r.Worktree && !r.WorktreeReclaimed {
 		if linkErr := checkWorktreeLinkage(r.WorkDir); linkErr != nil {
 			return fmt.Errorf("runtime: resume run %q: %w", runID, linkErr)
 		}
@@ -1728,6 +1728,22 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 
 	if err := e.claimForFailureResume(ctx, runID, cp, restartNodeID); err != nil {
 		return err
+	}
+	if r.WorktreeReclaimed {
+		// A process can stop between a rewind's claim and its restoration.
+		// Rebuild only after the resume CAS, from a fresh record so clearing
+		// the marker cannot overwrite that claim or its budget metadata.
+		current, restoreErr := e.store.LoadRun(ctx, runID)
+		if restoreErr == nil {
+			restoreErr = RestoreReclaimedWorktree(ctx, e.store, current)
+		}
+		if restoreErr != nil {
+			writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+			defer cancel()
+			_, _ = e.store.UpdateRunStatusIf(writeCtx, runID, store.RunStatusCancelled, restoreErr.Error(), []store.RunStatus{store.RunStatusRunning})
+			return restoreErr
+		}
+		r.WorktreeReclaimed = false
 	}
 	if err := e.failSpentBudgetBeforeResume(ctx, r); err != nil {
 		return err

@@ -50,6 +50,8 @@ type ClawBackend struct {
 	logger *iterlog.Logger
 }
 
+func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
+
 // WithClawLogger attaches a leveled logger for operator-facing warnings.
 func WithClawLogger(l *iterlog.Logger) ClawBackendOption {
 	return func(b *ClawBackend) { b.logger = l }

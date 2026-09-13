@@ -1021,11 +1021,9 @@ agent campaign:
   session: fresh
   interaction: async
   capabilities: [board.read, board.create]
-  fallbacks:
-    kimi_quota:
-      backend: "kimi"
-      model: "kimi-code/kimi-for-coding"
-      on: [usage_window, unavailable]
+  ## Kimi cannot carry ask_user_async/await_answers. Keep the campaign on
+  ## its async-capable backend; usage-window recovery waits for Claude.
+  ## The synchronous planning, review and verification nodes retain Kimi.
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent

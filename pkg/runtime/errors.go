@@ -44,6 +44,7 @@ const (
 	ErrCodeAuthFailed            = store.FailureAuthFailed
 	ErrCodeModelUnavailable      = store.FailureModelUnavailable
 	ErrCodeSchemaUnusable        = store.FailureSchemaUnusable
+	ErrCodeCapabilityUnsupported = store.FailureCapabilityUnsupported
 	// Raised before the first node when the attached bundle declares a
 	// `requires.iterion` this build is below (engine_requirement.go).
 	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine

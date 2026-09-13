@@ -478,6 +478,12 @@ DSL `fail` node keeps its checkpoint, so an explicit rewind can still recover
 it. Runs that failed **before** that preservation existed carry no checkpoint
 and stay unrecoverable (`run ... has no checkpoint — nothing to rewind`).
 
+An untouched worktree released after an early terminal refusal is rebuilt
+at its original launch commit when rewound, even with `--restore-scope none`.
+This applies only to a recorded deliberate reclamation; an unexpectedly
+missing checkout or a broken git link still raises an error. Resumable
+failures keep their worktree in place.
+
 After a successful rewind, the run is parked in `paused_operator`, not
 `cancelled`: it is ready at the chosen checkpoint and has not been abandoned.
 It also carries an internal **explicit-resume-required** marker. A cloud runner

@@ -148,7 +148,8 @@ var classification = map[store.FailureCode]Disposition{
 	// the serving backend read as a single string — five attempts, four
 	// pods, one verdict. SchemaValidation stays re-executable: there, a
 	// request WAS served and the next sample may conform.
-	store.FailureSchemaUnusable: DispositionDeterministic,
+	store.FailureSchemaUnusable:        DispositionDeterministic,
+	store.FailureCapabilityUnsupported: DispositionDeterministic,
 }
 
 // Classify reports what an automatic resume can achieve for this code.

@@ -1,4 +1,5 @@
 import type { languages } from "monaco-editor";
+import { iterDslDeclarations, iterDslKeywords, iterDslProperties } from "./iterDsl.generated";
 
 export const ITER_LANGUAGE_ID = "iter";
 
@@ -24,29 +25,9 @@ export const iterLanguageConfig: languages.LanguageConfiguration = {
 };
 
 export const iterTokensProvider: languages.IMonarchLanguage = {
-  keywords: [
-    // Top-level / declaration kinds
-    "vars", "prompt", "schema", "agent", "judge", "router", "human", "tool", "compute", "workflow",
-    "mcp_server",
-    // The syntax-profile header that may open a file (`dsl: 2`)
-    "dsl",
-    // Workflow + node fields
-    "entry", "default_backend", "budget", "compaction", "mcp", "worktree",
-    "model", "backend", "input", "output", "publish", "system", "user", "session",
-    "tools", "tool_policy", "tool_max_steps", "max_tokens", "reasoning_effort", "readonly",
-    "interaction", "interaction_prompt", "interaction_model",
-    "instructions", "min_answers", "command", "expr",
-    "mode", "multi", "await",
-    // MCP server block
-    "transport", "args", "url", "auth",
-    "type", "auth_url", "token_url", "revoke_url", "client_id", "scopes",
-    // MCP config block
-    "autoload_project", "inherit", "servers", "disable",
-    // Compaction block
-    "threshold", "preserve_recent",
-    // Edge syntax
-    "when", "not", "as", "with", "enum",
-  ],
+  keywords: iterDslKeywords,
+  declarationKeywords: iterDslDeclarations,
+  properties: iterDslProperties,
   typeKeywords: [
     "string", "bool", "int", "float", "json", "string[]",
   ],
@@ -71,9 +52,7 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     "true", "false",
   ],
   builtinNodes: ["done", "fail"],
-  budgetKeys: [
-    "max_parallel_branches", "max_duration", "max_cost_usd", "max_tokens", "max_iterations",
-  ],
+
 
   tokenizer: {
     root: [
@@ -112,6 +91,18 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
       // Strings
       [/"/, { token: "string.quote", next: "@string" }],
 
+      // A list marker only opens a line; dashes in strings, prompt bodies
+      // and block scalars remain in their enclosing text state.
+      [/^(\s*)(-)(?=\s)/, ["white", "operator"]],
+
+      // A property name wins over the same word's value colour (inherit:
+      // vs session: inherit). The generated union covers every block kind.
+      [/^(\s*)([A-Za-z_]\w*)(\s*:)/, [
+        "white",
+        { cases: { "@properties": "keyword", "@keywords": "keyword", "@default": "identifier" } },
+        "delimiter",
+      ]],
+
       // Arrow operator
       [/->/, "operator"],
 
@@ -124,11 +115,12 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
       // Keywords and identifiers
       [/[a-zA-Z_]\w*/, {
         cases: {
-          "@keywords": "keyword",
           "@typeKeywords": "type",
-          "@valueKeywords": "constant",
           "@builtinNodes": "type.builtin",
-          "@budgetKeys": "keyword",
+          "@declarationKeywords": "keyword",
+          "@valueKeywords": "constant",
+          "@keywords": "keyword",
+          "@properties": "keyword",
           "@default": "identifier",
         },
       }],

@@ -192,16 +192,17 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagUnknownTool:             {"Unknown tool name", "Use a claw built-in (`read_file`, `write_file`, `file_edit`, `glob`, `grep`, `bash`, `web_fetch`, ...) or an MCP tool by its `mcp.<server>.<tool>` name; the message names the nearest match."},
 
 	// Async interaction, parallel branches, typed fails (C24x band).
-	DiagAsyncOnHuman:          {"Async interaction on human node", "Move `interaction: async` to the asking agent/judge and add an `await_answers` node as the sync point."},
-	DiagAwaitAnswersNoTimeout: {"await_answers without timeout", "Add `timeout: \"30m\"` (a positive Go duration) — no silent infinity."},
-	DiagAwaitAnswersBadFrom:   {"await_answers with dead from", "Point `from:` at an `interaction: async` agent/judge, or drop it to await the whole run."},
-	DiagPersistInFanOut:       {"Persist in fan-out body", "Move the `session: persist` node to the trunk after the join, or use `session: fresh` inside the branch."},
-	DiagLoopInExecBranch:      {"Bounded iteration crosses a parallel-branch boundary", "Keep every node of the cycle inside one branch with its own loop name, move the loop to the trunk (wrap the router from the join), or use a `subbot`."},
-	DiagHumanModeInExecBranch: {"Trunk-only human mode in parallel branch", "Use a plain `interaction: human` gate inside the branch, or move the review / llm_or_human gate after the collector."},
-	DiagImplicitCollectorMove: {"Implicit fan-out collector execution moved into branches", "Add `await: wait_all` or `await: best_effort` to the intended collector, or keep it unmarked when per-branch execution is intended."},
-	DiagInvalidFailCode:       {"Malformed fail code", "Use an UPPER_SNAKE identifier: `code: PLAN_BUDGET_EXHAUSTED`."},
-	DiagReservedFailCode:      {"Fail code collides with an engine code", "Pick a code of the bot's own (`BUDGET_EXCEEDED`, `TIMEOUT`, `USAGE_LIMIT_BLOCKED`, ... are the engine's)."},
-	DiagDuplicateFanOutTarget: {"Duplicate fan-out target", "Remove the duplicate edge; use a `fan_out_each` router when the intent is N executions of one node."},
+	DiagAsyncOnHuman:            {"Async interaction on human node", "Move `interaction: async` to the asking agent/judge and add an `await_answers` node as the sync point."},
+	DiagAsyncBackendUnsupported: {"Async interaction unsupported by backend", "Use a backend with async question tools: claude_code, claw, or pi with its RPC transport; remove interaction: async only if the workflow does not need those questions."},
+	DiagAwaitAnswersNoTimeout:   {"await_answers without timeout", "Add `timeout: \"30m\"` (a positive Go duration) — no silent infinity."},
+	DiagAwaitAnswersBadFrom:     {"await_answers with dead from", "Point `from:` at an `interaction: async` agent/judge, or drop it to await the whole run."},
+	DiagPersistInFanOut:         {"Persist in fan-out body", "Move the `session: persist` node to the trunk after the join, or use `session: fresh` inside the branch."},
+	DiagLoopInExecBranch:        {"Bounded iteration crosses a parallel-branch boundary", "Keep every node of the cycle inside one branch with its own loop name, move the loop to the trunk (wrap the router from the join), or use a `subbot`."},
+	DiagHumanModeInExecBranch:   {"Trunk-only human mode in parallel branch", "Use a plain `interaction: human` gate inside the branch, or move the review / llm_or_human gate after the collector."},
+	DiagImplicitCollectorMove:   {"Implicit fan-out collector execution moved into branches", "Add `await: wait_all` or `await: best_effort` to the intended collector, or keep it unmarked when per-branch execution is intended."},
+	DiagInvalidFailCode:         {"Malformed fail code", "Use an UPPER_SNAKE identifier: `code: PLAN_BUDGET_EXHAUSTED`."},
+	DiagReservedFailCode:        {"Fail code collides with an engine code", "Pick a code of the bot's own (`BUDGET_EXCEEDED`, `TIMEOUT`, `USAGE_LIMIT_BLOCKED`, ... are the engine's)."},
+	DiagDuplicateFanOutTarget:   {"Duplicate fan-out target", "Remove the duplicate edge; use a `fan_out_each` router when the intent is N executions of one node."},
 
 	// Connector actions (ADR-098). Each entry names what the refusal protects:
 	// an action node reaches a third-party API with no LLM deciding the

@@ -44,6 +44,18 @@ afterEach(() => {
 });
 
 describe("ForcedPasswordChange", () => {
+  it("keeps the requested run while removing temporary credentials", async () => {
+    const next = "/runs/review-123?tab=events#node-converge";
+    window.history.replaceState({}, "", `/auth/password/change?${new URLSearchParams({ email: "admin@example.com", temp: "initial", next })}`);
+    render(<ForcedPasswordChange />);
+    expect(new URLSearchParams(window.location.search).get("next")).toBe(next);
+    expect(window.location.href).not.toContain("initial");
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "ChangedAt#1" } });
+    fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "ChangedAt#1" } });
+    fireEvent.submit(screen.getByTestId("forced-password-change-form"));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(next, { replace: true }));
+  });
+
   it("pre-fills email + temp from the URL and clears the URL", () => {
     render(<ForcedPasswordChange />);
     const inputs = screen.getAllByDisplayValue(/.+/);

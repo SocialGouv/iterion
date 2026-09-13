@@ -930,6 +930,18 @@ func appendSchemaRetryFeedback(prompt, feedback string) string {
 // tool set, and session/resume continuity. Split out of executeBackend to
 // keep that method focused on dispatch + validation.
 func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]any, backendName string, sess *nodeBuildSession) (delegate.Task, error) {
+	// This builder runs for every selected backend, including fall-through
+	// routes. Refuse before prompts, tokens or async closures are built.
+	if f.interaction == ir.InteractionAsync {
+		backend, err := e.backendRegistry.Resolve(backendName)
+		if err != nil {
+			return delegate.Task{}, err
+		}
+		capability, ok := backend.(delegate.AsyncQuestionBackend)
+		if !ok || !capability.SupportsAsyncQuestions() {
+			return delegate.Task{}, &delegate.ErrCapabilityUnsupported{NodeID: f.id, Backend: backendName, Capability: "interaction: async"}
+		}
+	}
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)

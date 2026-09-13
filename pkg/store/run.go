@@ -858,6 +858,10 @@ type Run struct {
 	// Worktree is true when WorkDir was created by `worktree: auto`,
 	// false when WorkDir is the inherited cwd.
 	Worktree bool `json:"worktree,omitempty" bson:"worktree,omitempty"`
+	// WorktreeReclaimed records a pristine checkout removed after an early
+	// terminal refusal. Only this explicit marker permits reconstruction at
+	// BaseCommit on rewind/resume; an unexpectedly missing checkout is an error.
+	WorktreeReclaimed bool `json:"worktree_reclaimed,omitempty" bson:"worktree_reclaimed,omitempty"`
 	// RepoRoot is the absolute path of the main git repository the
 	// worktree was forked from. Used by the studio's modified-files
 	// panel after the worktree directory is gc'd to compute the diff

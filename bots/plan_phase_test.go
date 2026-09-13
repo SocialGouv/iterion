@@ -248,7 +248,7 @@ func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 	}
 	wf := cr.Workflow
 
-	for _, nodeID := range []string{"plan", "plan_revise", "campaign", "verify_build", "review", "finalize_mr"} {
+	for _, nodeID := range []string{"plan", "plan_revise", "verify_build", "review", "finalize_mr"} {
 		node, ok := wf.Nodes[nodeID]
 		if !ok {
 			t.Fatalf("feature-dev: node %q missing", nodeID)
@@ -275,6 +275,19 @@ func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 		}
 		if len(kimi.On) != 2 || kimi.On[0] != "usage_window" || kimi.On[1] != "unavailable" {
 			t.Errorf("feature-dev: node %q kimi_quota triggers = %v, want [usage_window unavailable]", nodeID, kimi.On)
+		}
+	}
+
+	campaign, ok := wf.Nodes["campaign"].(*ir.AgentNode)
+	if !ok {
+		t.Fatalf("feature-dev: campaign is %T, want *ir.AgentNode", wf.Nodes["campaign"])
+	}
+	if campaign.Interaction != ir.InteractionAsync || campaign.Backend != "claude_code" {
+		t.Errorf("feature-dev: campaign must retain Claude's async interaction, got %q on %q", campaign.Interaction, campaign.Backend)
+	}
+	for _, fallback := range campaign.GetFallbacks() {
+		if fallback.Backend == "kimi" {
+			t.Error("feature-dev: campaign cannot fall back to Kimi, which lacks async question tools")
 		}
 	}
 

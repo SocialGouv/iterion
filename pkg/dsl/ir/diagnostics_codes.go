@@ -182,7 +182,7 @@ const (
 	// C249 continues the C240 parallel-branch band: a branch-spawning router
 	// that names one target twice gives two goroutines one branch id.
 	DiagDuplicateFanOutTarget     DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
-	DiagSessionSlotWithoutPersist DiagCode = "C267" // session_slot requires session: persist
+	DiagSessionSlotWithoutPersist DiagCode = "C268" // session_slot requires session: persist
 
 	// Connector actions (ADR-098) — the `tool … action:` recipe. The band is
 	// about ONE promise: an action node reaches a third-party API with no LLM
@@ -197,4 +197,6 @@ const (
 	DiagActionBadParam     DiagCode = "C264" // a duplicate or unnamed `params:` key (error — one of the two could never be addressed)
 	DiagActionBadTimeout   DiagCode = "C265" // `timeout:` / `retry:` is not a value this build can read (error)
 	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:`/`timeout:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
+
+	DiagAsyncBackendUnsupported DiagCode = "C267" // interaction: async on a backend without async question tools (error)
 )

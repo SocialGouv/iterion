@@ -566,10 +566,11 @@ prompt review_system:
        out-of-scope-for-this-PR mismatches are questions, not findings.
     7. Report a per-ticket verdict in `ticket_conformance` (one line per
        ticket): `<REF>: covered | partial | not covered | unverifiable —
-       <one-line reason>`. A failed fetch or zero extractable refs is
-       `unverifiable` with the explicit reason (HTTP status, no refs
-       found) — never invent ticket content, never fail the review over
-       an unreachable tracker.
+       <one-line reason>`. A failed fetch is `unverifiable` with its
+       explicit reason (HTTP status). When there are no applicable ticket
+       references, emit an empty string: a PR without a ticket is normal.
+       Never invent ticket content or fail the review over an unreachable
+       tracker.
 
   ANTI-FAÇADE DISCIPLINE:
     - Report only REAL, concrete, actionable issues anchored to a
@@ -581,26 +582,28 @@ prompt review_system:
     - Rate each finding's `confidence` honestly. A guess is `low`.
     - Finding nothing is a valid, common outcome — return an empty
       `findings` array and say so in `summary`. Do NOT invent issues
-      to look thorough. A clean review is NOT "trust me, nothing":
-      make it auditable through `questions` (next section).
+      to look thorough. Record the audited perimeter in `scanned_areas`;
+      do not manufacture a question to justify a clean review.
 
-  OPEN QUESTIONS (falsifiability — kept STRICTLY SEPARATE from findings):
-    `findings` are issues you would BLOCK a merge on. The most valuable
-    thing a sharp human reviewer does on a clean diff is ASK — surface
-    the load-bearing assumptions the change now RELIES ON but that you
-    could not fully verify yourself:
-      - a contract MOVED to another component ("EditorView no longer
-        opens the file — does EditorTabHost guarantee it still does?"),
-      - an invariant the diff now depends on but does not itself prove,
-      - a cross-file / cross-service assumption you read AROUND but could
-        not confirm end-to-end.
-    Record each in `questions`, phrased as a concrete question a
-    maintainer can answer. They are NON-BLOCKING: never inflate one into
-    a finding, never file it to the board, never let it gate a merge —
-    their only job is to make a 0-finding review falsifiable, showing
-    WHAT you checked and WHERE the residual risk hides. Empty is correct
-    when the change is genuinely self-contained and you verified it
-    end-to-end — but reach for it before concluding a silent "nothing".
+  OPEN QUESTIONS (separate from findings):
+    Ask only when a concrete maintainer decision or missing fact is needed
+    to settle a material assumption. Read the available code and ticket
+    first; do not ask the maintainer to repeat checks you can perform.
+    Each question names the decision and its consequence in one sentence.
+    Skip generic reassurance, speculative risks and optional follow-ups.
+    An empty `questions` array is normal. Questions remain NON-BLOCKING:
+    never promote them to findings, file them to the board or gate a merge.
+
+  CONCISE REVIEW WRITING:
+    - Lead with the defect. In `detail`, use 1–2 short sentences to name
+      the trigger and concrete impact; use one sentence in `suggestion`
+      for the fix. Aim for 2–3 sentences total per finding, expanding only
+      when necessary to explain a consequential edge case precisely.
+    - Keep the evidence, file/line anchor and complete replacement code.
+      Remove repeated context, generic advice, praise and review narration.
+    - Concision changes presentation, not coverage, severity or the number
+      of actionable findings. Never truncate evidence or hide a finding
+      merely to meet an editorial word or sentence target.
 
   OUTPUT — emit `review_output`:
     - `family`: YOUR model family — "claude" or "gpt" (the user
@@ -649,8 +652,9 @@ prompt review_system:
       CONFORMANCE as a SINGLE STRING, one line per ticket (newline-
       separated, NOT an array — a downstream shell step interpolates it).
       Empty string "" when ticket context is not active.
-    - `summary`: one paragraph — overall risk read + anything notable
-      that did not rise to a finding.
+    - `summary`: one short sentence giving the result; no repeated finding
+      descriptions, praise or list of checks. With no findings, say only
+      that no issue was identified in the reviewed scope.
 
 prompt review_user_claude:
   You are the CLAUDE-family reviewer — set `family` to "claude" in your
@@ -737,9 +741,10 @@ prompt emit_system:
     - Keep family-unique findings too (one reviewer often sees what the
       other misses), at their own confidence.
     - Union the two `questions` arrays the same way: dedupe near-identical
-      questions, keep each family's distinct ones. Questions are NEVER
-      promoted to findings and NEVER filed to the board — they are the
-      falsifiability channel that makes a 0-finding review auditable.
+      questions; keep distinct requests for a material maintainer decision
+      or missing fact. Remove generic reassurance and questions answered
+      by the review itself. Questions are NEVER promoted to findings or
+      filed to the board. Do not invent questions when the union is empty.
     - Merge the two `ticket_conformance` blocks per TICKET REF: when both
       families judged the same ticket, keep one line per ticket with the
       more pessimistic verdict (not covered > partial > covered;
@@ -804,10 +809,9 @@ prompt emit_system:
       ## Ticket conformance (only when the merged ticket_conformance is
                         non-empty: one bullet per ticket with its verdict
                         line. Omit the section entirely when empty.)
-      ## Open questions (the merged non-blocking questions as a bulleted
-                        list — what the reviewers verified/assumed and the
-                        contracts a maintainer should confirm; "none" when
-                        empty. NEVER a findings table — these do not block.)
+      ## Open questions (only when a maintainer decision or missing fact
+                        remains: one concise bullet each; omit when empty.
+                        NEVER a findings table — these do not block.)
 
   RETURN `emit_output`:
     - `report_path`: absolute path of the markdown file you wrote.
@@ -841,9 +845,8 @@ prompt emit_system:
       SINGLE STRING with ONE QUESTION PER LINE (newline-separated), NOT a
       JSON array — empty string "" when none. (A downstream shell step
       interpolates this value; a scalar string is shell-safe, an array is
-      not.) Carried forward so the PR summary can show what the reviewers
-      verified/assumed even on a 0-finding review. NOT findings — they never
-      gate or reach the board.
+      not.) Only unanswered maintainer decisions or material missing facts.
+      NOT findings — they never gate or reach the board.
     - `ticket_conformance`: the MERGED per-ticket verdicts, ONE PER LINE in
       a SINGLE STRING (same shell-safety rule as `questions` — never an
       array). Empty string "" when the feature was inactive. Carried
@@ -910,6 +913,7 @@ schema review_output:
 ## review was mistaken for a reviewer failure). Routing both families through
 ## a compute makes every field exist with a real value on every path.
 schema family_reviews:
+  review_scope: string
   claude_ran: bool
   claude_summary: string
   claude_findings: json
@@ -1003,6 +1007,7 @@ schema pr_gate_output:
   gpt_findings: json
 
 schema publish_input:
+  review_scope: string
   ## Engine telemetry is mapped at publication, never supplied by the LLM.
   ai_run_tokens: json
   ai_reviewer_claude_model: json
@@ -1206,6 +1211,7 @@ compute merge_reviews:
   ## failure in `_failed_branches` instead of failing the run.
   await: best_effort
   expr:
+    review_scope: "join(unique(concat(outputs.reviewer_claude.scanned_areas, outputs.reviewer_gpt.scanned_areas, outputs.reviewer_claude_glance.scanned_areas, outputs.reviewer_gpt_glance.scanned_areas)), ' ; ')"
     claude_ran:       "outputs.reviewer_claude.family == 'claude' || outputs.reviewer_claude_glance.family == 'claude'"
     claude_summary:   "if(outputs.reviewer_claude.summary, outputs.reviewer_claude.summary, if(outputs.reviewer_claude_glance.summary, outputs.reviewer_claude_glance.summary, '(this family did not run)'))"
     claude_findings:  "if(outputs.reviewer_claude.findings, outputs.reviewer_claude.findings, if(outputs.reviewer_claude_glance.findings, outputs.reviewer_claude_glance.findings, '[]'))"
@@ -1280,8 +1286,8 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
-import os, json, subprocess, urllib.request, urllib.error, hashlib
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
 # (pkg/server/webhooks_handoff.go findingID) and with the fixer's ledger:
@@ -1382,6 +1388,7 @@ sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
 counts = {}
 comments = []
 finding_ids = []
+unanchored = []
 for f in findings:
     if not isinstance(f, dict):
         continue
@@ -1390,7 +1397,7 @@ for f in findings:
     cross = str(f.get('reviewers') or '') == 'both'
     fid = finding_id(f)
     finding_ids.append(fid)
-    header = fid + ' [' + sev + ' / ' + str(f.get('category') or '') + (' / cross-confirmed by both reviewers' if cross else '') + '] ' + str(f.get('title') or '')
+    header = fid + ' [' + sev + (' / cross-confirmed' if cross else '') + '] ' + str(f.get('title') or '')
     body = header + nl + nl + str(f.get('detail') or '')
     sketch = str(f.get('suggestion') or '').strip()
     if sketch:
@@ -1404,66 +1411,56 @@ for f in findings:
     except (TypeError, ValueError):
         line_end = 0
     repl = str(f.get('replacement') or '')
-    comments.append({'path': str(f.get('file') or ''), 'line': line, 'line_end': line_end,
-                     'body': body, 'suggestion': repl if repl.strip() else ''})
+    comment = {'path': str(f.get('file') or ''), 'line': line, 'line_end': line_end,
+               'body': body, 'suggestion': repl if repl.strip() else ''}
+    if stale_anchors or not comment['path'].strip() or line <= 0:
+        unanchored.append(comment)
+    else:
+        comments.append(comment)
 
-summary = ['## Code review by Revi (iterion)', '', str(len(findings)) + ' finding(s) kept after threshold/cap.']
-if recovered_from_reviewers:
-    summary.append('')
-    summary.append(chr(9888) + ' DEGRADED: the merged finding set was unreadable, so these were recovered directly from the two reviewers and de-duplicated by anchor. Cross-confirmation, severity threshold and cap were NOT applied.')
-elif findings_parse_failed:
-    summary.append('')
-    summary.append(chr(9888) + ' DEGRADED: the review produced findings but their machine-readable form was unreadable, and no reviewer fallback was available. Nothing could be anchored inline; the merge gate fails closed.')
-for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)):
-    summary.append('- ' + sev + ': ' + str(counts[sev]))
-# Cross-confirmation only exists when two families actually reviewed. The
-# topology predicate is the same one the graph routes on (anything not 'dual'
-# runs a single reviewer), so mono cannot report it. Saying '0 cross-confirmed'
-# there reads as 'two families looked and agreed on nothing' — a claim about a
-# review that never happened.
-dual = str(os.environ.get('REVIEW_MODE', '')).strip().lower() == 'dual'
-cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
-summary.append('')
-if not findings:
-    summary.append('No blocking findings.')
-elif dual:
-    summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.')
+# Keep the visible verdict brief. Detailed findings are posted once, inline;
+# preserve the full body here only when no safe inline anchor exists.
+if findings_parse_failed:
+    summary = ['**Revi — revue inexploitable.**']
+elif findings:
+    summary = ['**Revi — ' + str(len(findings)) + (' problème à corriger.**' if len(findings) == 1 else ' problèmes à corriger.**'), '',
+               ' · '.join(str(counts[sev]) + ' ' + sev for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)))]
 else:
-    summary.append('Reviewed by a single model family (mono topology): no finding is cross-confirmed, and none is meant to be.')
-if tickets:
-    summary.append('')
-    summary.append('### Ticket conformance (does the change answer the referenced ticket(s)?)')
-    for t in tickets:
-        summary.append('- ' + t)
-if finding_ids:
-    summary.append('')
-    summary.append('Each finding opens with a stable id (here: ' + finding_ids[0] + '). Fix them yourself, or comment /billy to have them fixed -- adding e.g. skip ' + finding_ids[0] + ' and your reason leaves that one alone.')
-if questions:
-    summary.append('')
-    summary.append('### Open questions (non-blocking — reviewer assumptions to confirm)')
-    for q in questions:
-        summary.append('- ' + q)
-elif not findings:
-    summary.append('')
-    summary.append('Reviewers verified the change end-to-end and raised no open questions.')
-
-# Stale anchors cost the inline comments, never the publish. The POST below
-# is what carries the merge-gate status, and a required status that never
-# lands blocks the PR for good — a far worse outcome than a review whose
-# file:line markers point at the wrong lines. So the anchors are dropped and
-# the summary says why, rather than the whole review being swallowed.
+    summary = ['**Revi — aucun problème détecté dans le périmètre revu.**']
+if recovered_from_reviewers:
+    summary.extend(['', chr(9888) + ' Revue dégradée : findings récupérés des reviewers ; seuil, limite et accord entre modèles non appliqués.'])
+elif findings_parse_failed:
+    summary.extend(['', chr(9888) + ' Findings illisibles, aucun repli disponible : gate bloquée. Relancer /revi.'])
 if stale_anchors:
-    comments = []
-    summary.append('')
-    summary.append(chr(9888) + ' The worktree HEAD moved after the reviewers judged it (' + stale_anchors +
-                   '), so the inline anchors would land on the wrong lines. The findings are summarised '
-                   'above instead. Push again or comment /revi for a review of the current head.')
+    summary.extend(['', chr(9888) + ' Le HEAD a changé depuis la revue (' + stale_anchors + '). Findings conservés ci-dessous sans ancrage ; relancer /revi sur la tête actuelle.'])
+# Explicit gaps stay visible. Unverifiable context stays available alongside
+# the audited scope; a missing ticket is not itself a defect to correct.
+def ticket_verdict(t, verdict):
+    return re.match(r'^[^:]+:\s*' + verdict + r'(?:\s*[—–-]|\s*$)', t, re.I)
+ticket_unverified = [t for t in tickets if ticket_verdict(t, 'unverifiable')]
+ticket_gaps = [t for t in tickets if not ticket_verdict(t, 'covered') and not ticket_verdict(t, 'unverifiable')]
+if ticket_gaps:
+    summary.extend(['', '**Écarts au ticket**'])
+    summary.extend('- ' + t for t in ticket_gaps)
+if questions:
+    summary.extend(['', '**À confirmer**'])
+    summary.extend('- ' + q for q in dict.fromkeys(questions))
+if unanchored:
+    summary.extend(['', '**Findings sans ancrage dans le diff**'])
+    for c in unanchored:
+        anchor = (c['path'] or '(fichier non précisé)') + ':' + str(c['line'])
+        summary.extend(['', anchor, '', c['body']])
+        if c['suggestion']:
+            # This is an unanchored replacement, never an apply-able suggestion.
+            fence = chr(96) * (max([len(m[0]) for m in re.finditer(chr(96) + '+', c['suggestion'])] + [2]) + 1)
+            summary.extend(['', 'Remplacement proposé :', fence, c['suggestion'], fence])
 
 # Run telemetry is engine-owned: never ask a reviewer to self-report it.
 # Effort is expanded by the engine before entering the tool sandbox, using
 # the same environment/default as the requested node setting above; it is
 # not a provider measurement. Only executed nodes have stamped metadata.
 import html
+from urllib.parse import urlsplit, urlunsplit, quote
 
 def ai_value(name):
     value = os.environ.get(name, '').strip()
@@ -1479,6 +1476,25 @@ def ai_tokens(value):
 def ai_cell(value):
     return html.escape(str(value or 'indisponible'), quote=True).replace('|', '&#124;').replace(chr(10), ' ').replace(chr(13), ' ')
 
+def ai_run_identity():
+    run_id = ai_value('AI_RUN_ID')
+    label = '<code>' + ai_cell(run_id) + '</code>'
+    # The server builds this callback from its public base URL. Use the same
+    # ordinary authenticated run page as the merge gate, never a share grant.
+    suffix = '/api/v1/forge/publish-review'
+    try:
+        endpoint = urlsplit(os.environ.get('PUB_URL', ''))
+        if (endpoint.scheme not in ('https', 'http') or not endpoint.hostname
+                or endpoint.username is not None or endpoint.password is not None
+                or not endpoint.path.endswith(suffix)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', run_id)):
+            return label
+        path = endpoint.path[:-len(suffix)] + '/runs/' + quote(run_id, safe='')
+        run_url = urlunsplit((endpoint.scheme, endpoint.netloc, path, '', ''))
+    except ValueError:
+        return label
+    return '<a href=' + chr(34) + html.escape(run_url, quote=True) + chr(34) + '>' + label + '</a>'
+
 ai_rows = []
 for label, prefix in [('Revue Claude', 'AI_REVIEWER_CLAUDE'), ('Revue GPT', 'AI_REVIEWER_GPT'), ('Revue Claude · glance', 'AI_REVIEWER_CLAUDE_GLANCE'), ('Revue GPT · glance', 'AI_REVIEWER_GPT_GLANCE'), ('Synthèse', 'AI_CONVERGE')]:
     model = ai_value(prefix + '_MODEL')
@@ -1489,8 +1505,21 @@ for label, prefix in [('Revue Claude', 'AI_REVIEWER_CLAUDE'), ('Revue GPT', 'AI_
     effort = ai_value(prefix + '_EFFORT')
     ai_rows.append('| ' + ' | '.join(ai_cell(v) for v in (label, model, harness, effort, ai_tokens(tokens))) + ' |')
 summary.extend(['', '<details>', '<summary><sub>Détails du run IA · Iterion</sub></summary>', '',
-                'Run : <code>' + ai_cell(ai_value('AI_RUN_ID')) + '</code>', '',
+                'Run : ' + ai_run_identity(), '',
                 'Tokens du run au moment de publier : **' + ai_tokens(ai_value('AI_RUN_TOKENS')) + '**.', ''])
+scope = ai_value('REVIEW_SCOPE')
+if scope:
+    summary.extend(['Périmètre revu : ' + ai_cell(scope), ''])
+if ticket_unverified:
+    summary.extend(['Vérifications de ticket indisponibles :'] + ['- ' + ai_cell(t) for t in ticket_unverified] + [''])
+dual = str(os.environ.get('REVIEW_MODE', '')).strip().lower() == 'dual'
+if dual:
+    cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
+    summary.extend(['Revue à deux familles ; ' + str(cross_n) + ' finding(s) cross-confirmed by both model families.', ''])
+else:
+    summary.extend(['Revue mono (single model family).', ''])
+if finding_ids:
+    summary.extend(['Correction : /billy ; arbitrage : /billy skip ' + finding_ids[0] + ' suivi du motif.', ''])
 if ai_rows:
     summary.extend(['| Étape | Modèle | Harness | Effort demandé | Tokens |',
                     '|---|---|---|---|---:|'] + ai_rows)
@@ -1711,6 +1740,7 @@ workflow review_pr:
   ## forge publish (no LLM, no workspace credential).
   pr_gate -> done when not has_pr
   pr_gate -> publish_review when has_pr with {
+    review_scope: "{{outputs.merge_reviews.review_scope}}",
     ai_run_tokens: "{{run.tokens}}",
     ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
     ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",
