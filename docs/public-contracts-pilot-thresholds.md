@@ -1,4 +1,12 @@
-# Frozen representative pilot thresholds for #1165
+# Frozen representative pilot thresholds for #1165 — version 2
+
+Version 1 was committed as `8b73c9e07`. Inspection after the first measurement
+showed that Shorts' `make_keyframes` runs a batch itself: modeling it as one
+job per keyframe would misrepresent the source. Version 1 measurements are
+discarded. Version 2 switches the Shorts reference to its actual
+`fan_out_each` unit-dispatch stage. The numerical thresholds below are
+unchanged; all nine cases must be freshly measured against this version's
+commit. This correction is recorded before those measurements.
 
 These are isolated, deterministic slices of three existing workflows. They do
 not run the projects, invoke models, create media, or modify project files.
@@ -7,7 +15,7 @@ values prevent silently switching the reference after measurement.
 
 | Pilot | Reference workflow and SHA-256 | Frozen slice |
 | --- | --- | --- |
-| Shorts | `video/shorts/bots/shorts-episode/scene-unit.bot`, `a7d1a5695c542d2cecd67cb88b22dfde1dff931e7ec5a59ffd87a856232e2913` | `prepare_keyframe_stage` → keyframe jobs → `publish_keyframes` |
+| Shorts | `video/shorts/bots/shorts-episode/units.bot`, `8a86c07d31e1321467bf96a55df4d9655ea4a26e716353a5d94c461a2ddf7fd6` | `plan_the_units` → `dispatch` (`fan_out_each`) → per-unit work → collection |
 | Town | `game/town/bots/town-vertical-pipeline/bots/planner/subbots/epic-acceptance-review.bot`, `f8c37ed234f2d8fea224518d21b46731c8c636c8e25261bd828fa1df4d1a60c9` | `prepare_epic_images` → per-view image jobs → `seal_epic_images` |
 | Tabarria | `video/Tabarria/bots/bestof-lab/animal-range.bot`, `887298f94de5f28752685b6ee6b50836acccf4065057371f6b72af446a68de25` | `prepare_stills` → per-still jobs → `collect_stills` |
 
