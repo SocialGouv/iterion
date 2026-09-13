@@ -67,7 +67,9 @@
       "TestPortsEngineMongo/InterruptedCommitRecovery/BeforeDispatch",
       "TestPortsEngineMongo/InterruptedCommitRecovery/AfterDispatch",
       "TestPortsEngineMongo/InterruptedCommitRecovery/BeforePublication",
-      "TestPortsEngineMongo/InterruptedCommitRecovery/AfterPublicationLostAck"
+      "TestPortsEngineMongo/InterruptedCommitRecovery/AfterPublicationLostAck",
+      "TestNativeProcessKillRecoveryFilesystem",
+      "TestNativeProcessKillRecoveryMongo"
     ]
   }
 }
