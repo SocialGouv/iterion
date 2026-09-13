@@ -339,7 +339,7 @@ func ValidatePortExecution(s *PortExecution) error {
 }
 
 func portFileHasLineage(s *PortExecution, value *PortValue, file PortFileRef) bool {
-	if file.Producer == value.Producer && file.Attempt == value.Attempt {
+	if file.Producer == value.Producer && file.Attempt == value.Attempt && (value.Producer == "input" || s.Invocations[value.Producer] != nil) {
 		return true // root input or captured by this successful invocation
 	}
 	if invocation := s.Invocations[value.Producer]; invocation != nil {

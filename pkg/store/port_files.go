@@ -20,6 +20,8 @@ type PortFilesStore interface {
 	PutPortFile(ctx context.Context, ref PortFileRef, content io.Reader) error
 }
 
+var ErrPortFileCorrupt = errors.New("store: native file content is missing or corrupt")
+
 // PublishedPortFileRefs is the only authority for native file visibility.
 // PutPortFile may have persisted bytes before an interrupted checkpoint CAS;
 // those bytes remain private until a successful publication references them.
@@ -92,7 +94,7 @@ func VerifyPortFile(ctx context.Context, ref PortFileRef, body io.Reader) error 
 		return err
 	}
 	if body == nil {
-		return fmt.Errorf("store: native file body is missing")
+		return fmt.Errorf("store: native file body is missing: %w", ErrPortFileCorrupt)
 	}
 	hash := sha256.New()
 	n, err := io.Copy(hash, io.LimitReader(portContextReader{ctx, body}, ref.Size+1))
@@ -100,7 +102,7 @@ func VerifyPortFile(ctx context.Context, ref PortFileRef, body io.Reader) error 
 		return err
 	}
 	if n != ref.Size || hex.EncodeToString(hash.Sum(nil)) != ref.SHA256 {
-		return fmt.Errorf("store: native file %s has unexpected size or content", ref.Path)
+		return fmt.Errorf("store: native file %s has unexpected size or content: %w", ref.Path, ErrPortFileCorrupt)
 	}
 	return nil
 }

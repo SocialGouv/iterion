@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
 
 var ErrPortEffectUncertain = errors.New("runtime: native effect outcome requires recovery evidence")
@@ -233,25 +235,42 @@ func (c *portCoordinator) reconcilePortIdentity(ctx context.Context, fresh *stor
 		}
 	}
 	files := store.AsRunFilesStore(c.engine.store)
+	verifiedFiles := map[store.PortFileRef]bool{}
 	for _, value := range c.state.Publications {
 		for _, file := range value.Files {
+			if verifiedFiles[file] {
+				continue
+			}
+			verifiedFiles[file] = true
 			if files == nil {
 				return fmt.Errorf("runtime: native file recovery needs a run-files store")
 			}
-			body, _, err := files.OpenRunFile(ctx, file.RunID, file.Path)
-			if err == nil {
-				err = errors.Join(store.VerifyPortFile(ctx, file, body), body.Close())
+			body, _, openErr := files.OpenRunFile(ctx, file.RunID, file.Path)
+			missing := errors.Is(openErr, os.ErrNotExist) || errors.Is(openErr, blob.ErrArtifactNotFound)
+			if openErr != nil && !missing {
+				return fmt.Errorf("runtime: cannot verify published file %s; preserving committed work: %w", file.Path, openErr)
 			}
-			if err != nil {
-				if value.Producer == "input" {
-					return fmt.Errorf("runtime: root input file is unavailable: %w", err)
+			corrupt := false
+			if openErr == nil {
+				verifyErr := store.VerifyPortFile(ctx, file, body)
+				closeErr := body.Close()
+				if closeErr != nil {
+					return fmt.Errorf("runtime: cannot close published file %s; preserving committed work: %w", file.Path, closeErr)
 				}
-				if invocation := c.state.Invocations[value.Producer]; invocation != nil {
-					invalid[invocation.Node] = true
+				corrupt = errors.Is(verifyErr, store.ErrPortFileCorrupt)
+				if verifyErr != nil && !corrupt {
+					return fmt.Errorf("runtime: cannot verify published file %s; preserving committed work: %w", file.Path, verifyErr)
 				}
-				if collection := c.state.Collections[value.Producer]; collection != nil {
-					invalid[collection.Node] = true
+			}
+			if missing || corrupt {
+				if file.Producer == "input" {
+					return fmt.Errorf("runtime: root input file is missing or corrupt: %s", file.Path)
 				}
+				owner := c.state.Invocations[file.Producer]
+				if owner == nil {
+					return fmt.Errorf("runtime: published file %s has no invocation owner", file.Path)
+				}
+				invalid[owner.Node] = true
 			}
 		}
 	}

@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -146,7 +148,99 @@ func TestPortsFileCaptureMongo(t *testing.T) {
 	runPortsFileCapture(t, portsTestMongoStore)
 }
 
+type transientPortFilesStore struct {
+	store.RunStore
+	files       store.RunFilesStore
+	openError   error
+	corruptOnce atomic.Bool
+}
+
+func (s *transientPortFilesStore) EnsureRunFilesDir(ctx context.Context, id string) (string, error) {
+	return s.files.EnsureRunFilesDir(ctx, id)
+}
+func (s *transientPortFilesStore) ListRunFiles(ctx context.Context, id string) ([]store.RunFileInfo, error) {
+	return s.files.ListRunFiles(ctx, id)
+}
+func (s *transientPortFilesStore) OpenRunFile(ctx context.Context, id, path string) (io.ReadCloser, store.RunFileInfo, error) {
+	if s.openError != nil {
+		return nil, store.RunFileInfo{}, s.openError
+	}
+	if s.corruptOnce.Swap(false) {
+		return io.NopCloser(strings.NewReader("corrupt")), store.RunFileInfo{Path: path}, nil
+	}
+	return s.files.OpenRunFile(ctx, id, path)
+}
+func (s *transientPortFilesStore) PutPortFile(ctx context.Context, ref store.PortFileRef, body io.Reader) error {
+	return store.AsPortFilesStore(s.RunStore).PutPortFile(ctx, ref, body)
+}
+
 func runPortsFileCapture(t *testing.T, factory portsTestStoreFactory) {
+	t.Run("corrupt read invalidates the actual file producer", func(t *testing.T) {
+		executor := portsExecutorFunc(func(ctx context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
+			if _, producer := input["value"]; producer {
+				scope, ok := model.InvocationFilesFromContext(ctx)
+				if !ok {
+					return nil, fmt.Errorf("missing producer area")
+				}
+				if err := os.WriteFile(filepath.Join(scope.HostDir, "report.txt"), []byte("saved\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return map[string]any{"report": "report.txt"}, nil
+			}
+			return nil, errors.New("consumer stays failed")
+		})
+		engine, s := portsTestEngine(t, factory, portsFileSource, executor)
+		ctx := portsTestContext(t)
+		const id = "pc1_file_corrupt"
+		if err := engine.Run(ctx, id, map[string]any{"value": "saved"}); err == nil {
+			t.Fatal("first attempt unexpectedly succeeded")
+		}
+		wrapped := &transientPortFilesStore{RunStore: s, files: store.AsRunFilesStore(s)}
+		wrapped.corruptOnce.Store(true)
+		resumer := New(portsTestWorkflow(t, portsFileSource), wrapped, executor, WithWorkDir(engine.workDir), WithSandboxOverride("none"))
+		if err := resumer.Resume(ctx, id, nil); err == nil {
+			t.Fatal("consumer unexpectedly succeeded")
+		}
+		after := portsTestRun(t, s, id)
+		if producer := after.PortExecution.Invocations["produce"]; producer.Attempt != 2 || producer.Status != store.PortSucceeded {
+			t.Fatalf("corrupt file did not invalidate its producer: %+v", producer)
+		}
+	})
+	t.Run("transient file read preserves committed producer on resume", func(t *testing.T) {
+		executor := portsExecutorFunc(func(ctx context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
+			if _, producer := input["value"]; producer {
+				scope, ok := model.InvocationFilesFromContext(ctx)
+				if !ok {
+					return nil, fmt.Errorf("missing producer area")
+				}
+				if err := os.WriteFile(filepath.Join(scope.HostDir, "report.txt"), []byte("saved\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return map[string]any{"report": "report.txt"}, nil
+			}
+			return nil, errors.New("fail consumer after producer commit")
+		})
+		engine, s := portsTestEngine(t, factory, portsFileSource, executor)
+		ctx := portsTestContext(t)
+		const id = "pc1_file_recover"
+		if err := engine.Run(ctx, id, map[string]any{"value": "saved"}); err == nil {
+			t.Fatal("first attempt unexpectedly succeeded")
+		}
+		before := portsTestRun(t, s, id)
+		if before.PortExecution.Invocations["produce"].Status != store.PortSucceeded {
+			t.Fatal("producer did not commit before failure")
+		}
+		temporary := errors.New("temporary object-store outage")
+		wrapped := &transientPortFilesStore{RunStore: s, files: store.AsRunFilesStore(s), openError: temporary}
+		resumer := New(portsTestWorkflow(t, portsFileSource), wrapped, executor, WithWorkDir(engine.workDir), WithSandboxOverride("none"))
+		if err := resumer.Resume(ctx, id, nil); !errors.Is(err, temporary) {
+			t.Fatalf("transient read was not preserved: %v", err)
+		}
+		after := portsTestRun(t, s, id)
+		if after.PortExecution.Invocations["produce"].Attempt != 1 || after.PortExecution.Invocations["produce"].Status != store.PortSucceeded {
+			t.Fatalf("transient read invalidated successful work: %+v", after.PortExecution.Invocations["produce"])
+		}
+	})
 	t.Run("root attachment is captured before consumption", func(t *testing.T) {
 		executor := portsExecutorFunc(func(ctx context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
 			scope, ok := model.InvocationFilesFromContext(ctx)
