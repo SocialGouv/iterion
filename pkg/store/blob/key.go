@@ -18,7 +18,7 @@ import (
 // dance and avoids killing the whole request-path goroutine when a
 // malformed runID slips through the upstream sanitiser.
 func artifactKey(runID, nodeID string, version int) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
 	if err := store.SanitizePathComponent("node_id", nodeID); err != nil {
@@ -27,7 +27,7 @@ func artifactKey(runID, nodeID string, version int) (string, error) {
 	if version < 0 {
 		return "", fmt.Errorf("blob: negative artifact version %d", version)
 	}
-	return fmt.Sprintf("artifacts/%s/%s/%d.json", runID, nodeID, version), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("artifacts/%s/%s/%d.json", runID, nodeID, version), nil
 }
 
 // attachmentKey builds the canonical S3 key for an attachment body.
@@ -39,7 +39,7 @@ func artifactKey(runID, nodeID string, version int) (string, error) {
 // S3 key shape consistent prevents `migrate to-cloud` from producing
 // keys the FS layer would have flattened (F-ST-10).
 func attachmentKey(runID, name, filename string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
 	if err := store.SanitizePathComponent("attachment_name", name); err != nil {
@@ -48,17 +48,17 @@ func attachmentKey(runID, name, filename string) (string, error) {
 	if err := store.SanitizePathComponent("attachment_filename", filename); err != nil {
 		return "", fmt.Errorf("blob: invalid attachment_filename: %w", err)
 	}
-	return fmt.Sprintf("attachments/%s/%s/%s", runID, name, filename), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("attachments/%s/%s/%s", runID, name, filename), nil
 }
 
 // attachmentRunPrefix is the S3 key prefix containing every
 // attachment for a run. Trailing slash is included so a delete-by-
 // prefix doesn't accidentally match `attachments/<runID>-other/`.
 func attachmentRunPrefix(runID string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
-	return fmt.Sprintf("attachments/%s/", runID), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("attachments/%s/", runID), nil
 }
 
 // toolBlobKey builds the canonical S3 key for a per-tool-call I/O body.
@@ -69,7 +69,7 @@ func attachmentRunPrefix(runID string) (string, error) {
 // caller (store layer) before this point; it is still sanitised here as
 // a path component so a malformed value can never escape the prefix.
 func toolBlobKey(runID, toolUseID, kind string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
 	if err := store.SanitizePathComponent("tool_use_id", toolUseID); err != nil {
@@ -78,7 +78,7 @@ func toolBlobKey(runID, toolUseID, kind string) (string, error) {
 	if kind != "input" && kind != "output" {
 		return "", fmt.Errorf("blob: tool blob kind must be input|output, got %q", kind)
 	}
-	return fmt.Sprintf("tools/%s/%s/%s", runID, toolUseID, kind), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("tools/%s/%s/%s", runID, toolUseID, kind), nil
 }
 
 // irBlobKey builds the canonical S3 key for an out-of-band compiled IR:
@@ -86,10 +86,10 @@ func toolBlobKey(runID, toolUseID, kind string) (string, error) {
 // stashes a single IR per run), so there is no sub-path to sanitise
 // beyond the run id.
 func irBlobKey(runID string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
-	return fmt.Sprintf("ir/%s.json", runID), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("ir/%s.json", runID), nil
 }
 
 // validateIRBlobKey re-derives the canonical IR key from a storage key
@@ -97,7 +97,8 @@ func irBlobKey(runID string) (string, error) {
 // so a tampered or malformed reference can never escape the ir/ prefix.
 // Returns the (identical) canonical key on success.
 func validateIRBlobKey(storageKey string) (string, error) {
-	runID := strings.TrimSuffix(strings.TrimPrefix(storageKey, "ir/"), ".json")
+	key := strings.TrimPrefix(storageKey, "ports-v1/")
+	runID := strings.TrimSuffix(strings.TrimPrefix(key, "ir/"), ".json")
 	canonical, err := irBlobKey(runID)
 	if err != nil {
 		return "", err
@@ -111,28 +112,28 @@ func validateIRBlobKey(storageKey string) (string, error) {
 // toolBlobRunPrefix is the S3 key prefix containing every tool blob for
 // a run. Trailing slash guards against matching `tools/<runID>-other/`.
 func toolBlobRunPrefix(runID string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
-	return fmt.Sprintf("tools/%s/", runID), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("tools/%s/", runID), nil
 }
 
 // backendSessionKey is sessions/<run_id>/<ref>.
 func backendSessionKey(runID, ref string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
 	if err := store.SanitizePathComponent("session_ref", ref); err != nil {
 		return "", fmt.Errorf("blob: invalid session_ref: %w", err)
 	}
-	return fmt.Sprintf("sessions/%s/%s", runID, ref), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("sessions/%s/%s", runID, ref), nil
 }
 
 func backendSessionRunPrefix(runID string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
-	return fmt.Sprintf("sessions/%s/", runID), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("sessions/%s/", runID), nil
 }
 
 // runFileKey builds the canonical S3 key for a tool-produced artifact
@@ -143,23 +144,23 @@ func backendSessionRunPrefix(runID string) (string, error) {
 // same containment invariant the filesystem store's OpenRunFile enforces
 // via its openat walk, applied here to the flat S3 key space.
 func runFileKey(runID, relPath string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
 	clean, err := sanitizeRunFileRelPath(relPath)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("runfiles/%s/%s", runID, clean), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("runfiles/%s/%s", runID, clean), nil
 }
 
 // runFileRunPrefix is the S3 key prefix containing every artifact file
 // for a run. Trailing slash guards against matching `runfiles/<runID>-x/`.
 func runFileRunPrefix(runID string) (string, error) {
-	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
-	return fmt.Sprintf("runfiles/%s/", runID), nil
+	return store.RunBlobPrefix(runID) + fmt.Sprintf("runfiles/%s/", runID), nil
 }
 
 // sanitizeRunFileRelPath validates a slash-separated relative path and

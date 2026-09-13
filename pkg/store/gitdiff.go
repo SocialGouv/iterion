@@ -254,13 +254,13 @@ func ResolveRunFileDiff(ctx context.Context, store RunDiffBlobStore, runID strin
 // diffBlobPath validates runID + ref and returns
 // <root>/runs/<runID>/gitdiffs/<ref>.json for the filesystem blob store.
 func (s *FilesystemRunStore) diffBlobPath(runID, ref string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
 	if err := sanitizePathComponent("diff ref", ref); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "gitdiffs", ref+".json"), nil
+	return filepath.Join(s.runDir(runID), "gitdiffs", ref+".json"), nil
 }
 
 // PutRunDiffBlob implements RunDiffBlobStore over the filesystem store.

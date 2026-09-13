@@ -37,6 +37,9 @@ type runGitMetaDoc struct {
 // snapshot keyed on run_id. Re-saving replaces the prior snapshot so the
 // latest write always reflects the full base..head range.
 func (s *Store) SaveRunGitMeta(ctx context.Context, runID string, meta *store.RunGitMeta) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if meta == nil {
 		return fmt.Errorf("store/mongo: SaveRunGitMeta(%s): nil meta", runID)
 	}
@@ -59,7 +62,7 @@ func (s *Store) SaveRunGitMeta(ctx context.Context, runID string, meta *store.Ru
 		doc.TenantID = id
 	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	if _, err := s.runGitMeta.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
+	if _, err := s.collectionForRun(runID, s.runGitMeta).ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
 		return fmt.Errorf("store/mongo: save git meta %s: %w", runID, err)
 	}
 	return nil
@@ -68,9 +71,12 @@ func (s *Store) SaveRunGitMeta(ctx context.Context, runID string, meta *store.Ru
 // LoadRunGitMeta implements store.RunGitMetaStore: the snapshot for the
 // run, or (nil, nil) when none was ever recorded.
 func (s *Store) LoadRunGitMeta(ctx context.Context, runID string) (*store.RunGitMeta, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
 	var doc runGitMetaDoc
-	if err := s.runGitMeta.FindOne(ctx, filter).Decode(&doc); err != nil {
+	if err := s.collectionForRun(runID, s.runGitMeta).FindOne(ctx, filter).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
 		}

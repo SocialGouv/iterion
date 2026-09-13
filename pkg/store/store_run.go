@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,8 +29,8 @@ import (
 // instead of resetting an existing run's metadata/checkpoint. Resume and
 // crash-recovery code relies on run.json being the authoritative identity
 // and checkpoint record for a run.
-func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]any) (*Run, error) {
-	if err := sanitizePathComponent("run ID", id); err != nil {
+func (s *FilesystemRunStore) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*Run, error) {
+	if err := ValidateRunID(id); err != nil {
 		return nil, err
 	}
 	// A deleted run id is never reusable: run ids are time-prefixed so
@@ -50,6 +51,9 @@ func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName strin
 		LaunchEnv:      CaptureLaunchEnv(),
 		IterionVersion: appinfo.FullVersion(),
 	}
+	if err := StampRunSemantics(ctx, r); err != nil {
+		return nil, err
+	}
 	if err := s.writeRunNew(r); err != nil {
 		return nil, err
 	}
@@ -62,8 +66,8 @@ var _ ParentedRunCreator = (*FilesystemRunStore)(nil)
 // ParentRunID in the same exclusive-create write as the run document.
 // It exists so spawnRun's precreate never leaves a running child doc
 // behind a failed second SaveRun (see store.ParentedRunCreator).
-func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error) {
-	if err := sanitizePathComponent("run ID", id); err != nil {
+func (s *FilesystemRunStore) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error) {
+	if err := ValidateRunID(id); err != nil {
 		return nil, err
 	}
 	if err := s.guardNotDeleted(id); err != nil {
@@ -82,6 +86,9 @@ func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName,
 		LaunchEnv:      CaptureLaunchEnv(),
 		IterionVersion: appinfo.FullVersion(),
 	}
+	if err := StampRunSemantics(ctx, r); err != nil {
+		return nil, err
+	}
 	if err := s.writeRunNew(r); err != nil {
 		return nil, err
 	}
@@ -99,8 +106,8 @@ func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName,
 //
 // Implements store.QueuedRunCreator (filesystem-only; cloud stores
 // already create runs queued via CreateRun).
-func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName, filePath, botID string, inputs map[string]any) (*Run, error) {
-	if err := sanitizePathComponent("run ID", id); err != nil {
+func (s *FilesystemRunStore) CreateQueuedRun(ctx context.Context, id, workflowName, filePath, botID string, inputs map[string]any) (*Run, error) {
+	if err := ValidateRunID(id); err != nil {
 		return nil, err
 	}
 	// Same tombstone rule as CreateRun: a deleted run id is never
@@ -125,6 +132,9 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 		LaunchEnv:      CaptureLaunchEnv(),
 		IterionVersion: appinfo.FullVersion(),
 	}
+	if err := StampRunSemantics(ctx, r); err != nil {
+		return nil, err
+	}
 	if err := s.writeRunNew(r); err != nil {
 		return nil, err
 	}
@@ -137,6 +147,9 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 // finalize path concurrent with an engine status update, would
 // otherwise read-modify-write through each other and lose fields.
 func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
+	if err := ValidateRunSemantics(r); err != nil {
+		return err
+	}
 	if r.Status != RunStatusRunning {
 		r.AwaitAnswersWaits = nil
 	}
@@ -238,7 +251,7 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 // the caller didn't account for (its own follow-up writeRun would
 // then race the persisted state against its own in-memory copy).
 func (s *FilesystemRunStore) loadRunRaw(id string) (*Run, error) {
-	if err := sanitizePathComponent("run ID", id); err != nil {
+	if err := ValidateRunID(id); err != nil {
 		return nil, err
 	}
 	p := s.runJSONPath(id)
@@ -259,9 +272,22 @@ func (s *FilesystemRunStore) loadRunRaw(id string) (*Run, error) {
 		}
 		return nil, fmt.Errorf("store: load run %s: %w", id, err)
 	}
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("store: invalid run JSON for %s", id)
+	}
 	var r Run
-	if err := json.Unmarshal(data, &r); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if IsNativeRunID(id) {
+		decoder.UseNumber()
+	}
+	if err := decoder.Decode(&r); err != nil {
 		return nil, fmt.Errorf("store: decode run %s: %w", id, err)
+	}
+	if r.ID != id {
+		return nil, fmt.Errorf("store: run identity mismatch for %s: %w", id, ErrRunSemantics)
+	}
+	if err := ValidateRunSemantics(&r); err != nil {
+		return nil, err
 	}
 	return &r, nil
 }
@@ -866,6 +892,9 @@ func (s *FilesystemRunStore) SetSubbotChild(_ context.Context, parentRunID, key,
 	if key == "" {
 		return nil
 	}
+	if err := ValidateNativeChild(parentRunID, childRunID); err != nil {
+		return err
+	}
 	return s.mutateSubbotChildren(parentRunID, func(m map[string]string) map[string]string {
 		if m == nil {
 			m = make(map[string]string, 1)
@@ -933,27 +962,33 @@ func (s *FilesystemRunStore) ListRunDirs(ctx context.Context) ([]string, error) 
 }
 
 func (s *FilesystemRunStore) listRunEntries(_ context.Context, requireDoc bool) ([]string, error) {
-	runsDir := filepath.Join(s.root, "runs")
-	entries, err := os.ReadDir(runsDir)
-	if err != nil {
-		return nil, fmt.Errorf("store: list runs: %w", err)
-	}
 	var ids []string
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, family := range []string{"runs", NativeRunsDirectory} {
+		entries, err := os.ReadDir(filepath.Join(s.root, family))
+		if os.IsNotExist(err) && family == NativeRunsDirectory {
 			continue
 		}
-		// Tombstoned runs (deletion marker, no data) are not listed —
-		// they'd surface as phantom rows failing every LoadRun.
-		if s.runDeleted(e.Name()) {
-			continue
+		if err != nil {
+			return nil, fmt.Errorf("store: list runs: %w", err)
 		}
-		if requireDoc {
-			if _, err := os.Stat(s.runJSONPath(e.Name())); err != nil {
+		for _, e := range entries {
+			id := e.Name()
+			// A legacy shadow record with a reserved ID is never authoritative.
+			if !e.IsDir() || ValidateRunID(id) != nil || RunDataDirectory(id) != family || s.runDeleted(id) {
 				continue
 			}
+			if requireDoc {
+				if _, err := os.Stat(s.runJSONPath(id)); err != nil {
+					continue
+				}
+				if IsNativeRunID(id) {
+					if _, err := s.loadRunRaw(id); err != nil {
+						continue
+					}
+				}
+			}
+			ids = append(ids, id)
 		}
-		ids = append(ids, e.Name())
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -1183,7 +1218,7 @@ func (s *FilesystemRunStore) writeRunNew(r *Run) error {
 	// Defence in depth for CreateRun's exclusive create path: sanitise here as
 	// well as at the public entry point so future internal callers cannot path
 	// join a tampered Run.ID outside the store root.
-	if err := sanitizePathComponent("run ID", r.ID); err != nil {
+	if err := ValidateRunSemantics(r); err != nil {
 		return err
 	}
 	dir := s.runDir(r.ID)
@@ -1226,7 +1261,7 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	// FailRunResumable) flows through here. Sanitise once, here, so
 	// e.g. a Run loaded with a tampered ID can't be re-serialised to a
 	// path outside the store root.
-	if err := sanitizePathComponent("run ID", r.ID); err != nil {
+	if err := ValidateRunSemantics(r); err != nil {
 		return err
 	}
 	dir := s.runDir(r.ID)
@@ -1247,6 +1282,14 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	current, loadErr := s.loadRunRaw(r.ID)
 	if loadErr != nil && !errors.Is(loadErr, ErrRunNotFound) {
 		return loadErr
+	}
+	if current == nil && IsNativeRunID(r.ID) {
+		return fmt.Errorf("store: native run %s must be explicitly created: %w", r.ID, ErrRunNotFound)
+	}
+	if current != nil {
+		if err := CheckRunSemanticIdentity(current, r); err != nil {
+			return err
+		}
 	}
 	if current != nil && current.CASVersion != r.CASVersion || current == nil && r.CASVersion != 0 {
 		return fmt.Errorf("store: run %s: %w", r.ID, ErrRunConflict)

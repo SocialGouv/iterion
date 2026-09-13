@@ -62,6 +62,9 @@ func (s *Store) allocNoteSeq(ctx context.Context, runID string) (int64, error) {
 // or a concurrent racer) re-seeds the counter to tail+1 and reallocs
 // rather than surfacing a hard failure.
 func (s *Store) AppendRunNote(ctx context.Context, runID string, note store.RunNote) (store.RunNote, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return store.RunNote{}, err
+	}
 	if note.Timestamp.IsZero() {
 		note.Timestamp = time.Now().UTC()
 	}
@@ -89,7 +92,7 @@ func (s *Store) AppendRunNote(ctx context.Context, runID string, note store.RunN
 			Body:      note.Body,
 			Timestamp: note.Timestamp,
 		}
-		if _, err := s.runNotes.InsertOne(ctx, doc); err != nil {
+		if _, err := s.collectionForRun(runID, s.runNotes).InsertOne(ctx, doc); err != nil {
 			if mongo.IsDuplicateKeyError(err) {
 				lastErr = err
 				if tail, hasTail, terr := s.lastRunNote(ctx, runID); terr == nil && hasTail && tail.Seq >= seq {
@@ -109,10 +112,13 @@ func (s *Store) AppendRunNote(ctx context.Context, runID string, note store.RunN
 // lastRunNote returns the highest-seq note for the run (the seq source),
 // or (_, false, nil) when the run has none.
 func (s *Store) lastRunNote(ctx context.Context, runID string) (store.RunNote, bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return store.RunNote{}, false, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
 	opts := options.FindOne().SetSort(bson.D{{Key: "seq", Value: -1}})
 	var doc runNoteDoc
-	if err := s.runNotes.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
+	if err := s.collectionForRun(runID, s.runNotes).FindOne(ctx, filter, opts).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return store.RunNote{}, false, nil
 		}
@@ -125,9 +131,12 @@ func (s *Store) lastRunNote(ctx context.Context, runID string) (store.RunNote, b
 // the run in ascending Seq (chronological) order. A run with no notes
 // yields (nil, nil).
 func (s *Store) ListRunNotes(ctx context.Context, runID string) ([]store.RunNote, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
 	opts := options.Find().SetSort(bson.D{{Key: "seq", Value: 1}})
-	cur, err := s.runNotes.Find(ctx, filter, opts)
+	cur, err := s.collectionForRun(runID, s.runNotes).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list run notes %s: %w", runID, err)
 	}

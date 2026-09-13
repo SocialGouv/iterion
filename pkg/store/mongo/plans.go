@@ -76,6 +76,9 @@ func (d runPlanDoc) toSnapshot() store.PlanSnapshot {
 // desynced the counter) reallocs with a jittered backoff rather than
 // surfacing a hard failure.
 func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return store.PlanSnapshot{}, false, err
+	}
 	newTodos, err := json.Marshal(snap.Todos)
 	if err != nil {
 		return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: marshal plan todos: %w", err)
@@ -122,7 +125,7 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 			Timestamp: snap.Timestamp,
 			Todos:     snap.Todos,
 		}
-		if _, err := s.runPlans.InsertOne(ctx, doc); err != nil {
+		if _, err := s.collectionForRun(runID, s.runPlans).InsertOne(ctx, doc); err != nil {
 			if mongo.IsDuplicateKeyError(err) {
 				// The seq is already taken: either a sibling branch raced us,
 				// or the counter is BEHIND the persisted tail — runs whose
@@ -149,10 +152,13 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 // lastPlanSnapshot returns the highest-seq snapshot for the run (the
 // dedup anchor + seq source), or (_, false, nil) when the run has none.
 func (s *Store) lastPlanSnapshot(ctx context.Context, runID string) (store.PlanSnapshot, bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return store.PlanSnapshot{}, false, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
 	opts := options.FindOne().SetSort(bson.D{{Key: "seq", Value: -1}})
 	var doc runPlanDoc
-	if err := s.runPlans.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
+	if err := s.collectionForRun(runID, s.runPlans).FindOne(ctx, filter, opts).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return store.PlanSnapshot{}, false, nil
 		}
@@ -165,9 +171,12 @@ func (s *Store) lastPlanSnapshot(ctx context.Context, runID string) (store.PlanS
 // for the run in ascending Seq (chronological) order. A run with no
 // snapshots yields (nil, nil).
 func (s *Store) ListPlanSnapshots(ctx context.Context, runID string) ([]store.PlanSnapshot, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
 	opts := options.Find().SetSort(bson.D{{Key: "seq", Value: 1}})
-	cur, err := s.runPlans.Find(ctx, filter, opts)
+	cur, err := s.collectionForRun(runID, s.runPlans).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list plan snapshots %s: %w", runID, err)
 	}

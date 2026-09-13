@@ -33,12 +33,12 @@ func TeeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID str
 			logger.Warn(format, args...)
 		}
 	}
-	if err := SanitizePathComponent("run ID", runID); err != nil {
+	if err := ValidateRunID(runID); err != nil {
 		warn("store: refusing run.log tee for unsafe run ID: %v", err)
 		return logger, nil
 	}
 
-	runsDir := filepath.Join(storeRoot, "runs")
+	runsDir := filepath.Join(storeRoot, RunDataDirectory(runID))
 	runDir := filepath.Join(runsDir, runID)
 	if err := os.MkdirAll(runDir, dirPerm); err != nil {
 		warn("store: mkdir run dir for log tee: %v", err)
@@ -73,10 +73,10 @@ func TeeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID str
 
 // runLogPath validates runID and returns <root>/runs/<runID>/run.log.
 func (s *FilesystemRunStore) runLogPath(runID string) (string, error) {
-	if err := SanitizePathComponent("run ID", runID); err != nil {
+	if err := ValidateRunID(runID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "run.log"), nil
+	return filepath.Join(s.runDir(runID), "run.log"), nil
 }
 
 // AppendRunLog implements RunLogStore over runs/<id>/run.log. Bytes are

@@ -92,6 +92,12 @@ func turnKeyFilter(ctx context.Context, runID, nodeID string, loopIter, turn int
 // store's atomic overwrite. t.Messages (when non-nil) is persisted inline.
 func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 	if t == nil {
+		return store.ErrRunSemantics
+	}
+	if err := s.guardNativeRun(ctx, t.RunID); err != nil {
+		return err
+	}
+	if t == nil {
 		return fmt.Errorf("store/mongo: WriteTurn: nil turn")
 	}
 	if t.RunID == "" || t.NodeID == "" {
@@ -123,7 +129,7 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 		WrittenAt:    t.WrittenAt,
 	}
 	filter := turnKeyFilter(ctx, t.RunID, t.NodeID, t.LoopIter, t.TurnIndex)
-	if _, err := s.runTurns.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
+	if _, err := s.collectionForRun(t.RunID, s.runTurns).ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
 		return fmt.Errorf("store/mongo: write turn %s/%s/%d/%d: %w", t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, err)
 	}
 	return nil
@@ -136,9 +142,12 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 // toCheckpoint would waste bandwidth; callers fetch it via
 // LoadTurnMessages.
 func (s *Store) LoadTurn(ctx context.Context, runID, nodeID string, loopIter, turn int) (*store.TurnCheckpoint, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	var doc runTurnDoc
 	opts := options.FindOne().SetProjection(bson.M{"messages": 0})
-	err := s.runTurns.FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn), opts).Decode(&doc)
+	err := s.collectionForRun(runID, s.runTurns).FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn), opts).Decode(&doc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, fmt.Errorf("%w: run=%s node=%s iter=%d turn=%d", store.ErrTurnNotFound, runID, nodeID, loopIter, turn)
@@ -153,6 +162,9 @@ func (s *Store) LoadTurn(ctx context.Context, runID, nodeID string, loopIter, tu
 // error) when none exist. The inline messages blob is NOT surfaced —
 // callers follow up with LoadTurnMessages, mirroring the fs reader.
 func (s *Store) ListTurns(ctx context.Context, runID, nodeID string, loopIter int) ([]*store.TurnCheckpoint, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{
 		"run_id":    runID,
 		"node_id":   nodeID,
@@ -161,7 +173,7 @@ func (s *Store) ListTurns(ctx context.Context, runID, nodeID string, loopIter in
 	opts := options.Find().
 		SetSort(bson.D{{Key: "turn_index", Value: 1}}).
 		SetProjection(bson.M{"messages": 0})
-	cur, err := s.runTurns.Find(ctx, filter, opts)
+	cur, err := s.collectionForRun(runID, s.runTurns).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list turns %s/%s/%d: %w", runID, nodeID, loopIter, err)
 	}
@@ -186,12 +198,15 @@ func (s *Store) ListTurns(ctx context.Context, runID, nodeID string, loopIter in
 // turn_index within it) — or ErrTurnNotFound. Used by Fork to default
 // turn_index to "the last completed turn".
 func (s *Store) LatestTurn(ctx context.Context, runID, nodeID string) (*store.TurnCheckpoint, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID, "node_id": nodeID})
 	opts := options.FindOne().
 		SetSort(bson.D{{Key: "loop_iter", Value: -1}, {Key: "turn_index", Value: -1}}).
 		SetProjection(bson.M{"messages": 0})
 	var doc runTurnDoc
-	if err := s.runTurns.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
+	if err := s.collectionForRun(runID, s.runTurns).FindOne(ctx, filter, opts).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, fmt.Errorf("%w: run=%s node=%s", store.ErrTurnNotFound, runID, nodeID)
 		}
@@ -205,12 +220,15 @@ func (s *Store) LatestTurn(ctx context.Context, runID, nodeID string) (*store.Tu
 // loop may only carry that turn on iter > 0). ErrTurnNotFound when no
 // iteration has it.
 func (s *Store) LoadTurnAtIndex(ctx context.Context, runID, nodeID string, turn int) (*store.TurnCheckpoint, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID, "node_id": nodeID, "turn_index": turn})
 	opts := options.FindOne().
 		SetSort(bson.D{{Key: "loop_iter", Value: -1}}).
 		SetProjection(bson.M{"messages": 0})
 	var doc runTurnDoc
-	if err := s.runTurns.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
+	if err := s.collectionForRun(runID, s.runTurns).FindOne(ctx, filter, opts).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, fmt.Errorf("%w: run=%s node=%s turn=%d (any loop iter)", store.ErrTurnNotFound, runID, nodeID, turn)
 		}
@@ -223,9 +241,12 @@ func (s *Store) LoadTurnAtIndex(ctx context.Context, runID, nodeID string, turn 
 // blob for a turn, or ErrTurnNotFound when the turn is missing or carried
 // no messages (a legacy turn or a non-claw backend).
 func (s *Store) LoadTurnMessages(ctx context.Context, runID, nodeID string, loopIter, turn int) ([]byte, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	opts := options.FindOne().SetProjection(bson.M{"messages": 1})
 	var doc runTurnDoc
-	err := s.runTurns.FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn), opts).Decode(&doc)
+	err := s.collectionForRun(runID, s.runTurns).FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn), opts).Decode(&doc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, fmt.Errorf("%w: run=%s node=%s iter=%d turn=%d messages", store.ErrTurnNotFound, runID, nodeID, loopIter, turn)

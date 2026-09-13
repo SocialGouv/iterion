@@ -32,7 +32,7 @@ func validateToolBlobKind(kind string) error {
 // total byte size persisted. Idempotent — re-writing the same key
 // replaces the prior bytes.
 func (s *FilesystemRunStore) WriteToolBlob(_ context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return 0, err
 	}
 	if err := sanitizePathComponent("tool_use_id", toolUseID); err != nil {
@@ -60,7 +60,7 @@ func (s *FilesystemRunStore) WriteToolBlob(_ context.Context, runID, toolUseID, 
 // offset". Returns the bytes read, the full blob size, and eof when
 // offset+len(data) == total. Missing blob → wrapped os.ErrNotExist.
 func (s *FilesystemRunStore) ReadToolBlob(_ context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, 0, false, err
 	}
 	if err := sanitizePathComponent("tool_use_id", toolUseID); err != nil {

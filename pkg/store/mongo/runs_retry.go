@@ -43,6 +43,9 @@ func retryPath(field string) string { return retryStateField + "." + field }
 // resuming the run by hand between the two would otherwise have their
 // resume silently re-armed.
 func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time, reason, code string, maxAttempts int) (bool, int, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return false, 0, err
+	}
 	if maxAttempts <= 0 {
 		return false, 0, nil
 	}
@@ -82,7 +85,7 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	var updated struct {
 		RetryState *store.RunRetryState `bson:"retry_state"`
 	}
-	err := s.runs.FindOneAndUpdate(ctx, filter, versionRunUpdate(update),
+	err := s.collectionForRun(runID, s.runs).FindOneAndUpdate(ctx, filter, versionRunUpdate(update),
 		options.FindOneAndUpdate().
 			SetReturnDocument(options.After).
 			SetProjection(bson.M{retryStateField: 1}),
@@ -106,6 +109,9 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 // charging a new attempt. The exact retry_after CAS means a stale sweeper can
 // neither overwrite a newer arm nor resurrect an operator-resumed run.
 func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return false, err
+	}
 	now := time.Now().UTC()
 	filter := withTenantFilter(ctx, bson.M{
 		"_id":                    runID,
@@ -123,7 +129,7 @@ func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, 
 		retryPath("claimed_at"): "$$REMOVE",
 		"updated_at":            now,
 	}}}}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.collectionForRun(runID, s.runs).UpdateOne(ctx, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)
 	}
@@ -140,6 +146,9 @@ func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, 
 // retry that fires one lease later. The successful resume is what clears it
 // (ClearRunRetry).
 func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter time.Time) (bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return false, err
+	}
 	now := time.Now().UTC()
 	filter := withTenantFilter(ctx, bson.M{
 		"_id":                    runID,
@@ -157,7 +166,7 @@ func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter t
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.collectionForRun(runID, s.runs).UpdateOne(ctx, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: claim retry %s: %w", runID, err)
 	}
@@ -169,12 +178,15 @@ func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter t
 // retry_after in the past would survive on the row and re-fire the moment
 // the resumed run failed again for an unrelated reason.
 func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	update := bson.M{
 		"$unset": bson.M{retryPath("retry_after"): "", retryPath("claimed_at"): ""},
 		"$set":   bson.M{"updated_at": time.Now().UTC()},
 		"$inc":   bson.M{"version": 1},
 	}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
+	if _, err := s.collectionForRun(runID, s.runs).UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
 		return fmt.Errorf("store/mongo: clear retry %s: %w", runID, err)
 	}
 	return nil
@@ -184,6 +196,9 @@ func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
 // disarmed. Not conditioned on status: by the time we abandon, the reason
 // is already permanent, and the note matters more than the race.
 func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	update := bson.M{
 		"$set": bson.M{
@@ -198,7 +213,7 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error
 		"$unset": bson.M{retryPath("retry_after"): ""},
 		"$inc":   bson.M{"version": 1},
 	}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
+	if _, err := s.collectionForRun(runID, s.runs).UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
 		return fmt.Errorf("store/mongo: abandon retry %s: %w", runID, err)
 	}
 	return nil
@@ -234,7 +249,7 @@ func (s *Store) ListRunsDueForRetry(ctx context.Context, before time.Time, limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	cur, err := s.runs.Find(ctx,
+	cur, err := s.findAllRuns(ctx,
 		withTenantFilter(ctx, bson.M{
 			"status":                 string(store.RunStatusFailedResumable),
 			retryPath("retry_after"): bson.M{"$lte": before.UTC()},

@@ -29,6 +29,12 @@ type interactionDoc struct {
 // the initial pause writes the questions, and the resume path writes
 // the answers; both go through this single method.
 func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) error {
+	if i == nil {
+		return store.ErrRunSemantics
+	}
+	if err := s.guardNativeRun(ctx, i.RunID); err != nil {
+		return err
+	}
 	if err := s.guardNotDeleted(ctx, i.RunID); err != nil {
 		return err
 	}
@@ -40,7 +46,7 @@ func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) erro
 		},
 		Interaction: *i,
 	}
-	_, err := s.interactions.ReplaceOne(
+	_, err := s.collectionForRun(i.RunID, s.interactions).ReplaceOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"_id": doc.ID}),
 		doc,
@@ -54,7 +60,10 @@ func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) erro
 
 // LoadInteraction looks up the composite key directly.
 func (s *Store) LoadInteraction(ctx context.Context, runID, interactionID2 string) (*store.Interaction, error) {
-	doc, err := mongoutil.FindOne[interactionDoc](ctx, s.interactions,
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	doc, err := mongoutil.FindOne[interactionDoc](ctx, s.collectionForRun(runID, s.interactions),
 		withTenantFilter(ctx, bson.M{"_id": interactionID{RunID: runID, InteractionID: interactionID2}}),
 		fmt.Errorf("store/mongo: interaction %s/%s not found", runID, interactionID2),
 		fmt.Sprintf("store/mongo: load interaction %s/%s", runID, interactionID2))
@@ -74,8 +83,11 @@ func (s *Store) LoadInteraction(ctx context.Context, runID, interactionID2 strin
 // load-then-write window. ({"answered_at": nil} matches both a missing
 // field — the omitempty write shape — and an explicit null.)
 func (s *Store) AnswerInteractionCAS(ctx context.Context, runID, interactionID string, answers map[string]any) (*store.Interaction, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
-	res := s.interactions.FindOneAndUpdate(
+	res := s.collectionForRun(runID, s.interactions).FindOneAndUpdate(
 		ctx,
 		withTenantFilter(ctx, bson.M{
 			"_id":         interactionID2Key(runID, interactionID),
@@ -111,7 +123,10 @@ func interactionID2Key(runID, iid string) interactionID {
 // requested-at order. Mirrors the filesystem store's directory
 // enumeration.
 func (s *Store) ListInteractions(ctx context.Context, runID string) ([]string, error) {
-	cur, err := s.interactions.Find(
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	cur, err := s.collectionForRun(runID, s.interactions).Find(
 		ctx,
 		withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().

@@ -299,10 +299,17 @@ func (s *Store) Capabilities() store.Capabilities {
 //
 // eventsTTLDays==0 disables the TTL.
 func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
+	if err := s.ensureNamespaceSchema(ctx, eventsTTLDays, ""); err != nil {
+		return err
+	}
+	return s.ensureNamespaceSchema(ctx, eventsTTLDays, store.NativeRunIDPrefix+"schema")
+}
+
+func (s *Store) ensureNamespaceSchema(ctx context.Context, eventsTTLDays int, namespaceID string) error {
 	// runs collection indexes (plan §D.1). Compound (tenant_id, …)
 	// indexes accelerate per-tenant filters; single-field indexes
 	// remain for cross-tenant admin views.
-	_, err := s.runs.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	_, err := s.collectionForRun(namespaceID, s.runs).Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("status_created")},
 		{Keys: bson.D{{Key: "workflow_name", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("workflow_created_desc")},
 		{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("updated_desc")},
@@ -336,7 +343,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// without breaking the existing seq-only sort.
 	// One decision per (run, episode): the unique key IS the router's
 	// idempotence — a re-offered episode trips the duplicate and stops.
-	if _, err := s.routeDecisions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	if _, err := s.collectionForRun(namespaceID, s.routeDecisions).Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "outcome_seq", Value: 1}}, Options: options.Index().SetName("run_episode_unique").SetUnique(true)},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "claimed_at", Value: -1}}, Options: options.Index().SetName("tenant_claimed_desc")},
 	}); err != nil {
@@ -351,7 +358,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	if eventsTTLDays > 0 {
 		eventIdx = append(eventIdx, ttlIndexModel("events_ttl", eventsTTLDays))
 	}
-	_, err = s.events.Indexes().CreateMany(ctx, eventIdx)
+	_, err = s.collectionForRun(namespaceID, s.events).Indexes().CreateMany(ctx, eventIdx)
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure events indexes: %w", err)
 	}
@@ -368,13 +375,13 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	if eventsTTLDays > 0 {
 		runLogIdx = append(runLogIdx, ttlIndexModel("run_logs_ttl", eventsTTLDays))
 	}
-	if _, err := s.runLogs.Indexes().CreateMany(ctx, runLogIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+	if _, err := s.collectionForRun(namespaceID, s.runLogs).Indexes().CreateMany(ctx, runLogIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_logs indexes: %w", err)
 	}
 
 	// interactions: query by run_id (the composite _id has run_id as a
 	// nested field; an additional index gives us a fast prefix scan).
-	_, err = s.interactions.Indexes().CreateOne(ctx, mongo.IndexModel{
+	_, err = s.collectionForRun(namespaceID, s.interactions).Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "run_id", Value: 1}},
 		Options: options.Index().SetName("run_id"),
 	})
@@ -384,7 +391,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 
 	// user_messages: query by (run_id, status, queued_at) for FIFO
 	// drain plus (run_id) for full enumeration.
-	_, err = s.userMessages.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	_, err = s.collectionForRun(namespaceID, s.userMessages).Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("run_queued")},
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("run_status_queued")},
 	})
@@ -394,7 +401,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 
 	// run_gitmeta: one doc per run, keyed uniquely by run_id (the runner
 	// upserts a whole-snapshot once after the run returns, post-finalize).
-	_, err = s.runGitMeta.Indexes().CreateOne(ctx, mongo.IndexModel{
+	_, err = s.collectionForRun(namespaceID, s.runGitMeta).Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "run_id", Value: 1}},
 		Options: options.Index().SetUnique(true).SetName("run_id_unique"),
 	})
@@ -416,7 +423,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	if eventsTTLDays > 0 {
 		runPlanIdx = append(runPlanIdx, ttlIndexModel("run_plans_ttl", eventsTTLDays))
 	}
-	if _, err := s.runPlans.Indexes().CreateMany(ctx, runPlanIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+	if _, err := s.collectionForRun(namespaceID, s.runPlans).Indexes().CreateMany(ctx, runPlanIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_plans indexes: %w", err)
 	}
 
@@ -430,7 +437,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 	}
-	if _, err := s.runNotes.Indexes().CreateMany(ctx, runNoteIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+	if _, err := s.collectionForRun(namespaceID, s.runNotes).Indexes().CreateMany(ctx, runNoteIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_notes indexes: %w", err)
 	}
 
@@ -450,7 +457,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	if eventsTTLDays > 0 {
 		runTurnIdx = append(runTurnIdx, ttlIndexModel("run_turns_ttl", eventsTTLDays))
 	}
-	if _, err := s.runTurns.Indexes().CreateMany(ctx, runTurnIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+	if _, err := s.collectionForRun(namespaceID, s.runTurns).Indexes().CreateMany(ctx, runTurnIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_turns indexes: %w", err)
 	}
 
@@ -459,7 +466,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// durable metadata, NOT a derived observability stream, so — like
 	// run_gitmeta — they carry NO TTL: a tagged run keeps its tags for as
 	// long as the run document survives.
-	_, err = s.runTags.Indexes().CreateOne(ctx, mongo.IndexModel{
+	_, err = s.collectionForRun(namespaceID, s.runTags).Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "run_id", Value: 1}},
 		Options: options.Index().SetUnique(true).SetName("run_id_unique"),
 	})

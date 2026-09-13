@@ -23,7 +23,7 @@ type RunLock interface {
 //
 // Limitations: does not work over NFS (flock is local-only on Linux).
 func (s *FilesystemRunStore) LockRun(_ context.Context, runID string) (RunLock, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := ValidateRunID(runID); err != nil {
 		return nil, err
 	}
 	dir := s.runDir(runID)

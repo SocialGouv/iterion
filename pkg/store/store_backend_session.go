@@ -15,7 +15,7 @@ func (s *FilesystemRunStore) backendSessionPath(runID, ref string) string {
 }
 
 func (s *FilesystemRunStore) PutBackendSession(_ context.Context, runID, ref string, body []byte) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("session ref", ref); err != nil {
@@ -35,7 +35,7 @@ func (s *FilesystemRunStore) PutBackendSession(_ context.Context, runID, ref str
 }
 
 func (s *FilesystemRunStore) GetBackendSession(_ context.Context, runID, ref string) ([]byte, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("session ref", ref); err != nil {
@@ -49,7 +49,7 @@ func (s *FilesystemRunStore) GetBackendSession(_ context.Context, runID, ref str
 }
 
 func (s *FilesystemRunStore) DeleteBackendSession(_ context.Context, runID, ref string) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("session ref", ref); err != nil {

@@ -27,7 +27,7 @@ func (s *FilesystemRunStore) runFilesDir(runID string) string {
 
 // EnsureRunFilesDir satisfies RunFilesStore. Idempotent.
 func (s *FilesystemRunStore) EnsureRunFilesDir(_ context.Context, runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
 	// Tombstone guard BEFORE the MkdirAll below: re-provisioning the
@@ -126,7 +126,7 @@ func cleanRunFilePath(relPath string) ([]string, string, error) {
 // ListRunFiles satisfies RunFilesStore. Returns a sorted slice (by path)
 // for stable output; empty (no error) when no files exist.
 func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]RunFileInfo, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	root := s.runFilesDir(runID)
@@ -175,7 +175,7 @@ func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]Ru
 // artifact_files tree could swap an intermediate directory for a symlink
 // after validation and trick the server into streaming an arbitrary host file.
 func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, RunFileInfo{}, err
 	}
 	components, cleaned, err := cleanRunFilePath(relPath)

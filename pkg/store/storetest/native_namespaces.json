@@ -1,0 +1,39 @@
+{
+  "scope": "Storage routing only; runtime, old executable compatibility and UI verification remain separate acceptance requirements.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/store": [
+      "TestNativeNamespacesFilesystem",
+      "TestNativeNamespacesFilesystem/BlobClosure",
+      "TestNativeNamespacesFilesystem/ExplicitIdentity",
+      "TestNativeNamespacesFilesystem/ExactPublicInputs",
+      "TestNativeNamespacesFilesystem/DescendantNamespace",
+      "TestNativeNamespacesFilesystem/MetadataClosure",
+      "TestNativeFilesystemNeverFallsBackToLegacyShadow",
+      "TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation"
+    ],
+    "github.com/SocialGouv/iterion/pkg/store/mongo": [
+      "TestNativeNamespacesMongo",
+      "TestNativeNamespacesMongo/BlobClosure",
+      "TestNativeNamespacesMongo/ExplicitIdentity",
+      "TestNativeNamespacesMongo/ExactPublicInputs",
+      "TestNativeNamespacesMongo/DescendantNamespace",
+      "TestNativeNamespacesMongo/MetadataClosure",
+      "TestNativeMongoNeverFallsBackToLegacyShadow",
+      "TestNativeMongoRefusesUnsupportedRecordBeforeMutation",
+      "TestNativeMongoDeleteRemovesSequenceAndIRClosure"
+    ],
+    "github.com/SocialGouv/iterion/pkg/store/blob": [
+      "TestNativeBlobKeysAreOutsideLegacyFamilies",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/artifact",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/attachment",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/attachment_prefix",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/tool",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/tool_prefix",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/IR",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/session",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/session_prefix",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/file",
+      "TestNativeBlobKeysAreOutsideLegacyFamilies/file_prefix"
+    ]
+  }
+}

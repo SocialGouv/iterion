@@ -31,6 +31,9 @@ type runTagsDoc struct {
 // on run_id. Re-saving replaces the prior set (never merges). tags is
 // assumed already normalized by the caller (see store.NormalizeTags).
 func (s *Store) SetRunTags(ctx context.Context, runID string, tags []string) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if tags == nil {
 		tags = []string{}
 	}
@@ -43,7 +46,7 @@ func (s *Store) SetRunTags(ctx context.Context, runID string, tags []string) err
 		doc.TenantID = id
 	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	if _, err := s.runTags.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
+	if _, err := s.collectionForRun(runID, s.runTags).ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
 		return fmt.Errorf("store/mongo: set run tags %s: %w", runID, err)
 	}
 	return nil
@@ -52,9 +55,12 @@ func (s *Store) SetRunTags(ctx context.Context, runID string, tags []string) err
 // GetRunTags implements store.RunTagStore: the tag set for the run, or an
 // empty slice when none was ever recorded.
 func (s *Store) GetRunTags(ctx context.Context, runID string) ([]string, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
 	var doc runTagsDoc
-	if err := s.runTags.FindOne(ctx, filter).Decode(&doc); err != nil {
+	if err := s.collectionForRun(runID, s.runTags).FindOne(ctx, filter).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return []string{}, nil
 		}

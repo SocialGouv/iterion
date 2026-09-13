@@ -17,7 +17,7 @@ import (
 
 // WriteInteraction persists a human interaction.
 func (s *FilesystemRunStore) WriteInteraction(_ context.Context, i *Interaction) error {
-	if err := sanitizePathComponent("run ID", i.RunID); err != nil {
+	if err := s.guardNativeRun(i.RunID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("interaction ID", i.ID); err != nil {
@@ -26,7 +26,7 @@ func (s *FilesystemRunStore) WriteInteraction(_ context.Context, i *Interaction)
 	if err := s.guardNotDeleted(i.RunID); err != nil {
 		return err
 	}
-	dir := filepath.Join(s.root, "runs", i.RunID, "interactions")
+	dir := filepath.Join(s.runDir(i.RunID), "interactions")
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: mkdir interaction: %w", err)
 	}
@@ -40,13 +40,13 @@ func (s *FilesystemRunStore) WriteInteraction(_ context.Context, i *Interaction)
 
 // LoadInteraction reads a specific interaction by ID.
 func (s *FilesystemRunStore) LoadInteraction(_ context.Context, runID, interactionID string) (*Interaction, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("interaction ID", interactionID); err != nil {
 		return nil, err
 	}
-	p := filepath.Join(s.root, "runs", runID, "interactions", interactionID+".json")
+	p := filepath.Join(s.runDir(runID), "interactions", interactionID+".json")
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("store: load interaction: %w", err)
@@ -65,11 +65,11 @@ func (s *FilesystemRunStore) LoadInteraction(_ context.Context, runID, interacti
 // wins and the other gets ErrInteractionAlreadyAnswered. The critical
 // section is a few ms; contention waits (bounded) instead of erroring.
 func (s *FilesystemRunStore) AnswerInteractionCAS(ctx context.Context, runID, interactionID string, answers map[string]any) (*Interaction, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	lock, err := acquireFileLockRetry(
-		filepath.Join(s.root, "runs", runID, "interactions", ".answer.lock"),
+		filepath.Join(s.runDir(runID), "interactions", ".answer.lock"),
 		fmt.Sprintf("interactions of run %s", runID),
 		2*time.Second,
 	)
@@ -84,10 +84,10 @@ func (s *FilesystemRunStore) AnswerInteractionCAS(ctx context.Context, runID, in
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).
 func (s *FilesystemRunStore) ListInteractions(_ context.Context, runID string) ([]string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(s.root, "runs", runID, "interactions")
+	dir := filepath.Join(s.runDir(runID), "interactions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

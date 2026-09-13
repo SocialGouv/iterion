@@ -69,7 +69,7 @@ func (s *FilesystemRunStore) WriteTurn(_ context.Context, t *TurnCheckpoint) err
 	if t == nil {
 		return fmt.Errorf("store: WriteTurn: nil turn")
 	}
-	if err := sanitizePathComponent("run ID", t.RunID); err != nil {
+	if err := s.guardNativeRun(t.RunID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("node ID", t.NodeID); err != nil {
@@ -146,7 +146,7 @@ func (s *FilesystemRunStore) refreshTurnIndex(runID, nodeID string, loopIter, tu
 
 // LoadTurn satisfies TurnStore.
 func (s *FilesystemRunStore) LoadTurn(_ context.Context, runID, nodeID string, loopIter, turn int) (*TurnCheckpoint, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
@@ -170,7 +170,7 @@ func (s *FilesystemRunStore) LoadTurn(_ context.Context, runID, nodeID string, l
 // order. The sibling messages.json blob is NOT inlined — callers that
 // need it should follow up with LoadTurnMessages.
 func (s *FilesystemRunStore) ListTurns(_ context.Context, runID, nodeID string, loopIter int) ([]*TurnCheckpoint, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
@@ -225,7 +225,7 @@ func (s *FilesystemRunStore) ListTurns(_ context.Context, runID, nodeID string, 
 // turn. Falls back to a directory scan when index.json is missing
 // (e.g. legacy run created before this feature shipped).
 func (s *FilesystemRunStore) LatestTurn(ctx context.Context, runID, nodeID string) (*TurnCheckpoint, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
@@ -282,7 +282,7 @@ func (s *FilesystemRunStore) LatestTurn(ctx context.Context, runID, nodeID strin
 // checkpoint at that turn on iteration > 0, so probing loop_iter=0 alone
 // would spuriously fail with ErrTurnNotFound.
 func (s *FilesystemRunStore) LoadTurnAtIndex(ctx context.Context, runID, nodeID string, turn int) (*TurnCheckpoint, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
@@ -320,7 +320,7 @@ func (s *FilesystemRunStore) LoadTurnAtIndex(ctx context.Context, runID, nodeID 
 // LoadTurnMessages satisfies TurnStore. Returns the sibling
 // messages.json blob, or ErrTurnNotFound when missing.
 func (s *FilesystemRunStore) LoadTurnMessages(_ context.Context, runID, nodeID string, loopIter, turn int) ([]byte, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {

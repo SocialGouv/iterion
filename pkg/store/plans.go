@@ -88,10 +88,10 @@ func AsPlanStore(s RunStore) PlanStore {
 
 // plansDir returns <root>/runs/<runID>/plans after validating runID.
 func (s *FilesystemRunStore) plansDir(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "plans"), nil
+	return filepath.Join(s.runDir(runID), "plans"), nil
 }
 
 // AppendPlanSnapshot implements PlanStore over runs/<id>/plans/<NNNN>.json.

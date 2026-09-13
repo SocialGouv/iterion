@@ -36,6 +36,9 @@ var (
 
 // runFilesScratchDir returns the runner-local scratch area for a run.
 func (s *Store) runFilesScratchDir(runID string) string {
+	if store.IsNativeRunID(runID) {
+		return filepath.Join(s.runFilesScratch, "ports-v1", runID)
+	}
 	return filepath.Join(s.runFilesScratch, runID)
 }
 
@@ -44,7 +47,7 @@ func (s *Store) runFilesScratchDir(runID string) string {
 // perms like the filesystem store so the in-container user (uid 1000)
 // can write into a host-owned mount. Idempotent.
 func (s *Store) EnsureRunFilesDir(_ context.Context, runID string) (string, error) {
-	if err := store.SanitizePathComponent("run ID", runID); err != nil {
+	if err := store.ValidateRunID(runID); err != nil {
 		return "", err
 	}
 	if s.runFilesScratch == "" {
@@ -107,7 +110,7 @@ func (r *runFileUploadReader) Read(p []byte) (int, error) {
 // the runner. A failed upload keeps the dir so the bytes aren't lost to a
 // transient S3 error.
 func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
-	if err := store.SanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return 0, err
 	}
 	root := s.runFilesScratchDir(runID)
@@ -191,7 +194,7 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 // artifact files from S3, sorted by path. Empty slice (no error) when the
 // run produced none.
 func (s *Store) ListRunFiles(ctx context.Context, runID string) ([]store.RunFileInfo, error) {
-	if err := store.SanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	objs, err := s.blob.ListRunFiles(ctx, runID)
@@ -218,7 +221,7 @@ func (s *Store) ListRunFiles(ctx context.Context, runID string) ([]store.RunFile
 // absolute paths + `..`/empty segments), so an invalid path and a missing
 // object both surface as a clean error the HTTP layer maps to 404.
 func (s *Store) OpenRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, store.RunFileInfo, error) {
-	if err := store.SanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return nil, store.RunFileInfo{}, err
 	}
 	rc, obj, err := s.blob.GetRunFile(ctx, runID, relPath)

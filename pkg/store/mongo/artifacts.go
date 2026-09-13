@@ -23,6 +23,12 @@ import (
 //
 // Plan §F T-18.
 func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
+	if a == nil {
+		return store.ErrRunSemantics
+	}
+	if err := s.guardNativeRun(ctx, a.RunID); err != nil {
+		return err
+	}
 	body, err := json.Marshal(a)
 	if err != nil {
 		return fmt.Errorf("store/mongo: marshal artifact: %w", err)
@@ -53,7 +59,7 @@ func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
 
 	// Step 3: maintain run.artifact_index so LoadLatestArtifact has a
 	// fast path. Best-effort — the event is the canonical record.
-	_, _ = s.runs.UpdateOne(
+	_, _ = s.collectionForRun(a.RunID, s.runs).UpdateOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"_id": a.RunID}),
 		versionRunUpdate(bson.M{
@@ -67,6 +73,9 @@ func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
 // LoadArtifact fetches the body from S3 and returns it as a
 // *store.Artifact. Mongo isn't consulted: the blob is authoritative.
 func (s *Store) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	body, err := s.blob.GetArtifact(ctx, runID, nodeID, version)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
@@ -110,6 +119,9 @@ func (s *Store) LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*
 // node. Reads from the blob LIST so the result matches what
 // LoadArtifact can actually return.
 func (s *Store) ListArtifactVersions(ctx context.Context, runID, nodeID string) ([]store.ArtifactVersionInfo, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	versions, err := s.blob.ListArtifactVersions(ctx, runID, nodeID)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
@@ -124,7 +136,7 @@ func (s *Store) ListArtifactVersions(ctx context.Context, runID, nodeID string) 
 	// filesystem store. A missing event is tolerated — we fall back
 	// to zero time, matching the filesystem reader's behaviour.
 	tsByVersion := map[int]any{}
-	cur, err := s.events.Find(ctx, withTenantFilter(ctx, bson.M{
+	cur, err := s.collectionForRun(runID, s.events).Find(ctx, withTenantFilter(ctx, bson.M{
 		"run_id":  runID,
 		"node_id": nodeID,
 		"type":    store.EventArtifactWritten,

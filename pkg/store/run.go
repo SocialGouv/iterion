@@ -542,8 +542,9 @@ type RunCredStamp struct {
 }
 
 type Run struct {
-	FormatVersion int    `json:"format_version" bson:"format_version"`
-	ID            string `json:"id" bson:"_id"`
+	FormatVersion    int    `json:"format_version" bson:"format_version"`
+	ID               string `json:"id" bson:"_id"`
+	RuntimeSemantics string `json:"runtime_semantics,omitempty" bson:"runtime_semantics,omitempty"`
 	// ExecutionContext is the versioned launch contract. It is optional so
 	// runs written before the reliability contract remain readable and keep
 	// their legacy behaviour on resume.

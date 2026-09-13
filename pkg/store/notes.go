@@ -60,10 +60,10 @@ func AsRunNoteStore(s RunStore) RunNoteStore {
 
 // notesDir returns <root>/runs/<runID>/notes after validating runID.
 func (s *FilesystemRunStore) notesDir(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "notes"), nil
+	return filepath.Join(s.runDir(runID), "notes"), nil
 }
 
 // AppendRunNote implements RunNoteStore over runs/<id>/notes/<NNNN>.json.

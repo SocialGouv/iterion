@@ -32,6 +32,9 @@ func validateToolBlobKind(kind string) error {
 // tools/<runID>/<toolUseID>/<kind>. Idempotent — re-writing the same key
 // replaces the prior bytes. Returns the byte size written.
 func (s *Store) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return 0, err
+	}
 	if err := validateToolBlobKind(kind); err != nil {
 		return 0, err
 	}
@@ -52,6 +55,9 @@ func (s *Store) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string
 // 404), exactly as OpenAttachment gates the attachment blob. S3 keys are
 // not tenant-prefixed, matching artifacts + attachments.
 func (s *Store) ReadToolBlob(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, 0, false, err
+	}
 	if err := validateToolBlobKind(kind); err != nil {
 		return nil, 0, false, err
 	}

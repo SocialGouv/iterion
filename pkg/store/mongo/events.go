@@ -40,6 +40,9 @@ const appendEventBackoffBase = 20 * time.Millisecond
 //
 // Plan §D.3.
 func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	// Tombstone guard: the events collection has no run-doc filter to
 	// piggyback the predicate on, so a late writer's insert would
 	// otherwise re-grow a deleted run's event stream.
@@ -81,7 +84,7 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) 
 		evt.Seq = seq
 		lastSeq = seq
 
-		if _, err := s.events.InsertOne(ctx, evt); err != nil {
+		if _, err := s.collectionForRun(runID, s.events).InsertOne(ctx, evt); err != nil {
 			if mongo.IsDuplicateKeyError(err) {
 				// Another writer beat us at this seq; reallocate after a
 				// brief jittered pause to let the winning writer commit.
@@ -158,8 +161,11 @@ func (s *Store) allocPlanSeq(ctx context.Context, runID string) (int64, error) {
 // re-sync a counter that is BEHIND the persisted tail (docs written by
 // the pre-counter max-read allocation).
 func (s *Store) seedSeqField(ctx context.Context, runID, field string, floor int64) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	tenantID, _ := store.TenantFromContext(ctx)
-	_, err := s.runSeq.UpdateOne(
+	_, err := s.collectionForRun(runID, s.runSeq).UpdateOne(
 		ctx,
 		bson.M{"_id": bson.M{"tenant_id": tenantID, "run_id": runID}},
 		bson.M{"$max": bson.M{field: floor}},
@@ -172,8 +178,11 @@ func (s *Store) seedSeqField(ctx context.Context, runID, field string, floor int
 }
 
 func (s *Store) allocSeqField(ctx context.Context, runID, field string) (int64, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return 0, err
+	}
 	tenantID, _ := store.TenantFromContext(ctx)
-	res := s.runSeq.FindOneAndUpdate(
+	res := s.collectionForRun(runID, s.runSeq).FindOneAndUpdate(
 		ctx,
 		bson.M{"_id": bson.M{"tenant_id": tenantID, "run_id": runID}},
 		bson.M{"$inc": bson.M{field: 1}},
@@ -205,7 +214,10 @@ func (s *Store) allocSeqField(ctx context.Context, runID, field string) (int64, 
 // Bounded by the BSON document size — for very long-running runs the
 // caller should prefer LoadEventsRange or ScanEvents.
 func (s *Store) LoadEvents(ctx context.Context, runID string) ([]*store.Event, error) {
-	cur, err := s.events.Find(
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	cur, err := s.collectionForRun(runID, s.events).Find(
 		ctx,
 		withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}),
@@ -233,6 +245,9 @@ func (s *Store) LoadEvents(ctx context.Context, runID string) ([]*store.Event, e
 // bound when to == 0), capped at limit (or unbounded when limit == 0).
 // Mirrors the FilesystemRunStore semantics for paginated reads.
 func (s *Store) LoadEventsRange(ctx context.Context, runID string, from, to int64, limit int) ([]*store.Event, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	filter := withTenantFilter(ctx, bson.M{
 		"run_id": runID,
 		"seq":    bson.M{"$gte": from},
@@ -244,7 +259,7 @@ func (s *Store) LoadEventsRange(ctx context.Context, runID string, from, to int6
 	if limit > 0 {
 		opts.SetLimit(int64(limit))
 	}
-	cur, err := s.events.Find(ctx, filter, opts)
+	cur, err := s.collectionForRun(runID, s.events).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: events range %s: %w", runID, err)
 	}
@@ -265,7 +280,10 @@ func (s *Store) LoadEventsRange(ctx context.Context, runID string, from, to int6
 // returns false. Used by long-tail folds (snapshot reducer, runview
 // list filter) to avoid materializing the full event slice.
 func (s *Store) ScanEvents(ctx context.Context, runID string, visit func(*store.Event) bool) error {
-	cur, err := s.events.Find(
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
+	cur, err := s.collectionForRun(runID, s.events).Find(
 		ctx,
 		withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}),

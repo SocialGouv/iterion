@@ -81,10 +81,10 @@ var ErrQueuedMessageStatusConflict = errors.New("store: queued message status co
 // ---------------------------------------------------------------------------
 
 func (s *FilesystemRunStore) userMessagesPath(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "user_messages.jsonl"), nil
+	return filepath.Join(s.runDir(runID), "user_messages.jsonl"), nil
 }
 
 // AppendQueuedMessage adds a new queued message in "queued" status.

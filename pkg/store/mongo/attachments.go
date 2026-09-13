@@ -23,6 +23,9 @@ import (
 // exist for this run", which is required for resume to be deterministic.
 
 func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.AttachmentRecord, body io.Reader) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if rec.Name == "" {
 		return errors.New("store/mongo: attachment name required")
 	}
@@ -72,7 +75,7 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	// Reflect into runs collection. Use $set on the nested key so a
 	// concurrent attachment write to a different name doesn't lose
 	// the document-level race.
-	_, err = s.runs.UpdateOne(ctx,
+	_, err = s.collectionForRun(runID, s.runs).UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
 		versionRunUpdate(bson.M{
 			"$set": bson.M{
@@ -116,6 +119,9 @@ func (s *Store) ListAttachments(ctx context.Context, runID string) ([]store.Atta
 }
 
 func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	r, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		return err
@@ -127,7 +133,7 @@ func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error 
 	if err := s.blob.DeleteAttachment(ctx, runID, name, rec.OriginalFilename); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachment %s/%s: %w", runID, name, err)
 	}
-	_, err = s.runs.UpdateOne(ctx,
+	_, err = s.collectionForRun(runID, s.runs).UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
 		versionRunUpdate(bson.M{
 			"$unset": bson.M{"attachments." + name: ""},
@@ -141,10 +147,13 @@ func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error 
 }
 
 func (s *Store) DeleteRunAttachments(ctx context.Context, runID string) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if err := s.blob.DeleteRunAttachments(ctx, runID); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachments: %w", err)
 	}
-	_, err := s.runs.UpdateOne(ctx,
+	_, err := s.collectionForRun(runID, s.runs).UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
 		versionRunUpdate(bson.M{"$unset": bson.M{"attachments": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}}),
 	)

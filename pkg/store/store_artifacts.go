@@ -20,7 +20,7 @@ import (
 // WriteArtifact persists an artifact for a node at the given version and
 // updates the run's artifact index for O(1) latest-version lookups.
 func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) error {
-	if err := sanitizePathComponent("run ID", a.RunID); err != nil {
+	if err := s.guardNativeRun(a.RunID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("node ID", a.NodeID); err != nil {
@@ -38,7 +38,7 @@ func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) err
 	if err != nil {
 		return fmt.Errorf("store: marshal artifact: %w", err)
 	}
-	dir := filepath.Join(s.root, "runs", a.RunID, "artifacts", a.NodeID)
+	dir := filepath.Join(s.runDir(a.RunID), "artifacts", a.NodeID)
 	p := filepath.Join(dir, fmt.Sprintf("%d.json", a.Version))
 
 	// Hold s.mu across the artifact file write AND the index update so
@@ -87,13 +87,13 @@ func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) err
 
 // LoadArtifact reads a specific artifact version.
 func (s *FilesystemRunStore) LoadArtifact(_ context.Context, runID, nodeID string, version int) (*Artifact, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
 		return nil, err
 	}
-	p := filepath.Join(s.root, "runs", runID, "artifacts", nodeID, fmt.Sprintf("%d.json", version))
+	p := filepath.Join(s.runDir(runID), "artifacts", nodeID, fmt.Sprintf("%d.json", version))
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("store: load artifact: %w", err)
@@ -109,7 +109,7 @@ func (s *FilesystemRunStore) LoadArtifact(_ context.Context, runID, nodeID strin
 // It first checks the run's artifact index for an O(1) lookup and falls back
 // to a directory scan for backward compatibility with older run formats.
 func (s *FilesystemRunStore) LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*Artifact, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
@@ -124,7 +124,7 @@ func (s *FilesystemRunStore) LoadLatestArtifact(ctx context.Context, runID, node
 	}
 
 	// Fallback: directory scan (backward compat with old runs without index).
-	dir := filepath.Join(s.root, "runs", runID, "artifacts", nodeID)
+	dir := filepath.Join(s.runDir(runID), "artifacts", nodeID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("store: list artifacts: %w", err)
@@ -163,13 +163,13 @@ type ArtifactVersionInfo struct {
 // decoding the body. Returns (nil, nil) when the node has no artifact
 // directory (a node that hasn't published anything yet).
 func (s *FilesystemRunStore) ListArtifactVersions(_ context.Context, runID, nodeID string) ([]ArtifactVersionInfo, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(s.root, "runs", runID, "artifacts", nodeID)
+	dir := filepath.Join(s.runDir(runID), "artifacts", nodeID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

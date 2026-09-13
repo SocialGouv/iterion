@@ -163,10 +163,10 @@ func BuildRunGitMeta(repoDir, base string) (*RunGitMeta, error) {
 
 // gitMetaPath validates runID and returns <root>/runs/<runID>/gitmeta.json.
 func (s *FilesystemRunStore) gitMetaPath(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "gitmeta.json"), nil
+	return filepath.Join(s.runDir(runID), "gitmeta.json"), nil
 }
 
 // SaveRunGitMeta implements RunGitMetaStore over runs/<id>/gitmeta.json —

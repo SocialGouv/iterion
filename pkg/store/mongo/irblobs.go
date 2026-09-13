@@ -21,6 +21,9 @@ var _ store.IRBlobStore = (*Store)(nil)
 // PutIRBlob implements store.IRBlobStore: PUT the marshaled IR to S3 under
 // ir/<runID>.json and return that key for queue.IRRef.StorageKey.
 func (s *Store) PutIRBlob(ctx context.Context, runID string, body []byte) (string, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return "", err
+	}
 	key, err := blob.IRBlobKey(runID)
 	if err != nil {
 		return "", err

@@ -45,10 +45,9 @@ func TestDeleteRunCoversEveryPerRunCollection(t *testing.T) {
 		t.Fatal("no col* collection constants found in store.go — parser drifted; fix this test")
 	}
 
-	// Names swept by DeleteRun: the `{"name", s.field}` rows of the
-	// children slice. Grep the whole file for `{"name", s.` rows — the
-	// children slice is the only construct of that shape here.
-	childRe := regexp.MustCompile(`\{"([a-z0-9_]+)",\s*s\.[A-Za-z0-9_]+\}`)
+	// Every child must use the ID-derived namespace route. A raw legacy
+	// collection here would leak the native half even when the name matches.
+	childRe := regexp.MustCompile(`\{"([a-z0-9_]+)",\s*s\.collectionForRun\(id,\s*s\.[A-Za-z0-9_]+\)\}`)
 	swept := map[string]bool{}
 	for _, m := range childRe.FindAllStringSubmatch(runsSrc, -1) {
 		swept[m[1]] = true
@@ -63,7 +62,7 @@ func TestDeleteRunCoversEveryPerRunCollection(t *testing.T) {
 		}
 		if !swept[name] {
 			t.Errorf("collection %q is declared but NOT swept by DeleteRun (runs.go children slice). "+
-				"Add {%q, s.<field>} to the children list, or exempt it in nonPerRunCollections with a reason. "+
+				"Add {%q, s.collectionForRun(id, s.<field>)} to the children list, or exempt it in nonPerRunCollections with a reason. "+
 				"Without this, deleting a run leaks its %q data.", name, name, name)
 		}
 	}

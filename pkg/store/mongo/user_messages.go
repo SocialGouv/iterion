@@ -31,6 +31,9 @@ type userMessageDoc struct {
 // emits a companion event to events.jsonl so observers can replay
 // transitions.
 func (s *Store) AppendQueuedMessage(ctx context.Context, runID string, msg store.QueuedUserMessage) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if err := store.NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return fmt.Errorf("store/mongo: %w", err)
 	}
@@ -42,7 +45,7 @@ func (s *Store) AppendQueuedMessage(ctx context.Context, runID string, msg store
 		ID:                userMessageID{RunID: runID, MessageID: msg.ID},
 		QueuedUserMessage: msg,
 	}
-	_, err := s.userMessages.ReplaceOne(
+	_, err := s.collectionForRun(runID, s.userMessages).ReplaceOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"_id": doc.ID}),
 		doc,
@@ -58,6 +61,9 @@ func (s *Store) AppendQueuedMessage(ctx context.Context, runID string, msg store
 // ReplaceOne, a replay cannot move an already-delivered/consumed row back to
 // queued; $setOnInsert makes the existing row immutable on the duplicate.
 func (s *Store) AppendQueuedMessageOnce(ctx context.Context, runID string, msg store.QueuedUserMessage) (bool, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return false, err
+	}
 	if err := store.NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return false, fmt.Errorf("store/mongo: %w", err)
 	}
@@ -69,7 +75,7 @@ func (s *Store) AppendQueuedMessageOnce(ctx context.Context, runID string, msg s
 		ID:                userMessageID{RunID: runID, MessageID: msg.ID},
 		QueuedUserMessage: msg,
 	}
-	res, err := s.userMessages.UpdateOne(
+	res, err := s.collectionForRun(runID, s.userMessages).UpdateOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"_id": doc.ID}),
 		bson.M{"$setOnInsert": doc},
@@ -85,6 +91,9 @@ func (s *Store) AppendQueuedMessageOnce(ctx context.Context, runID string, msg s
 // row when expectedFrom is non-empty; otherwise it unconditionally
 // stamps the new status + the matching transition timestamp.
 func (s *Store) UpdateQueuedMessageStatus(ctx context.Context, runID, msgID string, status store.QueuedMessageStatus, expectedFrom ...store.QueuedMessageStatus) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if msgID == "" {
 		return fmt.Errorf("store/mongo: queued message ID required")
 	}
@@ -106,7 +115,7 @@ func (s *Store) UpdateQueuedMessageStatus(ctx context.Context, runID, msgID stri
 	case store.QueuedMessageStatusCancelled:
 		set["cancelled_at"] = now
 	}
-	res, err := s.userMessages.UpdateOne(ctx, filter, bson.M{"$set": set})
+	res, err := s.collectionForRun(runID, s.userMessages).UpdateOne(ctx, filter, bson.M{"$set": set})
 	if err != nil {
 		return fmt.Errorf("store/mongo: update user_message %s/%s: %w", runID, msgID, err)
 	}
@@ -124,7 +133,10 @@ func (s *Store) UpdateQueuedMessageStatus(ctx context.Context, runID, msgID stri
 }
 
 func (s *Store) userMessageExists(ctx context.Context, runID, msgID string) (bool, error) {
-	err := s.userMessages.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": userMessageID{RunID: runID, MessageID: msgID}})).Err()
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return false, err
+	}
+	err := s.collectionForRun(runID, s.userMessages).FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": userMessageID{RunID: runID, MessageID: msgID}})).Err()
 	if err == nil {
 		return true, nil
 	}
@@ -137,7 +149,7 @@ func (s *Store) userMessageExists(ctx context.Context, runID, msgID string) (boo
 // LoadPendingQueuedMessages returns rows with status="queued" in FIFO
 // order by queued_at.
 func (s *Store) LoadPendingQueuedMessages(ctx context.Context, runID string) ([]store.QueuedUserMessage, error) {
-	return s.findUserMessages(ctx, withTenantFilter(ctx, bson.M{
+	return s.findUserMessages(ctx, runID, withTenantFilter(ctx, bson.M{
 		"run_id": runID,
 		"status": string(store.QueuedMessageStatusQueued),
 	}))
@@ -145,11 +157,14 @@ func (s *Store) LoadPendingQueuedMessages(ctx context.Context, runID string) ([]
 
 // ListQueuedMessages returns every row for the run in FIFO order.
 func (s *Store) ListQueuedMessages(ctx context.Context, runID string) ([]store.QueuedUserMessage, error) {
-	return s.findUserMessages(ctx, withTenantFilter(ctx, bson.M{"run_id": runID}))
+	return s.findUserMessages(ctx, runID, withTenantFilter(ctx, bson.M{"run_id": runID}))
 }
 
-func (s *Store) findUserMessages(ctx context.Context, filter bson.M) ([]store.QueuedUserMessage, error) {
-	cur, err := s.userMessages.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "queued_at", Value: 1}}))
+func (s *Store) findUserMessages(ctx context.Context, runID string, filter bson.M) ([]store.QueuedUserMessage, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	cur, err := s.collectionForRun(runID, s.userMessages).Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "queued_at", Value: 1}}))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: find user_messages: %w", err)
 	}

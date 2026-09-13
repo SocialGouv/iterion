@@ -39,7 +39,7 @@ const attachmentSigningKeyFile = ".attachment-signing-key"
 // attachmentDir returns the on-disk directory for an attachment under
 // the FilesystemRunStore root.
 func (s *FilesystemRunStore) attachmentDir(runID, name string) string {
-	return filepath.Join(s.root, "runs", runID, "attachments", name)
+	return filepath.Join(s.runDir(runID), "attachments", name)
 }
 
 // WriteAttachment persists the bytes of an attachment under
@@ -51,7 +51,7 @@ func (s *FilesystemRunStore) attachmentDir(runID, name string) string {
 // caller's responsibility — this method trusts the AttachmentRecord
 // it receives.
 func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, rec AttachmentRecord, body io.Reader) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("attachment name", rec.Name); err != nil {
@@ -112,7 +112,7 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
-	rec.StorageRef = filepath.ToSlash(filepath.Join("runs", runID, "attachments", rec.Name, rec.OriginalFilename))
+	rec.StorageRef = filepath.ToSlash(filepath.Join(RunDataDirectory(runID), runID, "attachments", rec.Name, rec.OriginalFilename))
 
 	// Persist meta sidecar (used by Open/List even if Run.Attachments
 	// is corrupted).
@@ -176,10 +176,10 @@ func (s *FilesystemRunStore) OpenAttachment(ctx context.Context, runID, name str
 // ListAttachments enumerates the attachments persisted for a run.
 // Returns a nil slice when no attachments directory exists.
 func (s *FilesystemRunStore) ListAttachments(_ context.Context, runID string) ([]AttachmentRecord, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
-	root := filepath.Join(s.root, "runs", runID, "attachments")
+	root := filepath.Join(s.runDir(runID), "attachments")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -209,7 +209,7 @@ func (s *FilesystemRunStore) ListAttachments(_ context.Context, runID string) ([
 // promotion (e.g. promoteStaged) to roll back partial writes. Safe to
 // call on a name that was never persisted.
 func (s *FilesystemRunStore) RemoveAttachment(ctx context.Context, runID, name string) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("attachment name", name); err != nil {
@@ -241,10 +241,10 @@ func (s *FilesystemRunStore) RemoveAttachment(ctx context.Context, runID, name s
 // DeleteRunAttachments removes every attachment under the run directory
 // and clears Run.Attachments. Safe to call on runs without attachments.
 func (s *FilesystemRunStore) DeleteRunAttachments(ctx context.Context, runID string) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return err
 	}
-	root := filepath.Join(s.root, "runs", runID, "attachments")
+	root := filepath.Join(s.runDir(runID), "attachments")
 	if err := os.RemoveAll(root); err != nil {
 		return fmt.Errorf("store: rm attachments dir: %w", err)
 	}
@@ -278,7 +278,7 @@ func (s *FilesystemRunStore) DeleteRunAttachments(ctx context.Context, runID str
 // Cloud (S3-backed) stores override this with PresignGetObject; the
 // HMAC scheme is local-only.
 func (s *FilesystemRunStore) PresignAttachment(_ context.Context, runID, name string, ttl time.Duration) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
 	if err := sanitizePathComponent("attachment name", name); err != nil {
@@ -318,7 +318,7 @@ func (s *FilesystemRunStore) VerifyAttachmentSignature(runID, name, exp, sig str
 	// making one valid signature match a different (runID, name) pair.
 	// Reject the same shapes PresignAttachment rejects so the contract
 	// matches on both sides.
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return false
 	}
 	if err := sanitizePathComponent("attachment name", name); err != nil {
@@ -382,7 +382,7 @@ func (s *FilesystemRunStore) presignKey() ([]byte, error) {
 // loadAttachmentMeta reads the on-disk meta sidecar for a single
 // attachment.
 func (s *FilesystemRunStore) loadAttachmentMeta(runID, name string) (AttachmentRecord, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return AttachmentRecord{}, err
 	}
 	if err := sanitizePathComponent("attachment name", name); err != nil {

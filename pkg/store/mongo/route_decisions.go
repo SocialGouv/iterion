@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -18,6 +19,9 @@ import (
 // duplicate key means the episode is already decided — the existing
 // row comes back so the caller can report WHO decided and how it went.
 func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, staleBefore time.Time) (bool, *store.RouteDecision, error) {
+	if err := s.guardNativeRun(ctx, d.RunID); err != nil {
+		return false, nil, err
+	}
 	if d.RunID == "" {
 		return false, nil, fmt.Errorf("store/mongo: claim route decision without run_id")
 	}
@@ -26,7 +30,7 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 	d.ClaimedAt = time.Now().UTC()
 	stampTenantDecision(ctx, &d)
 	d.Attempts = 1
-	if _, err := s.routeDecisions.InsertOne(ctx, d); err != nil {
+	if _, err := s.collectionForRun(d.RunID, s.routeDecisions).InsertOne(ctx, d); err != nil {
 		if !mongo.IsDuplicateKeyError(err) {
 			return false, nil, fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
 		}
@@ -35,7 +39,7 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 		// claimant died between claim and action) and a "failed" under
 		// the cap. The CAS is a conditional update, so replicas racing
 		// on the steal still elect exactly one winner.
-		res := s.routeDecisions.FindOneAndUpdate(ctx,
+		res := s.collectionForRun(d.RunID, s.routeDecisions).FindOneAndUpdate(ctx,
 			withTenantFilter(ctx, bson.M{
 				"run_id": d.RunID, "outcome_seq": d.OutcomeSeq,
 				"attempts": bson.M{"$lt": store.MaxRouteDecisionAttempts},
@@ -56,7 +60,7 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 			return false, nil, fmt.Errorf("store/mongo: reclaim route decision %s: %w", d.ID, res.Err())
 		}
 		var existing store.RouteDecision
-		ferr := s.routeDecisions.FindOne(ctx, withTenantFilter(ctx, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq})).Decode(&existing)
+		ferr := s.collectionForRun(d.RunID, s.routeDecisions).FindOne(ctx, withTenantFilter(ctx, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq})).Decode(&existing)
 		if ferr != nil {
 			return false, nil, fmt.Errorf("store/mongo: route decision %s exists but is unreadable: %w", d.ID, ferr)
 		}
@@ -67,11 +71,14 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 
 // FinishRouteDecision moves the claimed row to its terminal state.
 func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSeq int64, state, actionErr string) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if state != store.RouteDecisionSucceeded && state != store.RouteDecisionFailed {
 		return fmt.Errorf("store/mongo: finish route decision: invalid state %q", state)
 	}
 	now := time.Now().UTC()
-	res, err := s.routeDecisions.UpdateOne(ctx,
+	res, err := s.collectionForRun(runID, s.routeDecisions).UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"run_id": runID, "outcome_seq": outcomeSeq, "state": store.RouteDecisionClaimed}),
 		bson.M{"$set": bson.M{"state": state, "error": actionErr, "finished_at": now}})
 	if err != nil {
@@ -85,7 +92,10 @@ func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSe
 
 // ListRouteDecisions returns a run's decisions, newest episode first.
 func (s *Store) ListRouteDecisions(ctx context.Context, runID string) ([]store.RouteDecision, error) {
-	cur, err := s.routeDecisions.Find(ctx, withTenantFilter(ctx, bson.M{"run_id": runID}),
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	cur, err := s.collectionForRun(runID, s.routeDecisions).Find(ctx, withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().SetSort(bson.D{{Key: "outcome_seq", Value: -1}}))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list route decisions %s: %w", runID, err)
@@ -155,6 +165,18 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 		{{Key: "$limit", Value: int64(limit)}},
 		{{Key: "$project", Value: bson.M{"_id": 1}}},
 	}
+	// Each family's anti-join uses its own decision records. Union after
+	// that filter, then apply one global oldest-first limit.
+	baseMatch := pipeline[0][0].Value
+	native := append(mongo.Pipeline(nil), pipeline[:4]...)
+	native[0] = bson.D{{Key: "$match", Value: namespaceFilter(baseMatch, true)}}
+	lookup := maps.Clone(pipeline[2][0].Value.(bson.M))
+	lookup["from"] = colRouteDecisions + "_ports_v1"
+	native[2] = bson.D{{Key: "$lookup", Value: lookup}}
+	pipeline[0] = bson.D{{Key: "$match", Value: namespaceFilter(baseMatch, false)}}
+	tail := append(mongo.Pipeline{pipeline[1]}, pipeline[4:]...)
+	pipeline = append(pipeline[:4], bson.D{{Key: "$unionWith", Value: bson.M{"coll": colRuns + "_ports_v1", "pipeline": native}}})
+	pipeline = append(pipeline, tail...)
 	cur, err := s.runs.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list routable runs: %w", err)

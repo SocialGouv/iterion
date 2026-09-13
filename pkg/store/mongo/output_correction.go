@@ -14,6 +14,9 @@ import (
 // $set. The run status, checkpoint, steering and cancel fields are untouched
 // even when another authority writes them concurrently.
 func (s *Store) SetRunOutputCorrection(ctx context.Context, id, ledgerKey string, episode store.OutputCorrectionEpisode) error {
+	if err := s.guardNativeRun(ctx, id); err != nil {
+		return err
+	}
 	if ledgerKey == "" {
 		return fmt.Errorf("store/mongo: output correction ledger key is empty")
 	}
@@ -21,7 +24,7 @@ func (s *Store) SetRunOutputCorrection(ctx context.Context, id, ledgerKey string
 		"output_corrections." + ledgerKey: episode,
 		"updated_at":                      time.Now().UTC(),
 	}}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
+	res, err := s.collectionForRun(id, s.runs).UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set output correction: %w", err)
 	}

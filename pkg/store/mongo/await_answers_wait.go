@@ -10,6 +10,9 @@ import (
 )
 
 func (s *Store) SetAwaitAnswersWait(ctx context.Context, runID, token string, wait *store.AwaitAnswersWait) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if err := store.ValidateAwaitAnswersWait(token, wait); err != nil {
 		return err
 	}
@@ -23,7 +26,7 @@ func (s *Store) SetAwaitAnswersWait(ctx context.Context, runID, token string, wa
 	} else {
 		update["$unset"] = bson.M{key: ""}
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.collectionForRun(runID, s.runs).UpdateOne(ctx, filter, versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: update await_answers wait: %w", err)
 	}

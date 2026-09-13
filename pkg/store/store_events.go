@@ -20,7 +20,7 @@ import (
 // from concurrent branches. The sequence counter is only incremented after
 // a successful write to avoid gaps in the event stream.
 func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Event) (*Event, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
 	}
 	// Tombstone guard BEFORE the MkdirAll below: without it a late
@@ -203,7 +203,7 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).
 func (s *FilesystemRunStore) ScanEvents(_ context.Context, runID string, visit func(*Event) bool) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return err
 	}
 	p := s.eventsPath(runID)
@@ -304,7 +304,7 @@ func (s *FilesystemRunStore) LoadEvents(ctx context.Context, runID string) ([]*E
 // This intentionally does NOT use LoadEvents (which allocates the full slice
 // of events) — we only need the max Seq, so we scan and discard.
 func (s *FilesystemRunStore) scanMaxSeqLocked(runID string) (int64, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return 0, err
 	}
 	p := s.eventsPath(runID)

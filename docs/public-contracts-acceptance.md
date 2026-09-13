@@ -22,7 +22,7 @@ Syntax profiles and runtime semantics are independent.
 | Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Outstanding |
 | Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Outstanding |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Outstanding |
-| Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Outstanding |
+| Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing and no-shadow-fallback checks pass on FS/Mongo; old executable tests, workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Outstanding |
 | Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Outstanding |
 | Rollback | New root launches stop; existing compatible executions remain resumable | Outstanding |
@@ -63,6 +63,24 @@ Syntax profiles and runtime semantics are independent.
 - `TestPublicJSONRejectsAmbiguousObjects`: passing. Public defaults and
   criterion parameters reject duplicate JSON members as well as trailing
   values, retaining large numeric values without rounding.
+
+- Store routing now uses `pc1_` IDs, `port_runs_v1/<id>/run.ports-v1.json`,
+  Mongo collection families suffixed `_ports_v1`, and blob keys prefixed
+  `ports-v1/`. Native run-file scratch uses a distinct directory family.
+  Explicit creation identity is required; full saves cannot upsert a missing
+  native run or change its interpreter. These are storage guarantees, not
+  evidence that the native scheduler or deployment barrier is implemented.
+- Native store tests pass on filesystem and a real Mongo 8 replica set with
+  `ITERION_TEST_REQUIRED=1`, `ITERION_TEST_MONGO_URI` and `go test -race -json`.
+  `scripts/verify-port-tests.mjs` verified all 28 expected cases in
+  `pkg/store/storetest/native_namespaces.json` passed without skips. They cover
+  metadata and blob round trips, exact public inputs, descendant namespaces,
+  no legacy shadow fallback, unsupported-record refusal and deletion closure.
+- Full `pkg/store` and `pkg/store/blob` suites pass. The real-Mongo shared
+  legacy conformance suite passed. The subsequent full Mongo package run
+  found a static deletion-inventory parser that did not recognize the new
+  namespace selector; that guard was updated to require routed collections
+  and its focused rerun passed. Final broader verification remains required.
 
 ## Verification rules
 

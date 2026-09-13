@@ -18,7 +18,7 @@ const pidFileName = ".pid"
 // PIDFilePath returns the canonical path to the .pid file for runID.
 // The file may or may not exist.
 func (s *FilesystemRunStore) PIDFilePath(runID string) string {
-	return filepath.Join(s.root, "runs", runID, pidFileName)
+	return filepath.Join(s.runDir(runID), pidFileName)
 }
 
 // WritePIDFile writes pid to the run's .pid file. The directory is
@@ -26,10 +26,10 @@ func (s *FilesystemRunStore) PIDFilePath(runID string) string {
 // (tmp + fsync + rename) so a crashed writer cannot leave a
 // half-written .pid that would confuse the reconciler.
 func (s *FilesystemRunStore) WritePIDFile(runID string, pid int) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := ValidateRunID(runID); err != nil {
 		return err
 	}
-	dir := filepath.Join(s.root, "runs", runID)
+	dir := s.runDir(runID)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: pid file: mkdir: %w", err)
 	}

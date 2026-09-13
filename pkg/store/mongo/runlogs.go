@@ -33,6 +33,9 @@ type runLogDoc struct {
 // already persisted (runner redelivery / retry after a timed-out ack)
 // and is skipped as an idempotent success.
 func (s *Store) AppendRunLog(ctx context.Context, runID string, offset int64, data []byte) error {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return err
+	}
 	if len(data) == 0 {
 		return nil
 	}
@@ -48,7 +51,7 @@ func (s *Store) AppendRunLog(ctx context.Context, runID string, offset int64, da
 	if id, ok := store.TenantFromContext(ctx); ok {
 		doc.TenantID = id
 	}
-	if _, err := s.runLogs.InsertOne(ctx, doc); err != nil {
+	if _, err := s.collectionForRun(runID, s.runLogs).InsertOne(ctx, doc); err != nil {
 		if mongoutil.IsDuplicateKey(err) {
 			return nil // idempotent redelivery of an already-persisted chunk
 		}
@@ -64,6 +67,9 @@ func (s *Store) AppendRunLog(ctx context.Context, runID string, offset int64, da
 // overlapping chunks sliced at the window edges is the exact range. A
 // run with no persisted log yields (nil, nil).
 func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until int64) ([]byte, error) {
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return nil, err
+	}
 	if from < 0 {
 		from = 0
 	}
@@ -81,7 +87,7 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 		var anchor struct {
 			Offset int64 `bson:"offset"`
 		}
-		if err := s.runLogs.FindOne(ctx, anchorFilter,
+		if err := s.collectionForRun(runID, s.runLogs).FindOne(ctx, anchorFilter,
 			options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}).SetProjection(bson.M{"offset": 1}),
 		).Decode(&anchor); err == nil {
 			offsetRange["$gte"] = anchor.Offset
@@ -93,7 +99,7 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 	if len(offsetRange) > 0 {
 		filter["offset"] = offsetRange
 	}
-	cur, err := s.runLogs.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "offset", Value: 1}}))
+	cur, err := s.collectionForRun(runID, s.runLogs).Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "offset", Value: 1}}))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: run log range %s: %w", runID, err)
 	}
@@ -133,7 +139,10 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 // persisted chunk (the offset the next append should use), 0 when the
 // run has no log.
 func (s *Store) RunLogSize(ctx context.Context, runID string) (int64, error) {
-	res := s.runLogs.FindOne(
+	if err := s.guardNativeRun(ctx, runID); err != nil {
+		return 0, err
+	}
+	res := s.collectionForRun(runID, s.runLogs).FindOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}),

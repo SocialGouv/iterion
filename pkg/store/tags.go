@@ -86,10 +86,10 @@ type runTagsFile struct {
 
 // tagsPath validates runID and returns <root>/runs/<runID>/tags.json.
 func (s *FilesystemRunStore) tagsPath(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	if err := s.guardNativeRun(runID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "runs", runID, "tags.json"), nil
+	return filepath.Join(s.runDir(runID), "tags.json"), nil
 }
 
 // SetRunTags implements RunTagStore over runs/<id>/tags.json — a single

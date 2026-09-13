@@ -110,7 +110,7 @@ func (b *inMemoryBlob) GetArtifact(_ context.Context, runID, nodeID string, vers
 }
 
 func (b *inMemoryBlob) ListArtifactVersions(_ context.Context, runID, nodeID string) ([]int, error) {
-	prefix := "artifacts/" + runID + "/" + nodeID + "/"
+	prefix := store.RunBlobPrefix(runID) + "artifacts/" + runID + "/" + nodeID + "/"
 	versions := []int{}
 	for k := range b.data {
 		if len(k) <= len(prefix) || k[:len(prefix)] != prefix {
@@ -142,7 +142,7 @@ func (b *inMemoryBlob) ListArtifactVersions(_ context.Context, runID, nodeID str
 }
 
 func (b *inMemoryBlob) DeleteRun(_ context.Context, runID string) error {
-	prefix := "artifacts/" + runID + "/"
+	prefix := store.RunBlobPrefix(runID) + "artifacts/" + runID + "/"
 	for k := range b.data {
 		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
 			delete(b.data, k)

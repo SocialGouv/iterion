@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/store"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -162,7 +164,13 @@ func (c *S3Client) GetArtifact(ctx context.Context, runID, nodeID string, versio
 // prefix has no objects so callers don't need to special-case empty
 // slices vs missing nodes.
 func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID string) ([]int, error) {
-	prefix := fmt.Sprintf("artifacts/%s/%s/", runID, nodeID)
+	if err := store.ValidateRunID(runID); err != nil {
+		return nil, err
+	}
+	if err := store.SanitizePathComponent("node ID", nodeID); err != nil {
+		return nil, err
+	}
+	prefix := store.RunBlobPrefix(runID) + fmt.Sprintf("artifacts/%s/%s/", runID, nodeID)
 	versions := []int{}
 
 	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
@@ -208,7 +216,10 @@ func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID strin
 // Returns nil only when every page listed and every delete batch
 // succeeded.
 func (c *S3Client) DeleteRun(ctx context.Context, runID string) error {
-	prefix := fmt.Sprintf("artifacts/%s/", runID)
+	if err := store.ValidateRunID(runID); err != nil {
+		return err
+	}
+	prefix := store.RunBlobPrefix(runID) + fmt.Sprintf("artifacts/%s/", runID)
 
 	var collected []error
 	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
@@ -823,7 +834,7 @@ func (c *S3Client) GetRunFile(ctx context.Context, runID, relPath string) (io.Re
 	}
 	// relPath was validated by runFileKey; report the cleaned prefix-
 	// relative path so callers get a stable, area-relative value.
-	rel := strings.TrimPrefix(key, fmt.Sprintf("runfiles/%s/", runID))
+	rel := strings.TrimPrefix(key, store.RunBlobPrefix(runID)+fmt.Sprintf("runfiles/%s/", runID))
 	info := RunFileObject{Path: rel}
 	if out.ContentLength != nil {
 		info.Size = *out.ContentLength

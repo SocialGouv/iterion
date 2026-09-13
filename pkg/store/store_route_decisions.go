@@ -133,13 +133,13 @@ func (s *FilesystemRunStore) ListRouteDecisions(_ context.Context, runID string)
 // ListRoutableRuns — filesystem twin of the sweep query. Scans the run
 // directory (bounded by limit); acceptable for the local store's scale
 // and for tests.
-func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time, limit int) ([]string, error) {
+func (s *FilesystemRunStore) ListRoutableRuns(ctx context.Context, since time.Time, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(s.root, "runs"))
+	ids, err := s.ListRuns(ctx)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -151,11 +151,8 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 		at time.Time
 	}
 	var cands []cand
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		r, err := s.loadRunRaw(e.Name())
+	for _, id := range ids {
+		r, err := s.loadRunRaw(id)
 		if err != nil || r.RoutingPolicy == nil || r.UpdatedAt.Before(since) {
 			continue
 		}

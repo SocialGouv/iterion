@@ -197,10 +197,13 @@ func (s *FilesystemRunStore) Root() string { return s.root }
 // ---------------------------------------------------------------------------
 
 func (s *FilesystemRunStore) runDir(runID string) string {
-	return filepath.Join(s.root, "runs", runID)
+	return filepath.Join(s.root, RunDataDirectory(runID), runID)
 }
 
 func (s *FilesystemRunStore) runJSONPath(runID string) string {
+	if IsNativeRunID(runID) {
+		return filepath.Join(s.runDir(runID), "run.ports-v1.json")
+	}
 	return filepath.Join(s.runDir(runID), "run.json")
 }
 

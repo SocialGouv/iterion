@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,13 +24,16 @@ const deletionMarkerName = ".deleted"
 
 // runDeleted reports whether the run carries the deletion marker.
 func (s *FilesystemRunStore) runDeleted(id string) bool {
-	_, err := os.Stat(filepath.Join(s.root, "runs", id, deletionMarkerName))
+	_, err := os.Stat(filepath.Join(s.runDir(id), deletionMarkerName))
 	return err == nil
 }
 
 // guardNotDeleted is the shared write-path check: a typed refusal for
 // tombstoned runs, before any directory or file would be (re)created.
 func (s *FilesystemRunStore) guardNotDeleted(id string) error {
+	if err := ValidateRunID(id); err != nil {
+		return err
+	}
 	if s.runDeleted(id) {
 		return fmt.Errorf("store: run %s: %w", id, ErrRunDeleted)
 	}
@@ -40,12 +44,20 @@ func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("store: DeleteRun requires a run id")
 	}
-	if err := sanitizePathComponent("run ID", id); err != nil {
+	if err := ValidateRunID(id); err != nil {
 		return err
+	}
+	if IsNativeRunID(id) {
+		if _, err := s.loadRunRaw(id); err != nil {
+			if errors.Is(err, ErrRunDeleted) || errors.Is(err, ErrRunNotFound) {
+				return nil
+			}
+			return err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dir := filepath.Join(s.root, "runs", id)
+	dir := s.runDir(id)
 	// Write the tombstone FIRST (MkdirAll is idempotent if the dir was
 	// already gone), so a concurrent writer that passes its guard just
 	// before our sweep still finds the marker on its next write.
@@ -77,28 +89,30 @@ func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
 func (s *FilesystemRunStore) PruneDeletionMarkers(_ context.Context, cutoff time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	runsDir := filepath.Join(s.root, "runs")
-	entries, err := os.ReadDir(runsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("store: prune deletion markers: %w", err)
-	}
 	reaped := 0
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, family := range []string{"runs", NativeRunsDirectory} {
+		runsDir := filepath.Join(s.root, family)
+		entries, err := os.ReadDir(runsDir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		marker := filepath.Join(runsDir, e.Name(), deletionMarkerName)
-		info, err := os.Stat(marker)
-		if err != nil || info.ModTime().After(cutoff) {
-			continue
+		if err != nil {
+			return reaped, fmt.Errorf("store: prune deletion markers: %w", err)
 		}
-		if err := os.RemoveAll(filepath.Join(runsDir, e.Name())); err != nil {
-			return reaped, fmt.Errorf("store: reap tombstone %s: %w", e.Name(), err)
+		for _, e := range entries {
+			if !e.IsDir() || ValidateRunID(e.Name()) != nil || RunDataDirectory(e.Name()) != family {
+				continue
+			}
+			marker := filepath.Join(runsDir, e.Name(), deletionMarkerName)
+			info, err := os.Stat(marker)
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(runsDir, e.Name())); err != nil {
+				return reaped, fmt.Errorf("store: reap tombstone %s: %w", e.Name(), err)
+			}
+			reaped++
 		}
-		reaped++
 	}
 	return reaped, nil
 }
