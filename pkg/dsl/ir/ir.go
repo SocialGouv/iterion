@@ -1373,12 +1373,12 @@ var AttachmentSubFields = map[string]struct{}{
 type Loop struct {
 	Name          string
 	MaxIterations int
-	// MaxIterationsExpr carries the raw template source when the cap
-	// was declared as `as <name>("{{outputs.X.cap}}")`. Empty for
-	// literal-int caps. Refs are pre-parsed at compile time so the
-	// runtime lookup is a pure string interpolation against rs.
+	// MaxIterationsExpr is the authored template or expression source. Literal
+	// caps leave it empty. Templates carry Refs; expressions carry an immutable
+	// AST. Both are resolved from live state at each attempted crossing.
 	MaxIterationsExpr     string
 	MaxIterationsExprRefs []*Ref
+	MaxIterationsAST      *expr.AST // expression form, evaluated at each crossing
 	// Unbounded marks `as <name>(unbounded)`: the loop has no user iteration
 	// cap. It still terminates — the runtime bounds it by FuelCap (the
 	// effective fuel ceiling) and by a liveness monitor (no-progress halt).

@@ -951,6 +951,7 @@ src -> dst when "approved && length(outputs.scan.findings) == 0"
 src -> fallback else
 src -> dst as retry(5)
 src -> dst as retry("{{outputs.plan.max_passes}}")
+src -> dst as retry("vars.max_passes - 1")
 src -> dst as retry(unbounded 200)
 src -> dst as foreach scan(item in "{{outputs.plan.items}}")
 src -> dst with {
@@ -964,7 +965,13 @@ A chain `a -> b -> c` reads as the edges it names (`a -> b`, `b -> c`), and the 
 
 Quoted `when` expressions are evaluated in parallel branch bodies as well as on the trunk, against that branch's private outputs, artifacts, loop state, and shared run variables. Migration note: older runtimes skipped expression-form edges inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branches, so an existing workflow may now take a guarded route that previously fell through to `else` or an unconditional edge.
 
-Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
+Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, one runtime template reference, a quoted expression over `vars.*` and `outputs.*`, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
+
+**Counting crossings.** `as retry(N)` permits N back-edge crossings, hence N+1 executions of the loop body when entered once. To request a total of `max_passes` executions, write `as retry("vars.max_passes - 1")`. The expression is evaluated at each attempted crossing against the current variables and outputs, including after a fresh-engine resume with raised variables. A dynamic result of zero permits no further crossing. Literal caps retain their existing minimum of 1.
+
+The compiler refuses undeclared references and definitely non-integer cap types. At a selected crossing, an absent, fractional, negative or overflowing result fails explicitly with `EXPRESSION_FAILED`, naming the loop and its cap; it is never treated as zero. A fallback cap is not evaluated as a failure if another condition selects an exit. Prompt/display lookups may see an unresolved cap before its producer has run and do not abort the run. Migrate a loop-cap variable declared as `string` to `int`; the compiler now reports that mismatch even when its default happens to contain digits. Numeric strings from dynamically typed legacy template outputs remain accepted; use `floor` or `round` when converting a fractional expression is intended.
+
+Expression caps require the engine release that introduces queue schema v15. New publishers use v15 so older runners reject the message before compilation; new runners retain support for v10–v14. See the [queue rollout contract](cloud-queue-schema-rollout.md) before deploying a mixed fleet.
 
 **Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `NO_OUTGOING_EDGE`. The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
 

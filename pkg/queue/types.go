@@ -114,7 +114,10 @@ import (
 // v=14: ExecutionContext carries the resolved run/workspace/workflow/lineage
 // contract to the claiming runner. Dropping it would make cloud admission
 // disagree with local admission, so the wire version is bumped.
-const SchemaVersion = 14
+// v=15: loop cap expressions are evaluated at each crossing. A pre-v15
+// runner cannot compile this AST semantics and must reject the envelope before
+// admission; new runners still accept old literal/template messages.
+const SchemaVersion = 15
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom

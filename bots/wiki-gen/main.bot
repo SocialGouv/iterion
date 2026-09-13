@@ -60,7 +60,7 @@ vars:
 
   ## Bounded continuation passes (validation feedback → author). Wiki
   ## generation converges fast; N loop-BACKS = N+1 total passes.
-  max_passes: string = "3"
+  max_passes: int = 3
 
 ## ─── Prompts ─────────────────────────────────────────────────────
 prompt author_system:

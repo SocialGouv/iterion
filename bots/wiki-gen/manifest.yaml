@@ -1,7 +1,8 @@
 name: wiki-gen
 display_name: Wikky
 icon: 📖
-version: 1.0.0
+version: 1.0.1
+## 1.0.1 — max_passes is typed as an integer for validated loop bounds.
 ## 1.0.0 — Generate + maintain a navigable OKF wiki for ANY repository
 ## (openwiki-inspired). One adaptive claude_code agent surveys the repo,
 ## plans, and writes a structured wiki tree under wiki/ grounded in the

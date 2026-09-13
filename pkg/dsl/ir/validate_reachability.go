@@ -177,14 +177,10 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 // ---------------------------------------------------------------------------
 
 func (c *compiler) validateLoopIterations(w *Workflow) {
+	c.validateLoopCapExpressions(w)
 	for _, loop := range w.Loops {
-		// Templated caps (`as fix_loop("{{outputs.X.cap}}")`) carry
-		// MaxIterations=0 by design — the real bound is resolved at
-		// runtime from the referenced output/var. The runtime falls
-		// back to MaxIterations (0) if resolution fails, which produces
-		// a "loop exhausted on iteration 0" log line: the operator
-		// sees the wiring problem without compile-time blocking
-		// otherwise-valid templated declarations.
+		// Dynamic caps carry MaxIterations=0; their types/references are checked
+		// above and the actual value is validated at each attempted crossing.
 		if loop.MaxIterationsExpr != "" {
 			continue
 		}

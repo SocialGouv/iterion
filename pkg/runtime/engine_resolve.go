@@ -655,14 +655,6 @@ func (e *Engine) resolveLoopPath(path []string, rs *runState) any {
 	return nil
 }
 
-// resolveLoopMax returns the effective cap for a loop. Literal-int
-// declarations (`as fix_loop(3)`) yield MaxIterations directly.
-// Template declarations (`as fix_loop("{{outputs.X.cap}}")`) resolve
-// the refs against the runState and coerce the result to int. The
-// fallback when resolution / coercion fails is loop.MaxIterations
-// (typically 0 for the template form) — that surfaces as a "loop
-// exhausted on iteration 0" log line at the edge check, which is the
-// loudest visible failure mode we can offer without aborting the run.
 // defaultUnboundedFuel is the fuel ceiling applied to an `unbounded` loop that
 // declares neither a per-loop fuel nor a workflow budget.max_iterations.
 // Validation (C097) normally requires one of those, so this only guards a
@@ -706,45 +698,14 @@ func outputSignature(output map[string]any) string {
 // declared/expr/fuel base plus any live-steering grant (bump_loop). The
 // grant applies for the remainder of the run; a loop re-entry still
 // resets its COUNTER, so the raised ceiling governs each entry.
+// Prompt/display lookups may happen before a referenced output exists. Only
+// actual edge selection treats an unresolved cap as a run failure.
 func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
-	base := e.resolveLoopMaxBase(loop, rs)
-	if extra := rs.loopOverrides[loop.Name]; extra > 0 {
-		return base + extra
+	n, err := e.resolveLoopMaxChecked(loop, rs)
+	if err != nil {
+		return 0
 	}
-	return base
-}
-
-func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) int {
-	// Unbounded loops have no user iteration cap; the effective ceiling is the
-	// fuel: the clause's per-loop fuel, else the workflow's max_iterations, else
-	// a hard default (so there is never a silent infinity even if validation was
-	// bypassed). The liveness monitor halts a no-progress loop before this.
-	if loop.Unbounded {
-		if loop.FuelCap > 0 {
-			return loop.FuelCap
-		}
-		if e.workflow.Budget != nil && e.workflow.Budget.MaxIterations > 0 {
-			return e.workflow.Budget.MaxIterations
-		}
-		return defaultUnboundedFuel
-	}
-	if loop.MaxIterationsExpr == "" || len(loop.MaxIterationsExprRefs) == 0 {
-		return loop.MaxIterations
-	}
-	var resolved any
-	for _, ref := range loop.MaxIterationsExprRefs {
-		v := e.resolveRef(ref, rs.scope())
-		if v != nil {
-			resolved = v
-		}
-	}
-	if resolved == nil {
-		return loop.MaxIterations
-	}
-	if n, ok := coerceToInt(resolved); ok {
-		return n
-	}
-	return loop.MaxIterations
+	return n
 }
 
 // coerceToInt accepts the common shapes that an output/var ref can
