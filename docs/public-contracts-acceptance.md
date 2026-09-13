@@ -162,11 +162,13 @@ Syntax profiles and runtime semantics are independent.
   classification; cloud lease adoption remains an open integration item.
 - `TestReconcileOrphans` now covers a native run with `PortExecution` and a
   native run without it. The local Service boot scan marks only the former
-  `failed_resumable`, using its existing cross-process run lock. Previously
-  it looked only for a legacy `Checkpoint` and classified every native crash
-  as terminal `failed`. The full `pkg/runview` suite passes. This is local
-  liveness classification; the cloud runner uses NATS lease/redelivery and
-  needs its own native process-kill integration proof.
+  `failed_resumable`. `TestNativeOrphanProcessBecomesResumableAfterKill` holds
+  the native run's cross-process lock in a real child, proves the live run is
+  left alone, kills the child, then proves the scan marks it resumable. Both
+  cases pass with race detection and the full `pkg/runview` suite passes.
+  Previously the scan looked only for a legacy `Checkpoint` and classified
+  every native crash as terminal `failed`. The cloud runner uses NATS
+  lease/redelivery and needs its own native process-kill integration proof.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.

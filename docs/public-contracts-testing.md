@@ -54,7 +54,8 @@ Two more kill a child after the file store has read one byte of a declared
 output, before its snapshot or publication completes. Recovery must publish
 only a fresh verified file. These Engine tests explicitly simulate the
 orphan-status transition before resuming. The local Studio boot scan separately
-tests native checkpoint classification; cloud NATS lease adoption remains
+tests native checkpoint classification and the real cross-process lock after
+a child process dies; cloud NATS lease adoption remains
 outside this harness.
 
 The ordinary legacy route has an independent executable comparison. Build the
