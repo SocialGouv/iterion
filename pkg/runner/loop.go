@@ -408,10 +408,10 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 		}
 		// Evidence, when identity is unavailable (a publication with no
 		// usable published_at) or the message is the current attempt's:
-		// a queued doc carrying a checkpoint has already executed, so
+		// a queued doc carrying a legacy or native checkpoint has already executed, so
 		// running it as a launch would re-spend exactly what the
 		// checkpoint exists to save.
-		if run.Checkpoint != nil {
+		if run.Checkpoint != nil || run.PortExecution != nil {
 			msg.Resume = &queue.ResumeSpec{}
 			return preconditionOutcome{
 				proceed: true,

@@ -835,6 +835,24 @@ func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
 	})
 }
 
+func TestQueuedNativeLaunchUsesDurablePortExecution(t *testing.T) {
+	const id = "pc1_queued_native"
+	run := &store.Run{ID: id, RuntimeSemantics: store.RuntimeSemanticsPortsV1, Status: store.RunStatusQueued,
+		PortExecution: &store.PortExecution{Version: store.PortExecutionVersion, Revision: 3, RootRunID: id}}
+	msg := &queue.RunMessage{RunID: id}
+	out := dispositionForStatus(msg, run)
+	if !out.proceed || msg.Resume == nil {
+		t.Fatalf("native checkpoint was restarted as a launch: outcome=%+v resume=%+v", out, msg.Resume)
+	}
+	// A first native attempt without an execution state still starts normally.
+	first := &queue.RunMessage{RunID: id}
+	run.PortExecution = nil
+	out = dispositionForStatus(first, run)
+	if !out.proceed || first.Resume != nil {
+		t.Fatalf("new native run was incorrectly resumed: outcome=%+v resume=%+v", out, first.Resume)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // injectCredentials / deleteRunSecrets
 // ---------------------------------------------------------------------------

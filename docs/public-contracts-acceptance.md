@@ -23,7 +23,7 @@ Syntax profiles and runtime semantics are independent.
 | Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine publication/acknowledgment fault injection pass on FS/Mongo; real child-process SIGKILL after effect dispatch and during file capture passes on both stores. The local orphan scan recognizes native checkpoints; cloud lease adoption remains to be proven end to end |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Engine pause/cancel/resume, selective source and corrupt-file invalidation, interrupted CAS and manual/idempotent/verified effect decisions pass on FS/Mongo; real process-kill recovery passes on both stores after the explicit orphan status transition; complete child source closure remains outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
-| Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume; complete consumer inventory outstanding |
+| Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume. Runner now treats a queued native run with durable `PortExecution` as a resume on redelivery; complete consumer inventory and real mixed-fleet delivery proof remain outstanding |
 | Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Local scope proof and store-bound admission pass; trusted distributed fleet/queue census and access reconciliation outstanding |
 | Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and admitted-run continuation pass; distributed rollback outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
@@ -169,6 +169,12 @@ Syntax profiles and runtime semantics are independent.
   Previously the scan looked only for a legacy `Checkpoint` and classified
   every native crash as terminal `failed`. The cloud runner uses NATS
   lease/redelivery and needs its own native process-kill integration proof.
+- `TestQueuedNativeLaunchUsesDurablePortExecution` covers a queued native run
+  whose launch message is redelivered after state was persisted. The runner
+  now synthesizes a resume from `PortExecution` instead of restarting the
+  graph; a first native launch without state remains a launch. The focused
+  regression and the full `pkg/runner` suite pass. This guards the status
+  switch, not actual delivery by a mixed fleet on the shared consumer.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
