@@ -427,7 +427,8 @@ the hours this one spent.
   dedicated Forgejo/GitLab account (`iterion remote forge connections
   avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
   App (no logo API; the studio hands over the file + the settings page).
-  Read it when a bot posts with a default avatar, or before touching a logo.
+  Read it when a bot posts with a default avatar, a reconnect preserves a custom
+  avatar, or automatic avatar inspection fails; explicit applies remain replacements.
 - [docs/bot-bundle-snapshots.md](docs/bot-bundle-snapshots.md) — cloud launches
   freeze workflow, resources and sibling subbots through the server authority;
   queue v13, bounded immutable snapshot transport, strict runner resolution and

@@ -129,3 +129,10 @@ You promote cards, observe their states, and report. You do NOT launch
 or reload the dispatcher, do NOT read child-run internals, do NOT touch
 caps, do NOT resume paused runs. Everything beyond the board is a
 recommendation to the operator, with the exact command they'd run.
+
+## A forge bot keeps its existing avatar
+
+At connect time, automatic branding preserves existing avatars, including
+reconnects and Gravatar images. If inspection fails, `avatar_error` names why
+and the connection remains active. Read [the brand runbook](../../../docs/brand.md)
+before diagnosing a missing bot face or requesting an explicit replacement.
