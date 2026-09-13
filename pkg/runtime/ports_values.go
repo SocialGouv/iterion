@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -46,7 +47,7 @@ func (e *Engine) nativeRootInputs(inputs map[string]any) (map[string]any, error)
 	return values, nil
 }
 
-func (e *Engine) newPortExecution(runID string, inputs map[string]any) (*store.PortExecution, error) {
+func (e *Engine) newPortExecution(ctx context.Context, runID string, inputs map[string]any) (*store.PortExecution, error) {
 	bundleHash := ""
 	if e.bundle != nil {
 		bundleHash = e.bundle.Hash
@@ -80,9 +81,17 @@ func (e *Engine) newPortExecution(runID string, inputs map[string]any) (*store.P
 	}
 	for _, port := range e.workflow.PublicContract.Inputs {
 		if value, present := inputs[port.Name]; present {
+			var files []store.PortFileRef
+			if value != nil && port.Type.Name == "file" {
+				value, files, err = e.captureRootPortFiles(ctx, runID, port, value)
+				if err != nil {
+					return nil, fmt.Errorf("runtime: root input %s: %w", port.Name, err)
+				}
+			}
 			if err := addPortValue(state, "input."+port.Name, "input", port.Name, 0, value); err != nil {
 				return nil, err
 			}
+			state.Publications["input."+port.Name].Files = files
 		}
 	}
 	for _, id := range e.workflow.Ports.Order {

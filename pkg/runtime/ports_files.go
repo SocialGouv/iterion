@@ -303,3 +303,78 @@ func (e *Engine) capturePortFiles(ctx context.Context, runID string, invocation 
 func portFileDescriptor(ref store.PortFileRef) map[string]any {
 	return map[string]any{"path": ref.Path, "sha256": ref.SHA256, "size": ref.Size, "media_type": ref.MediaType}
 }
+
+// Root file inputs use an attachment name rather than an arbitrary host path.
+// Capture under producer=input/attempt=0 makes the source byte identity part
+// of every downstream revision and permits deterministic recovery checks.
+func (e *Engine) captureRootPortFiles(ctx context.Context, runID string, port ir.PublicPort, candidate any) (any, []store.PortFileRef, error) {
+	var capture func(any, int) (any, []store.PortFileRef, error)
+	capture = func(value any, depth int) (any, []store.PortFileRef, error) {
+		if value == nil && port.Nullable && depth == port.Type.ArrayDepth {
+			return nil, nil, nil
+		}
+		if depth > 0 {
+			array := reflect.ValueOf(value)
+			if !array.IsValid() || array.Kind() != reflect.Slice && array.Kind() != reflect.Array {
+				return nil, nil, fmt.Errorf("expected an array of attachment references")
+			}
+			out := make([]any, array.Len())
+			var refs []store.PortFileRef
+			for i := range out {
+				item, files, err := capture(array.Index(i).Interface(), depth-1)
+				if err != nil {
+					return nil, nil, fmt.Errorf("attachment item %d: %w", i, err)
+				}
+				out[i], refs = item, append(refs, files...)
+			}
+			return out, refs, nil
+		}
+		path := ""
+		switch v := value.(type) {
+		case string:
+			path = v
+		case map[string]any:
+			path, _ = v["path"].(string)
+		}
+		if !strings.HasPrefix(path, "attachment:") || strings.TrimPrefix(path, "attachment:") == "" {
+			return nil, nil, fmt.Errorf("file input must reference a run attachment as attachment:<name>")
+		}
+		name := strings.TrimPrefix(path, "attachment:")
+		body, _, err := e.store.OpenAttachment(ctx, runID, name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("attachment %s: %w", name, err)
+		}
+		files := store.AsRunFilesStore(e.store)
+		if files == nil || store.AsPortFilesStore(e.store) == nil {
+			_ = body.Close()
+			return nil, nil, fmt.Errorf("native attachment capture requires file storage")
+		}
+		rootDir, err := files.EnsureRunFilesDir(ctx, runID)
+		if err != nil {
+			_ = body.Close()
+			return nil, nil, err
+		}
+		stage, err := os.MkdirTemp(rootDir, ".native-input-")
+		if err != nil {
+			_ = body.Close()
+			return nil, nil, err
+		}
+		defer func() { _ = os.RemoveAll(stage) }()
+		file, err := os.OpenFile(filepath.Join(stage, "body"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			_ = body.Close()
+			return nil, nil, err
+		}
+		_, copyErr := io.Copy(file, body)
+		if err := errors.Join(copyErr, file.Close(), body.Close()); err != nil {
+			return nil, nil, err
+		}
+		input := &store.PortInvocation{ID: "input", Node: "input", Attempt: 0}
+		descriptor, ref, err := e.capturePortFile(ctx, runID, input, port, "body", &portOutputArea{HostDir: stage})
+		if err != nil {
+			return nil, nil, err
+		}
+		return descriptor, []store.PortFileRef{ref}, nil
+	}
+	return capture(candidate, port.Type.ArrayDepth)
+}

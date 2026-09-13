@@ -29,7 +29,7 @@ func (e *Engine) resumePortRun(ctx context.Context, r *store.Run, answers map[st
 	if err != nil {
 		return err
 	}
-	fresh, err := e.newPortExecution(r.ID, inputs)
+	fresh, err := e.newPortExecution(ctx, r.ID, inputs)
 	if err != nil {
 		return err
 	}

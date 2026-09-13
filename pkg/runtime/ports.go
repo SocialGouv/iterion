@@ -52,7 +52,7 @@ func (e *Engine) checkNativeSemanticIdentity(runID string, run *store.Run) error
 }
 
 func (e *Engine) execPortGraph(ctx context.Context, rs *runState) error {
-	state, err := e.newPortExecution(rs.runID, rs.runInputs)
+	state, err := e.newPortExecution(ctx, rs.runID, rs.runInputs)
 	if err != nil {
 		return err
 	}

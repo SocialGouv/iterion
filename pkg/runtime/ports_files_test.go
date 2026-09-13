@@ -99,6 +99,42 @@ workflow deliver:
     products: ["reports"]
 `
 
+const portsAttachmentSource = `dsl: 2
+contract Root:
+  display_name: "Forward attachment"
+  responsibility: "Publish a verified attachment"
+  inputs:
+    source: file
+      file:
+        media_type: "text/plain"
+        min_bytes: 1
+  outputs:
+    report: file
+contract Pass:
+  display_name: "Forward file"
+  responsibility: "Pass the captured input"
+  inputs:
+    source: file
+  outputs:
+    report: file
+tool pass_impl:
+  command: "fixture"
+workflow forward:
+  worktree: none
+  runtime_semantics: "ports-v1"
+  contract: Root
+  graph:
+    nodes:
+      pass:
+        implementation: pass_impl
+        contract: Pass
+    bindings:
+      input.source -> pass.source
+    exports:
+      report: pass.report
+    products: ["report"]
+`
+
 func TestPortsFileCaptureFilesystem(t *testing.T) { runPortsFileCapture(t, tmpStore) }
 func TestPortsFileCaptureMongo(t *testing.T) {
 	if os.Getenv("ITERION_TEST_MONGO_URI") == "" {
@@ -111,6 +147,40 @@ func TestPortsFileCaptureMongo(t *testing.T) {
 }
 
 func runPortsFileCapture(t *testing.T, factory portsTestStoreFactory) {
+	t.Run("root attachment is captured before consumption", func(t *testing.T) {
+		executor := portsExecutorFunc(func(_ context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
+			return map[string]any{"report": input["source"]}, nil
+		})
+		engine, s := portsTestEngine(t, factory, portsAttachmentSource, executor)
+		ctx := portsTestContext(t)
+		const id = "pc1_input_file"
+		if _, err := s.CreateRun(store.WithRuntimeSemantics(ctx, ir.RuntimeSemanticsPortsV1), id, "forward", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteAttachment(ctx, id, store.AttachmentRecord{Name: "source", OriginalFilename: "source.txt", MIME: "text/plain"}, strings.NewReader("attached\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Run(ctx, id, map[string]any{"source": "attachment:source"}); err != nil {
+			t.Fatal(err)
+		}
+		run := portsTestRun(t, s, id)
+		inputRef := run.PortExecution.Publications["input.source"].Files
+		outputRef := run.PortExecution.Publications[run.PortExecution.Exports["report"]].Files
+		if len(inputRef) != 1 || len(outputRef) != 1 || outputRef[0] != inputRef[0] || inputRef[0].Producer != "input" {
+			t.Fatalf("attachment lineage: input=%+v output=%+v", inputRef, outputRef)
+		}
+		body, _, err := store.AsRunFilesStore(s).OpenRunFile(ctx, id, inputRef[0].Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, readErr := io.ReadAll(body)
+		if err := body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if readErr != nil || string(data) != "attached\n" {
+			t.Fatalf("attachment capture: %q %v", data, readErr)
+		}
+	})
 	t.Run("mapped files keep item order and origin", func(t *testing.T) {
 		executor := portsExecutorFunc(func(ctx context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
 			area, ok := model.InvocationFilesFromContext(ctx)
