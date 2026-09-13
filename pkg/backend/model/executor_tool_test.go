@@ -110,6 +110,45 @@ func TestExecutorToolNodeDirectPolicyAllows(t *testing.T) {
 	})
 }
 
+func TestExecutorToolReadsNativeMaterializedInput(t *testing.T) {
+	inputFile := filepath.Join(t.TempDir(), "captured.txt")
+	if err := os.WriteFile(inputFile, []byte("materialized input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{})
+	const logical = "published/input/0/abc"
+	ctx := WithInvocationFiles(context.Background(), InvocationFiles{HostDir: t.TempDir(), Inputs: map[string]InvocationFileInput{
+		logical: {HostPath: inputFile, SandboxPath: "/sandbox/input", SHA256: "abc"},
+	}})
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "read_native_input"}, Command: "cat {{input.source}}", CommandRefs: []*ir.Ref{{Kind: ir.RefInput, Path: []string{"source"}, Raw: "{{input.source}}"}}}
+	input := map[string]any{"source": map[string]any{"path": logical, "sha256": "abc"}}
+	out, err := e.Execute(ctx, node, input)
+	if err != nil || out["result"] != "materialized input" {
+		t.Fatalf("tool did not read verified private input: %+v %v", out, err)
+	}
+	if got := input["source"].(map[string]any)["path"]; got != logical {
+		t.Fatalf("executor mutated checkpoint input: %v", got)
+	}
+}
+
+func TestExecutorToolWritesOnlyToInvocationOutputDirectory(t *testing.T) {
+	outputDir := t.TempDir()
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{})
+	ctx := WithInvocationFiles(context.Background(), InvocationFiles{HostDir: outputDir, HasOutputFiles: true})
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "write_native_output"}, Command: `printf 'produced' > "$ITERION_ARTIFACT_FILES_DIR/report.txt"; printf '%s' "$ITERION_ARTIFACT_FILES_DIR/report.txt"`}
+	out, err := e.Execute(ctx, node, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out["result"]; got != filepath.Join(outputDir, "report.txt") {
+		t.Fatalf("tool returned %v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(outputDir, "report.txt"))
+	if err != nil || string(data) != "produced" {
+		t.Fatalf("scoped tool output = %q, %v", data, err)
+	}
+}
+
 // executor_tool.go (carved out of executor.go in commit ab2fa26a) holds
 // the tool-node helpers. End-to-end paths (executeToolNodeShell /
 // executeToolNodeScript) need a ClawExecutor + workspace + sandbox

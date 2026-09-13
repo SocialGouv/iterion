@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -25,15 +26,139 @@ import (
 type portOutputArea struct {
 	HostDir    string
 	SandboxDir string
+	Inputs     map[string]model.InvocationFileInput
 }
 
 func needsPortOutputArea(instance *ir.PortInstance) bool {
+	for _, port := range instance.Contract.Inputs {
+		if port.Type.Name == "file" {
+			return true
+		}
+	}
 	for _, port := range instance.Contract.Outputs {
 		if port.Type.Name == "file" {
 			return true
 		}
 	}
 	return false
+}
+
+func hasPortFileOutputs(instance *ir.PortInstance) bool {
+	for _, port := range instance.Contract.Outputs {
+		if port.Type.Name == "file" {
+			return true
+		}
+	}
+	return false
+}
+
+// Materialize only the file descriptors selected for this invocation. A map
+// item therefore copies its own file, not its siblings' entire collection.
+// The copy is private scratch; public reads continue to use committed refs.
+func (e *Engine) materializePortInputs(ctx context.Context, instance *ir.PortInstance, bindings map[string]string, values map[string]any, state *store.PortExecution, area *portOutputArea) error {
+	if area == nil {
+		return nil
+	}
+	area.Inputs = map[string]model.InvocationFileInput{}
+	for _, port := range instance.Contract.Inputs {
+		if port.Type.Name != "file" {
+			continue
+		}
+		value, present := values[port.Name]
+		if !present || value == nil {
+			continue
+		}
+		revision := bindings[port.Name]
+		publication := state.Publications[revision]
+		if publication == nil {
+			return fmt.Errorf("runtime: file input %s.%s has no committed publication", instance.ID, port.Name)
+		}
+		refs := map[string]store.PortFileRef{}
+		for _, ref := range publication.Files {
+			refs[ref.Path] = ref
+		}
+		var selectFiles func(any) error
+		selectFiles = func(item any) error {
+			if array, ok := item.([]any); ok {
+				for _, child := range array {
+					if err := selectFiles(child); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			path := ""
+			switch v := item.(type) {
+			case string:
+				path = v
+			case map[string]any:
+				path, _ = v["path"].(string)
+			}
+			ref, ok := refs[path]
+			if !ok {
+				return fmt.Errorf("runtime: file input %s.%s has no verified reference for %q", instance.ID, port.Name, path)
+			}
+			if _, done := area.Inputs[path]; done {
+				return nil
+			}
+			input, err := e.materializePortFile(ctx, area, ref)
+			if err != nil {
+				return err
+			}
+			area.Inputs[path] = input
+			return nil
+		}
+		if err := selectFiles(value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) materializePortFile(ctx context.Context, area *portOutputArea, ref store.PortFileRef) (model.InvocationFileInput, error) {
+	if err := store.ValidatePortFileRef(ref); err != nil {
+		return model.InvocationFileInput{}, err
+	}
+	files := store.AsRunFilesStore(e.store)
+	if files == nil {
+		return model.InvocationFileInput{}, fmt.Errorf("runtime: file input needs run-files storage")
+	}
+	source, _, err := files.OpenRunFile(ctx, ref.RunID, ref.Path)
+	if err != nil {
+		return model.InvocationFileInput{}, err
+	}
+	defer source.Close()
+	attemptDir := filepath.Dir(area.HostDir)
+	root, err := os.OpenRoot(attemptDir)
+	if err != nil {
+		return model.InvocationFileInput{}, err
+	}
+	defer root.Close()
+	rel := filepath.Join("inputs", filepath.FromSlash(ref.Path))
+	if err := root.MkdirAll(filepath.Dir(rel), 0o775); err != nil {
+		return model.InvocationFileInput{}, err
+	}
+	for dir := filepath.Dir(rel); dir != "."; dir = filepath.Dir(dir) {
+		f, err := root.Open(dir)
+		if err != nil {
+			return model.InvocationFileInput{}, err
+		}
+		if err := errors.Join(f.Chmod(0o775), f.Close()); err != nil {
+			return model.InvocationFileInput{}, err
+		}
+	}
+	dest, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return model.InvocationFileInput{}, err
+	}
+	verifyErr := store.VerifyPortFile(ctx, ref, io.TeeReader(source, dest))
+	if verifyErr == nil {
+		verifyErr = errors.Join(dest.Chmod(0o644), dest.Sync())
+	}
+	if err := errors.Join(verifyErr, dest.Close()); err != nil {
+		return model.InvocationFileInput{}, err
+	}
+	return model.InvocationFileInput{HostPath: filepath.Join(attemptDir, rel), SandboxPath: path.Join(path.Dir(area.SandboxDir), filepath.ToSlash(rel)), SHA256: ref.SHA256}, nil
 }
 
 // Every attempt gets a new directory inside the already-mounted native
@@ -248,7 +373,7 @@ func (e *Engine) capturePortFiles(ctx context.Context, runID string, invocation 
 				continue
 			}
 			for _, ref := range publication.Files {
-				if ref.Path != path {
+				if ref.Path != path && (area == nil || area.Inputs[ref.Path].HostPath != path && area.Inputs[ref.Path].SandboxPath != path) {
 					continue
 				}
 				if port.File != nil && (ref.Size < port.File.MinBytes || port.File.MediaType != "" && ref.MediaType != port.File.MediaType) {

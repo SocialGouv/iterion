@@ -67,6 +67,10 @@ func (c *portCoordinator) admitReady(ctx context.Context) (bool, error) {
 				release()
 				return false, err
 			}
+			if err := c.engine.materializePortInputs(ctx, instance, bindings, inputs, c.state, area); err != nil {
+				release()
+				return false, err
+			}
 		}
 		next, err := c.state.Clone()
 		if err != nil {
@@ -103,7 +107,7 @@ func (c *portCoordinator) admitReady(ctx context.Context) (bool, error) {
 		c.active[id] = release
 		workerCtx := ctx
 		if area != nil {
-			workerCtx = model.WithInvocationFiles(ctx, model.InvocationFiles{HostDir: area.HostDir, SandboxDir: area.SandboxDir})
+			workerCtx = model.WithInvocationFiles(ctx, model.InvocationFiles{HostDir: area.HostDir, SandboxDir: area.SandboxDir, HasOutputFiles: hasPortFileOutputs(instance), Inputs: area.Inputs})
 		}
 		if len(resources) > 0 {
 			inputs[leaseInputKey] = resources

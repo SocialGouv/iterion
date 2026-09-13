@@ -1016,7 +1016,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// CLI delegates receive the path in their environment; in-process
 		// backends also see the instruction in their task prompt.
 		task.ExtraEnv = append(append([]string(nil), task.ExtraEnv...), "ITERION_ARTIFACT_FILES_DIR="+outputDir)
-		task.UserPrompt += "\n\nFor this invocation, write declared file outputs only under " + outputDir + " and return each file path in its public output port."
+		if files.HasOutputFiles {
+			task.UserPrompt += "\n\nFor this invocation, write declared file outputs only under " + outputDir + " and return each file path in its public output port."
+		}
 	}
 	// interaction: async (ADR-081) — bind the non-blocking question
 	// closures. Both backends key their ask_user_async / await_answers

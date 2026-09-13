@@ -148,8 +148,21 @@ func TestPortsFileCaptureMongo(t *testing.T) {
 
 func runPortsFileCapture(t *testing.T, factory portsTestStoreFactory) {
 	t.Run("root attachment is captured before consumption", func(t *testing.T) {
-		executor := portsExecutorFunc(func(_ context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
-			return map[string]any{"report": input["source"]}, nil
+		executor := portsExecutorFunc(func(ctx context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
+			scope, ok := model.InvocationFilesFromContext(ctx)
+			if !ok {
+				return nil, fmt.Errorf("file consumer has no invocation scope")
+			}
+			descriptor := input["source"].(map[string]any)
+			mapped, ok := scope.Inputs[descriptor["path"].(string)]
+			if !ok {
+				return nil, fmt.Errorf("file consumer has no private input materialization")
+			}
+			body, err := os.ReadFile(mapped.HostPath)
+			if err != nil || string(body) != "attached\n" {
+				return nil, fmt.Errorf("private input is unavailable or invalid: %q %v", body, err)
+			}
+			return map[string]any{"report": mapped.HostPath}, nil
 		})
 		engine, s := portsTestEngine(t, factory, portsAttachmentSource, executor)
 		ctx := portsTestContext(t)
