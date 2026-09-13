@@ -67,7 +67,23 @@ func SyncOne(ctx context.Context, workdir, name string, dep botlock.Dependency) 
 	if installedHash, hashErr := bundle.ContentHashDir(target); hashErr == nil && installedHash == dep.BundleSHA256 {
 		return SyncResult{Name: name, BundleSHA256: installedHash, InstalledPath: target}, nil
 	}
+	return materializeOne(ctx, workdir, "", name, dep, false)
+}
 
+// StageOne installs into a caller-owned private destination, without replacing
+// an existing target or regenerating any live catalog. Sources are still
+// resolved against the real workspace, independently of the destination.
+func StageOne(ctx context.Context, workdir, dest, name string, dep botlock.Dependency) (SyncResult, error) {
+	if !filepath.IsAbs(workdir) || !filepath.IsAbs(dest) {
+		return SyncResult{}, fmt.Errorf("bot dependencies: private staging requires absolute workspace and destination paths")
+	}
+	return materializeOne(ctx, workdir, dest, name, dep, true)
+}
+
+func materializeOne(ctx context.Context, workdir, dest, name string, dep botlock.Dependency, private bool) (SyncResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SyncResult{}, err
+	}
 	source := resolveLocalSource(workdir, dep.Source)
 	fetched, cleanup, fetchErr := botinstall.Fetch(ctx, botinstall.Options{Source: source, Ref: dep.Ref, Path: dep.Path})
 	if fetchErr != nil {
@@ -93,8 +109,13 @@ func SyncOne(ctx context.Context, workdir, name string, dep botlock.Dependency) 
 		return SyncResult{}, fmt.Errorf("bot dependencies: lock name %q does not exactly match bundle manifest name %q", name, actual)
 	}
 
+	var origin *botinstall.Origin
+	if private {
+		origin = &botinstall.Origin{Source: source, Ref: dep.Ref, SourcePath: dep.Path}
+	}
 	installed, installErr := botinstall.Install(ctx, botinstall.Options{
-		Source: fetched, Name: name, Force: true, Workdir: workdir,
+		Source: fetched, Name: name, Force: !private, Workdir: workdir, Dest: dest, SkipCatalog: private,
+		Origin: origin,
 	})
 	if installErr != nil {
 		return SyncResult{}, fmt.Errorf("bot dependencies: install %q: %w", name, installErr)

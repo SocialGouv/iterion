@@ -81,6 +81,10 @@ func (g authoringGitIndex) tree(ctx context.Context, parent string, paths []stri
 }
 
 func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []string, hashes map[string]string, message string) (published string, err error) {
+	return commitAttestedAuthoringFilesWithDependency(ctx, root, paths, hashes, message, nil)
+}
+
+func commitAttestedAuthoringFilesWithDependency(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction) (published string, err error) {
 	version, err := runAuthoringGit(ctx, root, "version")
 	if err != nil {
 		return "", err
@@ -105,6 +109,11 @@ func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []stri
 			_ = os.Remove(indexPath + ".lock")
 		}
 	}()
+	if dependency != nil {
+		// Registered after lock cleanup, so restoration runs while the real
+		// index lock is still held on every prepublication failure.
+		defer func() { err = dependency.finish(ctx, published, err) }()
+	}
 	originalIndex, err := os.ReadFile(indexPath)
 	if err != nil {
 		return "", err
@@ -183,6 +192,11 @@ func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []stri
 	if _, err := g.run(ctx, "", "read-tree", parent); err != nil {
 		return "", err
 	}
+	if dependency != nil {
+		if err := dependency.install(ctx, parent, binding); err != nil {
+			return "", err
+		}
+	}
 	if _, err := g.run(ctx, "", append([]string{"add", "--"}, paths...)...); err != nil {
 		return "", err
 	}
@@ -209,6 +223,11 @@ func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []stri
 	}
 	for _, hook := range [][]string{{"pre-commit"}, {"prepare-commit-msg", "--", msgPath, "message"}, {"commit-msg", "--", msgPath}} {
 		if _, err := g.run(ctx, "", append([]string{"hook", "run", "--ignore-missing"}, hook...)...); err != nil {
+			return "", err
+		}
+	}
+	if dependency != nil {
+		if err := dependency.attest(ctx); err != nil {
 			return "", err
 		}
 	}
@@ -267,7 +286,17 @@ func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []stri
 	// lock or skip installation after a successful CAS.
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	visible, publishErr := publishAuthoringCommit(finishCtx, g, parent, commit, binding)
+	var beforePublication func() error
+	if dependency != nil {
+		beforePublication = func() error {
+			if err := dependency.attest(finishCtx); err != nil {
+				return err
+			}
+			dependency.phase = "publication-attempt"
+			return dependency.record()
+		}
+	}
+	visible, publishErr := publishAuthoringCommit(finishCtx, g, parent, commit, binding, beforePublication)
 	if !visible {
 		return "", publishErr
 	}
@@ -304,7 +333,7 @@ func authoringHeadBinding(ctx context.Context, g authoringGitIndex) (string, err
 // symref-verify HEAD plus update <branch> transaction is rejected by Git's
 // files backend as a duplicate HEAD update, so do not split those into two
 // unlocked transactions. This also protects a detached HEAD becoming attached.
-func publishAuthoringCommit(ctx context.Context, g authoringGitIndex, parent, commit, binding string) (bool, error) {
+func publishAuthoringCommit(ctx context.Context, g authoringGitIndex, parent, commit, binding string, beforePublication func() error) (bool, error) {
 	cmd := g.command(ctx, "update-ref", "-m", "commit: authoring", "--stdin")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -348,7 +377,12 @@ func publishAuthoringCommit(ctx context.Context, g authoringGitIndex, parent, co
 		}
 	}
 	committed := false
+	commitRequested := false
+	if txErr == nil && beforePublication != nil {
+		txErr = beforePublication()
+	}
 	if txErr == nil {
+		commitRequested = true
 		txErr = send("commit\n", "commit: ok")
 		committed = txErr == nil
 	}
@@ -364,7 +398,17 @@ func publishAuthoringCommit(ctx context.Context, g authoringGitIndex, parent, co
 			cancel()
 			committed = err == nil && strings.TrimSpace(head) == commit
 		}
-		return committed, fmt.Errorf("publish verified Git commit: %w: %s", errors.Join(txErr, waitErr), strings.TrimSpace(stderr.String()))
+		publishErr := fmt.Errorf("publish verified Git commit: %w: %s", errors.Join(txErr, waitErr), strings.TrimSpace(stderr.String()))
+		if commitRequested && !committed {
+			return false, &authoringPublicationUncertainError{publishErr}
+		}
+		return committed, publishErr
 	}
 	return true, nil
 }
+
+// A missing commit acknowledgement cannot authorize filesystem rollback, even
+// if a later probe cannot find the commit at HEAD (another ref writer may act).
+type authoringPublicationUncertainError struct{ error }
+
+func (e *authoringPublicationUncertainError) Unwrap() error { return e.error }

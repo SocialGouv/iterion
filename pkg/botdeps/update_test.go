@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botlock"
@@ -54,5 +55,48 @@ func writeUpdateTestBundle(t *testing.T, dir, version, workflow string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(fmt.Sprintf("name: shared-planner\nversion: %s\nschema_version: 1\nenabled: false\n", version)), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPrivateStageLeavesCatalogsWhileSyncRetainsDefaultRegeneration(t *testing.T) {
+	workdir := t.TempDir()
+	source := filepath.Join(workdir, "source")
+	writeUpdateTestBundle(t, source, "0.1.0", "workflow shared {}\n")
+	hash, err := bundle.ContentHashDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := filepath.Join(workdir, "bots", "router")
+	if err := os.MkdirAll(filepath.Join(owner, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"main.bot": "workflow router {}\n", "manifest.yaml": "name: router\nschema_version: 1\n",
+		"iterion-bot-catalog-static.md": "<!-- ITERION:CATALOG:GENERATED:BEGIN -->\nstale\n<!-- ITERION:CATALOG:GENERATED:END -->\n",
+		"skills/iterion-bot-catalog.md": "untouched\n",
+	} {
+		if err := os.WriteFile(filepath.Join(owner, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dep := botlock.Dependency{Source: "./source", Ref: "local-test", BundleSHA256: hash}
+	stage := t.TempDir()
+	if _, err := StageOne(t.Context(), workdir, stage, "shared-planner", dep); err != nil {
+		t.Fatal(err)
+	}
+	catalogPath := filepath.Join(owner, "skills", "iterion-bot-catalog.md")
+	body, err := os.ReadFile(catalogPath)
+	if err != nil || string(body) != "untouched\n" {
+		t.Fatalf("private staging changed live catalog: %q %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".botz")); !os.IsNotExist(err) {
+		t.Fatalf("private staging touched live cache: %v", err)
+	}
+	if _, err := SyncOne(t.Context(), workdir, "shared-planner", dep); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(catalogPath)
+	if err != nil || !strings.Contains(string(body), "## The team") {
+		t.Fatalf("normal sync no longer regenerates catalogs: %q %v", body, err)
 	}
 }

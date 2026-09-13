@@ -1,9 +1,11 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +20,8 @@ import (
 //
 // The test pins the handler at the point where the real work would start —
 // it holds assistantDependencyMu, so the handler blocks on that Lock — and
-// then asserts stateMu is writable throughout. Under the `defer
-// s.stateMu.RUnlock()` form this fails on the first poll after the handler
-// takes the read lock.
+// then asserts stateMu is writable after the short snapshot has completed.
+// Under the `defer s.stateMu.RUnlock()` form the writer stays blocked.
 func TestAssistantDependencyUpdateDoesNotHoldStateMuAcrossTheFetch(t *testing.T) {
 	s := New(Config{DisableAuth: true, SkipProjectRegistration: true, WorkDir: t.TempDir()}, iterlog.Nop())
 
@@ -28,29 +29,50 @@ func TestAssistantDependencyUpdateDoesNotHoldStateMuAcrossTheFetch(t *testing.T)
 	// validation that used to sit under the read lock.
 	s.assistantDependencyMu.Lock()
 
-	body := `{"name":"shared","ref":"0123456789abcdef0123456789abcdef01234567","message":"bump shared"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/assistant/dependencies/bots/update", strings.NewReader(body))
+	// Reading the request body happens after the brief configuration snapshot.
+	// Signal there instead of racing TryLock against that legitimate RLock.
+	body := &dependencyRequestBodyBarrier{Reader: strings.NewReader(`{"name":"shared","ref":"0123456789abcdef0123456789abcdef01234567","message":"bump shared"}`), read: make(chan struct{})}
+	req := httptest.NewRequest(http.MethodPost, "/api/assistant/dependencies/bots/update", body)
 	rec := httptest.NewRecorder()
-	started := make(chan struct{})
-	go func() {
-		close(started)
-		s.handleAssistantDependencyBotsUpdate(rec, req)
-	}()
-	<-started
-
-	// Poll for longer than the handler needs to reach the parked Lock. Every
-	// sample must find stateMu free: a single held read lock is the defect.
-	deadline := time.Now().Add(300 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !s.stateMu.TryLock() {
-			s.assistantDependencyMu.Unlock()
-			t.Fatal("stateMu is held while the dependency update waits on its own lock — the read lock spans the network fetch")
+	finished := make(chan struct{})
+	go func() { s.handleAssistantDependencyBotsUpdate(rec, req); close(finished) }()
+	defer func() {
+		s.assistantDependencyMu.Unlock()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("dependency handler did not finish after releasing its action lock")
 		}
-		s.stateMu.Unlock()
-		time.Sleep(5 * time.Millisecond)
+	}()
+	select {
+	case <-body.read:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dependency handler did not read its body")
+	}
+	writable := make(chan struct{})
+	go func() { s.stateMu.Lock(); close(writable); s.stateMu.Unlock() }()
+	select {
+	case <-writable:
+	case <-time.After(time.Second):
+		t.Fatal("stateMu remains held while the dependency action is blocked")
+	}
+	select {
+	case <-finished:
+		t.Fatal("dependency handler bypassed its action lock")
+	default:
 	}
 
-	s.assistantDependencyMu.Unlock()
+}
+
+type dependencyRequestBodyBarrier struct {
+	io.Reader
+	once sync.Once
+	read chan struct{}
+}
+
+func (b *dependencyRequestBodyBarrier) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.read) })
+	return b.Reader.Read(p)
 }
 
 // The snapshot must still refuse the two shapes the read lock guarded: a

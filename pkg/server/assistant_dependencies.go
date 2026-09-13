@@ -78,6 +78,7 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 	// board) for the duration of the network call.
 	s.stateMu.RLock()
 	mode, workDir := s.cfg.Mode, s.cfg.WorkDir
+	discoveryPaths := append([]string(nil), s.effectivePathsFor(workDir)...)
 	s.stateMu.RUnlock()
 	if mode == "cloud" {
 		s.httpErrorFor(w, r, http.StatusForbidden, "dependency update is unavailable in cloud mode")
@@ -100,7 +101,7 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 
 	s.assistantDependencyMu.Lock()
 	defer s.assistantDependencyMu.Unlock()
-	result, err := assistantDependencyBotsUpdate(r.Context(), workDir, req)
+	result, err := assistantDependencyBotsUpdateInPaths(r.Context(), workDir, req, discoveryPaths)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -170,144 +171,71 @@ func validateAssistantDependencyBotsLocalize(req assistantDependencyBotsLocalize
 }
 
 func assistantDependencyBotsUpdate(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest) (assistantDependencyBotsUpdateResponse, error) {
+	return assistantDependencyBotsUpdateInPaths(ctx, workdir, req, nil)
+}
+
+func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string) (response assistantDependencyBotsUpdateResponse, err error) {
+	if err = validateAssistantDependencyBotsUpdate(req); err != nil {
+		return response, err
+	}
+	workdir, err = filepath.Abs(workdir)
+	if err != nil {
+		return response, err
+	}
+	workdir, err = filepath.EvalSymlinks(workdir)
+	if err != nil {
+		return response, err
+	}
 	rootOut, err := assistantDependencyGit(ctx, workdir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
+		return response, err
 	}
 	root, err := filepath.EvalSymlinks(strings.TrimSpace(rootOut))
 	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("resolve project Git root: %w", err)
+		return response, fmt.Errorf("resolve project Git root: %w", err)
 	}
-	lockPath := filepath.Join(workdir, botlock.FileName)
-	lockRel, err := filepath.Rel(root, lockPath)
+	lockRel, err := filepath.Rel(root, filepath.Join(workdir, botlock.FileName))
 	if err != nil || lockRel == ".." || strings.HasPrefix(filepath.ToSlash(lockRel), "../") {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("bots.lock is outside the project Git root")
+		return response, errors.New("bots.lock is outside the project Git root")
 	}
 	lockRel = filepath.ToSlash(lockRel)
-	if clean, err := assistantDependencyGitQuiet(ctx, root, "diff", "--quiet", "--", lockRel); err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
+	if clean, checkErr := assistantDependencyGitQuiet(ctx, root, "diff", "--quiet", "--", lockRel); checkErr != nil {
+		return response, checkErr
 	} else if !clean {
-		return assistantDependencyBotsUpdateResponse{}, authoringConflictError{"bots.lock has uncommitted changes"}
+		return response, authoringConflictError{"bots.lock has uncommitted changes"}
 	}
-	if clean, err := assistantDependencyGitQuiet(ctx, root, "diff", "--cached", "--quiet"); err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
+	if clean, checkErr := assistantDependencyGitQuiet(ctx, root, "diff", "--cached", "--quiet"); checkErr != nil {
+		return response, checkErr
 	} else if !clean {
-		return assistantDependencyBotsUpdateResponse{}, authoringConflictError{"staged changes block the dependency update"}
+		return response, authoringConflictError{"staged changes block the dependency update"}
 	}
-	beforeLock, err := os.ReadFile(lockPath)
+	before, err := botlock.Load(workdir)
 	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
+		return response, err
 	}
-	beforeHash := contentSHA256(string(beforeLock))
-	beforeLockModel, err := botlock.Load(workdir)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	previous, exists := beforeLockModel.Dependencies[req.Name]
+	previous, exists := before.Dependencies[req.Name]
 	if !exists {
-		return assistantDependencyBotsUpdateResponse{}, authoringConflictError{fmt.Sprintf("dependency %q is not declared in bots.lock", req.Name)}
+		return response, authoringConflictError{fmt.Sprintf("dependency %q is not declared in bots.lock", req.Name)}
 	}
 	if previous.Ref == req.Ref {
-		return assistantDependencyBotsUpdateResponse{}, authoringConflictError{"bots.lock already pins this exact commit"}
+		return response, authoringConflictError{"bots.lock already pins this exact commit"}
 	}
-	otherPaths := []string{".", ":(exclude)" + lockRel, ":(exclude).botz"}
-	beforeOtherDiff, err := assistantDependencyGit(ctx, root, append([]string{"diff", "--no-ext-diff", "--binary", "--"}, otherPaths...)...)
+	transaction, err := prepareAssistantDependencyTransaction(ctx, root, workdir, lockRel, discovery)
 	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
+		return response, err
 	}
-	// .botz is the intentionally materialized, non-source cache for the one
-	// locked bundle. It may be untracked in a project that has not ignored it;
-	// no other path is exempt from this before/after equality check.
-	beforeOtherStatus, err := assistantDependencyGit(ctx, root, append([]string{"status", "--porcelain=v1", "-z", "--untracked-files=all", "--"}, otherPaths...)...)
+	defer func() { err = transaction.discard(err) }()
+	prepared, err := transaction.prepare(ctx, req)
 	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
+		return response, err
 	}
-
-	updated, err := botdeps.Update(ctx, botdeps.UpdateOptions{Workdir: workdir, Name: req.Name, Ref: req.Ref})
+	commit, err := commitAttestedAuthoringFilesWithDependency(ctx, root, []string{lockRel}, map[string]string{lockRel: contentSHA256(string(prepared.CandidateLock))}, req.Message, transaction)
 	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	if updated.Name != req.Name || updated.Ref != req.Ref {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("dependency updater returned an unexpected pin")
-	}
-	afterLock, err := os.ReadFile(lockPath)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("updated bots.lock could not be read: %w", err)
-	}
-	afterHash := contentSHA256(string(afterLock))
-	if afterHash == beforeHash {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("dependency update left bots.lock unchanged")
-	}
-	afterLockModel, err := botlock.Load(workdir)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("updated bots.lock is invalid: %w", err)
-	}
-	after, exists := afterLockModel.Dependencies[req.Name]
-	if !exists || after.Ref != req.Ref || after.BundleSHA256 != updated.BundleSHA256 {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("updated bots.lock does not contain the verified dependency pin")
-	}
-	afterOtherDiff, err := assistantDependencyGit(ctx, root, append([]string{"diff", "--no-ext-diff", "--binary", "--"}, otherPaths...)...)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	afterOtherStatus, err := assistantDependencyGit(ctx, root, append([]string{"status", "--porcelain=v1", "-z", "--untracked-files=all", "--"}, otherPaths...)...)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	if afterOtherDiff != beforeOtherDiff || afterOtherStatus != beforeOtherStatus {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("dependency update changed files outside bots.lock (diff_changed=%t status_changed=%t); no rollback was attempted", afterOtherDiff != beforeOtherDiff, afterOtherStatus != beforeOtherStatus)
-	}
-	// Re-read immediately before staging so a concurrent edit cannot be
-	// silently committed under the assistant's receipt.
-	lockBeforeStage, err := os.ReadFile(lockPath)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	if contentSHA256(string(lockBeforeStage)) != afterHash {
-		return assistantDependencyBotsUpdateResponse{}, authoringConflictError{"bots.lock changed concurrently before staging"}
-	}
-	if _, err := assistantDependencyGit(ctx, root, "add", "--", lockRel); err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	stagedNames, err := assistantDependencyGit(ctx, root, "diff", "--cached", "--name-only", "-z")
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	if !sameGitPathSet(splitGitPathList(stagedNames), []string{lockRel}) {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("staged paths diverged from bots.lock; no rollback was attempted")
-	}
-	stagedLock, err := assistantDependencyGit(ctx, root, "show", ":"+lockRel)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	if contentSHA256(stagedLock) != afterHash {
-		return assistantDependencyBotsUpdateResponse{}, authoringConflictError{"staged bots.lock differs from the verified update"}
-	}
-	if _, err := assistantDependencyGit(ctx, root, "commit", "--only", "-m", req.Message, "--", lockRel); err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	commit, err := assistantDependencyGit(ctx, root, "rev-parse", "HEAD")
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, err
-	}
-	commit = strings.TrimSpace(commit)
-	committedNames, err := assistantDependencyGit(ctx, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD")
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("commit %s exists but changed paths could not be verified: %w", commit, err)
-	}
-	if !sameGitPathSet(splitGitPathList(committedNames), []string{lockRel}) {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("commit %s exists but changed paths diverged from bots.lock; no rollback was attempted", commit)
-	}
-	committedLock, err := assistantDependencyGit(ctx, root, "show", "HEAD:"+lockRel)
-	if err != nil {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("commit %s exists but bots.lock could not be verified: %w", commit, err)
-	}
-	if contentSHA256(committedLock) != afterHash {
-		return assistantDependencyBotsUpdateResponse{}, fmt.Errorf("commit %s exists but bots.lock differs from the verified update; no rollback was attempted", commit)
+		return response, err
 	}
 	return assistantDependencyBotsUpdateResponse{
-		Name: req.Name, PreviousRef: previous.Ref, Ref: updated.Ref,
-		BundleSHA256: updated.BundleSHA256, Commit: commit, InstalledPath: updated.InstalledPath,
+		Name: req.Name, PreviousRef: previous.Ref, Ref: prepared.Dependency.Ref,
+		BundleSHA256: prepared.Dependency.BundleSHA256, Commit: commit, InstalledPath: transaction.cachePath,
 	}, nil
 }
 

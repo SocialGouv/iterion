@@ -56,10 +56,7 @@ func Load(workdir string) (*Lock, error) {
 // v1 document. The temporary file lives beside the lock so Rename remains an
 // atomic same-filesystem operation.
 func Save(workdir string, lock *Lock) error {
-	if err := lock.Validate(); err != nil {
-		return fmt.Errorf("bot dependencies: %s: %w", filepath.Join(workdir, FileName), err)
-	}
-	body, err := yaml.Marshal(lock)
+	body, err := Encode(lock)
 	if err != nil {
 		return fmt.Errorf("bot dependencies: encode %s: %w", filepath.Join(workdir, FileName), err)
 	}
@@ -89,6 +86,15 @@ func Save(workdir string, lock *Lock) error {
 		return fmt.Errorf("bot dependencies: replace %s: %w", path, err)
 	}
 	return nil
+}
+
+// Encode validates and serializes a candidate without changing the workspace.
+// Save and callers that publish an attested lock use exactly the same bytes.
+func Encode(lock *Lock) ([]byte, error) {
+	if err := lock.Validate(); err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(lock)
 }
 
 // Validate enforces the lockfile's closed v1 contract.

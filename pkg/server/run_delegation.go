@@ -102,13 +102,16 @@ func inferRunBotOrigin(run *store.Run) (*store.BotOrigin, error) {
 			// repo. Repair must target the source repository recorded by the
 			// sidecar, never that copy. Re-resolve local sources; URL sources
 			// remain portable identities and require a cloud forge connection.
-			if sourceProv, sourceErr := gitlib.Describe(installed.Source); sourceErr == nil {
-				origin.RepoRoot, origin.Commit, origin.TreeHash, origin.Dirty = sourceProv.RepoRoot, sourceProv.Commit, sourceProv.TreeHash, sourceProv.Dirty
-				origin.ProjectID, _ = projectForRepo(sourceProv.RepoRoot)
-			} else if strings.Contains(installed.Source, "://") || strings.HasPrefix(installed.Source, "git@") {
+			// A URL is not a local path. Describe can otherwise walk back to
+			// the server's current repository and attribute this remote bot
+			// to that unrelated checkout.
+			if strings.Contains(installed.Source, "://") || strings.HasPrefix(installed.Source, "git@") {
 				origin.RepoRoot = ""
 				origin.RepoURL = installed.Source
 				origin.Commit = installed.Ref
+			} else if sourceProv, sourceErr := gitlib.Describe(installed.Source); sourceErr == nil {
+				origin.RepoRoot, origin.Commit, origin.TreeHash, origin.Dirty = sourceProv.RepoRoot, sourceProv.Commit, sourceProv.TreeHash, sourceProv.Dirty
+				origin.ProjectID, _ = projectForRepo(sourceProv.RepoRoot)
 			}
 		}
 	}

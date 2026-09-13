@@ -26,13 +26,15 @@ import (
 
 // Options configures an install.
 type Options struct {
-	Source  string // git URL (optionally url#ref) or a local directory
-	Ref     string // git ref (branch/tag); overrides a #ref in Source
-	Path    string // subdirectory within the repo, or an iterion-bots.yaml bot name
-	Dest    string // install destination root (default <workdir>/.botz)
-	Name    string // install under this name instead of the source's
-	Force   bool   // overwrite an existing install
-	Workdir string // workspace root for catalog regen (default cwd)
+	Source      string  // git URL (optionally url#ref) or a local directory
+	Ref         string  // git ref (branch/tag); overrides a #ref in Source
+	Path        string  // subdirectory within the repo, or an iterion-bots.yaml bot name
+	Dest        string  // install destination root (default <workdir>/.botz)
+	Name        string  // install under this name instead of the source's
+	Force       bool    // overwrite an existing install
+	Workdir     string  // workspace root for catalog regen (default cwd)
+	SkipCatalog bool    // private dependency staging only; preserve pinned catalog bytes
+	Origin      *Origin // private staging: durable source identity instead of the fetched checkout
 }
 
 // Result is the structured outcome of an install.
@@ -131,15 +133,21 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 	if err := copyTree(botDir, target); err != nil {
 		return nil, fmt.Errorf("install %s: %w", name, err)
 	}
-	if err := writeOrigin(target, Origin{
+	origin := Origin{
 		Source: opts.Source, Ref: ref, SourcePath: opts.Path, InstalledAt: time.Now().UTC(),
-	}); err != nil {
+	}
+	if opts.Origin != nil {
+		origin.Source, origin.Ref, origin.SourcePath = opts.Origin.Source, opts.Origin.Ref, opts.Origin.SourcePath
+	}
+	if err := writeOrigin(target, origin); err != nil {
 		_ = os.RemoveAll(target)
 		return nil, err
 	}
 
 	// 6. Refresh Nexie's catalog so the new bot is advertised (best-effort).
-	_, _ = botregistry.RegenerateWhatsNextCatalog(workdir)
+	if !opts.SkipCatalog {
+		_, _ = botregistry.RegenerateWhatsNextCatalog(workdir)
+	}
 
 	res := &Result{Name: name, Source: opts.Source, Ref: ref, InstalledPath: target}
 	if installed, derr := bundle.OpenDir(target); derr == nil {

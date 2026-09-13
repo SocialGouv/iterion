@@ -32,6 +32,36 @@ type UpdateResult struct {
 // materializes exactly that dependency. Local Git sources must be clean by
 // default so the recorded ref can reproduce the recorded content hash.
 func Update(ctx context.Context, opts UpdateOptions) (*UpdateResult, error) {
+	prepared, err := PrepareUpdate(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := botlock.Save(prepared.workdir, prepared.lock); err != nil {
+		return nil, err
+	}
+	synced, err := SyncOne(ctx, prepared.workdir, opts.Name, prepared.Dependency)
+	if err != nil {
+		if restoreErr := restoreLockBytes(filepath.Join(prepared.workdir, botlock.FileName), prepared.OriginalLock, prepared.OriginalMode); restoreErr != nil {
+			return nil, fmt.Errorf("%v; additionally failed to restore bots.lock exactly: %w", err, restoreErr)
+		}
+		return nil, err
+	}
+	return &UpdateResult{Name: opts.Name, Ref: prepared.Dependency.Ref, BundleSHA256: prepared.Dependency.BundleSHA256, InstalledPath: synced.InstalledPath}, nil
+}
+
+// PreparedUpdate contains a validated pin without changing the live lock or
+// install. The caller must revalidate its original state before publication.
+type PreparedUpdate struct {
+	OriginalLock  []byte
+	OriginalMode  os.FileMode
+	CandidateLock []byte
+	Dependency    botlock.Dependency
+	workdir       string
+	lock          *botlock.Lock
+}
+
+// PrepareUpdate shares Update's source, ref, manifest and hash validation.
+func PrepareUpdate(ctx context.Context, opts UpdateOptions) (*PreparedUpdate, error) {
 	if strings.TrimSpace(opts.Name) == "" {
 		return nil, fmt.Errorf("bot dependencies: dependency name is required")
 	}
@@ -105,17 +135,11 @@ func Update(ctx context.Context, opts UpdateOptions) (*UpdateResult, error) {
 	}
 	dep.BundleSHA256 = hash
 	lock.Dependencies[opts.Name] = dep
-	if err := botlock.Save(absWorkdir, lock); err != nil {
-		return nil, err
-	}
-	synced, err := SyncOne(ctx, absWorkdir, opts.Name, dep)
+	candidate, err := botlock.Encode(lock)
 	if err != nil {
-		if restoreErr := restoreLockBytes(lockPath, lockBefore, lockInfo.Mode().Perm()); restoreErr != nil {
-			return nil, fmt.Errorf("%v; additionally failed to restore bots.lock exactly: %w", err, restoreErr)
-		}
 		return nil, err
 	}
-	return &UpdateResult{Name: opts.Name, Ref: dep.Ref, BundleSHA256: hash, InstalledPath: synced.InstalledPath}, nil
+	return &PreparedUpdate{OriginalLock: lockBefore, OriginalMode: lockInfo.Mode().Perm(), CandidateLock: candidate, Dependency: dep, workdir: absWorkdir, lock: lock}, nil
 }
 
 func restoreLockBytes(path string, contents []byte, mode os.FileMode) error {
@@ -146,7 +170,9 @@ func restoreLockBytes(path string, contents []byte, mode os.FileMode) error {
 func localBundleGitState(ctx context.Context, bundleDir string) (head string, dirty bool, err error) {
 	runAt := func(dir string, args ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = gitlib.SanitizeEnv(os.Environ())
+		// Inspecting a source in the consumer's own repository must not
+		// refresh its real index while a dependency update is preparing.
+		cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
 		return cmd.Output()
 	}
 	rootBody, rootErr := runAt(bundleDir, "rev-parse", "--show-toplevel")
