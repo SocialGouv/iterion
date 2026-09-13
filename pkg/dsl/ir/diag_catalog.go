@@ -19,6 +19,20 @@ type DiagInfo struct {
 // emit to its title and fix line. Bundle-consistency codes (C2xx, pkg/bundlelint)
 // carry their own hints and are not listed here.
 var Catalog = map[DiagCode]DiagInfo{
+	DiagRuntimeSemantics:   {"Unsupported runtime semantics", "Use runtime_semantics: \"ports-v1\" with a public contract and data graph; omit it only for legacy control flow."},
+	DiagPublicContract:     {"Invalid public contract", "Declare a unique named contract with display_name, responsibility and valid input/output declarations."},
+	DiagPublicPort:         {"Invalid public port", "Resolve the port type and align requiredness, defaults, cardinality and file properties; defaults belong to optional inputs."},
+	DiagPortPolicy:         {"Invalid technical port policy", "Reference a declared policy; declare effect recovery as idempotent, verify (with verifier), or manual, and use declared resources."},
+	DiagPortReference:      {"Invalid port graph reference", "Use a unique instance and a declared source.port -> consumer.port binding; input.port refers to a workflow input."},
+	DiagPortSupplier:       {"Missing or duplicate input supplier", "Connect exactly one supplier to each required input; remove duplicate bindings."},
+	DiagPortCompatibility:  {"Incompatible public ports", "Connect resolved matching types and compatible requiredness/nullability; map accepts one array dimension and performs no coercion."},
+	DiagPortCycle:          {"Cyclic data graph", "Remove the cyclic dependency or encapsulate its control flow in a verified legacy adapter."},
+	DiagPortMapAxes:        {"Ambiguous implicit map", "Use one T[] -> T input axis; express any zip or Cartesian composition explicitly."},
+	DiagPortControl:        {"Control construct in native data graph", "Use native data operations; encapsulate entry, routing, loops and control gates in a verified legacy adapter."},
+	DiagPublicCriterion:    {"Invalid public acceptance criterion", "Use a registered criterion, its typed parameters and a compatible input.port or output.port."},
+	DiagPortExport:         {"Invalid public or product export", "Bind each required public output once and select product deliverables explicitly from those exports."},
+	DiagPortHiddenInput:    {"Undeclared data dependency", "Expose the consumed value as a public input and bind its upstream port in the graph."},
+	DiagPortImplementation: {"Incompatible node implementation", "Reference an executable declaration and align its legacy schemas with the public contract, or remove those superseded schemas."},
 	// Compilation.
 	DiagUnknownNode:           {"Unknown node reference", "Declare the node or fix the name — an edge, `entry:` or `watches:` may only name a declared node."},
 	DiagUnknownSchema:         {"Unknown schema reference", "Declare `schema <name>:` or fix the name in `input:` / `output:`."},

@@ -165,6 +165,20 @@ func Reference() string {
 			b.WriteString(".\n\n")
 		}
 	}
+	b.WriteString("### Deterministic public criteria\n\n")
+	b.WriteString("| Criterion | Accepted values | Parameters | Meaning |\n|---|---|---|---|\n")
+	for _, criterion := range PublicCriteria {
+		var params []string
+		for _, parameter := range criterion.Parameters {
+			label := parameter.Name + ": " + string(parameter.Type)
+			if parameter.Required {
+				label += " (required)"
+			}
+			params = append(params, label)
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", codes([]string{criterion.Name}), codes(criterion.Types), codes(params), criterion.Description)
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -288,6 +302,17 @@ func SkillSection() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("- Public criteria (deterministic; parameters are JSON data): ")
+	for i, criterion := range PublicCriteria {
+		if i != 0 {
+			b.WriteString(" · ")
+		}
+		fmt.Fprintf(&b, "`%s`", criterion.Name)
+		for _, parameter := range criterion.Parameters {
+			fmt.Fprintf(&b, " `%s:%s`", parameter.Name, parameter.Type)
+		}
+	}
+	b.WriteString(".\n")
 	return b.String()
 }
 

@@ -286,7 +286,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `wait` — description str · event str · timeout str · output id
 - `await_answers` — description str · from str|id · timeout str
 - `fail` — description str · code str|id · message str · resumable bool
-- `workflow` — entry id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async
+- `workflow` — runtime_semantics "ports-v1" · contract id · port_policy id · graph {graph} · entry id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int
 - `resources` (`resources:` in workflow) — entries `name: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
@@ -297,6 +297,23 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `sandbox.network` (`network:` in sandbox) — mode open|allowlist|denylist · preset str|id · inherit replace|append · rules [str|id]
 - `cursors` (`cursors:` in agent, judge) — enabled bool — entries `cursor_name: ident | number | "string"`
 - `fallback` (`fallbacks:` in agent, judge) — backend str · model str · provider str · on [id] · metered bool · action skip · when str
+- `contract` — display_name str · responsibility str · version int · inputs {contract.ports} · outputs {contract.ports} · criteria {contract.criteria} · effects {contract.effects}
+- `contract.ports` (`inputs / outputs:` in contract) — entries `name: type [optional indented properties]`
+- `contract.port` (`inputs / outputs:` in contract.ports) — description str · required bool · nullable bool · default json value · min_items int · max_items int · file {contract.file}
+- `contract.file` (`file:` in contract.port) — media_type str · min_bytes int · schema id
+- `contract.criteria` (`criteria:` in contract) — entries `name: [indented criterion properties]`
+- `contract.criterion` (`criteria:` in contract.criteria) — kind id · port id · params json value
+- `contract.effects` (`effects:` in contract) — entries `name: [indented effect properties]`
+- `contract.effect` (`effects:` in contract.effects) — description str · paid bool
+- `port_policy` — max_map_items int · effects {port_policy.effects}
+- `port_policy.effects` (`effects:` in port_policy) — entries `name: [indented policy properties]`
+- `port_policy.effect` (`effects:` in port_policy.effects) — resource id · recovery idempotent|verify|manual · verifier str
+- `graph` (`graph:` in workflow) — nodes {graph.nodes} · bindings {graph.bindings} · exports {graph.exports} · products [str]
+- `graph.nodes` (`nodes:` in graph) — entries `name: [indented instance properties]`
+- `graph.node` (`nodes:` in graph.nodes) — implementation id · contract id · policy id
+- `graph.bindings` (`bindings:` in graph) — entries `source.port -> consumer.port`
+- `graph.exports` (`exports:` in graph) — entries `public_name: source.port`
+- Public criteria (deterministic; parameters are JSON data): `min_length` `min:int` · `pattern` `pattern:string`.
 <!-- dsl-spec:end -->
 
 ## Edges

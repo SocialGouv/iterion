@@ -486,6 +486,10 @@ A top-level declaration: `workflow <name>:`.
 
 | Property | Value | Meaning |
 |---|---|---|
+| `runtime_semantics` | string — `ports-v1` | Opt into typed data readiness; absence preserves legacy control flow. Independent of the DSL syntax profile. |
+| `contract` | ident | Public workflow contract, shared with reusable nodes |
+| `port_policy` | ident | Shared technical policy inherited by native graph instances |
+| `graph` | block → [graph](#graph) | Instances, typed port bindings, public exports and explicit product outputs |
 | `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
@@ -645,5 +649,183 @@ An entry opened by `fallbacks:` inside `agent`, `judge`.
 | `metered` | bool | The route spends a metered API key (credential hint) |
 | `action` | ident — `skip` | skip: complete the node with a zero-value output stamped _skipped instead of failing |
 | `when` | string | Expression over vars that gates the route |
+
+### contract
+
+Public interface shared by a node and a reusable workflow; no prompts, tools or provider configuration.
+
+A top-level declaration: `contract <name>:`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `display_name` | string | Explicit human-readable name |
+| `responsibility` | string | The single responsibility this component fulfils |
+| `version` | int | Public contract version; defaults to 1 |
+| `inputs` | block → [contract.ports](#contractports) | Named typed values and files consumed by this component |
+| `outputs` | block → [contract.ports](#contractports) | Named typed values and files produced on success |
+| `criteria` | block → [contract.criteria](#contractcriteria) | Deterministic registered checks; prose is not executable |
+| `effects` | block → [contract.effects](#contracteffects) | Visible effects, including paid operations, backed by technical policies |
+
+### contract.ports
+
+Public input or output ports, in declaration order.
+
+A block opened by `inputs / outputs:` inside `contract`.
+
+Entries: `name: type [optional indented properties]` — Builtin or resolved schema type, optionally followed by []; an entry's sub-block is a [contract.port](#contractport).
+
+### contract.port
+
+One named typed port. Missing, null and [] remain different values.
+
+An entry opened by `inputs / outputs:` inside `contract.ports`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Meaning of the value |
+| `required` | bool | Mandatory port (default true); connected optional inputs still wait for their producer |
+| `nullable` | bool | Permit an explicit null value (default false) |
+| `default` | json value | Typed default for an unconnected optional input; omission means absence |
+| `min_items` | int | Minimum array cardinality, including whether an empty map is accepted |
+| `max_items` | int | Maximum array cardinality |
+| `file` | block → [contract.file](#contractfile) | File properties validated before publication; existence and provenance are always required |
+
+### contract.file
+
+Verifiable properties of a produced or consumed file.
+
+A block opened by `file:` inside `contract.port`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `media_type` | string | Expected media type |
+| `min_bytes` | int | Minimum file size |
+| `schema` | ident | Schema of structured file contents |
+
+### contract.criteria
+
+
+
+A block opened by `criteria:` inside `contract`.
+
+Entries: `name: [indented criterion properties]` — Named deterministic acceptance check; an entry's sub-block is a [contract.criterion](#contractcriterion).
+
+### contract.criterion
+
+
+
+An entry opened by `criteria:` inside `contract.criteria`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `kind` | ident | Registered deterministic validator |
+| `port` | ident | Checked input.name or output.name port |
+| `params` | json value | Structured parameters validated against the criterion's parameter schema |
+
+### contract.effects
+
+
+
+A block opened by `effects:` inside `contract`.
+
+Entries: `name: [indented effect properties]` — Name links to the technical effect policy; an entry's sub-block is a [contract.effect](#contracteffect).
+
+### contract.effect
+
+
+
+An entry opened by `effects:` inside `contract.effects`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Externally visible operation |
+| `paid` | bool | The operation may incur a charge; unknown cost remains unknown |
+
+### port_policy
+
+Technical admission and recovery policy referenced by graph instances.
+
+A top-level declaration: `port_policy <name>:`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `max_map_items` | int | Maximum inferred map cardinality before allocation; omission inherits the workflow policy |
+| `effects` | block → [port_policy.effects](#port_policyeffects) | Enforceable resource and recovery declarations for public effects |
+
+### port_policy.effects
+
+
+
+A block opened by `effects:` inside `port_policy`.
+
+Entries: `name: [indented policy properties]` — Technical policy matching a public effect name; an entry's sub-block is a [port_policy.effect](#port_policyeffect).
+
+### port_policy.effect
+
+
+
+An entry opened by `effects:` inside `port_policy.effects`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `resource` | ident | Shared resource guarding conflicting effects |
+| `recovery` | ident — `idempotent`, `verify`, `manual` | Policy for interrupted external effects; no exactly-once guarantee |
+| `verifier` | string | Technical verification implementation for uncertain effects |
+
+### graph
+
+Native acyclic graph of typed data dependencies.
+
+A block opened by `graph:` inside `workflow`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `nodes` | block → [graph.nodes](#graphnodes) | Instances referring to public contracts and technical implementations |
+| `bindings` | block → [graph.bindings](#graphbindings) | Named input suppliers; T[] to T infers one map axis, T[] to T[] passes the whole array |
+| `exports` | block → [graph.exports](#graphexports) | Public workflow outputs supplied by internal ports |
+| `products` | string list | Explicit product deliverables selected from public outputs; a consumed output may also be a product |
+
+### graph.nodes
+
+
+
+A block opened by `nodes:` inside `graph`.
+
+Entries: `name: [indented instance properties]` — Stable graph instance name; an entry's sub-block is a [graph.node](#graphnode).
+
+### graph.node
+
+
+
+An entry opened by `nodes:` inside `graph.nodes`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `implementation` | ident | Existing executable declaration implementing the contract |
+| `contract` | ident | Reusable public contract |
+| `policy` | ident | Technical port policy |
+
+### graph.bindings
+
+
+
+A block opened by `bindings:` inside `graph`.
+
+Entries: `source.port -> consumer.port` — Exactly one supplier per required input; input.port refers to a public workflow input.
+
+### graph.exports
+
+
+
+A block opened by `exports:` inside `graph`.
+
+Entries: `public_name: source.port` — Publish a validated node output or public workflow input.
+
+### Deterministic public criteria
+
+| Criterion | Accepted values | Parameters | Meaning |
+|---|---|---|---|
+| `min_length` | `string`, `array` | `min: int (required)` | Minimum Unicode character or array element count |
+| `pattern` | `string` | `pattern: string (required)` | String matches a Go regular expression |
 
 <!-- dsl-spec:end -->

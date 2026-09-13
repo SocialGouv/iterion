@@ -395,6 +395,14 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 	artifactProducers := buildArtifactProducers(w)
 
 	for _, rc := range refs {
+		if w.RuntimeSemantics == RuntimeSemanticsPortsV1 {
+			switch rc.Ref.Kind {
+			case RefInput, RefOutputs, RefArtifacts, RefAttachments:
+				// The native contract validator gives the port-oriented
+				// remedy. Legacy schema/control-edge hints would contradict it.
+				continue
+			}
+		}
 		switch rc.Ref.Kind {
 		case RefOutputs:
 			c.validateOutputsRef(w, rc, predecessors)

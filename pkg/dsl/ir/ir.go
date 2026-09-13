@@ -20,31 +20,35 @@ import (
 // execute a workflow: resolved nodes, edges, schemas, prompts, vars,
 // loops and budget.
 type Workflow struct {
-	Name            string
-	Entry           string                 // entry node ID
-	Nodes           map[string]Node        // node ID → node
-	Edges           []*Edge                // ordered list of edges
-	Schemas         map[string]*Schema     // schema name → resolved schema
-	Prompts         map[string]*Prompt     // prompt name → resolved prompt
-	Vars            map[string]*Var        // var name → resolved variable
-	Secrets         map[string]*Secret     // secret name → resolved secret declaration
-	Presets         map[string]Preset      // preset name → resolved preset values (var name → typed value)
-	Attachments     map[string]*Attachment // attachment name → resolved attachment
-	Loops           map[string]*Loop       // loop name → loop definition
-	Foreaches       map[string]*Foreach    // foreach name → sequential-iteration definition
-	Budget          *Budget                // workflow budget (nil if not set)
-	Resources       map[string]int         // named counting semaphores (resource name → capacity); nil = none
-	ResourceMembers map[string][]string    // resource name → named-instance lease pool (capacity = len); nil = counting-only
-	Compaction      *Compaction            // workflow-level compaction overrides (nil = no override)
-	MCP             *MCPConfig             // workflow-level MCP activation/filtering
-	DefaultBackend  string                 // workflow-level default backend (empty = not set)
-	ToolPolicy      []string               // workflow-level tool policy patterns (nil = open)
-	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
-	Skills          []string               // workflow-level default skill-library references (nil = none)
-	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
-	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory      string                 // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	RuntimeSemantics string          `json:",omitempty"`
+	PublicContract   *PublicContract `json:",omitempty"`
+	PortPolicy       *PortPolicy     `json:",omitempty"`
+	Ports            *PortGraph      `json:",omitempty"`
+	Name             string
+	Entry            string                 // entry node ID
+	Nodes            map[string]Node        // node ID → node
+	Edges            []*Edge                // ordered list of edges
+	Schemas          map[string]*Schema     // schema name → resolved schema
+	Prompts          map[string]*Prompt     // prompt name → resolved prompt
+	Vars             map[string]*Var        // var name → resolved variable
+	Secrets          map[string]*Secret     // secret name → resolved secret declaration
+	Presets          map[string]Preset      // preset name → resolved preset values (var name → typed value)
+	Attachments      map[string]*Attachment // attachment name → resolved attachment
+	Loops            map[string]*Loop       // loop name → loop definition
+	Foreaches        map[string]*Foreach    // foreach name → sequential-iteration definition
+	Budget           *Budget                // workflow budget (nil if not set)
+	Resources        map[string]int         // named counting semaphores (resource name → capacity); nil = none
+	ResourceMembers  map[string][]string    // resource name → named-instance lease pool (capacity = len); nil = counting-only
+	Compaction       *Compaction            // workflow-level compaction overrides (nil = no override)
+	MCP              *MCPConfig             // workflow-level MCP activation/filtering
+	DefaultBackend   string                 // workflow-level default backend (empty = not set)
+	ToolPolicy       []string               // workflow-level tool policy patterns (nil = open)
+	Capabilities     []string               // workflow-level default host capabilities (nil = inherit none)
+	Skills           []string               // workflow-level default skill-library references (nil = none)
+	Interaction      *InteractionMode       // workflow-level default interaction mode (nil = not set)
+	Worktree         string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Compress         string                 // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory       string                 // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -1164,6 +1168,11 @@ type Ref struct {
 type Schema struct {
 	Name   string
 	Fields []*SchemaField
+	// Generated native schemas derive from public ports. Fields retain the
+	// shallow projection used by expression diagnostics; PublicPorts carries
+	// requiredness, nullability, arrays and resolved nested shapes.
+	NativePorts bool         `json:",omitempty"`
+	PublicPorts []PublicPort `json:",omitempty"`
 }
 
 // SchemaField is a single field in a schema.

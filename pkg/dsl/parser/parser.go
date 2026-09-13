@@ -185,7 +185,7 @@ func isTopLevelKeyword(tt TokenType) bool {
 		TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor, TokenSupervisor,
 		TokenAgent, TokenJudge, TokenRouter, TokenHuman,
 		TokenTool, TokenCompute, TokenEmit, TokenWait, TokenAwaitAnswers, TokenFail,
-		TokenGroup, TokenUse, TokenSubbot, TokenWorkflow, TokenDSL:
+		TokenGroup, TokenUse, TokenSubbot, TokenWorkflow, TokenDSL, TokenContract, TokenPortPolicy:
 		return true
 	}
 	return false
@@ -341,6 +341,16 @@ func (p *parser) parseFile() *ast.File {
 		case TokenDSL:
 			p.parseDSLHeader(f, declared)
 			continue
+
+		case TokenContract:
+			if c := p.parseContractDecl(); c != nil && !p.isReservedName(t, c.Name, "contract") {
+				f.Contracts = append(f.Contracts, c)
+			}
+
+		case TokenPortPolicy:
+			if policy := p.parsePortPolicyDecl(); policy != nil && !p.isReservedName(t, policy.Name, "port_policy") {
+				f.PortPolicies = append(f.PortPolicies, policy)
+			}
 
 		case TokenVars:
 			vb := p.parseVarsBlock()

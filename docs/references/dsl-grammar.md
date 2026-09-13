@@ -331,6 +331,10 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 <!-- dsl-spec:begin table workflow -->
 | Property | Value | Meaning |
 |---|---|---|
+| `runtime_semantics` | string — `ports-v1` | Opt into typed data readiness; absence preserves legacy control flow. Independent of the DSL syntax profile. |
+| `contract` | ident | Public workflow contract, shared with reusable nodes |
+| `port_policy` | ident | Shared technical policy inherited by native graph instances |
+| `graph` | block → [graph](#graph) | Instances, typed port bindings, public exports and explicit product outputs |
 | `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |

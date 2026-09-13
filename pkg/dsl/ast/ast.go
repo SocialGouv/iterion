@@ -17,6 +17,8 @@ type File struct {
 	// EffectiveProfile: a document built in memory — the studio's, a
 	// test's — has no header and is profile 1, as a file without one is.
 	Profile      int
+	Contracts    []*ContractDecl     // reusable public interfaces (no implementation settings)
+	PortPolicies []*PortPolicyDecl   // technical policies referenced by graph instances
 	Vars         *VarsBlock          // top-level vars (optional, at most one)
 	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
 	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
@@ -832,22 +834,26 @@ type FailDecl struct {
 
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
-	Name           string
-	Vars           *VarsBlock        // workflow-level variable declarations
-	Attachments    *AttachmentsBlock // workflow-level attachments declarations
-	Entry          string            // entry node name
-	DefaultBackend string            // workflow-level default backend (empty = not set)
-	ToolPolicy     []string          // workflow-level tool policy patterns (nil = open)
-	Capabilities   []string          // workflow-level default host capabilities (nil = inherit none)
-	Skills         []string          // workflow-level default skill-library references (nil = none)
-	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
-	Budget         *BudgetBlock      // execution limits (optional)
-	Resources      *ResourcesBlock   // named counting semaphores (optional)
-	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
-	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
-	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
-	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	Name             string
+	RuntimeSemantics string            // empty preserves legacy control flow; ports-v1 opts into data readiness
+	Contract         string            // public workflow contract reference
+	PortPolicy       string            // shared technical policy inherited by native graph instances
+	Graph            *PortGraphDecl    // named data-port graph, separate from legacy control edges
+	Vars             *VarsBlock        // workflow-level variable declarations
+	Attachments      *AttachmentsBlock // workflow-level attachments declarations
+	Entry            string            // entry node name
+	DefaultBackend   string            // workflow-level default backend (empty = not set)
+	ToolPolicy       []string          // workflow-level tool policy patterns (nil = open)
+	Capabilities     []string          // workflow-level default host capabilities (nil = inherit none)
+	Skills           []string          // workflow-level default skill-library references (nil = none)
+	MCP              *MCPConfigDecl    // workflow-level MCP activation/filtering
+	Budget           *BudgetBlock      // execution limits (optional)
+	Resources        *ResourcesBlock   // named counting semaphores (optional)
+	Compaction       *CompactionBlock  // session compaction defaults for all nodes (optional)
+	Interaction      *InteractionMode  // workflow-level default interaction mode (nil = not set)
+	Worktree         string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
+	Compress         string            // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory       string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string

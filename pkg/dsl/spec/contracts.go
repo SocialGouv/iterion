@@ -1,0 +1,81 @@
+package spec
+
+// All authoring surfaces read this same registry. Public declarations carry
+// data obligations; the graph refers to separate technical implementations.
+var contractKinds = []Kind{
+	{Name: "contract", Role: Declaration, Doc: "Public interface shared by a node and a reusable workflow; no prompts, tools or provider configuration.",
+		Properties: []Property{
+			prop("display_name", String, "Explicit human-readable name"),
+			prop("responsibility", String, "The single responsibility this component fulfils"),
+			prop("version", Int, "Public contract version; defaults to 1"),
+			block("inputs", "contract.ports", "Named typed values and files consumed by this component"),
+			block("outputs", "contract.ports", "Named typed values and files produced on success"),
+			block("criteria", "contract.criteria", "Deterministic registered checks; prose is not executable"),
+			block("effects", "contract.effects", "Visible effects, including paid operations, backed by technical policies"),
+		}},
+	{Name: "contract.ports", Role: BlockRole, Opener: "inputs / outputs", Hosts: []string{"contract"}, Doc: "Public input or output ports, in declaration order.",
+		Entries: &Entries{Shape: "name: type [optional indented properties]", Doc: "Builtin or resolved schema type, optionally followed by []", Body: "contract.port"}},
+	{Name: "contract.port", Role: Entry, Opener: "inputs / outputs", Hosts: []string{"contract.ports"}, Doc: "One named typed port. Missing, null and [] remain different values.",
+		Properties: []Property{
+			prop("description", String, "Meaning of the value"),
+			prop("required", Bool, "Mandatory port (default true); connected optional inputs still wait for their producer"),
+			prop("nullable", Bool, "Permit an explicit null value (default false)"),
+			prop("default", JSON, "Typed default for an unconnected optional input; omission means absence"),
+			prop("min_items", Int, "Minimum array cardinality, including whether an empty map is accepted"),
+			prop("max_items", Int, "Maximum array cardinality"),
+			block("file", "contract.file", "File properties validated before publication; existence and provenance are always required"),
+		}},
+	{Name: "contract.file", Role: BlockRole, Opener: "file", Hosts: []string{"contract.port"}, Doc: "Verifiable properties of a produced or consumed file.",
+		Properties: []Property{
+			prop("media_type", String, "Expected media type"),
+			prop("min_bytes", Int, "Minimum file size"),
+			prop("schema", Ident, "Schema of structured file contents"),
+		}},
+	{Name: "contract.criteria", Role: BlockRole, Opener: "criteria", Hosts: []string{"contract"},
+		Entries: &Entries{Shape: "name: [indented criterion properties]", Doc: "Named deterministic acceptance check", Body: "contract.criterion"}},
+	{Name: "contract.criterion", Role: Entry, Opener: "criteria", Hosts: []string{"contract.criteria"},
+		Properties: []Property{
+			prop("kind", Ident, "Registered deterministic validator"),
+			prop("port", Ident, "Checked input.name or output.name port"),
+			prop("params", JSON, "Structured parameters validated against the criterion's parameter schema"),
+		}},
+	{Name: "contract.effects", Role: BlockRole, Opener: "effects", Hosts: []string{"contract"},
+		Entries: &Entries{Shape: "name: [indented effect properties]", Doc: "Name links to the technical effect policy", Body: "contract.effect"}},
+	{Name: "contract.effect", Role: Entry, Opener: "effects", Hosts: []string{"contract.effects"},
+		Properties: []Property{
+			prop("description", String, "Externally visible operation"),
+			prop("paid", Bool, "The operation may incur a charge; unknown cost remains unknown"),
+		}},
+	{Name: "port_policy", Role: Declaration, Doc: "Technical admission and recovery policy referenced by graph instances.",
+		Properties: []Property{
+			prop("max_map_items", Int, "Maximum inferred map cardinality before allocation; omission inherits the workflow policy"),
+			block("effects", "port_policy.effects", "Enforceable resource and recovery declarations for public effects"),
+		}},
+	{Name: "port_policy.effects", Role: BlockRole, Opener: "effects", Hosts: []string{"port_policy"},
+		Entries: &Entries{Shape: "name: [indented policy properties]", Doc: "Technical policy matching a public effect name", Body: "port_policy.effect"}},
+	{Name: "port_policy.effect", Role: Entry, Opener: "effects", Hosts: []string{"port_policy.effects"},
+		Properties: []Property{
+			prop("resource", Ident, "Shared resource guarding conflicting effects"),
+			checked("recovery", "Policy for interrupted external effects; no exactly-once guarantee", "idempotent", "verify", "manual"),
+			prop("verifier", String, "Technical verification implementation for uncertain effects"),
+		}},
+	{Name: "graph", Role: BlockRole, Opener: "graph", Hosts: []string{"workflow"}, Doc: "Native acyclic graph of typed data dependencies.",
+		Properties: []Property{
+			block("nodes", "graph.nodes", "Instances referring to public contracts and technical implementations"),
+			block("bindings", "graph.bindings", "Named input suppliers; T[] to T infers one map axis, T[] to T[] passes the whole array"),
+			block("exports", "graph.exports", "Public workflow outputs supplied by internal ports"),
+			prop("products", StringList, "Explicit product deliverables selected from public outputs; a consumed output may also be a product"),
+		}},
+	{Name: "graph.nodes", Role: BlockRole, Opener: "nodes", Hosts: []string{"graph"},
+		Entries: &Entries{Shape: "name: [indented instance properties]", Doc: "Stable graph instance name", Body: "graph.node"}},
+	{Name: "graph.node", Role: Entry, Opener: "nodes", Hosts: []string{"graph.nodes"},
+		Properties: []Property{
+			prop("implementation", Ident, "Existing executable declaration implementing the contract"),
+			prop("contract", Ident, "Reusable public contract"),
+			prop("policy", Ident, "Technical port policy"),
+		}},
+	{Name: "graph.bindings", Role: BlockRole, Opener: "bindings", Hosts: []string{"graph"},
+		Entries: &Entries{Shape: "source.port -> consumer.port", Doc: "Exactly one supplier per required input; input.port refers to a public workflow input"}},
+	{Name: "graph.exports", Role: BlockRole, Opener: "exports", Hosts: []string{"graph"},
+		Entries: &Entries{Shape: "public_name: source.port", Doc: "Publish a validated node output or public workflow input"}},
+}

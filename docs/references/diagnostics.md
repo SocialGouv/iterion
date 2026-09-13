@@ -6,6 +6,27 @@ The compiler carries its own copy of each row's *Fix* ([`pkg/dsl/ir/diag_catalog
 
 ## Compilation Diagnostics
 
+Native `runtime_semantics: "ports-v1"` contracts also use these errors. Every
+one prevents execution; editing an existing legacy workflow does not enable
+native semantics implicitly.
+
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| C300 | Missing or unsupported runtime semantic identity | Opt into `"ports-v1"` with a public contract and graph; keep legacy control flow without the marker |
+| C301 | Invalid or unresolved public contract | Supply a unique name, display name, responsibility and valid declarations |
+| C302 | Invalid public port, default, type or file rule | Resolve its type and align requiredness, nullability, cardinality and file properties |
+| C303 | Invalid technical port/effect policy | Declare the policy, a supported recovery mode and any required verifier/resources |
+| C304 | Unknown or malformed graph reference | Bind declared `source.port -> consumer.port` endpoints |
+| C305 | Missing or duplicate input supplier | Give each required input exactly one supplier |
+| C306 | Incompatible port connection or export | Match resolved shapes and presence/null guarantees; no implicit conversion |
+| C307 | Cyclic native data graph | Remove the cycle or encapsulate control flow in a verified legacy adapter |
+| C308 | Multiple inferred map axes | Use one array-to-element axis; declare zip/Cartesian composition explicitly |
+| C309 | Legacy control construct in a native graph | Encapsulate gates, loops and routing in a verified legacy adapter |
+| C310 | Invalid deterministic criterion | Select a registered rule with typed parameters and a compatible public port |
+| C311 | Missing or invalid public/product export | Export each required public output once; select products from explicit exports |
+| C312 | Hidden data dependency | Consume named inputs instead of reading predecessor outputs or artifacts directly |
+| C313 | Missing or incompatible technical implementation | Reference an executable declaration and align or remove superseded legacy schemas |
+
 | Code | Severity | Description | Cause | Fix |
 |------|----------|-------------|-------|-----|
 | **C001** | error | Unknown node reference | An edge references a node that is not declared | Declare the node or fix the name typo |

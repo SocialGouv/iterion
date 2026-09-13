@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"maps"
 	"sort"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -63,6 +64,25 @@ func (c *compiler) attachPositions() {
 	}
 	for _, d := range f.Subbots {
 		add(d.Name, d.Span)
+	}
+	// Native instance IDs can differ from their implementation declarations.
+	// Attribute expression/tool diagnostics to the implementation text, without
+	// letting an alias overwrite the lookup used by a later instance.
+	implementationPos := maps.Clone(nodePos)
+	for _, workflow := range f.Workflows {
+		if workflow.RuntimeSemantics != RuntimeSemanticsPortsV1 || workflow.Graph == nil {
+			continue
+		}
+		for _, instance := range workflow.Graph.Nodes {
+			if instance == nil {
+				continue
+			}
+			pos, found := implementationPos[instance.Implementation]
+			if !found {
+				pos = instance.Span.Start
+			}
+			nodePos[instance.Name] = pos
+		}
 	}
 	for _, u := range f.Uses {
 		for _, g := range f.Groups {

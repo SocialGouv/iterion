@@ -115,6 +115,8 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 
 type jsonFile struct {
 	Profile      int                     `json:"profile,omitempty"`
+	Contracts    []*ContractDecl         `json:"contracts,omitempty"`
+	PortPolicies []*PortPolicyDecl       `json:"port_policies,omitempty"`
 	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
 	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
 	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
@@ -718,16 +720,20 @@ type jsonFailDecl struct {
 }
 
 type jsonWorkflowDecl struct {
-	Name           string                `json:"name,omitempty"`
-	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
-	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Entry          string                `json:"entry,omitempty"`
-	DefaultBackend string                `json:"default_backend,omitempty"`
-	ToolPolicy     []string              `json:"tool_policy,omitempty"`
-	Capabilities   []string              `json:"capabilities,omitempty"`
-	Skills         []string              `json:"skills,omitempty"`
-	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
-	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	PortPolicy       string                `json:"port_policy,omitempty"`
+	RuntimeSemantics string                `json:"runtime_semantics,omitempty"`
+	Contract         string                `json:"contract,omitempty"`
+	Graph            *PortGraphDecl        `json:"graph,omitempty"`
+	Name             string                `json:"name,omitempty"`
+	Vars             *jsonVarsBlock        `json:"vars,omitempty"`
+	Attachments      *jsonAttachmentsBlock `json:"attachments,omitempty"`
+	Entry            string                `json:"entry,omitempty"`
+	DefaultBackend   string                `json:"default_backend,omitempty"`
+	ToolPolicy       []string              `json:"tool_policy,omitempty"`
+	Capabilities     []string              `json:"capabilities,omitempty"`
+	Skills           []string              `json:"skills,omitempty"`
+	MCP              *jsonMCPConfigDecl    `json:"mcp,omitempty"`
+	Budget           *jsonBudgetBlock      `json:"budget,omitempty"`
 	// Resources is a pointer so the EMPTY block travels: a bare `resources:`
 	// (a block the canvas created and did not fill in, or a plain file's) is
 	// `{}`, an absent block is no key — with a plain map, omitempty would
@@ -815,7 +821,7 @@ func toJSON(f *File) *jsonFile {
 	if f == nil {
 		return nil
 	}
-	jf := &jsonFile{}
+	jf := &jsonFile{Contracts: f.Contracts, PortPolicies: f.PortPolicies}
 
 	if f.Vars != nil {
 		jf.Vars = varsBlockToJSON(f.Vars)
@@ -1453,6 +1459,10 @@ func humanToJSON(h *HumanDecl) *jsonHumanDecl {
 
 func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 	jw := &jsonWorkflowDecl{
+		RuntimeSemantics:    w.RuntimeSemantics,
+		PortPolicy:          w.PortPolicy,
+		Contract:            w.Contract,
+		Graph:               w.Graph,
 		Name:                w.Name,
 		Entry:               w.Entry,
 		DefaultBackend:      w.DefaultBackend,
@@ -1624,7 +1634,7 @@ func jsonFieldName(f reflect.StructField) string {
 }
 
 func fromJSON(jf *jsonFile) (*File, error) {
-	f := &File{}
+	f := &File{Contracts: jf.Contracts, PortPolicies: jf.PortPolicies}
 
 	if jf.Attachments != nil {
 		a, err := attachmentsBlockFromJSON(jf.Attachments)
@@ -2240,6 +2250,10 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 	w := &WorkflowDecl{
+		RuntimeSemantics:    jw.RuntimeSemantics,
+		PortPolicy:          jw.PortPolicy,
+		Contract:            jw.Contract,
+		Graph:               jw.Graph,
 		Name:                jw.Name,
 		Entry:               jw.Entry,
 		DefaultBackend:      jw.DefaultBackend,

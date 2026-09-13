@@ -24,6 +24,9 @@ func isMissingFieldError(err error) bool {
 // schema with compatible types. It does NOT attempt to repair or coerce
 // invalid values — the node must fail explicitly on schema mismatch.
 func ValidateOutput(output map[string]any, schema *ir.Schema) error {
+	if schema.NativePorts {
+		return ir.ValidatePublicValues(schema.PublicPorts, output)
+	}
 	var errs []string
 
 	for _, f := range schema.Fields {
@@ -64,6 +67,9 @@ func ValidateOutput(output map[string]any, schema *ir.Schema) error {
 func ConformComputeOutput(output map[string]any, schema *ir.Schema) error {
 	if schema == nil {
 		return nil
+	}
+	if schema.NativePorts {
+		return ir.ValidatePublicValues(schema.PublicPorts, output)
 	}
 	var errs []string
 	for _, f := range schema.Fields {

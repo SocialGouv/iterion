@@ -29,7 +29,8 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
                | tool_decl | compute_decl | emit_decl | wait_decl
                | await_answers_decl | subbot_decl
                | fail_decl
-               | group_decl | use_decl | workflow_decl ;
+               | group_decl | use_decl | workflow_decl
+               | contract_decl | port_policy_decl ;
 
 (* ---------- Values and collections ---------- *)
 
@@ -379,6 +380,10 @@ workflow_decl = "workflow" IDENT ":" NEWLINE [ INDENT
                   { workflow_member }
                 DEDENT ] ;
 workflow_member = vars_decl | attachments_decl | mcp_config_block
+                | "runtime_semantics" ":" str_value NEWLINE
+                | "contract" ":" IDENT NEWLINE
+                | "port_policy" ":" IDENT NEWLINE
+                | port_graph_block
                 | "entry" ":" node_ref NEWLINE
                 | "default_backend" ":" str_value NEWLINE
                 | "tool_policy" ":" tool_ref_list NEWLINE
@@ -399,6 +404,60 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | sandbox_decl | edge ;
 
 worktree_mode = "auto" | "none" ;
+
+(* ---------- Public contracts and native port graphs ----------
+   runtime_semantics: "ports-v1" opts in independently of the syntax profile.
+   The compiler enforces types, suppliers and deterministic map semantics.
+   Public descriptions are not interpreted as executable criteria. *)
+contract_decl = "contract" IDENT ":" NEWLINE [ INDENT { contract_prop } DEDENT ] ;
+contract_prop = "display_name" ":" str_value NEWLINE
+              | "responsibility" ":" str_value NEWLINE
+              | "version" ":" INT_LIT NEWLINE
+              | "inputs" ":" NEWLINE [ INDENT { contract_port } DEDENT ]
+              | "outputs" ":" NEWLINE [ INDENT { contract_port } DEDENT ]
+              | "criteria" ":" NEWLINE [ INDENT { contract_criterion } DEDENT ]
+              | "effects" ":" NEWLINE [ INDENT { contract_effect } DEDENT ] ;
+contract_port = IDENT ":" port_type NEWLINE [ INDENT { contract_port_prop } DEDENT ] ;
+port_type = ( type_expr | "file" | node_ref ) { "[" "]" } ;
+contract_port_prop = "description" ":" str_value NEWLINE
+                   | "required" ":" BOOL_LIT NEWLINE
+                   | "nullable" ":" BOOL_LIT NEWLINE
+                   | "default" ":" contract_json NEWLINE
+                   | "min_items" ":" INT_LIT NEWLINE
+                   | "max_items" ":" INT_LIT NEWLINE
+                   | "file" ":" NEWLINE [ INDENT { contract_file_prop } DEDENT ] ;
+contract_file_prop = "media_type" ":" str_value NEWLINE
+                   | "min_bytes" ":" INT_LIT NEWLINE
+                   | "schema" ":" IDENT NEWLINE ;
+contract_criterion = IDENT ":" NEWLINE [ INDENT { contract_criterion_prop } DEDENT ] ;
+contract_criterion_prop = "kind" ":" IDENT NEWLINE
+                        | "port" ":" node_ref NEWLINE
+                        | "params" ":" contract_json NEWLINE ;
+contract_effect = IDENT ":" NEWLINE [ INDENT { contract_effect_prop } DEDENT ] ;
+contract_effect_prop = "description" ":" str_value NEWLINE
+                     | "paid" ":" BOOL_LIT NEWLINE ;
+port_policy_decl = "port_policy" IDENT ":" NEWLINE [ INDENT { port_policy_prop } DEDENT ] ;
+port_policy_prop = "max_map_items" ":" INT_LIT NEWLINE
+                 | "effects" ":" NEWLINE [ INDENT { port_effect_policy } DEDENT ] ;
+port_effect_policy = IDENT ":" NEWLINE [ INDENT { port_effect_policy_prop } DEDENT ] ;
+port_effect_policy_prop = "resource" ":" IDENT NEWLINE
+                        | "recovery" ":" IDENT NEWLINE
+                        | "verifier" ":" str_value NEWLINE ;
+port_graph_block = "graph" ":" NEWLINE [ INDENT { port_graph_prop } DEDENT ] ;
+port_graph_prop = "nodes" ":" NEWLINE [ INDENT { port_node } DEDENT ]
+                | "bindings" ":" NEWLINE [ INDENT { port_binding } DEDENT ]
+                | "exports" ":" NEWLINE [ INDENT { port_export } DEDENT ]
+                | "products" ":" string_list NEWLINE ;
+port_node = IDENT ":" NEWLINE [ INDENT { port_node_prop } DEDENT ] ;
+port_node_prop = "implementation" ":" node_ref NEWLINE
+               | "contract" ":" IDENT NEWLINE
+               | "policy" ":" IDENT NEWLINE ;
+port_binding = node_ref "->" node_ref NEWLINE ;
+port_export = IDENT ":" node_ref NEWLINE ;
+contract_json = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | "null"
+              | "[" [ contract_json { "," contract_json } [ "," ] ] "]"
+              | "{" [ string_or_ident ":" contract_json
+                       { "," string_or_ident ":" contract_json } [ "," ] ] "}" ;
 
 budget_block = "budget" ":" NEWLINE [ INDENT { budget_prop } DEDENT ] ;
 budget_prop = "max_parallel_branches" ":" INT_LIT NEWLINE

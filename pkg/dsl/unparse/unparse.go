@@ -80,6 +80,8 @@ func (w *fileWriter) writeFile(f *ast.File) {
 	w.writeMCPServers(f.MCPServers)
 	w.writePrompts(declaredPrompts(f.Prompts))
 	w.writeSchemas(f.Schemas)
+	w.writeContracts(f.Contracts)
+	w.writePortPolicies(f.PortPolicies)
 	w.writeCursors(f.Cursors)
 	w.writeSupervisors(f.Supervisors)
 	w.writeAgents(f.Agents)
@@ -981,6 +983,18 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 	for _, wf := range workflows {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "workflow %s:\n", wf.Name)
+		if wf.RuntimeSemantics != "" {
+			writeQuotedProp(&w.b, "runtime_semantics", wf.RuntimeSemantics)
+		}
+		if wf.Contract != "" {
+			writeProp(&w.b, "contract", wf.Contract)
+		}
+		if wf.PortPolicy != "" {
+			writeProp(&w.b, "port_policy", wf.PortPolicy)
+		}
+		if wf.Graph != nil {
+			w.writePortGraph(wf.Graph)
+		}
 
 		// Written when present, empty or not — the same rule as the
 		// top-level blocks (an omitted empty block would be deleted from

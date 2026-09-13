@@ -3,6 +3,7 @@ package spec_test
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -29,7 +30,7 @@ func TestEveryStringPropertyReadsABareWord(t *testing.T) {
 				continue
 			}
 			word := "claw"
-			if len(p.Values) > 0 {
+			if len(p.Values) > 0 && regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`).MatchString(p.Values[0]) {
 				word = p.Values[0] // a quoted enum: its own words, bare
 			}
 			n++

@@ -56,6 +56,10 @@ const (
 	TokenTool
 	TokenWorkflow
 	TokenDSL // `dsl`: the syntax-profile header that may open a file
+	TokenContract
+	TokenPortPolicy
+	TokenRuntimeSemantics
+	TokenGraph
 	TokenCompute
 	TokenEmit
 	TokenWait
@@ -244,6 +248,10 @@ var tokenNames = map[TokenType]string{
 	TokenTool:               "tool",
 	TokenWorkflow:           "workflow",
 	TokenDSL:                "dsl",
+	TokenContract:           "contract",
+	TokenPortPolicy:         "port_policy",
+	TokenRuntimeSemantics:   "runtime_semantics",
+	TokenGraph:              "graph",
 	TokenCompute:            "compute",
 	TokenEmit:               "emit",
 	TokenWait:               "wait",
@@ -391,6 +399,10 @@ var keywords = map[string]TokenType{
 	"tool":                  TokenTool,
 	"workflow":              TokenWorkflow,
 	"dsl":                   TokenDSL,
+	"contract":              TokenContract,
+	"port_policy":           TokenPortPolicy,
+	"runtime_semantics":     TokenRuntimeSemantics,
+	"graph":                 TokenGraph,
 	"compute":               TokenCompute,
 	"emit":                  TokenEmit,
 	"wait":                  TokenWait,

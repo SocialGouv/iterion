@@ -13,6 +13,9 @@ func SchemaToJSON(schema *ir.Schema) (json.RawMessage, error) {
 	if schema == nil {
 		return nil, fmt.Errorf("model: nil schema")
 	}
+	if schema.NativePorts {
+		return json.Marshal(publicPortsToJSONSchema(schema.PublicPorts))
+	}
 
 	properties := make(map[string]any)
 	required := make([]string, 0, len(schema.Fields))

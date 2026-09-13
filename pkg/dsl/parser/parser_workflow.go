@@ -45,6 +45,36 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		}
 
 		switch t.Type {
+		case TokenRuntimeSemantics:
+			p.next()
+			p.expect(TokenColon)
+			if wd.RuntimeSemantics != "" {
+				p.addError(DiagDuplicateBlock, t, "duplicate runtime_semantics")
+			}
+			wd.RuntimeSemantics = p.expectString()
+
+		case TokenContract:
+			p.next()
+			p.expect(TokenColon)
+			if wd.Contract != "" {
+				p.addError(DiagDuplicateBlock, t, "duplicate workflow contract")
+			}
+			wd.Contract = p.expectIdent()
+
+		case TokenPortPolicy:
+			p.next()
+			p.expect(TokenColon)
+			if wd.PortPolicy != "" {
+				p.addError(DiagDuplicateBlock, t, "duplicate workflow port_policy")
+			}
+			wd.PortPolicy = p.expectIdent()
+
+		case TokenGraph:
+			if wd.Graph != nil {
+				p.addError(DiagDuplicateBlock, t, "duplicate graph block")
+			}
+			wd.Graph = p.parsePortGraph()
+
 		case TokenVars:
 			wd.Vars = p.parseVarsBlock()
 

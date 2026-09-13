@@ -536,6 +536,7 @@ func (c *compiler) compile() *Workflow {
 	// Compile shared declarations.
 	c.compileMCPServers()
 	c.compileSchemas()
+	publicContracts, portPolicies := c.compilePublicDeclarations()
 	c.compilePrompts()
 	cursors := c.compileCursors()
 	supervisors := c.compileSupervisors()
@@ -586,10 +587,12 @@ func (c *compiler) compile() *Workflow {
 	// Validate entry node. A workflow with no entry at all (the bare
 	// `workflow w:` the studio saves before a node exists) is told so,
 	// not sent looking for a node named "".
-	if wf.Entry == "" {
-		c.errorf(DiagMissingEntry, "workflow %q declares no entry node", wf.Name)
-	} else if _, ok := c.nodes[wf.Entry]; !ok {
-		c.errorf(DiagMissingEntry, "entry node %q not found", wf.Entry)
+	if wf.RuntimeSemantics == "" {
+		if wf.Entry == "" {
+			c.errorf(DiagMissingEntry, "workflow %q declares no entry node", wf.Name)
+		} else if _, ok := c.nodes[wf.Entry]; !ok {
+			c.errorf(DiagMissingEntry, "entry node %q not found", wf.Entry)
+		}
 	}
 
 	// Compile vars (merge top-level + workflow-level).
@@ -664,6 +667,8 @@ func (c *compiler) compile() *Workflow {
 		PermissionDeny:      wf.Deny,
 		Sandbox:             c.compileSandboxBlock(wf.Sandbox, "workflow", wf.Name),
 	}
+
+	c.compilePortWorkflow(w, wf, publicContracts, portPolicies)
 
 	// Compute each loop's body — the set of nodes that participate in
 	// the loop's iteration cycle. Required so the runtime can reset a

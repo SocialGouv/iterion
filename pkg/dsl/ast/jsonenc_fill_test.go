@@ -1,6 +1,8 @@
 package ast
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -70,6 +72,11 @@ func fillValue(v reflect.Value, n *int, depth int) {
 	if transportlessTypes[v.Type()] {
 		return
 	}
+	if v.Type() == reflect.TypeFor[json.RawMessage]() {
+		*n++
+		v.SetBytes([]byte(fmt.Sprintf("{\"field\":%d}", *n)))
+		return
+	}
 	switch v.Kind() {
 	case reflect.String:
 		*n++
@@ -135,6 +142,19 @@ func firstDifference(path string, want, got reflect.Value) string {
 		return path + ": type differs"
 	}
 	if transportlessTypes[want.Type()] {
+		return ""
+	}
+	if want.Type() == reflect.TypeFor[json.RawMessage]() {
+		var a, b bytes.Buffer
+		if err := json.Compact(&a, want.Bytes()); err != nil {
+			return path + ": invalid expected JSON: " + err.Error()
+		}
+		if err := json.Compact(&b, got.Bytes()); err != nil {
+			return path + ": invalid restored JSON: " + err.Error()
+		}
+		if !bytes.Equal(a.Bytes(), b.Bytes()) {
+			return fmt.Sprintf("%s: %s became %s", path, a.Bytes(), b.Bytes())
+		}
 		return ""
 	}
 	switch want.Kind() {

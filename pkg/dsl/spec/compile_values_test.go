@@ -21,6 +21,7 @@ import (
 // hostCompileProbes instead, once per host.
 var compileProbes = map[string]map[string]string{
 	"workflow": {
+		"runtime_semantics":    "contract C:\n  display_name: \"No-op\"\n  responsibility: \"Return without operations\"\nworkflow w:\n  runtime_semantics: \"%s\"\n  contract: C\n  graph:\n",
 		"sandbox":              "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  sandbox: %s\n  a -> done\n",
 		"compress":             "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  compress: %s\n  a -> done\n",
 		"auto_memory":          "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  auto_memory: %s\n  a -> done\n",
@@ -50,6 +51,17 @@ var compileProbes = map[string]map[string]string{
 	},
 	"secret": {
 		"as": "secrets:\n  s:\n    as: %s\nagent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  a -> done\n",
+	},
+	"port_policy.effect": {
+		"recovery": "port_policy p:\n  effects:\n    request:\n      recovery: %s\ncompute a:\n  expr:\n    value: \"1\"\nworkflow w:\n  entry: a\n  a -> done\n",
+	},
+}
+
+// Some values add a required companion property. Keep the positive fixtures
+// explicit so the registry probe still proves every value with no exemptions.
+var compileValueOverrides = map[string]map[string]string{
+	"port_policy.effect.recovery": {
+		"verify": "port_policy p:\n  effects:\n    request:\n      recovery: verify\n      verifier: \"check_request\"\ncompute a:\n  expr:\n    value: \"1\"\nworkflow w:\n  entry: a\n  a -> done\n",
 	},
 }
 
@@ -179,7 +191,11 @@ func probedProperty(t *testing.T, kind, name string) (spec.Property, bool) {
 func probeValues(t *testing.T, kind, name, where, tmpl string, p spec.Property) {
 	t.Helper()
 	for _, v := range p.Values {
-		if errs, _ := compileDiags(t, fmt.Sprintf(tmpl, v), v, false, false); len(errs) != 0 {
+		doc := fmt.Sprintf(tmpl, v)
+		if override := compileValueOverrides[kind+"."+name][v]; override != "" {
+			doc = override
+		}
+		if errs, _ := compileDiags(t, doc, v, false, false); len(errs) != 0 {
 			t.Errorf("%s.%s = %s%s is listed but the compiler refuses it: %v", kind, name, v, where, errs)
 		}
 	}
