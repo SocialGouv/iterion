@@ -2008,13 +2008,18 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
 		}
 	}()
+	queueVersion, err := queue.SchemaVersionForSemantics(wf.RuntimeSemantics)
+	if err != nil {
+		return 0, err
+	}
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 	persisted = true
 
 	msg := &queue.RunMessage{
-		V:                queue.SchemaVersion,
+		V:                queueVersion,
+		RuntimeSemantics: wf.RuntimeSemantics,
 		Contributions:    contributions,
 		RunID:            runID,
 		WorkflowName:     wf.Name,
@@ -2305,8 +2310,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// figure, so the studio never advertises a cap the run does not have.
 	merged := runtime.MergeResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
 	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID)
+	queueVersion, err := queue.SchemaVersionForSemantics(wf.RuntimeSemantics)
+	if err != nil {
+		return err
+	}
 	msg := &queue.RunMessage{
-		V:                queue.SchemaVersion,
+		V:                queueVersion,
+		RuntimeSemantics: wf.RuntimeSemantics,
 		Contributions:    contributions,
 		RunID:            spec.RunID,
 		WorkflowName:     wf.Name,

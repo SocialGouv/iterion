@@ -43,6 +43,9 @@ func launchTopologyRun(t *testing.T, p *Publisher, wf *ir.Workflow, runID string
 	if len(published) != 1 {
 		t.Fatalf("expected 1 published message, got %d", len(published))
 	}
+	if published[0].V != queue.LegacySchemaVersion || published[0].RuntimeSemantics != "" {
+		t.Fatalf("legacy publisher changed its rolling-upgrade envelope: v%d semantics=%q", published[0].V, published[0].RuntimeSemantics)
+	}
 	r, err := p.store.LoadRun(ctx, runID)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)

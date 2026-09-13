@@ -240,9 +240,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// the dual-accept window advances to MinSchemaVersion=10.
 	// v=12 (2026-09-02) adds the runner rollout epoch. A stale consumer must
 	// reject it rather than silently ignore the fence.
-	// v=14 carries the execution context; old consumers must not ignore it.
-	if SchemaVersion != 14 {
-		t.Errorf("SchemaVersion = %d, want 14 (bump intentionally)", SchemaVersion)
+	// v=15 carries native interpreter identity; old consumers must reject it.
+	if SchemaVersion != 15 || LegacySchemaVersion != 14 {
+		t.Errorf("SchemaVersion = %d, LegacySchemaVersion = %d, want 15 and 14", SchemaVersion, LegacySchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -275,6 +275,37 @@ func TestValidate_DualAcceptWindow(t *testing.T) {
 		if !errors.Is(err, ErrSchemaVersion) {
 			t.Errorf("v=%d: want ErrSchemaVersion, got %v", v, err)
 		}
+	}
+}
+
+func TestNativeInterpreterRequiresNewQueueEnvelope(t *testing.T) {
+	version, err := SchemaVersionForSemantics("")
+	if err != nil || version != LegacySchemaVersion {
+		t.Fatalf("legacy publisher changed its wire version: %d %v", version, err)
+	}
+	version, err = SchemaVersionForSemantics("ports-v1")
+	if err != nil || version != SchemaVersion {
+		t.Fatalf("native publisher version: %d %v", version, err)
+	}
+	base := RunMessage{V: SchemaVersion, RunID: "pc1_native", RuntimeSemantics: "ports-v1", WorkflowName: "w", IRCompiled: json.RawMessage(`{}`), TenantID: "t1"}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("native v15 rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*RunMessage)
+	}{
+		{"old envelope", func(m *RunMessage) { m.V = LegacySchemaVersion }},
+		{"missing interpreter", func(m *RunMessage) { m.RuntimeSemantics = "" }},
+		{"legacy ID", func(m *RunMessage) { m.RunID = "legacy" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := base
+			tc.mutate(&candidate)
+			if err := candidate.Validate(); !errors.Is(err, ErrSchemaVersion) {
+				t.Fatalf("unsafe queue envelope accepted: %v", err)
+			}
+		})
 	}
 }
 

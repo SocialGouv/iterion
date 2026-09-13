@@ -114,7 +114,23 @@ import (
 // v=14: ExecutionContext carries the resolved run/workspace/workflow/lineage
 // contract to the claiming runner. Dropping it would make cloud admission
 // disagree with local admission, so the wire version is bumped.
-const SchemaVersion = 14
+// v=15: RuntimeSemantics and reserved native run IDs select a different
+// interpreter and checkpoint namespace. Supported v14 consumers must reject
+// these messages before reading a store. Legacy launches continue to emit
+// v14 while an older fleet may still be present.
+const SchemaVersion = 15
+const LegacySchemaVersion = 14
+
+func SchemaVersionForSemantics(semantics string) (int, error) {
+	switch semantics {
+	case "":
+		return LegacySchemaVersion, nil
+	case store.RuntimeSemanticsPortsV1, store.RuntimeSemanticsLegacyAdapterV1:
+		return SchemaVersion, nil
+	default:
+		return 0, fmt.Errorf("%w: unknown runtime semantics %q", ErrSchemaVersion, semantics)
+	}
+}
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -129,11 +145,12 @@ const MinSchemaVersion = 10
 //
 // Field order is stable to keep readable JSON diffs in tests.
 type RunMessage struct {
-	V            int    `json:"v"`
-	RunnerEpoch  uint64 `json:"runner_epoch,omitempty"`
-	RunID        string `json:"run_id"`
-	WorkflowName string `json:"workflow_name"`
-	WorkflowHash string `json:"workflow_hash"`
+	V                int    `json:"v"`
+	RuntimeSemantics string `json:"runtime_semantics,omitempty"`
+	RunnerEpoch      uint64 `json:"runner_epoch,omitempty"`
+	RunID            string `json:"run_id"`
+	WorkflowName     string `json:"workflow_name"`
+	WorkflowHash     string `json:"workflow_hash"`
 	// ExecutionContext is the launcher's resolved, versioned context
 	// contract. The queued run document also carries it; the wire copy lets a
 	// runner fail closed even when it has not yet loaded the document.
@@ -434,6 +451,13 @@ func (m *RunMessage) Validate() error {
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
+	}
+	if store.IsNativeRunID(m.RunID) {
+		if m.V < SchemaVersion || (m.RuntimeSemantics != store.RuntimeSemanticsPortsV1 && m.RuntimeSemantics != store.RuntimeSemanticsLegacyAdapterV1) {
+			return fmt.Errorf("%w: native run %s requires v%d and explicit runtime semantics", ErrSchemaVersion, m.RunID, SchemaVersion)
+		}
+	} else if m.RuntimeSemantics != "" {
+		return fmt.Errorf("%w: runtime semantics %q require a reserved native run ID", ErrSchemaVersion, m.RuntimeSemantics)
 	}
 	if m.WorkflowName == "" {
 		return fmt.Errorf("queue: WorkflowName required")
