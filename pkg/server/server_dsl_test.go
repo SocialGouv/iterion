@@ -78,6 +78,50 @@ func TestParse_ValidWorkflow(t *testing.T) {
 	}
 }
 
+func TestValidateNativeWorkflowReturnsPublicProjection(t *testing.T) {
+	_, hs := newTestServer(t)
+	const source = `dsl: 2
+contract Result:
+  display_name: "Deliver result"
+  responsibility: "Produce the public result"
+  outputs:
+    value: string
+compute internal:
+  expr:
+    value: "\"private technical expression\""
+workflow main:
+  runtime_semantics: "ports-v1"
+  contract: Result
+  graph:
+    nodes:
+      deliver:
+        implementation: internal
+        contract: Result
+    exports:
+      value: deliver.value
+    products: ["value"]
+`
+	doc := parseDocument(t, hs.URL, source)
+	resp := postDSLJSON(t, hs.URL+"/api/validate", `{"document":`+string(doc)+`}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d; body=%s", resp.StatusCode, mustReadBody(t, resp))
+	}
+	var out validateResponse
+	decodeJSONResp(t, resp, &out)
+	if !out.Valid || out.PublicView == nil || len(out.PublicView.Nodes) != 1 ||
+		out.PublicView.Nodes[0].Contract.Responsibility != "Produce the public result" ||
+		out.PublicView.Exports["value"].Node != "deliver" {
+		t.Fatalf("native public projection missing or invalid: %+v", out)
+	}
+	encoded, err := json.Marshal(out.PublicView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private technical expression") || strings.Contains(string(encoded), "internal") {
+		t.Fatalf("public API leaked technical implementation: %s", encoded)
+	}
+}
+
 // TestParse_UnparseableSource proves the parser diagnostic channel is
 // wired: an obviously invalid source must produce at least one
 // non-empty diagnostic string.

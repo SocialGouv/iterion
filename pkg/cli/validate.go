@@ -19,15 +19,16 @@ import (
 
 // ValidateResult holds the outcome of a validate command.
 type ValidateResult struct {
-	File               string   `json:"file"`
-	Valid              bool     `json:"valid"`
-	WorkflowName       string   `json:"workflow_name,omitempty"`
-	NodeCount          int      `json:"node_count,omitempty"`
-	EdgeCount          int      `json:"edge_count,omitempty"`
-	BundleName         string   `json:"bundle_name,omitempty"`
-	BundleVersion      string   `json:"bundle_version,omitempty"`
-	ParseDiagnostics   []string `json:"parse_diagnostics,omitempty"`
-	CompileDiagnostics []string `json:"compile_diagnostics,omitempty"`
+	File               string                 `json:"file"`
+	Valid              bool                   `json:"valid"`
+	WorkflowName       string                 `json:"workflow_name,omitempty"`
+	NodeCount          int                    `json:"node_count,omitempty"`
+	EdgeCount          int                    `json:"edge_count,omitempty"`
+	PublicView         *ir.PublicWorkflowView `json:"public_view,omitempty"`
+	BundleName         string                 `json:"bundle_name,omitempty"`
+	BundleVersion      string                 `json:"bundle_version,omitempty"`
+	ParseDiagnostics   []string               `json:"parse_diagnostics,omitempty"`
+	CompileDiagnostics []string               `json:"compile_diagnostics,omitempty"`
 	// BundleDiagnostics holds manifest↔workflow consistency findings
 	// (bundlelint, C2xx). Kept separate from CompileDiagnostics so the
 	// studio can distinguish DSL-level from manifest-level issues.
@@ -283,6 +284,7 @@ func RunValidate(path string, p *Printer) error {
 		result.WorkflowName = cr.Workflow.Name
 		result.NodeCount = len(cr.Workflow.Nodes)
 		result.EdgeCount = len(cr.Workflow.Edges)
+		result.PublicView = cr.Workflow.PublicView()
 	}
 
 	// Bundle consistency: cross-check the manifest against the compiled

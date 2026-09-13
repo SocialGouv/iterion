@@ -5938,6 +5938,14 @@ export interface components {
             pushed: boolean;
             verifiable: boolean;
         };
+        DiagnosticDTO: {
+            code?: string;
+            edge_id?: string;
+            hint?: string;
+            message: string;
+            node_id?: string;
+            severity: string;
+        };
         DiagnosticEvidence: {
             details?: {
                 [key: string]: string;
@@ -6282,6 +6290,33 @@ export interface components {
             reserved: number;
             waiting: number;
         };
+        PortBinding: {
+            from: components["schemas"]["PortEndpoint"];
+            map?: boolean;
+            source?: components["schemas"]["PortSource"];
+            to: components["schemas"]["PortEndpoint"];
+        };
+        PortEndpoint: {
+            node: string;
+            port: string;
+        };
+        PortFile: {
+            media_type?: string;
+            min_bytes?: number;
+            schema?: components["schemas"]["Schema"];
+            shape_hash?: string;
+        };
+        PortSource: {
+            column?: number;
+            file?: string;
+            line?: number;
+        };
+        PortType: {
+            array_depth?: number;
+            name: string;
+            schema?: components["schemas"]["Schema"];
+            shape_hash: string;
+        };
         ProjectSyncConflict: {
             /** Format: date-time */
             at?: string;
@@ -6290,6 +6325,68 @@ export interface components {
             reason?: string;
             status?: string;
             to: string;
+        };
+        PublicContract: {
+            criteria?: components["schemas"]["PublicCriterion"][];
+            display_name: string;
+            effects?: components["schemas"]["PublicEffect"][];
+            identity: string;
+            inputs: components["schemas"]["PublicPort"][];
+            name: string;
+            outputs: components["schemas"]["PublicPort"][];
+            responsibility: string;
+            source?: components["schemas"]["PortSource"];
+            version: number;
+        };
+        PublicCriterion: {
+            kind: string;
+            name: string;
+            /** Format: byte */
+            params?: string;
+            port: string;
+            source?: components["schemas"]["PortSource"];
+        };
+        PublicEffect: {
+            description: string;
+            name: string;
+            paid: boolean;
+            source?: components["schemas"]["PortSource"];
+        };
+        PublicNodeView: {
+            contract?: components["schemas"]["PublicContract"];
+            dependencies: string[];
+            id: string;
+            inputs: {
+                [key: string]: components["schemas"]["PortEndpoint"];
+            };
+            map_input?: string;
+            output_types: {
+                [key: string]: components["schemas"]["PortType"];
+            };
+        };
+        PublicPort: {
+            /** Format: byte */
+            default?: string;
+            description?: string;
+            file?: components["schemas"]["PortFile"];
+            max_items?: number;
+            min_items?: number;
+            name: string;
+            nullable?: boolean;
+            required: boolean;
+            source?: components["schemas"]["PortSource"];
+            type: components["schemas"]["PortType"];
+        };
+        PublicWorkflowView: {
+            bindings: components["schemas"]["PortBinding"][];
+            contract?: components["schemas"]["PublicContract"];
+            exports: {
+                [key: string]: components["schemas"]["PortEndpoint"];
+            };
+            graph_identity: string;
+            nodes: components["schemas"]["PublicNodeView"][];
+            products: string[];
+            runtime_semantics: string;
         };
         RepoSummary: {
             can_admin: boolean;
@@ -6467,6 +6564,17 @@ export interface components {
             updated_at: string;
             work_dir?: string;
             workflow_name: string;
+        };
+        Schema: {
+            Fields: components["schemas"]["SchemaField"][];
+            Name: string;
+            NativePorts?: boolean;
+            PublicPorts?: components["schemas"]["PublicPort"][];
+        };
+        SchemaField: {
+            EnumValues: string[];
+            Name: string;
+            Type: number;
         };
         StatusMapping: {
             state: string;
@@ -6861,6 +6969,20 @@ export interface components {
         usageReadingsClearedView: {
             deleted: number;
             fingerprint: string;
+        };
+        validateRequest: {
+            /** Format: byte */
+            document: string;
+            path?: string;
+        };
+        validateResponse: {
+            diagnostics?: string[];
+            edge_count?: number;
+            issues?: components["schemas"]["DiagnosticDTO"][];
+            node_count?: number;
+            public_view?: components["schemas"]["PublicWorkflowView"];
+            valid: boolean;
+            warnings?: string[];
         };
     };
     responses: never;
@@ -14449,14 +14571,20 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["validateRequest"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["validateResponse"];
+                };
             };
         };
     };

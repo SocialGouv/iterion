@@ -32,6 +32,9 @@ type routeOp struct {
 // CLI-driven surface; extend it route-by-route as schemas are needed.
 func routeSchemas() map[string]routeOp {
 	return map[string]routeOp{
+		// Editor validation carries the resolved native public interface and
+		// graph while the authoritative editable document stays in /api/parse.
+		"POST /api/validate": {request: validateRequest{}, response: validateResponse{}},
 		// Auth + identity.
 		"POST /api/auth/login": {request: loginReq{}, response: AuthMeResponse{}},
 		"GET /api/auth/me":     {response: AuthMeResponse{}},

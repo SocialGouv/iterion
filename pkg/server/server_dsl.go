@@ -91,6 +91,8 @@ type validateResponse struct {
 	Valid       bool            `json:"valid"`
 	NodeCount   int             `json:"node_count,omitempty"`
 	EdgeCount   int             `json:"edge_count,omitempty"`
+	// Native public interface and data flow, without technical node settings.
+	PublicView *ir.PublicWorkflowView `json:"public_view,omitempty"`
 }
 
 // --- Handlers ---
@@ -243,6 +245,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if cr.Workflow != nil {
 		resp.NodeCount = len(cr.Workflow.Nodes)
 		resp.EdgeCount = len(cr.Workflow.Edges)
+		resp.PublicView = cr.Workflow.PublicView()
 	}
 
 	writeJSON(w, resp)

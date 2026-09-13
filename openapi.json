@@ -907,6 +907,33 @@
         ],
         "type": "object"
       },
+      "DiagnosticDTO": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "edge_id": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "message"
+        ],
+        "type": "object"
+      },
       "DiagnosticEvidence": {
         "properties": {
           "details": {
@@ -2019,6 +2046,94 @@
         ],
         "type": "object"
       },
+      "PortBinding": {
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/PortEndpoint"
+          },
+          "map": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PortSource"
+          },
+          "to": {
+            "$ref": "#/components/schemas/PortEndpoint"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "PortEndpoint": {
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "port": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "port"
+        ],
+        "type": "object"
+      },
+      "PortFile": {
+        "properties": {
+          "media_type": {
+            "type": "string"
+          },
+          "min_bytes": {
+            "type": "integer"
+          },
+          "schema": {
+            "$ref": "#/components/schemas/Schema"
+          },
+          "shape_hash": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PortSource": {
+        "properties": {
+          "column": {
+            "type": "integer"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "PortType": {
+        "properties": {
+          "array_depth": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "schema": {
+            "$ref": "#/components/schemas/Schema"
+          },
+          "shape_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "shape_hash"
+        ],
+        "type": "object"
+      },
       "ProjectSyncConflict": {
         "properties": {
           "at": {
@@ -2044,6 +2159,235 @@
         "required": [
           "from",
           "to"
+        ],
+        "type": "object"
+      },
+      "PublicContract": {
+        "properties": {
+          "criteria": {
+            "items": {
+              "$ref": "#/components/schemas/PublicCriterion"
+            },
+            "type": "array"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/PublicEffect"
+            },
+            "type": "array"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/PublicPort"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/PublicPort"
+            },
+            "type": "array"
+          },
+          "responsibility": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PortSource"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "responsibility",
+          "version",
+          "inputs",
+          "outputs",
+          "identity"
+        ],
+        "type": "object"
+      },
+      "PublicCriterion": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "format": "byte",
+            "type": "string"
+          },
+          "port": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PortSource"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "port"
+        ],
+        "type": "object"
+      },
+      "PublicEffect": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "paid": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PortSource"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "paid"
+        ],
+        "type": "object"
+      },
+      "PublicNodeView": {
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/PublicContract"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PortEndpoint"
+            },
+            "type": "object"
+          },
+          "map_input": {
+            "type": "string"
+          },
+          "output_types": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PortType"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "inputs",
+          "output_types",
+          "dependencies"
+        ],
+        "type": "object"
+      },
+      "PublicPort": {
+        "properties": {
+          "default": {
+            "format": "byte",
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "file": {
+            "$ref": "#/components/schemas/PortFile"
+          },
+          "max_items": {
+            "type": "integer"
+          },
+          "min_items": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nullable": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PortSource"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PortType"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "required"
+        ],
+        "type": "object"
+      },
+      "PublicWorkflowView": {
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/PortBinding"
+            },
+            "type": "array"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/PublicContract"
+          },
+          "exports": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PortEndpoint"
+            },
+            "type": "object"
+          },
+          "graph_identity": {
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/PublicNodeView"
+            },
+            "type": "array"
+          },
+          "products": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtime_semantics": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runtime_semantics",
+          "nodes",
+          "bindings",
+          "exports",
+          "products",
+          "graph_identity"
         ],
         "type": "object"
       },
@@ -2597,6 +2941,55 @@
           "created_at",
           "updated_at",
           "active"
+        ],
+        "type": "object"
+      },
+      "Schema": {
+        "properties": {
+          "Fields": {
+            "items": {
+              "$ref": "#/components/schemas/SchemaField"
+            },
+            "type": "array"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "NativePorts": {
+            "type": "boolean"
+          },
+          "PublicPorts": {
+            "items": {
+              "$ref": "#/components/schemas/PublicPort"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "Name",
+          "Fields"
+        ],
+        "type": "object"
+      },
+      "SchemaField": {
+        "properties": {
+          "EnumValues": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "Type": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "Name",
+          "Type",
+          "EnumValues"
         ],
         "type": "object"
       },
@@ -3920,6 +4313,59 @@
         "required": [
           "fingerprint",
           "deleted"
+        ],
+        "type": "object"
+      },
+      "validateRequest": {
+        "properties": {
+          "document": {
+            "format": "byte",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "validateResponse": {
+        "properties": {
+          "diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "edge_count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticDTO"
+            },
+            "type": "array"
+          },
+          "node_count": {
+            "type": "integer"
+          },
+          "public_view": {
+            "$ref": "#/components/schemas/PublicWorkflowView"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "valid"
         ],
         "type": "object"
       }
@@ -12206,9 +12652,26 @@
     "/api/validate": {
       "post": {
         "operationId": "postValidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/validateRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/validateResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/validate",
