@@ -10,6 +10,22 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+func TestCheckpointCostUSDUsesNativeRootBudget(t *testing.T) {
+	if got := checkpointCostUSD(&store.Run{
+		RuntimeSemantics: "ports-v1",
+		PortExecution: &store.PortExecution{Budget: store.PortBudgetState{
+			Consumed: store.PortBudgetAmount{CostUSD: 6.25},
+		}},
+	}); got != 6.25 {
+		t.Fatalf("native banked cost = %g, want 6.25", got)
+	}
+	if got := checkpointCostUSD(&store.Run{
+		Checkpoint: &store.Checkpoint{BudgetCostUSD: 3.5},
+	}); got != 3.5 {
+		t.Fatalf("legacy banked cost = %g, want 3.5", got)
+	}
+}
+
 // The operator's launch-time budget ask must survive a resume: cloud
 // resumes are often unattended (usage-window auto-retries), so nothing
 // can re-state the override, and a dropped one silently reverts the run

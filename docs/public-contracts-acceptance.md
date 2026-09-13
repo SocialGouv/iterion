@@ -189,6 +189,15 @@ Syntax profiles and runtime semantics are independent.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
+- A fresh `task test` pass after the native orphan, runner-redelivery,
+  dispatcher and CLI-inspection changes completed across the repository.
+  `go vet` also passes for the changed runtime, service, runner, dispatcher
+  and CLI packages.
+- Cloud resume's grant clamp now reads banked cost from the native root's
+  durable `PortExecution.Budget` when present, rather than treating the
+  absent legacy checkpoint as zero. The full `pkg/server/cloudpublisher`
+  suite passes after this change; distributed native activation remains
+  blocked by the separate fleet and queue census gap.
 - `TestLegacyRuntimeTraceParity` runs a committed ordinary `.bot` workflow
   through the actual pinned-main and current CLIs. The zero- and two-element
   fan-out cases have equal persisted status, budgets, checkpoint location and

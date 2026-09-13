@@ -2796,9 +2796,16 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 }
 
 // checkpointCostUSD is what a run has already banked across its earlier
-// attempts, 0 for a run that never checkpointed.
+// attempts, 0 for a run that never checkpointed. Native runs persist their
+// root budget in PortExecution rather than the legacy Checkpoint.
 func checkpointCostUSD(r *store.Run) float64 {
-	if r == nil || r.Checkpoint == nil {
+	if r == nil {
+		return 0
+	}
+	if r.PortExecution != nil {
+		return r.PortExecution.Budget.Consumed.CostUSD
+	}
+	if r.Checkpoint == nil {
 		return 0
 	}
 	return r.Checkpoint.BudgetCostUSD
