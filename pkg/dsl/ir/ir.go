@@ -1113,6 +1113,7 @@ const (
 	RefRun                        // {{run.id}}
 	RefSecrets                    // {{secrets.<name>}} — renders the placeholder; materialised at exec
 	RefEach                       // {{each.<name>.item|index|count|first|last}} — sequential foreach binding
+	RefLiteralOpen                // {{"{{"}} — literal source delimiter; append to preserve prior RefKind values
 )
 
 func (rk RefKind) String() string {
@@ -1135,6 +1136,8 @@ func (rk RefKind) String() string {
 		return "secrets"
 	case RefEach:
 		return "each"
+	case RefLiteralOpen:
+		return "literal_open"
 	default:
 		return "unknown"
 	}

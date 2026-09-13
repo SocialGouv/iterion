@@ -244,8 +244,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=15 carries reasoning effort and the run-level permission override.
 	// v=17 carries durable assistant-mission receipt identity.
 	// v=18 carries loop cap expressions.
-	if SchemaVersion != 18 {
-		t.Errorf("SchemaVersion = %d, want 18 (bump intentionally)", SchemaVersion)
+	// v=19 carries literal template delimiters.
+	if SchemaVersion != 19 {
+		t.Errorf("SchemaVersion = %d, want 19 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)

@@ -511,6 +511,8 @@ func renderMappingValue(v any) string {
 // pass nil to skip those (they'll resolve to nil).
 func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 	switch ref.Kind {
+	case ir.RefLiteralOpen:
+		return "{{"
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
 			return sc.vars[ref.Path[0]]
