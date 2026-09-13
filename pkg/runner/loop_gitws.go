@@ -102,8 +102,8 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 // `msg.Resume` is the ordinary resume publish; it does not cover every
 // re-execution, since a JetStream redelivery of a run still marked `running` —
 // a pod that died inside the orphan sweeper's window — re-clones with Resume
-// nil. The checkpoint is the fact that does not depend on how the delivery was
-// shaped: it exists if and only if a node boundary was already crossed.
+// nil. A legacy Checkpoint or native PortExecution is the durable fact that
+// does not depend on how the delivery was shaped.
 func (r *Runner) reExecutionReason(ctx context.Context, msg *queue.RunMessage) string {
 	if msg.Resume != nil {
 		return "resume"
@@ -115,7 +115,7 @@ func (r *Runner) reExecutionReason(ctx context.Context, msg *queue.RunMessage) s
 		r.cfg.Logger.Warn("runner: run %s: could not read the run to tell a first claim from a re-execution (%v) — not recording a workspace reset", msg.RunID, err)
 		return ""
 	}
-	if run != nil && run.Checkpoint != nil {
+	if run != nil && (run.Checkpoint != nil || run.PortExecution != nil) {
 		return "redelivery"
 	}
 	return ""

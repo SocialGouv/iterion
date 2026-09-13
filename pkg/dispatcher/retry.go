@@ -233,7 +233,7 @@ func (c *Dispatcher) resumableRunID(runID string) string {
 // liveness probe — grabbing it proves no live process owns the run
 // (both the dispatcher's engine_runner and runview launches lock their
 // run for its whole lifetime, and flock is auto-released on crash). A
-// run nobody holds is promoted to failed_resumable (checkpoint present
+// run nobody holds is promoted to failed_resumable (legacy or native checkpoint present
 // → the caller resumes it) or failed (no recovery point → a fresh run
 // becomes legitimate), and the new status is returned. A held lock
 // (live owner), a store without cross-process lock authority, or any
@@ -265,7 +265,7 @@ func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemR
 		return cur.Status
 	}
 	newStatus := store.RunStatusFailed
-	if cur.Checkpoint != nil {
+	if cur.Checkpoint != nil || cur.PortExecution != nil {
 		newStatus = store.RunStatusFailedResumable
 	}
 	if err := s.UpdateRunStatusCoded(ctx, cur.ID, newStatus, "process orphaned: dispatcher found run '"+string(cur.Status)+"' with no live owner", store.FailureProcessOrphaned); err != nil {

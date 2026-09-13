@@ -67,3 +67,44 @@ func TestPromoteIfOrphanedPersistsProcessOrphaned(t *testing.T) {
 	}
 	t.Fatal("no run_failed event after the orphan promotion")
 }
+
+func TestPromoteIfOrphanedKeepsNativeCheckpointResumable(t *testing.T) {
+	s, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Capabilities().CrossProcessLock {
+		t.Skip("no cross-process lock on this platform")
+	}
+	ctx := store.WithRuntimeSemantics(context.Background(), store.RuntimeSemanticsPortsV1)
+	const id = "pc1_dispatcher_orphan"
+	if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	identity := store.PortExecutionIdentity{Source: "fixture", Graph: "fixture", Contract: "fixture", Policy: "fixture", Inputs: "fixture"}
+	if err := store.SavePortExecution(ctx, s, id, 0, &store.PortExecution{
+		Version: store.PortExecutionVersion, Revision: 1, Generation: 1, RootRunID: id, Identity: identity,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.CreatedAt = time.Now().Add(-2 * orphanRunGraceWindow)
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Dispatcher{logger: iterlog.Nop()}
+	if status := c.promoteIfOrphaned(ctx, s, r); status != store.RunStatusFailedResumable {
+		t.Fatalf("native orphan = %s, want failed_resumable", status)
+	}
+	after, err := s.LoadRun(ctx, id)
+	if err != nil || after.Status != store.RunStatusFailedResumable || after.PortExecution == nil || after.FailureCode != store.FailureProcessOrphaned {
+		t.Fatalf("native checkpoint lost or classified terminal: run=%+v err=%v", after, err)
+	}
+}

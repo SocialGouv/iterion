@@ -119,11 +119,13 @@ func TestReExecutionReason(t *testing.T) {
 		name       string
 		resume     *queue.ResumeSpec
 		checkpoint *store.Checkpoint
+		native     bool
 		want       string
 	}{
 		{name: "first claim: nothing has run yet", want: ""},
 		{name: "explicit resume publish", resume: &queue.ResumeSpec{}, want: "resume"},
 		{name: "redelivery with a checkpoint, no resume spec", checkpoint: &store.Checkpoint{NodeID: "commit"}, want: "redelivery"},
+		{name: "native redelivery with durable execution, no resume spec", native: true, want: "redelivery"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := store.New(t.TempDir())
@@ -131,13 +133,26 @@ func TestReExecutionReason(t *testing.T) {
 				t.Fatalf("store.New: %v", err)
 			}
 			ctx := context.Background()
-			run, err := st.CreateRun(ctx, "run-1", "dep_update_guard", nil)
+			id := "run-1"
+			if tc.native {
+				id = "pc1_run_1"
+				ctx = store.WithRuntimeSemantics(ctx, store.RuntimeSemanticsPortsV1)
+			}
+			run, err := st.CreateRun(ctx, id, "dep_update_guard", nil)
 			if err != nil {
 				t.Fatalf("CreateRun: %v", err)
 			}
 			if tc.checkpoint != nil {
 				if err := st.SaveCheckpoint(ctx, run.ID, tc.checkpoint); err != nil {
 					t.Fatalf("SaveCheckpoint: %v", err)
+				}
+			}
+			if tc.native {
+				identity := store.PortExecutionIdentity{Source: "fixture", Graph: "fixture", Contract: "fixture", Policy: "fixture", Inputs: "fixture"}
+				if err := store.SavePortExecution(ctx, st, id, 0, &store.PortExecution{
+					Version: store.PortExecutionVersion, Revision: 1, Generation: 1, RootRunID: id, Identity: identity,
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 			r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}

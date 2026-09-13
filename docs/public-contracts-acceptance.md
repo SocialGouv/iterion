@@ -175,6 +175,12 @@ Syntax profiles and runtime semantics are independent.
   graph; a first native launch without state remains a launch. The focused
   regression and the full `pkg/runner` suite pass. This guards the status
   switch, not actual delivery by a mixed fleet on the shared consumer.
+- The dispatcher's local orphan promotion now uses `PortExecution` as a
+  recovery point, matching the Studio service; its native regression and
+  full `pkg/dispatcher` suite pass. The runner's workspace-reset audit also
+  recognizes native durable state on an undated redelivery, with a focused
+  regression. Neither case substitutes for a real cloud process-kill and
+  JetStream redelivery test.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
