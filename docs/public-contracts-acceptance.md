@@ -374,3 +374,17 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   and current fixture executables and runs these tests. Effective ACL
   evaluation and Kubernetes/credential-custody reconciliation remain pending;
   parsing a matching configuration does not establish that authority.
+- Static subject-permission analysis now checks the complete intersection of
+  protected patterns and allowed subjects minus the union of denies. A finite
+  alphabet partition covers unnamed literals; `>` consumes one or more tokens.
+  Unsupported patterns, queue-qualified rules and excessive analysis complexity
+  refuse a conclusion. The loader must still refuse dynamic reply permissions
+  and other unsupported auth paths before using this bounded evaluator.
+- Actual NATS 2.14.5 publish/subscription tests match the evaluator for seven
+  permission arrangements, including inherited default denial, an explicit
+  empty permissions block overriding those defaults, and an empty configured
+  allow list permitting access. API, ACK and KV subjects plus a generated
+  wildcard witness are exercised. This is permission-language evidence, not
+  the complete protected-API census or an exclusion proof for the deployment.
+  The combined parser/permissions manifest passes 39 cases with race detection
+  without skips; the package also passes `go vet`.

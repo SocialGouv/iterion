@@ -1,5 +1,5 @@
 {
-  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. Does not establish ACL effectiveness, custody or Kubernetes authority.",
+  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. Does not establish ACL effectiveness, custody or Kubernetes authority. Also checks bounded whole-language wildcard/deny analysis against actual publish and subscribe delivery for seven static permission arrangements. The complete supported-profile loader and protected-API inventory remain outstanding.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig": [
       "TestNATSConfigSourcesConfineIncludes",
@@ -19,7 +19,28 @@
       "TestNATSConfigDoesNotInheritEnvironmentOrLeakParseErrors",
       "TestNATSConfigCanceledHelperCleansScratch",
       "TestNATSConfigProductionHelperBypassesDotEnv",
-      "TestNATSConfigDigestMatchesBroker"
+      "TestNATSConfigDigestMatchesBroker",
+      "TestNATSSubjectPermissionsCoverWholeLanguages",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/unrestricted",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/empty_configured_list",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/explicit_exclusion",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/unrelated_grant",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/deny_precedence",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/hole_below_wildcard",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/one_token_required",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/union_covers_tail",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/literal_denies_leave_a_hole",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/exact_depth",
+      "TestNATSSubjectPermissionsCoverWholeLanguages/several_protected_families",
+      "TestNATSSubjectPermissionsRefuseUnsupportedPatterns",
+      "TestNATSPermissionsAgreeWithPinnedBroker",
+      "TestNATSPermissionsAgreeWithPinnedBroker/inherit-default",
+      "TestNATSPermissionsAgreeWithPinnedBroker/explicit-empty-overrides-default",
+      "TestNATSPermissionsAgreeWithPinnedBroker/empty-list-is-unrestricted",
+      "TestNATSPermissionsAgreeWithPinnedBroker/safe-only",
+      "TestNATSPermissionsAgreeWithPinnedBroker/wildcard-minus-deny",
+      "TestNATSPermissionsAgreeWithPinnedBroker/deny-union",
+      "TestNATSPermissionsAgreeWithPinnedBroker/protected-family"
     ]
   }
 }
