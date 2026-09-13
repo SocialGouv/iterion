@@ -18,6 +18,7 @@ function PortList({ title, ports }: { title: string; ports: PublicPortDecl[] }) 
                 {port.nullable ? " · nullable" : ""}
                 {port.min_items !== undefined ? ` · min ${port.min_items}` : ""}
                 {port.max_items !== undefined ? ` · max ${port.max_items}` : ""}
+                {port.type.endsWith("[]") && port.max_items === undefined ? " · item count unknown" : ""}
                 {port.file ? ` · file${port.file.media_type ? ` (${port.file.media_type})` : ""}` : ""}
               </p>
             </li>
@@ -50,7 +51,7 @@ export default function PublicContractPanel({ contract }: { contract: ContractDe
         <section className="mt-3 text-xs">
           <h3 className="font-semibold text-fg-muted uppercase tracking-wide">Declared effects</h3>
           <ul className="mt-1 space-y-1">{contract.effects!.map((effect) => (
-            <li key={effect.name}>{effect.name}{effect.paid ? " · paid" : ""}: {effect.description}</li>
+            <li key={effect.name}>{effect.name}{effect.paid ? " · paid · cost unknown" : ""}: {effect.description}</li>
           ))}</ul>
         </section>
       )}
