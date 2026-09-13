@@ -78,7 +78,7 @@ though read-only mode restricts it to GET.
 | `local_validate` | read | Parse/compile/validate a `.bot` or `.botz` (diagnostics JSON; `valid:false` is a normal answer). |
 | `local_bots_list` | read | Discover bots under `bots/`, `examples/` (or given paths). |
 | `local_runs_list` | read | List runs in the store (status/workflow filters, newest first). |
-| `local_run_get` | read | One run's record: status, error, budget, worktree finalization (`final_commit`/`final_branch`/`merged_into`), and for `running` docs an `executing` liveness verdict (see below). |
+| `local_run_get` | read | One run's status, error, budget, worktree finalization and `executing` liveness verdict. Native runs add public invocation/map/product progress and reported usage; `total_cost_known:false` marks missing price evidence. |
 | `local_run_events` | read | Structured event stream, incremental via `since`. |
 | `local_run_log` | read | Plain-text `run.log` tail. |
 | `local_run_report` | read | The chronological markdown report (`iterion report`). |

@@ -418,6 +418,10 @@ func handleLocalRunGet(ctx context.Context, s *Server, raw json.RawMessage) (str
 	if r.Budget != nil {
 		view["budget"] = r.Budget
 	}
+	if r.PortExecution != nil {
+		view["runtime_semantics"] = r.RuntimeSemantics
+		view["native_progress"] = nativeProgress(r.PortExecution)
+	}
 	if r.BundleName != "" {
 		view["bundle_name"] = r.BundleName
 	}
