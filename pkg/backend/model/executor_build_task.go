@@ -1177,14 +1177,21 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 			task.SessionSlot = f.id
 		}
 		currentFingerprint := clawSessionFingerprint(task.Model)
-		if task.SessionID != "" && task.SessionFingerprint != "" && task.SessionFingerprint != currentFingerprint {
-			if runID := RunIDFromContext(ctx); runID != "" && e.sessions != nil {
-				e.sessions.evict(runID, task.SessionSlot)
+		if task.SessionID != "" && task.SessionFingerprint != currentFingerprint {
+			if knownClawSessionFingerprint(task.SessionFingerprint) && knownClawSessionFingerprint(currentFingerprint) {
+				// The slot is Iterion-owned history. Keep it across Claw
+				// providers, including a return from fallback to primary;
+				// provider-specific blocks must not cross that boundary.
+				e.rollbackTaskSession(ctx, e.snapshotTaskSession(ctx, &task))
+			} else {
+				if runID := RunIDFromContext(ctx); runID != "" && e.sessions != nil {
+					e.sessions.evict(runID, task.SessionSlot)
+				}
+				e.noteSessionDegrade(ctx, f.id, backendName, task.SessionID, delegate.FallbackUnclassified,
+					fmt.Errorf("session provider fingerprint changed from %s to %s", task.SessionFingerprint, currentFingerprint))
+				task.SessionID = ""
+				task.SessionFingerprint = ""
 			}
-			e.noteSessionDegrade(ctx, f.id, backendName, task.SessionID, delegate.FallbackUnclassified,
-				fmt.Errorf("session provider fingerprint changed from %s to %s", task.SessionFingerprint, currentFingerprint))
-			task.SessionID = ""
-			task.SessionFingerprint = ""
 		}
 		if task.SessionID == "" {
 			task.SessionID = uuid.NewString()
@@ -1192,6 +1199,14 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.SessionFingerprint = currentFingerprint
 	}
 	applyResumeContinuity(&task, input)
+	if backendName == delegate.BackendClaw && f.session == ir.SessionPersist {
+		if len(task.ResumeConversation) == 0 && (input[delegate.ResumeConversationKey] != nil || input[delegate.ResumePendingToolUseIDKey] != nil || input[delegate.ResumeAnswerKey] != nil) {
+			return delegate.Task{}, fmt.Errorf("claw persisted resume: missing or invalid conversation")
+		}
+		if err := sanitizeClawPersistResume(&task); err != nil {
+			return delegate.Task{}, err
+		}
+	}
 
 	return task, nil
 }

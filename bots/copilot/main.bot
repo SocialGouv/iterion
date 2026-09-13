@@ -1228,18 +1228,19 @@ compute turn_state:
     actionless_clarification_key: "input.actionless_clarification_key"
 
 agent copi:
-  ## This persisted conversation uses the locally authenticated Claw/OpenAI
-  ## route. Claude Code Opus is currently quota-limited; the detected OpenAI
-  ## route is available through ChatGPT OAuth. A persisted session cannot
-  ## safely cross backend: C176 rejects that fallback because it would lose
-  ## continuity. Kimi and Grok remain independent reviewers, not unsafe
-  ## author fallbacks. If this route becomes unavailable, surface recovery
-  ## explicitly; do not weaken permission or session guarantees.
+  ## Keep both providers inside Claw so fallback retains the persisted
+  ## conversation, bounded tools, and permission gate. Claude uses the
+  ## configured Anthropic credentials; the primary keeps ChatGPT OAuth.
   backend: "claw"
   ## Terra is the fast user-facing entry and the only node that may make a
   ## Studio proposal. Sol below has a distinct persistent reflection slot.
   model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-5.6-terra}"
   reasoning_effort: "${ITERION_COPILOT_EFFORT:-medium}"
+  fallbacks:
+    claude:
+      backend: "claw"
+      model: "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}"
+      on: [usage_window, unavailable, transient_exhausted]
   input: turn_input
   output: copi_turn
   ## Studio consumes this versioned output from the run store. Publish
@@ -1436,6 +1437,11 @@ agent reflect:
   backend: "claw"
   model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-5.6-sol}"
   reasoning_effort: "${ITERION_COPILOT_REFLECTION_EFFORT:-high}"
+  fallbacks:
+    claude:
+      backend: "claw"
+      model: "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}"
+      on: [usage_window, unavailable, transient_exhausted]
   input: reflect_in
   output: reflect_out
   system: reflect_system

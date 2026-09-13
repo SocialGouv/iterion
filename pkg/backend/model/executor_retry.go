@@ -820,7 +820,14 @@ func (e *ClawExecutor) newElementBuilder(
 		} else {
 			task.Model = baseModels[bn]
 		}
-		if index > 0 {
+		// Claw's named persistent slot stores provider-neutral history and
+		// its pause data was validated/sanitized by buildTask. Keep both on
+		// same-Claw fallback, including when the primary is on cooldown.
+		// The serving backend stamps its actual provider fingerprint.
+		keepClawSession := baseBackendName == delegate.BackendClaw && bn == delegate.BackendClaw &&
+			task.SessionSlot != "" && knownClawSessionFingerprint(task.SessionFingerprint) &&
+			knownClawSessionFingerprint(clawSessionFingerprint(task.Model))
+		if index > 0 && !keepClawSession {
 			// A fall-through starts a fresh conversation. The resume
 			// continuity applied at build time (the operator's answer,
 			// the pending tool_use, the prior messages) belongs to the

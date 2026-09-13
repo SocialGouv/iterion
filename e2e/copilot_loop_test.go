@@ -245,8 +245,8 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !hasFileChanges {
 		t.Error("copi_turn has no file_changes field — the declared companion-file authoring bridge cannot receive a proposal")
 	}
-	// The persisted author uses the detected locally authenticated Claw/OpenAI
-	// route. It has no fallback: crossing backends would lose session continuity.
+	// The primary author uses Claw/OpenAI; its Claude fallback stays on Claw
+	// to retain the persisted conversation and bounded tool surface.
 	if copi.Backend != "claw" {
 		t.Errorf("copi backend = %q, want \"claw\" — the authenticated persisted author route changed", copi.Backend)
 	}
@@ -514,8 +514,18 @@ func TestCopilot_GraphContract(t *testing.T) {
 	}
 	// These structural invariants used to sit behind an early return alongside
 	// the retired editorial-review graph. Keep the live contract executable.
-	if len(copi.Fallbacks) != 0 {
-		t.Errorf("copi declares %d fallback route(s) — a persisted author must not cross to an unsafe backend", len(copi.Fallbacks))
+	for _, author := range []*ir.AgentNode{copi, reflect} {
+		if len(author.Fallbacks) != 1 {
+			t.Errorf("%s fallbacks = %#v, want one Claude route", author.ID, author.Fallbacks)
+			continue
+		}
+		fallback := author.Fallbacks[0]
+		if fallback.Name != "claude" || fallback.Backend != "claw" || fallback.Model != "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}" || fallback.Action != "" {
+			t.Errorf("%s fallback = %#v, want same-Claw Claude", author.ID, fallback)
+		}
+		if !slices.Equal(fallback.On, []string{"usage_window", "unavailable", "transient_exhausted"}) {
+			t.Errorf("%s fallback triggers = %v", author.ID, fallback.On)
+		}
 	}
 	if len(copi.Tools) == 0 {
 		t.Error("copi declares no tools: it would lose the documented read-only surface")
