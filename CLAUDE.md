@@ -428,6 +428,7 @@ the hours this one spent.
   avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
   App (no logo API; the studio hands over the file + the settings page).
   Read it when a bot posts with a default avatar, or before touching a logo.
+- [docs/groups-iteration-subbots.md#child-bundle-resources](docs/groups-iteration-subbots.md#child-bundle-resources) — child skills/devbox missing or leaking into a parent: bundle identity, borrowed resource restoration, nested resumes and scoped PATH.
 - [docs/bot-bundle-snapshots.md](docs/bot-bundle-snapshots.md) — cloud launches
   freeze workflow, resources and sibling subbots through the server authority;
   queue v13, bounded immutable snapshot transport, strict runner resolution and

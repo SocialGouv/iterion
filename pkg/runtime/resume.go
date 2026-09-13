@@ -72,7 +72,7 @@ func ValidateResumeWorkflowHash(runID, persistedHash, currentHash string, force 
 // answers are recorded and execution continues from the human node. For
 // failed-resumable runs, execution restarts from the node after the last
 // successfully completed one (re-executing the failed node).
-func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]any) error {
+func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]any) (resultErr error) {
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -163,6 +163,17 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if rerr := e.refuseBundleRequiringNewerEngine(); rerr != nil {
 		return rerr
 	}
+	e.restoreRunEnv(r)
+	e.parentRunID = r.ParentRunID
+	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, r.ParentRunID != "" && !r.Worktree)
+	if resourceErr != nil {
+		return resourceErr
+	}
+	defer func() {
+		if cleanupErr := resourceCleanup(); cleanupErr != nil {
+			resultErr = errors.Join(resultErr, cleanupErr)
+		}
+	}()
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
@@ -1454,6 +1465,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
 	}
 
+	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
 	// Attachments are otherwise loaded only by runInitState, on the LAUNCH
@@ -1702,6 +1714,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	}
 	defer sandboxCleanup()
 
+	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
 	// Same reason as the paused-resume path above: without this every
@@ -1935,7 +1948,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	execCtx := e.execContext(ctx, rs, nodeID)
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The llm half of llm_or_human is an OPTIMIZATION — it auto-answers
@@ -2630,7 +2643,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
 	execCtx = e.execContext(execCtx, rs, nodeID)
 	execStart := time.Now()
-	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// Check for another interaction request (recursive). depth+1

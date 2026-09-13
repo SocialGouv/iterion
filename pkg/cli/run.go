@@ -600,12 +600,10 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			childPath = filepath.Join(parentDir, childPath)
 		}
 		// The child compiles the way every path does: a bundle's main.bot
-		// promoted to its bundle, prompts/*.md in scope. Its skills are NOT
-		// mirrored here: the child works in the parent's workdir, and a
-		// same-named skill would overwrite the parent's for the rest of its
-		// run (the studio's in-process runner and the cloud runner do mirror
-		// them today, with that hazard).
-		childWf, hash, _, err := runview.CompileWorkflowPath(childPath)
+		// promoted to its bundle, prompts/*.md in scope. The engine borrows
+		// the parent's managed resource paths for the child's active pass
+		// and restores them before returning, including on pause/failure.
+		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -652,6 +650,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		childOpts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
+			runtime.WithBundle(childBundle),
 			runtime.WithExecutionContext(childContext),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),

@@ -190,6 +190,11 @@ locally).
 
 When `iterion run my.botz` (or a directory bundle) executes:
 
+Subbot children use the bundle returned by their compilation on all four
+launchers. Shared-workspace children temporarily borrow the managed resource
+trees and restore them on return; see [Child bundle resources](groups-iteration-subbots.md#child-bundle-resources)
+for collision, devbox and pause/resume rules.
+
 1. **Skills** in `skills/` are copied into `<workDir>/.claude/skills/`
    with marker-aware collision handling
    (`<workDir>/.claude/skills/.iterion-managed/<name>.sha256` records

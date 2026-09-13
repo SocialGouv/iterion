@@ -129,3 +129,13 @@ You promote cards, observe their states, and report. You do NOT launch
 or reload the dispatcher, do NOT read child-run internals, do NOT touch
 caps, do NOT resume paused runs. Everything beyond the board is a
 recommendation to the operator, with the exact command they'd run.
+
+## Child resources differ from the parent
+
+When a subbot cannot read its skills/tools, or its parent sees child resources
+later, consult [Child bundle resources](../../../docs/groups-iteration-subbots.md#child-bundle-resources).
+Check the child's `FilePath`/`BundlePath` and `sandbox_devbox_provisioned`
+event (`target`, `bin_dirs`, `errors`). `step.bot` beside `main.bot` is a bare
+workflow. Shared-workspace resources are borrowed for each active pass and
+restored on return, including pauses; child devbox PATH never replaces the
+parent's. A restoration error names a retained backup to inspect.
