@@ -200,7 +200,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	}
 	defer func() {
 		if cleanupErr := resourceCleanup(); cleanupErr != nil {
-			err = errors.Join(err, cleanupErr)
+			err = errors.Join(cleanupErr, err)
 		}
 	}()
 

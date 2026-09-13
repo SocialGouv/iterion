@@ -135,7 +135,15 @@ In a shared workspace, each active child pass borrows `.claude/skills`,
 ancestor can be replaced by the child's same-named skill, including directory
 skills and flat-file aliases. User-edited workspace skills retain precedence.
 On success, failure, cancellation or a human pause, the saved resource trees
-are restored before control returns. Code edits elsewhere survive; deliberate
+are restored before control returns. A child is published as `finished` only
+after successful restoration; a restoration failure is `failed_resumable` with
+`RESOURCE_RESTORE_FAILED`, so reattachment cannot reuse a false success.
+This code requires manual inspection rather than automatic resume.
+If an abandoned executor ignores cancellation, cleanup drains for at most five
+seconds, reports that same failure, and retains the snapshot and workspace
+lease. Background cleanup restores the resources and releases the lease only
+after that executor exits; it never restores files under a live reader or
+publishes a late success. Code edits elsewhere survive; deliberate
 edits inside those borrowed resource trees do not. A failed restore returns
 an error naming the retained backup. Nested children and externally resumed
 children use the same scope rules.

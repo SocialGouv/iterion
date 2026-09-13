@@ -146,17 +146,13 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
 			return true, true, "", emErr
 		}
-		// Best-effort status flip — the run logically succeeded the
-		// moment we reached DoneNode, so a transient store-side
-		// failure on the final status write must not flip a
-		// successful run to "failed" (which would also skip
-		// worktree finalize and orphan any commits the run
-		// produced). Log and continue; run_finished still fires
-		// below so observers see the terminal event.
-		if usErr := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); usErr != nil && e.logger != nil {
-			e.logger.Warn("runtime: failed to persist run %s as finished: %v (run reached DoneNode — treating as success)", rs.runID, usErr)
+		// A child is not successful until its borrowed resources are restored.
+		// Reattach/polling callers must never observe a prematurely finished child.
+		if e.resourceScope != nil {
+			e.resourceScope.reachedDone = true
+			return true, true, "", nil
 		}
-		return true, true, "", e.emit(rs.ctx, rs.runID, store.EventRunFinished, "", nil)
+		return true, true, "", e.publishRunFinished(rs.ctx, rs.runID)
 
 	case *ir.FailNode:
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
@@ -1255,4 +1251,13 @@ func isSpecialDispatch(node ir.Node) bool {
 		return true
 	}
 	return false
+}
+
+// Preserve the ordinary terminal write policy while allowing resource scopes
+// to delay that terminal publication until their cleanup succeeds.
+func (e *Engine) publishRunFinished(ctx context.Context, runID string) error {
+	if usErr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFinished, ""); usErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: failed to persist run %s as finished: %v (run reached DoneNode — treating as success)", runID, usErr)
+	}
+	return e.emit(ctx, runID, store.EventRunFinished, "", nil)
 }

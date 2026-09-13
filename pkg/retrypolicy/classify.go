@@ -132,6 +132,9 @@ var classification = map[store.FailureCode]Disposition{
 	// not "nothing would change", but "no automatic attempt may decide".
 	// Only an operator who reconciled the remote state can.
 	store.FailureAmbiguousEffect: DispositionDeterministic,
+	// Likewise, an outstanding executor or failed restoration needs inspection
+	// before a fresh attempt may use the workspace and retained snapshot.
+	store.FailureResourceRestore: DispositionDeterministic,
 	store.FailureCancelled:       DispositionDeterministic, // an operator's decision, not a fault
 	// The provider will not serve this model to this caller. Nothing in
 	// the request's content is at fault, so a different sample cannot

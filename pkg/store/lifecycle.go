@@ -37,10 +37,12 @@ const (
 	// persisting writer today — a run record never carries them until
 	// their sites are classified. Kept so the wire vocabulary and the
 	// runtime aliases stay stable.
-	FailureLoopExhausted    FailureCode = "LOOP_EXHAUSTED"
-	FailureBudgetExceeded   FailureCode = "BUDGET_EXCEEDED"
-	FailureExecutionFailed  FailureCode = "EXECUTION_FAILED"
-	FailureWorkspaceSafety  FailureCode = "WORKSPACE_SAFETY"
+	FailureLoopExhausted   FailureCode = "LOOP_EXHAUSTED"
+	FailureBudgetExceeded  FailureCode = "BUDGET_EXCEEDED"
+	FailureExecutionFailed FailureCode = "EXECUTION_FAILED"
+	FailureWorkspaceSafety FailureCode = "WORKSPACE_SAFETY"
+	// The run cannot hand its borrowed resources back safely; inspect the retained backup.
+	FailureResourceRestore  FailureCode = "RESOURCE_RESTORE_FAILED"
 	FailureTimeout          FailureCode = "TIMEOUT"
 	FailureCancelled        FailureCode = "CANCELLED"
 	FailureJoinFailed       FailureCode = "JOIN_FAILED"
@@ -216,6 +218,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureBudgetExceeded,
 	FailureExecutionFailed,
 	FailureWorkspaceSafety,
+	FailureResourceRestore,
 	FailureTimeout,
 	FailureCancelled,
 	FailureJoinFailed,

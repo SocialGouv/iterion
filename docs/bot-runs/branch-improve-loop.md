@@ -1804,3 +1804,21 @@ drop, ChatGPT-forfait cap, and an intermittent sandbox bootstrap flake — via
 delegate-level network retries and an auto-resume loop that relaunches from
 the checkpoint (no progress lost) until convergence. None were the
 context-overflow bug; all were absorbed without operator intervention.
+
+
+## 2026-09-13 — #1195 resource cleanup review, blocked before work
+
+PR [#1195](https://github.com/SocialGouv/iterion/pull/1195), for #1146, received
+Revi findings R7f1193 (unbounded cleanup after abandoned execution) and R205239
+(restoration error persisted as a successful child). The automatic Billy run
+[`01a09bec-c6ce-7496-a8d2-ad3a9c9792fd`](https://iterion.cloud/runs/01a09bec-c6ce-7496-a8d2-ad3a9c9792fd)
+started at 17:59:41.021 UTC and ended at 17:59:41.190, before executing a node.
+`USAGE_LIMIT_BLOCKED`: Claude weekly use 99% >= 95%, reset September 15 at
+21:00 UTC. No commit and no active fixer; the quota retry remains scheduled.
+
+Applied the weekly-cap exception from the review loop runbook: direct fixes,
+with a five-second drain and retained workspace lease for an abandoned reader,
+and terminal success delayed until resource restoration succeeds. Regression
+tests use a real wedged executor and an unwritable resource destination on
+both Run and Resume. The normal CI and Revi gates recheck the corrected head;
+the blocked run was not manually relaunched.

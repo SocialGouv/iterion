@@ -41,6 +41,7 @@ type runResourceScope struct {
 	path         string
 	runID        string
 	borrowed     bool
+	reachedDone  bool
 	gate         *resourceGate
 	owned        map[string]string // exact bytes last mirrored by the active parent
 	setupRelease func()
@@ -130,12 +131,13 @@ func (e *Engine) beginRunResources(ctx context.Context, runID string, childInPla
 	}
 	scope.setupRelease = releaseWriter
 	restore := func() error { return nil }
+	backup := "workspace " + dir
 	if childInPlace {
 		// Nodes within the child may run concurrently. Sibling/parent readers use
 		// the outer gate, held exclusively until restoration has finished.
 		scope.gate = &resourceGate{sem: semaphore.NewWeighted(resourceWriterWeight)}
 		scope.setupRelease = func() {}
-		restore, err = snapshotChildResources(dir)
+		restore, backup, err = snapshotChildResources(dir)
 		if err == nil {
 			remoteRestore, remoteErr := e.snapshotSharedChildResources(ctx, "iterion-child-resources-"+rand.Text())
 			if remoteErr != nil {
@@ -163,18 +165,9 @@ func (e *Engine) beginRunResources(ctx context.Context, runID string, childInPla
 		}
 	}
 	scope.finish = func() error {
-		workspaceResourceGates.Lock()
-		delete(workspaceResourceGates.active, resourceOwnerKey{dir, runID})
-		workspaceResourceGates.Unlock()
-		scope.setupRelease()
-		// Drain a separately resumed descendant before restoring its ancestors.
-		_ = scope.gate.sem.Acquire(context.Background(), resourceWriterWeight)
-		err := restore()
-		scope.gate.sem.Release(resourceWriterWeight)
-		releaseWriter()
-		release()
-		return err
+		return e.finishRunResources(ctx, runID, scope, backup, restore, func() { releaseWriter(); release() })
 	}
+
 	e.resourceScope = scope
 	return context.WithValue(ctx, resourceScopeKey{}, scope), scope.finish, nil
 }
@@ -207,10 +200,10 @@ var childResourcePaths = []string{"skills", "commands", "agents", "settings.json
 // Copy only the directories the resource mirrors own. Other workspace edits,
 // including code produced by the child, are deliberately outside this scope.
 // Backups survive a failed restore, and the returned error names their path.
-func snapshotChildResources(workDir string) (func() error, error) {
+func snapshotChildResources(workDir string) (func() error, string, error) {
 	backup, err := os.MkdirTemp("", "iterion-child-resources-")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	root := filepath.Join(workDir, ".claude")
 	existed := map[string]bool{}
@@ -225,7 +218,7 @@ func snapshotChildResources(workDir string) (func() error, error) {
 		}
 		if err != nil {
 			_ = os.RemoveAll(backup)
-			return nil, err
+			return nil, "", err
 		}
 		existed[name] = true
 	}
@@ -242,7 +235,7 @@ func snapshotChildResources(workDir string) (func() error, error) {
 			}
 		}
 		return os.RemoveAll(backup)
-	}, nil
+	}, backup, nil
 }
 
 func copyResourceEntry(src, dst string) error {

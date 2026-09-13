@@ -171,7 +171,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	}
 	defer func() {
 		if cleanupErr := resourceCleanup(); cleanupErr != nil {
-			resultErr = errors.Join(resultErr, cleanupErr)
+			resultErr = errors.Join(cleanupErr, resultErr)
 		}
 	}()
 	switch r.Status {
