@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.141.0](https://github.com/SocialGouv/iterion/compare/v3.140.3...v3.141.0) (2026-09-13)
+
+### Features
+
+* **bots:** show Revi AI run details in a collapsed review footer ([#1167](https://github.com/SocialGouv/iterion/issues/1167)) ([6a25a6a](https://github.com/SocialGouv/iterion/commit/6a25a6a871d78d06531a7ce98174a7af21eb59dd)), references [#1166](https://github.com/SocialGouv/iterion/issues/1166)
+
+    <details><summary>why</summary>
+
+    Show served models and harnesses, requested effort, and engine token counters without changing findings or gate semantics. Refs #1166.
+
+    </details>
+
 ## [3.140.3](https://github.com/SocialGouv/iterion/compare/v3.140.2...v3.140.3) (2026-09-12)
 
 ### Bug Fixes
