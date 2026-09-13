@@ -1,0 +1,20 @@
+{
+  "scope": "Frozen version-2 representative Shorts, Town and Tabarria fan-out/convergence slices. This manifest certifies case execution, not full project conversion or model economics.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/runtime": [
+      "TestPublicContractsRepresentativePilots",
+      "TestPublicContractsRepresentativePilots/ShortsUnitDispatch",
+      "TestPublicContractsRepresentativePilots/ShortsUnitDispatch/0",
+      "TestPublicContractsRepresentativePilots/ShortsUnitDispatch/1",
+      "TestPublicContractsRepresentativePilots/ShortsUnitDispatch/4",
+      "TestPublicContractsRepresentativePilots/TownEpicImageStage",
+      "TestPublicContractsRepresentativePilots/TownEpicImageStage/0",
+      "TestPublicContractsRepresentativePilots/TownEpicImageStage/1",
+      "TestPublicContractsRepresentativePilots/TownEpicImageStage/4",
+      "TestPublicContractsRepresentativePilots/TabarriaStillStage",
+      "TestPublicContractsRepresentativePilots/TabarriaStillStage/0",
+      "TestPublicContractsRepresentativePilots/TabarriaStillStage/1",
+      "TestPublicContractsRepresentativePilots/TabarriaStillStage/4"
+    ]
+  }
+}
