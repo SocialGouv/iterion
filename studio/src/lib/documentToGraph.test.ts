@@ -59,3 +59,70 @@ describe("documentToGraph — subbot declarations", () => {
     expect(getTopologyKey(without)).not.toBe(getTopologyKey(withSubbot));
   });
 });
+
+describe("documentToGraph — native public graph", () => {
+  const d = doc({
+    contracts: [
+      { name: "Root", display_name: "Deliver", responsibility: "Ship outputs", inputs: [{ name: "seed", type: "string" }], outputs: [{ name: "report", type: "string" }, { name: "result", type: "string" }] },
+      { name: "Produce", display_name: "Produce", responsibility: "Produce a value", inputs: [{ name: "seed", type: "string" }], outputs: [{ name: "value", type: "string" }] },
+      { name: "Join", display_name: "Join both", responsibility: "Combine values", inputs: [{ name: "left", type: "string" }, { name: "right", type: "string" }], outputs: [{ name: "value", type: "string" }] },
+    ],
+    computes: [
+      { name: "producer_impl", output: "", expr: [] },
+      { name: "join_impl", output: "", expr: [] },
+      { name: "unused_impl", output: "", expr: [] },
+    ],
+    workflows: [{
+      name: "deliver", runtime_semantics: "ports-v1", contract: "Root", entry: "", edges: [],
+      graph: {
+        nodes: [
+          { name: "a", implementation: "producer_impl", contract: "Produce" },
+          { name: "b", implementation: "producer_impl", contract: "Produce" },
+          { name: "c", implementation: "join_impl", contract: "Join" },
+        ],
+        bindings: [
+          { from: "input.seed", to: "a.seed" }, { from: "input.seed", to: "b.seed" },
+          { from: "a.value", to: "c.left" }, { from: "b.value", to: "c.right" },
+        ],
+        exports: [{ name: "report", from: "a.value" }, { name: "result", from: "c.value" }],
+        products: ["report"],
+      },
+    }],
+  });
+
+  it("shows public instances, multi-input join and independently exported product", () => {
+    const { nodes, edges } = documentToGraph(d, "deliver");
+    expect(nodes.map(node => node.id)).toEqual(["__inputs__", "a", "b", "c", "__outputs__"]);
+    expect(nodes.find(node => node.id === "c")?.data.label).toBe("Join both");
+    expect(edges.filter(edge => edge.target === "c").map(edge => edge.source)).toEqual(["a", "b"]);
+    expect(edges.some(edge => edge.source === "a" && edge.target === "c")).toBe(true);
+    expect(edges.some(edge => edge.source === "a" && edge.target === "__outputs__" && String(edge.label).includes("product"))).toBe(true);
+  });
+
+  it("keys layout to bindings and instances rather than unused technical declarations", () => {
+    const key = getTopologyKey(d, "deliver");
+    expect(getTopologyKey(doc({ ...d, computes: [...d.computes, { name: "more_unused", output: "", expr: [] }] }), "deliver")).toBe(key);
+    const changed = doc({ ...d, workflows: [{ ...d.workflows[0]!, graph: { ...d.workflows[0]!.graph,
+      bindings: [...d.workflows[0]!.graph!.bindings!, { from: "b.value", to: "c.extra" }] } }] });
+    expect(getTopologyKey(changed, "deliver")).not.toBe(key);
+  });
+
+  it("labels array-to-scalar expansion and distinguishes whole-array passing", () => {
+    const mapped = doc({ ...d, contracts: [
+      ...d.contracts!,
+      { name: "Batch", display_name: "Batch", responsibility: "Supply items", inputs: [], outputs: [{ name: "items", type: "string[]" }] },
+      { name: "Collect", display_name: "Collect", responsibility: "Consume all items", inputs: [{ name: "items", type: "string[]" }], outputs: [] },
+    ], workflows: [{ ...d.workflows[0]!, graph: {
+      nodes: [
+        { name: "batch", implementation: "producer_impl", contract: "Batch" },
+        { name: "item", implementation: "producer_impl", contract: "Produce" },
+        { name: "collect", implementation: "join_impl", contract: "Collect" },
+      ],
+      bindings: [{ from: "batch.items", to: "item.seed" }, { from: "batch.items", to: "collect.items" }],
+      exports: [],
+    } }] });
+    const { edges } = documentToGraph(mapped, "deliver");
+    expect(String(edges.find(edge => edge.target === "item")?.label)).toContain("map each (dynamic)");
+    expect(String(edges.find(edge => edge.target === "collect")?.label)).not.toContain("map each");
+  });
+});

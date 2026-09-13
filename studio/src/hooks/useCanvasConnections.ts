@@ -99,6 +99,8 @@ export function useCanvasConnections() {
 
   const getConnectionError = useCallback(
     (connection: FlowEdge | Connection): string | null => {
+      if (activeWorkflow?.runtime_semantics === "ports-v1")
+        return "Choose named ports in the workflow graph editor";
       if (!connection.source || !connection.target) return "Invalid connection";
       if (connection.source === connection.target) return "Cannot connect a node to itself";
       if (connection.source === "done" || connection.source === "fail") return "Cannot connect from a terminal node";
@@ -178,7 +180,7 @@ export function useCanvasConnections() {
       const source = pendingConnectSourceRef.current;
       pendingConnectSourceRef.current = null;
 
-      if (!source || !document || !activeWorkflow) return;
+      if (!source || !document || !activeWorkflow || activeWorkflow.runtime_semantics === "ports-v1") return;
       // Never quick-add from a subbot child node — edges from another
       // bot's nodes cannot be written into this document.
       if (isSubbotChildId(source)) return;

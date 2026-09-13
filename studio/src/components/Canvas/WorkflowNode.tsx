@@ -1,6 +1,6 @@
 import { Handle } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import type { FallbackDecl, NodeKind } from "@/api/types";
+import type { ContractDecl, FallbackDecl, NodeKind } from "@/api/types";
 import { declOf } from "@/lib/documentToGraph";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
@@ -36,18 +36,21 @@ interface WorkflowNodeData extends Record<string, unknown> {
   subbotSource?: string;
   // Set on a compact subbot node whose child file failed to load.
   loadError?: string;
+  publicContract?: ContractDecl;
+  nativeBoundary?: boolean;
+  instanceId?: string;
 }
 
 type WorkflowNodeType = Node<WorkflowNodeData, "workflow">;
 
 export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeType>) {
-  const { label, kind, color, decl, external, subbotSource, loadError } = data;
+  const { label, kind, color, decl, external, subbotSource, loadError, publicContract, nativeBoundary, instanceId } = data;
   const activeWorkflow = useActiveWorkflow();
   const grouped = useGroupedDiagnostics();
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
-  const isEntry = !external && activeWorkflow?.entry === label;
+  const isEntry = !external && !nativeBoundary && !publicContract && activeWorkflow?.entry === label;
 
-  const nodeDiags = external ? [] : grouped.byNode.get(label) ?? [];
+  const nodeDiags = external ? [] : grouped.byNode.get(instanceId ?? label) ?? [];
   const severity = dominantSeverity(nodeDiags);
   const hasError = severity === "error";
   const hasWarning = severity === "warning";
@@ -185,7 +188,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
         <div className="absolute -top-2 -right-2 z-[var(--z-canvas)]">
           <DiagnosticBadge
             diagnostics={nodeDiags}
-            onReveal={() => setSelectedNode(label)}
+            onReveal={() => setSelectedNode(instanceId ?? label)}
           />
         </div>
       )}
@@ -207,9 +210,14 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
       <div className="flex items-center justify-center gap-1">
         <NodeIcon kind={kind} size={20} />
       </div>
-      <div className="font-semibold text-sm text-fg-default">{isStart ? "Start" : label}</div>
-      {!isStart && <div className="text-xs text-fg-muted">{kind}</div>}
-      {isLLMNode && modelLabel && (
+      <div className="font-semibold text-sm text-fg-default">{isStart && !nativeBoundary ? "Start" : label}</div>
+      {publicContract && !nativeBoundary ? (
+        <div className="text-caption text-fg-muted max-w-[180px]" title={publicContract.responsibility}>
+          {(publicContract.inputs ?? []).length} inputs · {(publicContract.outputs ?? []).length} outputs
+          {(publicContract.effects ?? []).some(effect => effect.paid) ? " · paid effect" : ""}
+        </div>
+      ) : !isStart && !nativeBoundary && <div className="text-xs text-fg-muted">{kind}</div>}
+      {!publicContract && !nativeBoundary && isLLMNode && modelLabel && (
         <div
           className="text-caption text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1"
           data-testid="node-model"
@@ -219,7 +227,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
           <span className="truncate">{modelLabel}</span>
         </div>
       )}
-      {isLLMNode && fallbackLabel && (
+      {!publicContract && !nativeBoundary && isLLMNode && fallbackLabel && (
         <div
           className="text-[9px] text-fg-muted mt-0.5 max-w-[160px] flex items-center justify-center gap-0.5"
           data-testid="node-fallbacks"
@@ -229,7 +237,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
           <span className="truncate">{fallbackLabel}</span>
         </div>
       )}
-      {isLLMNode && (
+      {!publicContract && !nativeBoundary && isLLMNode && (
         <div className="text-caption text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1.5 flex-wrap">
           <BackendBadge backend={backendValue} size={10} />
           {isEffortLevel(resolvedEffort) ? (
@@ -257,14 +265,14 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
           {awaitGlyph && <span aria-hidden>{awaitGlyph}</span>}
         </div>
       )}
-      {!isLLMNode && subtitle && (
+      {!publicContract && !nativeBoundary && !isLLMNode && subtitle && (
         <div className="text-caption text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1">
           <span className="truncate">{subtitle}</span>
           {awaitGlyph && <span aria-hidden>{awaitGlyph}</span>}
         </div>
       )}
       {/* Schema badges */}
-      {(inputSchema || outputSchema) && (
+      {!publicContract && !nativeBoundary && (inputSchema || outputSchema) && (
         <div className="flex items-center justify-center gap-1 mt-1">
           {inputSchema && (
             <span className="text-[9px] bg-accent-soft text-accent-text px-1 rounded" title={`input: ${inputSchema}`}>

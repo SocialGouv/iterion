@@ -6,6 +6,10 @@ export interface IterDocument {
   // The syntax profile of the file's `dsl: N` header (ADR-098); absent
   // or 0 = profile 1. The server writes the header back on save.
   profile?: number;
+  /** Public interfaces shared by native nodes and reusable workflows. */
+  contracts?: ContractDecl[];
+  /** Native execution limits and effect recovery remain technical config. */
+  port_policies?: PortPolicyDecl[];
   vars?: VarsBlock;
   presets?: PresetsBlock;
   attachments?: AttachmentsBlock;
@@ -539,11 +543,72 @@ export interface SubbotDecl {
 }
 
 // ---------------------------------------------------------------------------
+// Native public contracts and data graph. Mirrors pkg/dsl/ast/contract.go.
+// Array order is authoritative: duplicate names must reach Go validation.
+// ---------------------------------------------------------------------------
+
+export interface ContractDecl {
+  name: string;
+  display_name: string;
+  responsibility: string;
+  version?: number;
+  inputs?: PublicPortDecl[];
+  outputs?: PublicPortDecl[];
+  criteria?: PublicCriterionDecl[];
+  effects?: PublicEffectDecl[];
+}
+
+export interface PublicPortDecl {
+  name: string;
+  type: string;
+  description?: string;
+  /** Omitted means required; false is an explicit optional input. */
+  required?: boolean;
+  nullable?: boolean;
+  /** Distinguish absence from an explicit null or empty array with `"default" in port`. */
+  default?: unknown;
+  min_items?: number;
+  max_items?: number;
+  file?: { media_type?: string; min_bytes?: number; schema?: string };
+}
+
+export interface PublicCriterionDecl {
+  name: string;
+  kind: string;
+  port: string;
+  params?: unknown;
+}
+
+export interface PublicEffectDecl {
+  name: string;
+  description: string;
+  paid?: boolean;
+}
+
+export interface PortPolicyDecl {
+  name: string;
+  max_map_items?: number;
+  effects?: { name: string; resource?: string; recovery: string; verifier?: string }[];
+}
+
+export interface PortGraphDecl {
+  nodes?: { name: string; implementation: string; contract: string; policy?: string }[];
+  bindings?: { from: string; to: string }[];
+  exports?: { name: string; from: string }[];
+  products?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
 
 export interface WorkflowDecl {
   name: string;
+  /** Absent selects the unchanged legacy control interpreter. */
+  runtime_semantics?: string;
+  contract?: string;
+  port_policy?: string;
+  graph?: PortGraphDecl;
   vars?: VarsBlock;
   attachments?: AttachmentsBlock;
   entry: string;

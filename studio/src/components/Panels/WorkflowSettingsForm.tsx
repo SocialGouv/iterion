@@ -18,6 +18,7 @@ import {
 } from "@/lib/dslOptions";
 import CompactionFields from "./forms/CompactionFields";
 import MCPConfigFields from "./forms/MCPConfigFields";
+import NativeWorkflowSettings from "./NativeWorkflowSettings";
 
 export default function WorkflowSettingsForm() {
   const document = useDocumentStore((s) => s.document);
@@ -32,6 +33,7 @@ export default function WorkflowSettingsForm() {
   if (!workflow) {
     return <p className="p-3 text-fg-subtle text-xs">No workflow defined.</p>;
   }
+  if (workflow.runtime_semantics === "ports-v1") return <NativeWorkflowSettings workflow={workflow} />;
 
   const nodeNames = document ? Array.from(getAllNodeNames(document)).filter((n) => n !== "done" && n !== "fail") : [];
   const nodeOptions = nodeNames.map((n) => ({ value: n, label: n }));

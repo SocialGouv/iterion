@@ -72,6 +72,7 @@ interface ContextMenuState {
 
 interface ActiveWorkflowLike {
   name: string;
+  runtime_semantics?: string;
 }
 
 export interface UseCanvasHandlersDeps {
@@ -200,6 +201,7 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
 
   const onNodeDoubleClick = useCallback<NodeMouseHandler>(
     (_event, node) => {
+      if (activeWorkflow?.runtime_semantics === "ports-v1") return;
       // In sub-node view: double-click on edge sub-node navigates to the target node
       if (node.id.startsWith(DETAIL_PREFIX_EDGE)) {
         const data = node.data as { targetNodeId?: string };
@@ -216,7 +218,7 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
         pushSubNodeView(node.id);
       }
     },
-    [pushSubNodeView],
+    [pushSubNodeView, activeWorkflow],
   );
 
   const onEdgeClick = useCallback<EdgeMouseHandler>(
@@ -257,11 +259,12 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
   const onNodeContextMenu = useCallback(
     (event: ReactMouseEvent, node: Node) => {
       event.preventDefault();
+      if (activeWorkflow?.runtime_semantics === "ports-v1") return;
       // Subbot child nodes belong to another file — no edit context menu.
       if (isAuxiliaryNodeId(node.id) || isDetailNodeId(node.id) || isSubbotChildId(node.id)) return;
       setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
     },
-    [setContextMenu],
+    [setContextMenu, activeWorkflow],
   );
 
   // Quick-add menu handler

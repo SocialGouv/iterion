@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useTabsStore } from "@/store/tabs";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { NODE_COLORS, NODE_ICONS, softColor } from "@/lib/constants";
 import { getAllNodeNames } from "@/lib/defaults";
 import {
@@ -14,6 +15,7 @@ import type {
   ComputeDecl,
   FailDecl,
   HumanDecl,
+  IterDocument,
   JudgeDecl,
   NodeKind,
   RouterDecl,
@@ -29,6 +31,8 @@ import { CheckboxField, CommittedTextField, NodeFormHeader, SelectFieldWithCreat
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import NodeRunsChip from "./NodeRunsChip";
+import PublicContractPanel from "./PublicContractPanel";
+import PublicContractEditor from "./PublicContractEditor";
 import { Button, IconButton } from "@/components/ui";
 import { TrashIcon } from "@radix-ui/react-icons";
 
@@ -56,29 +60,84 @@ type NodeMatch =
   | { kind: "subbot"; decl: SubbotDecl }
   | { kind: "fail"; decl: FailDecl };
 
+function findNodeMatch(document: IterDocument | null, name: string | undefined): NodeMatch | null {
+  if (!document || !name) return null;
+  for (const a of document.agents) if (a.name === name) return { kind: "agent", decl: a };
+  for (const j of document.judges) if (j.name === name) return { kind: "judge", decl: j };
+  for (const r of document.routers) if (r.name === name) return { kind: "router", decl: r };
+  for (const h of document.humans) if (h.name === name) return { kind: "human", decl: h };
+  for (const t of document.tools) if (t.name === name) return { kind: "tool", decl: t };
+  for (const c of document.computes ?? []) if (c.name === name) return { kind: "compute", decl: c };
+  for (const sb of document.subbots ?? []) if (sb.name === name) return { kind: "subbot", decl: sb };
+  for (const f of document.fails ?? []) if (f.name === name) return { kind: "fail", decl: f };
+  return null;
+}
+
 export default function InspectorNode({ nodeId }: { nodeId: string }) {
   const document = useDocumentStore((s) => s.document);
+  const activeWorkflow = useActiveWorkflow();
   const removeNode = useDocumentStore((s) => s.removeNode);
   const renameNode = useDocumentStore((s) => s.renameNode);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const match = useMemo<NodeMatch | null>(() => {
-    if (!document) return null;
-    for (const a of document.agents) if (a.name === nodeId) return { kind: "agent", decl: a };
-    for (const j of document.judges) if (j.name === nodeId) return { kind: "judge", decl: j };
-    for (const r of document.routers) if (r.name === nodeId) return { kind: "router", decl: r };
-    for (const h of document.humans) if (h.name === nodeId) return { kind: "human", decl: h };
-    for (const t of document.tools) if (t.name === nodeId) return { kind: "tool", decl: t };
-    for (const c of document.computes ?? []) if (c.name === nodeId) return { kind: "compute", decl: c };
-    for (const sb of document.subbots ?? []) if (sb.name === nodeId) return { kind: "subbot", decl: sb };
-    // A named `fail <name>:` is drawn on the canvas, so it must resolve
-    // here too — otherwise selecting the node the canvas just rendered
-    // reports it "not found in the current document".
-    for (const f of document.fails ?? []) if (f.name === nodeId) return { kind: "fail", decl: f };
-    return null;
-  }, [document, nodeId]);
+  const match = useMemo(() => findNodeMatch(document, nodeId), [document, nodeId]);
+
+  if (activeWorkflow?.runtime_semantics === "ports-v1") {
+    const instance = activeWorkflow.graph?.nodes?.find((node) => node.name === nodeId);
+    const contractName = instance?.contract ?? activeWorkflow.contract;
+    const contract = document?.contracts?.find((item) => item.name === contractName);
+    const technical = instance?.implementation;
+    const technicalMatch = findNodeMatch(document, technical);
+    const policyName = instance?.policy ?? activeWorkflow.port_policy;
+    const policy = document?.port_policies?.find((item) => item.name === policyName);
+    const inputs = (activeWorkflow.graph?.bindings ?? []).filter((binding) => binding.to.startsWith(`${nodeId}.`));
+    const outputs = (activeWorkflow.graph?.bindings ?? []).filter((binding) => binding.from.startsWith(`${nodeId}.`));
+    const exports = (activeWorkflow.graph?.exports ?? []).filter((item) => item.from.startsWith(`${nodeId}.`));
+    const products = new Set(activeWorkflow.graph?.products ?? []);
+    return (
+      <div className="h-full overflow-y-auto p-3 text-sm">
+        <p className="text-caption uppercase tracking-wide text-fg-subtle mb-2">
+          {instance ? `Graph instance · ${nodeId}` : nodeId === "__inputs__" ? "Workflow inputs" : "Workflow outputs"}
+        </p>
+        <PublicContractPanel contract={contract} />
+        <PublicContractEditor contract={contract} />
+        {instance && (
+          <section className="mt-4 border-t border-border-default pt-3 text-xs">
+            <h3 className="font-semibold text-fg-muted uppercase tracking-wide">Connections</h3>
+            <ul className="mt-1 space-y-1">
+              {inputs.map((binding) => <li key={binding.to}>{binding.to.split(".", 2)[1]} ← {binding.from}</li>)}
+              {outputs.map((binding) => <li key={binding.to}>{binding.from.split(".", 2)[1]} → {binding.to}</li>)}
+              {exports.map((item) => <li key={item.name}>{item.from.split(".", 2)[1]} → workflow.{item.name}{products.has(item.name) ? " · product" : ""}</li>)}
+            </ul>
+          </section>
+        )}
+        {!instance && nodeId === "__outputs__" && (
+          <section className="mt-4 border-t border-border-default pt-3 text-xs">
+            <h3 className="font-semibold text-fg-muted uppercase tracking-wide">Exports</h3>
+            <ul className="mt-1 space-y-1">{(activeWorkflow.graph?.exports ?? []).map((item) => (
+              <li key={item.name}>{item.name} ← {item.from}{products.has(item.name) ? " · product" : ""}</li>
+            ))}</ul>
+          </section>
+        )}
+        {instance && (
+          <details className="mt-4 border-t border-border-default pt-3">
+            <summary className="cursor-pointer text-xs font-semibold text-fg-muted uppercase tracking-wide">Technical configuration</summary>
+            <p className="text-caption text-fg-subtle mt-2">Implementation: {technical}</p>
+            {policyName && <p className="text-caption text-fg-subtle">Policy: {policyName}</p>}
+            {policy && <pre className="mt-2 overflow-x-auto text-caption text-fg-subtle">{JSON.stringify(policy, null, 2)}</pre>}
+            {technicalMatch ? <NodeForm match={technicalMatch} /> : (
+              <pre className="mt-2 overflow-x-auto text-caption text-fg-subtle">{JSON.stringify(
+                [...(document?.agents ?? []), ...(document?.judges ?? []), ...(document?.tools ?? []),
+                  ...(document?.computes ?? []), ...(document?.subbots ?? [])].find((item) => item.name === technical), null, 2,
+              )}</pre>
+            )}
+          </details>
+        )}
+      </div>
+    );
+  }
 
   // Node inside an expanded subbot frame — belongs to the CHILD file, so
   // there is nothing to edit here; show a read-only notice + open button.

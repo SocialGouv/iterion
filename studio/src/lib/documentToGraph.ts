@@ -10,6 +10,7 @@ import type {
   ToolNodeDecl,
   ComputeDecl,
   SubbotDecl,
+  WorkflowDecl,
 } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
@@ -60,6 +61,13 @@ export function makeEdgeId(workflowName: string, index: number): string {
 /** Returns a key that changes only when the graph topology changes (nodes added/removed, edges added/removed).
  *  Uses counts and edge signatures instead of node names, so renaming a node does not trigger relayout. */
 export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): string {
+  const native = (doc.workflows ?? []).find(w => w.name === activeWorkflowName && w.runtime_semantics === "ports-v1");
+  if (native?.graph) {
+    const graph = native.graph;
+    return `${native.name}|ports-v1|${(graph.nodes ?? []).map(n => `${n.name}:${n.implementation}:${n.contract}`).join(",")}` +
+      `|${(graph.bindings ?? []).map(b => `${b.from}->${b.to}`).join(",")}` +
+      `|${(graph.exports ?? []).map(e => `${e.name}:${e.from}`).join(",")}`;
+  }
   const counts = [
     (doc.agents ?? []).length,
     (doc.judges ?? []).length,
@@ -82,6 +90,8 @@ export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): 
 }
 
 export function documentToGraph(doc: IterDocument, activeWorkflowName?: string): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
+  const native = (doc.workflows ?? []).find(w => w.name === activeWorkflowName && w.runtime_semantics === "ports-v1");
+  if (native?.graph) return nativeDocumentToGraph(doc, native);
   const nodeMap = new Map<string, { kind: NodeKind; decl: unknown }>();
 
   for (const a of doc.agents ?? []) nodeMap.set(a.name, { kind: "agent", decl: a });
@@ -204,6 +214,74 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
     });
   }
 
+  return { nodes, edges };
+}
+
+/** Project named native bindings without exposing unused technical declarations.
+ * The root input and output nodes show that an export can also feed consumers. */
+function nativeDocumentToGraph(doc: IterDocument, wf: WorkflowDecl): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
+  const technical = new Map<string, { kind: NodeKind; decl: unknown }>();
+  for (const decl of doc.agents ?? []) technical.set(decl.name, { kind: "agent", decl });
+  for (const decl of doc.judges ?? []) technical.set(decl.name, { kind: "judge", decl });
+  for (const decl of doc.tools ?? []) technical.set(decl.name, { kind: "tool", decl });
+  for (const decl of doc.computes ?? []) technical.set(decl.name, { kind: "compute", decl });
+  for (const decl of doc.subbots ?? []) technical.set(decl.name, { kind: "subbot", decl });
+  const contracts = new Map((doc.contracts ?? []).map(contract => [contract.name, contract]));
+  const instances = wf.graph?.nodes ?? [];
+  const publicWorkflow = contracts.get(wf.contract ?? "");
+  const hasInputs = (publicWorkflow?.inputs ?? []).length > 0 ||
+    (wf.graph?.bindings ?? []).some(binding => binding.from.startsWith("input.")) ||
+    (wf.graph?.exports ?? []).some(exported => exported.from.startsWith("input."));
+  const hasOutputs = (publicWorkflow?.outputs ?? []).length > 0 || (wf.graph?.exports ?? []).length > 0;
+  const records: { id: string; label: string; kind: NodeKind; decl: unknown; contract?: string; boundary?: boolean }[] = [];
+  if (hasInputs) records.push({ id: "__inputs__", label: "Workflow inputs", kind: "start", decl: null, boundary: true });
+  for (const instance of instances) {
+    const implementation = technical.get(instance.implementation);
+    records.push({ id: instance.name, label: contracts.get(instance.contract)?.display_name || instance.name,
+      kind: implementation?.kind ?? "compute", decl: implementation?.decl ?? null, contract: instance.contract });
+  }
+  if (hasOutputs) records.push({ id: "__outputs__", label: "Workflow outputs", kind: "done", decl: null, boundary: true });
+  const nodes: Node<NodeData>[] = records.map((record, index) => ({
+    id: record.id,
+    type: "workflowNode",
+    ariaLabel: `${record.kind} node: ${record.label}`,
+    position: { x: (index % 4) * 250 + 50, y: Math.floor(index / 4) * 150 + 50 },
+    initialWidth: 140,
+    initialHeight: 60,
+    data: { label: record.label, kind: record.kind, color: NODE_COLORS[record.kind],
+      decl: record.decl, contractName: record.contract, publicContract: contracts.get(record.contract ?? wf.contract ?? ""),
+      nativeBoundary: !!record.boundary, instanceId: record.id },
+  }));
+  const known = new Set(instances.map(instance => instance.name));
+  const contractFor = (name: string) => name === "input" ? publicWorkflow :
+    contracts.get(instances.find(instance => instance.name === name)?.contract ?? "");
+  const edges: FlowEdge[] = [];
+  for (const [index, binding] of (wf.graph?.bindings ?? []).entries()) {
+    const [source, sourcePort] = binding.from.split(".", 2);
+    const [target, targetPort] = binding.to.split(".", 2);
+    if (!target || !known.has(target) || !source || (source !== "input" && !known.has(source))) continue;
+    const sourceId = source === "input" ? "__inputs__" : source;
+    const sourceType = contractFor(source)?.outputs?.find(port => port.name === sourcePort)?.type ??
+      (source === "input" ? publicWorkflow?.inputs?.find(port => port.name === sourcePort)?.type : undefined);
+    const targetType = contractFor(target)?.inputs?.find(port => port.name === targetPort)?.type;
+    const mapped = !!sourceType?.endsWith("[]") && sourceType.slice(0, -2) === targetType;
+    edges.push({ id: `${wf.name}:port:${index}`, source: sourceId, target,
+      type: "conditionalEdge", label: `${sourcePort ?? "?"} → ${targetPort ?? "?"}${mapped ? " · map each (dynamic)" : ""}`,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-fg-subtle)", width: 16, height: 16 },
+      data: { portBinding: binding, bindingIndex: index, workflowName: wf.name, mapped },
+    });
+  }
+  const products = new Set(wf.graph?.products ?? []);
+  for (const [index, exported] of (wf.graph?.exports ?? []).entries()) {
+    const [source, sourcePort] = exported.from.split(".", 2);
+    if (!source || (source !== "input" && !known.has(source))) continue;
+    edges.push({ id: `${wf.name}:export:${index}`, source: source === "input" ? "__inputs__" : source,
+      target: "__outputs__", type: "conditionalEdge",
+      label: `${sourcePort ?? "?"} → ${exported.name}${products.has(exported.name) ? " · product" : ""}`,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-fg-subtle)", width: 16, height: 16 },
+      data: { portExport: exported, exportIndex: index, workflowName: wf.name, product: products.has(exported.name) },
+    });
+  }
   return { nodes, edges };
 }
 

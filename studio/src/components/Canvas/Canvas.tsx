@@ -404,7 +404,7 @@ export default function Canvas({ active = true }: CanvasProps) {
       </ReactFlow>
 
       {/* Empty-state overlay when the document has no editable nodes */}
-      {document &&
+      {document && activeWorkflow?.runtime_semantics !== "ports-v1" &&
         document.agents.length === 0 &&
         document.judges.length === 0 &&
         document.routers.length === 0 &&
