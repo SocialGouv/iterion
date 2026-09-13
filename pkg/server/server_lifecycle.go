@@ -849,10 +849,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.assistantWatchCancel()
 		s.assistantWatchCancel = nil
 	}
-	if s.assistantMissionCancel != nil {
-		s.assistantMissionCancel()
-		s.assistantMissionCancel = nil
-	}
+	s.stopAssistantMissions()
 	if s.gateAutofixCancel != nil {
 		s.gateAutofixCancel()
 		s.gateAutofixCancel = nil

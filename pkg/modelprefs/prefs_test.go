@@ -295,3 +295,100 @@ func TestFileStorePersistsAcrossInstances(t *testing.T) {
 		t.Errorf("reloaded model = %q", got.Model)
 	}
 }
+
+// A file that PARSES but is not this build's document is the loss the
+// corrupt check is for, arriving through the door it did not watch: each of
+// these decoded into a zero fileDoc with no rows and no error, so the
+// backup was skipped and the next Set rewrote the file holding only its own
+// row. The version field exists precisely to catch the last one — it was
+// written by save and read by nobody.
+func TestFileStoreTreatsAWrongShapeAsCorrupt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"null", `null`},
+		{"null prefs", `{"version":1,"prefs":null}`},
+		{"negative version", `{"version":-1,"prefs":[]}`},
+		{"empty object", `{}`},
+		{"renamed top-level key", `{"version":1,"preferences":[{"key":"whats-next","model":"anthropic/claude-opus-5"}]}`},
+		{"no version", `{"prefs":[{"key":"whats-next","model":"anthropic/claude-opus-5"}]}`},
+		{"version zero", `{"version":0,"prefs":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "model-prefs.json")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s := NewFileStore(dir)
+			if err := s.Set(context.Background(), &Pref{Key: "copilot", Model: "openai/gpt-5.5"}); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			backup, err := os.ReadFile(path + ".corrupt.bak")
+			if err != nil {
+				t.Fatalf("the original was rewritten with no backup: %v", err)
+			}
+			if string(backup) != tc.body {
+				t.Fatalf("backup = %q, want the original bytes %q", backup, tc.body)
+			}
+		})
+	}
+}
+
+// The mirror: the document this build writes must keep round-tripping, or
+// the check above would back up every healthy file on every write.
+func TestFileStoreAcceptsItsOwnDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-prefs.json")
+	s := NewFileStore(dir)
+	if err := s.Set(context.Background(), &Pref{Key: "whats-next", Model: "anthropic/claude-opus-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(context.Background(), &Pref{Key: "copilot", Model: "openai/gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".corrupt.bak"); !os.IsNotExist(err) {
+		t.Fatalf("a healthy round-trip produced a corrupt backup: %v", err)
+	}
+	// The earlier preference survived the second write — the property the
+	// wrong-shape cases above were silently breaking.
+	got, err := s.Get(context.Background(), "", "", "whats-next")
+	if err != nil || got == nil || got.Model != "anthropic/claude-opus-5" {
+		t.Fatalf("first preference after a second write = %+v (err %v)", got, err)
+	}
+}
+
+func TestFileStorePreservesFutureVersionAndExistingBackup(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-prefs.json")
+	original := []byte(`{"version":2,"renamed_preferences":[{"key":"kept"}]}`)
+	backup := []byte("older corruption backup")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".corrupt.bak", backup, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := NewFileStore(dir)
+	if pref, err := st.Get(ctx, "", "", "copilot"); err != nil || pref != nil {
+		t.Fatalf("Get = %v, %v", pref, err)
+	}
+	for _, mutate := range []func() error{
+		func() error { return st.Set(ctx, &Pref{Key: "copilot", Model: "test"}) },
+		func() error { return st.Delete(ctx, "", "", "copilot") },
+	} {
+		if err := mutate(); !errors.Is(err, ErrUnsupportedVersion) {
+			t.Fatalf("mutation = %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("future document changed: %q, %v", got, err)
+		}
+		got, err = os.ReadFile(path + ".corrupt.bak")
+		if err != nil || !bytes.Equal(got, backup) {
+			t.Fatalf("backup changed: %q, %v", got, err)
+		}
+	}
+}
