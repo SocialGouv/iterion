@@ -17,6 +17,8 @@
 
 ## Fan a doc rewrite out over modules, then run two independent checks
 
+dsl: 2
+
 schema plan_schema:
   modules: string[]   ## Module names to sweep
 

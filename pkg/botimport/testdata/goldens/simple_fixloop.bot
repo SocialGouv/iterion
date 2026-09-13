@@ -28,6 +28,8 @@
 ## phase: Fix — Fixer and checker alternate, max 4 rounds
 ## phase: Wrap — Summarize what changed
 
+dsl: 2
+
 vars:
   target: string = ""   ## input derived from args in the source script
   hole_1: string = ""   ## IMPORT hole: dynamic fragment — JS: lastReport ? `\n\nChecker feedback from the previous round:\n${lastReport}` : ''

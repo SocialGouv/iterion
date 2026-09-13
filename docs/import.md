@@ -5,6 +5,9 @@
 `agent()` / `phase()` / `log()` shape) into a **draft** `.bot`
 workflow.
 
+New drafts declare `dsl: 2`. String literals use the DSL's strict quoting,
+and blank lines inside imported prompts remain paragraph breaks.
+
 ```bash
 iterion import .claude/workflows/simple-bugfix.js            # writes simple_bugfix.bot next to the source
 iterion import flow.js --out bots/drafts/flow.bot --name flow
