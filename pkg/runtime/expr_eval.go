@@ -71,6 +71,9 @@ func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[stri
 				return sc.outputs
 			}
 			out, fields := matchOutputNode(sc.outputs, path)
+			if out == nil {
+				return nil
+			}
 			return drillPath(out, fields)
 		},
 		Artifacts: keyedMapResolver(sc.artifacts),

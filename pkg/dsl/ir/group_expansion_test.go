@@ -88,6 +88,7 @@ compute gate:
   expr:
     value: "'external'"
 agent outside:
+  model: "test-model"
   system: shared
   output: out
 group g(label):
@@ -96,6 +97,7 @@ group g(label):
     expr:
       value: "'{{params.label}}'"
   agent work:
+    model: "test-model"
     system: "{{params.label}} {{outputs.gate.value}}"
     user: shared
     output: out
