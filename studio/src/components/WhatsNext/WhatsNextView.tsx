@@ -169,7 +169,7 @@ function WhatsNextConversation({
             ) : (
               session.runId && (
                 <div className="border-t border-border-subtle">
-                  {(options.length > 0 || quickReplies.length > 0) && (
+                  {!pendingApproval && (options.length > 0 || quickReplies.length > 0) && (
                     <div className="flex flex-wrap gap-2 px-4 pt-3">
                       {/* Chip failures already surface via the session's
                           errorMessage banner — swallow the rethrow that

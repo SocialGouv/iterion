@@ -22,6 +22,7 @@ import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 import { AssistantProvider } from "./AssistantProvider";
 import ChatDock from "./ChatDock";
+import WhatsNextView from "@/components/WhatsNext/WhatsNextView";
 
 const retryDiscovery = vi.fn();
 let session: UseWhatsNextSession;
@@ -65,7 +66,7 @@ const { dockBot } = vi.hoisted(() => ({
 
 vi.mock("@/hooks/useChatRegistry", () => ({
   useChatRegistry: () => ({
-    byId: { copilot: dockBot },
+    byId: { copilot: dockBot, "whats-next": dockBot },
     bots: [dockBot],
     dockBots: [dockBot],
     resolve: () => dockBot,
@@ -105,6 +106,9 @@ vi.mock("@/components/shared/AgentChatboxInline", () => ({
 }));
 
 const contextAPI = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("@/hooks/useActiveRepo", () => ({
+  useActiveRepo: () => ({ enabled: false, activeRepo: null, overview: true }),
+}));
 vi.mock("@/api/assistantContext", () => ({
   resolveAssistantContext: contextAPI.resolve,
 }));
@@ -142,6 +146,10 @@ function makeSession(over: Partial<UseWhatsNextSession> = {}): UseWhatsNextSessi
     retryDiscovery,
     sessionRepo: null,
     launchRepo: null,
+    modelPref: {
+      choice: {}, set: false, loading: false, saving: false, available: true,
+      error: null, save: async () => {}, reset: async () => {}, current: () => ({}),
+    },
     launch: async () => {},
     submitHumanAnswer: async () => {},
     newSession: () => {},
@@ -152,6 +160,7 @@ function makeSession(over: Partial<UseWhatsNextSession> = {}): UseWhatsNextSessi
 
 beforeEach(() => {
   retryDiscovery.mockClear();
+  dockBot.nodeMap = {};
   contextAPI.resolve.mockReset();
   contextAPI.resolve.mockResolvedValue({ references: [] });
   editorAPI.capture.mockReset();
@@ -174,23 +183,24 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-function renderDock(path = "/") {
+function renderDock(path = "/", fullRoute = false) {
   // AssistantProvider discovers its bot registry through react-query now
   // (#333), so it needs a client. Retries off: the fetch fails under jsdom
   // and the registry's built-in floor is what these tests then exercise —
   // which is the production degradation path, not a stub.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const location = memoryLocation({ path });
-  const view = render(
+  const ui = () => (
     <QueryClientProvider client={qc}>
       <Router hook={location.hook}>
         <AssistantProvider>
-          <ChatDock />
+          {fullRoute ? <WhatsNextView /> : <ChatDock />}
         </AssistantProvider>
       </Router>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
-  return { ...view, navigate: location.navigate };
+  const view = render(ui());
+  return { ...view, navigate: location.navigate, refresh: () => view.rerender(ui()) };
 }
 
 describe("ChatDock empty state", () => {
@@ -816,4 +826,41 @@ describe("ChatDock offers wait for the chat pause", () => {
     expect(screen.getByText(/Je propose le reset/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Confirm action" })).toBeNull();
   });
+});
+
+describe("assistant approval suggestions", () => {
+  it.each([false, true])("hides quick replies during approval (full route=%s)", (fullRoute) => {
+    dockBot.nodeMap = { chat: { kind: "human", approvedField: "accepted" } };
+    session = makeSession({ status: "active", runId: "run-approval", runStatus: "paused_waiting_human", messages: [{
+      kind: "human-question", id: "approval", nodeId: "chat", status: "pending", prompt: "Approve this proposal?",
+      questions: { quick_replies: ["Suggested reply"] },
+    }] });
+    renderDock(fullRoute ? "/whats-next" : "/", fullRoute);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Suggested reply" })).toBeNull();
+  });
+
+  it.each([false, true])("keeps ordinary quick replies available (full route=%s)", (fullRoute) => {
+    session = makeSession({ status: "active", runId: "run-question", runStatus: "paused_waiting_human", messages: [{
+      kind: "human-question", id: "question", nodeId: "chat", status: "pending", prompt: "What next?",
+      questions: { quick_replies: ["Suggested reply"] },
+    }] });
+    renderDock(fullRoute ? "/whats-next" : "/", fullRoute);
+    expect(screen.getByRole("button", { name: "Suggested reply" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+});
+
+it("badges an ordinary reply arriving while the dock is closed", () => {
+  session = makeSession({ status: "active", runId: "run-unread", runStatus: "running", messages: [{
+    kind: "user-message", id: "seed", text: "Explain this run", status: "consumed",
+  }] });
+  const view = renderDock();
+  fireEvent.click(screen.getByRole("button", { name: /Minimise assistant/i }));
+  session = { ...session, messages: [...session.messages, { kind: "assistant-text", id: "reply", nodeId: "copi", iteration: 1, text: "Here is the explanation." }] };
+  view.refresh();
+  expect(screen.getByRole("button", { name: /Open assistant.*1 new assistant update/i })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Open assistant/i }));
+  fireEvent.click(screen.getByRole("button", { name: /Minimise assistant/i }));
+  expect(screen.getByRole("button", { name: "Open assistant" })).toBeTruthy();
 });

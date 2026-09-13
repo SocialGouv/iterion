@@ -40,6 +40,7 @@ import {
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
 import VeilleBanner from "@/components/ChatDock/VeilleBanner";
+import { useUnreadWhileClosed } from "@/lib/chatDock/useUnreadWhileClosed";
 import { useRunVeille } from "@/lib/chatDock/useRunVeille";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -503,7 +504,11 @@ function AssistantDock({
     hasPendingHumanQuestion: !!composer.pendingHumanQuestion,
     pendingIsAskUser: composer.pendingIsAskUser,
   });
-  const unreadWatchCount = strip.unreadWatchConversationIds.size;
+  const unreadMessages = useUnreadWhileClosed(dock, session.messages.length);
+  const activeWatchAlreadyCounted = unreadMessages > 0 &&
+    !!strip.activeConversationId && strip.unreadWatchConversationIds.has(strip.activeConversationId);
+  const unreadWatchCount = unreadMessages + strip.unreadWatchConversationIds.size -
+    (activeWatchAlreadyCounted ? 1 : 0);
   const unreadWatchLabel = `${unreadWatchCount} new assistant ${
     unreadWatchCount === 1 ? "update" : "updates"
   }`;
@@ -717,7 +722,7 @@ function AssistantDock({
             </div>
           ) : null}
           <AttachedReferences references={attached} onDetach={detach} />
-          {(composer.options.length > 0 ||
+          {!composer.pendingApproval && (composer.options.length > 0 ||
             composer.quickReplies.length > 0 ||
             (!!session.runId &&
               workplaceDraft.designing &&

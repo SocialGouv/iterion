@@ -8,7 +8,7 @@
 // uses them as a doorbell: an event arrives, we re-read the authoritative
 // state. Fast path plus reconciliation, the same discipline the board uses.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   listRunVeille,
@@ -33,82 +33,106 @@ export interface UseRunVeille {
   stop: () => Promise<void>;
 }
 
-export function useRunVeille(runId: string | null): UseRunVeille {
-  const [veille, setVeille] = useState<RunVeille>(EMPTY);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface VeilleScope {
+  runId: string;
+  alive: boolean;
+  request: number;
+  stopping: boolean;
+}
 
-  // The doorbell. Counting the veille events rather than watching the whole
-  // event array keeps the fetch out of every unrelated transcript update.
+interface VeilleState {
+  runId: string | null;
+  veille: RunVeille;
+  busy: boolean;
+  error: string | null;
+}
+
+const EMPTY_STATE: VeilleState = { runId: null, veille: EMPTY, busy: false, error: null };
+
+export function useRunVeille(runId: string | null): UseRunVeille {
+  const [state, setState] = useState<VeilleState>(EMPTY_STATE);
+  const scopeRef = useRef<VeilleScope | null>(null);
+  // A switch hides the previous run's data in this render. Commit the lifetime
+  // separately so discarded concurrent renders cannot invalidate the live run.
+  const current = state.runId === runId ? state : EMPTY_STATE;
+  useLayoutEffect(() => {
+    const scope = runId ? { runId, alive: true, request: 0, stopping: false } : null;
+    scopeRef.current = scope;
+    // Reset committed state on ownership changes, including A -> B -> A before
+    // B has loaded, so A cannot inherit a completed stop's stale busy flag.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setState(EMPTY_STATE);
+    return () => { if (scope) scope.alive = false; };
+  }, [runId]);
+
   const doorbell = useRunStore((s) =>
     s.events.reduce(
-      (n, e) =>
-        e.type === "assistant_veille_armed" ||
-        e.type === "assistant_veille_stopped"
-          ? n + 1
-          : n,
+      (n, e) => e.type === "assistant_veille_armed" || e.type === "assistant_veille_stopped" ? n + 1 : n,
       0,
     ),
   );
 
-  const refresh = useCallback(async () => {
-    if (!runId) {
-      setVeille(EMPTY);
-      return;
-    }
+  const refresh = useCallback(async (scope: VeilleScope) => {
+    const request = ++scope.request;
+    let veille = EMPTY;
     try {
-      const next = await listRunVeille(runId);
-      setVeille({
+      const next = await listRunVeille(scope.runId);
+      veille = {
         run_watches: next.run_watches ?? [],
         watched_issue_ids: next.watched_issue_ids ?? [],
-      });
+      };
     } catch {
-      // A standby the dock cannot read is not worth an error banner: the
-      // assistant still works, it just draws no chip. The next event or
-      // remount retries.
-      setVeille(EMPTY);
+      // A later event retries an unreadable standby. A stale failure must not
+      // erase the new run's successful response.
     }
-  }, [runId]);
+    if (!scope.alive || request !== scope.request) return;
+    setState((prev) => ({
+      ...(prev.runId === scope.runId ? prev : EMPTY_STATE),
+      runId: scope.runId,
+      veille,
+    }));
+  }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh, doorbell]);
+    const scope = scopeRef.current;
+    if (scope) void refresh(scope);
+  }, [runId, doorbell, refresh]);
 
-  const issueIds = veille.watched_issue_ids;
+  const issueIds = current.veille.watched_issue_ids;
   const runTargets = useMemo(
-    () => veille.run_watches.map((w) => w.target_run_id),
-    [veille.run_watches],
+    () => current.veille.run_watches.map((w) => w.target_run_id),
+    [current.veille.run_watches],
   );
 
   const stop = useCallback(async () => {
-    if (!runId) return;
-    setBusy(true);
-    setError(null);
+    const scope = scopeRef.current;
+    if (!scope?.alive || scope.runId !== runId || scope.stopping || current.runId !== runId) return;
+    // Capture both halves of the ownership pair before the first await.
+    const veille = current.veille;
+    scope.stopping = true;
+    ++scope.request;
+    setState((prev) => ({ ...prev, busy: true, error: null }));
     try {
-      // Run watches first: stopping a card subscription while its watches
-      // stay armed would leave the assistant waking on outcomes for a card
-      // it no longer follows.
-      await Promise.all(
-        veille.run_watches.map((w) => stopAssistantRunWatch(w.id)),
-      );
-      await Promise.all(issueIds.map((id) => removeWatch(runId, id)));
-      await refresh();
+      await Promise.all(veille.run_watches.map((w) => stopAssistantRunWatch(w.id)));
+      await Promise.all(veille.watched_issue_ids.map((id) => removeWatch(scope.runId, id)));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      // Partial success is real (one of several calls may have landed), so
-      // re-read rather than assume either outcome.
-      await refresh();
+      if (scope.alive) setState((prev) => ({ ...prev, error: e instanceof Error ? e.message : String(e) }));
     } finally {
-      setBusy(false);
+      if (scope.alive) {
+        // Partial success also needs a fresh authoritative result.
+        await refresh(scope);
+        if (scope.alive) setState((prev) => ({ ...prev, busy: false }));
+      }
+      scope.stopping = false;
     }
-  }, [runId, veille.run_watches, issueIds, refresh]);
+  }, [runId, current, refresh]);
 
   return {
     active: issueIds.length > 0 || runTargets.length > 0,
     issueIds,
     runTargets,
-    busy,
-    error,
+    busy: current.busy,
+    error: current.error,
     stop,
   };
 }
