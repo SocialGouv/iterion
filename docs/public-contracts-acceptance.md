@@ -323,3 +323,29 @@ tokens or charges remain unknown.
 
 No production deployment, production workflow modification, live paid pilot,
 mass migration, PR merge or legacy removal belongs to this implementation task.
+
+- Distributed activation records now use schema 4, with independent
+  `policy_revision` and `proof_revision`. A lease claim does not extend proof
+  freshness; renewal compares the enabled policy, observation revision,
+  fingerprint and NATS fencing token. Mongo checks the lease deadline again
+  using its clock at the write. Disable advances only the policy revision,
+  preserving the latest observations, and cannot conflict with renewal alone.
+  Old/future activation schemas remain refused. The run admission's
+  `activation_revision` denotes the operator policy revision. All holders of
+  Store write credentials are inside the proof-integrity trust boundary.
+- Capability heartbeats use `ports-v1.census.<principal>.<instance>` in the
+  existing rollout KV bucket, without changing its TTL or monotonic epoch
+  keys. Freshness uses the broker timestamp (60 seconds); the opt-in publisher
+  ticks every 20 seconds and deletes its own revision at shutdown. The
+  authority's subject-and-sequence-bounded cleanup removes entries and
+  tombstones older than 24 hours while preserving concurrent publications.
+  The retention cutoff is advanced in tests; no 24-hour soak is claimed.
+- The distributed-primitives manifest passes 23 cases with race detection,
+  real Mongo and NATS 2.14, including an actual pinned-main `EnsureSchema`
+  caller. `go vet` passes for activation, Store and NATS packages. These are
+  storage and census primitives: the production authority observer, effective
+  ACL/Kubernetes reconciliation, refresher lifecycle, operator handlers and
+  positive distributed activation are still outstanding. Raw Mongo continues
+  refusing a hand-written activation record.
+- The complete Studio check after the connection-picker change passes 156
+  test files and 1,375 tests, in addition to its rebuilt Chromium round trip.

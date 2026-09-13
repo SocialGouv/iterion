@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-const PortActivationVersion = 3
+const PortActivationVersion = 4
 
 const PortDistributedProofMaxAge = time.Minute
 
@@ -29,17 +30,22 @@ var ErrPortActivation = errors.New("store: native runtime activation is unavaila
 // CapabilityDigest binds the binary's native runtime capabilities. Operators
 // must re-probe when the evidence or binary changes.
 type PortActivation struct {
-	Version                int       `json:"version" bson:"version"`
-	Revision               uint64    `json:"revision" bson:"revision"`
-	Enabled                bool      `json:"enabled" bson:"enabled"`
-	Scope                  string    `json:"scope" bson:"scope"`
-	StoreIdentity          string    `json:"store_identity" bson:"store_identity"`
-	ProofDigest            string    `json:"proof_digest" bson:"proof_digest"`
-	CapabilityDigest       string    `json:"capability_digest" bson:"capability_digest"`
-	QueueVersion           int       `json:"queue_version" bson:"queue_version"`
-	ConsumerAccessEvidence string    `json:"consumer_access_evidence,omitempty" bson:"consumer_access_evidence,omitempty"`
-	VerifiedAt             time.Time `json:"verified_at" bson:"verified_at"`
-	ExpiresAt              time.Time `json:"expires_at" bson:"expires_at"`
+	Version int `json:"version" bson:"version"`
+	// Revision is the operator policy revision recorded in run admissions.
+	// Renewing observations never changes it, so Disable cannot be starved
+	// by the authority refresher. Version 3 records require a new probe.
+	Revision               uint64                      `json:"policy_revision" bson:"policy_revision"`
+	ProofRevision          uint64                      `json:"proof_revision" bson:"proof_revision"`
+	Enabled                bool                        `json:"enabled" bson:"enabled"`
+	Scope                  string                      `json:"scope" bson:"scope"`
+	StoreIdentity          string                      `json:"store_identity" bson:"store_identity"`
+	ProofDigest            string                      `json:"proof_digest" bson:"proof_digest"`
+	CapabilityDigest       string                      `json:"capability_digest" bson:"capability_digest"`
+	QueueVersion           int                         `json:"queue_version" bson:"queue_version"`
+	ConsumerAccessEvidence string                      `json:"consumer_access_evidence,omitempty" bson:"consumer_access_evidence,omitempty"`
+	VerifiedAt             time.Time                   `json:"verified_at" bson:"verified_at"`
+	ExpiresAt              time.Time                   `json:"expires_at" bson:"expires_at"`
+	RefreshLease           *PortActivationRefreshLease `json:"refresh_lease,omitempty" bson:"refresh_lease,omitempty"`
 }
 
 // PortLaunchAdmission is the immutable authorization observed when a native
@@ -66,7 +72,8 @@ func (a *PortLaunchAdmission) Validate() error {
 }
 
 func (a *PortActivation) Validate() error {
-	if a == nil || a.Version != PortActivationVersion || a.Revision == 0 ||
+	if a == nil || a.Version != PortActivationVersion || a.Revision == 0 || a.Revision > math.MaxInt64 ||
+		a.ProofRevision == 0 || a.ProofRevision > math.MaxInt64 ||
 		(a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) || a.StoreIdentity == "" ||
 		len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
 		len(a.CapabilityDigest) != 64 || strings.Trim(a.CapabilityDigest, "0123456789abcdef") != "" ||
@@ -76,6 +83,9 @@ func (a *PortActivation) Validate() error {
 	if a.Scope == PortActivationDistributed && (a.QueueVersion < 15 || a.ConsumerAccessEvidence == "" ||
 		a.ExpiresAt.After(a.VerifiedAt.Add(PortDistributedProofMaxAge))) {
 		return fmt.Errorf("%w: distributed activation lacks queue/consumer evidence", ErrPortActivation)
+	}
+	if a.RefreshLease != nil && (a.Scope != PortActivationDistributed || a.RefreshLease.Validate() != nil) {
+		return fmt.Errorf("%w: malformed authority refresh lease", ErrPortActivation)
 	}
 	return nil
 }

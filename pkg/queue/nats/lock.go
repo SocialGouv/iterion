@@ -95,6 +95,12 @@ func (l *Lock) Refresh(ctx context.Context) error {
 	return nil
 }
 
+// FencingToken is the revision obtained by the last successful Acquire or
+// Refresh. The authority refresher carries it into the Store's CAS, so a
+// delayed previous owner cannot renew admission after a newer claim. Like
+// Refresh and Release, it must be called by the lease-owning goroutine.
+func (l *Lock) FencingToken() uint64 { return l.rev }
+
 // Release deletes the lock so a subsequent run can pick up the
 // run_id immediately. Non-fatal if the lease has already expired —
 // the next Acquire will succeed regardless.

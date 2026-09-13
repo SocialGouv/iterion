@@ -1,0 +1,36 @@
+{
+  "scope": "Policy/freshness CAS and authority fencing on real Mongo; capability heartbeat, retention and pinned-main schema preservation on real NATS. Does not establish effective ACLs, credential custody, production authority verification, or positive distributed activation.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/portsactivation": [
+      "TestLocalProbeActivateAndRollback"
+    ],
+    "github.com/SocialGouv/iterion/pkg/store": [
+      "TestNativeActivationFilesystem"
+    ],
+    "github.com/SocialGouv/iterion/pkg/store/mongo": [
+      "TestNativeActivationMongo",
+      "TestNativeActivationMongoRenewalPreservesPolicy",
+      "TestNativeActivationMongoRefresherFencing",
+      "TestNativeActivationMongoDisableWinsRenewal",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence",
+      "TestNativeActivationMongoRefusesOtherSchema",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/fingerprint",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/owner",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/policy",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/proof",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/extended_lease",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/past_observation",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/future_observation",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/overlong_proof",
+      "TestNativeActivationMongoRenewalRejectsChangedEvidence/expired_lease"
+    ],
+    "github.com/SocialGouv/iterion/pkg/queue/nats": [
+      "TestPortCensusIdentityAndFreshness",
+      "TestPortCensusRoundTripAndShutdown",
+      "TestPortCensusRejectsMalformedOrMismatchedRecords",
+      "TestPortCensusPrunesOnlyRetiredSubjects",
+      "TestPortCensusHeartbeatCleansUpOnCancellation",
+      "TestPortCensusLegacyEnsureSchemaPreservesKeys"
+    ]
+  }
+}

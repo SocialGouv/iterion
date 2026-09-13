@@ -470,6 +470,13 @@ jobs:
           logs="$(docker logs nats-js 2>&1)"
           grep -Fq "JetStream" <<<"$logs" || { echo "JetStream not enabled"; exit 1; }
 
+      - name: Build supported legacy NATS fixture
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          git fetch --no-tags --depth=1 origin 3872f9dd1d1cbf9c18ed338c66c9f55aaaea3fcc
+          bash scripts/build-port-legacy-fixture.sh "$RUNNER_TEMP/ports-legacy"
+
       - name: JetStream integration tests
         # Alongside pkg/runner's schema-rollout test, run EVERY suite
         # gated on this URI — a NATS-only test that no job runs is a
@@ -477,6 +484,7 @@ jobs:
         #   grep -rl ITERION_TEST_NATS_URI --include='*_test.go' pkg/
         env:
           ITERION_TEST_NATS_URI: nats://localhost:4222
+          ITERION_TEST_LEGACY_PROBE: ${{ runner.temp }}/ports-legacy/probe-legacy
         run: |
           go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
 

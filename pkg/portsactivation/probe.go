@@ -135,7 +135,7 @@ func ActivateLocal(ctx context.Context, s store.RunStore, proof Proof) (*store.P
 	if inspection.Activation != nil {
 		revision = inspection.Activation.Revision
 	}
-	record := &store.PortActivation{Version: store.PortActivationVersion, Revision: revision + 1, Enabled: true,
+	record := &store.PortActivation{Version: store.PortActivationVersion, ProofRevision: 1, Revision: revision + 1, Enabled: true,
 		Scope: proof.Scope, StoreIdentity: proof.StoreIdentity, ProofDigest: proof.Digest, CapabilityDigest: proof.CapabilityDigest,
 		QueueVersion: proof.QueueVersion, VerifiedAt: proof.VerifiedAt, ExpiresAt: proof.ExpiresAt}
 	if err := activation.SavePortActivation(ctx, revision, record); err != nil {
@@ -155,6 +155,9 @@ func Disable(ctx context.Context, s store.RunStore) (*store.PortActivation, erro
 	}
 	if current == nil {
 		return nil, fmt.Errorf("%w: no activation record", store.ErrPortActivation)
+	}
+	if disabler, ok := activation.(store.PortActivationDisabler); ok {
+		return disabler.DisablePortActivation(ctx, current.Revision)
 	}
 	next := *current
 	next.Revision++

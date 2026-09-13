@@ -165,7 +165,7 @@ func activatePortsTestStore(t *testing.T, s store.RunStore) {
 		t.Fatal(err)
 	}
 	scope := store.PortActivationLocal
-	record := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1, Enabled: true, Scope: scope, StoreIdentity: identity,
+	record := &store.PortActivation{Version: store.PortActivationVersion, ProofRevision: 1, Revision: 1, Enabled: true, Scope: scope, StoreIdentity: identity,
 		ProofDigest: strings.Repeat("a", 64), VerifiedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	if s.Root() == "" {
 		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, 15, "isolated disposable test consumer"

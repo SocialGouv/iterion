@@ -25,7 +25,7 @@ func RunPortActivation(t *testing.T, factory Factory) {
 	if err := store.RequirePortActivation(ctx, s, store.PortActivationLocal, now); !errors.Is(err, store.ErrPortActivation) {
 		t.Fatalf("fresh store allowed native execution: %v", err)
 	}
-	first := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1, Enabled: true, Scope: store.PortActivationLocal, StoreIdentity: identity,
+	first := &store.PortActivation{Version: store.PortActivationVersion, ProofRevision: 1, Revision: 1, Enabled: true, Scope: store.PortActivationLocal, StoreIdentity: identity,
 		ProofDigest: strings.Repeat("a", 64), CapabilityDigest: strings.Repeat("b", 64), VerifiedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := capability.SavePortActivation(ctx, 0, first); err != nil {
 		t.Fatal(err)

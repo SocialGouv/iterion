@@ -163,7 +163,7 @@ func nativeRewindStore(t *testing.T, cloud bool) store.RunStore {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	record := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1, Enabled: true, Scope: store.PortActivationLocal,
+	record := &store.PortActivation{Version: store.PortActivationVersion, ProofRevision: 1, Revision: 1, Enabled: true, Scope: store.PortActivationLocal,
 		StoreIdentity: identity, ProofDigest: strings.Repeat("a", 64), VerifiedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if cloud {
 		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, 15, "isolated rewind fixture"

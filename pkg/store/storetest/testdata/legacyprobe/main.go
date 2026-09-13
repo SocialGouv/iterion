@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/queue"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	storemongo "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -34,6 +35,8 @@ func run() error {
 	database := flag.String("database", "", "test Mongo database")
 	endpoint := flag.String("s3", "", "test S3 HTTP endpoint")
 	bucket := flag.String("bucket", "", "test S3 bucket")
+	natsURI := flag.String("nats", "", "disposable NATS URI")
+	rolloutBucket := flag.String("rollout-bucket", "", "isolated rollout KV bucket")
 	flag.Parse()
 	if *action == "queue-check" {
 		var m queue.RunMessage
@@ -44,6 +47,14 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(store.WithoutTenantFilter(context.Background()), 30*time.Second)
 	defer cancel()
+	if *action == "queue-schema" {
+		conn, err := natsq.Connect(ctx, natsq.Config{URL: *natsURI, RolloutKVBucket: *rolloutBucket})
+		if err != nil {
+			return err
+		}
+		conn.Close()
+		return nil
+	}
 	var s store.RunStore
 	var blobs blob.Client
 	if *uri != "" {
