@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.3](https://github.com/SocialGouv/iterion/compare/v3.142.2...v3.142.3) (2026-09-13)
+
+### Bug Fixes
+
+* **engine:** refuse unsupported async backend capabilities ([#1180](https://github.com/SocialGouv/iterion/issues/1180)) ([9f47bca](https://github.com/SocialGouv/iterion/commit/9f47bca0721cff5260417e477fad16140f28178f))
+
 ## [3.142.2](https://github.com/SocialGouv/iterion/compare/v3.142.1...v3.142.2) (2026-09-13)
 
 ### Bug Fixes
