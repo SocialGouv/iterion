@@ -247,6 +247,10 @@ func initAuthoringGit(t *testing.T, root string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	// A bot sandbox injects commit.gpgsign=false through Git's environment
+	// config. These repositories own their signing settings, including true.
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"config", "user.name", "Authoring Test"},

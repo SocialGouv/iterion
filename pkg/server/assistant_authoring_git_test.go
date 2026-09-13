@@ -306,6 +306,11 @@ func TestAuthoringGitHonorsSSHSigning(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("ssh-keygen unavailable")
 	}
+	// Reproduce the signing override inherited by tests run inside a bot.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "commit.gpgsign")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'commit.gpgsign=false'")
 	root, commit := attestedGitFixture(t)
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
