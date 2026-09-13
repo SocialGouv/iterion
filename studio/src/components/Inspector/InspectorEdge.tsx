@@ -3,7 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { makeEdgeId } from "@/lib/documentToGraph";
-import type { Edge } from "@/api/types";
+import type { ContractDecl, Edge, PortGraphDecl, PublicPortDecl, WorkflowDecl } from "@/api/types";
 import EdgeForm from "@/components/Panels/forms/EdgeForm";
 import { CheckboxField, CommittedTextField } from "@/components/Panels/forms/FormField";
 import { IconButton } from "@/components/ui";
@@ -13,6 +13,53 @@ interface EdgeMatch {
   edge: Edge;
   edgeIndex: number;
   workflowName: string;
+}
+
+function bindingHint(
+  binding: { from: string; to: string },
+  workflow: WorkflowDecl,
+  graph: PortGraphDecl | undefined,
+  contracts: ContractDecl[],
+): string {
+  const endpoint = (value: string) => {
+    const dot = value.indexOf(".");
+    return dot > 0 ? { node: value.slice(0, dot), port: value.slice(dot + 1) } : null;
+  };
+  const contractFor = (node: string) => {
+    const name = node === "input" ? workflow.contract : graph?.nodes?.find(item => item.name === node)?.contract;
+    return contracts.find(item => item.name === name);
+  };
+  const lookup = (value: string, direction: "input" | "output"): PublicPortDecl | undefined => {
+    const part = endpoint(value);
+    if (!part) return undefined;
+    const contract = contractFor(part.node);
+    const ports = direction === "input" || part.node === "input" ? contract?.inputs : contract?.outputs;
+    return ports?.find(item => item.name === part.port);
+  };
+  const source = lookup(binding.from, "output");
+  const target = lookup(binding.to, "input");
+  if (!source || !target) return "Validate the workflow to resolve this connection's cardinality.";
+  const mapped = source.type.endsWith("[]") && source.type.slice(0, -2) === target.type;
+  if (mapped) {
+    const range = source.max_items === undefined
+      ? source.min_items === undefined ? "item count is dynamic" : `at least ${source.min_items} invocations; maximum unknown`
+      : `${source.min_items ?? 0}–${source.max_items} invocations`;
+    const targetNode = endpoint(binding.to)?.node;
+    const paid = contractFor(targetNode ?? "")?.effects?.some(effect => effect.paid);
+    return `One invocation per array element (${range}); ready items may run in parallel within the workflow limit.${paid ? " Paid effect cost is unknown until execution." : ""}`;
+  }
+  if (source.type === target.type && source.type.endsWith("[]")) {
+    return "The complete array is passed as one value; this connection does not expand the node.";
+  }
+  if (source.type !== target.type) return "The declared port types differ; validate the workflow before execution.";
+  const targetNode = endpoint(binding.to)?.node;
+  const siblingMap = (graph?.bindings ?? []).some(item => {
+    if (item.to === binding.to || endpoint(item.to)?.node !== targetNode) return false;
+    const supplied = lookup(item.from, "output");
+    const consumed = lookup(item.to, "input");
+    return !!supplied && !!consumed && supplied.type.endsWith("[]") && supplied.type.slice(0, -2) === consumed.type;
+  });
+  return siblingMap ? "This value is broadcast to every mapped invocation of the node." : "The value is delivered after its supplier commits.";
 }
 
 export default function InspectorEdge({ edgeId }: { edgeId: string }) {
@@ -85,7 +132,7 @@ export default function InspectorEdge({ edgeId }: { edgeId: string }) {
                   : (graph?.products ?? []).filter((name) => name !== exported!.name) } })} />
           </>
         )}
-        {binding && <p className="text-caption text-fg-subtle mt-3">An array-to-scalar binding expands into independent parallel invocations. Other scalar inputs are broadcast.</p>}
+        {binding && <p className="text-caption text-fg-subtle mt-3">{bindingHint(binding, activeWorkflow, graph, document?.contracts ?? [])}</p>}
       </div>
     );
   }
