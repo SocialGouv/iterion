@@ -125,10 +125,11 @@ workflow w:
 
 All four launchers (CLI, dispatcher, studio and cloud runner) pass the **same
 bundle returned by compilation** to the child engine. A directory or its
-`main.bot` brings its own prompts, skills and `devbox.json`; another file such
-as `step.bot` beside that entry remains a bare workflow. Its persisted
-`FilePath` stays `step.bot`, without a misleading `BundlePath` that would
-resume the sibling `main.bot`.
+Every child file inside a bundle brings that bundle's prompts, skills and
+`devbox.json`, including a sibling `step.bot` or a `workflows/` export.
+Its persisted `FilePath` remains the selected child, while `BundlePath`
+identifies its resources. A loose file outside any bundle stays bare;
+resource-looking siblings alone do not promote it to a bundle.
 
 In a shared workspace, each active child pass borrows `.claude/skills`,
 `commands`, `agents` and `settings.json`. An unchanged skill installed by an

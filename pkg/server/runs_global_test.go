@@ -28,6 +28,15 @@ func TestOnlyRunningGlobalRunNeedsHeartbeat(t *testing.T) {
 	}
 }
 
+func TestGlobalRunSourceKindPreservesStudioChat(t *testing.T) {
+	if got := globalRunSourceKind(&store.RunSource{Kind: store.RunSourceKindStudioChat}); got != store.RunSourceKindStudioChat {
+		t.Fatalf("source kind = %q, want %q", got, store.RunSourceKindStudioChat)
+	}
+	if got := globalRunSourceKind(nil); got != "" {
+		t.Fatalf("nil source kind = %q, want empty", got)
+	}
+}
+
 func TestWorkspaceDirForGlobalRunPrefersPersistedWorkDir(t *testing.T) {
 	storePath := filepath.Join(
 		"/home/user/.iterion/projects",

@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -74,12 +76,10 @@ func WithLogger(l *iterlog.Logger) EngineOption {
 	return func(e *Engine) { e.logger = l }
 }
 
-// WithBoardMCP wires the board MCP HTTP handler used to serve a per-run
-// gateway-reachable board listener when a sandbox is active, so sandboxed
-// board-capability nodes (claude_code) can write the operator's board
-// (C082). The handler must serve ONLY the board MCP routes (it is exposed
-// gateway-reachable, token-gated) — never the full server mux. Nil (CLI
-// runs with no server) leaves sandboxed board-emit disabled.
+// WithBoardMCP wires the dedicated board/runs MCP HTTP handler used to serve a
+// per-run gateway-reachable listener when a sandbox is active (C082). The
+// handler must never be the full server mux. The historical option name is
+// retained for compatibility.
 func WithBoardMCP(h http.Handler) EngineOption {
 	return func(e *Engine) { e.boardMCPHandler = h }
 }
@@ -292,6 +292,27 @@ func WithPreset(name string) EngineOption {
 	return func(e *Engine) { e.preset = name }
 }
 
+// WithExtraSkills adds skill-library skills to a run on top of whatever the
+// workflow declares (`iterion run --skill <name>`, repeatable, or the
+// ITERION_SKILLS machine default).
+//
+// ADDITIVE, never a filter. The bot's author declared a set for a reason, and
+// an operator adding their own house standard must not be able to silently
+// remove one — the union is taken in collectSkillRefs. It is also not
+// posture-aware on purpose: a node's posture is a bias its own turn may flip,
+// so filtering the roster by it would lock the agent out of a skill exactly on
+// the turn it discovers it needs one.
+//
+// An unresolvable name is a LAUNCH ERROR, unlike a workflow's own reference
+// which is soft: the operator typed this one and is entitled to be told it
+// landed nowhere.
+func WithExtraSkills(names []string, origin string) EngineOption {
+	return func(e *Engine) {
+		e.extraSkills = names
+		e.extraSkillsOrigin = origin
+	}
+}
+
 // WithBudgetAsk records the operator's launch-time budget ask (the
 // `--max-*` flags, the launch modal's budget object) so runResolveDoc
 // persists it on the run doc as Run.BudgetOverrides — the replay source
@@ -319,6 +340,22 @@ func WithBudgetAsk(o *ir.BudgetOverrides) EngineOption {
 // the kanban. nil for CLI / studio / fork-spawned runs.
 func WithSource(src *store.RunSource) EngineOption {
 	return func(e *Engine) { e.source = src }
+}
+
+// WithBotOrigin records the workflow code provenance on the run.
+func WithBotOrigin(origin *store.BotOrigin) EngineOption {
+	return func(e *Engine) { e.botOrigin = origin }
+}
+
+// WithDelegation records the failed-run episode that launched this worker.
+func WithDelegation(d *store.RunDelegation) EngineOption {
+	return func(e *Engine) { e.delegation = d }
+}
+
+// WithWorktreeBaseCommit pins worktree:auto to an explicit host-verified
+// commit instead of the target checkout's moving HEAD.
+func WithWorktreeBaseCommit(commit string) EngineOption {
+	return func(e *Engine) { e.worktreeBaseCommit = strings.TrimSpace(commit) }
 }
 
 // WithCallback records the run-completion webhook parameters on the run
@@ -393,6 +430,28 @@ func WithModelOverrides(o []store.RunModelOverride) EngineOption {
 	return func(e *Engine) { e.modelOverrides = o }
 }
 
+// WithBudgetOverrides records the raw run-level budget intent. Enforcement is
+// wired separately by mutating the workflow before Engine construction; this
+// option makes that intent durable for later resumes. The value is copied so
+// callers cannot mutate the run record through their own pointer.
+func WithBudgetOverrides(o *store.RunBudgetOverrides) EngineOption {
+	return func(e *Engine) {
+		if o == nil {
+			e.budgetOverrides = nil
+			return
+		}
+		copy := *o
+		e.budgetOverrides = &copy
+	}
+}
+
+// WithPermissionOverride records the operator's run-level gate mode on the
+// run document. Executor enforcement is wired separately; this option makes
+// the choice durable across resumes and visible as the effective header mode.
+func WithPermissionOverride(mode string) EngineOption {
+	return func(e *Engine) { e.permissionOverride = mode }
+}
+
 // WithRoutingPolicy pins the launch-frozen outcome contract on the
 // engine; it is persisted on the run doc at start (same
 // replay-from-the-doc doctrine as the model pins).
@@ -405,6 +464,18 @@ func WithRoutingPolicy(p *store.RoutingPolicy) EngineOption {
 // instead of causing an error.
 func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
+}
+
+// WithExpectedResumeStatus narrows the resume claim to one exact source
+// state. It prevents a delayed durable action from consuming a newer pause.
+func WithExpectedResumeStatus(status store.RunStatus) EngineOption {
+	return func(e *Engine) { e.expectedResumeStatus = status }
+}
+
+// WithResumeReceiptID stamps the host-issued durable action identity on the
+// authoritative run_resumed event.
+func WithResumeReceiptID(id string) EngineOption {
+	return func(e *Engine) { e.resumeReceiptID = id }
 }
 
 // WithArtifactContractsPrevalidated avoids re-running the contract-only gate
@@ -444,6 +515,34 @@ func WithWorkDir(dir string) EngineOption {
 		e.workDir = dir
 		e.workDirDelegated = dir != ""
 	}
+}
+
+// WithRunEnv supplies the immutable project environment snapshot used by host
+// commands and the changed keys inherited by a sandbox.
+func WithRunEnv(env []string) EngineOption {
+	return func(e *Engine) {
+		e.runEnv = append([]string(nil), env...)
+	}
+}
+
+func projectEnvironmentOverlay(snapshot []string) map[string]string {
+	base := make(map[string]string)
+	for _, entry := range os.Environ() {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			base[key] = value
+		}
+	}
+	overlay := make(map[string]string)
+	for _, entry := range snapshot {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		if current, exists := base[key]; !exists || current != value {
+			overlay[key] = value
+		}
+	}
+	return overlay
 }
 
 // WithBundle attaches a resolved `.botz` bundle to the engine. The

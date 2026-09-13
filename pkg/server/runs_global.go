@@ -31,6 +31,7 @@ type globalActiveRun struct {
 	WorkflowName      string          `json:"workflow_name"`
 	BundleName        string          `json:"bundle_name,omitempty"`
 	BundleDisplayName string          `json:"bundle_display_name,omitempty"`
+	SourceKind        string          `json:"source_kind,omitempty"`
 	InputPath         string          `json:"input_path,omitempty"`
 	Status            store.RunStatus `json:"status"`
 	CreatedAt         time.Time       `json:"created_at"`
@@ -128,6 +129,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 				WorkflowName:      rec.WorkflowName,
 				BundleName:        rec.BundleName,
 				BundleDisplayName: rec.BundleDisplayName,
+				SourceKind:        globalRunSourceKind(rec.Source),
 				InputPath:         runJSONInputString(rec.Inputs, "input_path"),
 				Status:            rec.Status,
 				CreatedAt:         rec.CreatedAt,
@@ -153,18 +155,26 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 // shape evolves, the worst case is a field falling back to its zero
 // value here.
 type runJSONShape struct {
-	ID                string          `json:"id"`
-	Name              string          `json:"name"`
-	ParentRunID       string          `json:"parent_run_id"`
-	WorkflowName      string          `json:"workflow_name"`
-	BundleName        string          `json:"bundle_name"`
-	BundleDisplayName string          `json:"bundle_display_name"`
-	Inputs            map[string]any  `json:"inputs"`
-	Status            store.RunStatus `json:"status"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	WorkDir           string          `json:"work_dir"`
-	RepoRoot          string          `json:"repo_root"`
+	ID                string           `json:"id"`
+	Name              string           `json:"name"`
+	ParentRunID       string           `json:"parent_run_id"`
+	WorkflowName      string           `json:"workflow_name"`
+	BundleName        string           `json:"bundle_name"`
+	BundleDisplayName string           `json:"bundle_display_name"`
+	Source            *store.RunSource `json:"source"`
+	Inputs            map[string]any   `json:"inputs"`
+	Status            store.RunStatus  `json:"status"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+	WorkDir           string           `json:"work_dir"`
+	RepoRoot          string           `json:"repo_root"`
+}
+
+func globalRunSourceKind(source *store.RunSource) string {
+	if source == nil {
+		return ""
+	}
+	return strings.TrimSpace(source.Kind)
 }
 
 func runJSONInputString(inputs map[string]any, key string) string {

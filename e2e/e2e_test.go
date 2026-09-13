@@ -126,6 +126,29 @@ func newScenarioExecutor() *scenarioExecutor {
 }
 
 func (e *scenarioExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
+	// The scenario executor bypasses the real model-output validator. Keep old
+	// Copi scenarios focused on their routing subject by supplying the neutral,
+	// complete scope classification that a conforming backend must emit. Tests
+	// for missing/type/enum failures call model.ValidateOutput directly.
+	if nodeID == "copi" {
+		original := fn
+		fn = func(input map[string]any) (map[string]any, error) {
+			output, err := original(input)
+			if output == nil || err != nil {
+				return output, err
+			}
+			if _, ok := output["emitted_scope_exclusions"]; !ok {
+				output["emitted_scope_exclusions"] = []any{}
+			}
+			if _, ok := output["proposal_scope_status"]; !ok {
+				output["proposal_scope_status"] = "complete"
+			}
+			if _, ok := output["proposal_scope_categories"]; !ok {
+				output["proposal_scope_categories"] = []any{}
+			}
+			return output, nil
+		}
+	}
 	e.handlers[nodeID] = fn
 }
 
@@ -140,6 +163,23 @@ func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[st
 	// Default: return empty output with a _tokens marker for metrics.
 	return map[string]any{"_tokens": 10, "_cost_usd": 0.001}, nil
 }
+
+// Persist-session seams make the E2E executor behave like a backend whose
+// opaque session can survive a checkpoint. Tests still choose the session id
+// in their handler output; the payload itself is intentionally inert.
+func (e *scenarioExecutor) SessionResumeCapability(ir.Node) (string, bool) {
+	return "claw", true
+}
+
+func (e *scenarioExecutor) PackSession(_ context.Context, _, sessionID string) ([]byte, error) {
+	return []byte("e2e-session:" + sessionID), nil
+}
+
+func (e *scenarioExecutor) UnpackSession(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (e *scenarioExecutor) HasSession(context.Context, string, string) bool { return true }
 
 func (e *scenarioExecutor) callCount(nodeID string) int {
 	e.mu.Lock()

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { errorMessage as toMessage } from "@/lib/errorHints";
 
 import { getRun, resumeRun } from "@/api/runs";
-import { runStore, useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 
 import type { WhatsNextStatus } from "./sessionStatus";
 
@@ -30,6 +30,12 @@ export function useSessionSteering(opts: {
 }): SessionSteering {
   const { runId, setStatus, setBusyMessageId, setErrorMessage } = opts;
 
+  // The store this session lives in — the assistant's isolated one
+  // when mounted under AssistantProvider, the module default
+  // otherwise. Imperative reads MUST go through it: reaching for the
+  // module-default `runStore` façade here would split the session's
+  // state (reads via the provider, writes to another store).
+  const store = useRunStoreInstance();
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const applySnapshot = useRunStore((s) => s.applySnapshot);
@@ -62,7 +68,7 @@ export function useSessionSteering(opts: {
       }
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        if (runStore.getState().runId !== targetRunId) return;
+        if (store.getState().runId !== targetRunId) return;
         getRun(targetRunId)
           .then(applySnapshot)
           .catch((e) => {

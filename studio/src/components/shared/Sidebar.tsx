@@ -19,6 +19,13 @@ function openSettings() {
 const SIDEBAR_W_EXPANDED = "w-[220px]";
 const SIDEBAR_W_COLLAPSED = "w-[56px]";
 
+// Numeric mirrors of the two widths above, for FIXED surfaces that must
+// clear the sidebar (the floating assistant's resize clamp, which grows
+// leftward). Tailwind only sees the string literals, so the numbers live
+// beside them — change them together.
+export const SIDEBAR_EXPANDED_PX = 220;
+export const SIDEBAR_COLLAPSED_PX = 56;
+
 // Sidebar is the persistent vertical chrome on the left of the studio.
 // It hosts the iterion logo, the project + ⌘K context block, primary
 // nav, and the footer with backend status / theme / user team chip.

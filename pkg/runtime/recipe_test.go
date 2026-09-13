@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -346,6 +347,25 @@ func TestResolveVarsExpandsProjectMemoryDir(t *testing.T) {
 	got2 := eng2.resolveVars(nil)["memory_dir"].(string)
 	if !strings.Contains(got2, "tmp-fallback") && !strings.Contains(got2, "-tmp-fallback") {
 		t.Errorf("fallback to workDir: got %q", got2)
+	}
+}
+
+func TestResolveVarsExpandsBundleDir(t *testing.T) {
+	wf := &ir.Workflow{Vars: map[string]*ir.Var{
+		"pipeline_dir": {Name: "pipeline_dir", Type: ir.VarString, HasDefault: true, Default: "${BUNDLE_DIR}"},
+	}}
+	bundleDir := t.TempDir()
+	eng := &Engine{workflow: wf, bundle: &bundle.Bundle{Dir: bundleDir}}
+	if got := eng.resolveVars(nil)["pipeline_dir"]; got != bundleDir {
+		t.Fatalf("host BUNDLE_DIR = %q, want %q", got, bundleDir)
+	}
+	eng.containerWorkspace = "/workspace"
+	if got := eng.resolveVars(nil)["pipeline_dir"]; got != "/run/iterion/bundle" {
+		t.Fatalf("sandbox BUNDLE_DIR = %q", got)
+	}
+	eng.bundle = nil
+	if got := eng.resolveVars(nil)["pipeline_dir"]; got != "" {
+		t.Fatalf("plain workflow BUNDLE_DIR = %q, want empty", got)
 	}
 }
 

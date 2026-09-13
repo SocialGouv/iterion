@@ -16,6 +16,7 @@
 package bundle
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -275,6 +276,39 @@ func DirForMainBot(path string) string {
 		}
 	}
 	return ""
+}
+
+// OpenForWorkflow returns the nearest enclosing directory bundle for an
+// arbitrary workflow file. Unlike DirForMainBot, this also recognizes
+// exported workflows under workflows/ so subbot children retain their bundle
+// prompts, skills, attachments and sandbox mount. A workflow outside a bundle
+// returns (nil, nil).
+func OpenForWorkflow(path string) (*Bundle, error) {
+	if path == "" {
+		return nil, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("bundle: resolve workflow %s: %w", path, err)
+	}
+	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+		hasMain := false
+		if info, statErr := os.Stat(filepath.Join(dir, MainBotFile)); statErr == nil && info.Mode().IsRegular() {
+			hasMain = true
+		}
+		if hasMain && DirForMainBot(filepath.Join(dir, MainBotFile)) != "" {
+			b, openErr := OpenDir(dir)
+			if openErr != nil {
+				return nil, openErr
+			}
+			return b, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return nil, nil
 }
 
 // Kind discriminates how a workflow path was supplied.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 
@@ -9,6 +9,9 @@ import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 import { useUIStore } from "@/store/ui";
+import { useAssistantPageContext } from "@/lib/chatDock/pageContext";
+import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
+import { mintReference } from "@/lib/chatDock/routeReference";
 
 import AddTaskDialog from "./AddTaskDialog";
 import ExternalActiveRunsNotice from "./ExternalActiveRunsNotice";
@@ -20,6 +23,7 @@ import {
 import {
   collectFilterOptions,
   emptyPipelineFilters,
+  excludeAssistantConversationCards,
   filterPipelineCards,
   resetPipelineFilters,
 } from "./filters";
@@ -48,9 +52,29 @@ export default function PipelineBoardView() {
       : null;
   const [includeUnscoped, setIncludeUnscoped] = useState(false);
   const addToast = useUIStore((s) => s.addToast);
+  const assistant = useAssistantDock();
   // issue_id → run_id snapshot for launch-toast detection.
   const prevIssueRuns = useRef<Map<string, string>>(new Map());
   const launchToastPrimed = useRef(false);
+
+  const assistantDrawerContext = useMemo(() => {
+    if (!selected) return {};
+    const reference = selected.issue_id
+      ? mintReference("card", selected.issue_id, `Card ${selected.issue_id.slice(0, 8)}`)
+      : selected.run_id
+        ? mintReference("run", selected.run_id, `Run ${selected.run_id.slice(0, 8)}`)
+        : mintReference("card", selected.id, `Card ${selected.id.slice(0, 8)}`);
+    return {
+      title: selected.title,
+      section: "pipeline-card-drawer",
+      ...(reference ? { reference } : {}),
+      state: {
+        column: selected.column_id,
+        ...(selected.status ? { status: selected.status } : {}),
+      },
+    };
+  }, [selected]);
+  useAssistantPageContext(assistantDrawerContext, selected !== null);
 
   const query = useQuery({
     queryKey: ["pipeline-board"],
@@ -147,16 +171,26 @@ export default function PipelineBoardView() {
   const board = query.data;
   const { concurrency } = board;
 
-  const liveSelected = selected ? findFollowCard(board.cards, selected) : null;
+  const assistantRunIDs = new Set(
+    assistant?.conversations.flatMap((conversation) =>
+      conversation.runId ? [conversation.runId] : [],
+    ),
+  );
+  const boardCards = excludeAssistantConversationCards(
+    board.cards,
+    assistantRunIDs,
+  );
+
+  const liveSelected = selected ? findFollowCard(boardCards, selected) : null;
   const detailCard = liveSelected ?? selected;
   const detailStale = selected !== null && liveSelected === null;
 
-  const filterOptions = collectFilterOptions(board.cards);
+  const filterOptions = collectFilterOptions(boardCards);
   // ONE filtered set: the text/label/kind chips AND the repo scope. The
   // lifecycle chips (Opened/Closed tabs) are applied further down, inside
   // PipelineColumns, so In progress is never hidden by an inventory tab.
   const filteredCards = filterPipelineCards(
-    board.cards,
+    boardCards,
     filters,
     repoScope,
     includeUnscoped,
@@ -228,12 +262,12 @@ export default function PipelineBoardView() {
             Showing the last successful projection. {errorMessage(query.error)}
           </InlineBanner>
         )}
-        <ExternalActiveRunsNotice cards={board.cards} />
+        <ExternalActiveRunsNotice cards={boardCards} />
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <div className="flex h-full min-w-0 flex-col overflow-hidden">
-          {board.cards.length === 0 ? (
+          {boardCards.length === 0 ? (
             <EmptyState
               title="No pipelines yet"
               message="Add a task or launch a bot. Running pipelines and their human reviews appear here automatically."
@@ -247,7 +281,7 @@ export default function PipelineBoardView() {
           ) : (
             <PipelineColumns
               board={{ ...board, cards: filteredCards }}
-              allCardsForQueue={board.cards}
+              allCardsForQueue={boardCards}
               onRefetch={() => void query.refetch()}
               onEditTask={setEditTask}
               onOpenCard={openCard}

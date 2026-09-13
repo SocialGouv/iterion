@@ -362,3 +362,35 @@ func TestSubmitResumeReplaysTheLaunchBudgetAsk(t *testing.T) {
 		t.Fatalf("resume wire budget = %+v, want the launch ask replayed from the run doc (a nil here is the measured death at 14407s/14400s under a doc showing 8h)", published.Budget)
 	}
 }
+
+func TestSubmitResumePersistsUnlimitedWorkflowActivation(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
+	const runID = "run-bo-unlimited-resume"
+	if err := st.SaveRun(ctx, &store.Run{ID: runID, TenantID: "team-a", OwnerID: "u1", Status: store.RunStatusPausedWaitingHuman}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	var published *queue.RunMessage
+	p := &Publisher{store: st, publishRun: func(_ context.Context, m *queue.RunMessage) error { published = m; return nil }}
+	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20, MaxIterations: 100}}
+	spec := runview.ResumeSpec{
+		RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n",
+		Budget: &ir.BudgetOverrides{UnlimitedWorkflow: true},
+	}
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	if published == nil || published.Budget == nil || !published.Budget.UnlimitedWorkflow {
+		t.Fatalf("published budget = %+v", published)
+	}
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.BudgetOverrides == nil || !r.BudgetOverrides.UnlimitedWorkflow {
+		t.Fatalf("persisted activation = %+v", r.BudgetOverrides)
+	}
+}

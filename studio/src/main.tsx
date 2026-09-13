@@ -17,7 +17,7 @@ import "./app.css";
 import { initializeTheme } from "./store/theme";
 import { initializeBackendDetect } from "./store/backendDetect";
 import { initializeServerInfo } from "./store/serverInfo";
-import { isWailsHosted } from "./lib/desktopBridge";
+import { isBrowserWorkspace, isWailsHosted } from "./lib/desktopBridge";
 import { isScopedPane, scopePrefix } from "./lib/scope";
 
 // Desktop workspace shell vs. studio app. The DESKTOP main frame (a Wails
@@ -27,7 +27,8 @@ import { isScopedPane, scopePrefix } from "./lib/scope";
 // routed under its /x/<id> base. isWailsHosted() is synchronous (origin check),
 // so the branch is stable at first paint even before window.go finishes
 // injecting — unlike isDesktop(), which would briefly read false.
-const isWorkspaceShell = isWailsHosted() && !isScopedPane();
+const isWorkspaceShell =
+  (isWailsHosted() || isBrowserWorkspace()) && !isScopedPane();
 
 initializeTheme();
 // The workspace shell talks to no single backend, so skip the boot-time

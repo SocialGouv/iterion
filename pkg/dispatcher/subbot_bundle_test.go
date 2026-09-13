@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/subbottest"
@@ -11,9 +10,9 @@ import (
 )
 
 func TestDispatchSubbotBundleResourceScope(t *testing.T) {
-	for _, bare := range []bool{false, true} {
-		t.Run(fmt.Sprint(bare), func(t *testing.T) {
-			f := subbottest.New(t, bare)
+	for _, kind := range []string{"bundle", "member", "bare"} {
+		t.Run(kind, func(t *testing.T) {
+			f := subbottest.New(t, kind)
 			t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 			r, err := NewEngineRunner(f.Parent, iterlog.Nop())
 			if err != nil {

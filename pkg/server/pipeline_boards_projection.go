@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -103,6 +105,13 @@ type pipelineProjectionBuilder struct {
 	since         time.Time
 	hiddenBySince int
 
+	// chatBot answers "is this bot conversational?" (a manifest chat:
+	// surface) for a (bot id, workflow path) pair — injected by the server,
+	// memoized per key in chatBots for the lifetime of one projection so a
+	// board of N Copi sessions reads the manifest once, not N times.
+	chatBot  func(teamID, botID, filePath string) bool
+	chatBots map[string]bool
+
 	cardLimitReached  bool
 	depthLimitReached bool
 	cycleDetected     bool
@@ -128,6 +137,10 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		queuePositions:  map[string]int{},
 		since:           since,
 		finalOutputMemo: &s.finalOutputMemo,
+		chatBot: func(teamID, botID, filePath string) bool {
+			return s.botIsChat(ctx, teamID, botID, filePath)
+		},
+		chatBots: map[string]bool{},
 	}
 	if runs != nil {
 		builder.rs = runs.RunStore()
@@ -198,7 +211,12 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	// Standalone roots: manual/API/scheduled/queued runs with no native
 	// issue. Only top-level runs (parent absent or dangling) become cards;
 	// a child belongs to the root that spawned it, even when the child runs
-	// a different bot.
+	// a different bot. A CHAT SESSION (a run of a bot whose manifest
+	// declares a chat: surface — the assistant dock's Copi / Nexie) is not a
+	// pipeline at all and never becomes a card: the dock is its surface, and
+	// a session parks on a budget-free human turn for days, so projecting it
+	// would pin one In-progress card per open conversation. Its children
+	// (a subbot it spawned) stay folded under it and disappear with it.
 	standalone := make([]*store.Run, 0)
 	for _, run := range builder.runs {
 		if _, owned := builder.issueOwnedRuns[run.ID]; owned {
@@ -206,6 +224,9 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		}
 		parentID := pipelineParentRunID(run)
 		if parentID != "" && builder.runs[parentID] != nil {
+			continue
+		}
+		if builder.isChatSession(run) {
 			continue
 		}
 		standalone = append(standalone, run)
@@ -461,6 +482,66 @@ func pipelineCardEligible(run *store.Run) bool {
 // ended.
 func pipelineForkShell(run *store.Run) bool {
 	return run.ForkedFrom != "" && run.Status.IsTerminal() && run.FinishedAt == nil
+}
+
+// isChatSession reports whether run belongs to a conversational bot — see
+// the standalone-roots comment in buildPipelineBoard. Memoized per bot id
+// (or, for a legacy run stamped with no bot id, per workflow directory).
+func (b *pipelineProjectionBuilder) isChatSession(run *store.Run) bool {
+	if run == nil {
+		return false
+	}
+	// Typed launch provenance is authoritative and survives bundle moves,
+	// malformed manifests, and old file paths. Manifest discovery remains the
+	// compatibility path for chat sessions created before studio_chat existed.
+	if run.Source != nil && run.Source.Kind == store.RunSourceKindStudioChat {
+		return true
+	}
+	if b.chatBot == nil {
+		return false
+	}
+	botID := strings.TrimSpace(run.BotID)
+	filePath := strings.TrimSpace(run.FilePath)
+	key := "bot:" + botID
+	if botID == "" {
+		if filePath == "" {
+			return false
+		}
+		key = "dir:" + filepath.Dir(filePath)
+	}
+	key = run.TenantID + "\x00" + key
+	if b.chatBots == nil {
+		b.chatBots = map[string]bool{}
+	}
+	if v, ok := b.chatBots[key]; ok {
+		return v
+	}
+	v := b.chatBot(run.TenantID, botID, filePath)
+	b.chatBots[key] = v
+	return v
+}
+
+// botIsChat resolves whether the bot behind a run declares a chat: surface
+// in its manifest. The bot id goes through the same tiers as every other
+// manifest read (team override, platform override, then configured catalog —
+// botManifestFor); a run with no bot id (a legacy launch, or a loose .bot)
+// falls back to the manifest beside its workflow file, which is where a
+// bundle's manifest lives. Anything unresolvable is an ordinary run — the
+// board must never hide a card on a missing or malformed manifest.
+func (s *Server) botIsChat(ctx context.Context, teamID, botID, filePath string) bool {
+	if botID != "" {
+		if m := s.botManifestFor(ctx, teamID, botID); m != nil {
+			return m.Chat != nil
+		}
+	}
+	if filePath == "" {
+		return false
+	}
+	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(filePath), "manifest.yaml"))
+	if err != nil || m == nil {
+		return false
+	}
+	return m.Chat != nil
 }
 
 func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, current *store.Run) []PipelineBoardAttempt {
@@ -723,8 +804,8 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 // an event scan (see runProgress).
 func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, treeTotal, descCount int, reviews []PipelineBoardPendingReview, runIDs []string) {
 	visited := map[string]struct{}{}
-	var walk func(run *store.Run, depth int)
-	walk = func(run *store.Run, depth int) {
+	var walk func(run *store.Run, depth int, path []*store.Run)
+	walk = func(run *store.Run, depth int, path []*store.Run) {
 		if run == nil {
 			return
 		}
@@ -747,7 +828,23 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 		exec, total := b.runProgress(run)
 		treeExec += exec
 		treeTotal += total
-		if run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.PausedNodeID() != "" {
+		// Only inspect rewind provenance when a descendant actually presents a
+		// human gate. Finished/queued subtrees therefore retain the existing
+		// no-event-scan fast path. The path includes the root and each parent;
+		// checking every edge lets an orphaned child suppress a paused grandchild
+		// without pruning historical tree accounting.
+		orphaned := false
+		if depth > 0 && run.Status == store.RunStatusPausedWaitingHuman {
+			edgePath := append(append([]*store.Run(nil), path...), run)
+			for i := 1; i < len(edgePath); i++ {
+				parentScan := b.scanRunEvents(edgePath[i-1].ID)
+				if _, found := parentScan.orphanedChildRuns[edgePath[i].ID]; found {
+					orphaned = true
+					break
+				}
+			}
+		}
+		if !orphaned && run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.PausedNodeID() != "" {
 			reviews = append(reviews, PipelineBoardPendingReview{
 				RunID:         run.ID,
 				WorkflowName:  run.WorkflowName,
@@ -758,13 +855,14 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 				Instructions:  b.pendingReviewInstructions(run),
 				UpdatedAt:     b.pendingReviewUpdatedAt(run),
 				Depth:         depth,
+				BatchKey:      b.pendingReviewBatchKey(run),
 			})
 		}
 		for _, child := range b.children[run.ID] {
-			walk(child, depth+1)
+			walk(child, depth+1, append(path, run))
 		}
 	}
-	walk(root, 0)
+	walk(root, 0, nil)
 	// FIFO by the time each pending turn was requested. In particular, a
 	// review gate that resumes and re-pauses is a new turn and belongs at the
 	// back of the queue, even though its run keeps the same place in the tree.
@@ -782,6 +880,50 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 		return a.InteractionID < c.InteractionID
 	})
 	return
+}
+
+// pendingReviewBatchKey recognizes only the runtime's own fan-out sibling
+// relation. A parent records its live subbot children under a key ending in
+// "#branch_<router>_<index>". Removing just that numeric branch index keeps
+// the siblings from one router pass together while preserving the execution
+// path before it, so a later loop pass never joins an earlier review batch.
+//
+// The relation is intentionally conservative: missing or legacy provenance
+// produces no key and the UI presents that pause on its own rather than
+// risking a combined submission of two unrelated gates.
+func (b *pipelineProjectionBuilder) pendingReviewBatchKey(run *store.Run) string {
+	if b == nil || run == nil {
+		return ""
+	}
+	parentID := pipelineParentRunID(run)
+	if parentID == "" {
+		return ""
+	}
+	parent := b.runs[parentID]
+	if parent == nil {
+		return ""
+	}
+	for executionKey, childID := range parent.SubbotChildren {
+		if childID != run.ID {
+			continue
+		}
+		branchAt := strings.LastIndex(executionKey, "#branch_")
+		if branchAt < 1 {
+			return ""
+		}
+		branch := executionKey[branchAt+len("#branch_"):]
+		separator := strings.LastIndex(branch, "_")
+		if separator < 1 || separator == len(branch)-1 {
+			return ""
+		}
+		for _, r := range branch[separator+1:] {
+			if r < '0' || r > '9' {
+				return ""
+			}
+		}
+		return parentID + ":" + executionKey[:branchAt] + "#branch_" + branch[:separator]
+	}
+	return ""
 }
 
 // pendingReviewUpdatedAt returns the enqueue time of the current pending

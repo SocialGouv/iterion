@@ -36,7 +36,7 @@ var botsListCmd = &cobra.Command{
 		if len(paths) == 0 {
 			paths = []string{"bots", "examples"}
 		}
-		return cli.BotsList(cli.BotsListOptions{Paths: paths, Format: format}, os.Stdout)
+		return cli.BotsList(cli.BotsListOptions{Paths: paths, Format: format, ErrW: os.Stderr}, os.Stdout)
 	},
 }
 
@@ -183,6 +183,64 @@ sandboxing applies as usual). By default bots install under <workdir>/.botz/
 	},
 }
 
+var botsSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Materialize the shared bot bundles pinned by bots.lock",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		workdir, _ := cmd.Flags().GetString("workdir")
+		results, err := cli.BotsSync(cmd.Context(), workdir)
+		if err != nil {
+			return err
+		}
+		p := newPrinter()
+		if p.Format == cli.OutputJSON {
+			p.JSON(results)
+			return nil
+		}
+		for _, result := range results {
+			state := "verified"
+			if result.Changed {
+				state = "installed"
+			}
+			p.Line("%s  %s  %s", state, result.Name, result.BundleSHA256)
+		}
+		return nil
+	},
+}
+
+var botsUpdateCmd = &cobra.Command{
+	Use:   "update <name>",
+	Short: "Refresh one bots.lock dependency and materialize it",
+	Long: `Resolve one existing bots.lock dependency at its current pin (or at
+--ref), validate and hash the bundle, atomically rewrite the lock, then sync
+the materialized .botz copy. Local Git bundle changes must be committed unless
+--allow-dirty is passed explicitly.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir, _ := cmd.Flags().GetString("workdir")
+		ref, _ := cmd.Flags().GetString("ref")
+		allowDirty, _ := cmd.Flags().GetBool("allow-dirty")
+		result, err := cli.BotsUpdate(cmd.Context(), cli.BotsUpdateOptions{
+			Workdir: workdir, Name: args[0], Ref: ref, AllowDirty: allowDirty,
+		})
+		if err != nil {
+			return err
+		}
+		p := newPrinter()
+		if p.Format == cli.OutputJSON {
+			p.JSON(result)
+			return nil
+		}
+		p.Header("Bot dependency updated")
+		p.KV("Name", result.Name)
+		p.KV("Ref", result.Ref)
+		p.KV("SHA-256", result.BundleSHA256)
+		p.KV("Installed", result.InstalledPath)
+		return nil
+	},
+}
+
 func init() {
 	botsListCmd.Flags().StringSlice("paths", nil, "Directories or .bot files to scan (default: bots, examples)")
 	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill")
@@ -203,10 +261,16 @@ func init() {
 	botsInstallCmd.Flags().String("name", "", "Install under this name instead of the source's")
 	botsInstallCmd.Flags().Bool("force", false, "Overwrite an existing install of the same name")
 	botsInstallCmd.Flags().String("workdir", "", "Workspace root for catalog refresh (default: current directory)")
+	botsSyncCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")
+	botsUpdateCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")
+	botsUpdateCmd.Flags().String("ref", "", "New Git commit or tag (default: keep the locked ref; local clean sources record HEAD)")
+	botsUpdateCmd.Flags().Bool("allow-dirty", false, "Allow hashing uncommitted local bundle content (not reproducible from the recorded ref)")
 	botsCmd.AddCommand(botsCreateCmd)
 	botsCmd.AddCommand(botsTemplatesCmd)
 	botsCmd.AddCommand(botsListCmd)
 	botsCmd.AddCommand(botsRegenCatalogCmd)
 	botsCmd.AddCommand(botsInstallCmd)
+	botsCmd.AddCommand(botsSyncCmd)
+	botsCmd.AddCommand(botsUpdateCmd)
 	rootCmd.AddCommand(botsCmd)
 }

@@ -17,10 +17,10 @@ type Fixture struct {
 	Bare                            bool
 }
 
-func New(t *testing.T, bare bool) Fixture {
+func New(t *testing.T, kind string) Fixture {
 	t.Helper()
 	root := t.TempDir()
-	f := Fixture{Parent: filepath.Join(root, "parent", "main.bot"), Child: filepath.Join(root, "child", "main.bot"), Workspace: filepath.Join(root, "workspace"), Store: filepath.Join(root, "store"), Bare: bare}
+	f := Fixture{Parent: filepath.Join(root, "parent", "main.bot"), Child: filepath.Join(root, "child", "main.bot"), Workspace: filepath.Join(root, "workspace"), Store: filepath.Join(root, "store"), Bare: kind == "bare"}
 	write := func(path, body string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -44,10 +44,17 @@ func New(t *testing.T, bare bool) Fixture {
 	}
 	write(f.Child, child("child"))
 	source := "../child/main.bot"
-	if bare {
+	switch kind {
+	case "member":
 		f.Child = filepath.Join(root, "child", "step.bot")
-		write(f.Child, child("parent"))
+		write(f.Child, child("child"))
 		source = "../child/step.bot"
+	case "bare":
+		f.Child = filepath.Join(root, "loose", "step.bot")
+		write(f.Child, child("parent"))
+		// Resource-looking siblings alone must not invent a bundle.
+		write(filepath.Join(root, "loose", "skills", "shared.md"), "decoy")
+		source = "../loose/step.bot"
 	}
 	write(f.Parent, fmt.Sprintf("schema result:\n  ok: bool\ntool before:\n  command: `%s`\n  output: result\nsubbot child:\n  source: %q\n  output: result\ntool after:\n  command: `%s`\n  output: result\nworkflow parent:\n  worktree: none\n  sandbox: none\n  entry: before\n  before -> child\n  child -> after\n  after -> done\n", check("parent"), source, check("parent")))
 	if err := os.MkdirAll(f.Workspace, 0o755); err != nil {

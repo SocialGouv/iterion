@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -15,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
 // maxSubbotDepth bounds nested subbot recursion so a child that (directly or
@@ -47,21 +47,16 @@ type subbotDepthKey struct{}
 // whereas here the daemon's cwd is the host repo, so workDir must be threaded
 // explicitly or the child resolves relative paths (a bot's `.venv/bin/python`)
 // against the wrong tree.
-func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger) runtime.SubbotRunner {
-	parentDir := filepath.Dir(parentPath)
+func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger, runEnv ...[]string) runtime.SubbotRunner {
+	var projectEnv []string
+	if len(runEnv) > 0 {
+		projectEnv = runEnv[0]
+	}
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{WorkDir: workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
-		}
-
-		// Re-attach to an in-flight/finished child from a prior (interrupted)
-		// execution of this subbot node before spawning a fresh one — the
-		// dispatcher resumes a failed run on its own retry path, so this is
-		// the difference between picking a paid child back up and paying for
-		// it twice.
-		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
-			return out, aerr
 		}
 
 		// Le workDir EFFECTIF du parent prime : sous `worktree: auto` le moteur a
@@ -72,13 +67,15 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			childWorkDir = req.WorkDir
 		}
 
-		childPath := req.Source
-		if !filepath.IsAbs(childPath) {
-			childPath = filepath.Join(parentDir, childPath)
+		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
-		// Keep the exact promoted bundle that compiled the child. The engine
-		// borrows and restores the parent's managed resources for this pass.
-		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath)
+		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
+			return out, aerr
+		}
+		childPath := resolvedSource.Path
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -110,6 +107,10 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			logger.Warn("subbot child %s: run lock unavailable (%v) — the orphan reaper may misjudge it as dead mid-flight", childRunID, lerr)
 		}
 
+		bundleName := runview.BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
 		execSpec := runview.ExecutorSpec{
 			Ctx:      ctx,
 			Workflow: childWf,
@@ -117,12 +118,13 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			RunID:    childRunID,
 			Logger:   logger,
 			StoreDir: storeDir,
+			WorkDir:  childWorkDir,
 			// A subbot is a DIFFERENT bot from its parent, so it keys its own
 			// bot-scoped memory — derived from the CHILD's path, exactly as the
 			// CLI and studio runners do. Without it the executor falls back to
 			// the child workflow's name and the same subbot ends up with two
 			// memory spaces depending on which surface launched the parent.
-			BotID: runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath),
+			BotID: runview.ResolveBotID("", bundleName, childPath),
 			// Sans ce liant, un message adressé à l'enfant depuis le board est
 			// accepté, persisté `queued`, et jamais délivré : un silence, pas
 			// une erreur. Le parent le câble, le studio aussi.
@@ -155,6 +157,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			releaseLock()
 			return nil, err
 		}
+		childExec.SetRunExtraEnv(projectEnv)
 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result. The callback fires concurrently when the
@@ -173,7 +176,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.
-			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, logger)),
+			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, logger, projectEnv)),
 			// Le parent a six reprises à repli exponentiel sur un incident
 			// transitoire (timeout http2, 429, DNS) ; sans ça l'enfant mourrait
 			// définitivement au premier, et comme `ReattachSubbotChild` repart
@@ -187,6 +190,9 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 					lastMu.Unlock()
 				}
 			}),
+		}
+		if len(projectEnv) > 0 {
+			opts = append(opts, runtime.WithRunEnv(projectEnv))
 		}
 		if childWorkDir != "" {
 			opts = append(opts, runtime.WithWorkDir(childWorkDir))

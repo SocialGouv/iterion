@@ -1,0 +1,190 @@
+## Copi's deterministic Studio demo.
+##
+## The state machine is scripted so the presentation is repeatable and needs
+## no model credential. The actions are not mocked: Studio validates and
+## executes the real bot.create, run.launch, run.watch and run.resume requests,
+## and the runtime delivers their host receipts back through this chat gate.
+
+vars:
+  initial_message: string = ""
+  store_dir: string = "${ITERION_E2E_STORE_DIR}"
+
+schema turn_input:
+  operator_message: string
+  host_event: json
+
+schema turn_output:
+  reply: string
+  close: bool
+  quick_replies: json
+  assistant_actions: json
+
+schema chat_input:
+  reply: string
+  quick_replies: json
+
+schema chat_output:
+  message: string
+  host_event: json
+
+schema seed_input:
+  value: string
+
+compute seed:
+  input: seed_input
+  output: turn_input
+  expr:
+    operator_message: "vars.initial_message"
+    host_event: "''"
+
+tool turn:
+  input: turn_input
+  output: turn_output
+  publish: assistant_turn
+  language: py
+  script: |
+    import glob
+    import json
+    import os
+
+    null = None; true = True; false = False
+    operator_message = {{input.operator_message}} or ''
+    host_event = {{input.host_event}} or {}
+    store_dir = {{vars.store_dir}}
+
+    if isinstance(host_event, str):
+        host_event = json.loads(host_event) if host_event else {}
+
+    reply = "Je suis prêt à construire la démo."
+    actions = []
+    kind = host_event.get('kind', '') if isinstance(host_event, dict) else ''
+    action = host_event.get('action', '') if isinstance(host_event, dict) else ''
+    event = host_event.get('event', '') if isinstance(host_event, dict) else ''
+
+    if not kind:
+        if not operator_message.strip():
+            reply = "Décrivez-moi le workflow à créer, lancer et surveiller."
+        else:
+            reply = (
+                "Je vais créer un workflow de contrôle santé, puis le lancer "
+                "et suivre son exécution jusqu'au bout."
+            )
+            actions = [{
+                'id': 'bot.create',
+                'intent': 'explicit',
+                'args': {
+                    'slug': 'demo-healthcheck',
+                    'display_name': 'Contrôle santé — Démo',
+                    'description': 'Workflow créé par Copi pendant la démonstration.',
+                    'instructions': (
+                        "Vérifie la santé du service de démonstration et fournis un "
+                        "résumé concis. Termine avec mission_complete=true."
+                    ),
+                    'backend': 'claw',
+                    'model': 'openai/demo-fault-model',
+                    'worktree': False,
+                    'sandbox': False,
+                },
+            }]
+    elif kind == 'action-completed' and action == 'bot.create':
+        reply = "Le workflow est créé. Je vous propose maintenant de lancer son premier run."
+        actions = [{
+            'id': 'run.launch',
+            'intent': 'explicit',
+            'args': {'bot': 'demo-healthcheck'},
+        }]
+    elif kind == 'action-completed' and action == 'run.launch':
+        paths = sorted(glob.glob(os.path.join(store_dir, 'runs', '*', 'run.json')))
+        if len(paths) > 64:
+            raise SystemExit('copi demo: run scan exceeded the 64-file safety bound')
+        candidates = []
+        for path in paths:
+            with open(path, encoding='utf-8') as handle:
+                run = json.load(handle)
+            if run.get('workflow_name') == 'demo_healthcheck':
+                candidates.append(run)
+        if len(candidates) != 1:
+            raise SystemExit(
+                'copi demo: expected exactly one demo_healthcheck run, found '
+                + str(len(candidates))
+            )
+        target_id = candidates[0].get('id', '')
+        if not target_id:
+            raise SystemExit('copi demo: target run has no id')
+        reply = "Le run est parti. J'arme une veille durable sur ses échecs et sa fin."
+        actions = [{
+            'id': 'run.watch',
+            'intent': 'explicit',
+            'args': {
+                'target_run_id': target_id,
+                'mode': 'propose',
+                'kinds': ['run.failed', 'run.finished'],
+                'cooldown_seconds': 0,
+            },
+        }]
+    elif kind == 'action-completed' and action == 'run.watch':
+        reply = "La veille est armée. Je reste disponible et je vous préviens dès qu'un résultat demande mon attention."
+    elif kind == 'assistant-watch-event' and event == 'run.failed':
+        outcome = host_event.get('outcome_run') or {}
+        target = host_event.get('target_run') or {}
+        target_id = outcome.get('id') or target.get('id') or ''
+        if not target_id:
+            raise SystemExit('copi demo: failed watch event has no run id')
+        reply = (
+            "J'ai détecté l'échec intentionnel du run " + target_id + ". "
+            "Le checkpoint est reprenable : je propose de relancer l'étape en erreur."
+        )
+        actions = [{
+            'id': 'run.resume',
+            'intent': 'explicit',
+            'args': {'run_id': target_id},
+        }]
+    elif kind == 'action-completed' and action == 'run.resume':
+        reply = "La correction est appliquée et le run a repris. Je continue à le surveiller."
+    elif kind == 'assistant-watch-event' and event == 'run.finished':
+        outcome = host_event.get('outcome_run') or {}
+        target_id = outcome.get('id', '')
+        reply = (
+            "Le run " + target_id + " est terminé avec succès. "
+            "Copi a suivi tout le cycle : création, lancement, détection, correction et validation finale."
+        )
+    else:
+        reply = "J'ai reçu un événement inattendu ; la démo s'arrête sans lancer d'autre action."
+
+    print(json.dumps({
+        'reply': reply,
+        'close': False,
+        'quick_replies': [],
+        'assistant_actions': actions,
+    }, ensure_ascii=False))
+
+prompt chat_instructions:
+  {{input.reply}}
+
+human chat:
+  input: chat_input
+  output: chat_output
+  instructions: chat_instructions
+  interaction: human_or_host
+
+workflow copilot:
+  entry: seed
+  worktree: none
+  sandbox: none
+
+  seed -> turn with {
+    operator_message: "{{outputs.seed.operator_message}}",
+    host_event: "{{outputs.seed.host_event}}"
+  }
+
+  turn -> chat with {
+    reply: "{{outputs.turn.reply}}",
+    quick_replies: "{{outputs.turn.quick_replies}}"
+  }
+
+  chat -> turn with {
+    operator_message: "{{outputs.chat.message}}",
+    host_event: "{{outputs.chat.host_event}}"
+  } as conversation_loop(32)
+
+  chat -> done

@@ -8,7 +8,7 @@ import {
   listRuns,
   type RunSummary,
 } from "@/api/runs";
-import { runStore } from "@/store/run";
+import { type RunStore } from "@/store/run";
 
 import { rememberSessionRunId } from "./sessionStorage";
 
@@ -54,13 +54,28 @@ export async function findLiveRunForBot(
   return pickLiveRunId(matches);
 }
 
-// attachSessionRun hydrates the (module-default) run store from the
+// runBelongsToBot is the same match findLiveRunForBot uses: hyphen and
+// underscore spellings of the bot id. Anything else is another bot's run.
+export function runBelongsToBot(
+  workflowName: string | undefined,
+  botId: string,
+): boolean {
+  if (!workflowName || !botId) return false;
+  return candidateWorkflows(botId).includes(workflowName);
+}
+
+// attachSessionRun hydrates the CALLER'S run store from the
 // given run and remembers it for this (bot, scope). Returns false when
 // `isCancelled()` reports the caller's effect was torn down after the
 // snapshot fetch — the caller then skips its own setRunId. Fetch
 // errors propagate to the caller (they decide between discovery-error
 // and forget-the-memory).
 export async function attachSessionRun(opts: {
+  // The store to hydrate. Passed in rather than reached for: the
+  // assistant session runs in its OWN store (see AssistantProvider), so
+  // writing to the module default here would split the session's state
+  // in half — reads through the provider, writes to another store.
+  store: RunStore;
   runId: string;
   botId: string;
   scopeKey: string | null;
@@ -72,20 +87,28 @@ export async function attachSessionRun(opts: {
   // listing by a beat. See getRunWithRetry for the race rationale.
   const snap = await getRunWithRetry(opts.runId, { signal: opts.signal });
   if (opts.isCancelled()) return false;
+  // attachRunId is a conversation's remembered run. Switching the tab's
+  // bot used to keep that id, so bot B would hydrate bot A's transcript
+  // and the composer would steer A's run. Refuse here — the lookup is
+  // also bot-scoped, so an explicit attach must be too.
+  if (!runBelongsToBot(snap.run?.workflow_name, opts.botId)) return false;
   // Continuity is the central whats-next promise: when the user
   // returns to /whats-next after a previous session ended, they
   // expect to see the full transcript of that exchange, not a
   // blank launcher offering them to start over.
-  runStore.getState().reset();
-  runStore.getState().applySnapshot(snap);
+  opts.store.getState().reset();
+  opts.store.getState().applySnapshot(snap);
   // setRunId on the store FIRST so loadEventHistoryIfMissing's
   // post-await guard (`state.runId !== runId` → return) passes.
-  runStore.getState().setRunId(opts.runId);
+  opts.store.getState().setRunId(opts.runId);
   try {
-    await runStore.getState().loadEventHistoryIfMissing(opts.runId);
+    await opts.store.getState().loadEventHistoryIfMissing(opts.runId);
   } catch {
     // ignore — the live WS will eventually fill any gap.
   }
+  // The bot/scope may have changed while the history request was in flight.
+  // Its cleanup resets this store; never re-arm the old identity afterward.
+  if (opts.isCancelled()) return false;
   // Remember now so subsequent mounts (within the same origin)
   // skip the discovery query and re-attach via localStorage.
   rememberSessionRunId(opts.botId, opts.scopeKey, opts.runId);

@@ -47,6 +47,25 @@ func (e *Engine) resolveWorkflowSource() string {
 	return string(b)
 }
 
+func (e *Engine) inferredBotOrigin() *store.BotOrigin {
+	if e.filePath == "" {
+		return nil
+	}
+	p, err := gitlib.Describe(e.filePath)
+	if err != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(p.RepoRoot, e.filePath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		rel = filepath.Base(e.filePath)
+	}
+	pkg := strings.Split(filepath.ToSlash(rel), "/")[0]
+	return &store.BotOrigin{
+		Kind: "git", RepoRoot: p.RepoRoot, Commit: p.Commit, TreeHash: p.TreeHash,
+		WorkflowPath: filepath.ToSlash(rel), Package: pkg, Dirty: p.Dirty,
+	}
+}
+
 // Run executes the workflow. It creates a run, walks the graph from the
 // entry node, and returns when a terminal node is reached, a human pause
 // is hit (ErrRunPaused), or an error occurs.
@@ -65,6 +84,9 @@ func (e *Engine) resolveWorkflowSource() string {
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
+	if e.botOrigin == nil {
+		e.botOrigin = e.inferredBotOrigin()
+	}
 	run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
 		return err
@@ -172,7 +194,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			// it grows. Best-effort and never fatal — see boundWorktreePool.
 			e.boundWorktreePool(ctx, e.store.Root())
 
-			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
+			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.worktreeBaseCommit, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
 				return e.setupErr(ctx, fmt.Errorf("runtime: worktree setup: %w", wtErr))
@@ -318,8 +340,8 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
-		e.routingPolicy != nil || e.budgetAsk != nil {
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -345,11 +367,23 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.preset != "" {
 			run.Preset = e.preset
 		}
-		// Persist the workflow-declared tool-permission mode so the studio
-		// RunHeader can badge a gated run (off|ask|deny). This is the bot's
-		// declared posture; a run-level --permission override refines it per
-		// node but isn't reflected here.
-		run.PermissionMode = e.workflow.Permission
+		// Persisted so every resume re-applies it. This matters more than
+		// Preset does: a conversational bot resumes on EVERY turn, so a
+		// launch-only list would quietly disappear after the first reply.
+		if len(e.extraSkills) > 0 {
+			run.ExtraSkills = e.extraSkills
+		}
+		// Keep the operator's strongest-precedence gate choice durable. On a
+		// cloud attempt the publisher has already stamped it; on a local launch
+		// the engine option does. A resume with no new option must preserve it.
+		if e.permissionOverride != "" {
+			run.PermissionOverride = e.permissionOverride
+		}
+		if run.PermissionOverride != "" {
+			run.PermissionMode = run.PermissionOverride
+		} else {
+			run.PermissionMode = e.workflow.Permission
+		}
 		// Guard on len>0 so a resume (which never re-supplies overrides)
 		// preserves the value persisted at the original launch instead of
 		// clobbering it with nil.
@@ -360,6 +394,10 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// launch, a resume never re-supplies it.
 		if e.routingPolicy != nil {
 			run.RoutingPolicy = e.routingPolicy
+		}
+		if e.budgetOverrides != nil {
+			copy := *e.budgetOverrides
+			run.BudgetOverrides = &copy
 		}
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
@@ -381,7 +419,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			run.BundlePath = e.bundle.SourcePath
 			if e.bundle.Manifest != nil {
 				run.BundleName = e.bundle.Manifest.Name
+				run.BundleVersion = e.bundle.Manifest.Version
 				run.BundleDisplayName = e.bundle.Manifest.DisplayName
+				if rel, relErr := filepath.Rel(e.bundle.Dir, e.filePath); relErr == nil {
+					rel = filepath.ToSlash(rel)
+					for _, exp := range e.bundle.Manifest.Exports.Workflows {
+						if exp.Path == rel {
+							run.BundleWorkflow = exp.ID
+							break
+						}
+					}
+				}
 			}
 		}
 		if e.source != nil {
@@ -389,6 +437,14 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			// through the run record.
 			src := *e.source
 			run.Source = &src
+		}
+		if e.botOrigin != nil {
+			origin := *e.botOrigin
+			run.BotOrigin = &origin
+		}
+		if e.delegation != nil {
+			delegation := *e.delegation
+			run.Delegation = &delegation
 		}
 		if e.callbackURL != "" {
 			run.CallbackURL = e.callbackURL
@@ -618,6 +674,18 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// once, after the last of them has run.
 	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
+	// Say, on the run's own record, that this run carried skills its .bot
+	// does not mention. Without it the addition is invisible state changing
+	// how the bot answers, and a bug report against the run is
+	// irreproducible. Best-effort: losing the note must not lose the run.
+	if len(e.extraSkills) > 0 {
+		if err := e.emit(ctx, runID, store.EventSkillsInjected, "", map[string]any{
+			"skills": append([]string(nil), e.extraSkills...),
+			"origin": e.extraSkillsOrigin,
+		}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: skills_injected event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -660,7 +728,7 @@ func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error
 // is there — but a shadowed entry is NOT owned: that content is the target
 // repository's, and a backend passing skills explicitly must not hand it over.
 func (e *Engine) applyLibrarySkills() []string {
-	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
+	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)

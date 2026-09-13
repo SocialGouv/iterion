@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"testing"
 
@@ -11,9 +10,9 @@ import (
 )
 
 func TestCLISubbotBundleResourceScope(t *testing.T) {
-	for _, bare := range []bool{false, true} {
-		t.Run(fmt.Sprint(bare), func(t *testing.T) {
-			f := subbottest.New(t, bare)
+	for _, kind := range []string{"bundle", "member", "bare"} {
+		t.Run(kind, func(t *testing.T) {
+			f := subbottest.New(t, kind)
 			t.Chdir(f.Workspace)
 			t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 			ctx := context.Background()

@@ -148,6 +148,20 @@ var remoteRunsFollowCmd = &cobra.Command{
 	}),
 }
 
+var (
+	remoteWatchHealthFollow   bool
+	remoteWatchHealthInterval time.Duration
+)
+
+var remoteRunsWatchHealthCmd = &cobra.Command{
+	Use:   "watch-health <run-id>",
+	Short: "Inspect durable assistant-watch health (--follow keeps watching)",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsWatchHealth(cmd.Context(), c, p, args[0], remoteWatchHealthFollow, remoteWatchHealthInterval)
+	}),
+}
+
 var remoteRunsLogCmd = &cobra.Command{
 	Use:   "log <run-id>",
 	Short: "Print the raw run log",
@@ -438,7 +452,69 @@ var remoteRunsReposCmd = &cobra.Command{
 	}),
 }
 
+var remoteRunsMissionCmd = &cobra.Command{
+	Use:   "mission",
+	Short: "Manage durable assistant missions for a target run",
+}
+
+var (
+	remoteMissionInvocation string
+	remoteMissionWatch      string
+	remoteMissionAssistant  string
+	remoteMissionActions    []string
+	remoteMissionTTL        int64
+	remoteMissionMaxActions int
+)
+
+var remoteRunsMissionStartCmd = &cobra.Command{
+	Use:   "start <target-run-id>",
+	Short: "Start or reattach a bounded assistant mission",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsMissionStart(cmd.Context(), c, p, args[0], cli.RemoteRunsMissionStartOptions{
+			InvocationKey: remoteMissionInvocation, WatchID: remoteMissionWatch,
+			AssistantRunID: remoteMissionAssistant, Actions: remoteMissionActions,
+			TTLSeconds: remoteMissionTTL, MaxActions: remoteMissionMaxActions,
+		})
+	}),
+}
+
+var remoteRunsMissionListCmd = &cobra.Command{
+	Use:   "list <target-run-id>",
+	Short: "List assistant missions for a target run",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsMissionList(cmd.Context(), c, p, args[0])
+	}),
+}
+
+var remoteRunsMissionGetCmd = &cobra.Command{
+	Use:   "get <target-run-id> <mission-id>",
+	Short: "Inspect one assistant mission and its receipts",
+	Args:  cobra.ExactArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsMissionGet(cmd.Context(), c, p, args[0], args[1])
+	}),
+}
+
+var remoteRunsMissionStopCmd = &cobra.Command{
+	Use:   "stop <target-run-id> <mission-id>",
+	Short: "Stop an assistant mission without changing its watch",
+	Args:  cobra.ExactArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsMissionStop(cmd.Context(), c, p, args[0], args[1])
+	}),
+}
+
 func init() {
+	remoteRunsMissionStartCmd.Flags().StringVar(&remoteMissionInvocation, "invocation", "", "Stable idempotency key (default goal:<target>)")
+	remoteRunsMissionStartCmd.Flags().StringVar(&remoteMissionWatch, "watch", "", "Exact active assistant watch id")
+	remoteRunsMissionStartCmd.Flags().StringVar(&remoteMissionAssistant, "assistant", "", "Assistant run id (used to resolve the exact watch)")
+	remoteRunsMissionStartCmd.Flags().StringSliceVar(&remoteMissionActions, "actions", nil, "Allowed actions (run.resume,run.rewind)")
+	remoteRunsMissionStartCmd.Flags().Int64Var(&remoteMissionTTL, "ttl-seconds", 0, "Mission TTL (60-86400; default 7200)")
+	remoteRunsMissionStartCmd.Flags().IntVar(&remoteMissionMaxActions, "max-actions", 0, "Maximum dispatched actions (1-20; default 6)")
+	remoteRunsMissionCmd.AddCommand(remoteRunsMissionStartCmd, remoteRunsMissionListCmd, remoteRunsMissionGetCmd, remoteRunsMissionStopCmd)
+
 	remoteRunsListCmd.Flags().StringVar(&remoteRunsListStatus, "status", "", "Filter by status")
 	remoteRunsListCmd.Flags().StringVar(&remoteRunsListWorkflow, "workflow", "", "Filter by workflow name")
 	remoteRunsListCmd.Flags().StringVar(&remoteRunsListRepo, "repo", "", "Filter by repository")
@@ -470,6 +546,8 @@ func init() {
 	remoteRunsEventsCmd.Flags().BoolVar(&remoteEventsFollow, "follow", false, "Keep polling until the run terminates")
 	remoteRunsEventsCmd.Flags().DurationVar(&remoteFollowInterval, "interval", 2*time.Second, "Poll interval")
 	remoteRunsFollowCmd.Flags().DurationVar(&remoteFollowInterval, "interval", 2*time.Second, "Poll interval")
+	remoteRunsWatchHealthCmd.Flags().BoolVar(&remoteWatchHealthFollow, "follow", false, "Keep polling until interrupted")
+	remoteRunsWatchHealthCmd.Flags().DurationVar(&remoteWatchHealthInterval, "interval", 5*time.Second, "Health poll interval")
 
 	remoteRunsArtifactsCmd.Flags().StringVar(&remoteArtifactsNode, "node", "", "Artifacts of one node")
 	remoteRunsArtifactsCmd.Flags().StringVar(&remoteArtifactsFile, "file", "", "Artifact file path (tree when empty)")
@@ -513,11 +591,12 @@ func init() {
 
 	remoteRunsCmd.AddCommand(
 		remoteRunsListCmd, remoteRunsLaunchCmd, remoteRunsGetCmd, remoteRunsEventsCmd,
-		remoteRunsFollowCmd, remoteRunsLogCmd, remoteRunsWorkflowCmd, remoteRunsArtifactsCmd,
+		remoteRunsFollowCmd, remoteRunsWatchHealthCmd, remoteRunsLogCmd, remoteRunsWorkflowCmd, remoteRunsArtifactsCmd,
 		remoteRunsFilesCmd, remoteRunsCommitsCmd, remoteRunsCancelCmd, remoteRunsPauseCmd,
 		remoteRunsResumeCmd, remoteRunsForkCmd, remoteRunsSendCmd, remoteRunsMergeCmd,
 		remoteRunsConflictsCmd, remoteRunsRenameCmd, remoteRunsDeleteCmd,
 		remoteRunsPreviewCostCmd, remoteRunsUploadCmd, remoteRunsStatsCmd, remoteRunsReposCmd,
+		remoteRunsMissionCmd,
 	)
 	remoteCmd.AddCommand(remoteRunsCmd)
 }

@@ -332,17 +332,12 @@ func TestPipelineBoardPlatformMetadataDescribesTheBundleThatRuns(t *testing.T) {
 	})
 }
 
-// A catalog that will not PARSE is not a catalog without this bot in it.
-// The baked tier reports both the same way — resolveBotTieredRaw turns any
-// ResolveBotPath failure into "nothing resolved", and one malformed
-// manifest.yaml under the discovery roots fails the walk for every bot — so
-// the lane has to ask before it answers "not found". Before this lane went
-// through the tiers, findBot propagated that error and the operator was told
-// what to fix.
-func TestPipelineBoardSaysWhenTheCatalogItselfWillNotParse(t *testing.T) {
+// Partial discovery keeps healthy siblings available while a request for the
+// malformed bot reports its diagnostic rather than claiming it is absent.
+func TestPipelineBoardReportsMalformedBotWithoutHidingHealthySiblings(t *testing.T) {
 	env := newPipelineTierEnv(t)
 	// A second bundle, alongside the healthy `probe`, whose manifest is not
-	// YAML. Discovery walks the whole root, so `probe` stops resolving too.
+	// YAML. Discovery must still resolve the healthy `probe` independently.
 	broken := filepath.Join(env.srv.cfg.Bots.Paths[0], "broken")
 	if err := os.MkdirAll(broken, 0o755); err != nil {
 		t.Fatal(err)
@@ -355,7 +350,7 @@ func TestPipelineBoardSaysWhenTheCatalogItselfWillNotParse(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"probe","title":"catalog is broken"}`))
+	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"broken","title":"catalog is broken"}`))
 	if w.Code == http.StatusNotFound {
 		t.Fatalf("create = 404 %s — the catalog could not be READ, and the operator is being sent to look for a bot that is there", w.Body.String())
 	}
@@ -364,6 +359,11 @@ func TestPipelineBoardSaysWhenTheCatalogItselfWillNotParse(t *testing.T) {
 	}
 	if body := w.Body.String(); !strings.Contains(body, "manifest") {
 		t.Errorf("refusal = %s, want the manifest parse failure that actually blocked the resolution", body)
+	}
+	w = httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"probe","title":"healthy sibling"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("healthy sibling create = %d %s, want 201", w.Code, w.Body.String())
 	}
 }
 

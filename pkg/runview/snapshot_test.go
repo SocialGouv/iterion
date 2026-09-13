@@ -759,6 +759,23 @@ func TestSnapshotReducer_WorktreeFinalizationFieldsPropagate(t *testing.T) {
 	}
 }
 
+func TestHeaderFromRunAdvertisesTerminalCheckpointRecovery(t *testing.T) {
+	run := &store.Run{
+		ID:           "failed-with-checkpoint",
+		WorkflowName: "workflow",
+		Status:       store.RunStatusFailed,
+		Checkpoint:   &store.Checkpoint{NodeID: "fail"},
+	}
+	if got := headerFromRun(run); !got.Rewindable {
+		t.Fatalf("failed run with checkpoint must be rewindable: %#v", got)
+	}
+
+	run.Checkpoint = nil
+	if got := headerFromRun(run); got.Rewindable {
+		t.Fatalf("failed run without checkpoint must not be rewindable: %#v", got)
+	}
+}
+
 func TestSnapshotReducer_WorktreeAvailableReflectsOnDiskDir(t *testing.T) {
 	// The studio gates its inline file-editor affordances on
 	// WorktreeAvailable so a click can never 409. It must be true for a

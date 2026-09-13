@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -15,9 +14,9 @@ import (
 )
 
 func TestPodSubbotBundleResourceScope(t *testing.T) {
-	for _, bare := range []bool{false, true} {
-		t.Run(fmt.Sprint(bare), func(t *testing.T) {
-			f := subbottest.New(t, bare)
+	for _, kind := range []string{"bundle", "member", "bare"} {
+		t.Run(kind, func(t *testing.T) {
+			f := subbottest.New(t, kind)
 			r, st := subbotTestRunner(t)
 			wf, hash, b, err := runview.CompileWorkflowPath(f.Parent)
 			if err != nil {

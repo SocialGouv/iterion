@@ -69,6 +69,8 @@ type Project struct {
 	Kind       string    `json:"kind,omitempty"` // "local" (default/empty) | "cloud"
 	Dir        string    `json:"dir"`
 	StoreDir   string    `json:"store_dir,omitempty"`
+	BotsPaths  []string  `json:"bots_paths,omitempty"`
+	EnvFile    string    `json:"env_file,omitempty"`
 	LastOpened time.Time `json:"last_opened"`
 	Color      string    `json:"color,omitempty"`
 

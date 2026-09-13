@@ -183,6 +183,14 @@ const (
 	InteractionLLMOrHuman                        // LLM decides whether to answer or escalate to human
 	InteractionReview                            // guided review-&-merge gate: companion-driven multi-turn dialogue ending in a squash-merge
 	InteractionAsync                             // agent may post non-blocking questions (ask_user_async) and sync on demand (await_answers)
+	// InteractionHumanOrHost is a human gate that ALSO accepts a value
+	// attested by the host — a watched run's outcome, say — on a separate
+	// answer field. Both sources land on the same pause and the first one to
+	// arrive wins, which is what keeps the operator able to type while the
+	// gate stands by. Named for the two sources, following llm_or_human: a
+	// mode called "host" would read as "operator input no longer accepted",
+	// the opposite of what it means.
+	InteractionHumanOrHost
 )
 
 func (im InteractionMode) String() string {
@@ -199,6 +207,8 @@ func (im InteractionMode) String() string {
 		return "review"
 	case InteractionAsync:
 		return "async"
+	case InteractionHumanOrHost:
+		return "human_or_host"
 	default:
 		return "unknown"
 	}

@@ -7,6 +7,7 @@ import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button, EmptyState, InlineBanner, Spinner } from "@/components/ui";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { useAssistantPageContext } from "@/lib/chatDock/pageContext";
 
 import { botLaunchFile } from "../botPaths";
 import ActionsRow from "./ActionsRow";
@@ -95,6 +96,29 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
   const serverInfo = useServerInfoStore((s) => s.info);
   const launchFile = botLaunchFile(entry);
   const [testOpen, setTestOpen] = useState(false);
+  const assistantContext = useMemo(
+    () => ({
+      title: entry.display_name?.trim() || entry.name,
+      section: testOpen ? "bot-test" : "bot-overview",
+      entity: {
+        type: "bot",
+        id: entry.name,
+        label: entry.display_name?.trim() || entry.name,
+      },
+      state: {
+        enabled: entry.enabled !== false,
+        testOpen,
+        ...(launchFile ? { file: launchFile } : {}),
+        ...(entry.description ? { description: entry.description } : {}),
+        ...(entry.when_to_use ? { whenToUse: entry.when_to_use } : {}),
+        ...(entry.capabilities ? { capabilities: entry.capabilities } : {}),
+        ...(entry.triggers ? { triggers: entry.triggers } : {}),
+        variableNames: (entry.vars?.fields ?? []).map((field) => field.name),
+      },
+    }),
+    [entry, launchFile, testOpen],
+  );
+  useAssistantPageContext(assistantContext);
 
   const main = (
     <>

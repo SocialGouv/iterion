@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -72,7 +73,9 @@ type launchBot struct {
 	// Cloud catalog and stored bots both use it; Cleanup owns the collection.
 	BundleDir string
 	// Ref carries the snapshot and, for stored origins, the row provenance.
-	Ref             *runview.BotBundleRef
+	Ref *runview.BotBundleRef
+	// Manifest describes the exact tier that supplied Source.
+	Manifest        *bundle.Manifest
 	cleanupSnapshot func()
 }
 
@@ -188,9 +191,18 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 			return nil, fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)
 		}
 	}
-	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())
+	paths, captured := ctx.Value(assistantWatchBotPathsKey{}).([]string)
+	if !captured {
+		paths = s.effectivePaths()
+	}
+	path, err := botregistry.ResolveBotPath(slug, paths)
 	if err != nil {
-		return nil, nil //nolint:nilerr // unknown id = not found here, the caller decides
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil // unknown id = not found here, the caller decides
+		}
+		// A matching malformed bundle is not absence: preserve the discovery
+		// diagnostic so studio/webhook launches explain why it is unavailable.
+		return nil, err
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -198,7 +210,14 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 		// an absence.
 		return nil, fmt.Errorf("read bot %q: %w", slug, err)
 	}
-	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: string(b)}, nil
+	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFile))
+	if err == nil && m == nil {
+		m, err = bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFileAlt))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read bot %q manifest: %w", slug, err)
+	}
+	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: string(b), Manifest: m}, nil
 }
 
 // teamBotRow finds teamID's OWN botsource row for a bot id, tolerating the
@@ -262,6 +281,7 @@ func (s *Server) storedLaunchBot(bs botsource.BotSource, origin string) (*launch
 		Source:    main,
 		BundleDir: dir,
 		Ref:       &runview.BotBundleRef{TenantID: bs.TenantID, Slug: bs.Slug, Version: bs.Version},
+		Manifest:  bs.Manifest(),
 	}, nil
 }
 
@@ -304,7 +324,8 @@ type platformBotSet struct {
 	// row whose Materialize failed and returns nil on a ListWithSchema error,
 	// so absence there is not absence in the store. The list read is the
 	// authority, and this is its projection.
-	slugs map[string]struct{}
+	slugs       map[string]struct{}
+	diagnostics []botregistry.DiscoveryError
 }
 
 // platformBotSetCached returns the resolver-cached set (30s TTL,
@@ -341,10 +362,12 @@ func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[platformBotSet]
 		if err != nil {
 			return nil, err
 		}
+		entries, diags := s.materializeBotEntriesWithDiagnostics(list)
 		set := platformBotSet{
-			entries:   s.materializeBotEntries(list),
-			manifests: make(map[string]*bundle.Manifest, len(list)),
-			slugs:     make(map[string]struct{}, len(list)),
+			entries:     entries,
+			diagnostics: diags,
+			manifests:   make(map[string]*bundle.Manifest, len(list)),
+			slugs:       make(map[string]struct{}, len(list)),
 		}
 		for i := range list {
 			set.slugs[list[i].Slug] = struct{}{}
@@ -626,7 +649,7 @@ func (s *Server) storedBotEntry(ctx context.Context, tenantID, slug string) (bot
 	if !found {
 		return botregistry.EntryWithSchema{}, false, nil
 	}
-	if entries := s.materializeBotEntries([]botsource.BotSource{bs}); len(entries) == 1 {
+	if entries, _ := s.materializeBotEntriesWithDiagnostics([]botsource.BotSource{bs}); len(entries) == 1 {
 		return entries[0], true, nil
 	}
 	return botregistry.EntryWithSchema{}, false, fmt.Errorf(

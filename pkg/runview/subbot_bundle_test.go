@@ -2,7 +2,6 @@ package runview
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/subbottest"
@@ -10,9 +9,9 @@ import (
 )
 
 func TestServiceSubbotBundleResourceScope(t *testing.T) {
-	for _, bare := range []bool{false, true} {
-		t.Run(fmt.Sprint(bare), func(t *testing.T) {
-			f := subbottest.New(t, bare)
+	for _, kind := range []string{"bundle", "member", "bare"} {
+		t.Run(kind, func(t *testing.T) {
+			f := subbottest.New(t, kind)
 			t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 			s, err := NewService(f.Store, WithLogger(iterlog.Nop()), WithWorkDir(f.Workspace))
 			if err != nil {

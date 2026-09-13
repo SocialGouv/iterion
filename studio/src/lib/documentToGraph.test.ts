@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { IterDocument, WorkflowDecl } from "@/api/types";
-import { documentToGraph, getTopologyKey } from "./documentToGraph";
+import {
+  documentHasEditableNodes,
+  documentToGraph,
+  getTopologyKey,
+} from "./documentToGraph";
 
 function doc(partial: Partial<IterDocument>): IterDocument {
   return {
@@ -57,5 +61,38 @@ describe("documentToGraph — subbot declarations", () => {
       subbots: [{ name: "sb", source: "x.bot" }],
     });
     expect(getTopologyKey(without)).not.toBe(getTopologyKey(withSubbot));
+  });
+});
+
+// The canvas draws its "No workflow loaded" overlay from this predicate, so a
+// kind missing here HIDES a real workflow behind an empty state. That is not
+// hypothetical: `computes` was absent, and a deterministic (LLM-free)
+// workflow — every node a compute — rendered as if nothing had loaded.
+describe("documentHasEditableNodes", () => {
+  it("is false for a document with no nodes at all", () => {
+    expect(documentHasEditableNodes(doc({}))).toBe(false);
+  });
+
+  it("counts a compute-only workflow as loaded", () => {
+    const d = doc({
+      computes: [{ name: "say_hello", output: "hello_out", expr: [] }],
+    });
+    expect(documentHasEditableNodes(d)).toBe(true);
+  });
+
+  it("counts every kind the canvas can draw", () => {
+    // Minimal stubs: this predicate only counts, it never reads a field.
+    const cases = [
+      { agents: [{ name: "a" }] },
+      { judges: [{ name: "j" }] },
+      { routers: [{ name: "r", mode: "condition" }] },
+      { humans: [{ name: "h" }] },
+      { tools: [{ name: "t", command: "", output: "o" }] },
+      { computes: [{ name: "c", output: "o" }] },
+      { subbots: [{ name: "s", source: "x.bot", isolated: true }] },
+    ] as unknown as Array<Partial<IterDocument>>;
+    for (const partial of cases) {
+      expect(documentHasEditableNodes(doc(partial))).toBe(true);
+    }
   });
 });
