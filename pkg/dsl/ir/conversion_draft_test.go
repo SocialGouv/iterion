@@ -40,4 +40,9 @@ func TestLegacyConversionDraftKeepsUnverifiedWorkIncomplete(t *testing.T) {
 	if draft := w.ConversionDraft(); draft != nil {
 		t.Fatalf("native workflow received legacy extraction aid: %+v", draft)
 	}
+	w.Ports = nil
+	w.RuntimeSemantics = RuntimeSemanticsPortsV1
+	if draft := w.ConversionDraft(); draft != nil {
+		t.Fatalf("incomplete native compilation received legacy extraction aid: %+v", draft)
+	}
 }

@@ -36,7 +36,7 @@ type LegacyConversionGap struct {
 // effect policies and control-to-data bindings unresolved. The caller must not
 // treat the draft as activation or migration evidence.
 func (w *Workflow) ConversionDraft() *LegacyConversionDraft {
-	if w == nil || w.Ports != nil {
+	if w == nil || w.RuntimeSemantics != "" || w.Ports != nil {
 		return nil
 	}
 	draft := &LegacyConversionDraft{Status: "incomplete", WorkflowName: w.Name}
