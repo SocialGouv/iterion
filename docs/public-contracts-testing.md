@@ -28,9 +28,9 @@ and configuration directories and require no provider credentials.
 
 Required mode fails when a binary or integration prerequisite is missing.
 The manifest verifier also fails if any expected case is absent or skipped.
-These checks establish store namespace isolation and native checkpoint CAS
-behavior, not scheduler correctness, physical output-file validation, queue
-compatibility, fleet activation or safe workspace maintenance. Those
+These 70 required storage cases establish namespace isolation, immutable file
+capture and checkpoint CAS behavior. They do not establish scheduler
+correctness, queue delivery, fleet activation or safe workspace maintenance. Those
 remain separate entries in the [acceptance matrix](public-contracts-acceptance.md).
 
 The Engine suite uses the same deterministic scenarios against filesystem and
@@ -43,7 +43,10 @@ devbox run -- go test -race -json -count=1 ./pkg/runtime -run '^TestPortsEngine'
 devbox run -- node scripts/verify-port-tests.mjs pkg/runtime/ports_cases.json /tmp/iterion-port-runtime.jsonl
 ```
 
-All 60 named cases must execute without skips. They cover value scheduling and
-recovery; physical file provenance, effect verifiers, nested resource/budget
-sharing, deployment activation and full authoring surfaces remain outstanding.
+All 66 named cases must execute without skips. They cover value scheduling,
+file provenance and recovery, and attempt-bound effect verification through an
+executor that implements `PortEffectVerifier`. A default executor without that
+capability refuses a `recovery: verify` node before effect dispatch. Nested
+resource/budget sharing, distributed activation and full authoring surfaces
+remain outstanding.
 Commit fault injection is not a claim that an operating-system process was killed.
