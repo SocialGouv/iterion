@@ -15,6 +15,13 @@ import type {
   RunArtifactSummary,
   WireWorkflow,
 } from "./types";
+import {
+  ASSISTANT_ACTIONS,
+  parseAssistantActionRequestsDetailed,
+  type RejectedAssistantAction,
+  type AssistantActionRequest,
+} from "@/lib/chatDock/assistantActions";
+import { loadEvents } from "./snapshot";
 
 // listAllArtifacts returns the latest published artifact per node for a
 // run (node id, version, labels, title) — the data behind the centralized,
@@ -51,9 +58,11 @@ export async function getArtifact(
   runId: string,
   nodeId: string,
   version: number,
+  opts?: { signal?: AbortSignal },
 ): Promise<Artifact> {
   return request(
     `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(nodeId)}/${version}`,
+    { signal: opts?.signal },
   );
 }
 
@@ -156,4 +165,407 @@ async function blobToBase64(blob: Blob): Promise<string> {
     parts.push(String.fromCharCode(...bytes.subarray(i, i + chunk)));
   }
   return btoa(parts.join(""));
+}
+
+// A conversational bot can produce a `.bot` DRAFT as part of a turn — Copi's
+// `design` posture does, and a deterministic node compiles it before the
+// operator reads the reply. The draft is NOT a file: the bot is read-only with
+// respect to the workspace, so it lives only in that node's artifact.
+//
+// Found by SHAPE, never by node name. The studio's chat registry is
+// manifest-driven (issue #333), so hardcoding "copi" here would put a specific
+// bot's node id back into studio code — the same coupling the registry
+// removed. Any node publishing a non-empty `draft_bot` string qualifies.
+export const DRAFT_BOT_FIELD = "draft_bot";
+export const EDITOR_SESSION_FIELD = "editor_session_id";
+export const EDITOR_REVISION_FIELD = "editor_revision";
+export const EDITOR_APPLY_INTENT_FIELD = "editor_apply_intent";
+export const EDITOR_SAVE_INTENT_FIELD = "editor_save_intent";
+export const ASSISTANT_ACTIONS_FIELD = "assistant_actions";
+export const FILE_CHANGES_FIELD = "file_changes";
+export const FILE_CHANGES_INTENT_FIELD = "file_changes_intent";
+
+export type EditorActionIntent = "none" | "suggested" | "explicit";
+
+// The bot's own posture for the turn. A conversational bot that designs
+// workflows announces it here BEFORE it has anything to show, which is what
+// lets the studio offer the editor first and the draft second — the order the
+// operator asked for: settle where the work happens, then do it there.
+export const MODE_FIELD = "mode";
+export const DESIGN_MODE = "design";
+
+export interface DraftLookup {
+  /** The `.bot` source, when this conversation has produced one. */
+  source: string | null;
+  /** True when the latest turn is designing, draft or not. */
+  designing: boolean;
+}
+
+export interface EditorProposalLookup {
+  source: string | null;
+  sessionId: string | null;
+  revision: number | null;
+  applyIntent: EditorActionIntent;
+  saveIntent: EditorActionIntent;
+}
+
+export interface AssistantActionsLookup {
+  requests: AssistantActionRequest[];
+  invalid?: AssistantActionInvalidFeedback;
+}
+
+export interface AssistantActionInvalidFeedback {
+  sourceKey: string;
+  attempt: number;
+  rejected: RejectedAssistantAction[];
+  validIds: string[];
+  canonicalIds: string[];
+}
+
+async function priorInvalidActionFeedbackCount(
+  runId: string,
+  sourceKey: string,
+): Promise<number> {
+  try {
+    const events = await loadEvents(runId);
+    return events.reduce((count, event) => {
+      const answers = (event.data as { answers?: unknown } | undefined)?.answers;
+      if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+        return count;
+      }
+      const hostEvent = (answers as { host_event?: unknown }).host_event;
+      if (
+        hostEvent &&
+        typeof hostEvent === "object" &&
+        !Array.isArray(hostEvent) &&
+        (hostEvent as { kind?: unknown }).kind === "assistant-action-invalid" &&
+        (hostEvent as { source?: unknown }).source === sourceKey
+      ) {
+        return count + 1;
+      }
+      return count;
+    }, 0);
+  } catch {
+    // A missing event read must not make a valid action disappear. The host
+    // event endpoint remains the authority for whether feedback is accepted.
+    return 0;
+  }
+}
+
+export interface AssistantFileReplacement {
+  before: string;
+  after: string;
+}
+
+interface AssistantFileChangeTarget {
+  scope: "bundle" | "workspace";
+  path: string;
+}
+
+export type AssistantFileChange = AssistantFileChangeTarget & (
+  | { replacements: AssistantFileReplacement[]; create?: never }
+  | { create: { content: string }; replacements?: never }
+);
+
+export interface FileChangeProposalLookup {
+  changes: AssistantFileChange[];
+  sessionId: string | null;
+  revision: number | null;
+  intent: EditorActionIntent;
+}
+
+function editorActionIntent(value: unknown): EditorActionIntent {
+  return value === "suggested" || value === "explicit" ? value : "none";
+}
+
+// Newest artifacts first: a draft is the LATEST thing the conversation
+// produced, so the last-written node is where the search should start.
+export async function lookupDraft(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<DraftLookup> {
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const s of ordered) {
+    if (opts?.signal?.aborted) return { source: null, designing: false };
+    let art: Artifact;
+    try {
+      art = await getArtifact(runId, s.node_id, s.version, opts);
+    } catch {
+      // One unreadable artifact must not hide a draft published by another
+      // node — keep looking rather than failing the whole lookup.
+      continue;
+    }
+    const value = art.data?.[DRAFT_BOT_FIELD];
+    // The first artifact that DECLARES a posture is the newest turn boundary.
+    // An `info` turn retires an older design and its draft; a fresh design
+    // cannot inherit a prior turn's draft when it has not produced one yet.
+    if (
+      art.data &&
+      Object.prototype.hasOwnProperty.call(art.data, MODE_FIELD)
+    ) {
+      const designing = art.data[MODE_FIELD] === DESIGN_MODE;
+      const editorSession = art.data[EDITOR_SESSION_FIELD];
+      const source =
+        designing &&
+        !(typeof editorSession === "string" && editorSession.trim() !== "") &&
+        typeof value === "string" &&
+        value.trim() !== ""
+          ? value
+          : null;
+      return { source, designing };
+    }
+    if (
+      typeof value === "string" &&
+      value.trim() !== "" &&
+      !(typeof art.data?.[EDITOR_SESSION_FIELD] === "string" &&
+        String(art.data[EDITOR_SESSION_FIELD]).trim() !== "")
+    ) {
+      // Backward compatibility for bots that publish a draft but predate
+      // `mode`: a non-empty draft itself implies the design posture.
+      return { source: value, designing: true };
+    }
+  }
+  return { source: null, designing: false };
+}
+
+/**
+ * Find the newest editor-bound proposal. A newer Copi artifact with an empty
+ * session retires an older offer: editor capabilities are turn-scoped, never
+ * sticky across an unrelated conversation reply.
+ */
+export async function lookupEditorProposal(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<EditorProposalLookup> {
+  const none: EditorProposalLookup = {
+    source: null,
+    sessionId: null,
+    revision: null,
+    applyIntent: "none",
+    saveIntent: "none",
+  };
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const summary of ordered) {
+    if (opts?.signal?.aborted) return none;
+    let artifact: Artifact;
+    try {
+      artifact = await getArtifact(
+        runId,
+        summary.node_id,
+        summary.version,
+        opts,
+      );
+    } catch {
+      continue;
+    }
+    const data = artifact.data;
+    if (!data) continue;
+    const session = data[EDITOR_SESSION_FIELD];
+    const revision = data[EDITOR_REVISION_FIELD];
+    const source = data[DRAFT_BOT_FIELD];
+    const saveIntent = editorActionIntent(data[EDITOR_SAVE_INTENT_FIELD]);
+    const hasDraft = typeof source === "string" && source.trim() !== "";
+    if (
+      typeof session === "string" &&
+      session.trim() !== "" &&
+      typeof revision === "number" &&
+      Number.isInteger(revision) &&
+      revision >= 0 &&
+      (hasDraft || saveIntent !== "none")
+    ) {
+      return {
+        source: hasDraft ? source : null,
+        sessionId: session,
+        revision,
+        // A save-only artifact can never smuggle an apply request without a
+        // draft. The document to persist comes exclusively from host state.
+        applyIntent: hasDraft
+          ? editorActionIntent(data[EDITOR_APPLY_INTENT_FIELD])
+          : "none",
+        saveIntent,
+      };
+    }
+    // `mode` exists on every current Copi turn. Reaching it without a valid
+    // proposal means this newest turn intentionally carries no editor action.
+    if (Object.prototype.hasOwnProperty.call(data, MODE_FIELD)) return none;
+  }
+  return none;
+}
+
+/**
+ * Return the newest turn's generic host-action requests. Every capable chat
+ * bot publishes assistant_actions on every turn, including an empty array;
+ * encountering the field therefore retires an older offer deterministically.
+ */
+export async function lookupAssistantActions(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<AssistantActionsLookup> {
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const summary of ordered) {
+    if (opts?.signal?.aborted) return { requests: [] };
+    let artifact: Artifact;
+    try {
+      artifact = await getArtifact(
+        runId,
+        summary.node_id,
+        summary.version,
+        opts,
+      );
+    } catch {
+      continue;
+    }
+    if (
+      artifact.data &&
+      Object.prototype.hasOwnProperty.call(
+        artifact.data,
+        ASSISTANT_ACTIONS_FIELD,
+      )
+    ) {
+      const key = `${runId}:${summary.node_id}:${summary.version}`;
+      const parsed = parseAssistantActionRequestsDetailed(
+        artifact.data[ASSISTANT_ACTIONS_FIELD],
+        key,
+      );
+      if (parsed.rejected.length > 0) {
+        const prior = await priorInvalidActionFeedbackCount(runId, key);
+        return {
+          requests: [],
+          invalid: {
+            sourceKey: key,
+            attempt: Math.min(prior + 1, 2),
+            rejected: parsed.rejected,
+            validIds: parsed.requests.map((request) => request.id),
+            canonicalIds: ASSISTANT_ACTIONS.map((action) => action.id),
+          },
+        };
+      }
+      return {
+        requests: parsed.requests,
+      };
+    }
+  }
+  return { requests: [] };
+}
+
+function parseFileChanges(value: unknown): AssistantFileChange[] {
+  if (!Array.isArray(value) || value.length > 8) return [];
+  let total = 0;
+  const parsed: AssistantFileChange[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const item = raw as Record<string, unknown>;
+    if (
+      (item.scope !== "bundle" && item.scope !== "workspace") ||
+      typeof item.path !== "string" ||
+      item.path.trim() === ""
+    ) {
+      return [];
+    }
+    const hasCreate = Object.prototype.hasOwnProperty.call(item, "create");
+    const hasReplacements = Object.prototype.hasOwnProperty.call(item, "replacements");
+    if (hasCreate === hasReplacements) return [];
+    if (hasCreate) {
+      if (!item.create || typeof item.create !== "object" || Array.isArray(item.create)) return [];
+      const create = item.create as Record<string, unknown>;
+      if (typeof create.content !== "string" || create.content.length > 32 * 1024) return [];
+      total += create.content.length;
+      parsed.push({ scope: item.scope, path: item.path, create: { content: create.content } });
+      continue;
+    }
+    if (
+      !Array.isArray(item.replacements) ||
+      item.replacements.length === 0 ||
+      item.replacements.length > 16
+    ) {
+      return [];
+    }
+    const replacements: AssistantFileReplacement[] = [];
+    for (const candidate of item.replacements) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+      const replacement = candidate as Record<string, unknown>;
+      if (
+        typeof replacement.before !== "string" ||
+        replacement.before === "" ||
+        replacement.before.length > 32 * 1024 ||
+        typeof replacement.after !== "string" ||
+        replacement.after.length > 32 * 1024
+      ) {
+        return [];
+      }
+      total += replacement.before.length + replacement.after.length;
+      replacements.push({ before: replacement.before, after: replacement.after });
+    }
+    parsed.push({ scope: item.scope, path: item.path, replacements });
+  }
+  return total <= 256 * 1024 ? parsed : [];
+}
+
+/** Newest companion-file proposal, bound to the same editor turn snapshot. */
+export async function lookupFileChangeProposal(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<FileChangeProposalLookup> {
+  const none: FileChangeProposalLookup = {
+    changes: [],
+    sessionId: null,
+    revision: null,
+    intent: "none",
+  };
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const summary of ordered) {
+    if (opts?.signal?.aborted) return none;
+    let artifact: Artifact;
+    try {
+      artifact = await getArtifact(runId, summary.node_id, summary.version, opts);
+    } catch {
+      continue;
+    }
+    const data = artifact.data;
+    if (!data) continue;
+    const raw = data[FILE_CHANGES_FIELD];
+    if (raw !== undefined) {
+      const changes = parseFileChanges(raw);
+      const session = data[EDITOR_SESSION_FIELD];
+      const revision = data[EDITOR_REVISION_FIELD];
+      if (
+        changes.length > 0 &&
+        typeof session === "string" &&
+        session.trim() !== "" &&
+        typeof revision === "number" &&
+        Number.isInteger(revision) &&
+        revision >= 0
+      ) {
+        return {
+          changes,
+          sessionId: session,
+          revision,
+          intent: editorActionIntent(data[FILE_CHANGES_INTENT_FIELD]),
+        };
+      }
+      return none;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, MODE_FIELD)) return none;
+  }
+  return none;
+}
+
+/** Back-compat shorthand for callers that only want the source. */
+export async function findDraftBotSource(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<string | null> {
+  return (await lookupDraft(runId, opts)).source;
 }

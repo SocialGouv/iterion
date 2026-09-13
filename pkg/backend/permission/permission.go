@@ -127,14 +127,16 @@ func (d Decision) String() string {
 	}
 }
 
-// Policy is a resolved permission policy: a mode plus three ordered
-// rule lists. The zero value (ModeOff, no rules) is a disabled gate.
+// Policy is a resolved permission policy: a mode, the workflow-declared rule
+// lists, and engine-owned operator grants. The zero value (ModeOff, no rules)
+// is a disabled gate.
 type Policy struct {
 	Mode   Mode
 	allow  []rule
 	ask    []rule
 	deny   []rule
-	scoped bool // any rule has an (arg) pattern → Evaluate must summarize
+	grants []rule // operator-approved, engine-owned rules; never declared in a workflow
+	scoped bool   // any rule has an (arg) pattern → Evaluate must summarize
 	// exempt is the set of tool names the runtime explicitly marked as its
 	// own infrastructure (registration-linked, in addition to the reserved
 	// MCP namespace IsInfrastructureTool recognises). Keyed by canonical
@@ -151,6 +153,7 @@ type PolicyConfig struct {
 	Allow  []string `json:"allow,omitempty"`
 	Ask    []string `json:"ask,omitempty"`
 	Deny   []string `json:"deny,omitempty"`
+	Grants []string `json:"grants,omitempty"`
 	Exempt []string `json:"exempt,omitempty"`
 }
 
@@ -176,6 +179,7 @@ func (p *Policy) Config() PolicyConfig {
 		Allow:  raw(p.allow),
 		Ask:    raw(p.ask),
 		Deny:   raw(p.deny),
+		Grants: raw(p.grants),
 		Exempt: exempt,
 	}
 }
@@ -190,6 +194,9 @@ func NewPolicyFromConfig(cfg PolicyConfig) (*Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, rule := range cfg.Grants {
+		p.AddGrantRule(rule)
+	}
 	p.MarkExempt(cfg.Exempt...)
 	return p, nil
 }
@@ -201,10 +208,11 @@ func (p *Policy) CanAsk() bool {
 	return p != nil && (p.Mode == ModeAsk || len(p.ask) > 0)
 }
 
-// NewPolicy parses the rule strings into a Policy. A malformed rule is
-// an error (surfaced as a compile diagnostic upstream). Rule order
-// within each list is preserved; cross-list precedence is deny → ask →
-// allow (see [Policy.Evaluate]).
+// NewPolicy parses the workflow-declared rule strings into a Policy. A
+// malformed rule is an error (surfaced as a compile diagnostic upstream).
+// Trusted operator grants are added separately. A literal, argument-scoped
+// allow may supersede a bare ask for the same tool; all other asks retain
+// precedence over ordinary allows (see [Policy.Evaluate]).
 func NewPolicy(mode Mode, allow, ask, deny []string) (*Policy, error) {
 	p := &Policy{Mode: mode}
 	for _, group := range []struct {
@@ -233,16 +241,28 @@ func NewPolicy(mode Mode, allow, ask, deny []string) (*Policy, error) {
 // Enabled reports whether the gate is active (mode != off).
 func (p *Policy) Enabled() bool { return p != nil && p.Mode != ModeOff }
 
-// AddAllowRule appends an allow rule (used by "allow always" on
-// resume — the operator's grant persists for the rest of the run).
-// A malformed rule is ignored (it came from a structured decision, not
-// user free-text, so this is defensive only).
+// AddAllowRule appends an ordinary allow rule. Operator approvals must use
+// AddGrantRule so they can override an explicit ask rule without changing the
+// precedence of workflow-declared allow rules.
 func (p *Policy) AddAllowRule(raw string) {
 	if r, err := parseRule(raw); err == nil {
 		if r.argRe != nil {
 			p.scoped = true
 		}
 		p.allow = append(p.allow, r)
+	}
+}
+
+// AddGrantRule appends an engine-owned operator approval. It outranks an ask
+// rule for the approved scope, but never an explicit deny rule. A malformed
+// rule is ignored defensively: callers derive it from a structured tool call,
+// never workflow source or arbitrary model text.
+func (p *Policy) AddGrantRule(raw string) {
+	if r, err := parseRule(raw); err == nil {
+		if r.argRe != nil {
+			p.scoped = true
+		}
+		p.grants = append(p.grants, r)
 	}
 }
 
@@ -278,14 +298,18 @@ func (p *Policy) isExempt(toolName string) bool {
 	return IsInfrastructureTool(toolName)
 }
 
-// Evaluate decides what to do with a tool call. Precedence mirrors
-// Claude Code's evaluation order (deny rules → ask rules → allow rules
-// → permission mode):
+// Evaluate decides what to do with a tool call. Workflow rules preserve
+// Claude Code's evaluation order; an engine-owned grant from an explicit
+// operator approval is considered after deny and before ask:
 //
 //  1. a matching deny rule → Deny (wins in every mode);
-//  2. a matching ask rule  → Ask;
-//  3. a matching allow rule → Allow;
-//  4. otherwise the mode default — ModeAsk → Ask, ModeDeny → Deny,
+//  2. a matching trusted grant → Allow;
+//  3. a matching scoped ask rule → Ask;
+//  4. a matching bare exact-tool ask rule → Ask, except a matching literal
+//     scoped allow for that same tool → Allow;
+//  5. another matching ask rule → Ask;
+//  6. a matching allow rule → Allow;
+//  5. otherwise the mode default — ModeAsk → Ask, ModeDeny → Deny,
 //     ModeOff → Allow (the gate is disabled).
 //
 // The returned string is the matched rule (or "" for the mode default)
@@ -301,16 +325,27 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	if p.isExempt(toolName) {
 		return Allow, ""
 	}
-	canon := canonicalToolName(toolName)
-	// summarize is only needed by scoped (arg-pattern) rules; skip the
-	// work entirely when every rule is a bare tool name (the common
-	// `deny: [Bash]` / `allow: [*]` shapes).
-	summary := ""
-	if p.scoped {
-		summary = summarize(canon, input)
-	}
-	if r, ok := matchAny(p.deny, toolName, canon, summary); ok {
+	if r, ok := p.matchingDeny(toolName, input); ok {
 		return Deny, r.raw
+	}
+	canon, summary := p.toolSummary(toolName, input)
+	if r, ok := matchAny(p.grants, toolName, canon, summary); ok {
+		return Allow, r.raw
+	}
+	// A scoped ask is deliberately stronger than every allow. This lets an
+	// operator re-gate a single otherwise auto-allowed command.
+	if r, ok := matchScoped(p.ask, toolName, canon, summary, false); ok {
+		return Ask, r.raw
+	}
+	// A bare exact-tool ask is a generic fallback, so an authored literal
+	// allow for one complete argument can safely make that one invocation
+	// automatic. Do not extend this to tool globs, wildcard/prefix arguments,
+	// or catch-all asks: those remain approval gates.
+	if r, ok := matchBareExactTool(p.ask, toolName, canon); ok {
+		if allow, ok := matchScoped(p.allow, toolName, canon, summary, true); ok {
+			return Allow, allow.raw
+		}
+		return Ask, r.raw
 	}
 	if r, ok := matchAny(p.ask, toolName, canon, summary); ok {
 		return Ask, r.raw
@@ -326,6 +361,33 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	}
 }
 
+// HasExplicitDeny reports whether a declared deny rule (rather than the
+// permission mode's default) matches this call. Backend bridges use it before
+// changing a native tool spelling: an explicit author denial always wins.
+func (p *Policy) HasExplicitDeny(toolName string, input map[string]any) bool {
+	if p == nil || !p.Enabled() || p.isExempt(toolName) {
+		return false
+	}
+	_, ok := p.matchingDeny(toolName, input)
+	return ok
+}
+
+func (p *Policy) matchingDeny(toolName string, input map[string]any) (rule, bool) {
+	canon, summary := p.toolSummary(toolName, input)
+	return matchAny(p.deny, toolName, canon, summary)
+}
+
+func (p *Policy) toolSummary(toolName string, input map[string]any) (string, string) {
+	canon := canonicalToolName(toolName)
+	// summarize is only needed by scoped (arg-pattern) rules; skip the work
+	// entirely when every rule is bare (the common deny: [Bash] shape).
+	summary := ""
+	if p.scoped {
+		summary = summarize(canon, input)
+	}
+	return canon, summary
+}
+
 // rule is a parsed permission entry: a tool matcher plus an optional
 // argument matcher. A nil argRe is a bare tool rule (matches any
 // invocation of the tool).
@@ -334,6 +396,10 @@ type rule struct {
 	tool   string         // canonical tool key, or "*" (any) — literal case
 	toolRe *regexp.Regexp // non-nil when the tool name itself is a glob
 	argRe  *regexp.Regexp // non-nil when the rule scoped an (arg) pattern
+	// literalArg is true only for a bare, exact argument scope. It is kept
+	// separately from argRe so permission precedence never has to infer
+	// specificity from the rule spelling or regex shape.
+	literalArg bool
 }
 
 // parseRule parses `Tool` or `Tool(content)` into a rule.
@@ -351,11 +417,14 @@ func parseRule(raw string) (rule, error) {
 			return rule{}, fmt.Errorf("missing closing ')'")
 		}
 		toolPart = s[:open]
-		argRe, err := compileArg(s[open+1 : len(s)-1])
+		argContent := s[open+1 : len(s)-1]
+		argRe, err := compileArg(argContent)
 		if err != nil {
 			return rule{}, fmt.Errorf("bad arg pattern: %w", err)
 		}
 		r.argRe = argRe
+		trimmedArg := strings.TrimSpace(argContent)
+		r.literalArg = !strings.HasSuffix(trimmedArg, ":*") && !strings.Contains(trimmedArg, "*")
 	}
 	toolPart = strings.TrimSpace(toolPart)
 	if toolPart == "" {
@@ -395,24 +464,66 @@ func compileArg(content string) (*regexp.Regexp, error) {
 
 // matchAny returns the first rule in rs that matches the tool (by its raw
 // name + canonical key) and, for scoped rules, the input summary.
+//
+// A few summaries deliberately expose multiple safe candidates (for example
+// WebFetch's domain and full URL). Shell commands are different: a newline is
+// part of one command payload, not a second candidate. Splitting it would let
+// an exact allow for the first line approve arbitrary trailing shell text.
 func matchAny(rs []rule, rawName, canon, summary string) (rule, bool) {
 	for _, r := range rs {
 		if !r.matchesTool(rawName, canon) {
 			continue
 		}
-		if r.argRe == nil {
-			return r, true // bare tool rule matches any invocation
-		}
-		// summarize may emit several candidate strings (one per line) —
-		// e.g. WebFetch yields "domain:<host>", "<host>" and the full URL
-		// — and a scoped rule matches if it matches ANY candidate.
-		for _, cand := range strings.Split(summary, "\n") {
-			if r.argRe.MatchString(cand) {
-				return r, true
-			}
+		if r.matchesSummary(canon, summary) {
+			return r, true
 		}
 	}
 	return rule{}, false
+}
+
+// matchScoped returns a matching argument-scoped rule. When literalOnly is
+// true, it accepts neither wildcard/prefix argument scopes nor tool globs.
+func matchScoped(rs []rule, rawName, canon, summary string, literalOnly bool) (rule, bool) {
+	for _, r := range rs {
+		if r.argRe == nil || (literalOnly && (!r.literalArg || r.toolRe != nil)) {
+			continue
+		}
+		if r.matchesTool(rawName, canon) && r.matchesSummary(canon, summary) {
+			return r, true
+		}
+	}
+	return rule{}, false
+}
+
+// matchBareExactTool recognizes a generic ask only when it names this exact
+// canonical tool. A wildcard ask remains a catch-all approval rule.
+func matchBareExactTool(rs []rule, rawName, canon string) (rule, bool) {
+	for _, r := range rs {
+		if r.argRe == nil && r.toolRe == nil && r.tool == canon && r.matchesTool(rawName, canon) {
+			return r, true
+		}
+	}
+	return rule{}, false
+}
+
+func (r rule) matchesSummary(canon, summary string) bool {
+	if r.argRe == nil {
+		return true // bare tool rule matches any invocation
+	}
+	// summarize may emit several candidate strings (one per line) — e.g.
+	// WebFetch yields "domain:<host>", "<host>" and the full URL — and a
+	// scoped rule matches if it matches ANY candidate. A shell command must
+	// instead remain a single opaque candidate (see matchAny's contract).
+	candidates := strings.Split(summary, "\n")
+	if canon == "bash" || canon == "diagnostic_shell" {
+		candidates = []string{summary}
+	}
+	for _, cand := range candidates {
+		if r.argRe.MatchString(cand) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r rule) matchesTool(rawName, canon string) bool {
@@ -450,7 +561,7 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 // when adding a tool.
 func summarize(canon string, input map[string]any) string {
 	switch canon {
-	case "bash":
+	case "bash", "diagnostic_shell":
 		return str(input, "command")
 	case "read", "write", "edit", "notebookedit":
 		return cmp.Or(str(input, "file_path"), str(input, "path"), str(input, "notebook_path"))

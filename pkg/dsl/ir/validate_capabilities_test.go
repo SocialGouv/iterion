@@ -76,6 +76,33 @@ workflow w:
 	}
 }
 
+func TestCapabilities_RunsReadKnownAccepted(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+prompt sys:
+  hi.
+prompt usr:
+  go.
+agent po:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  capabilities: [runs.read]
+workflow w:
+  entry: po
+  po -> done
+`
+	r := compileFile(t, src)
+	for _, d := range r.Diagnostics {
+		if d.Severity == SeverityError || d.Code == DiagUnknownCapability {
+			t.Fatalf("runs.read should compile as a known capability: %s", d.Error())
+		}
+	}
+}
+
 func TestCapabilities_UnknownEmitsWarning(t *testing.T) {
 	src := `
 schema s:

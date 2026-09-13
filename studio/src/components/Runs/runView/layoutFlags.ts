@@ -19,8 +19,6 @@ export const BOTTOM_TABS = [
   "plans",
 ] as const;
 export type BottomTab = (typeof BOTTOM_TABS)[number];
-export const CHAT_DOCK_KEY = "run-console-v2.chat-dock";
-export const CHAT_DOCKS = ["closed", "floating", "docked-right"] as const;
 export const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
   tasks: "Tasks",
   events: "Events",

@@ -85,3 +85,27 @@ func TestIsPlatform(t *testing.T) {
 		t.Fatal("IsPlatform must match exactly the sentinel")
 	}
 }
+
+func TestReadBundleDirExcludesNestedRuntimeStorageSymlink(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "scripts")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(nested, ".iterion")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	files, err := ReadBundleDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files["main.bot"] != "source" {
+		t.Fatalf("unexpected bundle files: %+v", files)
+	}
+	if paths := ExecutableFiles(dir); len(paths) != 0 {
+		t.Fatalf("runtime storage exposed as executable: %v", paths)
+	}
+}

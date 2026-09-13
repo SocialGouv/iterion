@@ -47,7 +47,7 @@ func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[strin
 //
 // The caller MUST defer the returned cleanup (no-op on the
 // non-bundle path).
-func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
+func resumeOpenWorkflow(r *store.Run, iterFile string, force bool) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
 	cleanup := func() error { return nil }
 	if r != nil && r.BundlePath != "" {
 		bundleHandle, bundleCleanup, openErr := openResumeBundle(r.BundlePath)
@@ -56,11 +56,15 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 		}
 		if bundleHandle != nil {
 			cleanup = bundleCleanup
-			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleHandle.IterPath, bundleHandle)
-			if compileErr != nil {
-				return nil, "", bundleHandle.IterPath, bundleHandle, cleanup, compileErr
+			bundleWorkflowPath, resolveErr := runtime.ResolveResumeBundleWorkflow(r, bundleHandle, iterFile, force)
+			if resolveErr != nil {
+				return nil, "", iterFile, bundleHandle, cleanup, resolveErr
 			}
-			return wf, hash, bundleHandle.IterPath, bundleHandle, cleanup, nil
+			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleWorkflowPath, bundleHandle)
+			if compileErr != nil {
+				return nil, "", bundleWorkflowPath, bundleHandle, cleanup, compileErr
+			}
+			return wf, hash, bundleWorkflowPath, bundleHandle, cleanup, nil
 		}
 	}
 	// A bare <bundle>/main.bot named by --file is promoted to its bundle the
@@ -116,13 +120,21 @@ func buildResumeExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
 	if err != nil {
 		return nil, err
 	}
 	runFallback, err := ir.ParseRunFallbackFlag(opts.Fallback)
 	if err != nil {
 		return nil, err
+	}
+	// Inherit the model the run was LAUNCHED with, then let this attempt's
+	// flags win per field. Without the inheritance a resume silently drops
+	// back to the .bot's own model:/backend:/reasoning_effort:, so an
+	// operator's launch-time choice would last exactly one node — and the
+	// detached studio path resumes through this same CLI.
+	if r != nil {
+		modelOverrides = modelOverrides.MergeOver(runview.ModelOverridesFromRun(r.ModelOverrides))
 	}
 	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
 	if err != nil {

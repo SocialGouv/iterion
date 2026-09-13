@@ -16,6 +16,7 @@ export function externalActiveRuns(
   runs: readonly GlobalActiveRun[],
   cards: readonly PipelineBoardCard[],
   projectDir: string | null,
+  assistantRunIDs?: ReadonlySet<string>,
 ): GlobalActiveRun[] {
   const boardRunIDs = new Set<string>();
   const boardWorkflows = new Set<string>();
@@ -34,6 +35,8 @@ export function externalActiveRuns(
       (run) =>
         PIPELINE_LIVE_STATUSES.has(run.status) &&
         !run.parent_run_id &&
+        run.source_kind !== "studio_chat" &&
+        !assistantRunIDs?.has(run.id) &&
         !boardRunIDs.has(run.id) &&
         belongsToProject(run.workspace_dir, projectDir),
     )

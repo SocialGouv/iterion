@@ -71,7 +71,7 @@ func TestEarlyRefusalCleanupCannotRaceReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wc, cleanup, err := setupWorktree(st.Root(), runID, repo, nil)
+	wc, cleanup, err := setupWorktree(st.Root(), runID, repo, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"maps"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 
 // memSpendStore is an in-memory store.SpendStore for guard unit tests.
 type memSpendStore struct {
+	mu   sync.Mutex
 	days map[string]*store.DailySpend
 }
 
@@ -19,6 +22,12 @@ func newMemSpendStore() *memSpendStore {
 }
 
 func (m *memSpendStore) get(date string) *store.DailySpend {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return copyTestDailySpend(m.getLocked(date))
+}
+
+func (m *memSpendStore) getLocked(date string) *store.DailySpend {
 	ds, ok := m.days[date]
 	if !ok {
 		ds = &store.DailySpend{Date: date, RunsContributed: map[string]float64{}}
@@ -32,7 +41,9 @@ func (m *memSpendStore) LoadDailySpend(_ context.Context, date string) (*store.D
 }
 
 func (m *memSpendStore) AddSpend(_ context.Context, date, runID string, cum float64) (*store.DailySpend, error) {
-	ds := m.get(date)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ds := m.getLocked(date)
 	if prev, ok := ds.RunsContributed[runID]; !ok || cum > prev {
 		ds.RunsContributed[runID] = cum
 	}
@@ -41,13 +52,27 @@ func (m *memSpendStore) AddSpend(_ context.Context, date, runID string, cum floa
 		total += c
 	}
 	ds.SpentUSD = total
-	return ds, nil
+	return copyTestDailySpend(ds), nil
 }
 
 func (m *memSpendStore) SetSpendOverride(_ context.Context, date string, ov *store.SpendOverride) (*store.DailySpend, error) {
-	ds := m.get(date)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ds := m.getLocked(date)
 	ds.Override = ov
-	return ds, nil
+	return copyTestDailySpend(ds), nil
+}
+
+// Like the filesystem store, each call returns its own snapshot. Callers read
+// the result after the lock is released while sibling branches keep writing.
+func copyTestDailySpend(ds *store.DailySpend) *store.DailySpend {
+	copy := *ds
+	copy.RunsContributed = maps.Clone(ds.RunsContributed)
+	if ds.Override != nil {
+		override := *ds.Override
+		copy.Override = &override
+	}
+	return &copy
 }
 
 func TestDailyCapGuardDisabled(t *testing.T) {

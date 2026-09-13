@@ -39,6 +39,14 @@ const (
 	artifactContractUnavailableErrorCode  = "artifact_contract_unavailable"
 )
 
+// runNotResumableErrorCode tells the studio that the resume was refused
+// because the run's status changed under it — practically always because
+// something else resumed the same parked gate first. A parked chat gate has
+// two legitimate resumers (the operator, and the assistant-watch coordinator
+// delivering an event), so the caller re-routes to queue-message instead of
+// showing the operator a failure they did nothing to cause.
+const runNotResumableErrorCode = "run_not_resumable"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -48,15 +56,27 @@ type launchRunRequest struct {
 	// filesystem; FilePath is then advisory (used for display + as the
 	// AST parserPath). When both are set, Source wins.
 	Source string `json:"source,omitempty"`
-	// BotID names a catalog bundle (e.g. "whats-next") to launch. In cloud
-	// mode it lets the server resolve the bot's source off the pod's own
-	// bots/ tree (like the webhook/scheduler/board/trigger launchers) so a
-	// client need not upload the bytes, and it is carried on the LaunchSpec
-	// so the runner mirrors the bundle's skills. Optional: a catalog-shaped
-	// FilePath ("bots/<name>/main.bot") is inferred to the same id.
+	// RunSource is typed launch provenance. Deliberately not named `source`:
+	// that wire key already carries inline workflow DSL. The public endpoint
+	// admits only studio_chat; dispatcher/schedule provenance is stamped by
+	// trusted server-side launch paths and cannot be forged by an HTTP caller.
+	RunSource *launchRunSource `json:"run_source,omitempty"`
+	// BotID names a catalog bundle (e.g. "whats-next") to launch. The server
+	// resolves it through the configured catalog in both local and cloud mode:
+	// local catalogs may deliberately live outside the active workspace, while
+	// cloud callers need the source loaded from the pod/store. It is carried on
+	// the LaunchSpec so the runner mirrors the bundle's skills. Optional in
+	// cloud: a catalog-shaped FilePath ("bots/<name>/main.bot") is inferred to
+	// the same id.
 	BotID string            `json:"bot_id,omitempty"`
 	RunID string            `json:"run_id,omitempty"`
 	Vars  map[string]string `json:"vars,omitempty"`
+	// SourceRunID asks the host to launch the selected worker against the
+	// repository that owns one failed run's workflow source. The host resolves
+	// provenance, injects a bounded attested failure envelope, and enforces an
+	// isolated no-merge worktree.
+	SourceRunID  string `json:"source_run_id,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Maps directly to LaunchSpec.Preset; the engine
 	// records it on Run.Preset for resume.
@@ -250,7 +270,10 @@ type launchRunResponse struct {
 }
 
 type resumeRunRequest struct {
-	FilePath string `json:"file_path,omitempty"` // optional; falls back to run.FilePath
+	// Pointer distinguishes an omitted path (which may use the persisted run
+	// path) from an explicit path, including an explicit empty path. The latter
+	// must not silently fall back to the old run source.
+	FilePath *string `json:"file_path,omitempty"`
 	// Source carries the workflow contents inline. Used in cloud mode
 	// when the resumer (studio) wants to push a possibly-modified
 	// workflow without depending on the server pod's filesystem.
@@ -305,6 +328,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	runSource, err := validateLaunchRunSource(req.RunSource)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid run_source: %v", err)
+		span.SetStatus(codes.Error, "invalid run source")
+		return
+	}
 	if req.FilePath == "" && req.Source == "" && req.BotID == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
@@ -320,18 +349,20 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		req.RoutingPolicy.Hash = req.RoutingPolicy.ComputeHash()
 	}
-	// Cloud mode has no operator filesystem, so a bare workspace file_path
-	// can't be read. Resolve the bot through the tiered authority instead
-	// (bot_resolver.go): the caller's TEAM-AUTHORED bot first, then a
-	// PLATFORM override, then the baked catalog off the pod FS. Stored bots
-	// run their store content inline, with the materialized bundle merged at
-	// compile and the ref stamped for the runner; catalog bots resolve like
-	// the webhook/scheduler/board/trigger launchers. This is what lets the
-	// studio launch Nexie/Revi/etc. by id or catalog path without uploading
-	// bytes — and what makes an override effective on the very next launch.
+	// Resolve an explicit bot id through the tiered authority in BOTH modes
+	// (bot_resolver.go): the caller's TEAM-AUTHORED bot first, then a PLATFORM
+	// override, then the configured catalog. In local mode a configured catalog
+	// may intentionally live outside WorkDir (the ubiquitous assistant is the
+	// canonical example); treating its path as an ordinary editor file would
+	// make safePath reject it and then misleadingly try WorkDir/bots/<id>.
+	// Cloud additionally infers an id from a catalog-shaped path because it has
+	// no operator filesystem. Stored bots run their store content inline, with
+	// the materialized bundle merged at compile and the ref stamped for the
+	// runner.
 	botID := strings.TrimSpace(req.BotID)
 	var launchLB *launchBot
-	if s.cfg.Mode == "cloud" && req.Source == "" {
+	trustedCatalogPath := ""
+	if req.Source == "" && (botID != "" || s.cfg.Mode == "cloud") {
 		id, _ := auth.FromContext(r.Context())
 		lb, lbErr := s.resolveBotTiered(r.Context(), id.TeamID, req.BotID, req.FilePath)
 		if lbErr != nil {
@@ -342,7 +373,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		if lb != nil {
 			launchLB = lb
 			defer launchLB.Cleanup()
-			req.Source, req.FilePath, botID = lb.Source, lb.Path, lb.BotID
+			req.FilePath, botID = lb.Path, lb.BotID
+			if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
+				req.Source = lb.Source
+			} else {
+				// ResolveBotPath already constrained this absolute path to a
+				// configured catalog root and read it successfully. Keep the real
+				// file so bundle-relative skills/prompts remain adjacent.
+				trustedCatalogPath = lb.Path
+			}
 		}
 	}
 	// Anything that is not a resolvable bot still requires inline Source in
@@ -352,11 +391,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "cloud mode requires source")
 		return
 	}
-	absPath, pathErr := s.resolveWorkflowPath(req.FilePath, req.Source)
-	if pathErr != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
-		span.SetStatus(codes.Error, "invalid file_path")
-		return
+	absPath := trustedCatalogPath
+	if absPath == "" {
+		var pathErr error
+		absPath, pathErr = s.resolveWorkflowPath(req.FilePath, req.Source)
+		if pathErr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+			span.SetStatus(codes.Error, "invalid file_path")
+			return
+		}
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
@@ -365,6 +408,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	budget := req.Budget.toOverrides()
+	if launchLB != nil && launchLB.Manifest != nil && launchLB.Manifest.Chat.UnlimitedWorkflowForLaunch(req.Vars) {
+		if budget == nil {
+			budget = &ir.BudgetOverrides{}
+		}
+		budget.UnlimitedWorkflow = true
+	}
 	if budget != nil {
 		// Validate max_duration at admission so the caller gets a 400
 		// with the offending value instead of a launch-time failure.
@@ -376,6 +425,48 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The effort override reaches the provider verbatim, so an unknown level
+	// has to be rejected at admission rather than surfacing as a mid-run API
+	// error on the first node.
+	if err := validateModelOverrides(req.ModelOverrides); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		span.SetStatus(codes.Error, "invalid model override")
+		return
+	}
+
+	var (
+		delegation       *store.RunDelegation
+		delegationTarget delegationLaunchTarget
+	)
+	if strings.TrimSpace(req.SourceRunID) != "" {
+		if len(req.Instructions) > 20_000 {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "instructions are too long")
+			return
+		}
+		bundleDir := ""
+		if launchLB != nil {
+			bundleDir = launchLB.BundleDir
+		}
+		if _, err := compileDelegatedWorker(absPath, req.Source, bundleDir); err != nil {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
+			return
+		}
+		var err error
+		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.Instructions, req.Vars)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
+			return
+		}
+		// A delegated worker always lands on its own storage branch. Accepting
+		// model-supplied merge flags would turn diagnosis into an implicit write
+		// on the operator branch.
+		req.MergeInto = "none"
+		req.AutoMerge = false
+		if delegationTarget.RepoURL != "" {
+			req.RepoURL, req.RepoRef, req.ConnectionID = delegationTarget.RepoURL, delegationTarget.RepoRef, delegationTarget.ConnectionID
+		}
+	}
+
 	// Repo-targeted launch (the "Target repository" section): resolve the
 	// forge context on the request ctx (auth identity) BEFORE detaching.
 	var repoProjectPath string
@@ -483,6 +574,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		FilePath:          absPath,
 		Source:            req.Source,
 		BotID:             botID,
+		SourceRef:         runSource,
 		RunID:             req.RunID,
 		Vars:              req.Vars,
 		Preset:            req.Preset,
@@ -520,6 +612,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		RepoRef:            req.RepoRef,
 		ProjectPath:        repoProjectPath,
 		SecretOverrides:    repoSecretOverrides,
+		WorkDir:            delegationTarget.WorkDir,
+		WorktreeBaseCommit: delegationTarget.WorktreeBaseCommit,
+		Delegation:         delegation,
+	}
+	if origin, originErr := inferRunBotOrigin(&store.Run{FilePath: absPath}); originErr == nil {
+		spec.BotOrigin = origin
 	}
 	// Stored-bot resolution (team/platform): the compile-time bundle dir and
 	// the runner-side ref ride the spec. Threaded from the SAME resolution
@@ -640,13 +738,24 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolve file path: explicit body wins, falling back to the
 	// FilePath persisted at launch.
-	filePath := req.FilePath
-	if filePath == "" {
+	explicitFilePath := req.FilePath != nil
+	var filePath string
+	if explicitFilePath {
+		filePath = *req.FilePath
+	} else {
 		filePath = runMeta.FilePath
 	}
 	// Shared with the retry sweeper so the automated resume resolves its
 	// source exactly like this one (see resolveResumeSource).
-	absPath, resolvedSource, resumeLB, pathErr := s.resolveResumeSource(r.Context(), runMeta.BotSourceTenant, filePath, req.Source, runMeta.WorkflowSource)
+	absPath, resolvedSource, resumeLB, pathErr := s.resolveResumeSourceWithFallback(
+		r.Context(),
+		runMeta.BotSourceTenant,
+		filePath,
+		req.Source,
+		runMeta.WorkflowSource,
+		!explicitFilePath,
+		runMeta,
+	)
 	if pathErr != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", pathErr)
 		span.SetStatus(codes.Error, "resume source unresolvable")
@@ -732,6 +841,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Timeout:  timeout,
 		Budget:   budget,
 	}
+	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
+	if historyErr != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
+		span.RecordError(historyErr)
+		span.SetStatus(codes.Error, "chat history projection failed")
+		return
+	}
+	resumeSpec.HostInputs = hostInputs
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
 	}
@@ -752,7 +869,9 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeResumeError preserves the normal human-readable error response and
-// adds a stable code for the one resume failure the studio must act on.
+// adds a stable code for the resume failures the studio must ACT on rather
+// than merely display: a changed source (offer --force) and a run that is no
+// longer parked (re-route to queue-message).
 func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
 	if s.writeQueueOutageError(w, r, "resume", err) {
 		return
@@ -778,6 +897,13 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
 			"error":      fmt.Sprintf("resume: %v", err),
 			"error_code": artifactContractIncompatibleErrorCode,
+		})
+		return
+	}
+	if errors.Is(err, runview.ErrRunNotResumable) {
+		s.writeJSONError(w, r, http.StatusConflict, map[string]any{
+			"error":      fmt.Sprintf("resume: %v", err),
+			"error_code": runNotResumableErrorCode,
 		})
 		return
 	}

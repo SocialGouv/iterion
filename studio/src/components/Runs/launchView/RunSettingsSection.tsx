@@ -37,9 +37,12 @@ export interface RunSettingsSectionProps {
 
 // knobCaption renders "effective: X · from Y" — the override wins when
 // the operator set the select; else the server's workflow/env/default
-// resolution, plus a node-pinned warning when a run override wouldn't
-// reach every node.
-function knobCaption(override: string, knob: PreviewEffectiveKnob | undefined) {
+// resolution, plus the knob-specific relation to node pins.
+function knobCaption(
+  override: string,
+  knob: PreviewEffectiveKnob | undefined,
+  nodePinWins: boolean = false,
+) {
   if (!override && !knob) return null;
   const effective = override || knob?.effective || "";
   const source = override ? "run override" : (knob?.source ?? "");
@@ -47,9 +50,13 @@ function knobCaption(override: string, knob: PreviewEffectiveKnob | undefined) {
     <div className="mt-1 text-caption text-fg-subtle">
       effective: <code>{effective}</code>
       {source ? <> · from {source}</> : null}
-      {knob?.node_pinned ? (
-        <> · some nodes pin their own (override won’t affect them)</>
-      ) : null}
+      {knob?.node_pinned
+        ? override
+          ? nodePinWins
+            ? <> · some nodes pin their own (this setting won’t affect them)</>
+            : <> · run override wins over node settings</>
+          : <> · some nodes set their own value</>
+        : null}
     </div>
   );
 }
@@ -103,7 +110,7 @@ export default function RunSettingsSection({
                 </option>
               ))}
             </Select>
-            {knobCaption(backendOverride, effective?.backend)}
+            {knobCaption(backendOverride, effective?.backend, true)}
             <div className="mt-1 text-caption text-fg-subtle">
               Overrides the workflow&apos;s default. Nodes that pin a specific{" "}
               <code>backend:</code> keep their pin.

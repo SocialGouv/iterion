@@ -71,12 +71,13 @@ var strToAwaitMode = func() map[string]AwaitMode {
 }()
 
 var interactionModeToStr = map[InteractionMode]string{
-	InteractionNone:       "none",
-	InteractionHuman:      "human",
-	InteractionLLM:        "llm",
-	InteractionLLMOrHuman: "llm_or_human",
-	InteractionReview:     "review",
-	InteractionAsync:      "async",
+	InteractionNone:        "none",
+	InteractionHuman:       "human",
+	InteractionLLM:         "llm",
+	InteractionLLMOrHuman:  "llm_or_human",
+	InteractionReview:      "review",
+	InteractionAsync:       "async",
+	InteractionHumanOrHost: "human_or_host",
 }
 
 var strToInteractionMode = reverseMap(interactionModeToStr)
@@ -359,6 +360,7 @@ type jsonAgentDecl struct {
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
+	SessionSlot       string               `json:"session_slot,omitempty"`
 	Tools             []string             `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
@@ -400,6 +402,7 @@ type jsonJudgeDecl struct {
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
+	SessionSlot       string               `json:"session_slot,omitempty"`
 	Tools             []string             `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
@@ -1357,6 +1360,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		System:            a.System,
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
+		SessionSlot:       a.SessionSlot,
 		Tools:             a.Tools,
 		ToolPolicy:        a.ToolPolicy,
 		Capabilities:      a.Capabilities,
@@ -1400,6 +1404,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		System:            j.System,
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
+		SessionSlot:       j.SessionSlot,
 		Tools:             j.Tools,
 		ToolPolicy:        j.ToolPolicy,
 		Capabilities:      j.Capabilities,
@@ -2113,6 +2118,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			System:            ja.System,
 			User:              ja.User,
 			Session:           sess,
+			SessionSlot:       ja.SessionSlot,
 			Tools:             ja.Tools,
 			ToolPolicy:        ja.ToolPolicy,
 			Capabilities:      ja.Capabilities,
@@ -2170,6 +2176,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			System:            jj.System,
 			User:              jj.User,
 			Session:           sess,
+			SessionSlot:       jj.SessionSlot,
 			Tools:             jj.Tools,
 			ToolPolicy:        jj.ToolPolicy,
 			Capabilities:      jj.Capabilities,

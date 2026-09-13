@@ -92,10 +92,11 @@ func newValkeyBoardMCPTokenStore(rdb redis.UniversalClient, logger *iterlog.Logg
 type boardTokenPayload struct {
 	Caps          []string `json:"caps"`
 	SourceIssueID string   `json:"src,omitempty"`
+	TenantID      string   `json:"tenant_id,omitempty"`
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID string) error {
-	b, err := json.Marshal(boardTokenPayload{Caps: caps, SourceIssueID: strings.TrimSpace(sourceIssueID)})
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string) error {
+	b, err := json.Marshal(boardTokenPayload{Caps: caps, SourceIssueID: strings.TrimSpace(sourceIssueID), TenantID: strings.TrimSpace(tenantID)})
 	if err != nil {
 		return fmt.Errorf("marshal board MCP caps: %w", err)
 	}
@@ -143,6 +144,7 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 	grant := boardMCPGrant{
 		Capabilities:  boardops.Capabilities{},
 		SourceIssueID: payload.SourceIssueID,
+		TenantID:      payload.TenantID,
 	}
 	for _, c := range payload.Caps {
 		grant.Capabilities[c] = true

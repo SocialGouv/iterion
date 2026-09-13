@@ -6,18 +6,14 @@ description: Read-only survey method for Nexie — a tight single-pass survey fo
 # Repo Survey — single pass or audit fan-out
 
 You survey to GROUND recommendations, never to dump. Everything here is
-read-only: `bash` (inspection only), `read_file`, `glob`, `grep`. Never
+read-only: `read_file`, `glob`, `grep`. Bash is runtime-denied so the action
+policy cannot be bypassed with curl or a direct store edit. Never
 write, commit, push, or mutate the board from a survey.
 
-**Anchor every command on the workspace, never on your cwd.** Your
-shell starts in the run's working directory, which may be a DIFFERENT
-tree than the workspace you were asked to survey (a launch dir, a
-stale worktree cut from an older base). Set `WS` to the workspace root
-the mission names and use it everywhere — `git -C "$WS"`, `"$WS"/…`
-paths, `ls "$WS"/pkg` — or `cd "$WS"` once and stay there. A
-relative-path read in the wrong tree produces verdicts that are right
-for the wrong tree, which is worse than no verdict: state which tree
-you read (`git -C "$WS" rev-parse HEAD`) when the evidence matters.
+**Anchor every read/glob/grep path on the workspace, never on your cwd.** The
+run may start in a different tree. A relative-path read in the wrong tree
+produces verdicts that are right for the wrong tree, which is worse than no
+verdict.
 
 Two regimes. Pick by the size of the question, not by keywords:
 
@@ -35,7 +31,7 @@ A small question gets a small survey. The fan-out triggers on scale.
 
 Go deep on what matters, skip the rest:
 
-1. **Top level** — `find "$WS" -maxdepth 1 -mindepth 1 -type d | sort`;
+1. **Top level** — glob the workspace's first-level entries;
    classify roles (code / tests / docs / tooling / examples / infra /
    vendored / runtime-data).
 2. **Convention files** — `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`:
@@ -45,16 +41,14 @@ Go deep on what matters, skip the rest:
    package managers.
 4. **Bots** — `.bot`/`.botz` files outside vendor dirs (paths, not just
    names). Empty is a valid signal on a non-iterion repo.
-5. **Recent activity** — `git -C "$WS" log -n 20 --oneline`; tag themes
-   and note what's hot.
-6. **ADRs / architecture docs** — never recommend work that contradicts
+5. **ADRs / architecture docs** — never recommend work that contradicts
    an accepted ADR; surface tensions instead.
-7. **TODO/FIXME hotspots** — first-party only
+6. **TODO/FIXME hotspots** — first-party only
    (`--exclude-dir=vendor --exclude-dir=node_modules`), report
    hotspots, not every marker.
 
 Report conclusions in your own reply, cited compactly (`file:line`,
-sha). There is no output schema — you are speaking to the operator.
+file reference). There is no output schema — you are speaking to the operator.
 
 ## Audit fan-out (roadmap-scale)
 
@@ -79,7 +73,7 @@ The three canonical axes:
   flags never flipped), dead or unread config, skipped tests.
 - **operational-state** — the board state-by-state (via the board
   tools BEFORE spawning, or handed to the sub-agent as text), bot
-  manifests vs what the catalog says, git cadence over the last weeks,
+  manifests vs what the catalog says,
   schedules/dispatcher config present in the repo, open PRs if a forge
   remote is visible.
 
@@ -99,7 +93,7 @@ Area: <docs-adr | code-gaps | operational-state | …>
 Workspace: <absolute path>
 Baseline (read if present): <CONTEXT_BRIEF.md path> · <findings/ dir path>
 
-Tools: bash (read-only inspection), read_file, glob, grep.
+Tools: read_file, glob, grep. Bash is unavailable by design.
 NEVER write, commit, push, or mutate anything.
 Budget: ≤20 tool calls, then reply.
 
@@ -109,7 +103,7 @@ Return EXACTLY this markdown envelope, nothing before or after:
 5-8 lines. Key observations, in the operator's language.
 
 ## Findings
-5-12 bullets: "<one-line finding> — evidence: <file:line | sha | log excerpt>"
+5-12 bullets: "<one-line finding> — evidence: <file:line>"
 
 ## Candidate chantiers
 2-4 bullets: "<short name>: <one-sentence why> — evidence: <ref>"

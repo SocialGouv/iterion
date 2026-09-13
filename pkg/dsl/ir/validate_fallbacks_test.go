@@ -144,6 +144,26 @@ func TestFallbackUngatedRouteIsRefused(t *testing.T) {
 	}
 }
 
+func TestToolRestrictionLossReason(t *testing.T) {
+	if got := ToolRestrictionLossReason("claw", "claude_code", []string{"read_file"}); !strings.Contains(got, "tools:") {
+		t.Fatalf("claw → CLI warning = %q, want tools: restriction loss", got)
+	}
+	for _, tc := range []struct {
+		name, from, to string
+		tools          []string
+	}{
+		{name: "same backend", from: "claw", to: "claw", tools: []string{"read_file"}},
+		{name: "CLI source", from: "claude_code", to: "codex", tools: []string{"read_file"}},
+		{name: "no restriction", from: "claw", to: "claude_code"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ToolRestrictionLossReason(tc.from, tc.to, tc.tools); got != "" {
+				t.Fatalf("unexpected warning: %s", got)
+			}
+		})
+	}
+}
+
 // externalHookBackends are the CLI backends whose PreToolUse hook is an
 // EXTERNAL process. Both earned their entry with a live denial (a real model,
 // a real tool call, a filesystem sentinel), and both are deny-only for the
@@ -199,6 +219,23 @@ func TestExternalHookDenyWithAskRulesIsRefused(t *testing.T) {
 			cr := compileFallbackSrc(t, src)
 			if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
 				t.Fatalf("%s cannot preserve an explicit ask rule from an external hook process: %+v", tc.backend, cr.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestExternalHookDenyWithClawOnlyAskRulesIsAllowed closes the false
+// positive that blocked Copi's Kimi/Grok reviewer fallback: the workflow can
+// offer diagnostic_shell to Claw while its external-hook reviewer can never
+// invoke that Claw-only alias. A Bash or unknown ask remains covered above.
+func TestExternalHookDenyWithClawOnlyAskRulesIsAllowed(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := "agent x:\n  backend: \"" + tc.backend + "\"\n  model: \"" + tc.model + "\"\n  system: p\n  permission: deny\n" +
+				"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  ask: [\"diagnostic_shell\"]\n  x -> done\n"
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+				t.Fatalf("%s must permit a Claw-only ask rule it cannot receive: %+v", tc.backend, cr.Diagnostics)
 			}
 		})
 	}
