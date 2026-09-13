@@ -245,6 +245,8 @@ func TestAuthoringGitPublishPinsCurrentHeadToFreshOriginBranch(t *testing.T) {
 
 func initAuthoringGit(t *testing.T, root string) {
 	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"config", "user.name", "Authoring Test"},

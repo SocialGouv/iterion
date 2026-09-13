@@ -1195,77 +1195,8 @@ func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringG
 		expectedHashes[path] = requested.ExpectedSHA256
 	}
 
-	tracked, err := runAuthoringGit(r.Context(), gitRoot, append([]string{"ls-files", "--error-unmatch", "--"}, paths...)...)
-	if err != nil {
-		return "", nil, fmt.Errorf("selected authoring files must already be Git-tracked: %w", err)
-	}
-	if !sameGitPathSet(splitGitLines(tracked), paths) {
-		return "", nil, errors.New("git did not resolve exactly the selected authoring files")
-	}
-	changed, err := runAuthoringGit(r.Context(), gitRoot, append([]string{"diff", "--name-only", "-z", "HEAD", "--"}, paths...)...)
-	if err != nil {
-		return "", nil, err
-	}
-	if !sameGitPathSet(splitGitPathList(changed), paths) {
-		return "", nil, authoringConflictError{"selected files have no uncommitted change against HEAD (they may already be committed)"}
-	}
-	indexedBefore, err := runAuthoringGit(r.Context(), gitRoot, "diff", "--cached", "--name-only", "-z")
-	if err != nil {
-		return "", nil, err
-	}
-	selected := make(map[string]bool, len(paths))
-	for _, path := range paths {
-		selected[path] = true
-	}
-	for _, path := range splitGitPathList(indexedBefore) {
-		if !selected[path] {
-			return "", nil, fmt.Errorf("git index already contains non-selected path %q; leave it untouched and commit it separately", path)
-		}
-	}
-	if _, err := runAuthoringGit(r.Context(), gitRoot, append([]string{"add", "--"}, paths...)...); err != nil {
-		return "", nil, err
-	}
-	indexedAfter, err := runAuthoringGit(r.Context(), gitRoot, "diff", "--cached", "--name-only", "-z")
-	if err != nil {
-		return "", nil, err
-	}
-	if !sameGitPathSet(splitGitPathList(indexedAfter), paths) {
-		return "", nil, errors.New("git index diverged while staging the selected authoring files")
-	}
-	for _, path := range paths {
-		staged, err := runAuthoringGit(r.Context(), gitRoot, "show", ":"+path)
-		if err != nil {
-			return "", nil, err
-		}
-		if contentSHA256(staged) != expectedHashes[path] {
-			return "", nil, authoringConflictError{fmt.Sprintf("staged content for %q differs from the host snapshot", path)}
-		}
-	}
-	if _, err := runAuthoringGit(r.Context(), gitRoot, append([]string{"commit", "--only", "-m", strings.TrimSpace(req.Message), "--"}, paths...)...); err != nil {
-		return "", nil, err
-	}
-	head, err := runAuthoringGit(r.Context(), gitRoot, "rev-parse", "HEAD")
-	if err != nil {
-		return "", nil, err
-	}
-	head = strings.TrimSpace(head)
-	committed, err := runAuthoringGit(r.Context(), gitRoot, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD")
-	if err != nil {
-		return head, paths, fmt.Errorf("commit %s exists but its changed paths could not be verified: %w", head, err)
-	}
-	if !sameGitPathSet(splitGitPathList(committed), paths) {
-		return head, paths, fmt.Errorf("commit %s exists but changed paths diverged from the selected authoring files; no rollback was attempted", head)
-	}
-	for _, path := range paths {
-		committedContent, err := runAuthoringGit(r.Context(), gitRoot, "show", "HEAD:"+path)
-		if err != nil {
-			return head, paths, fmt.Errorf("commit %s exists but %q could not be verified; no rollback was attempted: %w", head, path, err)
-		}
-		if contentSHA256(committedContent) != expectedHashes[path] {
-			return head, paths, fmt.Errorf("commit %s exists but %q content diverged from the host snapshot; no rollback was attempted", head, path)
-		}
-	}
-	return head, paths, nil
+	head, err := commitAttestedAuthoringFiles(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message))
+	return head, paths, err
 }
 
 // authoringGitPublish exposes one deliberately narrow network mutation: push
@@ -1326,7 +1257,7 @@ func authoringGitPublish(r *http.Request, target *authoringTarget, req authoring
 }
 
 func runAuthoringGit(ctx context.Context, workDir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, gitlib.NoAutoMaintenance(args...)...)...)
 	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
