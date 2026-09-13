@@ -19,6 +19,18 @@ version `v: 2`. Native blob keys start with `ports-v1/`. There is no lookup
 fallback to legacy data, including when an older writer creates a shadow
 record with the same textual ID.
 
+Captured native files are addressed as
+`published/<producer>/<attempt>/<sha256>` through the existing run-file API.
+Filesystem stores keep these under `port_files/` in the run directory,
+outside the sandbox's `artifact_files/` directory; temporary snapshots use
+the private `.port-staging/` sibling. Mongo keeps captured bytes under native
+run-file blob keys and private local snapshots under
+`<scratch-root>/ports-v1-publications/<run-id>/`. Native deletion includes
+these directories and blobs. The `published/` prefix is reserved: an ordinary
+scratch upload cannot overwrite it. File capture verifies size and digest
+without a payload-sized memory buffer, but does not create a publication
+record or prove that the current producer created the original source file.
+
 `port_execution` is the authoritative native checkpoint for a `ports-v1`
 run. The internal `legacy-adapter-v1` interpreter retains legacy checkpoint
 semantics inside the protected native namespace. Its descendants remain in

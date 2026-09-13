@@ -188,6 +188,11 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		if err := os.RemoveAll(s.runFilesScratchDir(id)); err != nil {
 			return fmt.Errorf("store/mongo: remove run files scratch %s: %w", id, err)
 		}
+		if store.IsNativeRunID(id) {
+			if err := os.RemoveAll(s.portFileStagingDir(id)); err != nil {
+				return fmt.Errorf("store/mongo: remove native publication staging %s: %w", id, err)
+			}
+		}
 	}
 	children := []struct {
 		name string

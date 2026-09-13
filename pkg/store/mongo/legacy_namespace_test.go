@@ -47,6 +47,22 @@ func nativeMongoRecords(t *testing.T, ctx context.Context, s *Store) map[string]
 	return out
 }
 
+func TestNativeFileCaptureMongoS3(t *testing.T) {
+	storetest.RunPortFiles(t, func(t *testing.T) store.RunStore {
+		s := nativeNamespaceStore(t)
+		_, server := s3test.New(t, "native-file-capture")
+		ctx, cancel := mongotest.Ctx(t)
+		defer cancel()
+		objects, err := blob.NewS3(ctx, blob.Config{Endpoint: server.URL, Region: "us-east-1", Bucket: "native-file-capture", UsePathStyle: true, AccessKeyID: "test-key", SecretAccessKey: "test-secret"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = objects.Close() })
+		s.blob = objects
+		return s
+	})
+}
+
 func TestNativeOldMongoAndS3ExecutablesCannotMutateNativeClosure(t *testing.T) {
 	probe := storetest.LegacyTool(t, "ITERION_TEST_LEGACY_PROBE")
 	s := nativeNamespaceStore(t)

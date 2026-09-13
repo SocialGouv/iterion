@@ -130,6 +130,30 @@ func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]Ru
 		return nil, err
 	}
 	root := s.runFilesDir(runID)
+	out, err := listRunFilesUnder(root)
+	if err != nil {
+		return nil, err
+	}
+	if IsNativeRunID(runID) {
+		// The native published/ prefix belongs to captured files outside the
+		// sandbox scratch area. A scratch shadow cannot replace that reference.
+		filtered := out[:0]
+		for _, file := range out {
+			if !strings.HasPrefix(file.Path, "published/") {
+				filtered = append(filtered, file)
+			}
+		}
+		captured, err := listRunFilesUnder(s.portFilesDir(runID))
+		if err != nil {
+			return nil, err
+		}
+		out = append(filtered, captured...)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+func listRunFilesUnder(root string) ([]RunFileInfo, error) {
 	var out []RunFileInfo
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -183,6 +207,9 @@ func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath strin
 		return nil, RunFileInfo{}, err
 	}
 	root := s.runFilesDir(runID)
+	if IsNativeRunID(runID) && strings.HasPrefix(cleaned, "published/") {
+		root = s.portFilesDir(runID)
+	}
 	f, info, err := openRunFileAt(root, components)
 	if err != nil {
 		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")

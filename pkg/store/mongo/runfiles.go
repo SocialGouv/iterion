@@ -130,6 +130,11 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 			return walkErr
 		}
 		if d.IsDir() {
+			if store.IsNativeRunID(runID) && path == filepath.Join(root, "published") {
+				// This prefix names immutable captured results in the native
+				// file store. A tool's scratch shadow cannot overwrite them.
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Skip anything that isn't a regular file (symlinks, sockets):

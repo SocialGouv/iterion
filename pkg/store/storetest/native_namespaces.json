@@ -24,7 +24,11 @@
       "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/unknown_effect_outcome",
       "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/identity_replacement",
       "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/reservation_without_admission",
-      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/partial_collection"
+      "TestNativeExecutionStateFilesystem/RejectPartialPublicationAndSemanticLoss/partial_collection",
+      "TestNativeFileCaptureFilesystem",
+      "TestNativeFileCaptureFilesystem/different_same-size_body",
+      "TestNativeFileCaptureFilesystem/truncated",
+      "TestNativeFileCaptureFilesystem/extra_byte"
     ],
     "github.com/SocialGouv/iterion/pkg/store/mongo": [
       "TestNativeNamespacesMongo",
@@ -50,7 +54,15 @@
       "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/unknown_effect_outcome",
       "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/identity_replacement",
       "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/reservation_without_admission",
-      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/partial_collection"
+      "TestNativeExecutionStateMongo/RejectPartialPublicationAndSemanticLoss/partial_collection",
+      "TestNativeFileCaptureMongo",
+      "TestNativeFileCaptureMongo/different_same-size_body",
+      "TestNativeFileCaptureMongo/truncated",
+      "TestNativeFileCaptureMongo/extra_byte",
+      "TestNativeFileCaptureMongoS3",
+      "TestNativeFileCaptureMongoS3/different_same-size_body",
+      "TestNativeFileCaptureMongoS3/truncated",
+      "TestNativeFileCaptureMongoS3/extra_byte"
     ],
     "github.com/SocialGouv/iterion/pkg/store/blob": [
       "TestNativeBlobKeysAreOutsideLegacyFamilies",

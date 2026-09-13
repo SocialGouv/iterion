@@ -19,7 +19,7 @@ Syntax profiles and runtime semantics are independent.
 | Native acyclic data graph, including crossed diamonds | Compiled graph inspection and runtime dependency traces | Crossed DAG compilation and cycle rejection pass; runtime traces outstanding |
 | Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Map inference, shared-axis reuse, whole-array typing and ambiguous-axis rejection pass; execution outstanding |
 | Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Outstanding |
-| Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Outstanding |
+| Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable native file capture and scratch-shadow isolation pass on FS/Mongo/S3; runtime provenance, file schemas and required product completion outstanding |
 | Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Native checkpoint CAS, atomic publication/reservation transitions and lost-acknowledgment cases pass on FS/Mongo; Engine and physical file validation outstanding |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
@@ -72,7 +72,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the native scheduler or deployment barrier is implemented.
 - Native store tests pass on filesystem and a real Mongo 8 replica set with
   `ITERION_TEST_REQUIRED=1`, `ITERION_TEST_MONGO_URI` and `go test -race -json`.
-  `scripts/verify-port-tests.mjs` verified all 58 expected cases in
+  `scripts/verify-port-tests.mjs` verified all 70 expected cases in
   `pkg/store/storetest/native_namespaces.json` passed without skips. They cover
   metadata and blob round trips, exact public inputs, descendant namespaces,
   no legacy shadow fallback, unsupported-record refusal and deletion closure.
@@ -106,6 +106,18 @@ Syntax profiles and runtime semantics are independent.
   Mongo scratch-directory creation check native record compatibility before
   mutation; the FS/Mongo unsupported-record cases passed again with race
   detection. `go vet` passed for the store, storetest and Mongo packages.
+- `TestNativeFileCaptureFilesystem`, `TestNativeFileCaptureMongo` and
+  `TestNativeFileCaptureMongoS3` pass with race detection. The last uses a real
+  S3 client against the HTTP object fixture. Native capture streams into a
+  private verified snapshot, retains content-addressed attempt references and
+  refuses truncated, oversized or changed bodies before replacing any result.
+  Native reads and the final scratch upload cannot substitute a scratch
+  shadow for a captured file. Run deletion removes captured files and private
+  staging. Capturing a file does not itself publish a workflow result.
+  The native manifest verifies 70 cases without skips; the focused rerun also
+  covers ordinary run-file uploading, S3 client round trips and deletion
+  collection coverage. Runtime validation of fresh producer provenance and
+  declared file properties remains outstanding.
 
 ## Verification rules
 

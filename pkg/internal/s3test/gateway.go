@@ -77,11 +77,14 @@ func (f *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet:
 		f.mu.Lock()
 		body, ok := f.objects[key]
+		contentType := f.putContentTypes[key]
 		f.mu.Unlock()
 		if !ok {
 			writeS3Error(w, http.StatusNotFound, "NoSuchKey")
 			return
 		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.Header().Set("Content-Type", contentType)
 		_, _ = w.Write(body)
 	case r.Method == http.MethodDelete:
 		f.mu.Lock()
