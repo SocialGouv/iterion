@@ -48,6 +48,10 @@ type assistantWatchCoordinator struct {
 	server               *Server
 	mu                   sync.RWMutex
 	store                runwatch.Store
+	runs                 *runview.Service
+	botPaths             []string
+	generation           uint64
+	origin               *assistantWatchCoordinator // non-nil for an immutable operation snapshot
 	worker               string
 	clock                clock.Clock
 	healthMu             sync.RWMutex
@@ -76,19 +80,61 @@ func (c *assistantWatchCoordinator) nudge() {
 	}
 }
 
-func (c *assistantWatchCoordinator) currentStore() runwatch.Store {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.store
+// setRuntime is called under Server.stateMu when publishing a project. The
+// service, watch store and catalog paths move together, including overlapping
+// swaps. An in-flight operation retains its previous pair through completion.
+func (c *assistantWatchCoordinator) setRuntime(runs *runview.Service, watches runwatch.Store, paths []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.runs, c.store, c.botPaths = runs, watches, slices.Clone(paths)
+	c.generation++
+	c.healthMu.Lock()
+	c.lastSweepStartedAt, c.lastSweepCompletedAt, c.lastSweepDuration = time.Time{}, time.Time{}, 0
+	c.healthMu.Unlock()
 }
 
-func (c *assistantWatchCoordinator) setStore(next runwatch.Store) {
-	c.mu.Lock()
-	c.store = next
-	c.mu.Unlock()
+func (c *assistantWatchCoordinator) snapshot() *assistantWatchCoordinator {
+	if c.origin != nil {
+		return c
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &assistantWatchCoordinator{
+		server: c.server, runs: c.runs, store: c.store, botPaths: c.botPaths,
+		worker: c.worker, wake: c.wake, resumeRun: c.resumeRun,
+		generation: c.generation, origin: c,
+	}
+}
+
+func (c *assistantWatchCoordinator) currentStore() runwatch.Store { return c.snapshot().store }
+
+// A captured catalog travels through nested manifest resolution and the
+// service's resume policy, including continuations after a project switch.
+type assistantWatchBotPathsKey struct{}
+
+func (c *assistantWatchCoordinator) withBotPaths(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(assistantWatchBotPathsKey{}).([]string); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, assistantWatchBotPathsKey{}, c.botPaths)
+}
+
+func (s *Server) captureAssistantWatch() *assistantWatchCoordinator {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if s.assistantWatch != nil {
+		return s.assistantWatch.snapshot()
+	}
+	// Some route-only servers do not start the background coordinator.
+	c := &assistantWatchCoordinator{server: s}
+	c.setRuntime(s.runs, s.assistantWatches, s.effectivePathsFor(s.cfg.WorkDir))
+	return c.snapshot()
 }
 
 func (c *assistantWatchCoordinator) now() time.Time {
+	if c.origin != nil {
+		return c.origin.now()
+	}
 	c.healthMu.RLock()
 	clk := c.clock
 	c.healthMu.RUnlock()
@@ -99,12 +145,30 @@ func (c *assistantWatchCoordinator) now() time.Time {
 }
 
 func (c *assistantWatchCoordinator) markSweepStarted(at time.Time) {
+	if c.origin != nil {
+		root := c.origin
+		root.mu.RLock()
+		defer root.mu.RUnlock()
+		if root.generation != c.generation {
+			return
+		}
+		c = root
+	}
 	c.healthMu.Lock()
 	c.lastSweepStartedAt = at
 	c.healthMu.Unlock()
 }
 
 func (c *assistantWatchCoordinator) markSweepCompleted(at time.Time, duration time.Duration) {
+	if c.origin != nil {
+		root := c.origin
+		root.mu.RLock()
+		defer root.mu.RUnlock()
+		if root.generation != c.generation {
+			return
+		}
+		c = root
+	}
 	c.healthMu.Lock()
 	c.lastSweepCompletedAt = at
 	c.lastSweepDuration = duration
@@ -120,6 +184,15 @@ type assistantWatchHeartbeat struct {
 }
 
 func (c *assistantWatchCoordinator) heartbeat() assistantWatchHeartbeat {
+	if c.origin != nil {
+		root := c.origin
+		root.mu.RLock()
+		defer root.mu.RUnlock()
+		if root.generation != c.generation {
+			return assistantWatchHeartbeat{Present: true, Stale: true}
+		}
+		c = root
+	}
 	c.healthMu.RLock()
 	started, completed, duration := c.lastSweepStartedAt, c.lastSweepCompletedAt, c.lastSweepDuration
 	c.healthMu.RUnlock()
@@ -133,10 +206,12 @@ func (c *assistantWatchCoordinator) heartbeat() assistantWatchHeartbeat {
 }
 
 func (c *assistantWatchCoordinator) resume(ctx context.Context, spec runview.ResumeSpec) (*runview.LaunchResult, error) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	if c.resumeRun != nil {
 		return c.resumeRun(ctx, spec)
 	}
-	return c.server.runs.Resume(ctx, spec)
+	return c.runs.Resume(ctx, spec)
 }
 
 func (s *Server) startAssistantRunWatches() {
@@ -149,6 +224,7 @@ func (s *Server) startAssistantRunWatches() {
 		return
 	}
 	c := &assistantWatchCoordinator{server: s, store: s.assistantWatches, worker: "assistant-watch:" + uuid.NewString(), clock: clock.Default, wake: make(chan struct{}, 1)}
+	c.setRuntime(s.runs, s.assistantWatches, s.effectivePathsFor(s.cfg.WorkDir))
 	s.assistantWatch = c
 	if bus := s.eventsBus(); bus != nil {
 		cancel, err := bus.Subscribe("assistant-run-watch", trigger.Matcher{Sources: []trigger.Source{trigger.SourceRun}}, c.handleEvent)
@@ -180,7 +256,29 @@ func (c *assistantWatchCoordinator) sweepLoop(shutdown <-chan struct{}) {
 }
 
 func (c *assistantWatchCoordinator) handleEvent(ctx context.Context, ev trigger.Event) error {
-	if ev.Source != trigger.SourceRun || ev.Subject.ID == "" {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	if ev.Source != trigger.SourceRun || ev.Subject.ID == "" || (c.server.cfg.Mode == "cloud" && ev.TenantID == "") {
+		return nil
+	}
+	ctx = store.WithTenant(ctx, ev.TenantID)
+	target, err := c.runs.LoadRunCtx(ctx, ev.Subject.ID)
+	if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if target == nil || target.TenantID != ev.TenantID {
+		return nil
+	}
+	// A late event from a different project/episode has no authority over
+	// this runtime. Reconciliation reads the current persisted outcome.
+	interaction := ""
+	if target.Status.IsPaused() && target.Checkpoint != nil {
+		interaction = target.Checkpoint.InteractionID
+	}
+	if ev.ID != trigger.RunOutcomeEventID(target.ID, string(target.Status), interaction, target.UpdatedAt) {
 		return nil
 	}
 	// Arm BEFORE observing: a run spawned by a watched card has no link to
@@ -188,10 +286,7 @@ func (c *assistantWatchCoordinator) handleEvent(ctx context.Context, ev trigger.
 	// and drop the outcome on the floor.
 	switch ev.Kind {
 	case trigger.KindRunFailed, trigger.KindRunFinished, trigger.KindRunCancelled:
-		rctx := store.WithIdentity(ctx, ev.TenantID, "")
-		if target, err := c.server.runs.LoadRunCtx(rctx, ev.Subject.ID); err == nil {
-			c.armWatchesForTarget(ctx, target)
-		}
+		c.armWatchesForTarget(ctx, target)
 	}
 	switch ev.Kind {
 	case trigger.KindRunFailed:
@@ -217,6 +312,8 @@ func (c *assistantWatchCoordinator) handleEvent(ctx context.Context, ev trigger.
 }
 
 func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	started := c.now()
 	c.markSweepStarted(started)
 	ws := c.currentStore()
@@ -226,10 +323,14 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
 		return
 	}
 	for _, w := range watches {
+		if c.server.cfg.Mode == "cloud" && w.TenantID == "" {
+			c.server.logWarn("assistant run watch: skip watch %s without cloud tenant", w.ID)
+			continue
+		}
 		rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
-		target, err := c.server.runs.LoadRunCtx(rctx, w.TargetRunID)
+		target, err := c.runs.LoadRunCtx(rctx, w.TargetRunID)
 		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
-			_ = c.stopWatch(ctx, w, runwatch.WatchStopped, "target_missing", time.Now().UTC())
+			_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "target_missing", time.Now().UTC())
 			continue
 		}
 		if err != nil {
@@ -242,23 +343,23 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
 			// once at upgrade. New watches already carry CreatedAt here.
 			started = now
 		}
-		w, err = ws.InitializeTreeTracking(ctx, w.ID, w.TenantID, started, now)
+		w, err = ws.InitializeTreeTracking(rctx, w.ID, w.TenantID, started, now)
 		if err != nil {
 			c.server.logWarn("assistant run watch: initialize tree tracking watch=%s: %v", w.ID, err)
 			continue
 		}
 		tree := c.loadWatchTree(rctx, target)
-		observations := c.ensureTreeObservations(ctx, w, tree, now)
-		c.observePausedHumanGatesInTree(ctx, w, tree)
+		observations := c.ensureTreeObservations(rctx, w, tree, now)
+		c.observePausedHumanGatesInTree(rctx, w, tree)
 		for _, observed := range tree.runs {
 			if cursor, ok := observations[observed.ID]; ok {
-				c.observeRunHealthInTree(ctx, w, observed, cursor, tree)
+				c.observeRunHealthInTree(rctx, w, observed, cursor, tree)
 			}
-			c.observeTerminalStateForWatch(ctx, w, observed, false)
+			c.observeTerminalStateForWatch(rctx, w, observed, false)
 		}
-		assistant, aerr := c.server.runs.LoadRunCtx(rctx, w.AssistantRunID)
+		assistant, aerr := c.runs.LoadRunCtx(rctx, w.AssistantRunID)
 		if aerr == nil && assistantWatchStopsForStatus(assistant.Status) {
-			_ = c.stopWatch(ctx, w, runwatch.WatchStopped, "assistant_"+string(assistant.Status), time.Now().UTC())
+			_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "assistant_"+string(assistant.Status), time.Now().UTC())
 		}
 	}
 	c.reconcileArmedWatches(ctx)
@@ -272,6 +373,8 @@ type assistantWatchTree struct {
 }
 
 func (c *assistantWatchCoordinator) loadWatchTree(ctx context.Context, root *store.Run) assistantWatchTree {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	tree := assistantWatchTree{children: map[string][]*store.Run{}}
 	if root == nil {
 		return tree
@@ -282,7 +385,7 @@ func (c *assistantWatchCoordinator) loadWatchTree(ctx context.Context, root *sto
 		current := queue[0]
 		queue = queue[1:]
 		tree.runs = append(tree.runs, current)
-		ids, err := c.server.runs.RunStore().ListChildRuns(ctx, current.ID)
+		ids, err := c.runs.RunStore().ListChildRuns(ctx, current.ID)
 		if err != nil {
 			c.server.logWarn("assistant run watch: list children for tree target %s: %v", current.ID, err)
 			continue
@@ -293,7 +396,7 @@ func (c *assistantWatchCoordinator) loadWatchTree(ctx context.Context, root *sto
 				continue
 			}
 			seen[id] = true
-			child, err := c.server.runs.LoadRunCtx(ctx, id)
+			child, err := c.runs.LoadRunCtx(ctx, id)
 			if err != nil {
 				c.server.logWarn("assistant run watch: load tree child %s: %v", id, err)
 				continue
@@ -309,6 +412,9 @@ func (c *assistantWatchCoordinator) loadWatchTree(ctx context.Context, root *sto
 }
 
 func (c *assistantWatchCoordinator) ensureTreeObservations(ctx context.Context, w runwatch.Watch, tree assistantWatchTree, now time.Time) map[string]runwatch.RunObservation {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	out := make(map[string]runwatch.RunObservation, len(tree.runs))
 	trackingStarted := w.CreatedAt
 	if w.TreeTrackingStartedAt != nil {
@@ -319,7 +425,7 @@ func (c *assistantWatchCoordinator) ensureTreeObservations(ctx context.Context, 
 		if observed.ID == w.TargetRunID {
 			seed = w.LastObservedEventSeq
 		} else if observed.CreatedAt.Before(trackingStarted) {
-			if snap, err := c.server.runs.SnapshotCtx(store.WithIdentity(ctx, w.TenantID, w.OwnerID), observed.ID); err == nil && snap != nil {
+			if snap, err := c.runs.SnapshotCtx(store.WithIdentity(ctx, w.TenantID, w.OwnerID), observed.ID); err == nil && snap != nil {
 				seed = snap.LastSeq
 			}
 		}
@@ -340,6 +446,9 @@ func (c *assistantWatchCoordinator) ensureTreeObservations(ctx context.Context, 
 // Episodes are keyed to the paused child's stable outcome id, making this
 // sweep idempotent across restarts and repeated reconciliation passes.
 func (c *assistantWatchCoordinator) observePausedHumanGates(ctx context.Context, w runwatch.Watch, target *store.Run) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if !watchIncludes(w, trigger.KindRunPaused) || target == nil {
 		return
 	}
@@ -348,6 +457,9 @@ func (c *assistantWatchCoordinator) observePausedHumanGates(ctx context.Context,
 }
 
 func (c *assistantWatchCoordinator) observePausedHumanGatesInTree(ctx context.Context, w runwatch.Watch, tree assistantWatchTree) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if !watchIncludes(w, trigger.KindRunPaused) {
 		return
 	}
@@ -359,6 +471,9 @@ func (c *assistantWatchCoordinator) observePausedHumanGatesInTree(ctx context.Co
 }
 
 func (c *assistantWatchCoordinator) observePausedHumanGate(ctx context.Context, w runwatch.Watch, gate *store.Run) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if gate == nil || gate.Checkpoint == nil || gate.Status != store.RunStatusPausedWaitingHuman {
 		return
 	}
@@ -396,6 +511,9 @@ func (c *assistantWatchCoordinator) observePausedHumanGate(ctx context.Context, 
 // fast path elsewhere in the product, but it is intentionally lossy, so a
 // supervisor wake-up must be derived from this durable event stream.
 func (c *assistantWatchCoordinator) observeRunHealth(ctx context.Context, w runwatch.Watch, target *store.Run) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if target == nil {
 		return
 	}
@@ -408,6 +526,9 @@ func (c *assistantWatchCoordinator) observeRunHealth(ctx context.Context, w runw
 }
 
 func (c *assistantWatchCoordinator) observeRunHealthInTree(ctx context.Context, w runwatch.Watch, target *store.Run, cursor runwatch.RunObservation, tree assistantWatchTree) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if !watchIncludes(w, trigger.KindRunStalled) || target == nil || target.Status != store.RunStatusRunning {
 		return
 	}
@@ -416,7 +537,7 @@ func (c *assistantWatchCoordinator) observeRunHealthInTree(ctx context.Context, 
 		from = 0
 	}
 	rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
-	events, err := c.server.runs.RunStore().LoadEventsRange(rctx, target.ID, from, 0, assistantWatchHealthPageSize)
+	events, err := c.runs.RunStore().LoadEventsRange(rctx, target.ID, from, 0, assistantWatchHealthPageSize)
 	if err != nil || len(events) == 0 {
 		if err != nil {
 			c.server.logWarn("assistant run watch: reconcile health target %s: %v", target.ID, err)
@@ -512,12 +633,14 @@ func matchingHealthRecovery(events []*store.Event, stall *store.Event) (*store.E
 }
 
 func (c *assistantWatchCoordinator) hasProgressingDescendantInTree(ctx context.Context, tree assistantWatchTree, targetID string, now time.Time) (bool, error) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	window := alert.DefaultStallTimeout
-	if m := c.server.runs.AlertManager(); m != nil && m.StallTimeout() > 0 {
+	if m := c.runs.AlertManager(); m != nil && m.StallTimeout() > 0 {
 		window = m.StallTimeout()
 	}
 	deadline := now.Add(-window)
-	rs := c.server.runs.RunStore()
+	rs := c.runs.RunStore()
 	queue := []string{targetID}
 	seen := map[string]bool{targetID: true}
 	for len(queue) > 0 {
@@ -560,17 +683,19 @@ func (c *assistantWatchCoordinator) hasProgressingDescendantInTree(ctx context.C
 }
 
 func (c *assistantWatchCoordinator) observeFailure(ctx context.Context, tenant, targetID, eventID string) error {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	rctx := store.WithIdentity(ctx, tenant, "")
-	observed, err := c.server.runs.LoadRunCtx(rctx, targetID)
+	observed, err := c.runs.LoadRunCtx(rctx, targetID)
 	if err != nil {
 		return err
 	}
-	watches, err := c.coveringWatches(ctx, tenant, observed)
+	watches, err := c.coveringWatches(rctx, tenant, observed)
 	if err != nil {
 		return err
 	}
 	for _, w := range watches {
-		if err := c.observeFailureForWatch(ctx, w, observed, eventID); err != nil {
+		if err := c.observeFailureForWatch(rctx, w, observed, eventID); err != nil {
 			return err
 		}
 	}
@@ -578,6 +703,9 @@ func (c *assistantWatchCoordinator) observeFailure(ctx context.Context, tenant, 
 }
 
 func (c *assistantWatchCoordinator) observeFailureForWatch(ctx context.Context, w runwatch.Watch, observed *store.Run, eventID string) error {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if observed == nil || !watchIncludes(w, trigger.KindRunFailed) {
 		return nil
 	}
@@ -587,7 +715,7 @@ func (c *assistantWatchCoordinator) observeFailureForWatch(ctx context.Context, 
 		return nil
 	}
 	rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
-	resolved, err := loadAssistantRun(rctx, observed.ID, c.server.runs.RunStore())
+	resolved, err := loadAssistantRun(rctx, observed.ID, c.runs.RunStore())
 	if err != nil {
 		return nil
 	}
@@ -618,17 +746,19 @@ func watchIncludes(w runwatch.Watch, kind string) bool {
 }
 
 func (c *assistantWatchCoordinator) observeTerminal(ctx context.Context, tenant, targetID, eventID, kind string) error {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	rctx := store.WithIdentity(ctx, tenant, "")
-	observed, err := c.server.runs.LoadRunCtx(rctx, targetID)
+	observed, err := c.runs.LoadRunCtx(rctx, targetID)
 	if err != nil {
 		return err
 	}
-	watches, err := c.coveringWatches(ctx, tenant, observed)
+	watches, err := c.coveringWatches(rctx, tenant, observed)
 	if err != nil {
 		return err
 	}
 	for _, w := range watches {
-		if err := c.observeTerminalForWatch(ctx, w, observed, eventID, kind); err != nil {
+		if err := c.observeTerminalForWatch(rctx, w, observed, eventID, kind); err != nil {
 			return err
 		}
 	}
@@ -636,6 +766,8 @@ func (c *assistantWatchCoordinator) observeTerminal(ctx context.Context, tenant,
 }
 
 func (c *assistantWatchCoordinator) coveringWatches(ctx context.Context, tenant string, observed *store.Run) ([]runwatch.Watch, error) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	if observed == nil {
 		return nil, nil
 	}
@@ -659,7 +791,7 @@ func (c *assistantWatchCoordinator) coveringWatches(ctx context.Context, tenant 
 		if current.ParentRunID == "" {
 			break
 		}
-		parent, err := c.server.runs.LoadRunCtx(rctx, current.ParentRunID)
+		parent, err := c.runs.LoadRunCtx(rctx, current.ParentRunID)
 		if err != nil {
 			break
 		}
@@ -670,6 +802,9 @@ func (c *assistantWatchCoordinator) coveringWatches(ctx context.Context, tenant 
 }
 
 func (c *assistantWatchCoordinator) observeTerminalForWatch(ctx context.Context, w runwatch.Watch, observed *store.Run, eventID, kind string) error {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if observed == nil {
 		return nil
 	}
@@ -726,6 +861,8 @@ func episodeID(watchID, outcomeID string) string {
 }
 
 func (c *assistantWatchCoordinator) deliverDue(ctx context.Context, limit int) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	ws := c.currentStore()
 	episodes, err := ws.ListDueEpisodes(ctx, time.Now().UTC(), limit)
 	if err != nil {
@@ -733,11 +870,13 @@ func (c *assistantWatchCoordinator) deliverDue(ctx context.Context, limit int) {
 		return
 	}
 	for _, ep := range episodes {
-		c.attempt(ctx, ep.ID)
+		c.attempt(store.WithTenant(ctx, ep.TenantID), ep.ID)
 	}
 }
 
 func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID string) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	ws := c.currentStore()
 	now := time.Now().UTC()
 	ep, won, err := ws.ClaimEpisode(ctx, episodeID, c.worker, now, assistantWatchLease)
@@ -754,8 +893,9 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 		}
 		_ = ws.ReleaseEpisode(ctx, ep.ID, c.worker, now.Add(delay), reason)
 	}
+	ctx = store.WithTenant(ctx, ep.TenantID)
 	w, err := ws.GetWatch(ctx, ep.WatchID)
-	if err != nil || w.State != runwatch.WatchActive {
+	if err != nil || w.State != runwatch.WatchActive || w.TenantID != ep.TenantID || (c.server.cfg.Mode == "cloud" && w.TenantID == "") {
 		_ = ws.BlockEpisode(ctx, ep.ID, c.worker, now, "watch_not_active")
 		return
 	}
@@ -767,7 +907,7 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 		}
 	}
 	rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
-	assistant, err := c.server.runs.LoadRunCtx(rctx, w.AssistantRunID)
+	assistant, err := c.runs.LoadRunCtx(rctx, w.AssistantRunID)
 	if err != nil {
 		release(time.Minute, 15*time.Minute, "assistant_unavailable")
 		return
@@ -800,7 +940,7 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 		release(5*time.Minute, 30*time.Minute, "assistant_budget_near_cap")
 		return
 	}
-	target, err := loadAssistantRun(rctx, w.TargetRunID, c.server.runs.RunStore())
+	target, err := loadAssistantRun(rctx, w.TargetRunID, c.runs.RunStore())
 	if err != nil {
 		release(time.Minute, 15*time.Minute, "target_unavailable")
 		return
@@ -814,7 +954,7 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 	}
 	observed := target
 	if observedID != w.TargetRunID {
-		observed, err = loadAssistantRun(rctx, observedID, c.server.runs.RunStore())
+		observed, err = loadAssistantRun(rctx, observedID, c.runs.RunStore())
 		if err != nil {
 			release(time.Minute, 15*time.Minute, "outcome_run_unavailable")
 			return
@@ -857,7 +997,7 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 			"status":         string(store.RunStatusPausedWaitingHuman),
 		}
 	}
-	hostInputs, err := c.server.assistantChatHostInputs(rctx, assistant)
+	hostInputs, err := c.server.assistantChatHostInputsWithService(rctx, c.runs, assistant)
 	if err != nil {
 		_ = ws.ReleaseEpisode(ctx, ep.ID, c.worker, now.Add(assistantWatchRetryBusy), "chat_history_projection_failed")
 		return
@@ -907,10 +1047,12 @@ func assistantWatchRetryDelay(attempts int, base, max time.Duration) time.Durati
 // a gate that an operator has already answered. A later gate has its own
 // interaction-backed episode and will be delivered independently.
 func (c *assistantWatchCoordinator) pausedGateStillActive(ctx context.Context, ep runwatch.Episode) bool {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	if ep.PausedRunID == "" {
 		return false
 	}
-	gate, err := c.server.runs.LoadRunCtx(ctx, ep.PausedRunID)
+	gate, err := c.runs.LoadRunCtx(ctx, ep.PausedRunID)
 	if err != nil || gate == nil || gate.Status != store.RunStatusPausedWaitingHuman || gate.Checkpoint == nil {
 		return false
 	}
@@ -963,6 +1105,8 @@ func isSafeAssistantChatPause(run *store.Run, chatNodeID string) bool {
 }
 
 func (c *assistantWatchCoordinator) stopForAssistant(ctx context.Context, tenant, assistantID, reason string) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	ws := c.currentStore()
 	watches, _ := ws.ListActiveByAssistant(ctx, tenant, assistantID)
 	for _, w := range watches {
@@ -976,8 +1120,10 @@ func (c *assistantWatchCoordinator) stopForAssistant(ctx context.Context, tenant
 // operational interruption must retain the assistant's watches for the next
 // boot. A load error is likewise not evidence that the watch should end.
 func (c *assistantWatchCoordinator) stopForTerminalAssistant(ctx context.Context, tenant, assistantID, reason string) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	rctx := store.WithIdentity(ctx, tenant, "")
-	assistant, err := c.server.runs.LoadRunCtx(rctx, assistantID)
+	assistant, err := c.runs.LoadRunCtx(rctx, assistantID)
 	if err != nil || assistant == nil || !assistantWatchStopsForStatus(assistant.Status) {
 		return
 	}
@@ -1008,19 +1154,21 @@ type assistantWatchResponse struct {
 	CoveredRunID string `json:"covered_run_id,omitempty"`
 }
 
-func (s *Server) findCoveringAncestorWatch(ctx context.Context, target *store.Run, owner, assistantID string) (runwatch.Watch, bool) {
-	if target == nil || s.assistantWatches == nil {
+func (c *assistantWatchCoordinator) findCoveringAncestorWatch(ctx context.Context, target *store.Run, owner, assistantID string) (runwatch.Watch, bool) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	if target == nil || c.store == nil {
 		return runwatch.Watch{}, false
 	}
 	seen := map[string]bool{target.ID: true}
 	parentID := target.ParentRunID
 	for parentID != "" && !seen[parentID] {
 		seen[parentID] = true
-		parent, err := s.runs.LoadRunCtx(ctx, parentID)
+		parent, err := c.runs.LoadRunCtx(ctx, parentID)
 		if err != nil {
 			return runwatch.Watch{}, false
 		}
-		watches, err := s.assistantWatches.ListActiveByTarget(ctx, target.TenantID, parent.ID)
+		watches, err := c.store.ListActiveByTarget(ctx, target.TenantID, parent.ID)
 		if err != nil {
 			return runwatch.Watch{}, false
 		}
@@ -1070,6 +1218,8 @@ func mergeAssistantWatchPolicy(existing runwatch.Watch, requested createAssistan
 }
 
 func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Request) {
+	c := s.captureAssistantWatch()
+	r = r.WithContext(c.withBotPaths(r.Context()))
 	// A watch arms a durable link that later force-resumes the assistant run
 	// and spends LLM budget, or transfers an existing watch away from
 	// another assistant. That is a state change, so it takes the same gate
@@ -1079,7 +1229,7 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 	if !s.requireSafeOrigin(w, r) || s.rejectCrossStoreWrite(w, r) {
 		return
 	}
-	if s.assistantWatches == nil {
+	if c.store == nil {
 		s.httpErrorFor(w, r, http.StatusNotImplemented, "assistant run watch is unavailable")
 		return
 	}
@@ -1127,12 +1277,12 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 	if req.CooldownSeconds != nil {
 		requestedCooldown = *req.CooldownSeconds
 	}
-	target, err := s.runs.LoadRunCtx(r.Context(), targetID)
+	target, err := c.runs.LoadRunCtx(r.Context(), targetID)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "target run not found")
 		return
 	}
-	assistant, err := s.runs.LoadRunCtx(r.Context(), req.AssistantRunID)
+	assistant, err := c.runs.LoadRunCtx(r.Context(), req.AssistantRunID)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "assistant run not found")
 		return
@@ -1146,9 +1296,9 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 	if owner == "" {
 		owner = assistant.OwnerID
 	}
-	if covering, ok := s.findCoveringAncestorWatch(r.Context(), target, owner, assistant.ID); ok {
+	if covering, ok := c.findCoveringAncestorWatch(r.Context(), target, owner, assistant.ID); ok {
 		merged := mergeAssistantWatchPolicy(covering, req, requestedCooldown)
-		updated, found, updateErr := s.assistantWatches.ReconfigureActiveWatch(r.Context(), merged)
+		updated, found, updateErr := c.store.ReconfigureActiveWatch(r.Context(), merged)
 		if updateErr != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "merge covering watch: %v", updateErr)
 			return
@@ -1156,22 +1306,22 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 		if !found {
 			// The ancestor may have ended between lookup and CAS. Re-read once;
 			// never manufacture a nested watch from a stale coverage decision.
-			if retry, retryOK := s.findCoveringAncestorWatch(r.Context(), target, owner, assistant.ID); retryOK {
+			if retry, retryOK := c.findCoveringAncestorWatch(r.Context(), target, owner, assistant.ID); retryOK {
 				merged = mergeAssistantWatchPolicy(retry, req, requestedCooldown)
-				updated, found, updateErr = s.assistantWatches.ReconfigureActiveWatch(r.Context(), merged)
+				updated, found, updateErr = c.store.ReconfigureActiveWatch(r.Context(), merged)
 			}
 			if updateErr != nil || !found {
 				s.httpErrorFor(w, r, http.StatusConflict, "covering ancestor watch changed; retry the request")
 				return
 			}
 		}
-		s.assistantWatch.nudge()
+		c.nudge()
 		s.writeJSONFor(w, r, assistantWatchResponse{Watch: updated, CoveredRunID: target.ID})
 		return
 	}
 	now := time.Now().UTC()
 	lastObservedSeq := runview.NoEventsSeq
-	if snap, snapErr := s.runs.SnapshotCtx(r.Context(), target.ID); snapErr != nil {
+	if snap, snapErr := c.runs.SnapshotCtx(r.Context(), target.ID); snapErr != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "read target event cursor: %v", snapErr)
 		return
 	} else if snap != nil {
@@ -1183,14 +1333,14 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 		MaxEpisodes: req.MaxEpisodes, CooldownSeconds: requestedCooldown, LastObservedEventSeq: lastObservedSeq,
 		TreeTrackingStartedAt: &now, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.writeWatchCreate(r.Context(), watch); err != nil {
+	if err := c.createWatch(r.Context(), watch); err != nil {
 		if errors.Is(err, runwatch.ErrAlreadyExists) {
 			// POST is retried by the Studio and may also be proposed again after
 			// the target resumes. A failure episode does not consume the watch:
 			// the same link deliberately remains active until the target finishes
 			// or the operator stops it. Returning 409 for the exact same intent turns that
 			// healthy state into a false action failure for the operator.
-			existing, listErr := s.assistantWatches.ListActiveByTarget(
+			existing, listErr := c.store.ListActiveByTarget(
 				r.Context(), watch.TenantID, watch.TargetRunID,
 			)
 			if listErr != nil {
@@ -1211,14 +1361,14 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 						candidate.OwnerID == watch.OwnerID &&
 						candidate.TargetRunID == watch.TargetRunID &&
 						candidate.AssistantRunID == watch.AssistantRunID {
-						updated, found, updateErr := s.assistantWatches.ReconfigureActiveWatch(r.Context(), watch)
+						updated, found, updateErr := c.store.ReconfigureActiveWatch(r.Context(), watch)
 						if updateErr != nil {
 							s.httpErrorFor(w, r, http.StatusInternalServerError, "reconfigure watch: %v", updateErr)
 							return
 						}
 						if found {
 							s.writeJSONFor(w, r, assistantWatchResponse{Watch: updated})
-							s.assistantWatch.nudge()
+							c.nudge()
 							return
 						}
 						continue
@@ -1232,7 +1382,7 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 				if incumbent == nil {
 					break
 				}
-				incumbentRun, loadErr := s.runs.LoadRunCtx(r.Context(), incumbent.AssistantRunID)
+				incumbentRun, loadErr := c.runs.LoadRunCtx(r.Context(), incumbent.AssistantRunID)
 				if loadErr != nil {
 					// Never take over a watch when the incumbent cannot be
 					// established; the operator sees an honest conflict instead.
@@ -1243,19 +1393,19 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 					// recovery. Its watch cannot be displaced by another chat.
 					break
 				}
-				updated, found, transferErr := s.writeWatchTransfer(r.Context(), *incumbent, watch)
+				updated, found, transferErr := c.transferWatch(r.Context(), *incumbent, watch)
 				if transferErr != nil {
 					s.httpErrorFor(w, r, http.StatusInternalServerError, "transfer watch: %v", transferErr)
 					return
 				}
 				if found {
 					s.writeJSONFor(w, r, assistantWatchResponse{Watch: updated})
-					s.assistantWatch.nudge()
+					c.nudge()
 					return
 				}
 				// The outgoing assistant changed after inspection. Re-read once
 				// rather than overwriting a new owner with stale evidence.
-				existing, listErr = s.assistantWatches.ListActiveByTarget(r.Context(), watch.TenantID, watch.TargetRunID)
+				existing, listErr = c.store.ListActiveByTarget(r.Context(), watch.TenantID, watch.TargetRunID)
 				if listErr != nil {
 					s.httpErrorFor(w, r, http.StatusInternalServerError, "lookup changed watch: %v", listErr)
 					return
@@ -1268,17 +1418,17 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.writeJSONFor(w, r, assistantWatchResponse{Watch: watch})
-	if s.assistantWatch != nil && (target.Status == store.RunStatusFailed || target.Status == store.RunStatusFailedResumable) {
+	if c.worker != "" && (target.Status == store.RunStatusFailed || target.Status == store.RunStatusFailedResumable) {
 		eventID := trigger.RunOutcomeEventID(target.ID, string(target.Status), "", target.UpdatedAt)
-		go func() { _ = s.assistantWatch.observeFailure(context.Background(), target.TenantID, target.ID, eventID) }()
-	} else if s.assistantWatch != nil && (target.Status == store.RunStatusFinished || target.Status == store.RunStatusCancelled) {
+		go func() { _ = c.observeFailure(context.Background(), target.TenantID, target.ID, eventID) }()
+	} else if c.worker != "" && (target.Status == store.RunStatusFinished || target.Status == store.RunStatusCancelled) {
 		kind := trigger.KindRunFinished
 		if target.Status == store.RunStatusCancelled {
 			kind = trigger.KindRunCancelled
 		}
 		eventID := trigger.RunOutcomeEventID(target.ID, string(target.Status), "", target.UpdatedAt)
 		go func() {
-			_ = s.assistantWatch.observeTerminal(context.Background(), target.TenantID, target.ID, eventID, kind)
+			_ = c.observeTerminal(context.Background(), target.TenantID, target.ID, eventID, kind)
 		}()
 	}
 }
@@ -1310,16 +1460,18 @@ func sameAssistantWatchIntent(existing, requested runwatch.Watch) bool {
 }
 
 func (s *Server) handleListAssistantWatches(w http.ResponseWriter, r *http.Request) {
-	if s.assistantWatches == nil {
+	c := s.captureAssistantWatch()
+	r = r.WithContext(c.withBotPaths(r.Context()))
+	if c.store == nil {
 		s.writeJSONFor(w, r, []runwatch.Watch{})
 		return
 	}
-	run, err := s.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
+	run, err := c.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
 		return
 	}
-	watches, err := s.listCoveringAssistantWatches(r.Context(), run)
+	watches, err := c.listCoveringAssistantWatches(r.Context(), run)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list watches: %v", err)
 		return
@@ -1327,7 +1479,9 @@ func (s *Server) handleListAssistantWatches(w http.ResponseWriter, r *http.Reque
 	s.writeJSONFor(w, r, watches)
 }
 
-func (s *Server) listCoveringAssistantWatches(ctx context.Context, run *store.Run) ([]assistantWatchResponse, error) {
+func (c *assistantWatchCoordinator) listCoveringAssistantWatches(ctx context.Context, run *store.Run) ([]assistantWatchResponse, error) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	if run == nil {
 		return []assistantWatchResponse{}, nil
 	}
@@ -1337,7 +1491,7 @@ func (s *Server) listCoveringAssistantWatches(ctx context.Context, run *store.Ru
 	out := make([]assistantWatchResponse, 0)
 	for current != nil && current.ID != "" && !seenRuns[current.ID] {
 		seenRuns[current.ID] = true
-		watches, err := s.assistantWatches.ListActiveByTarget(ctx, run.TenantID, current.ID)
+		watches, err := c.store.ListActiveByTarget(ctx, run.TenantID, current.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -1355,7 +1509,7 @@ func (s *Server) listCoveringAssistantWatches(ctx context.Context, run *store.Ru
 		if current.ParentRunID == "" {
 			break
 		}
-		parent, err := s.runs.LoadRunCtx(ctx, current.ParentRunID)
+		parent, err := c.runs.LoadRunCtx(ctx, current.ParentRunID)
 		if err != nil {
 			break
 		}
@@ -1365,25 +1519,27 @@ func (s *Server) listCoveringAssistantWatches(ctx context.Context, run *store.Ru
 }
 
 func (s *Server) handleStopAssistantWatch(w http.ResponseWriter, r *http.Request) {
+	c := s.captureAssistantWatch()
+	r = r.WithContext(c.withBotPaths(r.Context()))
 	// Disarming one is a state change too — the mirror of the create gate
 	// above, and of handleStopAssistantMission.
 	if !s.requireSafeOrigin(w, r) || s.rejectCrossStoreWrite(w, r) {
 		return
 	}
-	if s.assistantWatches == nil {
+	if c.store == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
 		return
 	}
-	watch, err := s.assistantWatches.GetWatch(r.Context(), r.PathValue("watchID"))
+	watch, err := c.store.GetWatch(r.Context(), r.PathValue("watchID"))
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
 		return
 	}
-	if _, err := s.runs.LoadRunCtx(r.Context(), watch.TargetRunID); err != nil {
+	if _, err := c.runs.LoadRunCtx(r.Context(), watch.TargetRunID); err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
 		return
 	}
-	if err := s.writeWatchStop(r.Context(), watch, runwatch.WatchStopped, "operator", time.Now().UTC()); err != nil {
+	if err := c.stopWatch(r.Context(), watch, runwatch.WatchStopped, "operator", time.Now().UTC()); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "stop watch: %v", err)
 		return
 	}
@@ -1439,6 +1595,8 @@ func (s *Server) resolveAssistantChatCapability(ctx context.Context, run *store.
 // is derived from (watch, outcome event), so the fast path and the
 // reconciliation sweep cannot double-deliver.
 func (c *assistantWatchCoordinator) armWatchesForTarget(ctx context.Context, target *store.Run) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	if target == nil || target.Source == nil || target.Source.IssueID == "" {
 		return
 	}
@@ -1455,23 +1613,44 @@ func (c *assistantWatchCoordinator) armWatchesForTarget(ctx context.Context, tar
 // path needs: a sweep builds it once and hands it to every target, instead
 // of re-listing and re-loading every run in the store per target.
 func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*store.Run, error) {
-	rs := c.server.runs.RunStore()
-	ids, err := rs.ListRuns(ctx)
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	rs := c.runs.RunStore()
+	// Only a global sweep needs privileged discovery. An event already has
+	// its tenant and enumerates that tenant through the normal store API.
+	discovery := ctx
+	_, scoped := store.TenantFromContext(ctx)
+	if c.server.cfg.Mode == "cloud" && !scoped {
+		discovery = store.WithoutTenantFilter(ctx)
+	}
+	ids, err := rs.ListRuns(discovery)
 	if err != nil {
 		return nil, err
 	}
 	watchers := make([]*store.Run, 0, 8)
 	for _, runID := range ids {
-		watcher, err := rs.LoadRun(ctx, runID)
-		if err != nil || watcher == nil || len(watcher.WatchedIssueIDs) == 0 {
+		candidate, err := rs.LoadRun(discovery, runID)
+		if err != nil || candidate == nil || len(candidate.WatchedIssueIDs) == 0 {
 			continue
 		}
-		if !watchDeliverable(watcher.Status) {
+		if c.server.cfg.Mode == "cloud" && candidate.TenantID == "" {
+			c.server.logWarn("assistant run watch: skip candidate %s without cloud tenant", runID)
 			continue
 		}
-		// Resolve once per candidate, not once per terminal target. A
-		// non-conversational run cannot receive any watch episode.
-		if _, _, err := c.server.resolveAssistantChatCapability(ctx, watcher); err != nil {
+		rctx := store.WithIdentity(ctx, candidate.TenantID, candidate.OwnerID)
+		watcher := candidate
+		if discovery != ctx {
+			// Privilege never escapes discovery: revalidate the candidate using
+			// its tenant before capability checks or any execution/write.
+			watcher, err = rs.LoadRun(rctx, runID)
+			if err != nil || watcher == nil || watcher.TenantID != candidate.TenantID {
+				continue
+			}
+		}
+		if !watchDeliverable(watcher.Status) || len(watcher.WatchedIssueIDs) == 0 {
+			continue
+		}
+		if _, _, err := c.server.resolveAssistantChatCapability(rctx, watcher); err != nil {
 			continue
 		}
 		watchers = append(watchers, watcher)
@@ -1483,13 +1662,18 @@ func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*s
 // candidate set. Splitting it is what takes the reconciliation sweep from
 // quadratic back to the single store pass its own comment claims.
 func (c *assistantWatchCoordinator) armWatchesForTargetFrom(ctx context.Context, target *store.Run, watchers []*store.Run) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	if target == nil || target.Source == nil || target.Source.IssueID == "" {
+		return
+	}
+	if c.server.cfg.Mode == "cloud" && target.TenantID == "" {
 		return
 	}
 	issueID := target.Source.IssueID
 	now := time.Now().UTC()
 	for _, watcher := range watchers {
-		if watcher == nil || watcher.ID == target.ID {
+		if watcher == nil || watcher.ID == target.ID || watcher.TenantID != target.TenantID {
 			continue
 		}
 		if !slices.Contains(watcher.WatchedIssueIDs, issueID) {
@@ -1502,20 +1686,21 @@ func (c *assistantWatchCoordinator) armWatchesForTargetFrom(ctx context.Context,
 		if target.CreatedAt.Before(watcher.CreatedAt) {
 			continue
 		}
-		if covering, ok := c.server.findCoveringAncestorWatch(ctx, target, watcher.OwnerID, watcher.ID); ok {
+		rctx := store.WithIdentity(ctx, target.TenantID, watcher.OwnerID)
+		if covering, ok := c.findCoveringAncestorWatch(rctx, target, watcher.OwnerID, watcher.ID); ok {
 			merged := mergeAssistantWatchPolicy(covering, createAssistantWatchRequest{
 				AssistantRunID: watcher.ID,
 				Mode:           runwatch.ModeDiagnose,
 				Kinds:          autoWatchKinds(),
 			}, 0)
-			if _, found, mergeErr := c.currentStore().ReconfigureActiveWatch(ctx, merged); mergeErr != nil {
+			if _, found, mergeErr := c.currentStore().ReconfigureActiveWatch(rctx, merged); mergeErr != nil {
 				c.server.logWarn("assistant run watch: merge auto coverage %s -> %s: %v", watcher.ID, covering.TargetRunID, mergeErr)
 			} else if found {
 				continue
 			}
 		}
 		lastObservedSeq := runview.NoEventsSeq
-		if snap, snapErr := c.server.runs.SnapshotCtx(store.WithIdentity(ctx, target.TenantID, watcher.OwnerID), target.ID); snapErr == nil && snap != nil {
+		if snap, snapErr := c.runs.SnapshotCtx(store.WithIdentity(ctx, target.TenantID, watcher.OwnerID), target.ID); snapErr == nil && snap != nil {
 			lastObservedSeq = snap.LastSeq
 		}
 		watch := runwatch.Watch{
@@ -1525,7 +1710,7 @@ func (c *assistantWatchCoordinator) armWatchesForTargetFrom(ctx context.Context,
 			CooldownSeconds: assistantAutoWatchCooldown, LastObservedEventSeq: lastObservedSeq,
 			TreeTrackingStartedAt: &now, CreatedAt: now, UpdatedAt: now,
 		}
-		if err := c.createWatch(ctx, watch); err != nil {
+		if err := c.createWatch(rctx, watch); err != nil {
 			if !errors.Is(err, runwatch.ErrAlreadyExists) {
 				c.server.logWarn("assistant run watch: arm %s -> %s: %v", watcher.ID, target.ID, err)
 			}
@@ -1558,7 +1743,9 @@ func autoWatchKinds() []string {
 // store, every 20s, plus once per run-outcome event. A long-lived store
 // degraded the server continuously.
 func (c *assistantWatchCoordinator) reconcileArmedWatches(ctx context.Context) {
-	rs := c.server.runs.RunStore()
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	rs := c.runs.RunStore()
 	watchers, err := c.listIssueWatchers(ctx)
 	if err != nil {
 		return
@@ -1567,10 +1754,11 @@ func (c *assistantWatchCoordinator) reconcileArmedWatches(ctx context.Context) {
 	// same watcher, is the common shape — arming and observing it twice in
 	// one sweep is pure repeat work (both are idempotent, so it was only
 	// ever cost).
-	seen := make(map[string]struct{}, len(watchers))
+	seen := make(map[[2]string]struct{}, len(watchers))
 	for _, watcher := range watchers {
+		rctx := store.WithIdentity(ctx, watcher.TenantID, watcher.OwnerID)
 		for _, issueID := range watcher.WatchedIssueIDs {
-			targets, err := rs.ListRunsBySourceIssue(ctx, issueID)
+			targets, err := rs.ListRunsBySourceIssue(rctx, issueID)
 			if err != nil {
 				continue
 			}
@@ -1578,16 +1766,16 @@ func (c *assistantWatchCoordinator) reconcileArmedWatches(ctx context.Context) {
 				if targetID == watcher.ID {
 					continue
 				}
-				if _, done := seen[targetID]; done {
+				if _, done := seen[[2]string{watcher.TenantID, targetID}]; done {
 					continue
 				}
-				seen[targetID] = struct{}{}
-				target, err := rs.LoadRun(ctx, targetID)
-				if err != nil || target == nil || !target.Status.IsTerminal() {
+				seen[[2]string{watcher.TenantID, targetID}] = struct{}{}
+				target, err := rs.LoadRun(rctx, targetID)
+				if err != nil || target == nil || target.TenantID != watcher.TenantID || !target.Status.IsTerminal() {
 					continue
 				}
-				c.armWatchesForTargetFrom(ctx, target, watchers)
-				c.observeTerminalState(ctx, target)
+				c.armWatchesForTargetFrom(rctx, target, watchers)
+				c.observeTerminalState(rctx, target)
 			}
 		}
 	}
@@ -1598,6 +1786,8 @@ func (c *assistantWatchCoordinator) reconcileArmedWatches(ctx context.Context) {
 // two entry points so a re-derived event id is computed in exactly one place
 // (episode dedup keys on it).
 func (c *assistantWatchCoordinator) observeTerminalState(ctx context.Context, target *store.Run) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	switch target.Status {
 	case store.RunStatusFailed, store.RunStatusFailedResumable:
 		eventID := trigger.RunOutcomeEventID(target.ID, string(target.Status), "", target.UpdatedAt)
@@ -1617,6 +1807,9 @@ func (c *assistantWatchCoordinator) observeTerminalState(ctx context.Context, ta
 // watch learned tree semantics, while children created afterwards remain
 // observable even when they start and finish between two sweeps.
 func (c *assistantWatchCoordinator) observeTerminalStateForWatch(ctx context.Context, w runwatch.Watch, observed *store.Run, direct bool) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if observed == nil || !observed.Status.IsTerminal() {
 		return
 	}
@@ -1649,6 +1842,9 @@ func (c *assistantWatchCoordinator) observeTerminalStateForWatch(ctx context.Con
 // target Done, an explicit standby handoff and the operator's button all pass
 // through these functions.
 func (c *assistantWatchCoordinator) createWatch(ctx context.Context, w runwatch.Watch) error {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if err := c.currentStore().CreateWatch(ctx, w); err != nil {
 		return err
 	}
@@ -1657,6 +1853,9 @@ func (c *assistantWatchCoordinator) createWatch(ctx context.Context, w runwatch.
 }
 
 func (c *assistantWatchCoordinator) stopWatch(ctx context.Context, w runwatch.Watch, state runwatch.WatchState, reason string, now time.Time) error {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 	if err := c.currentStore().StopWatch(ctx, w.ID, w.TenantID, state, reason, now); err != nil {
 		return err
 	}
@@ -1669,6 +1868,8 @@ func (c *assistantWatchCoordinator) stopWatch(ctx context.Context, w runwatch.Wa
 // may still deliver once to the outgoing assistant; future delivery resolves
 // Watch.AssistantRunID after this compare-and-swap.
 func (c *assistantWatchCoordinator) transferWatch(ctx context.Context, existing, requested runwatch.Watch) (runwatch.Watch, bool, error) {
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
 	updated, found, err := c.currentStore().TransferActiveWatch(ctx, existing.AssistantRunID, requested)
 	if err != nil || !found {
 		return updated, found, err
@@ -1682,39 +1883,19 @@ func (c *assistantWatchCoordinator) transferWatch(ctx context.Context, existing,
 // transcript to understand why the assistant went quiet, and later why it
 // spoke without being asked. The target run's own log is not the place.
 func (c *assistantWatchCoordinator) publishVeille(ctx context.Context, typ store.EventType, w runwatch.Watch, reason string) {
-	rs := c.server.runs.RunStore()
-	publish := c.server.runs.BrokerPublish()
+	c = c.snapshot()
+	ctx = c.withBotPaths(ctx)
+	ctx = store.WithIdentity(ctx, w.TenantID, w.OwnerID)
+	if c.worker == "" {
+		return
+	}
+	rs := c.runs.RunStore()
+	publish := c.runs.BrokerPublish()
 	if typ == store.EventAssistantVeilleArmed {
 		store.PublishVeilleArmed(ctx, rs, publish, w.AssistantRunID, store.VeilleChannelRun, w.TargetRunID)
 		return
 	}
 	store.PublishVeilleStopped(ctx, rs, publish, w.AssistantRunID, store.VeilleChannelRun, w.TargetRunID, reason)
-}
-
-// writeWatchCreate / writeWatchTransfer / writeWatchStop are the HTTP
-// handlers' door into the same choke point. The coordinator owns the
-// emission, but it may be nil (the watch store is wired before
-// startAssistantRunWatches, and stays wired in tests that never start a
-// coordinator) — so the write must not depend on it.
-func (s *Server) writeWatchCreate(ctx context.Context, w runwatch.Watch) error {
-	if s.assistantWatch != nil {
-		return s.assistantWatch.createWatch(ctx, w)
-	}
-	return s.assistantWatches.CreateWatch(ctx, w)
-}
-
-func (s *Server) writeWatchStop(ctx context.Context, w runwatch.Watch, state runwatch.WatchState, reason string, now time.Time) error {
-	if s.assistantWatch != nil {
-		return s.assistantWatch.stopWatch(ctx, w, state, reason, now)
-	}
-	return s.assistantWatches.StopWatch(ctx, w.ID, w.TenantID, state, reason, now)
-}
-
-func (s *Server) writeWatchTransfer(ctx context.Context, existing, requested runwatch.Watch) (runwatch.Watch, bool, error) {
-	if s.assistantWatch != nil {
-		return s.assistantWatch.transferWatch(ctx, existing, requested)
-	}
-	return s.assistantWatches.TransferActiveWatch(ctx, existing.AssistantRunID, requested)
 }
 
 // runVeilleResponse is what the dock needs to render "standing by" and to
@@ -1732,7 +1913,9 @@ type runVeilleResponse struct {
 // what a freshly mounted dock (or one that missed an event) calls to catch up.
 // Same fast-path + poll discipline the board already uses.
 func (s *Server) handleListRunVeille(w http.ResponseWriter, r *http.Request) {
-	run, err := s.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
+	c := s.captureAssistantWatch()
+	r = r.WithContext(c.withBotPaths(r.Context()))
+	run, err := c.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
 		return
@@ -1741,8 +1924,8 @@ func (s *Server) handleListRunVeille(w http.ResponseWriter, r *http.Request) {
 	if out.WatchedIssueIDs == nil {
 		out.WatchedIssueIDs = []string{}
 	}
-	if s.assistantWatches != nil {
-		watches, err := s.assistantWatches.ListActiveByAssistant(r.Context(), run.TenantID, run.ID)
+	if c.store != nil {
+		watches, err := c.store.ListActiveByAssistant(r.Context(), run.TenantID, run.ID)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "list watches: %v", err)
 			return
@@ -1760,16 +1943,17 @@ func (s *Server) handleListRunVeille(w http.ResponseWriter, r *http.Request) {
 // on a card or a run outcome, and a notification that cries wolf is worse
 // than none.
 func (s *Server) hasActiveVeille(ctx context.Context, runID string) bool {
-	run, err := s.runs.LoadRunCtx(ctx, runID)
+	c := s.captureAssistantWatch()
+	run, err := c.runs.LoadRunCtx(ctx, runID)
 	if err != nil || run == nil {
 		return false
 	}
 	if len(run.WatchedIssueIDs) > 0 {
 		return true
 	}
-	if s.assistantWatches == nil {
+	if c.store == nil {
 		return false
 	}
-	watches, err := s.assistantWatches.ListActiveByAssistant(ctx, run.TenantID, run.ID)
+	watches, err := c.store.ListActiveByAssistant(ctx, run.TenantID, run.ID)
 	return err == nil && len(watches) > 0
 }

@@ -420,10 +420,10 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	// not read a field another switch could be writing. A switch that
 	// supplied no new watch store keeps the one already installed.
 	watchesForMissions := s.assistantWatches
-	s.stateMu.Unlock()
-	if newAssistantWatches != nil && s.assistantWatch != nil {
-		s.assistantWatch.setStore(newAssistantWatches)
+	if s.assistantWatch != nil {
+		s.assistantWatch.setRuntime(s.runs, s.assistantWatches, s.effectivePathsFor(abs))
 	}
+	s.stateMu.Unlock()
 	if newAssistantMissions != nil {
 		s.restartAssistantMissions(newRuns, watchesForMissions, newAssistantMissions)
 	}

@@ -62,7 +62,7 @@ func newArmFixture(t *testing.T, hostEventCapable bool) *armFixture {
 	srv.cfg.Bots.Paths = []string{botsRoot}
 	return &armFixture{
 		srv:   srv,
-		coord: &assistantWatchCoordinator{server: srv, store: ws, worker: "test"},
+		coord: testAssistantWatchCoordinator(srv, ws, "test"),
 		rs:    rs,
 		ws:    ws,
 	}
@@ -423,7 +423,7 @@ func TestTreeWatchRecoversShortLivedDescendantFailureExactlyOnce(t *testing.T) {
 	// failed entirely between two passes.
 	f.coord.sweep(ctx)
 	// Simulate a coordinator restart and reconciliation of the same state.
-	restarted := &assistantWatchCoordinator{server: f.srv, store: f.ws, worker: "test-restarted"}
+	restarted := testAssistantWatchCoordinator(f.srv, f.ws, "test-restarted")
 	restarted.sweep(ctx)
 	due, err := f.ws.ListDueEpisodes(ctx, time.Now().UTC().Add(time.Hour), 10)
 	if err != nil {
@@ -1426,4 +1426,10 @@ func TestHostEventEnvelope_StampsAuthorityOverCallerClaims(t *testing.T) {
 	if payload["action"] != "run.rewind" {
 		t.Fatalf("the caller's own fields must survive: %v", payload["action"])
 	}
+}
+
+func testAssistantWatchCoordinator(s *Server, ws runwatch.Store, worker string) *assistantWatchCoordinator {
+	c := &assistantWatchCoordinator{server: s, worker: worker}
+	c.setRuntime(s.runs, ws, s.effectivePathsFor(s.cfg.WorkDir))
+	return c
 }

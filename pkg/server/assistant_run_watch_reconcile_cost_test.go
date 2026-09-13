@@ -65,7 +65,7 @@ func newCountingArmFixture(t *testing.T) (*armFixture, *countingRunStore) {
 	srv.cfg.Bots.Paths = []string{botsRoot}
 	return &armFixture{
 		srv:   srv,
-		coord: &assistantWatchCoordinator{server: srv, store: ws, worker: "test"},
+		coord: testAssistantWatchCoordinator(srv, ws, "test"),
 		rs:    counting,
 		ws:    ws,
 	}, counting

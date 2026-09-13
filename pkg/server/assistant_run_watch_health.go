@@ -70,7 +70,9 @@ type assistantWatchHealthEpisode struct {
 }
 
 func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Request) {
-	run, err := s.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
+	snapshot := s.captureAssistantWatch()
+	r = r.WithContext(snapshot.withBotPaths(r.Context()))
+	run, err := snapshot.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
 	if err != nil || run == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
 		return
@@ -82,8 +84,8 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 		Watches:      []assistantWatchHealthWatch{},
 		Attention:    []string{},
 	}
-	if c := s.assistantWatch; c != nil {
-		out.Coordinator = projectAssistantWatchHeartbeat(c.heartbeat())
+	if s.assistantWatch != nil {
+		out.Coordinator = projectAssistantWatchHeartbeat(snapshot.heartbeat())
 	} else {
 		// A route can be served while the coordinator is starting, disabled, or
 		// deliberately absent in a test server. That is a stale health state,
@@ -99,8 +101,8 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 	}
 
 	var watches []assistantWatchResponse
-	if s.assistantWatches != nil {
-		watches, err = s.listCoveringAssistantWatches(r.Context(), run)
+	if snapshot.store != nil {
+		watches, err = snapshot.listCoveringAssistantWatches(r.Context(), run)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "list watches: %v", err)
 			return
@@ -141,7 +143,7 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 			out.Attention = append(out.Attention, "duplicate_active_watch")
 		}
 
-		assistant, assistantErr := s.runs.LoadRunCtx(r.Context(), watch.AssistantRunID)
+		assistant, assistantErr := snapshot.runs.LoadRunCtx(r.Context(), watch.AssistantRunID)
 		if assistantErr != nil || assistant == nil {
 			row.Attention = append(row.Attention, "assistant_unavailable")
 			out.Attention = append(out.Attention, "assistant_unavailable")
@@ -164,7 +166,7 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 			}
 		}
 
-		episodes, episodesErr := s.assistantWatches.ListEpisodesByWatch(r.Context(), watch.ID, watch.TenantID, assistantWatchHealthEpisodePageSize)
+		episodes, episodesErr := snapshot.store.ListEpisodesByWatch(r.Context(), watch.ID, watch.TenantID, assistantWatchHealthEpisodePageSize)
 		if episodesErr != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "list watch episodes: %v", episodesErr)
 			return

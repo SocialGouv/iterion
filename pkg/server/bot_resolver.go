@@ -191,7 +191,11 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 			return nil, fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)
 		}
 	}
-	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())
+	paths, captured := ctx.Value(assistantWatchBotPathsKey{}).([]string)
+	if !captured {
+		paths = s.effectivePaths()
+	}
+	path, err := botregistry.ResolveBotPath(slug, paths)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil // unknown id = not found here, the caller decides
