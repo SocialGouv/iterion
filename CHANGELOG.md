@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.2](https://github.com/SocialGouv/iterion/compare/v3.142.1...v3.142.2) (2026-09-13)
+
+### Bug Fixes
+
+* **import:** emit profile two drafts with DSL string quoting ([#1179](https://github.com/SocialGouv/iterion/issues/1179)) ([3b78eba](https://github.com/SocialGouv/iterion/commit/3b78eba6190ae6ae078e9d8fb649cead5618209d))
+
 ## [3.142.1](https://github.com/SocialGouv/iterion/compare/v3.142.0...v3.142.1) (2026-09-13)
 
 ### Bug Fixes
