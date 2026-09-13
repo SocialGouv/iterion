@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.0](https://github.com/SocialGouv/iterion/compare/v3.141.0...v3.142.0) (2026-09-13)
+
+### Features
+
+* **bots:** concise Revi reviews with linked run details ([#1173](https://github.com/SocialGouv/iterion/issues/1173)) ([7f695b3](https://github.com/SocialGouv/iterion/commit/7f695b31852a7e4c16f701d5ba6da5701b9a4949)), references [#1172](https://github.com/SocialGouv/iterion/issues/1172) [#1172](https://github.com/SocialGouv/iterion/issues/1172)
+
+    <details><summary>why</summary>
+
+    Keep clean reviews to one visible sentence and retain actionable details in inline comments or explicit fallbacks when anchors are unavailable. Move review scope and method into the existing collapsed run details, and ask only questions that require a material maintainer decision.
+
+    </details>
+
 ## [3.141.0](https://github.com/SocialGouv/iterion/compare/v3.140.3...v3.141.0) (2026-09-13)
 
 ### Features
