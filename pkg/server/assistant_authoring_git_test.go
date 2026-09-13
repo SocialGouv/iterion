@@ -122,7 +122,7 @@ exit 7`)
 }
 
 func TestAuthoringGitRejectsBeforePublishing(t *testing.T) {
-	for _, kind := range []string{"hook rejects", "hook stages content", "hook changes mode", "head advances", "head changes branch", "detached head becomes attached", "index locked", "unsupported cleanup", "signing failure"} {
+	for _, kind := range []string{"hook rejects", "hook stages content", "hook changes mode", "head advances", "head changes branch", "head alias changes", "detached head becomes attached", "index locked", "unsupported cleanup", "signing failure"} {
 		t.Run(kind, func(t *testing.T) {
 			root, commit := attestedGitFixture(t)
 			parent := strings.TrimSpace(gitTestRead(t, root, "rev-parse", "HEAD"))
@@ -147,6 +147,11 @@ git update-ref HEAD "$rival"`)
 					gitTestRead(t, root, "checkout", "--detach", "--quiet")
 				}
 				gitTestHook(t, root, "pre-commit", "git symbolic-ref HEAD refs/heads/other")
+			case "head alias changes":
+				branch := strings.TrimSpace(gitTestRead(t, root, "symbolic-ref", "HEAD"))
+				gitTestRead(t, root, "symbolic-ref", "refs/heads/alias", branch)
+				gitTestRead(t, root, "symbolic-ref", "HEAD", "refs/heads/alias")
+				gitTestHook(t, root, "pre-commit", `git symbolic-ref HEAD "$(git symbolic-ref refs/heads/alias)"`)
 			case "index locked":
 				writeGitTestFile(t, filepath.Join(root, ".git", "index.lock"), "editor-owned", 0o600)
 			case "unsupported cleanup":

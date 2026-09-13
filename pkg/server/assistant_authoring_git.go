@@ -289,7 +289,9 @@ func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []stri
 }
 
 func authoringHeadBinding(ctx context.Context, g authoringGitIndex) (string, error) {
-	out, err := g.run(ctx, "", "symbolic-ref", "--quiet", "HEAD")
+	// Preserve HEAD's direct binding even when a branch is itself a symref.
+	// Recursive resolution would hide switching from an alias to its referent.
+	out, err := g.run(ctx, "", "symbolic-ref", "--quiet", "--no-recurse", "HEAD")
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return "", nil
