@@ -2,11 +2,15 @@ package ir
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestGroupReferenceRewritingPreservesCallerText(t *testing.T) {
@@ -193,5 +197,101 @@ workflow w:
 	}
 	if r := compileFile(t, strings.Replace(src, "outputs.seed.n", "if(outputs.seed.n == 'x', 1, 0)", 1)); !hasDiag(r.Diagnostics, DiagExprOperandTypeMismatch) {
 		t.Fatalf("member field type not checked: %+v", r.Diagnostics)
+	}
+}
+
+func TestGroupMemberNamedHistoryIsNotHistoryAccess(t *testing.T) {
+	src := `schema out:
+  value: string
+group g():
+  compute history:
+    output: out
+    expr:
+      value: "'ok'"
+use g as r1
+agent collect:
+  model: "test-model"
+  output: out
+workflow w:
+  entry: r1.history
+  r1.history -> collect with { value: "{{outputs.r1.history}}" }
+  collect -> done
+`
+	if result := compileFile(t, src); result.HasErrors() {
+		t.Fatal(result.Diagnostics)
+	}
+	bad := strings.Replace(src, "{{outputs.r1.history}}", "{{outputs.r1.history.history}}", 1)
+	if result := compileFile(t, bad); !hasDiag(result.Diagnostics, DiagHistoryRefNotInLoop) {
+		t.Fatalf("actual history access lost its diagnostic: %v", result.Diagnostics)
+	}
+}
+
+func TestGroupPromptIncludesAreSpecializedBeforeValidation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"sub/outer.md": `{{include "inner.md"}}`,
+		"sub/inner.md": `{{params.label}} {{outputs.gate.value}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := strings.Replace(sharedGroupPrompts, "prompt shared:\n  {{outputs.gate.value}}", "prompt shared:\n  {{include \"sub/outer.md\"}}", 1)
+	src = strings.Replace(src, "system: shared", `system: "external"`, 1)
+	src = strings.Replace(src, `system: "{{params.label}} {{outputs.gate.value}}"`, "system: `prefix {{include \"sub/outer.md\"}}`", 1)
+	path := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed := parser.Parse(path, src)
+	for _, d := range parsed.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			t.Fatal(d)
+		}
+	}
+	before, err := ast.MarshalFile(parsed.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Compile(parsed.File)
+	if result.HasErrors() {
+		t.Fatal(result.Diagnostics)
+	}
+	for prefix, label := range map[string]string{"r1": "A", "r2": "B"} {
+		n := result.Workflow.Nodes[prefix+".work"].(*AgentNode)
+		want := label + " {{outputs." + prefix + ".gate.value}}"
+		if body := result.Workflow.Prompts[n.UserPrompt].Body; body != want {
+			t.Errorf("user=%q, want %q", body, want)
+		}
+		if body := result.Workflow.Prompts[n.SystemPrompt].Body; body != "prefix "+want {
+			t.Errorf("system=%q, want %q", body, "prefix "+want)
+		}
+	}
+	after, err := ast.MarshalFile(parsed.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || !reflect.DeepEqual(result, Compile(parsed.File)) {
+		t.Fatal("include specialization changed the source or repeat compilation")
+	}
+}
+
+func TestGroupPromptIncludesShareTheFileBudget(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("label {{params.label}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var src strings.Builder
+	src.WriteString("prompt p:\n  {{include \"rules.md\"}}\ngroup g(label):\n  agent a:\n    model: \"test-model\"\n    system: p\n")
+	for i := 0; i <= maxPromptIncludeExpansions; i++ {
+		fmt.Fprintf(&src, "use g as g%d with {label: \"%d\"}\n", i, i)
+	}
+	src.WriteString("workflow w:\n  entry: g0.a\n  g0.a -> done\n")
+	result := compileAt(t, filepath.Join(dir, "main.bot"), src.String())
+	if !hasDiag(result.Diagnostics, DiagBadPromptInclude) {
+		t.Fatal("group copies bypassed the file include budget")
 	}
 }

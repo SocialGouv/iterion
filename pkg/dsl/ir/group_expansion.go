@@ -224,7 +224,7 @@ func (x *groupExpansion) prompt(ref string) string {
 	if p == nil {
 		return ref
 	} // regular unknown-prompt diagnostic
-	body := substParams(x.templates(p.Body), x.binds)
+	body := substParams(x.templates(x.c.expandPromptBody(p)), x.binds)
 	if body == p.Body {
 		return ref
 	}

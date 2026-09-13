@@ -70,7 +70,7 @@ func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[stri
 			if len(path) == 0 {
 				return sc.outputs
 			}
-			out, fields := matchOutputNode(sc.outputs, path)
+			out, fields := matchOutputNode(e.workflow, sc.outputs, path)
 			if out == nil {
 				return nil
 			}

@@ -129,6 +129,7 @@ type compiler struct {
 	prompts              map[string]*Prompt
 	mcp                  map[string]*MCPServer
 	groupPromptTemplates map[string]bool
+	promptIncludeBudget  includeBudget
 	// edgeSpans remembers where each compiled edge was declared, so a
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
@@ -871,7 +872,6 @@ func (c *compiler) canAutoResolveBackend() bool {
 
 func (c *compiler) compilePrompts() {
 	seen := make(map[string]bool, len(c.file.Prompts))
-	budget := &includeBudget{} // one per file: a budget per prompt multiplies by the prompt count
 	for _, p := range c.file.Prompts {
 		if seen[p.Name] {
 			// Mirror compileSchemas: a second `prompt foo:` used to
@@ -885,33 +885,7 @@ func (c *compiler) compilePrompts() {
 		if c.groupPromptTemplates[p.Name] {
 			continue
 		}
-		// Expand {{include "..."}} markers once, at compile time, before
-		// ParseRefs sees the body — the injected file content becomes part
-		// of the resolved prompt (auditable, no runtime file reads).
-		// Resolve relative to the directory of the file that declares the
-		// prompt, carried on the declaration's span: the .bot source, or
-		// the bundle's prompts/ for a merged prompts/*.md. A prompt whose
-		// recorded source is not a file on this host — none at all (the
-		// JSON transport), or a synthetic name such as "<inline>" — has
-		// nothing to resolve against: its marker is refused, never looked
-		// up in the process working directory, which filepath.Dir of a
-		// synthetic name would be — on a runner, the pod's own.
-		body := p.Body
-		var incErrs []error
-		if HasPromptInclude(body) {
-			if dir, err := promptSourceDir(p.Span.Start.File); err != nil {
-				incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: %v", err)}
-				// One error per cause: the marker is not a template
-				// reference, and left in the body it would be reported a
-				// second time as one.
-				body = promptIncludeRe.ReplaceAllString(body, "")
-			} else {
-				body, incErrs = expandPromptIncludes(body, dir, budget)
-			}
-		}
-		for _, e := range incErrs {
-			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
-		}
+		body := c.expandPromptBody(p)
 		refs, err := ParseRefs(body)
 		if err != nil {
 			c.errorfAtSpan(DiagBadTemplateRef, p.Span, "prompt %q: %v", p.Name, err)

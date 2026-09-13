@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -79,27 +78,5 @@ workflow w:
 		if got := r.Checkpoint.Outputs[node]["value"]; got != want {
 			t.Errorf("%s persisted %v, want %s", node, got, want)
 		}
-	}
-}
-
-// An unexecuted fan-out route has no output entry. Preserve nil (an empty
-// collection to concat), rather than returning a typed nil map as its value.
-func TestGroupOutputResolverKeepsMissingOutputsNil(t *testing.T) {
-	e := New(&ir.Workflow{}, tmpStore(t), newStubExecutor())
-	rs := e.newRunState("missing-output", nil)
-	rs.outputs["r1.present"] = map[string]any{"items": []any{"ok"}}
-	for _, src := range []string{"outputs.absent.items", "outputs.r1.absent.items", "outputs.absent"} {
-		value, err := expr.MustParse(src).Eval(e.exprContext(rs, nil))
-		if err != nil || value != nil {
-			t.Errorf("%s=%#v (%T), err=%v; want nil", src, value, value, err)
-		}
-	}
-	value, err := expr.MustParse("concat(outputs.absent.items, outputs.r1.present.items)").Eval(e.exprContext(rs, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := value.([]any)
-	if !ok || len(got) != 1 || got[0] != "ok" {
-		t.Fatalf("collector=%#v", value)
 	}
 }

@@ -27,6 +27,28 @@ const maxPromptIncludeBytes = 256 * 1024 // 256 KiB
 // references such as {{vars.include}} or {{outputs.include.x}}.
 var promptIncludeRe = regexp.MustCompile(`\{\{\s*include\s+"([^"]*)"\s*\}\}`)
 
+// expandPromptBody is shared by group specialization and ordinary prompt
+// compilation. Includes must expose their references before a group binds
+// them. Each specialized copy consumes the same per-compilation budget; its
+// already-expanded body costs nothing when compilePrompts later reads it.
+// The declaration is never changed, and its source controls relative paths.
+func (c *compiler) expandPromptBody(p *ast.PromptDecl) string {
+	body := p.Body
+	var errs []error
+	if HasPromptInclude(body) {
+		if dir, err := promptSourceDir(p.Span.Start.File); err != nil {
+			errs = []error{fmt.Errorf("an {{include}} cannot be resolved: %v", err)}
+			body = promptIncludeRe.ReplaceAllString(body, "")
+		} else {
+			body, errs = expandPromptIncludes(body, dir, &c.promptIncludeBudget)
+		}
+	}
+	for _, err := range errs {
+		c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, err)
+	}
+	return body
+}
+
 // expandPromptIncludes replaces every {{include "..."}} marker in a
 // prompt body with the verbatim contents of the referenced file,
 // resolved relative to baseDir — the directory of the file that declares
