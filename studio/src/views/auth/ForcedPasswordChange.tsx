@@ -7,6 +7,7 @@ import { useLocation } from "wouter";
 
 import { ApiError, completePendingPasswordChange } from "@/api/auth";
 import { useAuth } from "@/auth/AuthContext";
+import { signInReturnTo, signInURL } from "@/auth/returnTo";
 
 // ForcedPasswordChange completes the pending_password_change flow for an
 // account (typically the bootstrapped super-admin) whose login was
@@ -16,6 +17,7 @@ import { useAuth } from "@/auth/AuthContext";
 export default function ForcedPasswordChange() {
   const { reloadIdentity } = useAuth();
   const [, navigate] = useLocation();
+  const [returnTo] = useState(() => signInReturnTo(window.location));
 
   const [email, setEmail] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -35,10 +37,11 @@ export default function ForcedPasswordChange() {
     if (e) setEmail(e);
     if (p) setCurrentPassword(p);
     if (e || p) {
-      const clean = window.location.pathname;
+      const next = returnTo === "/" ? "" : `?${new URLSearchParams({ next: returnTo })}`;
+      const clean = window.location.pathname + next;
       window.history.replaceState({}, "", clean);
     }
-  }, []);
+  }, [returnTo]);
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -55,7 +58,7 @@ export default function ForcedPasswordChange() {
     try {
       await completePendingPasswordChange(email, currentPassword, newPassword);
       await reloadIdentity();
-      navigate("/", { replace: true });
+      navigate(returnTo, { replace: true });
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : errorMessage(e);
       setErr(msg);
@@ -152,7 +155,7 @@ export default function ForcedPasswordChange() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate("/login")}
+            onClick={() => navigate(signInURL(returnTo))}
           >
             Back to sign-in
           </Button>

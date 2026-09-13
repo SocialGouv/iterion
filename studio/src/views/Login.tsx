@@ -8,6 +8,7 @@ import { listProviders, type ProvidersResponse } from "@/api/auth";
 import { ApiError } from "@/api/auth";
 import { consumeQueryParams } from "@/lib/queryFlash";
 import { useAuth } from "@/auth/AuthContext";
+import { signInReturnTo } from "@/auth/returnTo";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { apiBase } from "@/lib/scope";
 
@@ -68,6 +69,7 @@ function ssoErrorNotice(
 export function SignInCard() {
   const { signIn, signUp, status } = useAuth();
   const [, navigate] = useLocation();
+  const returnTo = signInReturnTo(window.location);
   const serverInfo = useServerInfoStore((s) => s.info);
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
@@ -130,9 +132,9 @@ export function SignInCard() {
 
   useEffect(() => {
     if (status === "authenticated") {
-      navigate("/");
+      navigate(returnTo, { replace: true });
     }
-  }, [status, navigate]);
+  }, [status, navigate, returnTo]);
 
   // Pre-fill invitation token from URL.
   useEffect(() => {
@@ -144,30 +146,6 @@ export function SignInCard() {
     }
   }, []);
 
-  // returnTo captures the in-app URL the user was on before being
-  // bounced to /login (typically by AuthGate on session expiry), OR
-  // honours an explicit ?next= param (e.g. /invitations/accept bounces
-  // here with `?invite=…&next=/invitations/accept?token=…`). We
-  // restrict to relative same-origin paths so a hostile `?next=`
-  // injection can't open-redirect after login.
-  const returnTo = (): string => {
-    const u = new URL(window.location.href);
-    const next = u.searchParams.get("next");
-    // Reject `//evil` AND `/\evil` (and encoded `/%2f` / `/%5c`): a leading
-    // slash followed by a slash OR backslash is normalized by browsers to a
-    // protocol-relative URL → off-site open redirect. Only `/` + a normal path
-    // char is a safe same-origin target.
-    const isSafeLocalPath = (p: string) =>
-      p.startsWith("/") && !/^\/[/\\]/.test(p) && !/^\/(%2f|%5c)/i.test(p);
-    if (next && isSafeLocalPath(next)) {
-      return next;
-    }
-    const here = window.location.pathname + window.location.search + window.location.hash;
-    if (!here || here.startsWith("/login") || here.startsWith("/auth/")) return "/";
-    if (!isSafeLocalPath(here)) return "/";
-    return here;
-  };
-
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setErr(null);
@@ -178,7 +156,7 @@ export function SignInCard() {
       } else {
         await signUp({ email, password, name, invitation: invitation || undefined });
       }
-      navigate(returnTo());
+      navigate(returnTo, { replace: true });
     } catch (e) {
       // 403 "password change required" → forced rotation flow. Carry the
       // email + the rejected password as the temporary credential so the
@@ -188,7 +166,7 @@ export function SignInCard() {
         e.status === 403 &&
         /password change required/i.test(e.message)
       ) {
-        const qs = new URLSearchParams({ email, temp: password }).toString();
+        const qs = new URLSearchParams({ email, temp: password, next: returnTo }).toString();
         navigate(`/auth/password/change?${qs}`, { replace: true });
         return;
       }
@@ -201,7 +179,7 @@ export function SignInCard() {
 
   const oidcStart = (name: string) => {
     setRedirecting(true);
-    const next = encodeURIComponent(returnTo());
+    const next = encodeURIComponent(returnTo);
     window.location.href = `${BASE}/auth/oidc/${encodeURIComponent(name)}/start?next=${next}`;
   };
 
