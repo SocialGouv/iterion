@@ -155,6 +155,13 @@ Syntax profiles and runtime semantics are independent.
   behavior. The race-instrumented manifest verified all three named cases
   without skips. This fixture is a deterministic compatibility sentinel, not
   a substitute for before/after traces of every project workflow.
+- Read-only `iterion validate --json` comparisons used the actual pinned-main
+  and branch CLIs against the version-3 reference sources in Shorts
+  (`units.bot`), Town (`epic-acceptance-review.bot`) and Tabarria
+  (`animal-range.bot`). All six invocations exited successfully; each pair
+  returned `valid: true` with byte-equivalent normalized diagnostics (5, 2
+  and 1 respectively). This verifies parsing and diagnostics for those exact
+  files, not their execution or full project bundles.
 - A real Chromium e2e case edits a native responsibility, saves the `.bot`,
   and reloads it with graph bindings and technical policy intact. The source
   equivalence check ignores diagnostic spans and JSON formatting while
