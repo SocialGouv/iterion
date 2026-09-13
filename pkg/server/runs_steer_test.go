@@ -113,6 +113,7 @@ tool work:
   output: work_out
 
 workflow answer_continues:
+  sandbox: none
   entry: gate
   gate -> work when approved
   gate -> fail when not approved

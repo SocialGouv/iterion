@@ -40,6 +40,7 @@ tool work:
   output: work_out
 
 workflow host_event_continues:
+  sandbox: none
   entry: chat
 
   chat -> work

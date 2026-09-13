@@ -141,6 +141,7 @@ tool work:
   output: work_out
 
 workflow passive_host_event:
+  sandbox: none
   entry: chat
 
   chat -> work

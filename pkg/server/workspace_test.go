@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -98,6 +99,11 @@ func TestWorkspaceHostInjectsBrowserWorkspaceAndScopedSPA(t *testing.T) {
 	}, iterlog.Nop())
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Exercise bootstrap injection even when Studio has not been built, as
+	// in the Go-only race job.
+	host.static = fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html><head></head><body>Studio</body></html>")},
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
