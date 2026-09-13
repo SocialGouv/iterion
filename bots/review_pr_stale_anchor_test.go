@@ -128,8 +128,11 @@ func TestReviewPRStaleAnchorStillPublishes(t *testing.T) {
 		if len(got.Comments) != 0 {
 			t.Errorf("posted %d inline comment(s) anchored to a tree that moved", len(got.Comments))
 		}
-		if !strings.Contains(got.Summary, "moved after the reviewers judged it") {
+		if !strings.Contains(got.Summary, "Le HEAD a changé depuis la revue") {
 			t.Errorf("the summary must say why the anchors are gone, got %q", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "Findings sans ancrage dans le diff") || !strings.Contains(got.Summary, "a.txt:1") {
+			t.Errorf("stale findings must remain readable in the summary: %s", got.Summary)
 		}
 		if res["published"] != true {
 			t.Errorf("published = %v, want true", res["published"])
