@@ -349,3 +349,28 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   refusing a hand-written activation record.
 - The complete Studio check after the connection-picker change passes 156
   test files and 1,375 tests, in addition to its rebuilt Chromium round trip.
+- The privileged source parser now invokes the same binary through a private
+  pipe protocol, without inherited environment, `.env` loading or telemetry.
+  Upstream parse errors are redacted; parent-owned private scratch is removed
+  even after killing a parser that has written source bytes. Includes are
+  restricted to whole-line `include "relative.conf"` statements naming files
+  in the supplied bundle. Other spellings, even ambiguous occurrences of the
+  word in values/comments, are refused by this initial source profile. Bounds:
+  32 files, 512 KiB of source, 256 expanded include visits and a five-second
+  helper deadline. External environment variables and include cycles are
+  refused; local variables and included permission defaults are retained.
+- The pinned image digest used by cloud compose and now NATS CI actually
+  reports **2.14.5**. The first exact-version integration check caught a 2.14.0
+  parser mismatch even though that fixture's digest agreed. The upstream
+  `nats-server/v2/conf` dependency is therefore pinned to 2.14.5, matching the
+  broker. It adds five vendored files and also requires `nkeys` 0.4.15 → 0.4.16
+  and `compress` 1.19.1 → 1.19.2; existing module checksums verify. This is not
+  a claim that arbitrary NATS patch versions are interchangeable.
+- All 18 required parser cases pass with race detection, including the real
+  production helper's `.env` bypass and an actual 2.14.5 broker's loaded
+  `config_digest`, through HTTP and authenticated system VARZ both before and
+  after reload. The static production build, queue/activation race suites and
+  relevant `go vet` checks pass. The existing NATS CI job now builds the old
+  and current fixture executables and runs these tests. Effective ACL
+  evaluation and Kubernetes/credential-custody reconciliation remain pending;
+  parsing a matching configuration does not establish that authority.

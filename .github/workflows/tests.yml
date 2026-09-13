@@ -451,7 +451,7 @@ jobs:
         # command. Same docker-run pattern as the mongo replica-set step.
         run: |
           set -euo pipefail
-          docker run -d --name nats-js -p 4222:4222 nats:2.14-alpine -js
+          docker run -d --name nats-js -p 4222:4222 nats:2.14-alpine@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da -js
           ready=0
           for i in $(seq 1 30); do
             logs="$(docker logs nats-js 2>&1)"
@@ -476,6 +476,8 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin 3872f9dd1d1cbf9c18ed338c66c9f55aaaea3fcc
           bash scripts/build-port-legacy-fixture.sh "$RUNNER_TEMP/ports-legacy"
+          docker cp nats-js:/usr/local/bin/nats-server "$RUNNER_TEMP/nats-server"
+          go build -mod=vendor -o "$RUNNER_TEMP/ports-current" ./cmd/iterion
 
       - name: JetStream integration tests
         # Alongside pkg/runner's schema-rollout test, run EVERY suite
@@ -485,8 +487,10 @@ jobs:
         env:
           ITERION_TEST_NATS_URI: nats://localhost:4222
           ITERION_TEST_LEGACY_PROBE: ${{ runner.temp }}/ports-legacy/probe-legacy
+          ITERION_TEST_NATS_SERVER: ${{ runner.temp }}/nats-server
+          ITERION_TEST_CURRENT_BINARY: ${{ runner.temp }}/ports-current
         run: |
-          go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
+          go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/... ./pkg/portsactivation/natsconfig
 
   cloud-e2e:
     # Advisory: not a required check, so it cannot block a merge — see the

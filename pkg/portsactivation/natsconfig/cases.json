@@ -1,0 +1,25 @@
+{
+  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. Does not establish ACL effectiveness, custody or Kubernetes authority.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig": [
+      "TestNATSConfigSourcesConfineIncludes",
+      "TestNATSConfigSourcesConfineIncludes/absolute_entry",
+      "TestNATSConfigSourcesConfineIncludes/parent_entry",
+      "TestNATSConfigSourcesConfineIncludes/missing_entry",
+      "TestNATSConfigSourcesConfineIncludes/absolute_include",
+      "TestNATSConfigSourcesConfineIncludes/parent_include",
+      "TestNATSConfigSourcesConfineIncludes/missing_include",
+      "TestNATSConfigSourcesConfineIncludes/inline_include",
+      "TestNATSConfigSourcesConfineIncludes/noncanonical_include",
+      "TestNATSConfigSourcesConfineIncludes/include_variable",
+      "TestNATSConfigSourcesConfineIncludes/cycle",
+      "TestNATSConfigSourcesConfineIncludes/oversized_sources",
+      "TestNATSConfigUsesLocalVariablesAndIncludedDefaults",
+      "TestNATSConfigBoundsRepeatedIncludeExpansion",
+      "TestNATSConfigDoesNotInheritEnvironmentOrLeakParseErrors",
+      "TestNATSConfigCanceledHelperCleansScratch",
+      "TestNATSConfigProductionHelperBypassesDotEnv",
+      "TestNATSConfigDigestMatchesBroker"
+    ]
+  }
+}

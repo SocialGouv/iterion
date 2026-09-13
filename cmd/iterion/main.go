@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +41,16 @@ func init() {
 }
 
 func main() {
+	// Static NATS configuration resolves missing variables from the process
+	// environment. The authority's private helper must bypass .env autoload
+	// and telemetry, not merely clear the environment before exec.
+	if len(os.Args) == 2 && os.Args[1] == natsconfig.HelperCommand {
+		if err := natsconfig.RunHelper(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// The permission hook is the grok/kimi anti-prompt-injection
 	// boundary. Both CLIs spawn it with cwd = the gated workspace and
 	// re-execute it on every tool call; a timeout is an ALLOW. So this
