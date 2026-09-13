@@ -1401,7 +1401,7 @@ try:
     if pr and (pr_parts.hostname != host or pr_parts.path.rsplit('/pull/', 1)[0].strip('/') != repo):
         emit(False, 'workflows:write preflight refuses a PR and push origin that name different repositories')
     token = ''
-    for path in (os.environ.get('TOKEN_PATH', ''), '/run/iterion/secrets/forge_token'):
+    for path in (os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token',):
         if path and os.path.isfile(path):
             with open(path) as f:
                 token = f.read().strip()

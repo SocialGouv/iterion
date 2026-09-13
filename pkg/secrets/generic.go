@@ -195,6 +195,9 @@ func SealInto(sealer Sealer, rec *GenericSecret, value string) error {
 	rec.SealedSecret = sealed
 	rec.Last4 = Last4(value)
 	rec.Fingerprint = FingerprintSHA256(value)
+	// A manually sealed value has no provider-issued permission evidence.
+	// Minting paths attach a fresh proof after sealing the returned token.
+	rec.ForgeTokenProof = nil
 	return nil
 }
 

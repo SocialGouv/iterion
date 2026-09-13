@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
@@ -99,7 +100,13 @@ func TestFixerWorkflowDiffRefusesBeforeAnalysis(t *testing.T) {
 			if name == "missing-token" {
 				token = ""
 			}
-			t.Setenv("GH_TOKEN", token)
+			// Bind an isolated file even for an absent token. Neither a standard
+			// mount on the test host nor its credential environment may enter this run.
+			tokenPath := filepath.Join(t.TempDir(), "forge_token")
+			if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GH_TOKEN", "")
 			t.Setenv("GITHUB_TOKEN", "")
 			t.Setenv("GH_CONFIG_DIR", t.TempDir())
 			calls, redirected := 0, 0
@@ -131,7 +138,9 @@ func TestFixerWorkflowDiffRefusesBeforeAnalysis(t *testing.T) {
 			if name == "missing-proof" {
 				checkURL = ""
 			}
-			executor := &deliveryProbeExecutor{ClawExecutor: model.NewClawExecutor(nil, wf, model.WithWorkDir(ws))}
+			guard := secretguard.New([]secretguard.Secret{{Name: "forge_token", FilePath: tokenPath}}, secretguard.DefaultConfig())
+			executor := &deliveryProbeExecutor{ClawExecutor: model.NewClawExecutor(nil, wf, model.WithWorkDir(ws), model.WithSecretGuard(guard))}
+			t.Cleanup(func() { _ = executor.Close() })
 			s := tmpStore(t)
 			err = New(wf, s, executor, WithWorkDir(ws), WithSandboxOverride("none")).Run(t.Context(), "delivery-refusal", map[string]any{
 				"workspace_dir": ws, "base_ref": "main", "plan_phase": "off", "pr_url": prURL,

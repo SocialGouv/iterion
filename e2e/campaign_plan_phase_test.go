@@ -30,6 +30,14 @@ func stubWorkspaceProbeOK(exec *scenarioExecutor) {
 	})
 }
 
+// The real delivery probe is exercised by runtime's compiled-bot regression
+// suite. Control-flow scenarios supply its successful precondition explicitly.
+func stubDeliveryProbeOK(exec *scenarioExecutor) {
+	exec.on("delivery_probe", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "code": "", "reason": "delivery permission established", "_tokens": 0, "_cost_usd": 0.0}, nil
+	})
+}
+
 // stubPlanAuthor stubs the plan AUTHOR with a recognisable plan so a test
 // can assert what reached the campaign.
 func stubPlanAuthor(exec *scenarioExecutor) {
