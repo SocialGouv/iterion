@@ -39,14 +39,16 @@ a real Mongo replica set. It needs no older executable and makes no model calls:
 ```bash
 ITERION_TEST_REQUIRED=1 \
 ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
-devbox run -- go test -race -json -count=1 ./pkg/runtime -run '^TestPortsEngine' > /tmp/iterion-port-runtime.jsonl
+devbox run -- go test -race -json -count=1 ./pkg/runtime -run 'TestPortsEngine|TestNativeProcessKillRecovery' > /tmp/iterion-port-runtime.jsonl
 devbox run -- node scripts/verify-port-tests.mjs pkg/runtime/ports_cases.json /tmp/iterion-port-runtime.jsonl
 ```
 
-All 66 named cases must execute without skips. They cover value scheduling,
+All 68 named cases must execute without skips. They cover value scheduling,
 file provenance and recovery, and attempt-bound effect verification through an
 executor that implements `PortEffectVerifier`. A default executor without that
 capability refuses a `recovery: verify` node before effect dispatch. Nested
 resource/budget sharing, distributed activation and full authoring surfaces
-remain outstanding.
-Commit fault injection is not a claim that an operating-system process was killed.
+remain outstanding. In addition to commit fault injection, two cases kill an
+actual child process after durable effect dispatch, on filesystem and Mongo.
+They simulate a supervisor's orphan-status transition before resuming; they do
+not certify production orphan detection or a kill during file capture.
