@@ -77,6 +77,61 @@ func TestLocalValidate(t *testing.T) {
 	}
 }
 
+func TestLocalValidateNativePublicView(t *testing.T) {
+	s := newTestServer(t)
+	const native = `dsl: 2
+contract Result:
+  display_name: "Deliver result"
+  responsibility: "Produce the public result"
+  outputs:
+    value: string
+compute internal:
+  expr:
+    value: "\"private technical expression\""
+workflow main:
+  runtime_semantics: "ports-v1"
+  contract: Result
+  graph:
+    nodes:
+      deliver:
+        implementation: internal
+        contract: Result
+    exports:
+      value: deliver.value
+    products: ["value"]
+`
+	if err := os.WriteFile(filepath.Join(s.WorkDir, "native.bot"), []byte(native), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, isErr := call(t, s, "local_validate", `{"file_path":"native.bot"}`)
+	if isErr {
+		t.Fatalf("native validation failed: %s", out)
+	}
+	var result struct {
+		Valid      bool `json:"valid"`
+		PublicView struct {
+			GraphIdentity string `json:"graph_identity"`
+			Nodes         []struct {
+				Contract struct {
+					Responsibility string `json:"responsibility"`
+				} `json:"contract"`
+			} `json:"nodes"`
+			Products []string `json:"products"`
+		} `json:"public_view"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || result.PublicView.GraphIdentity == "" || len(result.PublicView.Nodes) != 1 ||
+		result.PublicView.Nodes[0].Contract.Responsibility != "Produce the public result" ||
+		len(result.PublicView.Products) != 1 || result.PublicView.Products[0] != "value" {
+		t.Fatalf("MCP public projection missing: %+v", result)
+	}
+	if strings.Contains(out, "private technical expression") || strings.Contains(out, `"implementation"`) {
+		t.Fatalf("MCP validation leaked technical source: %s", out)
+	}
+}
+
 func TestLocalRunsListAndGet(t *testing.T) {
 	s := newTestServer(t)
 	st, err := s.store()
