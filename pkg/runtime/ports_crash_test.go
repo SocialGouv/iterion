@@ -28,6 +28,12 @@ func (s *portInterruptedStore) LoadPortActivation(ctx context.Context) (*store.P
 func (s *portInterruptedStore) SavePortActivation(ctx context.Context, revision uint64, next *store.PortActivation) error {
 	return store.AsPortActivationStore(s.RunStore).SavePortActivation(ctx, revision, next)
 }
+func (s *portInterruptedStore) PortBackendIdentity() string {
+	if identified, ok := s.RunStore.(interface{ PortBackendIdentity() string }); ok {
+		return identified.PortBackendIdentity()
+	}
+	return ""
+}
 
 func (s *portInterruptedStore) SaveRun(ctx context.Context, r *store.Run) error {
 	match := r.PortExecution != nil && r.PortExecution.Invocations["a"] != nil && r.PortExecution.Invocations["a"].Status == s.status

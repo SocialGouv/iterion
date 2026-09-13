@@ -78,9 +78,8 @@ test("engine options expose the workflow's own LLM node for retargeting", async 
 
 // The model-capability caption reads the node's OWN model on the inherit
 // path — the input is empty and the model lives only in the placeholder, which
-// is most launches. Offline the spec aggregator contributes nothing, so the
-// assertion is on the curated context window and on the source that says the
-// answer can still improve; the published price needs a fetched table.
+// is most launches. The capability source can be the curated fallback or a
+// cached aggregator answer, depending on the isolated test environment.
 test("the per-node model picker captions its model's capabilities", async ({
   page,
 }) => {
@@ -92,7 +91,7 @@ test("the per-node model picker captions its model's capabilities", async ({
   const caption = page.getByTestId("model-caps-caption").first();
   await expect(caption).toBeVisible();
   await expect(caption).toContainText("1M context");
-  await expect(caption).toContainText("curated");
+  await expect(caption).toContainText(/curated|aggregator/);
   // Zero is unknown, never free — the caption must never print a $0 rate.
   await expect(caption).not.toContainText("$0.00");
 });

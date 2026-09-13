@@ -77,6 +77,19 @@ func compileNativeTest(t *testing.T, text string) (*ast.File, *CompileResult) {
 	return parsed.File, Compile(parsed.File)
 }
 
+func TestNativeGraphRejectsUnverifiedNestedExecution(t *testing.T) {
+	source := strings.Replace(nativeMapDocument,
+		"compute collect_impl:\n  expr:\n    texts: \"input.texts\"",
+		"subbot collect_impl:\n  source: \"child.bot\"", 1)
+	_, result := compileNativeTest(t, source)
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == DiagPortControl && strings.Contains(diagnostic.Message, "verified native composition or legacy adapter") {
+			return
+		}
+	}
+	t.Fatalf("unverified child would compile but the native executor cannot run it: %v", result.Diagnostics)
+}
+
 func TestPortGraphCompilesMapBroadcastAndWholeArrayCollection(t *testing.T) {
 	file, result := compileNativeTest(t, nativeMapDocument)
 	if result.HasErrors() {

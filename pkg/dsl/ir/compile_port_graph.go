@@ -446,22 +446,8 @@ func ClonePortNode(node Node, id string) (Node, error) {
 		copy := *n
 		copy.ID = id
 		return &copy, nil
-	case *SubbotNode:
-		copy := *n
-		copy.ID = id
-		return &copy, nil
-	case *EmitNode:
-		copy := *n
-		copy.ID = id
-		return &copy, nil
-	case *WaitNode:
-		copy := *n
-		copy.ID = id
-		return &copy, nil
-	case *AwaitAnswersNode:
-		copy := *n
-		copy.ID = id
-		return &copy, nil
+	case *SubbotNode, *EmitNode, *WaitNode, *AwaitAnswersNode:
+		return nil, fmt.Errorf("node kind %s needs an explicitly verified native composition or legacy adapter before it can run in a data graph", node.NodeKind())
 	default:
 		return nil, fmt.Errorf("node kind %s is a control construct, not a native data operation", node.NodeKind())
 	}
