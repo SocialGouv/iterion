@@ -518,6 +518,7 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 // attempt), so the removal would race a process nothing here can wait for,
 // and gitOpTimeout would bound nothing that escaped it.
 func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) (string, error) {
+	parentCtx := ctx
 	if gitOpTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
@@ -546,8 +547,14 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 			detail = strings.ReplaceAll(detail, tok, "***")
 			shown = strings.ReplaceAll(shown, tok, "***")
 		}
+		if detail == "" {
+			detail = "git produced no output"
+		}
+		if parentCtx.Err() != nil {
+			return "", fmt.Errorf("git %s: caller context ended: %w: %s", shown, errors.Join(parentCtx.Err(), err), detail)
+		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
-			return "", fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
+			return "", fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, errors.Join(ctx.Err(), err), detail)
 		}
 		return "", fmt.Errorf("git %s: %w: %s", shown, err, detail)
 	}
@@ -916,45 +923,10 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 	}
-	// An earlier attempt of this run may have banked a RICHER chain than
-	// this outcome carries: a redelivered failure re-clones from base,
-	// and its retry can legitimately end with fewer commits. "A later
-	// attempt that ends better simply overwrites" — so a blind force-push
-	// here would enforce "later" without "better", orphaning the richer
-	// branch. Push when the branch is absent, unchanged, an ancestor of
-	// the new head, or at most as long; refuse loudly when this chain is
-	// strictly poorer and leave the branch (and the run doc that already
-	// points at it) alone.
-	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
-	if oldHead != "" && oldHead != head {
-		// A FINISHED outcome is the run's converged final state and
-		// supersedes whatever an earlier dead attempt banked, however
-		// long that chain was: a resume re-clones at the base and only
-		// re-does the remaining nodes, so the finished chain is
-		// legitimately SHORTER than the dead one it completes — refusing
-		// it would make `runs merge` land the dead attempt's tree over
-		// the finished run's. The chain comparison protects dead
-		// attempts from poorer dead attempts, nothing else. Supersede is
-		// not destruction, though: when the finished chain does not
-		// CONTAIN the banked head, that head may be the only copy of the
-		// dead attempt's commits, so it is archived first.
-		if finalStatus == "finished" {
-			r.preserveSupersededChain(ctx, msg, workDir, tok, branch, oldHead, head)
-			r.cfg.Logger.Info("runner: run %s: bank: finished outcome supersedes the chain banked at %.12s", msg.RunID, oldHead)
-		} else if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
-			return
-		}
+	attempts, allowed, pushErr := r.pushBankWithRetry(ctx, msg, workDir, tok, branch, head, finalStatus)
+	if !allowed {
+		return // the richer-chain guard recorded its own refusal
 	}
-	// Push through `origin` so git resolves the credential from the
-	// clone's live store (installGitCredentialStore wired
-	// `credential.helper store --file=.git/iterion-credentials`, and
-	// refreshGitCredentialsLoop keeps that file on the CURRENT token for
-	// the whole run). The previous shape injected the claim-time token
-	// into the push URL — a GitHub App installation token lives one hour,
-	// a paused-and-resumed run can end far later, and the bank push then
-	// died on a dead credential while a live one sat in the store. The
-	// claim-time token stays only as the redaction key for error output.
-	pushErr := r.runGit(ctx, workDir, tok, bankPushArgs(branch, head, oldHead)...)
 
 	// Persist on detached, deadlined ctxs carrying the run's tenant
 	// identity (the run ctx may already be cancelled) — bounded PER OP,
@@ -1022,12 +994,21 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	}
 	sctx, scancel := bankStoreCtx(msg)
 	defer scancel()
-	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
-		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
+	saveErr := r.cfg.Store.SaveRun(sctx, run)
+	if saveErr != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, saveErr)
 		data := bankExitData(branch, head, "doc_save_failed", pushErr)
-		data["error"] = serr.Error()
+		data["error"] = saveErr.Error()
 		r.recordBankRefused(msg, data)
 	}
+	if pushErr != nil {
+		data := bankPushErrorData(branch, head, pushErr)
+		data["bank_state"] = string(store.BankStateFailed)
+		data["attempts"] = attempts
+		data["recorded"] = saveErr == nil
+		r.recordBankEvent(msg, store.EventRunBankFailed, data)
+	}
+
 }
 
 // bankExitData shapes a post-push doc-I/O exit for the timeline. head
@@ -1073,12 +1054,12 @@ func bankPushArgs(branch, head, oldHead string) []string {
 // fails — an unreadable remote must not block the bank, it degrades to
 // the pre-check-less push).
 func (r *Runner) bankedBranchHead(ctx context.Context, workDir, tok, branch string) string {
-	out, err := r.runGitOutEnv(ctx, workDir, tok, nil, "ls-remote", "origin", "refs/heads/"+branch)
+	head, err := r.readBankedBranchHead(ctx, workDir, tok, branch)
 	if err != nil {
 		r.cfg.Logger.Warn("runner: bank: ls-remote %s: %v — pushing without the prior-attempt check", branch, err)
-		return ""
 	}
-	return parseLsRemoteHead(out, branch)
+	return head
+
 }
 
 // parseLsRemoteHead picks the sha ls-remote advertised for
@@ -1237,17 +1218,7 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 // already be dead): a store that refuses the append must never change
 // the run's outcome.
 func (r *Runner) recordBankRefused(msg *queue.RunMessage, data map[string]any) {
-	// Bounded like every best-effort timeline write on a teardown path
-	// (parkStoreOpTimeout): a wedged store must not pin the pod.
-	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
-	defer cancel()
-	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
-	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
-		Type: store.EventRunBankRefused,
-		Data: data,
-	}); err != nil {
-		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_refused: %v", msg.RunID, err)
-	}
+	r.recordBankEvent(msg, store.EventRunBankRefused, data)
 }
 
 // recordBankFailure persists why a run's work could NOT be banked into
@@ -1295,12 +1266,18 @@ func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 	run.FinalBranchError = cause
 	sctx, scancel := bankStoreCtx(msg)
 	defer scancel()
-	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
-		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranchError: %v", msg.RunID, serr)
+	saveErr := r.cfg.Store.SaveRun(sctx, run)
+	if saveErr != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranchError: %v", msg.RunID, saveErr)
 		r.recordBankRefused(msg, map[string]any{
 			"cause":  cause,
 			"reason": "doc_save_failed",
-			"error":  serr.Error(),
+			"error":  saveErr.Error(),
 		})
 	}
+	r.recordBankEvent(msg, store.EventRunBankFailed, map[string]any{
+		"bank_state": string(store.BankStateFailed), "reason": "bank_refused",
+		"error": cause, "recorded": saveErr == nil,
+	})
+
 }

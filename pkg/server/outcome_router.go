@@ -233,7 +233,7 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 	verdict := routing.Evaluate(run)
 	decision := verdict.Decision
 	reason := verdict.Reason
-	if decision == routing.DecisionMerge && run.FinalBranchError != "" {
+	if decision == routing.DecisionMerge && run.BankState() == store.BankStateFailed {
 		decision = routing.DecisionEscalate
 		reason = fmt.Sprintf("contract says merge but the bank recorded an error: %s", run.FinalBranchError)
 	}

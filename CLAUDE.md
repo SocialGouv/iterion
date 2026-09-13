@@ -252,6 +252,7 @@ the hours this one spent.
   against a 20-job organisation cap, and the trap that promoting an advisory
   job to required without deleting its `merge_group` skip produces a silent
   FALSE GREEN rather than a stalled queue.
+- [docs/resume.md#when-the-final-bank-push-fails](docs/resume.md#when-the-final-bank-push-fails) — final-bank retries, `bank_state`, failure events and recovery evidence.
 - [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy habit
   on THIS repo: findings on a PR here → comment `/billy` (don't hand-fix),
   what the command seeds (prior-review hand-off, push-back, ledger, gate),

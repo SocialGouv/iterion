@@ -134,3 +134,37 @@ func TestRunOutcomeEventIDRepeatEpisodes(t *testing.T) {
 		t.Fatalf("bare key = %q, want run:r", got)
 	}
 }
+
+func TestBuildRunOutcomeCarriesBankFailureSeparately(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	r, err := st.CreateRun(ctx, "run-bank", "w", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Status = store.RunStatusFinished
+	r.FinalCommit = "abc"
+	r.FinalBranchError = "push exit 12"
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	ev := BuildRunOutcome(ctx, st, r.ID, nil)
+	if ev.Kind != KindRunFinished || ev.Payload["status"] != "finished" || ev.Payload["bank_state"] != "bank_failed" || ev.Payload["final_commit"] != "abc" || ev.Payload["final_branch_error"] != "push exit 12" {
+		t.Fatalf("event=%+v", ev)
+	}
+	r.FinalBranchError = ""
+	r.FinalBranch = "iterion/run-bank"
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	ev = BuildRunOutcome(ctx, st, r.ID, nil)
+	if ev.Payload["bank_state"] != "banked" || ev.Payload["final_branch"] != r.FinalBranch {
+		t.Fatalf("event=%+v", ev)
+	}
+	if _, present := ev.Payload["final_branch_error"]; present {
+		t.Fatal("stale bank failure")
+	}
+}
