@@ -30,7 +30,7 @@ Syntax profiles and runtime semantics are independent.
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
 | Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local validation draft and real Chromium save pass; direct Copi authoring, runtime cost visibility and composition outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
-| Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed, covering corpus and existing legacy suites; explicit before/after trace comparison remains outstanding |
+| Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces; broader project-specific legacy trace corpus remains outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
 | Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store and 68 Engine cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
@@ -148,6 +148,13 @@ Syntax profiles and runtime semantics are independent.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox
   test container. An earlier pass failed three shell-backed `bots` cases only
   because those commands were missing; their focused rerun passed unchanged.
+- `TestLegacyRuntimeTraceParity` runs a committed ordinary `.bot` workflow
+  through the actual pinned-main and current CLIs. The zero- and two-element
+  fan-out cases have equal persisted status, budgets, checkpoint location and
+  iteration charge, node admissions/completions, mapped outputs and join
+  behavior. The race-instrumented manifest verified all three named cases
+  without skips. This fixture is a deterministic compatibility sentinel, not
+  a substitute for before/after traces of every project workflow.
 - A real Chromium e2e case edits a native responsibility, saves the `.bot`,
   and reloads it with graph bindings and technical policy intact. The source
   equivalence check ignores diagnostic spans and JSON formatting while
@@ -179,7 +186,9 @@ The existing correction, compute, compiler and native-store transition tests
 also pass after the shared seam changes. Full `pkg/dsl/expr`, `pkg/dsl/ir` and
 `pkg/backend/model` pass with race detection. A complete `task test` pass now
 covers the repository's ordinary legacy corpus and unit suites; explicit
-before/after legacy execution traces and final generated checks remain open.
+before/after legacy executable traces now pass for the committed fan-out
+fixture. Project-specific legacy trace comparison and final generated checks
+remain open.
 
 The native runtime remains incomplete: production effect verifiers, nested root
 admission, verified composition and adapters, distributed access census and

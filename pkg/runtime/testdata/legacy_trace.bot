@@ -1,0 +1,39 @@
+schema jobs:
+  items: json
+
+schema handled:
+  value: string
+
+schema summary:
+  count: int
+
+tool prepare:
+  command: `printf '{"items":[{"id":"a"},{"id":"b"}]}'`
+  output: jobs
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.prepare.items}}"
+  as: item
+
+tool handle:
+  parallel_safe: true
+  command: `printf '{"value":"%s"}' {{outputs.dispatch.item.id}}`
+  output: handled
+
+compute collect:
+  await: wait_all
+  output: summary
+  expr:
+    count: "2"
+
+workflow legacy_trace:
+  worktree: none
+  entry: prepare
+  budget:
+    max_parallel_branches: 2
+    max_iterations: 10
+  prepare -> dispatch
+  dispatch -> handle
+  handle -> collect
+  collect -> done

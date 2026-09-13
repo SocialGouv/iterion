@@ -52,3 +52,19 @@ remain outstanding. In addition to commit fault injection, two cases kill an
 actual child process after durable effect dispatch, on filesystem and Mongo.
 They simulate a supervisor's orphan-status transition before resuming; they do
 not certify production orphan detection or a kill during file capture.
+
+The ordinary legacy route has an independent executable comparison. Build the
+current CLI from this checkout, then run the same committed `.bot` fixture
+through it and the pinned-main CLI. The test checks the persisted status,
+budget, checkpoint, node and branch counts, mapped values, join and empty
+fan-out behavior. It ignores branch completion order and durations, which
+depend on OS scheduling. No provider credentials are used.
+
+```bash
+devbox run -- go build -o /tmp/iterion-port-current ./cmd/iterion
+ITERION_TEST_REQUIRED=1 \
+ITERION_TEST_LEGACY_BINARY=/tmp/iterion-port-legacy/iterion-legacy \
+ITERION_TEST_CURRENT_BINARY=/tmp/iterion-port-current \
+devbox run -- go test -race -json -count=1 ./pkg/runtime -run TestLegacyRuntimeTraceParity > /tmp/iterion-port-legacy-trace.jsonl
+devbox run -- node scripts/verify-port-tests.mjs pkg/runtime/legacy_trace_cases.json /tmp/iterion-port-legacy-trace.jsonl
+```

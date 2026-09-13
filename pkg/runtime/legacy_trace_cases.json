@@ -1,0 +1,10 @@
+{
+  "scope": "Deterministic ordinary .bot execution through actual pinned-main and current binaries: zero/two fan-out, join, node admissions, mapped values, budgets, checkpoint and final status. Branch completion order and wall-clock durations are intentionally ignored.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/runtime": [
+      "TestLegacyRuntimeTraceParity",
+      "TestLegacyRuntimeTraceParity/two",
+      "TestLegacyRuntimeTraceParity/zero"
+    ]
+  }
+}
