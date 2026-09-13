@@ -102,3 +102,38 @@ func TestInspectShowsPausePointerOnPausedRun(t *testing.T) {
 		t.Errorf("inspect of a PAUSED run lost its pause pointer:\n%s", out)
 	}
 }
+
+func TestInspectSummarizesNativeRunWithoutRawState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "pc1_inspect_native"
+	ctx := store.WithRuntimeSemantics(context.Background(), store.RuntimeSemanticsPortsV1)
+	if _, err := s.CreateRun(ctx, id, "deliver", nil); err != nil {
+		t.Fatal(err)
+	}
+	identity := store.PortExecutionIdentity{Source: "private-source-identity", Graph: "private-graph-identity", Contract: "contract", Policy: "policy", Inputs: "inputs"}
+	state := &store.PortExecution{Version: store.PortExecutionVersion, Revision: 1, Generation: 1, RootRunID: id, Identity: identity,
+		Invocations: map[string]*store.PortInvocation{"produce": {ID: "produce", Node: "produce", Attempt: 1, Status: store.PortPending,
+			Identity: store.PortExecutionIdentity{Source: "private-implementation-identity", Contract: "contract", Policy: "policy"}}},
+		Collections: map[string]*store.PortCollection{"render": {ID: "render", Node: "render", Complete: true}},
+		Products:    []string{"report"}}
+	if err := store.SavePortExecution(ctx, s, id, 0, state); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := RunInspect(InspectOptions{RunID: id, StoreDir: dir}, &Printer{Format: OutputHuman, W: &buf}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, required := range []string{"ports-v1", "Native graph", "produce", "1 pending", "render", "map 0 items complete", "Product report", "waiting", "reported"} {
+		if !strings.Contains(out, required) {
+			t.Fatalf("native summary omitted %q:\n%s", required, out)
+		}
+	}
+	if strings.Contains(out, "private-source-identity") || strings.Contains(out, "private-implementation-identity") {
+		t.Fatalf("human summary exposed technical identities:\n%s", out)
+	}
+}

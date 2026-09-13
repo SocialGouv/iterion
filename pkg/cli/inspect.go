@@ -125,6 +125,9 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 		p.KV("Name", r.Name)
 	}
 	p.KV("Workflow", r.WorkflowName)
+	if r.RuntimeSemantics != "" {
+		p.KV("Runtime semantics", r.RuntimeSemantics)
+	}
 	p.KV("Status", StatusIcon(string(r.Status))+" "+string(r.Status))
 	p.KV("Created", FormatTime(r.CreatedAt))
 	p.KV("Updated", FormatTime(r.UpdatedAt))
@@ -195,6 +198,9 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 			}
 		}
 	}
+	if r.PortExecution != nil {
+		printNativeRunSummary(p, r.PortExecution)
+	}
 
 	// Events.
 	if opts.Events || opts.Full {
@@ -238,6 +244,68 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	}
 
 	return nil
+}
+
+// A native run has PortExecution instead of a legacy Checkpoint. Show the
+// public-facing work and product status without dumping raw source identities,
+// artifact bytes or technical recovery fields into the normal human view.
+func printNativeRunSummary(p *Printer, state *store.PortExecution) {
+	p.Blank()
+	p.Header("Native graph")
+	byNode := map[string]map[store.PortInvocationStatus]int{}
+	collections := map[string][]*store.PortCollection{}
+	for _, invocation := range state.Invocations {
+		if byNode[invocation.Node] == nil {
+			byNode[invocation.Node] = map[store.PortInvocationStatus]int{}
+		}
+		byNode[invocation.Node][invocation.Status]++
+	}
+	for _, collection := range state.Collections {
+		collections[collection.Node] = append(collections[collection.Node], collection)
+		if byNode[collection.Node] == nil {
+			byNode[collection.Node] = map[store.PortInvocationStatus]int{}
+		}
+	}
+	nodes := make([]string, 0, len(byNode))
+	for node := range byNode {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	statusOrder := []store.PortInvocationStatus{store.PortPending, store.PortAdmitted, store.PortRunning, store.PortSucceeded, store.PortFailed, store.PortCanceled, store.PortUncertain}
+	for _, node := range nodes {
+		parts := make([]string, 0, len(statusOrder)+1)
+		for _, status := range statusOrder {
+			if count := byNode[node][status]; count > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", count, status))
+			}
+		}
+		sort.Slice(collections[node], func(i, j int) bool { return collections[node][i].ID < collections[node][j].ID })
+		for _, collection := range collections[node] {
+			label := "waiting"
+			if collection.Complete {
+				label = "complete"
+			}
+			parts = append(parts, fmt.Sprintf("map %d items %s", len(collection.Items), label))
+		}
+		p.KV(node, strings.Join(parts, "; "))
+	}
+	for _, name := range state.Products {
+		label := "waiting"
+		if revision := state.Exports[name]; revision != "" {
+			if publication := state.Publications[revision]; publication != nil {
+				label = "published"
+				if len(publication.Files) > 0 {
+					label += fmt.Sprintf(" (%d files)", len(publication.Files))
+				}
+			}
+		}
+		p.KV("Product "+name, label)
+	}
+	cost := fmt.Sprintf("$%.4f reported", state.Budget.Consumed.CostUSD)
+	if state.Budget.UnpricedNodes > 0 {
+		cost += fmt.Sprintf("; %d nodes have unpriced usage", state.Budget.UnpricedNodes)
+	}
+	p.KV("Usage", fmt.Sprintf("%d invocations, %d tokens, %s", state.Budget.Consumed.Iterations, state.Budget.Consumed.Tokens, cost))
 }
 
 // listRuns shows all runs in the store.

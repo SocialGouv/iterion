@@ -28,7 +28,7 @@ Syntax profiles and runtime semantics are independent.
 | Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and admitted-run continuation pass; distributed rollback outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
-| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local validation draft and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds on demand; Studio distinguishes mapped, whole-array and broadcast bindings and shows declared item bounds/unknown paid cost. Direct Copi editing, runtime cost visibility and composition outstanding |
+| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local validation draft and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect summarizes native invocation/map/product status and reported usage. Direct Copi editing, full runtime cost visibility and composition outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
@@ -175,6 +175,11 @@ Syntax profiles and runtime semantics are independent.
   graph; a first native launch without state remains a launch. The focused
   regression and the full `pkg/runner` suite pass. This guards the status
   switch, not actual delivery by a mixed fleet on the shared consumer.
+- `TestInspectSummarizesNativeRunWithoutRawState` verifies human CLI inspection
+  names the native semantics, pending nodes, a complete zero-item map, waiting
+  products and reported usage without printing technical source identities.
+  JSON inspection still carries the complete persisted run for technical
+  analysis. The focused CLI checks and `go vet` pass.
 - The dispatcher's local orphan promotion now uses `PortExecution` as a
   recovery point, matching the Studio service; its native regression and
   full `pkg/dispatcher` suite pass. The runner's workspace-reset audit also
