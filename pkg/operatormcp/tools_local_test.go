@@ -135,6 +135,60 @@ workflow main:
 	}
 }
 
+func TestLocalContractSpecLayersRegistryForAuthoring(t *testing.T) {
+	s := newTestServer(t)
+	text, isErr := call(t, s, "local_contract_spec", `{}`)
+	if isErr {
+		t.Fatalf("public spec errored: %s", text)
+	}
+	var public struct {
+		RuntimeSemantics string `json:"runtime_semantics"`
+		Kinds            []struct {
+			Name       string `json:"name"`
+			Properties []struct {
+				Name string `json:"name"`
+			} `json:"properties"`
+		} `json:"kinds"`
+		Criteria []struct {
+			Name string `json:"name"`
+		} `json:"criteria"`
+	}
+	if err := json.Unmarshal([]byte(text), &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.RuntimeSemantics != "ports-v1" || len(public.Criteria) == 0 || len(public.Kinds) == 0 {
+		t.Fatalf("missing native authoring contract: %+v", public)
+	}
+	seen := map[string]bool{}
+	for _, kind := range public.Kinds {
+		seen[kind.Name] = true
+		if kind.Name == "port_policy" || kind.Name == "tool" {
+			t.Fatalf("technical kind leaked into default public view: %s", kind.Name)
+		}
+		if kind.Name == "workflow" {
+			for _, property := range kind.Properties {
+				if property.Name == "entry" || property.Name == "budget" {
+					t.Fatalf("technical workflow property leaked: %s", property.Name)
+				}
+			}
+		}
+	}
+	if !seen["contract.port"] || !seen["graph.bindings"] || !seen["workflow"] {
+		t.Fatalf("public grammar incomplete: %+v", seen)
+	}
+	text, isErr = call(t, s, "local_contract_spec", `{"kind":"tool"}`)
+	if isErr || !strings.Contains(text, `"name":"command"`) || strings.Contains(text, `"criteria"`) {
+		t.Fatalf("technical kind lookup failed: %s", text)
+	}
+	text, isErr = call(t, s, "local_contract_spec", `{"kind":"workflow"}`)
+	if isErr || !strings.Contains(text, `"name":"entry"`) {
+		t.Fatalf("full workflow lookup failed: %s", text)
+	}
+	if _, isErr = call(t, s, "local_contract_spec", `{"kind":"not_a_kind"}`); !isErr {
+		t.Fatal("unknown DSL kind was accepted")
+	}
+}
+
 func TestLocalRunsListAndGet(t *testing.T) {
 	s := newTestServer(t)
 	st, err := s.store()

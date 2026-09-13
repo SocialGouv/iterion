@@ -19,6 +19,19 @@ import (
 func localTools() []Tool {
 	return []Tool{
 		{
+			Name:        "local_contract_spec",
+			Description: "Read the registry-backed ports-v1 authoring contract. With no arguments, returns only public contract and graph syntax plus executable criteria; pass kind (for example tool, workflow or port_policy) to inspect one technical DSL kind on demand. Read this before authoring a native workflow, then use local_validate for source-located diagnostics.",
+			ReadOnly:    true,
+			InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "kind": {"type": "string", "description": "Optional DSL kind whose complete syntax to inspect; omit for public contracts and graph only."}
+  },
+  "additionalProperties": false
+}`),
+			handler: handleLocalContractSpec,
+		},
+		{
 			Name:        "local_validate",
 			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns structured diagnostics; native workflows expose public contracts, typed ports, bindings and products in public_view without technical settings. Legacy workflows expose an explicitly incomplete conversion_draft with candidate inputs and unresolved mappings, effects and guarantees. valid:false is a normal outcome, not a tool error.",
 			ReadOnly:    true,
