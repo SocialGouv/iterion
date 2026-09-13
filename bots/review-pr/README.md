@@ -1,5 +1,14 @@
 # review_pr — Revi
 
+Reviews open with one sentence when no issue is retained, or a compact count
+when findings remain. Each inline finding states the trigger, impact and fix
+in 2–3 sentences where possible, without truncating evidence or replacement
+code. The summary shows only ticket gaps and questions that need a maintainer
+decision. Unverifiable ticket context, run telemetry, the reviewed scope, topology
+and fixer instructions stay in the collapsed details. If an anchor is missing
+or stale, the complete finding and replacement remain readable in the summary.
+Editorial brevity does not change severity thresholds, finding caps or gates.
+
 Read-only **code reviewer** with an optional cross-family dual mode. Revi
 reviews the changes on the current branch and *publishes* the findings — it
 never edits, fixes, or commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
@@ -83,7 +92,8 @@ finding carries a concrete replacement, plus a summary comment. The
 board + report still run; the PR review is additive.
 
 The review ends with a collapsed **Détails du run IA · Iterion** block. It
-shows the run id and cumulative token total at publication, plus each executed
+shows the run id, linked to the instance's normal run page (login and run access
+rights still apply), and cumulative token total at publication, plus each executed
 review/synthesis node's served model, harness, requested reasoning effort and
 tokens. Values come from engine metadata; absent telemetry is marked unavailable.
 Effort follows the node's `ITERION_VIBE_EFFORT_*` setting/default and describes

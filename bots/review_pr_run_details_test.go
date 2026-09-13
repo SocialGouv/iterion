@@ -18,13 +18,15 @@ func TestReviewPRRunDetails(t *testing.T) {
 	t.Setenv("ITERION_VIBE_EFFORT_CLAUDE", "")
 	t.Setenv("ITERION_VIBE_EFFORT_EMIT", "")
 	for _, tc := range []struct {
-		name   string
-		refs   map[string]string
-		want   []string
-		absent []string
+		name         string
+		endpointPath string
+		refs         map[string]string
+		want         []string
+		absent       []string
 	}{
 		{
-			name: "served model and harness, total includes other run work",
+			name:         "served model and harness, total includes other run work",
+			endpointPath: "/api/v1/forge/publish-review?unused=private#fragment",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "225800",
 				"input.ai_reviewer_gpt_model":   "openai/served-model",
@@ -35,7 +37,19 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_converge_tokens":      "20000",
 			},
 			want:   []string{"<code>run-123</code>", "**225 800**", "| Revue GPT | openai/served-model | claw | xhigh | 205 000 |", "| Synthèse | openai/summary-model | another-harness | medium | 20 000 |"},
-			absent: []string{"Revue Claude", "glance", "**225 000**"},
+			absent: []string{"Revue Claude", "glance", "**225 000**", "private", "fragment", "test-token"},
+		},
+		{
+			name:         "instance public base path is preserved",
+			endpointPath: "/iterion/api/v1/forge/publish-review",
+			refs:         map[string]string{"run.id": "run-123"},
+		},
+		{
+			name:         "unknown callback path leaves a plain identifier",
+			endpointPath: "/custom-publisher",
+			refs:         map[string]string{"run.id": "run-123"},
+			want:         []string{"Run : <code>run-123</code>"},
+			absent:       []string{"<a href="},
 		},
 		{
 			name: "both reviewers and a measured zero",
@@ -54,7 +68,7 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_gpt_tokens": "-1",
 			},
 			want:   []string{"**indisponible**", "&lt;details&gt;&#124;unsafe", "&lt;b&gt;model&lt;/b&gt;&#124;extra row", "| indisponible | xhigh | indisponible |"},
-			absent: []string{"{{run.tokens}}", "<b>model</b>", "**0**"},
+			absent: []string{"{{run.tokens}}", "<b>model</b>", "**0**", "<a href="},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,8 +86,12 @@ func TestReviewPRRunDetails(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"published": true, "comments_posted": len(got.Comments)})
 			}))
 			defer srv.Close()
+			endpointPath := tc.endpointPath
+			if endpointPath == "" {
+				endpointPath = "/api/v1/forge/publish-review"
+			}
 			refs := map[string]string{
-				"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test-token",
+				"vars.forge_publish_url": srv.URL + endpointPath, "vars.forge_publish_token": "test-token",
 				"input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono",
 				"input.findings":    `[{"file":"a.go","line":1,"title":"A real finding","severity":"high"}]`,
 				"vars.gate_enabled": "true", "vars.gate_severity": "high",
@@ -94,6 +112,13 @@ func TestReviewPRRunDetails(t *testing.T) {
 			}
 			if strings.Count(got.Summary, "<details>") != 1 || strings.Contains(got.Summary, "<details open") || !strings.HasSuffix(got.Summary, "</details>") {
 				t.Fatalf("details must be collapsed and last: %s", got.Summary)
+			}
+			if tc.refs["run.id"] == "run-123" && endpointPath != "/custom-publisher" {
+				basePath, _, _ := strings.Cut(endpointPath, "/api/v1/forge/publish-review")
+				want := `<a href="` + srv.URL + basePath + `/runs/run-123"><code>run-123</code></a>`
+				if !strings.Contains(got.Summary, want) {
+					t.Errorf("missing authenticated run link %q in %s", want, got.Summary)
+				}
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(got.Summary, want) {
