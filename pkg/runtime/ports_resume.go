@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -187,6 +188,18 @@ func (c *portCoordinator) recoverInterrupted(ctx context.Context) error {
 			}
 		}
 		decision := invocation.RecoveryDecision != "" && invocation.RecoveryAttempt == invocation.Attempt
+		if !idempotent && !decision && instance != nil && instance.Policy.Identity == invocation.Identity.Policy {
+			verified, evidence, err := c.verifyInterruptedEffects(ctx, next, instance, invocation)
+			if err != nil {
+				unresolved = errors.Join(unresolved, fmt.Errorf("%w: %s attempt %d: %v", ErrPortEffectUncertain, id, invocation.Attempt, err))
+				continue
+			}
+			if verified {
+				invocation.RecoveryDecision = evidence
+				invocation.RecoveryAttempt = invocation.Attempt
+				decision = true
+			}
+		}
 		if !idempotent && !decision {
 			unresolved = errors.Join(unresolved, fmt.Errorf("%w: %s attempt %d; verify the external outcome and record a decision for this exact attempt", ErrPortEffectUncertain, id, invocation.Attempt))
 			continue
@@ -210,6 +223,46 @@ func (c *portCoordinator) recoverInterrupted(ctx context.Context) error {
 		}
 	}
 	return unresolved
+}
+
+func (c *portCoordinator) verifyInterruptedEffects(ctx context.Context, state *store.PortExecution, instance *ir.PortInstance, invocation *store.PortInvocation) (bool, string, error) {
+	for _, effect := range instance.Policy.Effects {
+		if effect.Recovery != "verify" && effect.Recovery != "idempotent" {
+			return false, "", fmt.Errorf("effect %q requires an attempt-bound operator decision", effect.Name)
+		}
+	}
+	verifier, ok := c.engine.executor.(PortEffectVerifier)
+	if !ok {
+		return false, "", fmt.Errorf("executor has no effect verifier")
+	}
+	inputs, err := decodePortInputs(state, instance, invocation.Inputs, invocation.MapIndex)
+	if err != nil {
+		return false, "", fmt.Errorf("decode captured effect inputs: %w", err)
+	}
+	var evidence []string
+	for _, effect := range instance.Policy.Effects {
+		switch effect.Recovery {
+		case "idempotent":
+			continue
+		case "verify":
+			result, err := verifier.VerifyPortEffect(ctx, PortEffectVerification{
+				Verifier: effect.Verifier, Effect: effect.Name, RunID: c.rs.runID,
+				InvocationID: invocation.ID, Attempt: invocation.Attempt, Inputs: inputs,
+			})
+			if err != nil {
+				return false, "", fmt.Errorf("verifier %q for effect %q: %w", effect.Verifier, effect.Name, err)
+			}
+			proof := strings.TrimSpace(result.Evidence)
+			if !result.NotApplied || proof == "" || len(proof) > 1024 || strings.ContainsAny(proof, "\r\n") {
+				return false, "", fmt.Errorf("verifier %q did not prove effect %q absent with bounded evidence", effect.Verifier, effect.Name)
+			}
+			evidence = append(evidence, effect.Name+": "+proof)
+		}
+	}
+	if len(evidence) == 0 {
+		return false, "", nil
+	}
+	return true, "verifier confirmed not applied: " + strings.Join(evidence, "; "), nil
 }
 
 func (c *portCoordinator) reconcilePortIdentity(ctx context.Context, fresh *store.PortExecution) error {

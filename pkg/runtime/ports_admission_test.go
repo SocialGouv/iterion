@@ -104,7 +104,104 @@ func portsEffectSource(recovery string) string {
 	source = strings.Replace(source, "contract Collect:", "  effects:\n    request:\n      description: \"External fixture request\"\n      paid: false\ncontract Collect:", 1)
 	source = strings.Replace(source, "contract Render:", "  effects:\n    request:\n      description: \"External fixture request\"\n      paid: false\ncontract Render:", 1)
 	source = strings.Replace(source, "  max_map_items: 4", "  max_map_items: 4\n  effects:\n    request:\n      recovery: "+recovery, 1)
+	if recovery == "verify" {
+		source = strings.Replace(source, "      recovery: verify", "      recovery: verify\n      verifier: \"check_request\"", 1)
+	}
 	return source
+}
+
+type portsVerifyingExecutor struct {
+	portsExecutorFunc
+	verify func(PortEffectVerification) (PortEffectVerificationResult, error)
+}
+
+func (e *portsVerifyingExecutor) VerifyPortEffect(_ context.Context, request PortEffectVerification) (PortEffectVerificationResult, error) {
+	return e.verify(request)
+}
+
+func testPortsEngineVerifiedEffectReplay(t *testing.T, newStore portsTestStoreFactory) {
+	source := portsEffectSource("verify")
+	var calls, checks atomic.Int32
+	noVerifier := portsExecutorFunc(func(context.Context, ir.Node, map[string]any) (map[string]any, error) {
+		calls.Add(1)
+		return nil, errors.New("must not execute")
+	})
+	engine, _ := portsTestEngine(t, newStore, source, noVerifier)
+	if err := engine.Run(portsTestContext(t), "pc1_missing_verifier", map[string]any{"items": []any{"a"}}); err == nil || !strings.Contains(err.Error(), "cannot verify effects") {
+		t.Fatalf("unimplemented verifier was admitted: %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("effect executed before a verifier capability check")
+	}
+	executor := &portsVerifyingExecutor{
+		portsExecutorFunc: func(_ context.Context, _ ir.Node, _ map[string]any) (map[string]any, error) {
+			if calls.Add(1) == 1 {
+				return nil, errors.New("connection lost after effect dispatch")
+			}
+			return map[string]any{"text": "verified replay"}, nil
+		},
+		verify: func(request PortEffectVerification) (PortEffectVerificationResult, error) {
+			checks.Add(1)
+			if request.Verifier != "check_request" || request.Effect != "request" || request.RunID != "pc1_verified_effect" ||
+				request.InvocationID != "@render[0]" || request.Attempt != 1 || request.Inputs["item"] != "a" {
+				t.Fatalf("verifier did not receive attempt-bound inputs: %+v", request)
+			}
+			return PortEffectVerificationResult{NotApplied: true, Evidence: "fixture ledger has no request receipt"}, nil
+		},
+	}
+	engine, s := portsTestEngine(t, newStore, source, executor)
+	ctx := portsTestContext(t)
+	if err := engine.Run(ctx, "pc1_verified_effect", map[string]any{"items": []any{"a"}}); err == nil {
+		t.Fatal("fixture external failure did not stop the run")
+	}
+	r := portsTestRun(t, s, "pc1_verified_effect")
+	if r.PortExecution.Invocations["@render[0]"].Status != store.PortUncertain {
+		t.Fatal("failed effect should be uncertain before verification")
+	}
+	resume := New(portsTestWorkflow(t, source), s, executor, WithWorkDir(engine.workDir), WithSandboxOverride("none"))
+	if err := resume.Resume(ctx, "pc1_verified_effect", nil); err != nil {
+		t.Fatal(err)
+	}
+	r = portsTestRun(t, s, "pc1_verified_effect")
+	invocation := r.PortExecution.Invocations["@render[0]"]
+	if calls.Load() != 2 || checks.Load() != 1 || invocation.Attempt != 2 ||
+		!strings.Contains(invocation.RecoveryDecision, "fixture ledger has no request receipt") ||
+		portsTestExport(t, r, "results") == nil {
+		t.Fatalf("verified attempt did not replay once: calls=%d checks=%d invocation=%+v", calls.Load(), checks.Load(), invocation)
+	}
+	for _, scenario := range []struct {
+		name   string
+		result PortEffectVerificationResult
+	}{
+		{name: "unknown", result: PortEffectVerificationResult{NotApplied: false, Evidence: "receipt may exist"}},
+		{name: "no_evidence", result: PortEffectVerificationResult{NotApplied: true}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var executions atomic.Int32
+			unsafeExecutor := &portsVerifyingExecutor{
+				portsExecutorFunc: func(context.Context, ir.Node, map[string]any) (map[string]any, error) {
+					executions.Add(1)
+					return nil, errors.New("external outcome unknown")
+				},
+				verify: func(PortEffectVerification) (PortEffectVerificationResult, error) {
+					return scenario.result, nil
+				},
+			}
+			unsafeEngine, unsafeStore := portsTestEngine(t, newStore, source, unsafeExecutor)
+			const runID = "pc1_unverified_effect"
+			if err := unsafeEngine.Run(ctx, runID, map[string]any{"items": []any{"a"}}); err == nil {
+				t.Fatal("fixture effect failure did not stop the run")
+			}
+			unsafeResume := New(portsTestWorkflow(t, source), unsafeStore, unsafeExecutor,
+				WithWorkDir(unsafeEngine.workDir), WithSandboxOverride("none"))
+			if err := unsafeResume.Resume(ctx, runID, nil); !errors.Is(err, ErrPortEffectUncertain) {
+				t.Fatalf("unproven effect was replayed: %v", err)
+			}
+			if executions.Load() != 1 || portsTestRun(t, unsafeStore, runID).PortExecution.Invocations["@render[0]"].Status != store.PortUncertain {
+				t.Fatal("unproven effect changed state or executed twice")
+			}
+		})
+	}
 }
 
 func testPortsEngineUncertainEffectRequiresAttemptDecision(t *testing.T, newStore portsTestStoreFactory) {

@@ -20,6 +20,28 @@ type PortBudgetEstimator interface {
 	EstimatePortExecution(context.Context, ir.Node, map[string]any) (store.PortBudgetAmount, error)
 }
 
+// PortEffectVerifier is an optional executor capability for a declared
+// recovery: verify policy. A verifier may authorize replay only by proving
+// that the named effect did not happen for this exact invocation attempt.
+// Applied, unknown, erroneous and evidence-free outcomes stay uncertain.
+type PortEffectVerifier interface {
+	VerifyPortEffect(context.Context, PortEffectVerification) (PortEffectVerificationResult, error)
+}
+
+type PortEffectVerification struct {
+	Verifier     string
+	Effect       string
+	RunID        string
+	InvocationID string
+	Attempt      int
+	Inputs       map[string]any
+}
+
+type PortEffectVerificationResult struct {
+	NotApplied bool
+	Evidence   string
+}
+
 func (c *portCoordinator) admitReady(ctx context.Context) (bool, error) {
 	if c.limit > 0 && len(c.active) >= c.limit {
 		return false, nil
@@ -38,6 +60,13 @@ func (c *portCoordinator) admitReady(ctx context.Context) (bool, error) {
 		inputs, err := decodePortInputs(c.state, instance, bindings, invocation.MapIndex)
 		if err != nil {
 			return false, err
+		}
+		for _, effect := range instance.Policy.Effects {
+			if effect.Recovery == "verify" {
+				if _, ok := c.engine.executor.(PortEffectVerifier); !ok {
+					return false, fmt.Errorf("runtime: native node %s declares verifier %q but its executor cannot verify effects", instance.ID, effect.Verifier)
+				}
+			}
 		}
 		reservation, available, err := c.reserveBudget(ctx, instance, inputs)
 		if err != nil {

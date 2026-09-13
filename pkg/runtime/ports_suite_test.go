@@ -42,6 +42,7 @@ func runPortsEngineSuite(t *testing.T, factory portsTestStoreFactory) {
 		{"ExactNumericInputs", testPortsEngineExactNumericInputs},
 		{"UncertainEffectRequiresAttemptDecision", testPortsEngineUncertainEffectRequiresAttemptDecision},
 		{"IdempotentEffectCanResume", testPortsEngineIdempotentEffectCanResume},
+		{"VerifiedEffectReplay", testPortsEngineVerifiedEffectReplay},
 		{"InterruptedCommitRecovery", testPortsEngineInterruptedCommitRecovery},
 		{"CrossedDAG", testPortsEngineCrossedDAG},
 		{"CorrectsProducerBeforePublication", testPortsEngineCorrectsProducerBeforePublication},
