@@ -395,7 +395,18 @@ jobs:
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
-            ./pkg/forge/... ./pkg/trigger/... ./pkg/runtime/...
+            ./pkg/forge/... ./pkg/trigger/...
+
+      - name: Native runtime Mongo integration
+        # The ordinary test job runs the full runtime package. This Mongo
+        # job selects every native Mongo suite so its 5m per-package timeout
+        # is spent on replica-set behavior, not unrelated legacy fixtures.
+        env:
+          ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+          ITERION_TEST_REQUIRED: "1"
+        run: |
+          go test -mod=vendor -v -timeout 5m ./pkg/runtime/... \
+            -run '^TestPorts(EngineMongo|EngineDefaultOffMongo|EngineRollbackPreservesAcceptedMongoRun|FileCaptureMongo)$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the

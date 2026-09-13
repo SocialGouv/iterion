@@ -44,10 +44,35 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 	if err := RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, native); err != nil {
 		t.Fatal(err)
 	}
+	admittedCtx, err := AdmittedContext(ctx, s, ir.RuntimeSemanticsPortsV1, native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(store.WithRuntimeSemantics(admittedCtx, ir.RuntimeSemanticsPortsV1), native, "accepted", nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Disable(ctx, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, native); !errors.Is(err, store.ErrPortActivation) {
 		t.Fatalf("rollback allowed native launch: %v", err)
+	}
+	run, err := s.LoadRun(ctx, native)
+	if err != nil || run.PortLaunch == nil || RequireExistingAdmission(s, run) != nil {
+		t.Fatalf("accepted run lost proof after rollback: %+v %v", run, err)
+	}
+	tampered := *run
+	tampered.PortLaunch = nil
+	if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("bare native ID counted as prior admission: %v", err)
+	}
+	changed := *run.PortLaunch
+	changed.CapabilityDigest = strings.Repeat("0", 64)
+	tampered.PortLaunch = &changed
+	if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("changed binary capability retained admission: %v", err)
+	}
+	if err := s.SaveRun(ctx, &tampered); !errors.Is(err, store.ErrRunSemantics) {
+		t.Fatalf("persisted native admission was mutable: %v", err)
 	}
 }

@@ -257,8 +257,21 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		compiled = &launchCompilation{wf, hash, launchBundle}
 	}
 	wf, hash, launchBundle := compiled.wf, compiled.hash, compiled.bundle
-	if err := portsactivation.RequireLaunch(parent, s.store, wf.RuntimeSemantics, runID); err != nil {
-		return nil, err
+	if precreate || wf.RuntimeSemantics == "" {
+		if err := portsactivation.RequireLaunch(parent, s.store, wf.RuntimeSemantics, runID); err != nil {
+			return nil, err
+		}
+	} else {
+		accepted, err := s.store.LoadRun(parent, runID)
+		if err != nil {
+			return nil, err
+		}
+		if accepted.RuntimeSemantics != wf.RuntimeSemantics {
+			return nil, fmt.Errorf("%w: queued run and source use different interpreters", store.ErrRunSemantics)
+		}
+		if err := portsactivation.RequireExistingAdmission(s.store, accepted); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 		return nil, err
@@ -781,7 +794,13 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
-		createCtx := context.Background()
+		createCtx, admissionErr := portsactivation.AdmittedContext(context.Background(), s.store, wf.RuntimeSemantics, runID)
+		if admissionErr != nil {
+			s.manager.Deregister(runID)
+			_ = lock.Unlock()
+			s.dropRunLog(runID)
+			return nil, fmt.Errorf("runview: admit run: %w", admissionErr)
+		}
 		if wf.RuntimeSemantics != "" {
 			createCtx = store.WithRuntimeSemantics(createCtx, wf.RuntimeSemantics)
 		}

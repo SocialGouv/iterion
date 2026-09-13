@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -331,7 +332,10 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	for k, v := range spec.Vars {
 		inputs[k] = v
 	}
-	createCtx := context.Background()
+	createCtx, err := portsactivation.AdmittedContext(parent, s.store, wf.RuntimeSemantics, runID)
+	if err != nil {
+		return nil, err
+	}
 	if wf.RuntimeSemantics != "" {
 		createCtx = store.WithRuntimeSemantics(createCtx, wf.RuntimeSemantics)
 	}

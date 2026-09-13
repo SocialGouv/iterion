@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -72,15 +71,12 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		if err := e.checkNativeSemanticIdentity(runID, nil); err != nil {
 			return err
 		}
-		activationScope := store.PortActivationLocal
-		if e.store.Root() == "" {
-			activationScope = store.PortActivationDistributed
-		}
-		if err := store.RequirePortActivationCapability(ctx, e.store, activationScope, portsactivation.CapabilityDigest(activationScope), time.Now()); err != nil {
-			return err
-		}
-		if current, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
+		current, loadErr := e.store.LoadRun(ctx, runID)
+		if loadErr == nil {
 			if err := e.checkNativeSemanticIdentity(runID, current); err != nil {
+				return err
+			}
+			if err := portsactivation.RequireExistingAdmission(e.store, current); err != nil {
 				return err
 			}
 			if current.PortExecution != nil {
@@ -88,6 +84,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			}
 		} else if !errors.Is(loadErr, store.ErrRunNotFound) {
 			return loadErr
+		} else {
+			// A pre-created queued/running record was admitted by its launch
+			// authority. Rollback stops only new launches; work already
+			// accepted before rollback must still be claimable.
+			ctx, err = portsactivation.AdmittedContext(ctx, e.store, e.workflow.RuntimeSemantics, runID)
+			if err != nil {
+				return err
+			}
 		}
 		inputs, err = e.nativeRootInputs(inputs)
 		if err != nil {
@@ -288,6 +292,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 	if existing, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
 		if e.workflow.RuntimeSemantics != "" || store.IsNativeRunID(runID) {
 			if err := e.checkNativeSemanticIdentity(runID, existing); err != nil {
+				return nil, err
+			}
+			if err := portsactivation.RequireExistingAdmission(e.store, existing); err != nil {
 				return nil, err
 			}
 		}

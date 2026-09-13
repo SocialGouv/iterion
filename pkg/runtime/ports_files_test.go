@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -261,7 +262,11 @@ func runPortsFileCapture(t *testing.T, factory portsTestStoreFactory) {
 		engine, s := portsTestEngine(t, factory, portsAttachmentSource, executor)
 		ctx := portsTestContext(t)
 		const id = "pc1_input_file"
-		if _, err := s.CreateRun(store.WithRuntimeSemantics(ctx, ir.RuntimeSemanticsPortsV1), id, "forward", nil); err != nil {
+		createCtx, err := portsactivation.AdmittedContext(ctx, s, ir.RuntimeSemanticsPortsV1, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CreateRun(store.WithRuntimeSemantics(createCtx, ir.RuntimeSemanticsPortsV1), id, "forward", nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.WriteAttachment(ctx, id, store.AttachmentRecord{Name: "source", OriginalFilename: "source.txt", MIME: "text/plain"}, strings.NewReader("attached\n")); err != nil {

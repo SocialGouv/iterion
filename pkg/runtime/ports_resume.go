@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
@@ -19,6 +20,9 @@ var ErrPortEffectUncertain = errors.New("runtime: native effect outcome requires
 // captured identity before admission, answers, workspace setup or any claim.
 // The same Engine infrastructure then restores the execution environment.
 func (e *Engine) resumePortRun(ctx context.Context, r *store.Run, answers map[string]any) (resultErr error) {
+	if err := portsactivation.RequireExistingAdmission(e.store, r); err != nil {
+		return err
+	}
 	if len(answers) != 0 {
 		return fmt.Errorf("runtime: native resume does not accept legacy gate answers")
 	}

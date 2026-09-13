@@ -1813,7 +1813,8 @@ func credentialTierForSlot(bundle secrets.RunBundle, grant *credpool.Grant, slot
 // server's auth middleware) and propagate to both the persisted Run
 // document and the NATS message so the runner can verify isolation.
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (pos int, retErr error) {
-	if err := portsactivation.RequireLaunch(ctx, p.store, wf.RuntimeSemantics, runID); err != nil {
+	portLaunch, err := portsactivation.AuthorizeLaunch(ctx, p.store, wf.RuntimeSemantics, runID)
+	if err != nil {
 		return 0, err
 	}
 	// 1. Build the run doc (status=queued + workflow_hash + file_path so
@@ -1890,6 +1891,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if wf.RuntimeSemantics != "" {
 		r.RuntimeSemantics = wf.RuntimeSemantics
 		r.FormatVersion = store.NativeRunFormatVersion
+		r.PortLaunch = portLaunch
 	}
 	// Resolve the same versioned context the local launch authority stamps.
 	// It is persisted before the queued row is published so admission on the
@@ -2019,6 +2021,18 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	queueVersion, err := queue.SchemaVersionForSemantics(wf.RuntimeSemantics)
 	if err != nil {
 		return 0, err
+	}
+	if wf.RuntimeSemantics != "" {
+		// Credentials and contribution resolution can outlive a short fleet
+		// proof. Bind the persisted queued row to admission verified at its
+		// actual publication boundary, before any queue message exists.
+		portLaunch, err = portsactivation.AuthorizeLaunch(ctx, p.store, wf.RuntimeSemantics, runID)
+		if err != nil {
+			return 0, err
+		}
+		r.PortLaunch = portLaunch
+		r.CreatedAt, r.UpdatedAt = portLaunch.AdmittedAt, portLaunch.AdmittedAt
+		r.QueuedAt = &r.CreatedAt
 	}
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)

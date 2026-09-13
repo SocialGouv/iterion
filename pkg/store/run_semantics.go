@@ -64,6 +64,11 @@ func RunBlobPrefix(id string) string {
 }
 
 type runtimeSemanticsKey struct{}
+type portLaunchKey struct{}
+
+func WithPortLaunchAdmission(ctx context.Context, admission *PortLaunchAdmission) context.Context {
+	return context.WithValue(ctx, portLaunchKey{}, admission)
+}
 
 // WithRuntimeSemantics carries the explicit creation contract through the
 // existing RunStore creation seam. A reserved ID alone is never authorization
@@ -78,6 +83,10 @@ func StampRunSemantics(ctx context.Context, r *Run) error {
 	r.RuntimeSemantics = semantics
 	if IsNativeRunID(r.ID) {
 		r.FormatVersion = NativeRunFormatVersion
+		if admission, _ := ctx.Value(portLaunchKey{}).(*PortLaunchAdmission); admission != nil {
+			copy := *admission
+			r.PortLaunch = &copy
+		}
 	}
 	return ValidateRunSemantics(r)
 }
@@ -98,6 +107,11 @@ func ValidateRunSemantics(r *Run) error {
 		}
 	}
 	if IsNativeRunID(r.ID) {
+		if r.PortLaunch != nil {
+			if err := r.PortLaunch.Validate(); err != nil {
+				return err
+			}
+		}
 		if r.PortExecution != nil && r.RuntimeSemantics != RuntimeSemanticsPortsV1 {
 			return fmt.Errorf("store: adapter cannot carry a native coordinator: %w", ErrRunSemantics)
 		}
@@ -113,7 +127,7 @@ func ValidateRunSemantics(r *Run) error {
 			(r.RuntimeSemantics != RuntimeSemanticsPortsV1 && r.RuntimeSemantics != RuntimeSemanticsLegacyAdapterV1) {
 			return fmt.Errorf("store: native run %s requires explicit supported semantics and format: %w", r.ID, ErrRunSemantics)
 		}
-	} else if r.RuntimeSemantics != "" || r.PortExecution != nil {
+	} else if r.RuntimeSemantics != "" || r.PortExecution != nil || r.PortLaunch != nil {
 		return fmt.Errorf("store: run %s requires a native ID for %s: %w", r.ID, r.RuntimeSemantics, ErrRunSemantics)
 	}
 	return nil
@@ -142,10 +156,22 @@ func CheckRunSemanticIdentity(current, next *Run) error {
 		(IsNativeRunID(current.ID) && current.FormatVersion != next.FormatVersion) {
 		return fmt.Errorf("store: cannot change semantics of run %s: %w", current.ID, ErrRunSemantics)
 	}
+	if IsNativeRunID(current.ID) && !samePortLaunchAdmission(current.PortLaunch, next.PortLaunch) {
+		return fmt.Errorf("store: cannot change native admission of run %s: %w", current.ID, ErrRunSemantics)
+	}
 	if IsNativeRunID(current.ID) && current.CASVersion != next.CASVersion {
 		return fmt.Errorf("store: run %s changed during native update: %w", current.ID, ErrRunConflict)
 	}
 	return checkPortExecutionTransition(current.PortExecution, next.PortExecution)
+}
+
+func samePortLaunchAdmission(a, b *PortLaunchAdmission) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Scope == b.Scope && a.ProofDigest == b.ProofDigest &&
+		a.CapabilityDigest == b.CapabilityDigest && a.ActivationRevision == b.ActivationRevision &&
+		a.AdmittedAt.Equal(b.AdmittedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
 }
 
 func (s *FilesystemRunStore) guardNativeRun(id string) error {

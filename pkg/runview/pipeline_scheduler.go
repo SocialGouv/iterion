@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -23,15 +24,25 @@ const pipelineSchedulerInterval = 5 * time.Second
 // entry still starts the run later (the engine creates the doc on pickup).
 func (s *Service) enqueuePipeline(parent context.Context, runID string, spec LaunchSpec, position int) (*LaunchResult, error) {
 	if qc := store.AsQueuedRunCreator(s.store); qc != nil {
-		wfName := ""
-		if wf, _, _, cErr := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); cErr == nil {
-			wfName = wf.Name
-			if wf.RuntimeSemantics != "" {
-				parent = store.WithRuntimeSemantics(parent, wf.RuntimeSemantics)
-			}
-		}
-		created, err := qc.CreateQueuedRun(parent, runID, wfName, spec.FilePath, spec.BotID, varsToInputs(spec.Vars))
+		wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 		if err != nil {
+			s.pipelineQueue.dropQueued(runID)
+			return nil, err
+		}
+		createCtx, err := portsactivation.AdmittedContext(parent, s.store, wf.RuntimeSemantics, runID)
+		if err != nil {
+			s.pipelineQueue.dropQueued(runID)
+			return nil, err
+		}
+		if wf.RuntimeSemantics != "" {
+			createCtx = store.WithRuntimeSemantics(createCtx, wf.RuntimeSemantics)
+		}
+		created, err := qc.CreateQueuedRun(createCtx, runID, wf.Name, spec.FilePath, spec.BotID, varsToInputs(spec.Vars))
+		if err != nil {
+			if wf.RuntimeSemantics != "" {
+				s.pipelineQueue.dropQueued(runID)
+				return nil, fmt.Errorf("runview: persist native queued run: %w", err)
+			}
 			// The FIFO entry is then memory-only: rebuildPipelineQueue reads
 			// the store on restart, so this queued launch is LOST if the
 			// server restarts before a slot frees.

@@ -39,6 +39,28 @@ type PortActivation struct {
 	ExpiresAt              time.Time `json:"expires_at" bson:"expires_at"`
 }
 
+// PortLaunchAdmission is the immutable authorization observed when a native
+// run was created. It lets a queued or pre-created run continue after the
+// operator disables new launches, without treating a bare native ID as proof.
+type PortLaunchAdmission struct {
+	Scope              string    `json:"scope" bson:"scope"`
+	ProofDigest        string    `json:"proof_digest" bson:"proof_digest"`
+	CapabilityDigest   string    `json:"capability_digest" bson:"capability_digest"`
+	ActivationRevision uint64    `json:"activation_revision" bson:"activation_revision"`
+	AdmittedAt         time.Time `json:"admitted_at" bson:"admitted_at"`
+	ExpiresAt          time.Time `json:"expires_at" bson:"expires_at"`
+}
+
+func (a *PortLaunchAdmission) Validate() error {
+	if a == nil || (a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) ||
+		a.ActivationRevision == 0 || len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
+		len(a.CapabilityDigest) != 64 || strings.Trim(a.CapabilityDigest, "0123456789abcdef") != "" ||
+		a.AdmittedAt.IsZero() || !a.AdmittedAt.Before(a.ExpiresAt) {
+		return fmt.Errorf("%w: malformed native run admission", ErrPortActivation)
+	}
+	return nil
+}
+
 func (a *PortActivation) Validate() error {
 	if a == nil || a.Version != PortActivationVersion || a.Revision == 0 ||
 		(a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) ||
@@ -79,21 +101,26 @@ func RequirePortActivation(ctx context.Context, s RunStore, scope string, now ti
 }
 
 func RequirePortActivationCapability(ctx context.Context, s RunStore, scope, capabilityDigest string, now time.Time) error {
+	_, err := ActivePortActivationCapability(ctx, s, scope, capabilityDigest, now)
+	return err
+}
+
+func ActivePortActivationCapability(ctx context.Context, s RunStore, scope, capabilityDigest string, now time.Time) (*PortActivation, error) {
 	a := AsPortActivationStore(s)
 	if a == nil {
-		return fmt.Errorf("%w: store has no activation capability", ErrPortActivation)
+		return nil, fmt.Errorf("%w: store has no activation capability", ErrPortActivation)
 	}
 	record, err := a.LoadPortActivation(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if record == nil || !record.Enabled || record.Scope != scope || !now.Before(record.ExpiresAt) {
-		return fmt.Errorf("%w: no active %s proof", ErrPortActivation, scope)
+		return nil, fmt.Errorf("%w: no active %s proof", ErrPortActivation, scope)
 	}
 	if record.CapabilityDigest != capabilityDigest {
-		return fmt.Errorf("%w: binary capability changed since activation", ErrPortActivation)
+		return nil, fmt.Errorf("%w: binary capability changed since activation", ErrPortActivation)
 	}
-	return nil
+	return record, nil
 }
 
 func (s *FilesystemRunStore) portActivationPath() string {

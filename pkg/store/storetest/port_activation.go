@@ -26,6 +26,30 @@ func RunPortActivation(t *testing.T, factory Factory) {
 	if err := capability.SavePortActivation(ctx, 0, first); err != nil {
 		t.Fatal(err)
 	}
+	admission := &store.PortLaunchAdmission{Scope: store.PortActivationLocal, ProofDigest: first.ProofDigest,
+		CapabilityDigest: first.CapabilityDigest, ActivationRevision: first.Revision,
+		AdmittedAt: now.Truncate(time.Millisecond), ExpiresAt: first.ExpiresAt.Truncate(time.Millisecond)}
+	createCtx := store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, admission), store.RuntimeSemanticsPortsV1)
+	if _, err := s.CreateRun(createCtx, "pc1_activation_admission", "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := s.LoadRun(ctx, "pc1_activation_admission")
+	if err != nil || accepted.PortLaunch == nil {
+		t.Fatalf("native run lost launch admission: %+v %v", accepted, err)
+	}
+	if err := s.SaveRun(ctx, accepted); err != nil {
+		t.Fatalf("unchanged admission could not round-trip: %v", err)
+	}
+	accepted, err = s.LoadRun(ctx, "pc1_activation_admission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := *accepted.PortLaunch
+	changed.ProofDigest = strings.Repeat("c", 64)
+	accepted.PortLaunch = &changed
+	if err := s.SaveRun(ctx, accepted); !errors.Is(err, store.ErrRunSemantics) {
+		t.Fatalf("native admission was mutable through SaveRun: %v", err)
+	}
 	if err := store.RequirePortActivation(ctx, s, store.PortActivationLocal, now); err != nil {
 		t.Fatal(err)
 	}

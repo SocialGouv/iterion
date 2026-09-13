@@ -545,6 +545,9 @@ type Run struct {
 	FormatVersion    int    `json:"format_version" bson:"format_version"`
 	ID               string `json:"id" bson:"_id"`
 	RuntimeSemantics string `json:"runtime_semantics,omitempty" bson:"runtime_semantics,omitempty"`
+	// PortLaunch records the activation proof that admitted this run before
+	// any coordinator or queue consumer started it.
+	PortLaunch *PortLaunchAdmission `json:"port_launch,omitempty" bson:"port_launch,omitempty"`
 	// PortExecution is the authoritative native checkpoint. Invocation state,
 	// publications and reservations commit together through the run CAS. Events
 	// and artifact files alone never establish native consumer readiness.
