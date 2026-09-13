@@ -1,12 +1,14 @@
-# Frozen representative pilot thresholds for #1165 — version 2
+# Frozen representative pilot thresholds for #1165 — version 3
 
 Version 1 was committed as `8b73c9e07`. Inspection after the first measurement
 showed that Shorts' `make_keyframes` runs a batch itself: modeling it as one
 job per keyframe would misrepresent the source. Version 1 measurements are
 discarded. Version 2 switches the Shorts reference to its actual
-`fan_out_each` unit-dispatch stage. The numerical thresholds below are
-unchanged; all nine cases must be freshly measured against this version's
-commit. This correction is recorded before those measurements.
+`fan_out_each` unit-dispatch stage. Version 3 resolves the ambiguity between
+the declared fake item handler, which must run N times, and any real paid
+effect, which must run zero times. It also requires the test fixture to be
+committed before measurement. The numerical thresholds are unchanged; all
+nine cases must be freshly measured against this version's commit.
 
 These are isolated, deterministic slices of three existing workflows. They do
 not run the projects, invoke models, create media, or modify project files.
@@ -32,15 +34,18 @@ invocations are one preparation, exactly N item executions, and one collection
 for each fixture; a zero-item native map performs no item execution. Each
 required public product must be present before native success. At most two
 item jobs may execute together. With four jobs and the fixture's controlled
-overlap, at least two must overlap in both implementations. Retries and fake
-paid-effect calls must be zero in the success cases.
+overlap, at least two must overlap in both implementations. The declared fake
+item handler must be called exactly N times, once per input item. Retries and
+real or paid-effect calls must be zero in the success cases.
 
 Measure three isolated runs per input size after the fixtures and thresholds
 are committed. Record median wall time, invocation counts, peak item
 concurrency, retries and deliverables for each implementation. The native
 median must not exceed `max(2 × legacy median, legacy median + 100 ms)`; this
 wide bound detects gross regression without treating scheduler noise as a
-product promise. Tokens and monetary cost are **unknown** in a fake executor
+product promise. The latency ceiling applies to the ordinary uninstrumented
+run; race-instrumented runs verify the semantic and concurrency assertions but
+do not compare latencies. Tokens and monetary cost are **unknown** in a fake executor
 and must be reported that way. A failure requires code repair or a new
 documented threshold version committed before fresh measurements. The report
 must name this document's exact commit hash and make no claim about full
