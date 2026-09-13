@@ -8,6 +8,15 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-13 — collapsed AI run details (run 01a099f1, #1166)
+
+- Status: **partial** — analysis, report and token metadata validated; GitHub returned HTTP 500 on the final create-review call on #1122, including a retry with plain details HTML. The run finished at 08:48:49 UTC with `published=false`; the merge gate was posted successfully. A finished run alone is not publication evidence.
+- Versions: catalog bot 0.9.1; production Codex/Claw override 0.9.1-codex-claw.1 (platform v5).
+- Method: a real `/revi` webhook on PR #1122; GPT-only platform graph, `claw` + `openai/gpt-5.6-sol`, requested effort high for review and medium for synthesis; `post_to_board=false`.
+- Change: a collapsed details block at the end of the forge review carries engine-reported models, harnesses and tokens per executed step, requested effort and the run's cumulative token count at publication. Missing metadata stays unavailable; unexecuted reviewers are omitted.
+- Validation: `TestReviewPRRunDetails` executes the actual publish command against an HTTP receiver, covering served-model overrides, mono/dual-shaped telemetry, missing counts, measured zero, HTML escaping and preserved findings/gate. The catalog checks and local validation of both bundles pass.
+- Lesson: route metadata through the publish node's typed edge inputs, and resolve effort environment defaults before entering the tool sandbox. Do not ask the LLM to estimate its own model or consumption. The total is accumulated model-call tokens, not context size.
+
 ## 2026-09-11 — the gpt family carried a whole review for the first time, and named what still pinned it to Claude (runs 01a092b2 + 01a092c3, PR #1150)
 
 - Status: **validated** — `revi/review` posted `success` from a run in which
