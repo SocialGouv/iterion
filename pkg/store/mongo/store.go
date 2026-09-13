@@ -100,25 +100,26 @@ type LockProvider interface {
 
 // Store implements store.RunStore on top of Mongo + a blob backend.
 type Store struct {
-	client             *mongo.Client
-	db                 *mongo.Database
-	runs               *mongo.Collection
-	routeDecisions     *mongo.Collection
-	events             *mongo.Collection
-	runSeq             *mongo.Collection
-	runLogs            *mongo.Collection
-	interactions       *mongo.Collection
-	userMessages       *mongo.Collection
-	runGitMeta         *mongo.Collection
-	runPlans           *mongo.Collection
-	runNotes           *mongo.Collection
-	runTurns           *mongo.Collection
-	runTags            *mongo.Collection
-	retryCircuits      *mongo.Collection
-	blob               blob.Client
-	logger             *iterlog.Logger
-	lockProv           LockProvider
-	maxAttachmentBytes int64
+	client              *mongo.Client
+	db                  *mongo.Database
+	runs                *mongo.Collection
+	routeDecisions      *mongo.Collection
+	events              *mongo.Collection
+	runSeq              *mongo.Collection
+	runLogs             *mongo.Collection
+	interactions        *mongo.Collection
+	userMessages        *mongo.Collection
+	runGitMeta          *mongo.Collection
+	runPlans            *mongo.Collection
+	runNotes            *mongo.Collection
+	runTurns            *mongo.Collection
+	runTags             *mongo.Collection
+	retryCircuits       *mongo.Collection
+	blob                blob.Client
+	logger              *iterlog.Logger
+	lockProv            LockProvider
+	maxAttachmentBytes  int64
+	portBackendIdentity string
 
 	// logPositionFn stamps Event.LogOffset at AppendEvent time from the
 	// runner's per-run log writer total (the cloud twin of the
@@ -208,27 +209,33 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		scratch = filepath.Join(os.TempDir(), "iterion-runfiles")
 	}
 	db := cli.Database(cfg.Database)
+	backendIdentity, err := portBackendIdentity(cfg.URI, cfg.Database)
+	if err != nil {
+		_ = cli.Disconnect(context.Background())
+		return nil, err
+	}
 	s := &Store{
-		client:             cli,
-		db:                 db,
-		runs:               db.Collection(colRuns),
-		routeDecisions:     db.Collection(colRouteDecisions),
-		events:             db.Collection(colEvents),
-		runSeq:             db.Collection(colRunSeq),
-		runLogs:            db.Collection(colRunLogs),
-		interactions:       db.Collection(colInteractions),
-		userMessages:       db.Collection(colUserMessages),
-		runGitMeta:         db.Collection(colRunGitMeta),
-		runPlans:           db.Collection(colRunPlans),
-		runNotes:           db.Collection(colRunNotes),
-		runTurns:           db.Collection(colRunTurns),
-		runTags:            db.Collection(colRunTags),
-		retryCircuits:      db.Collection(colRetryCircuits),
-		blob:               cfg.Blob,
-		logger:             cfg.Logger,
-		lockProv:           cfg.LockProvider,
-		maxAttachmentBytes: maxAttach,
-		runFilesScratch:    scratch,
+		client:              cli,
+		db:                  db,
+		runs:                db.Collection(colRuns),
+		routeDecisions:      db.Collection(colRouteDecisions),
+		events:              db.Collection(colEvents),
+		runSeq:              db.Collection(colRunSeq),
+		runLogs:             db.Collection(colRunLogs),
+		interactions:        db.Collection(colInteractions),
+		userMessages:        db.Collection(colUserMessages),
+		runGitMeta:          db.Collection(colRunGitMeta),
+		runPlans:            db.Collection(colRunPlans),
+		runNotes:            db.Collection(colRunNotes),
+		runTurns:            db.Collection(colRunTurns),
+		runTags:             db.Collection(colRunTags),
+		retryCircuits:       db.Collection(colRetryCircuits),
+		blob:                cfg.Blob,
+		logger:              cfg.Logger,
+		lockProv:            cfg.LockProvider,
+		maxAttachmentBytes:  maxAttach,
+		portBackendIdentity: backendIdentity,
+		runFilesScratch:     scratch,
 	}
 	if err := s.EnsureSchema(ctx, cfg.EventsTTLDays); err != nil {
 		_ = cli.Disconnect(context.Background())

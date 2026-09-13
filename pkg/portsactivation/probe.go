@@ -31,7 +31,13 @@ func Inspect(ctx context.Context, s store.RunStore) (*Inspection, error) {
 	scope := store.PortActivationLocal
 	identity := s.Root()
 	if identity == "" {
-		scope, identity = store.PortActivationDistributed, "unverified-distributed-store"
+		scope = store.PortActivationDistributed
+		if identified, ok := s.(interface{ PortBackendIdentity() string }); ok {
+			identity = identified.PortBackendIdentity()
+		}
+		if identity == "" {
+			return nil, fmt.Errorf("%w: distributed store has no stable backend identity", store.ErrPortActivation)
+		}
 	}
 	if scope == store.PortActivationLocal {
 		var err error
