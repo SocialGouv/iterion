@@ -524,12 +524,12 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 			return nil
 		}
 		// Resolve the node id as the LONGEST dotted prefix of the path that is
-		// an actual output key. Group-instance nodes have dotted ids
+		// a declared node. Group-instance nodes have dotted ids
 		// (`prefix.name`), which collide with the dotted ref grammar:
 		// {{outputs.r1.gate.id}} parses as [r1, gate, id] but the node is
 		// "r1.gate". Longest-prefix-match disambiguates this for any nesting
 		// depth (the field path is whatever follows the matched id).
-		nodeOut, fieldPath := matchOutputNode(sc.outputs, ref.Path)
+		nodeOut, fieldPath := matchOutputNode(e.workflow, sc.outputs, ref.Path)
 		if nodeOut == nil {
 			return nil
 		}
@@ -884,12 +884,22 @@ func drillPath(root any, path []string) any {
 }
 
 // matchOutputNode picks the node whose id is the LONGEST dotted prefix of the
-// reference path that is an actual key in outputs, returning that node's output
-// map and the remaining field path. This disambiguates dotted group-instance
-// node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
+// reference path declared by the workflow, returning that exact node's output
+// (possibly nil) and the remaining field path. A missing dotted node must not
+// fall back to a shorter node's nested fields. With no declared prefix, the
+// output keys remain a fallback for legacy/ad-hoc resolver scopes.
+// This disambiguates dotted group-instance node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
 // {{outputs.r1.gate.id}} with a node "r1.gate" yields (outputs["r1.gate"], ["id"]).
 // Returns (nil, nil) when no prefix matches.
-func matchOutputNode(outputs map[string]map[string]any, path []string) (map[string]any, []string) {
+func matchOutputNode(wf *ir.Workflow, outputs map[string]map[string]any, path []string) (map[string]any, []string) {
+	if wf != nil {
+		for n := len(path); n >= 1; n-- {
+			id := strings.Join(path[:n], ".")
+			if wf.Nodes[id] != nil {
+				return outputs[id], path[n:]
+			}
+		}
+	}
 	for n := len(path); n >= 1; n-- {
 		id := strings.Join(path[:n], ".")
 		if out, ok := outputs[id]; ok {
