@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.5](https://github.com/SocialGouv/iterion/compare/v3.142.4...v3.142.5) (2026-09-13)
+
+### Bug Fixes
+
+* **studio:** generate Monaco vocabulary from the DSL registry ([#1183](https://github.com/SocialGouv/iterion/issues/1183)) ([ba7e6a4](https://github.com/SocialGouv/iterion/commit/ba7e6a4fc542335462af759028e5f27c11a43c71))
+
 ## [3.142.4](https://github.com/SocialGouv/iterion/compare/v3.142.3...v3.142.4) (2026-09-13)
 
 ### Bug Fixes
