@@ -231,9 +231,9 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 //
 // It is read from the branch results, the FAILED ones included, because the
 // trunk is not a witness of this: processConvergence merges only successful
-// branches' outputs and never removes what an earlier invocation left behind,
-// so "absent from rs.outputs" conflates "never ran", "ran and failed" and
-// "ran two invocations ago". Anchoring the floor on the trunk made the walk
+// branches' outputs, so "absent from rs.outputs" conflates "never ran" with
+// "ran and failed". Before #1116 it also retained earlier invocations' values.
+// Anchoring the floor on the trunk made the walk
 // resurrect a route routing had rejected, and made a partial failure lose the
 // mapping it was supposed to keep.
 type invocationEvidence struct {

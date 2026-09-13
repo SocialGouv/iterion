@@ -278,7 +278,11 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 	sort.Strings(persistedNames)
 	for _, name := range persistedNames {
 		revision := persisted[name]
-		if _, ok := outputs[revision.NodeID]; ok {
+		// A compacted historical artifact owns its immutable body even when
+		// convergence removed the producer's obsolete output (#1116). A
+		// rewind/fork that invalidates the artifact removes its revision too;
+		// absence from outputs alone is not that invalidation.
+		if _, ok := outputs[revision.NodeID]; ok || revision.ValueFromRevision {
 			if revision.ContractLogicalRef == "" {
 				revision.ContractLogicalRef = name
 			}

@@ -120,6 +120,10 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		// Proceed even with failures — failed branch metadata is exposed.
 	}
 
+	// This settled invocation replaces its region's output view. Otherwise a
+	// failed/skipped branch leaves a previous pass's output looking current,
+	// both in the join's mappings and in direct outputs.* references later.
+	e.clearConvergedOutputs(rs, convergenceNodeID, seeds)
 	// Merge successful branch outputs into the run state.
 	for _, r := range results {
 		if r.err != nil {
@@ -186,6 +190,34 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 
 	// Return the convergence node ID — the main loop will execute it normally.
 	return convergenceNodeID, nil
+}
+
+// clearConvergedOutputs invalidates only the forward region owned by this
+// invocation, stopping before its collector and never crossing a bounded
+// back-edge. Seeds come from the launched branches, not all declared router
+// targets (an LLM multi-select can launch only a subset). Include untaken
+// routes in that region: they produced no current value either.
+//
+// Run this after the branches settle, before merging their fresh results.
+// Their immutable input snapshots can still supply deliberate feedback from
+// the preceding pass. Published artifacts retain their separate history.
+func (e *Engine) clearConvergedOutputs(rs *runState, joinNodeID string, seeds []string) {
+	seen := make(map[string]bool)
+	frontier := append([]string(nil), seeds...)
+	for len(frontier) > 0 {
+		node := frontier[len(frontier)-1]
+		frontier = frontier[:len(frontier)-1]
+		if node == "" || node == joinNodeID || seen[node] {
+			continue
+		}
+		seen[node] = true
+		delete(rs.outputs, node)
+		for _, edge := range e.workflow.Edges {
+			if edge != nil && edge.From == node && !edge.IsBoundedIteration() {
+				frontier = append(frontier, edge.To)
+			}
+		}
+	}
 }
 
 // processConvergenceTerminal handles an all-done topology (every branch ran
