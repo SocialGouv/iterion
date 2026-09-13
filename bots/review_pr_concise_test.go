@@ -129,6 +129,7 @@ func TestReviewPRConciseScope(t *testing.T) {
 	}
 	for _, nodes := range []map[string]any{
 		{}, {"reviewer_gpt": []any{"a.go", "test.go"}}, {"reviewer_claude_glance": []any{"a.go"}, "reviewer_gpt_glance": []any{"a.go", "test.go"}},
+		{"reviewer_gpt": []string{"a.go", "test.go"}}, {"reviewer_claude": []string{"a.go"}, "reviewer_gpt": []any{"a.go", "test.go"}},
 	} {
 		ctx := &expr.Context{Outputs: func(path []string) any {
 			if len(path) == 2 && path[1] == "scanned_areas" {
