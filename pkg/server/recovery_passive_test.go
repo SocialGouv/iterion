@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,24 +50,20 @@ func TestRecoveryPassiveStartsNoAutonomousCoordinators(t *testing.T) {
 		t.Fatalf("recovery-passive boot changed run status to %s", stillRunning.Status)
 	}
 
+	// Addr reports the listener bind, which precedes coordinator startup.
+	// The first served request publishes the completed startup to this test.
+	booted := make(chan struct{})
+	markBooted := sync.OnceFunc(func() { close(booted) })
+	handler := srv.server.Handler
+	srv.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		markBooted()
+		handler.ServeHTTP(w, r)
+	})
 	done := make(chan error, 1)
 	go func() { done <- srv.ListenAndServe() }()
 	addr := srv.Addr()
 	if addr == "" {
 		t.Fatal("recovery-passive listener did not bind")
-	}
-
-	if srv.watcher != nil {
-		t.Fatal("recovery-passive started the file watcher")
-	}
-	if srv.watchCoord != nil || srv.triggerCoord != nil || srv.cloudTriggerCoord != nil {
-		t.Fatal("recovery-passive started a board or trigger coordinator")
-	}
-	if srv.assistantWatch != nil || srv.assistantWatchCancel != nil {
-		t.Fatal("recovery-passive started the assistant watch coordinator")
-	}
-	if srv.localEvents == nil {
-		t.Fatal("recovery-passive did not retain the explicit-run event path")
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -86,6 +83,19 @@ func TestRecoveryPassiveStartsNoAutonomousCoordinators(t *testing.T) {
 		if !payload.RecoveryPassive {
 			t.Fatalf("%s did not report recovery_passive", path)
 		}
+	}
+	<-booted
+	if srv.watcher != nil {
+		t.Fatal("recovery-passive started the file watcher")
+	}
+	if srv.watchCoord != nil || srv.triggerCoord != nil || srv.cloudTriggerCoord != nil {
+		t.Fatal("recovery-passive started a board or trigger coordinator")
+	}
+	if srv.assistantWatch != nil || srv.assistantWatchCancel != nil {
+		t.Fatal("recovery-passive started the assistant watch coordinator")
+	}
+	if srv.localEvents == nil {
+		t.Fatal("recovery-passive did not retain the explicit-run event path")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

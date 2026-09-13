@@ -545,6 +545,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/assistant-watches/{watchID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/assistant-watches/{watchID} */
+        delete: operations["deleteAssistantWatchesByWatchID"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/desktop/exchange": {
         parameters: {
             query?: never;
@@ -2555,6 +2574,105 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/assistant-missions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-missions */
+        get: operations["getRunsByIdAssistantMissions"];
+        put?: never;
+        /** POST /api/runs/{id}/assistant-missions */
+        post: operations["postRunsByIdAssistantMissions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-missions/{missionID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-missions/{missionID} */
+        get: operations["getRunsByIdAssistantMissionsByMissionID"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-missions/{missionID}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/assistant-missions/{missionID}/stop */
+        post: operations["postRunsByIdAssistantMissionsByMissionIDStop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-watch-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-watch-health */
+        get: operations["getRunsByIdAssistantWatchHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-watches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-watches */
+        get: operations["getRunsByIdAssistantWatches"];
+        put?: never;
+        /** POST /api/runs/{id}/assistant-watches */
+        post: operations["postRunsByIdAssistantWatches"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/attachments/{name}": {
         parameters: {
             query?: never;
@@ -2896,6 +3014,25 @@ export interface paths {
         put?: never;
         /** POST /api/runs/{id}/fork */
         post: operations["postRunsByIdFork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/host-event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/host-event */
+        post: operations["postRunsByIdHostEvent"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3477,6 +3614,25 @@ export interface paths {
         post: operations["postRunsByIdWatchByIssueID"];
         /** DELETE /api/runs/{id}/watch/{issueID} */
         delete: operations["deleteRunsByIdWatchByIssueID"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/watching": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/watching */
+        get: operations["getRunsByIdWatching"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4681,6 +4837,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/authoring/git-commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/git-commit */
+        post: operations["postV1AssistantAuthoringGitCommit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/git-push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/git-push */
+        post: operations["postV1AssistantAuthoringGitPush"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistant/authoring/preview": {
         parameters: {
             query?: never;
@@ -4709,6 +4899,57 @@ export interface paths {
         put?: never;
         /** POST /api/v1/assistant/authoring/snapshot */
         post: operations["postV1AssistantAuthoringSnapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/context/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/context/resolve */
+        post: operations["postV1AssistantContextResolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/dependencies/bots-localize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/dependencies/bots-localize */
+        post: operations["postV1AssistantDependenciesBotsLocalize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/dependencies/bots-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/dependencies/bots-update */
+        post: operations["postV1AssistantDependenciesBotsUpdate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6398,6 +6639,7 @@ export interface components {
             title: string;
         };
         PipelineBoardPendingReview: {
+            batch_key?: string;
             bot_id?: string;
             depth: number;
             instructions?: string;
@@ -6537,6 +6779,7 @@ export interface components {
             permission_mode?: string;
             project_path?: string;
             queue_position?: number;
+            rewindable?: boolean;
             routing_policy?: components["schemas"]["RoutingPolicy"];
             shard_count?: number;
             shard_index?: number;
@@ -6582,6 +6825,8 @@ export interface components {
             run: components["schemas"]["RunHeader"];
         };
         RunSource: {
+            client_id?: string;
+            conversation_id?: string;
             issue_id?: string;
             issue_identifier?: string;
             issue_title?: string;
@@ -6622,6 +6867,7 @@ export interface components {
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
+            source?: components["schemas"]["RunSource"];
             source_kind?: string;
             status: string;
             /** Format: date-time */
@@ -7945,6 +8191,26 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAssistantWatchesByWatchID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchID: string;
             };
             cookie?: never;
         };
@@ -10639,6 +10905,148 @@ export interface operations {
             };
         };
     };
+    getRunsByIdAssistantMissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdAssistantMissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantMissionsByMissionID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdAssistantMissionsByMissionIDStop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantWatchHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantWatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdAssistantWatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getRunsByIdAttachmentsByName: {
         parameters: {
             query?: never;
@@ -11010,6 +11418,26 @@ export interface operations {
         };
     };
     postRunsByIdFork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdHostEvent: {
         parameters: {
             query?: never;
             header?: never;
@@ -11683,6 +12111,26 @@ export interface operations {
             path: {
                 id: string;
                 issueID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdWatching: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };
@@ -13667,6 +14115,42 @@ export interface operations {
             };
         };
     };
+    postV1AssistantAuthoringGitCommit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringGitPush: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postV1AssistantAuthoringPreview: {
         parameters: {
             query?: never;
@@ -13686,6 +14170,60 @@ export interface operations {
         };
     };
     postV1AssistantAuthoringSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantContextResolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantDependenciesBotsLocalize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantDependenciesBotsUpdate: {
         parameters: {
             query?: never;
             header?: never;

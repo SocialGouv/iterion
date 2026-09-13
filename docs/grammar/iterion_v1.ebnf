@@ -173,6 +173,7 @@ llm_prop = "description" ":" str_value NEWLINE
          | "system" ":" prompt_ref NEWLINE
          | "user" ":" prompt_ref NEWLINE
          | "session" ":" session_mode NEWLINE
+         | "session_slot" ":" IDENT NEWLINE
          | "tools" ":" tool_ref_list NEWLINE
          | "tool_policy" ":" tool_ref_list NEWLINE
          | "capabilities" ":" tool_ref_list NEWLINE

@@ -2086,6 +2086,9 @@
       },
       "PipelineBoardPendingReview": {
         "properties": {
+          "batch_key": {
+            "type": "string"
+          },
           "bot_id": {
             "type": "string"
           },
@@ -2543,6 +2546,9 @@
           "queue_position": {
             "type": "integer"
           },
+          "rewindable": {
+            "type": "boolean"
+          },
           "routing_policy": {
             "$ref": "#/components/schemas/RoutingPolicy"
           },
@@ -2694,6 +2700,12 @@
       },
       "RunSource": {
         "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
           "issue_id": {
             "type": "string"
           },
@@ -2806,6 +2818,9 @@
           },
           "shard_label": {
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RunSource"
           },
           "source_kind": {
             "type": "string"
@@ -4364,7 +4379,7 @@
     }
   },
   "info": {
-    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route. Note: the /api/v1/native, /api/v1/dispatcher and /api/v1/mcp/board sub-trees are served but registered on a separate mux, so they are intentionally not catalogued here.",
+    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route. Note: the /api/v1/native, /api/v1/dispatcher and /api/v1/mcp/{board,runs} sub-trees are served but registered on a separate mux, so they are intentionally not catalogued here.",
     "title": "iterion API",
     "version": "current"
   },
@@ -5306,6 +5321,30 @@
           "admin"
         ]
       }
+    },
+    "/api/assistant-watches/{watchID}": {
+      "delete": {
+        "operationId": "deleteAssistantWatchesByWatchID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/assistant-watches/{watchID}",
+        "tags": [
+          "assistant-watches"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "watchID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/auth/desktop/exchange": {
       "post": {
@@ -8011,6 +8050,166 @@
         }
       ]
     },
+    "/api/runs/{id}/assistant-missions": {
+      "get": {
+        "operationId": "getRunsByIdAssistantMissions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-missions",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAssistantMissions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/assistant-missions",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/assistant-missions/{missionID}": {
+      "get": {
+        "operationId": "getRunsByIdAssistantMissionsByMissionID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-missions/{missionID}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "missionID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/assistant-missions/{missionID}/stop": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "missionID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAssistantMissionsByMissionIDStop",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/assistant-missions/{missionID}/stop",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/assistant-watch-health": {
+      "get": {
+        "operationId": "getRunsByIdAssistantWatchHealth",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-watch-health",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/assistant-watches": {
+      "get": {
+        "operationId": "getRunsByIdAssistantWatches",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-watches",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAssistantWatches",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/assistant-watches",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/attachments/{name}": {
       "get": {
         "operationId": "getRunsByIdAttachmentsByName",
@@ -8507,6 +8706,30 @@
           }
         },
         "summary": "POST /api/runs/{id}/fork",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/host-event": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdHostEvent",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/host-event",
         "tags": [
           "runs"
         ]
@@ -9323,6 +9546,30 @@
           "runs"
         ]
       }
+    },
+    "/api/runs/{id}/watching": {
+      "get": {
+        "operationId": "getRunsByIdWatching",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/watching",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/runs/{id}/workflow": {
       "get": {
@@ -11620,6 +11867,34 @@
         ]
       }
     },
+    "/api/v1/assistant/authoring/git-commit": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringGitCommit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/git-commit",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/authoring/git-push": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringGitPush",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/git-push",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
     "/api/v1/assistant/authoring/preview": {
       "post": {
         "operationId": "postV1AssistantAuthoringPreview",
@@ -11643,6 +11918,48 @@
           }
         },
         "summary": "POST /api/v1/assistant/authoring/snapshot",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/context/resolve": {
+      "post": {
+        "operationId": "postV1AssistantContextResolve",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/context/resolve",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/dependencies/bots-localize": {
+      "post": {
+        "operationId": "postV1AssistantDependenciesBotsLocalize",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/dependencies/bots-localize",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/dependencies/bots-update": {
+      "post": {
+        "operationId": "postV1AssistantDependenciesBotsUpdate",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/dependencies/bots-update",
         "tags": [
           "assistant"
         ]

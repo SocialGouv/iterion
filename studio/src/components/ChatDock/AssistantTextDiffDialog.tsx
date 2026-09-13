@@ -1,4 +1,4 @@
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor } from "@/lib/monaco";
 
 import type { AssistantAuthoringPreviewFile } from "@/api/assistantAuthoring";
 import { Dialog } from "@/components/ui";
