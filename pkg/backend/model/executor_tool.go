@@ -637,7 +637,11 @@ func scriptInterpreter(language string) (cmd string, ext string) {
 // is active and the node has not opted out.
 func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, scriptBasename string) *exec.Cmd {
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
+		env := map[string]string{}
+		if _, scoped := InvocationFilesFromContext(ctx); scoped {
+			env["ITERION_ARTIFACT_FILES_DIR"] = e.artifactFilesDirForCall(ctx, true)
+		}
+		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -648,10 +652,11 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	// container env (the same dir is bind-mounted there). runExtraEnv
 	// carries run-level provisioning (devbox profile PATH), appended
 	// after the inherited env so on a duplicate key it wins.
-	if e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
+	artifactDir := e.artifactFilesDirForCall(ctx, false)
+	if artifactDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = append(os.Environ(), e.runExtraEnv...)
-		if e.artifactFilesDir != "" {
-			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+		if artifactDir != "" {
+			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+artifactDir)
 		}
 	}
 	if e.workDir != "" {
@@ -691,6 +696,14 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 // tool body in POSIX shell.
 func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env map[string]string) *exec.Cmd {
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		if _, scoped := InvocationFilesFromContext(ctx); scoped {
+			copied := make(map[string]string, len(env)+1)
+			for key, value := range env {
+				copied[key] = value
+			}
+			copied["ITERION_ARTIFACT_FILES_DIR"] = e.artifactFilesDirForCall(ctx, true)
+			env = copied
+		}
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
@@ -700,18 +713,19 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// read blocked, so cancelling the run would stop the wait and not the
 	// work. Signal the whole group instead.
 	proc.TerminateGroupOnCancel(cmd)
-	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
+	artifactDir := e.artifactFilesDirForCall(ctx, false)
+	if len(env) > 0 || artifactDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = os.Environ()
 		// Run-level provisioning (devbox profile PATH) — appended after
 		// the inherited env so on a duplicate key it wins.
 		cmd.Env = append(cmd.Env, e.runExtraEnv...)
 		// Host path only: sandboxed commands already see the variable from
 		// the container env (the same dir is bind-mounted there).
-		if e.artifactFilesDir != "" {
-			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
-		}
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		if artifactDir != "" {
+			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+artifactDir)
 		}
 	}
 	if e.workDir != "" {

@@ -1007,6 +1007,17 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
+	if files, scoped := InvocationFilesFromContext(ctx); scoped {
+		outputDir := files.HostDir
+		if e.sandbox != nil {
+			outputDir = files.SandboxDir
+		}
+		// A public file descriptor is only accepted from this fresh area.
+		// CLI delegates receive the path in their environment; in-process
+		// backends also see the instruction in their task prompt.
+		task.ExtraEnv = append(append([]string(nil), task.ExtraEnv...), "ITERION_ARTIFACT_FILES_DIR="+outputDir)
+		task.UserPrompt += "\n\nFor this invocation, write declared file outputs only under " + outputDir + " and return each file path in its public output port."
+	}
 	// interaction: async (ADR-081) — bind the non-blocking question
 	// closures. Both backends key their ask_user_async / await_answers
 	// tool registration on PostAsyncQuestion being non-nil.

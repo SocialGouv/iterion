@@ -316,9 +316,7 @@ func ValidatePortExecution(s *PortExecution) error {
 			if err := ValidateNativeChild(s.RootRunID, file.RunID); err != nil {
 				return err
 			}
-			_, clean, pathErr := cleanRunFilePath(file.Path)
-			_, digestErr := hex.DecodeString(file.SHA256)
-			if file.Producer != value.Producer || file.Attempt != value.Attempt || file.Size < 0 || len(file.SHA256) != 64 || digestErr != nil || pathErr != nil || clean != file.Path {
+			if err := ValidatePortFileRef(file); err != nil || !portFileHasLineage(s, value, file) {
 				return invalidPortState("publication %s file provenance mismatch", revision)
 			}
 		}
@@ -338,6 +336,37 @@ func ValidatePortExecution(s *PortExecution) error {
 		}
 	}
 	return nil
+}
+
+func portFileHasLineage(s *PortExecution, value *PortValue, file PortFileRef) bool {
+	if file.Producer == value.Producer && file.Attempt == value.Attempt {
+		return true // root input or captured by this successful invocation
+	}
+	if invocation := s.Invocations[value.Producer]; invocation != nil {
+		for _, revision := range invocation.Inputs {
+			if source := s.Publications[revision]; source != nil {
+				for _, inherited := range source.Files {
+					if inherited == file {
+						return true
+					}
+				}
+			}
+		}
+	}
+	if collection := s.Collections[value.Producer]; collection != nil {
+		for _, item := range collection.Items {
+			if invocation := s.Invocations[item]; invocation != nil {
+				if source := s.Publications[invocation.Outputs[value.Port]]; source != nil {
+					for _, inherited := range source.Files {
+						if inherited == file {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func validatePortOutputs(s *PortExecution, producer string, attempt int, outputs map[string]string) error {

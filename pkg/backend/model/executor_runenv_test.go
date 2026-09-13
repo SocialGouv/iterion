@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"os/exec"
 	"slices"
 	"testing"
 )
@@ -30,5 +31,31 @@ func TestRunExtraEnvReachesHostToolCommands(t *testing.T) {
 	script := e.toolNodeScriptCommand(context.Background(), "sh", "x.sh")
 	if !slices.Contains(script.Env, "PATH=/devbox/profile/bin:/usr/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the run-level PATH entry: %v", script.Env)
+	}
+}
+
+func TestInvocationFilesOverrideHostToolCommandsPerCall(t *testing.T) {
+	e := &ClawExecutor{artifactFilesDir: "/legacy"}
+	first := WithInvocationFiles(context.Background(), InvocationFiles{HostDir: "/attempt-a", SandboxDir: "/sandbox-a"})
+	second := WithInvocationFiles(context.Background(), InvocationFiles{HostDir: "/attempt-b", SandboxDir: "/sandbox-b"})
+	for _, tc := range []struct {
+		ctx  context.Context
+		want string
+	}{
+		{first, "ITERION_ARTIFACT_FILES_DIR=/attempt-a"},
+		{second, "ITERION_ARTIFACT_FILES_DIR=/attempt-b"},
+		{context.Background(), "ITERION_ARTIFACT_FILES_DIR=/legacy"},
+	} {
+		for _, cmd := range []*exec.Cmd{
+			e.toolNodeCommand(tc.ctx, "true", map[string]string{"ITERION_ARTIFACT_FILES_DIR": "/untrusted"}),
+			e.toolNodeScriptCommand(tc.ctx, "sh", "x.sh"),
+		} {
+			if len(cmd.Env) == 0 {
+				t.Fatal("missing tool environment")
+			}
+			if cmd.Env[len(cmd.Env)-1] != tc.want {
+				t.Fatalf("last file environment is %q, want %q", cmd.Env[len(cmd.Env)-1], tc.want)
+			}
+		}
 	}
 }

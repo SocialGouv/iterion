@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
@@ -65,7 +66,16 @@ func portsTestMongoStore(t *testing.T) store.RunStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := storemongo.New(ctx, storemongo.Config{URI: os.Getenv("ITERION_TEST_MONGO_URI"), Database: "iterion_ports_engine_" + bson.NewObjectID().Hex(), Blob: objects, RunFilesScratchDir: t.TempDir()})
+	scratch := filepath.Join(t.TempDir(), "runfiles")
+	t.Cleanup(func() {
+		if err := os.RemoveAll(scratch + "-ports-v1"); err != nil {
+			t.Error(err)
+		}
+		if err := os.RemoveAll(scratch + "-ports-v1-publications"); err != nil {
+			t.Error(err)
+		}
+	})
+	s, err := storemongo.New(ctx, storemongo.Config{URI: os.Getenv("ITERION_TEST_MONGO_URI"), Database: "iterion_ports_engine_" + bson.NewObjectID().Hex(), Blob: objects, RunFilesScratchDir: scratch})
 	if err != nil {
 		t.Fatal(err)
 	}

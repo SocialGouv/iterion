@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,22 +32,18 @@ func RunPortFiles(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertBody := func() {
+	assertPrivate := func() {
 		t.Helper()
-		reader, info, err := files.OpenRunFile(ctx, id, ref.Path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, readErr := io.ReadAll(reader)
-		closeErr := reader.Close()
-		if readErr != nil || closeErr != nil || !bytes.Equal(data, body) || info.Size != ref.Size {
-			t.Fatalf("captured file changed: size=%d, read=%v, close=%v", info.Size, readErr, closeErr)
+		reader, _, err := files.OpenRunFile(ctx, id, ref.Path)
+		if err == nil {
+			_ = reader.Close()
+			t.Fatal("captured bytes became visible before atomic publication")
 		}
 	}
 	if err := publisher.PutPortFile(ctx, ref, bytes.NewReader(body)); err != nil {
 		t.Fatal(err)
 	}
-	assertBody()
+	assertPrivate()
 	for name, candidate := range map[string][]byte{
 		"different same-size body": bytes.Repeat([]byte("x"), len(body)),
 		"truncated":                body[:len(body)-1], "extra byte": append(append([]byte(nil), body...), 'x'),
@@ -57,7 +52,7 @@ func RunPortFiles(t *testing.T, factory Factory) {
 			if err := publisher.PutPortFile(ctx, ref, bytes.NewReader(candidate)); err == nil {
 				t.Fatal("bad content overwrote a content-addressed file")
 			}
-			assertBody()
+			assertPrivate()
 		})
 	}
 	if err := publisher.PutPortFile(ctx, ref, bytes.NewReader(body)); err != nil {
@@ -81,10 +76,10 @@ func RunPortFiles(t *testing.T, factory Factory) {
 			t.Fatalf("scratch upload overwrote an immutable captured file: %d, %v", n, err)
 		}
 	}
-	assertBody()
+	assertPrivate()
 	listed, err := files.ListRunFiles(ctx, id)
-	if err != nil || len(listed) != 1 || listed[0].Path != ref.Path || listed[0].Size != ref.Size {
-		t.Fatalf("captured file list: %+v, %v", listed, err)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("unpublished file appeared in public list: %+v, %v", listed, err)
 	}
 	loaded, err := s.LoadRun(ctx, id)
 	if err != nil || loaded.PortExecution != nil {

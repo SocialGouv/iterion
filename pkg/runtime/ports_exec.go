@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -59,6 +60,14 @@ func (c *portCoordinator) admitReady(ctx context.Context) (bool, error) {
 		if !available {
 			continue
 		}
+		var area *portOutputArea
+		if needsPortOutputArea(instance) {
+			area, err = c.engine.preparePortOutputArea(ctx, c.rs.runID, invocation)
+			if err != nil {
+				release()
+				return false, err
+			}
+		}
 		next, err := c.state.Clone()
 		if err != nil {
 			release()
@@ -92,12 +101,16 @@ func (c *portCoordinator) admitReady(ctx context.Context) (bool, error) {
 		local.correctionScope = "ports:" + id + ":attempt:" + strconv.Itoa(invocation.Attempt)
 		local.ctx = ctx
 		c.active[id] = release
+		workerCtx := ctx
+		if area != nil {
+			workerCtx = model.WithInvocationFiles(ctx, model.InvocationFiles{HostDir: area.HostDir, SandboxDir: area.SandboxDir})
+		}
 		if len(resources) > 0 {
 			inputs[leaseInputKey] = resources
 		}
 		go func() {
-			output, err := c.engine.executePortInvocation(ctx, local, instance, invocation, inputs)
-			c.done <- portCompletion{id: id, output: output, err: err}
+			output, err := c.engine.executePortInvocation(workerCtx, local, instance, invocation, inputs)
+			c.done <- portCompletion{id: id, output: output, err: err, area: area}
 		}()
 		return true, nil // observe completions before considering another admission
 	}
@@ -199,6 +212,23 @@ func (c *portCoordinator) complete(ctx context.Context, result portCompletion) e
 	}
 	delete(next.Budget.Reservations, result.id)
 	invocation.Resources = nil
+	// Capture every declared file into immutable storage before committing any
+	// publication. A capture failure is an invocation failure, not a half-
+	// published output or an indefinitely running checkpoint.
+	captured := map[string][]store.PortFileRef{}
+	if result.err == nil {
+		for _, port := range instance.Contract.Outputs {
+			value, present := result.output[port.Name]
+			if !present || value == nil || port.Type.Name != "file" {
+				continue
+			}
+			result.output[port.Name], captured[port.Name], err = c.engine.capturePortFiles(ctx, c.rs.runID, invocation, port, value, result.area, c.state)
+			if err != nil {
+				result.err = err
+				break
+			}
+		}
+	}
 	if result.err != nil {
 		invocation.Status, invocation.Failure = store.PortFailed, result.err.Error()
 		if errors.Is(result.err, context.Canceled) {
@@ -224,13 +254,11 @@ func (c *portCoordinator) complete(ctx context.Context, result portCompletion) e
 			if !present {
 				continue
 			}
-			if port.Type.Name == "file" {
-				return fmt.Errorf("runtime: file output %s.%s requires verified invocation capture before publication", invocation.Node, port.Name)
-			}
 			revision := portOutputRevision(invocation, port.Name)
 			if err := addPortValue(next, revision, invocation.ID, port.Name, invocation.Attempt, value); err != nil {
 				return err
 			}
+			next.Publications[revision].Files = captured[port.Name]
 			invocation.Outputs[port.Name] = revision
 		}
 	}

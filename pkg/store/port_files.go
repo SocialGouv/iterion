@@ -20,6 +20,28 @@ type PortFilesStore interface {
 	PutPortFile(ctx context.Context, ref PortFileRef, content io.Reader) error
 }
 
+// PublishedPortFileRefs is the only authority for native file visibility.
+// PutPortFile may have persisted bytes before an interrupted checkpoint CAS;
+// those bytes remain private until a successful publication references them.
+func PublishedPortFileRefs(ctx context.Context, s RunStore, runID string) (map[string]PortFileRef, error) {
+	run, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	refs := map[string]PortFileRef{}
+	if run.PortExecution == nil {
+		return refs, nil
+	}
+	for _, value := range run.PortExecution.Publications {
+		for _, ref := range value.Files {
+			if ref.RunID == runID {
+				refs[ref.Path] = ref
+			}
+		}
+	}
+	return refs, nil
+}
+
 func AsPortFilesStore(s RunStore) PortFilesStore {
 	publisher, _ := s.(PortFilesStore)
 	return publisher
@@ -169,7 +191,7 @@ func (s *FilesystemRunStore) PutPortFile(ctx context.Context, ref PortFileRef, c
 		if !errors.Is(err, os.ErrExist) {
 			return err
 		}
-		body, _, err := s.OpenRunFile(ctx, ref.RunID, ref.Path)
+		body, _, err := s.openNativeCapturedFile(ref.RunID, ref.Path)
 		if err != nil {
 			return err
 		}

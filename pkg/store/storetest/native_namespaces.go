@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,25 +35,20 @@ func RunNativeNamespaces(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		path := filepath.ToSlash(dir)
-		if !strings.Contains(path, "/"+store.NativeRunsDirectory+"/"+id) && !strings.Contains(path, "/ports-v1/"+id) {
+		if !strings.Contains(path, "/"+store.NativeRunsDirectory+"/"+id) && !strings.Contains(path, "-ports-v1/"+id) {
 			t.Fatalf("native scratch escapes its namespace: %s", path)
 		}
 		if err := os.WriteFile(filepath.Join(dir, "report.txt"), []byte("report"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if uploader := store.AsRunFilesUploader(s); uploader != nil {
-			if n, err := uploader.UploadRunFiles(ctx, id); err != nil || n != 1 {
-				t.Fatalf("upload: %d, %v", n, err)
+			if n, err := uploader.UploadRunFiles(ctx, id); err != nil || n != 0 {
+				t.Fatalf("native scratch must not upload unpublished files: %d, %v", n, err)
 			}
 		}
-		body, info, err := files.OpenRunFile(ctx, id, "report.txt")
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, readErr := io.ReadAll(body)
-		closeErr := body.Close()
-		if readErr != nil || closeErr != nil || string(data) != "report" || info.Path != "report.txt" {
-			t.Fatalf("file: %q, %+v, %v, %v", data, info, readErr, closeErr)
+		if body, _, err := files.OpenRunFile(ctx, id, "report.txt"); err == nil {
+			_ = body.Close()
+			t.Fatal("native scratch file escaped into public reads")
 		}
 		tools := store.AsToolBlobStore(s)
 		if tools == nil {

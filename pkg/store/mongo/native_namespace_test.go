@@ -3,6 +3,7 @@ package mongo
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,7 +25,16 @@ func nativeNamespaceStore(t *testing.T) *Store {
 	}
 	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
-	s, err := New(ctx, Config{URI: uri, Database: "iterion_native_" + bsonNonce(t), Blob: newInMemoryBlob(), RunFilesScratchDir: t.TempDir()})
+	scratch := t.TempDir()
+	t.Cleanup(func() {
+		if err := os.RemoveAll(scratch + "-ports-v1"); err != nil {
+			t.Error(err)
+		}
+		if err := os.RemoveAll(scratch + "-ports-v1-publications"); err != nil {
+			t.Error(err)
+		}
+	})
+	s, err := New(ctx, Config{URI: uri, Database: "iterion_native_" + bsonNonce(t), Blob: newInMemoryBlob(), RunFilesScratchDir: scratch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +47,54 @@ func nativeNamespaceStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { ctx, cancel := mongotest.TeardownCtx(); defer cancel(); _ = s.db.Drop(ctx); _ = s.Close(ctx) })
 	return s
+}
+
+// Legacy run IDs are not reserved words. A run called "ports-v1" can use
+// every supported old scratch operation without reaching native scratch.
+func TestNativeMongoScratchCannotBeSweptByLegacyRunName(t *testing.T) {
+	s := nativeNamespaceStore(t)
+	base, cancel := mongotest.Ctx(t)
+	defer cancel()
+	ctx := store.WithoutTenantFilter(base)
+	const nativeID, legacyID = "pc1_scratch", "ports-v1"
+	if _, err := s.CreateRun(store.WithRuntimeSemantics(ctx, store.RuntimeSemanticsPortsV1), nativeID, "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, legacyID, "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	nativeDir, err := s.EnsureRunFilesDir(ctx, nativeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDir, err := s.EnsureRunFilesDir(ctx, legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(nativeDir, legacyDir+string(os.PathSeparator)) {
+		t.Fatalf("native scratch %q is inside a legacy run's scratch %q", nativeDir, legacyDir)
+	}
+	if err := os.WriteFile(filepath.Join(nativeDir, "native.txt"), []byte("native survives"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "legacy.txt"), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UploadRunFiles(ctx, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(ctx, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(filepath.Join(nativeDir, "native.txt")); err != nil || string(content) != "native survives" {
+		t.Fatalf("legacy scratch operations changed native bytes: %q, %v", content, err)
+	}
+	if _, err := s.LoadRun(ctx, nativeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(ctx, nativeID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNativeExecutionStateMongo(t *testing.T) {

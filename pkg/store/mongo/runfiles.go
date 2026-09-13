@@ -37,7 +37,11 @@ var (
 // runFilesScratchDir returns the runner-local scratch area for a run.
 func (s *Store) runFilesScratchDir(runID string) string {
 	if store.IsNativeRunID(runID) {
-		return filepath.Join(s.runFilesScratch, "ports-v1", runID)
+		// The legacy scratch layout is <scratch>/<any legacy run ID>.
+		// A native subtree INSIDE <scratch> could therefore be swept by
+		// UploadRunFiles/DeleteRun for a legacy run named after that subtree.
+		// Keep the entire native mutable closure in a sibling root.
+		return filepath.Join(s.runFilesScratch+"-ports-v1", runID)
 	}
 	return filepath.Join(s.runFilesScratch, runID)
 }
@@ -112,6 +116,11 @@ func (r *runFileUploadReader) Read(p []byte) (int, error) {
 func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return 0, err
+	}
+	if store.IsNativeRunID(runID) {
+		// Native outputs are captured by PutPortFile at publication time.
+		// Sweeping scratch here would upload uncommitted attempts to S3.
+		return 0, nil
 	}
 	root := s.runFilesScratchDir(runID)
 	info, err := os.Stat(root)
@@ -202,17 +211,37 @@ func (s *Store) ListRunFiles(ctx context.Context, runID string) ([]store.RunFile
 	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return nil, err
 	}
+	var published map[string]store.PortFileRef
+	if store.IsNativeRunID(runID) {
+		var err error
+		published, err = store.PublishedPortFileRefs(ctx, s, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	objs, err := s.blob.ListRunFiles(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list run files %s: %w", runID, err)
 	}
 	out := make([]store.RunFileInfo, 0, len(objs))
 	for _, o := range objs {
+		if published != nil {
+			ref, ok := published[o.Path]
+			if !ok {
+				continue
+			}
+			if ref.Size != o.Size {
+				return nil, fmt.Errorf("store/mongo: published native file %s has changed size", o.Path)
+			}
+		}
 		out = append(out, store.RunFileInfo{
 			Path:       o.Path,
 			Size:       o.Size,
 			ModifiedAt: o.ModifiedAt,
 		})
+	}
+	if published != nil && len(out) != len(published) {
+		return nil, fmt.Errorf("store/mongo: a published native file is missing from blob storage")
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	if len(out) == 0 {
@@ -228,6 +257,15 @@ func (s *Store) ListRunFiles(ctx context.Context, runID string) ([]store.RunFile
 func (s *Store) OpenRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, store.RunFileInfo, error) {
 	if err := s.guardNativeRun(ctx, runID); err != nil {
 		return nil, store.RunFileInfo{}, err
+	}
+	if store.IsNativeRunID(runID) {
+		refs, err := store.PublishedPortFileRefs(ctx, s, runID)
+		if err != nil {
+			return nil, store.RunFileInfo{}, err
+		}
+		if _, ok := refs[relPath]; !ok {
+			return nil, store.RunFileInfo{}, fmt.Errorf("store/mongo: run file not found")
+		}
 	}
 	rc, obj, err := s.blob.GetRunFile(ctx, runID, relPath)
 	if err != nil {

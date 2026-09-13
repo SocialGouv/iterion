@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Store) portFileStagingDir(id string) string {
-	return filepath.Join(s.runFilesScratch, "ports-v1-publications", id)
+	return filepath.Join(s.runFilesScratch+"-ports-v1-publications", id)
 }
 
 func (s *Store) PutPortFile(ctx context.Context, ref store.PortFileRef, content io.Reader) error {

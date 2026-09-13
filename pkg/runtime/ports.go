@@ -28,6 +28,7 @@ type portCompletion struct {
 	id     string
 	output map[string]any
 	err    error
+	area   *portOutputArea
 }
 
 func (e *Engine) checkNativeSemanticIdentity(runID string, run *store.Run) error {
@@ -292,6 +293,7 @@ func (c *portCoordinator) collect(ctx context.Context) (bool, error) {
 		next.Collections[id].Outputs = map[string]string{}
 		for _, port := range c.engine.workflow.Ports.Nodes[id].Contract.Outputs {
 			values := make([]any, len(collection.Items))
+			var files []store.PortFileRef
 			for index, item := range collection.Items {
 				invocation := c.state.Invocations[item]
 				value := c.state.Publications[invocation.Outputs[port.Name]]
@@ -302,6 +304,7 @@ func (c *portCoordinator) collect(ctx context.Context) (bool, error) {
 				if err != nil {
 					return changed, err
 				}
+				files = append(files, value.Files...)
 			}
 			lifted := port
 			lifted.Type = port.Type.Array()
@@ -314,6 +317,7 @@ func (c *portCoordinator) collect(ctx context.Context) (bool, error) {
 			if err := addPortValue(next, revision, id, port.Name, 0, values); err != nil {
 				return changed, err
 			}
+			next.Publications[revision].Files = files
 			next.Collections[id].Outputs[port.Name] = revision
 		}
 		if err := c.commit(ctx, next); err != nil {

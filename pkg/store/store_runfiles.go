@@ -125,29 +125,36 @@ func cleanRunFilePath(relPath string) ([]string, string, error) {
 
 // ListRunFiles satisfies RunFilesStore. Returns a sorted slice (by path)
 // for stable output; empty (no error) when no files exist.
-func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]RunFileInfo, error) {
+func (s *FilesystemRunStore) ListRunFiles(ctx context.Context, runID string) ([]RunFileInfo, error) {
 	if err := s.guardNativeRun(runID); err != nil {
 		return nil, err
+	}
+	if IsNativeRunID(runID) {
+		refs, err := PublishedPortFileRefs(ctx, s, runID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]RunFileInfo, 0, len(refs))
+		for _, ref := range refs {
+			body, info, err := s.openNativeCapturedFile(runID, ref.Path)
+			if err != nil {
+				return nil, err
+			}
+			if err := body.Close(); err != nil {
+				return nil, err
+			}
+			if info.Size != ref.Size {
+				return nil, fmt.Errorf("store: published native file %s has changed size", ref.Path)
+			}
+			out = append(out, info)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+		return out, nil
 	}
 	root := s.runFilesDir(runID)
 	out, err := listRunFilesUnder(root)
 	if err != nil {
 		return nil, err
-	}
-	if IsNativeRunID(runID) {
-		// The native published/ prefix belongs to captured files outside the
-		// sandbox scratch area. A scratch shadow cannot replace that reference.
-		filtered := out[:0]
-		for _, file := range out {
-			if !strings.HasPrefix(file.Path, "published/") {
-				filtered = append(filtered, file)
-			}
-		}
-		captured, err := listRunFilesUnder(s.portFilesDir(runID))
-		if err != nil {
-			return nil, err
-		}
-		out = append(filtered, captured...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
@@ -198,18 +205,25 @@ func listRunFilesUnder(root string) ([]RunFileInfo, error) {
 // avoids the EvalSymlinks-then-open TOCTOU gap where a sandbox-controlled
 // artifact_files tree could swap an intermediate directory for a symlink
 // after validation and trick the server into streaming an arbitrary host file.
-func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
+func (s *FilesystemRunStore) OpenRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
 	if err := s.guardNativeRun(runID); err != nil {
 		return nil, RunFileInfo{}, err
+	}
+	if IsNativeRunID(runID) {
+		refs, err := PublishedPortFileRefs(ctx, s, runID)
+		if err != nil {
+			return nil, RunFileInfo{}, err
+		}
+		if _, ok := refs[relPath]; !ok {
+			return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+		}
+		return s.openNativeCapturedFile(runID, relPath)
 	}
 	components, cleaned, err := cleanRunFilePath(relPath)
 	if err != nil {
 		return nil, RunFileInfo{}, err
 	}
 	root := s.runFilesDir(runID)
-	if IsNativeRunID(runID) && strings.HasPrefix(cleaned, "published/") {
-		root = s.portFilesDir(runID)
-	}
 	f, info, err := openRunFileAt(root, components)
 	if err != nil {
 		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
@@ -219,4 +233,16 @@ func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath strin
 		Size:       info.Size(),
 		ModifiedAt: info.ModTime().UTC(),
 	}, nil
+}
+
+func (s *FilesystemRunStore) openNativeCapturedFile(runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
+	components, cleaned, err := cleanRunFilePath(relPath)
+	if err != nil || !strings.HasPrefix(cleaned, "published/") {
+		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+	}
+	f, info, err := openRunFileAt(s.portFilesDir(runID), components)
+	if err != nil {
+		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found: %w", err)
+	}
+	return f, RunFileInfo{Path: cleaned, Size: info.Size(), ModifiedAt: info.ModTime().UTC()}, nil
 }
