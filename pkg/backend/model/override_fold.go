@@ -16,6 +16,7 @@ type OverrideEntry struct {
 	Backend  string
 	Model    string
 	Provider string
+	Effort   string
 }
 
 // OverridesFrom folds neutral entries into the executor's per-node
@@ -35,6 +36,9 @@ func OverridesFrom(entries []OverrideEntry) ModelOverrides {
 		}
 		if e.Provider != "" {
 			o.SetProvider(e.Selector, e.Provider)
+		}
+		if e.Effort != "" {
+			o.SetEffort(e.Selector, e.Effort)
 		}
 	}
 	return o

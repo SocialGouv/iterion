@@ -5,6 +5,8 @@ import { Button, Dialog, IconButton, Input } from "@/components/ui";
 import { useProjects } from "@/hooks/useProjects";
 import { useDesktop } from "@/hooks/useDesktop";
 import { desktop as desktopBridge, isCloudConnection, isDesktop } from "@/lib/desktopBridge";
+import { errorMessage } from "@/lib/errorHints";
+import { useUIStore } from "@/store/ui";
 
 import AddProjectDialog from "./AddProjectDialog";
 import CloudConnectModal from "./CloudConnectModal";
@@ -35,6 +37,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
   // the list out of sync.
   const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
 
@@ -42,6 +45,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
     if (open) {
       setQuery("");
       setPendingRemovalId(null);
+      setSwitchingId(null);
     }
   }, [open]);
 
@@ -109,6 +113,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
               const isCurrent = currentProject?.id === p.id;
               const isPending = pendingRemovalId === p.id;
               const isBusy = busyId === p.id;
+              const isSwitching = switchingId === p.id;
               return (
                 <li
                   key={p.id}
@@ -129,10 +134,20 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                   <button
                     type="button"
                     className="flex-1 min-w-0 text-left pl-2 py-2 rounded hover:bg-surface-2 disabled:opacity-60 focus-visible:ring-1 focus-visible:ring-accent"
-                    disabled={isPending || isBusy}
+                    aria-busy={isSwitching}
+                    disabled={isPending || isBusy || switchingId !== null}
                     onClick={async () => {
-                      await switchProject(p.id);
-                      onClose();
+                      setSwitchingId(p.id);
+                      try {
+                        await switchProject(p.id);
+                        onClose();
+                      } catch (err) {
+                        useUIStore
+                          .getState()
+                          .addToast(`Switch project failed: ${errorMessage(err)}`, "error");
+                      } finally {
+                        setSwitchingId(null);
+                      }
                     }}
                   >
                     <div className="font-semibold flex items-center gap-2 truncate">
@@ -145,6 +160,11 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                       {isCurrent && (
                         <span className="text-caption uppercase tracking-wider text-accent-text shrink-0">
                           current
+                        </span>
+                      )}
+                      {isSwitching && (
+                        <span className="text-caption text-fg-subtle shrink-0">
+                          switching…
                         </span>
                       )}
                     </div>
@@ -161,7 +181,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                         size="sm"
                         variant="ghost"
                         onClick={() => setPendingRemovalId(null)}
-                        disabled={isBusy}
+                        disabled={isBusy || switchingId !== null}
                       >
                         Cancel
                       </Button>
@@ -169,7 +189,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                         size="sm"
                         variant="danger"
                         onClick={() => void onConfirmRemove(p.id)}
-                        disabled={isBusy}
+                        disabled={isBusy || switchingId !== null}
                       >
                         {isBusy ? "Removing…" : "Remove"}
                       </Button>
@@ -181,6 +201,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                       size="sm"
                       variant="danger"
                       onClick={() => setPendingRemovalId(p.id)}
+                      disabled={switchingId !== null}
                       className="opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 transition-opacity"
                     >
                       <TrashIcon />
@@ -191,7 +212,12 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
             })}
           </ul>
           <div className="pt-2 border-t border-border-default flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => void onAddClicked()}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void onAddClicked()}
+              disabled={switchingId !== null}
+            >
               + Add project…
             </Button>
             {isDesktop() && (

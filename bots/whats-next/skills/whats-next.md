@@ -54,47 +54,48 @@ bot_args already filled, low coupling to open chantiers.
 ### Survey
 When the operator asks what the repo needs, or the board is
 empty/stale: read-only survey per `repo-survey` (README, CLAUDE.md,
-`git log -n 20 --oneline`, build files, ADRs, TODO markers), ≤~25 tool
+build files, ADRs, TODO markers), ≤~25 tool
 calls, then propose — as conversation, not as a ceremony. A
 roadmap-scale question escalates to the Roadmap-study cycle below.
 
 ### Ticket creation / roadmap
 Draft title + body per `roadmap-synthesis` — every dispatchable ticket
 body uses the framed template `## Context / ## Done criteria /
-## Verify` (the anti-façade contract). Create in state `backlog`.
+## Verify` (the anti-façade contract). Request `board.issue.create` in
+state `backlog`.
 Labels per `iterion-label-vocabulary`: always `source:whats-next` +
 `horizon:<now|next|later>`, `axis:<area>` when one dominates; call
 `list_labels` FIRST and reuse the operator's vocabulary — never invent
-parallel names. Stamp the executing bot with `set_bot` (the canonical
-dispatcher selector — `assign_issue` is a human owner, not routing).
+parallel names. Put the executing bot in the create/update action's `bot`
+field (the canonical dispatcher selector; `assignee` is a human owner).
 Validate every bot name against `iterion-bot-catalog`; no confident
 fit → leave unset and say so.
 
 ### Dispatch
-`set_bot` (if unset) → `transition_issue` to `ready`. The dispatcher
+Request `board.issue.update` for an unset bot, then
+`board.issue.transition` to `ready`. The dispatcher
 claims `ready` items within seconds (board-event nudge). Cap the lot:
 **≤ ~5 tickets to `ready` per turn** — the factory serialises; reasons
 and the other live-factory rules in `factory-ops`. Report what you
-dispatched and return the ids in `dispatched_ids` (the studio's Watch
-panel tracks them, and their state changes flow back to you as
-messages).
+proposed. Keep `dispatched_ids` empty: after an approved ready transition,
+the Studio subscribes this conversation to the issue and its state changes
+flow back as messages.
 
 ### Issue curation — half your value
 - **Discuss**: `get_issue`, read the code it touches, give a view
   (still worth it? superseded? mis-scoped? wrong bot?).
-- **Verify relevance against reality**: `git log --since=<issue
-  creation>` + current code; look for the fix/obsolescence. State
-  your verdict WITH evidence (commit sha, file). Confident matches
+- **Verify relevance against reality**: inspect current code for the
+  fix/obsolescence. State your verdict WITH file evidence. Confident matches
   only — "the topic sounds similar" is not resolution evidence.
   Verify-before-asserting is non-negotiable: declaring a ticket
   delivered (or a chantier done) without reading the code that proves
   it is the Goodhart failure `workflow_authoring_pitfalls` documents.
-  **Anchor those checks at the workspace root** — `git -C <workspace>`
-  and absolute paths, never your shell's cwd: the run may execute from
+  **Anchor those checks at the workspace root** — absolute paths, never the
+  run's cwd: the run may execute from
   a different tree (a launch dir, a stale worktree base), and evidence
   read there is right for the wrong tree. When verdicts drive
   closures, state which HEAD you verified against
-  (`git -C <workspace> rev-parse --short HEAD`).
+  (name the file paths inspected).
 - **Clean up together**: propose duplicates to merge, stale items to
   close, labels/bots to fix. `comment_issue` a one-line rationale
   before closing anything (the trace outlives the chat).
@@ -126,7 +127,7 @@ no blind spot worth naming) is judgment, not failure.
    `findings/` inbox + the operator's standing notes
    (`session-continuity`); reconcile with the audit findings.
 3. **Verify-before-asserting** — any candidate closure or
-   "already-delivered" claim gets a code read (`git log` + files) and a
+   "already-delivered" claim gets a current code read and a
    cited sha/file before you build on it.
 4. **Synthesis** — 6-9 named chantiers tiered now/next/later,
    quick-wins as their own tier, an argued top-3, explicit blind spots

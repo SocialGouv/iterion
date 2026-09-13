@@ -97,33 +97,48 @@ which model and/or backend specific nodes use for a single run, **without
 editing the `.bot`**. Because the operator is deliberately re-pointing the
 bot at launch, these win over the node's own DSL `backend:`/`model:`.
 
+Three dimensions are overridable — **model**, **backend** and
+**`reasoning_effort`** — because they are one decision: a model, the backend
+that drives it, and how hard it is asked to think.
+
 - **Studio** — the Launch form's "Model & backend per node" section lists
-  the bot's LLM nodes (agents + judges) with a model input (suggesting
-  detected providers' models) and a backend select; leave a field on
-  *inherit* to keep the DSL default.
-- **CLI** — repeatable `--model` / `--backend`, each a `selector=value` (or
-  a bare `value` for every LLM node). A selector matches by exact node id
-  (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or node kind
-  (`agent`|`judge`). Most specific match wins; resolution is per-field so
-  `--model` and `--backend` compose:
+  the bot's LLM nodes (agents + judges) with a **model picker** (fed by the
+  model registry, so each option carries its reachability, context window and
+  price — see [docs/models.md](models.md)) and a backend select; leave a field
+  on *inherit* to keep the DSL default.
+- **CLI** — repeatable `--model` / `--backend` / `--effort-for`, each a
+  `selector=value` (or a bare `value` for every LLM node). A selector matches
+  by exact node id (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or
+  node kind (`agent`|`judge`). Most specific match wins; resolution is
+  per-field so the three compose:
 
   ```bash
   # cheap model for reviewers, stronger for fixers, all on claw
   iterion run bots/whole-improve-loop/main.bot \
     --model 'reviewer_*=anthropic/claude-fable-5' \
     --model 'fix_*=anthropic/claude-sonnet-5' \
-    --backend '*=claw'
+    --backend '*=claw' \
+    --effort-for 'fix_*=max'
   ```
 
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
-  backend}]`.
+  backend, effort}]`. An `effort` outside
+  `low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
+  reaches the provider verbatim.
+
+The **effort** override outranks both the node's static `reasoning_effort:`
+and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
+already sit at the top of the chain. A bot that escalates effort per branch is
+therefore flattened by a run-wide `*` override — which is what asking for one
+means. See [ADR-090](adr/090-model-registry-and-operator-model-choice.md).
 
 This composes with the mono/dual `--review-mode` topology (ADR-052): the
 review mode chooses *which family* runs (one or two), the override chooses
-*which model/backend* each running node uses. Launch-time model/backend rules
-are not re-applied automatically on resume; repeat the same `--model` and
-`--backend` flags on `iterion resume` when continuity matters. `--compress`
-remains launch-only.
+*which model/backend* each running node uses. A run launched through the studio / HTTP
+API re-applies its launch-time model/backend rules on resume (they are read
+back off the run document) — on every launch surface, `iterion run` included,
+so the flags do not have to be repeated on `iterion resume`. `--compress` remains
+launch-only. See [docs/models.md](models.md#the-assistants-model).
 
 ## Default preference order
 
@@ -477,10 +492,17 @@ Deliberately narrow, on three axes:
   model-level — a fresh session hits the same wall — and
   `transient_exhausted` is a provider-side cause (throttle, 5xx, TCP
   blip) the session had no part in.
-- **Backends that actually resume with the id** — `claude_code`,
-  `codex`, `pi`. `claw` never reads `SessionID` (its conversation is
-  replayed from the run's own store), and `kimi` / `grok` only report
-  one, so there the "fresh" call would be byte-identical.
+- **Backends that actually resume with the id** — `claw`, `claude_code`,
+  `codex`, `pi`. For `claw`, `session: persist` checkpoints a compacted,
+  versioned message envelope in the run's backend-session store (32k-token
+  target, eight recent messages preserved, 512 KiB hard blob cap). A
+  `session_slot` may let serial persist nodes share that envelope; absent it,
+  the node id remains the slot. Compaction and envelope loading repair tool
+  protocol half-pairs at message boundaries: orphaned `tool_result` blocks and
+  unanswered `tool_use` blocks are pruned before a provider request. The sole
+  exception is the exact pending tool id recorded by an `ask_user` pause.
+  `kimi` / `grok` only report an id, so there the "fresh" call would be
+  byte-identical.
 - **`inherit` and `fork` never degrade.** They asked for continuity
   unconditionally, and keep failing loudly.
 
@@ -491,6 +513,15 @@ amnesiac input. It is *not* a `model_fallback` and does not set
 `_fallback_used`: the same backend, model and credential served — what
 degraded is the node's input. The node's accumulated `claw` conversation
 is evicted alongside, so "fresh" means fresh on every backend.
+
+Provider fingerprints are checked before replay. A claw session produced by
+OpenAI is never replayed into Anthropic (or the reverse): the runtime emits
+`session_degraded`, discards the opaque conversation, and relies on the bot's
+bounded host projection instead of forwarding provider-signed thinking blocks.
+Within one live claw fallback chain, the executor instead rolls back the failed
+attempt to the route's last-good, provider-neutral message snapshot. This keeps
+a named durable chat slot intact without carrying partial output into the next
+route.
 
 ### Refusals
 
@@ -832,6 +863,19 @@ order) — currently
 `anthropic/glm-5.2` for z.ai,
 `openai/gpt-5.4-mini` for OpenAI, and
 `xai/grok-3` for xAI.
+
+#### Stream-silence watchdog
+
+Each in-process Claw provider request is protected against indefinite silence,
+without imposing a total duration limit on a healthy long response. The cold
+phase allows **5 minutes** for the first stream event; after the first event,
+every event (including a provider ping) resets the hot **15 minute** timer.
+A watchdog expiry is retried through the bounded transient retry budget; a
+parent node/run cancellation is not retried.
+
+Tune the tiers with `ITERION_CLAW_STREAM_COLD_TIMEOUT` and
+`ITERION_CLAW_STREAM_IDLE_TIMEOUT` (Go durations such as `2m` or `20m`). Set
+either to `0` only when that tier must be deliberately disabled.
 
 #### The `tools:` list is load-bearing here (`C135`)
 

@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { referenceDragProps } from "@/lib/chatDock/dragReference";
 
 import type { RunSummary } from "@/api/runs";
 import { Badge } from "@/components/ui/Badge";
@@ -54,6 +55,14 @@ export const RunListRow = memo(function RunListRow({
       </td>
       <td className="px-4 py-2">
         <div className="flex items-center gap-2">
+          <span
+            className="shrink-0 cursor-grab select-none text-fg-muted"
+            aria-label={`Drag ${friendlyLabel(run)} onto the assistant`}
+            title="Drag onto the assistant to ask about this run"
+            {...referenceDragProps("run", run.id, friendlyLabel(run))}
+          >
+            ⋮⋮
+          </span>
           <BotAvatar run={run} onFilter={onFilterBot} />
           <span className="font-medium truncate">{friendlyLabel(run)}</span>
         </div>

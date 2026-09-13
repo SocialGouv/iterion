@@ -69,6 +69,7 @@ func TestPermissionGrants_OnlyAlwaysIsRecorded(t *testing.T) {
 	}{
 		{"allow always", true},
 		{"allow", false},
+		{"allow once", false},
 		{"once", false},
 		{"deny", false},
 		{"oui", false}, // unparseable: read as a refusal

@@ -91,8 +91,8 @@ type RunHeader struct {
 	BundleDisplayName string          `json:"bundle_display_name,omitempty"`
 	Status            store.RunStatus `json:"status"`
 	Inputs            map[string]any  `json:"inputs,omitempty"`
-	// PermissionMode is the workflow-declared tool-permission gate mode
-	// ("off"|"ask"|"deny"); empty when the gate is off/unset. The studio
+	// PermissionMode is the effective run-level tool-permission gate mode
+	// (operator override when set, otherwise workflow declaration). The studio
 	// badges ask/deny. See docs/permissions.md.
 	PermissionMode string `json:"permission_mode,omitempty"`
 	// CredFingerprints are the audit identities of the credentials the run
@@ -150,6 +150,8 @@ type RunHeader struct {
 	// closed" from an operator's click. Empty = unknown/legacy.
 	EndReason  store.RunEndReason `json:"end_reason,omitempty"`
 	Checkpoint *store.Checkpoint  `json:"checkpoint,omitempty"`
+	// Rewindable permits restoring an earlier checkpoint even after a terminal fail.
+	Rewindable bool `json:"rewindable,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
@@ -1547,6 +1549,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Error:                r.Error,
 		FailureCode:          r.FailureCode,
 		EndReason:            r.EndReason,
+		Rewindable:           IsRewindableRun(r),
 		Checkpoint:           r.Checkpoint,
 		WorkDir:              r.WorkDir,
 		ProjectPath:          r.ProjectPath,

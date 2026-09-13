@@ -162,3 +162,30 @@ func TestBotsList_FormatSkill(t *testing.T) {
 		}
 	}
 }
+
+func TestBotsList_MalformedBundleWarnsAndKeepsSiblings(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good", "manifest.yaml"), "name: good\n")
+	writeFile(t, filepath.Join(dir, "good", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "broken", "manifest.yaml"), "name: broken\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "broken", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	var out, errBuf bytes.Buffer
+	err := BotsList(BotsListOptions{Paths: []string{dir}, Format: "json", ErrW: &errBuf}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The JSON payload stays parseable and carries the valid sibling.
+	var entries []BotEntry
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out.String())
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the valid bundle", entries)
+	}
+	// The skipped bundle's diagnostic went to the error writer.
+	warn := errBuf.String()
+	if !strings.Contains(warn, "broken") || !strings.Contains(warn, "schema_version") {
+		t.Fatalf("warnings = %q, want the broken bundle's diagnostic", warn)
+	}
+}

@@ -93,6 +93,8 @@ type ResumeOptions struct {
 	// silently stopped applying would kill the run on the second
 	// closure. See ADR-087.
 	Fallback string
+	// EffortFor re-applies the launch-time reasoning_effort overrides.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). Mirrors
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
@@ -212,8 +214,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if r.Checkpoint != nil {
 		pausedNode = r.Checkpoint.PausedNodeID()
 	}
+	opts.Budget = mergePersistedResumeBudget(r.BudgetOverrides, opts.Budget)
 
-	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile)
+	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile, opts.Force)
 	// Install cleanup BEFORE the error check: resumeOpenWorkflow returns a
 	// live cleanup (the .botz temp-dir remover) even on a bundle compile
 	// error, so returning on err without deferring it leaks the extracted dir.
@@ -270,6 +273,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// executor so the hub also rides the backend-hook seam (the only one
 	// carrying assistant_text / tool events).
 	resumeOpts := []runtime.EngineOption{}
+	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
+		resumeOpts = append(resumeOpts, runtime.WithBudgetOverrides(raw))
+	}
 	var superviseHub *supervise.EventHub
 	var hookObservers []func(store.Event)
 	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
@@ -299,6 +305,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		runtime.WithRepoDevbox(opts.RepoDevbox),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
+		// Re-applied from the run record, like Preset. Load-bearing for a
+		// conversational bot: every turn is a resume, so a launch-only list
+		// would vanish after the first reply.
+		runtime.WithExtraSkills(r.ExtraSkills, "resume"),
 		// Wire the subbot runner, mirroring the run path (run.go). Without
 		// it, ANY resumed run whose remaining graph contains a subbot node
 		// died with "no SubbotRunner is wired" — runs with subbots were
@@ -319,6 +329,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,
+			EffortFor:       opts.EffortFor,
 		})),
 	)...)
 
@@ -349,6 +360,13 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
+	}
+	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
+		if patcher := store.AsRunBudgetOverridesPatcher(s); patcher != nil {
+			if err := patcher.PatchRunBudgetOverrides(ctx, opts.RunID, raw); err != nil {
+				return fmt.Errorf("persist resume budget override: %w", err)
+			}
+		}
 	}
 
 	if p.Format == OutputHuman {
@@ -381,6 +399,35 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,
 	})
+}
+
+// mergePersistedResumeBudget gives a rebuilt CLI engine the raw launch intent
+// before layering explicit --max-* flags. Detached studio resumes pass the
+// full raw value, while a manual bare `iterion resume` still inherits it.
+func mergePersistedResumeBudget(persisted *store.RunBudgetOverrides, explicit BudgetOverrides) BudgetOverrides {
+	out := BudgetOverrides{}
+	if base := runview.BudgetOverridesFromRun(persisted); base != nil {
+		out = *base
+	}
+	if explicit.MaxCostUSD > 0 {
+		out.MaxCostUSD = explicit.MaxCostUSD
+	}
+	if explicit.MaxTokens > 0 {
+		out.MaxTokens = explicit.MaxTokens
+	}
+	if explicit.MaxDuration != "" {
+		out.MaxDuration = explicit.MaxDuration
+	}
+	if explicit.MaxIterations > 0 {
+		out.MaxIterations = explicit.MaxIterations
+	}
+	if explicit.MaxParallelBranches > 0 {
+		out.MaxParallelBranches = explicit.MaxParallelBranches
+	}
+	if explicit.UnlimitedWorkflow {
+		out.UnlimitedWorkflow = true
+	}
+	return out
 }
 
 // ParseAnswerFlags parses a slice of "key=value" strings into a map.

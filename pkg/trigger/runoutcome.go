@@ -50,6 +50,14 @@ func RunOutcomeEventID(runID, status, interactionID string, updatedAt time.Time)
 	return id
 }
 
+// RunHealthEventID is the stable identity of a persisted run-health event.
+// Health events already carry a monotonic per-run store sequence, which is a
+// stronger episode key than a wall-clock timestamp and stays valid across a
+// coordinator restart.
+func RunHealthEventID(runID string, seq int64) string {
+	return "run:" + runID + ":health:" + strconv.FormatInt(seq, 10)
+}
+
 func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyErr error) Event {
 	// A pause is NOT a terminal failure. Match it BEFORE the bodyErr!=nil arm
 	// so a run that suspends on a human node (ErrRunPaused) or an operator

@@ -60,6 +60,10 @@ type PipelineBoardPendingReview struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// Depth is 0 for the root's own pause, >0 for a descendant's.
 	Depth int `json:"depth"`
+	// BatchKey identifies sibling human gates launched by one fan-out. It is
+	// deliberately absent for ordinary pauses: the Studio must never group
+	// unrelated decisions merely because they happen to be pending together.
+	BatchKey string `json:"batch_key,omitempty"`
 }
 
 // PipelineBoardAttempt is one dispatcher attempt associated with a native

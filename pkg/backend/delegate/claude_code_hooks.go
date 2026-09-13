@@ -301,20 +301,21 @@ func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Optio
 	noContinue := false
 	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
 		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
-			dec, rule := policy.Evaluate(in.ToolName, in.ToolInput)
+			policyToolName := claudePermissionToolName(task, in.ToolName, in.ToolInput)
+			dec, rule := policy.Evaluate(policyToolName, in.ToolInput)
 			switch dec {
 			case permission.Deny:
 				return claudesdk.HookOutput{
 					Decision:       "deny",
-					DecisionReason: permission.DenyMessage(in.ToolName, in.ToolInput, rule),
+					DecisionReason: permission.DenyMessage(policyToolName, in.ToolInput, rule),
 				}, nil
 			case permission.Ask:
 				// Surface the approval request to the human and stop the
 				// stream — the post-session check reuses the ask_user
 				// pending path to pause the run. The marker carries the
 				// structured request so the runtime can auto-grant on resume.
-				pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(in.ToolName, in.ToolInput, rule)})
-				pendingPermission.Store(permission.Marker(in.ToolName, in.ToolInput, rule))
+				pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(policyToolName, in.ToolInput, rule)})
+				pendingPermission.Store(permission.Marker(policyToolName, in.ToolInput, rule))
 				cancelStream()
 				return claudesdk.HookOutput{
 					Decision:      "deny",
@@ -326,6 +327,26 @@ func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Optio
 			}
 		},
 	}))
+}
+
+// claudePermissionToolName is the narrow bridge between Claude Code's native
+// Bash spelling and Iterion's diagnostic_shell approval alias. The alias is
+// opt-in per declared node, never accepts a multiline command, and never wins
+// over a workflow author's explicit Bash deny. That lets a persisted Copi ask
+// for one inspectable verification command without exposing raw Bash to the
+// fresh Kimi/Grok reviewer routes that cannot pause for it.
+func claudePermissionToolName(task Task, toolName string, input map[string]any) string {
+	if toolName != "Bash" || !task.DiagnosticShell || task.Permission == nil {
+		return toolName
+	}
+	command, _ := input["command"].(string)
+	if strings.TrimSpace(command) == "" || strings.ContainsAny(command, "\r\n") {
+		return toolName
+	}
+	if task.Permission.HasExplicitDeny(toolName, input) {
+		return toolName
+	}
+	return "diagnostic_shell"
 }
 
 // installMaterializeSecretsHook adds a PreToolUse hook that swaps

@@ -71,6 +71,10 @@ const (
 	// NON-BLOCKING async question (ADR-081) — see IsAsyncHumanInput.
 	asyncEventDataKey           = "async"
 	EventRunResumed   EventType = "run_resumed"
+	// EventRunResumeOverride is the audit marker for an explicit --force
+	// resume that accepted changed workflow or shared-bundle identity.
+	// Data: workflow_changed, bundle_changed, previous/current hashes.
+	EventRunResumeOverride EventType = "run_resume_override"
 	// EventRunSteered marks a live-steering intervention on a RUNNING
 	// run (bump_loop / raise_budget), emitted by the engine goroutine
 	// atomically with the in-memory mutation so the timeline and any
@@ -461,6 +465,17 @@ const (
 	//   - mode: the requested mode ("auto" or "inline")
 	//   - reason: human-readable explanation
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSkillsInjected fires at run start when the OPERATOR added
+	// skill-library skills to this run on top of the workflow's own
+	// (`--skill <name>`, or the ITERION_SKILLS machine default).
+	//
+	// Emitted because otherwise the addition is invisible state that changes
+	// how a bot answers: the run would carry knowledge its `.bot` does not
+	// mention, and a bug report against that run would be irreproducible.
+	// This is the record that makes it reproducible. Data:
+	//   - skills: []string of the names added (never the workflow's own)
+	//   - origin: "flag" | "env" — where the list came from
+	EventSkillsInjected EventType = "skills_injected"
 	// EventSandboxShared is emitted at run start when the run executes in
 	// its PARENT run's live sandbox instead of one of its own (a subbot
 	// child): {driver, workspace, parent_run}. The parent's sandbox_started
@@ -666,6 +681,22 @@ const (
 	// human pause (claude_code / codex). Data carries the
 	// QueuedUserMessage record.
 	EventUserMessageQueued EventType = "user_message_queued"
+
+	// EventAssistantVeilleArmed / EventAssistantVeilleStopped record that a
+	// conversational run started or stopped standing by for something outside
+	// itself — a board card's transitions, or the outcome of a run that card
+	// produced. They are OBSERVATIONAL: the authority stays in the run's
+	// WatchedIssueIDs set and in the runwatch store.
+	//
+	// They exist because the assistant dock cannot derive this from the run
+	// snapshot. The snapshot reducer is deterministic over (run.json, events)
+	// — the frontend replays it locally for the time-travel scrubber — so a
+	// field fed by a second store would diverge between server and client.
+	// Emitting the fact as an event keeps the reducer pure, gives the dock a
+	// live WS push instead of a poll, and leaves a durable trace explaining
+	// why the assistant speaks up again three hours later.
+	EventAssistantVeilleArmed   EventType = "assistant_veille_armed"
+	EventAssistantVeilleStopped EventType = "assistant_veille_stopped"
 	// EventUserMessageDelivered fires when the engine extracts a
 	// queued message from the inbox and hands it to the agent. For
 	// claw this happens inline at the tool-iteration boundary; for

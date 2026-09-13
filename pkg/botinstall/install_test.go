@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -43,6 +44,13 @@ func TestInstall_SingleBundleRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "mybot", "main.bot")); err != nil {
 		t.Errorf("main.bot not installed: %v", err)
+	}
+	origin, err := ReadOrigin(res.InstalledPath)
+	if err != nil {
+		t.Fatalf("read install origin: %v", err)
+	}
+	if origin.Source != repo {
+		t.Errorf("origin source = %q, want %q", origin.Source, repo)
 	}
 }
 
@@ -180,6 +188,10 @@ func TestInstallFromBotzBytes_RoundTrip(t *testing.T) {
 	if res.Source != "upload" {
 		t.Errorf("source = %q, want upload", res.Source)
 	}
+	origin, err := ReadOrigin(res.InstalledPath)
+	if err != nil || origin.Source != "upload" {
+		t.Fatalf("upload origin = %#v, %v", origin, err)
+	}
 	if _, err := os.Stat(filepath.Join(dest, "packed", "main.bot")); err != nil {
 		t.Errorf("main.bot not installed: %v", err)
 	}
@@ -203,5 +215,33 @@ func TestRemove(t *testing.T) {
 	// Removing a non-existent install is an error (404 signal).
 	if err := Remove(context.Background(), Options{Name: "ghost", Dest: dest, Workdir: workdir}); err == nil {
 		t.Error("expected error removing missing install")
+	}
+}
+
+func TestInstallDefaultRegeneratesLiveCatalog(t *testing.T) {
+	workdir := t.TempDir()
+	owner := filepath.Join(workdir, "bots", "router")
+	writeBundle(t, owner, "router", 1)
+	if err := os.WriteFile(filepath.Join(owner, "main.bot"), []byte("workflow router {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	template := []byte("Catalog\n<!-- ITERION:CATALOG:GENERATED:BEGIN -->\nstale\n<!-- ITERION:CATALOG:GENERATED:END -->\n")
+	if err := os.WriteFile(filepath.Join(owner, "iterion-bot-catalog-static.md"), template, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source := t.TempDir()
+	writeBundle(t, source, "newbot", 1)
+	if err := os.WriteFile(filepath.Join(source, "main.bot"), []byte("workflow newbot {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(t.Context(), Options{Source: source, Workdir: workdir}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(owner, "skills", "iterion-bot-catalog.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "## The team") || strings.Contains(string(body), "\nstale\n") {
+		t.Fatalf("default install failed to regenerate catalog: %s", body)
 	}
 }

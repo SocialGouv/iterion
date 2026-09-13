@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/assistantmission"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server/projects"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -329,6 +331,8 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	}
 
 	var newRuns *runview.Service
+	var newAssistantWatches runwatch.Store
+	var newAssistantMissions assistantmission.Store
 	if storeDir != "" {
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(s.logger),
@@ -337,7 +341,9 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 			// Sandbox-by-default (same resolution as `iterion run`).
 			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
 		}
-		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
+		if mcpStore, openErr := store.New(storeDir); openErr != nil {
+			s.logger.Warn("projects: open runs MCP store for %q: %v — sandboxed runs.read disabled", abs, openErr)
+		} else if opt, ok := s.boardMCPServiceOption(s.logger, mcpStore); ok {
 			svcOpts = append(svcOpts, opt)
 		}
 		// Run-health alerting is a server-level setting, not a per-project
@@ -358,6 +364,21 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 			return fmt.Errorf("runview service: %w", svcErr)
 		}
 		newRuns = svc
+		if s.cfg.RunWatches == nil {
+			newAssistantWatches = runwatch.NewFSStore(svc.RunStore().Root())
+			if err := newAssistantWatches.EnsureSchema(context.Background()); err != nil {
+				return fmt.Errorf("assistant run watch store: %w", err)
+			}
+		}
+		if s.cfg.AssistantMissions == nil {
+			newAssistantMissions = assistantmission.NewFSStore(svc.RunStore().Root())
+			if err := newAssistantMissions.EnsureSchema(context.Background()); err != nil {
+				return fmt.Errorf("assistant mission store: %w", err)
+			}
+		}
+		if bus := s.eventsBus(); bus != nil {
+			newRuns.SetEventPublisher(bus)
+		}
 	}
 
 	// Build the new watcher. Best-effort: a NewWatcher failure is
@@ -383,13 +404,31 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	s.cfg.WorkDir = abs
 	s.cfg.StoreDir = storeDir
 	s.runs = newRuns
+	if newAssistantWatches != nil {
+		s.assistantWatches = newAssistantWatches
+	}
+	if newAssistantMissions != nil {
+		s.assistantMissions = newAssistantMissions
+	}
 	s.watcher = newWatcher
 	s.localSecrets = newLocalSecrets
 	// The run set changes wholesale on a project switch — drop the
 	// runs-stats memo so per-run cost from the previous project can't
 	// linger (and the cache can't grow unbounded across switches).
 	s.statsCache.clear()
+	// Snapshotted under the lock: the restart below runs outside it and must
+	// not read a field another switch could be writing. A switch that
+	// supplied no new watch store keeps the one already installed.
+	watchesForMissions := s.assistantWatches
+	watchCoordinator := s.assistantWatch
+	if watchCoordinator != nil {
+		watchCoordinator.setRuntime(s.runs, s.assistantWatches, s.effectivePathsFor(abs))
+	}
 	s.stateMu.Unlock()
+	watchCoordinator.nudge()
+	if newAssistantMissions != nil {
+		s.restartAssistantMissions(newRuns, watchesForMissions, newAssistantMissions)
+	}
 
 	// Re-point the concurrency gate's reservation source at the new run
 	// service. Skipping this leaves the fresh Service ungated while the

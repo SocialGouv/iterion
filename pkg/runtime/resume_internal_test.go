@@ -22,7 +22,7 @@ import (
 func TestCheckWorkflowHash_BothEmptyAllowsResume(t *testing.T) {
 	e := &Engine{} // workflowHash empty
 	r := &store.Run{ID: "r1"}
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(context.Background(), r); err != nil {
 		t.Fatalf("expected nil when both hashes empty, got %v", err)
 	}
 }
@@ -30,7 +30,7 @@ func TestCheckWorkflowHash_BothEmptyAllowsResume(t *testing.T) {
 func TestCheckWorkflowHash_MatchingHashesAllowResume(t *testing.T) {
 	e := &Engine{workflowHash: "abc123def456"}
 	r := &store.Run{ID: "r1", WorkflowHash: "abc123def456"}
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(context.Background(), r); err != nil {
 		t.Fatalf("expected nil for matching hashes, got %v", err)
 	}
 }
@@ -38,7 +38,7 @@ func TestCheckWorkflowHash_MatchingHashesAllowResume(t *testing.T) {
 func TestCheckWorkflowHash_MismatchReturnsError(t *testing.T) {
 	e := &Engine{workflowHash: "abc123def456"}
 	r := &store.Run{ID: "r1", WorkflowHash: "deadbeefcafe"}
-	err := e.checkWorkflowHash(r)
+	err := e.checkWorkflowHash(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch")
 	}
@@ -71,10 +71,22 @@ func TestIsWorkflowSourceChanged_LegacyTextCompatibility(t *testing.T) {
 }
 
 func TestCheckWorkflowHash_ForceAllowsMismatch(t *testing.T) {
-	e := &Engine{workflowHash: "abc123def456", forceResume: true}
+	ctx := context.Background()
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "r1", "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{workflowHash: "abc123def456", forceResume: true, store: s}
 	r := &store.Run{ID: "r1", WorkflowHash: "deadbeefcafe"}
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(ctx, r); err != nil {
 		t.Fatalf("expected --force to bypass hash check, got %v", err)
+	}
+	events, err := s.LoadEvents(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != store.EventRunResumeOverride {
+		t.Fatalf("events = %+v, want one run_resume_override", events)
 	}
 }
 

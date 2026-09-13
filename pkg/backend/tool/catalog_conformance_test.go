@@ -9,6 +9,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/runops"
+	"github.com/SocialGouv/iterion/pkg/store"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
@@ -37,9 +39,10 @@ func TestClawCatalogMatchesRegistry(t *testing.T) {
 	defaults := ClawDefaults{
 		// Workspace stays empty: registration does not touch the disk, and
 		// the tools' behaviour is not what this test is about.
-		IncludeWebSearch:   true,
-		IncludeComputerUse: true,
-		PlanMode:           &clawtools.PlanModeState{Active: &planActive, Dir: t.TempDir()},
+		IncludeWebSearch:            true,
+		IncludeComputerUse:          true,
+		IncludeWorkspaceDiagnostics: true,
+		PlanMode:                    &clawtools.PlanModeState{Active: &planActive, Dir: t.TempDir()},
 		Privacy: &privacy.Config{
 			StoreDir:     t.TempDir(),
 			Detector:     detector.New(),
@@ -98,11 +101,11 @@ func TestClawCatalogMatchesRegistry(t *testing.T) {
 // the compiler starts refusing a workflow that runs; this fails first.
 func TestInternalMCPShorthandsMatchRegistry(t *testing.T) {
 	reg := NewRegistry()
-	store, err := native.NewStore(t.TempDir())
+	boardStore, err := native.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("open board store: %v", err)
 	}
-	if err := RegisterClawBoardTools(reg, &BoardConfig{Store: store, Capabilities: boardops.AllCapabilities()}); err != nil {
+	if err := RegisterClawBoardTools(reg, &BoardConfig{Store: boardStore, Capabilities: boardops.AllCapabilities()}); err != nil {
 		t.Fatalf("RegisterClawBoardTools: %v", err)
 	}
 	if err := RegisterClawWatchTools(reg, &WatchConfig{
@@ -111,6 +114,13 @@ func TestInternalMCPShorthandsMatchRegistry(t *testing.T) {
 		Capabilities: []string{"watch.subscribe", "watch.unsubscribe"},
 	}); err != nil {
 		t.Fatalf("RegisterClawWatchTools: %v", err)
+	}
+	runStore, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("open run store: %v", err)
+	}
+	if err := RegisterClawRunTools(reg, &RunConfig{Store: runStore, Capabilities: []string{runops.CapRunsRead}}); err != nil {
+		t.Fatalf("RegisterClawRunTools: %v", err)
 	}
 
 	var registered []string
@@ -144,6 +154,7 @@ func TestInternalMCPShorthandsMatchRegistry(t *testing.T) {
 		"add_labels", "assign_issue", "close_issue", "comment_issue", "create_issue",
 		"get_issue", "list_issues", "list_labels", "remove_labels", "set_bot", "set_labels",
 		"transition_issue", "subscribe", "unsubscribe",
+		"run_events", "run_get", "runs_list",
 	} {
 		if !live[bare] {
 			t.Errorf("the catalog accepts %q but no internal MCP server registers it any more", bare)

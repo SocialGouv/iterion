@@ -74,6 +74,92 @@ func TestResolveResumeSourceExplicitSourceWinsOverPersistedFallback(t *testing.T
 	}
 }
 
+func TestResolveResumeSourceExplicitPathDoesNotUsePersistedFallback(t *testing.T) {
+	workDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), ".iterion")
+	srv := New(Config{
+		WorkDir:                 workDir,
+		StoreDir:                storeDir,
+		SkipProjectRegistration: true,
+	}, iterlog.New(iterlog.LevelError, os.Stderr))
+
+	explicitPath := filepath.Join(t.TempDir(), "dispatcher", "worktree", "child.bot")
+	persistedSource := "workflow child:\n  entry: done\n"
+	if _, _, _, err := srv.resolveResumeSourceWithFallback(
+		context.Background(), "", explicitPath, "", persistedSource, false,
+	); err == nil {
+		t.Fatal("explicit path unexpectedly fell back to the persisted launch source")
+	}
+}
+
+func TestResolveLegacyCatalogResumeRebindsCurrentCatalogSource(t *testing.T) {
+	workDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), ".iterion")
+	catalogRoot := t.TempDir()
+	catalogDir := filepath.Join(catalogRoot, "copilot")
+	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(catalogDir, botsource.MainBotFile), []byte(testBotMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(catalogDir, "manifest.yaml"), []byte("name: copilot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(Config{
+		WorkDir:                 workDir,
+		StoreDir:                storeDir,
+		Bots:                    BotsConfig{Paths: []string{catalogRoot}},
+		SkipProjectRegistration: true,
+	}, iterlog.New(iterlog.LevelError, os.Stderr))
+	oldPath, ok := srv.materializeInlineSource("main.bot", "workflow stale:\n  entry: done\n")
+	if !ok {
+		t.Fatal("materializeInlineSource() failed")
+	}
+	run := &store.Run{FilePath: oldPath, BundleName: "copilot", WorkflowName: "copilot"}
+
+	resolved, lb, rebound, err := srv.resolveLegacyCatalogResume(context.Background(), run, oldPath)
+	if err != nil {
+		t.Fatalf("resolveLegacyCatalogResume() error = %v", err)
+	}
+	if !rebound {
+		t.Fatal("legacy catalog cache was not rebound")
+	}
+	want := filepath.Join(catalogDir, botsource.MainBotFile)
+	if resolved != want {
+		t.Fatalf("resolved path = %q, want current catalog path %q", resolved, want)
+	}
+	if lb == nil || lb.Origin != "catalog" {
+		t.Fatalf("resolved bot = %+v, want catalog origin", lb)
+	}
+	lb.Cleanup()
+
+	// A configured catalog can also be persisted as an absolute path outside
+	// the active WorkDir. That path must be rebound before the safePath
+	// fallback materialises the stale launch snapshot.
+	legacyCatalogPath := filepath.Join(t.TempDir(), "bots", "copilot", botsource.MainBotFile)
+	resolved, lb, rebound, err = srv.resolveLegacyCatalogResume(context.Background(), run, legacyCatalogPath)
+	if err != nil {
+		t.Fatalf("external catalog path error = %v", err)
+	}
+	if !rebound || resolved != want || lb == nil || lb.Origin != "catalog" {
+		t.Fatalf("external catalog path = resolved=%q bot=%+v rebound=%v, want %q/catalog/true", resolved, lb, rebound, want)
+	}
+	lb.Cleanup()
+
+	// An arbitrary workspace path is never rebound merely because a matching
+	// workflow name exists in the catalog.
+	arbitrary := filepath.Join(t.TempDir(), "main.bot")
+	resolved, lb, rebound, err = srv.resolveLegacyCatalogResume(context.Background(), run, arbitrary)
+	if err != nil {
+		t.Fatalf("arbitrary path error = %v", err)
+	}
+	if rebound || lb != nil || resolved != arbitrary {
+		t.Fatalf("arbitrary path changed: resolved=%q bot=%+v rebound=%v", resolved, lb, rebound)
+	}
+}
+
 // A resume re-resolves the SAME stored-bot tier the launch used
 // (Run.BotSourceTenant), fresh version — never re-derives the tier from
 // the path, which silently swapped a team bot's resume onto a same-slug
