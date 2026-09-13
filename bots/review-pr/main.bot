@@ -1003,6 +1003,23 @@ schema pr_gate_output:
   gpt_findings: json
 
 schema publish_input:
+  ## Engine telemetry is mapped at publication, never supplied by the LLM.
+  ai_run_tokens: json
+  ai_reviewer_claude_model: json
+  ai_reviewer_claude_backend: json
+  ai_reviewer_claude_tokens: json
+  ai_reviewer_gpt_model: json
+  ai_reviewer_gpt_backend: json
+  ai_reviewer_gpt_tokens: json
+  ai_reviewer_claude_glance_model: json
+  ai_reviewer_claude_glance_backend: json
+  ai_reviewer_claude_glance_tokens: json
+  ai_reviewer_gpt_glance_model: json
+  ai_reviewer_gpt_glance_backend: json
+  ai_reviewer_gpt_glance_tokens: json
+  ai_converge_model: json
+  ai_converge_backend: json
+  ai_converge_tokens: json
   pr_url: string
   ## reviewed_sha: the worktree HEAD the findings anchor to. Comes in on the
   ## EDGE so the publish tool reads it as a typed `{{input.X}}` of its own
@@ -1263,7 +1280,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -1441,6 +1458,45 @@ if stale_anchors:
     summary.append(chr(9888) + ' The worktree HEAD moved after the reviewers judged it (' + stale_anchors +
                    '), so the inline anchors would land on the wrong lines. The findings are summarised '
                    'above instead. Push again or comment /revi for a review of the current head.')
+
+# Run telemetry is engine-owned: never ask a reviewer to self-report it.
+# Effort is expanded by the engine before entering the tool sandbox, using
+# the same environment/default as the requested node setting above; it is
+# not a provider measurement. Only executed nodes have stamped metadata.
+import html
+
+def ai_value(name):
+    value = os.environ.get(name, '').strip()
+    return '' if value.startswith(chr(123) * 2) or value in ('null', '<nil>', 'None') else value
+
+def ai_tokens(value):
+    try:
+        count = int(value)
+        return format(count, ',').replace(',', ' ') if count >= 0 else 'indisponible'
+    except (ValueError, TypeError):
+        return 'indisponible'
+
+def ai_cell(value):
+    return html.escape(str(value or 'indisponible'), quote=True).replace('|', '&#124;').replace(chr(10), ' ').replace(chr(13), ' ')
+
+ai_rows = []
+for label, prefix in [('Revue Claude', 'AI_REVIEWER_CLAUDE'), ('Revue GPT', 'AI_REVIEWER_GPT'), ('Revue Claude · glance', 'AI_REVIEWER_CLAUDE_GLANCE'), ('Revue GPT · glance', 'AI_REVIEWER_GPT_GLANCE'), ('Synthèse', 'AI_CONVERGE')]:
+    model = ai_value(prefix + '_MODEL')
+    harness = ai_value(prefix + '_BACKEND')
+    tokens = ai_value(prefix + '_TOKENS')
+    if not (model or harness or tokens):
+        continue
+    effort = ai_value(prefix + '_EFFORT')
+    ai_rows.append('| ' + ' | '.join(ai_cell(v) for v in (label, model, harness, effort, ai_tokens(tokens))) + ' |')
+summary.extend(['', '<details>', '<summary><sub>Détails du run IA · Iterion</sub></summary>', '',
+                'Run : <code>' + ai_cell(ai_value('AI_RUN_ID')) + '</code>', '',
+                'Tokens du run au moment de publier : **' + ai_tokens(ai_value('AI_RUN_TOKENS')) + '**.', ''])
+if ai_rows:
+    summary.extend(['| Étape | Modèle | Harness | Effort demandé | Tokens |',
+                    '|---|---|---|---|---:|'] + ai_rows)
+else:
+    summary.append('Détails par étape indisponibles pour ce run.')
+summary.extend(['', '<sub>Tokens cumulés des appels IA, pas la taille du contexte. L’effort indiqué est le réglage demandé au modèle.</sub>', '', '</details>'])
 
 payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': comments}
 
@@ -1655,6 +1711,22 @@ workflow review_pr:
   ## forge publish (no LLM, no workspace credential).
   pr_gate -> done when not has_pr
   pr_gate -> publish_review when has_pr with {
+    ai_run_tokens: "{{run.tokens}}",
+    ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
+    ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",
+    ai_reviewer_claude_tokens: "{{outputs.reviewer_claude._tokens}}",
+    ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
+    ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
+    ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
+    ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
+    ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
+    ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
+    ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
+    ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
+    ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
+    ai_converge_model: "{{outputs.converge._model}}",
+    ai_converge_backend: "{{outputs.converge._backend}}",
+    ai_converge_tokens: "{{outputs.converge._tokens}}",
     pr_url: "{{outputs.pr_gate.pr_url}}",
     reviewed_sha: "{{outputs.diff_precheck.reviewed_sha}}",
     effective_review_mode: "{{outputs.tier_expand.effective_review_mode}}",

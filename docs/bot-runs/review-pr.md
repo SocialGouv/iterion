@@ -8,6 +8,16 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-13 — collapsed AI run details (run 01a099f1, #1166)
+
+- Status: **validated after publication recovery** — GitHub initially returned HTTP 500, so the run finished at 08:48:49 UTC with `published=false`. Retrying only the deterministic publication with the original run grant and results eventually succeeded, with the original HTML unchanged: [published review](https://github.com/SocialGouv/iterion/pull/1122#pullrequestreview-5190269102), `revi/review=success` on `929f4197541390901737f356b7caa800929a6e4e`. No extra LLM call was needed for the recovery. The collapsed control, expanded table and small text were checked in GitHub.
+- Versions: catalog bot 0.9.1; production Codex/Claw override 0.9.1-codex-claw.1 (platform v5).
+- Method: a real `/revi` webhook on PR #1122; GPT-only platform graph, `claw` + `openai/gpt-5.6-sol`, requested effort high for review and medium for synthesis; `post_to_board=false`.
+- Result: review `high` / 204,292 tokens + synthesis `medium` / 25,538 tokens = 229,830 run tokens. Both stages report `openai/gpt-5.6-sol` via `claw`; the published values were compared to the engine events.
+- Change: a collapsed details block at the end of the forge review carries engine-reported models, harnesses and tokens per executed step, requested effort and the run's cumulative token count at publication. Missing metadata stays unavailable; unexecuted reviewers are omitted.
+- Validation: `TestReviewPRRunDetails` executes the actual publish command against an HTTP receiver, covering served-model overrides, mono/dual-shaped telemetry, missing counts, measured zero, HTML escaping and preserved findings/gate. The catalog checks and local validation of both bundles pass.
+- Lesson: route metadata through the publish node's typed edge inputs, and resolve effort environment defaults before entering the tool sandbox. Do not ask the LLM to estimate its own model or consumption. The total is accumulated model-call tokens, not context size.
+
 ## 2026-09-11 — the gpt family carried a whole review for the first time, and named what still pinned it to Claude (runs 01a092b2 + 01a092c3, PR #1150)
 
 - Status: **validated** — `revi/review` posted `success` from a run in which

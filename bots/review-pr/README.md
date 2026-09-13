@@ -82,6 +82,14 @@ to `file:line`, with a one-click ` ```suggestion ` block when the
 finding carries a concrete replacement, plus a summary comment. The
 board + report still run; the PR review is additive.
 
+The review ends with a collapsed **Détails du run IA · Iterion** block. It
+shows the run id and cumulative token total at publication, plus each executed
+review/synthesis node's served model, harness, requested reasoning effort and
+tokens. Values come from engine metadata; absent telemetry is marked unavailable.
+Effort follows the node's `ITERION_VIBE_EFFORT_*` setting/default and describes
+the requested level, not a provider measurement. Token counts accumulate calls,
+including repeated context; they are not the session's context-window size.
+
 ```bash
 # Check out the PR's branch locally, then:
 iterion run bots/review-pr/main.bot \
