@@ -310,7 +310,7 @@ export default function Canvas({ active = true }: CanvasProps) {
 
   return (
     <div className={`h-full w-full relative${canvasTool === "pan" ? " cursor-grab" : ""}`} ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
-      <ToolPalette />
+      {activeWorkflow?.runtime_semantics !== "ports-v1" && <ToolPalette />}
       <CanvasToolbar
         onFocusNode={selectedNodeId ? handleFocusNode : null}
         onBrowserFullscreen={toggleFullscreen}
@@ -333,6 +333,7 @@ export default function Canvas({ active = true }: CanvasProps) {
         onClose={() => setPaletteOpen(false)}
         actions={buildPaletteActions({
           selectedNodeId,
+          nativeWorkflow: activeWorkflow?.runtime_semantics === "ports-v1",
           fitView: () => fitView({ padding: 0.2 }),
           navigate: setLocation,
           undo: () => docStore.getState().undo(),
@@ -501,6 +502,7 @@ export default function Canvas({ active = true }: CanvasProps) {
 // (each action is just a thunk over store getters, which are stable).
 function buildPaletteActions(deps: {
   selectedNodeId: string | null;
+  nativeWorkflow?: boolean;
   fitView: () => void;
   navigate: (path: string) => void;
   undo: () => void;
@@ -514,7 +516,7 @@ function buildPaletteActions(deps: {
   openFilePicker: () => void;
   clearSelection: () => void;
 }): CommandAction[] {
-  const hasSelection = deps.selectedNodeId !== null && isEditableNode(deps.selectedNodeId);
+  const hasSelection = !deps.nativeWorkflow && deps.selectedNodeId !== null && isEditableNode(deps.selectedNodeId);
   return [
     {
       id: "edit.undo",

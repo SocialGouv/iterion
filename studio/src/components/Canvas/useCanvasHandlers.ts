@@ -296,6 +296,7 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
   const onDrop = useCallback(
     (e: DragEvent) => {
       e.preventDefault();
+      if (activeWorkflow?.runtime_semantics === "ports-v1") return;
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
 
       // Subnode drop (in detail view)
@@ -359,6 +360,7 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
       layout.pendingPositionsRef,
       subNodeViewStack,
       setSchemaRoleDialog,
+      activeWorkflow,
     ],
   );
 

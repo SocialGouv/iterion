@@ -5,6 +5,7 @@ import { useUIStore } from "@/store/ui";
 import { makeEdgeId, isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { isSubbotChildId } from "@/lib/subbotGraph";
 import { useEscapeStack } from "@/hooks/useEscapeStack";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { LayerKind } from "@/lib/constants";
 
 // Centralised handler for the "successfully duplicated / pasted a node"
@@ -50,6 +51,7 @@ interface CanvasKeyboardDeps {
 export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) => void {
   const docStore = useDocumentStoreInstance();
   const document = useDocumentStore((s) => s.document);
+  const activeWorkflow = useActiveWorkflow();
   const removeNode = useDocumentStore((s) => s.removeNode);
   const removeEdge = useDocumentStore((s) => s.removeEdge);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
@@ -121,6 +123,16 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         } else {
           addToast("Nothing to redo", "info");
         }
+        return;
+      }
+
+      // Native canvas IDs are graph instances, not technical declaration
+      // names. Legacy copy/delete would target the wrong document layer.
+      if (activeWorkflow?.runtime_semantics === "ports-v1" && !isInput && (
+        ((e.ctrlKey || e.metaKey) && ["a", "A", "c", "v", "d"].includes(e.key)) ||
+        e.key === "Delete" || e.key === "Backspace"
+      )) {
+        e.preventDefault();
         return;
       }
 
@@ -213,6 +225,6 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu, setCanvasTool, onSelectAll, setPendingFitNodeId],
+    [selectedNodeId, selectedEdgeId, document, activeWorkflow, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu, setCanvasTool, onSelectAll, setPendingFitNodeId],
   );
 }
