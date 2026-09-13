@@ -76,6 +76,9 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("load parent run: %w", err)
 	}
+	if parent.RuntimeSemantics != "" {
+		return nil, fmt.Errorf("runview: fork: %s requires a native-state fork implementation: %w", parent.RuntimeSemantics, store.ErrRunSemantics)
+	}
 	turnStore := store.AsTurnStore(s.store)
 	if turnStore == nil {
 		return nil, fmt.Errorf("runview: fork: backend store does not support turn checkpoints")

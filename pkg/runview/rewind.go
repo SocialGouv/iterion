@@ -264,6 +264,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
 	}
+	if run.RuntimeSemantics != "" {
+		return nil, fmt.Errorf("runview: rewind: %s requires native descendant invalidation: %w", run.RuntimeSemantics, store.ErrRunSemantics)
+	}
 	if run.Worktree && spec.RestoreScope == RestoreScopeProduced && !spec.KeepFiles {
 		// Refused UP FRONT, before anything is claimed or written. git is
 		// the mechanism for a worktree run and it has exactly one breadth
