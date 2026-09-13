@@ -39,6 +39,7 @@ func runPortsEngineSuite(t *testing.T, factory portsTestStoreFactory) {
 		{"ResumeCannotChangeInterpreterWithForce", testPortsEngineResumeCannotChangeInterpreterWithForce},
 		{"ConnectedOptionalWaitsWithoutDefault", testPortsEngineConnectedOptionalWaitsWithoutDefault},
 		{"ReservesRootIterationBudget", testPortsEngineReservesRootIterationBudget},
+		{"PaidEffectWithoutUsageStaysUnpriced", testPortsEnginePaidEffectWithoutUsageStaysUnpriced},
 		{"ExactNumericInputs", testPortsEngineExactNumericInputs},
 		{"UncertainEffectRequiresAttemptDecision", testPortsEngineUncertainEffectRequiresAttemptDecision},
 		{"IdempotentEffectCanResume", testPortsEngineIdempotentEffectCanResume},

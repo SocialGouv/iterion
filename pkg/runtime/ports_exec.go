@@ -239,7 +239,13 @@ func (c *portCoordinator) complete(ctx context.Context, result portCompletion) e
 	next.Budget.Consumed.Tokens += int64(tokens)
 	next.Budget.Consumed.CostUSD += cost
 	next.Budget.Consumed.Iterations++
-	if tokens > 0 && cost == 0 {
+	unpriced := tokens > 0 && cost == 0
+	for _, effect := range instance.Contract.Effects {
+		if effect.Paid && cost == 0 {
+			unpriced = true
+		}
+	}
+	if unpriced {
 		next.Budget.UnpricedTokens += int64(tokens)
 		next.Budget.UnpricedNodes++
 	}

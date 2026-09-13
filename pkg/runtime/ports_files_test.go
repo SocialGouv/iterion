@@ -156,6 +156,17 @@ type transientPortFilesStore struct {
 	corruptOnce atomic.Bool
 }
 
+// A RunStore wrapper used by recovery tests must retain the Mongo backend
+// identity. The embedded RunStore interface does not expose this optional
+// capability, so omitting the forwarding method makes native admission fail
+// before the injected file-read fault is ever exercised.
+func (s *transientPortFilesStore) PortBackendIdentity() string {
+	if identified, ok := s.RunStore.(interface{ PortBackendIdentity() string }); ok {
+		return identified.PortBackendIdentity()
+	}
+	return ""
+}
+
 func (s *transientPortFilesStore) EnsureRunFilesDir(ctx context.Context, id string) (string, error) {
 	return s.files.EnsureRunFilesDir(ctx, id)
 }

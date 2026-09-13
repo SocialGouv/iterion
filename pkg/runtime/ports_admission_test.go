@@ -110,6 +110,26 @@ func portsEffectSource(recovery string) string {
 	return source
 }
 
+func testPortsEnginePaidEffectWithoutUsageStaysUnpriced(t *testing.T, newStore portsTestStoreFactory) {
+	source := strings.ReplaceAll(portsEffectSource("idempotent"), "paid: false", "paid: true")
+	executor := portsExecutorFunc(func(_ context.Context, _ ir.Node, _ map[string]any) (map[string]any, error) {
+		return map[string]any{"text": "rendered"}, nil
+	})
+	engine, s := portsTestEngine(t, newStore, source, executor)
+	const id = "pc1_paid_unpriced"
+	ctx := portsTestContext(t)
+	if err := engine.Run(ctx, id, map[string]any{"items": []any{"one"}}); err != nil {
+		t.Fatalf("run paid fixture: %v", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.PortExecution == nil || r.PortExecution.Budget.UnpricedNodes != 1 || r.PortExecution.Budget.Consumed.CostUSD != 0 {
+		t.Fatalf("paid effect without usage was mistaken for a known zero-cost operation: %+v", r.PortExecution)
+	}
+}
+
 type portsVerifyingExecutor struct {
 	portsExecutorFunc
 	verify func(PortEffectVerification) (PortEffectVerificationResult, error)
