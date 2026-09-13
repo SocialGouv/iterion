@@ -2154,6 +2154,9 @@
             },
             "type": "array"
           },
+          "bank_state": {
+            "type": "string"
+          },
           "bot_source_tenant": {
             "type": "string"
           },
@@ -2488,6 +2491,9 @@
           },
           "auto_merge": {
             "type": "boolean"
+          },
+          "bank_state": {
+            "type": "string"
           },
           "bundle_display_name": {
             "type": "string"

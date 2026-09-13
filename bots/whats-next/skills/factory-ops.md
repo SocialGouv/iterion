@@ -68,6 +68,15 @@ a targeted re-run on a fresh base, recommend a direct
 `iterion run <bot> --var … --merge-into none` (isolated worktree) run
 instead, and say why.
 
+## A terminal run has no final branch
+
+Read `bank_state` and `final_branch_error`, not `final_branch` alone.
+`bank_failed` is a delivery failure even when the workflow is `finished`.
+Inspect `run_bank_retry`, `run_bank_failed`, and `run_bank_refused` before
+choosing recovery; a local `final_commit` does not prove a forge push.
+The retry settings, diagnostic fields, and workspace-checkpoint recovery
+path are in [the bank failure runbook](../../../docs/resume.md#when-the-final-bank-push-fails).
+
 ## Base drift during long drains
 
 Factory branches are cut from main-at-dispatch. If main advances while

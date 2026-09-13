@@ -6322,6 +6322,7 @@ export interface components {
             admission?: components["schemas"]["AdmissionDecision"];
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
+            bank_state?: string;
             bot_source_tenant?: string;
             bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
@@ -6431,6 +6432,7 @@ export interface components {
         RunSummary: {
             active: boolean;
             auto_merge?: boolean;
+            bank_state?: string;
             bundle_display_name?: string;
             bundle_name?: string;
             /** Format: date-time */
