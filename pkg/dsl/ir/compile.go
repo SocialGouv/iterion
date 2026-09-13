@@ -122,12 +122,13 @@ func (r *CompileResult) HasErrors() bool {
 
 // compiler holds state during compilation.
 type compiler struct {
-	file    *ast.File
-	diags   []Diagnostic
-	nodes   map[string]Node
-	schemas map[string]*Schema
-	prompts map[string]*Prompt
-	mcp     map[string]*MCPServer
+	file                 *ast.File
+	diags                []Diagnostic
+	nodes                map[string]Node
+	schemas              map[string]*Schema
+	prompts              map[string]*Prompt
+	mcp                  map[string]*MCPServer
+	groupPromptTemplates map[string]bool
 	// edgeSpans remembers where each compiled edge was declared, so a
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
@@ -503,6 +504,7 @@ func detachForCompile(f *ast.File) *ast.File {
 		return nil
 	}
 	cp := *f
+	cp.Prompts = append([]*ast.PromptDecl(nil), f.Prompts...)
 	cp.Agents = append([]*ast.AgentDecl(nil), f.Agents...)
 	cp.Judges = append([]*ast.JudgeDecl(nil), f.Judges...)
 	cp.Routers = append([]*ast.RouterDecl(nil), f.Routers...)
@@ -880,6 +882,9 @@ func (c *compiler) compilePrompts() {
 			continue
 		}
 		seen[p.Name] = true
+		if c.groupPromptTemplates[p.Name] {
+			continue
+		}
 		// Expand {{include "..."}} markers once, at compile time, before
 		// ParseRefs sees the body — the injected file content becomes part
 		// of the resolved prompt (auditable, no runtime file reads).

@@ -552,7 +552,9 @@ naming the node. Put a guard whose refusal must be resumable on the trunk.
 
 ### `group` / `use`
 
-Groups are compile-time macros containing agents, judges, routers, humans, tools, computes, and internal edges. Each use prefixes cloned node ids and substitutes `{{params.*}}`.
+Groups are compile-time macros containing agents, judges, routers, humans, tools, computes, and internal edges. Each use prefixes cloned node ids and substitutes `{{params.*}}` across string properties, including nested blocks and lists. Named and inline prompts used by group members are specialized when their bodies depend on the instance; concrete consumers outside the group retain the original prompt.
+
+Inside a group, `outputs.gate.value` in an expression and `{{outputs.gate.value}}` in a template refer to that instance's `gate` member (for example `outputs.security.gate.value`). References to nodes outside the group keep their names. Expression string literals and ordinary prose are unchanged. Parameter values are inserted once, verbatim, after local references are bound; a value supplied by `use ... with` is not reinterpreted as another parameter or as a group-local reference. Each instance owns its nested data, and expansion leaves the source AST intact.
 
 ```iter
 prompt inspect_prompt:

@@ -72,7 +72,7 @@ func (c *compiler) validateHistoryRefs(w *Workflow) {
 		}
 		// outputs.<node>.history pattern: Path = [node, "history"]
 		if len(ref.Path) >= 2 && ref.Path[len(ref.Path)-1] == "history" {
-			nodeID := ref.Path[0]
+			nodeID, _ := outputNodePath(w, ref.Path)
 			if _, ok := w.Nodes[nodeID]; !ok {
 				return // unknown node already reported by other checks
 			}

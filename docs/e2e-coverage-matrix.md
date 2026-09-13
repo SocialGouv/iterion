@@ -141,7 +141,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | dsl.secrets-block | `secrets:` declarations + optional-secret semantics | dsl | covered-deterministic | pkg/dsl/ir/secrets_test.go, pkg/dsl/ir/optional_secret_test.go | |
 | dsl.memory-block | `memory:` block scopes/visibility validation | dsl | covered-deterministic | pkg/dsl/ir/memory_visibility_test.go | |
 | dsl.verified-action | Verified Action quad (goal/postcondition/policy/recovery) | dsl | covered-deterministic | TestVerifiedActionEngineEmitsAndStrips (e2e/verified_action_test.go) | |
-| dsl.groups-iteration | `group:` expansion / iteration sugar | dsl | covered-deterministic | pkg/dsl/ir/expand_groups_test.go, pkg/dsl/ir/foreach_test.go | |
+| dsl.groups-iteration | `group:` expansion / iteration sugar | dsl | covered-deterministic | pkg/dsl/ir/expand_groups_test.go, pkg/dsl/ir/group_expansion_test.go, pkg/dsl/ir/foreach_test.go, TestTransportCarriesAFullKindGroup (pkg/dsl/ast/jsonenc_transport_test.go), TestGroupLocalOutputsExecuteIndependently (pkg/runtime/group_expansion_test.go) | Two compiled instances resolve local compute expressions, edge conditions and mappings at runtime; all six node kinds, prompt specialization, nested-copy isolation and repeat compilation are checked. |
 | dsl.diagnostics | compile diagnostics C001–C2xx codes and severities | dsl | covered-deterministic | pkg/dsl/ir/diag_codes_test.go, TestValidate_Invalid (pkg/cli/cli_test.go) | |
 | dsl.unparse-roundtrip | IR → `.bot` serialization round-trips | dsl | covered-deterministic | pkg/dsl/unparse/roundtrip_test.go | |
 | dsl.ast-json | AST JSON encode/decode (`MarshalFile`/`UnmarshalFile`) | dsl | covered-deterministic | pkg/dsl/ast/jsonenc_test.go | |
