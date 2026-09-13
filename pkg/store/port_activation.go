@@ -11,7 +11,9 @@ import (
 	"time"
 )
 
-const PortActivationVersion = 2
+const PortActivationVersion = 3
+
+const PortDistributedProofMaxAge = time.Minute
 
 const (
 	PortActivationLocal       = "local"
@@ -71,7 +73,8 @@ func (a *PortActivation) Validate() error {
 		a.VerifiedAt.IsZero() || !a.ExpiresAt.After(a.VerifiedAt) {
 		return fmt.Errorf("%w: malformed activation record", ErrPortActivation)
 	}
-	if a.Scope == PortActivationDistributed && (a.QueueVersion < 15 || a.ConsumerAccessEvidence == "") {
+	if a.Scope == PortActivationDistributed && (a.QueueVersion < 15 || a.ConsumerAccessEvidence == "" ||
+		a.ExpiresAt.After(a.VerifiedAt.Add(PortDistributedProofMaxAge))) {
 		return fmt.Errorf("%w: distributed activation lacks queue/consumer evidence", ErrPortActivation)
 	}
 	return nil
@@ -80,6 +83,32 @@ func (a *PortActivation) Validate() error {
 type PortActivationStore interface {
 	LoadPortActivation(ctx context.Context) (*PortActivation, error)
 	SavePortActivation(ctx context.Context, expectedRevision uint64, next *PortActivation) error
+}
+
+// PortDistributedActivationVerifier is supplied by a trusted deployment
+// authority, not by the activation record. A manually written evidence string
+// cannot establish which principals can fetch the shared durable consumer.
+// The production Mongo store intentionally does not provide this capability
+// until a fleet and queue-access census is implemented.
+type PortDistributedActivationVerifier interface {
+	VerifyPortDistributedActivation(context.Context, *PortActivation, time.Time) error
+}
+
+func verifyPortDistributedActivation(ctx context.Context, s RunStore, record *PortActivation, now time.Time) error {
+	if record.Scope != PortActivationDistributed {
+		return nil
+	}
+	if now.Before(record.VerifiedAt) || !now.Before(record.ExpiresAt) || now.After(record.VerifiedAt.Add(PortDistributedProofMaxAge)) {
+		return fmt.Errorf("%w: distributed proof is stale or from the future", ErrPortActivation)
+	}
+	verifier, ok := s.(PortDistributedActivationVerifier)
+	if !ok {
+		return fmt.Errorf("%w: no trusted distributed fleet and queue-access verifier", ErrPortActivation)
+	}
+	if err := verifier.VerifyPortDistributedActivation(ctx, record, now); err != nil {
+		return fmt.Errorf("%w: distributed access verification failed: %v", ErrPortActivation, err)
+	}
+	return nil
 }
 
 // PortStoreIdentity names the exact storage boundary an activation can admit.
@@ -116,6 +145,9 @@ func RequirePortActivation(ctx context.Context, s RunStore, scope string, now ti
 	if err != nil || record.StoreIdentity != identity {
 		return fmt.Errorf("%w: store identity changed since activation", ErrPortActivation)
 	}
+	if err := verifyPortDistributedActivation(ctx, s, record, now); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -142,6 +174,9 @@ func ActivePortActivationCapability(ctx context.Context, s RunStore, scope, capa
 	identity, err := PortStoreIdentity(s)
 	if err != nil || record.StoreIdentity != identity {
 		return nil, fmt.Errorf("%w: store identity changed since activation", ErrPortActivation)
+	}
+	if err := verifyPortDistributedActivation(ctx, s, record, now); err != nil {
+		return nil, err
 	}
 	return record, nil
 }

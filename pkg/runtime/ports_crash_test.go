@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -33,6 +34,9 @@ func (s *portInterruptedStore) PortBackendIdentity() string {
 		return identified.PortBackendIdentity()
 	}
 	return ""
+}
+func (s *portInterruptedStore) VerifyPortDistributedActivation(ctx context.Context, record *store.PortActivation, now time.Time) error {
+	return verifyWrappedPortsTestActivation(ctx, s.RunStore, record, now)
 }
 
 func (s *portInterruptedStore) SaveRun(ctx context.Context, r *store.Run) error {

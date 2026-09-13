@@ -169,6 +169,7 @@ func activatePortsTestStore(t *testing.T, s store.RunStore) {
 		ProofDigest: strings.Repeat("a", 64), VerifiedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	if s.Root() == "" {
 		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, 15, "isolated disposable test consumer"
+		record.ExpiresAt = record.VerifiedAt.Add(store.PortDistributedProofMaxAge)
 	}
 	record.CapabilityDigest = portsactivation.CapabilityDigest(record.Scope)
 	if err := store.AsPortActivationStore(s).SavePortActivation(context.Background(), 0, record); err != nil {

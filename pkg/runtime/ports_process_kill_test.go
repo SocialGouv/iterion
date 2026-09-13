@@ -64,7 +64,7 @@ func nativeKillChildStore(t *testing.T) store.RunStore {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = mongoStore.Close(context.Background()) })
-		s = mongoStore
+		s = &verifiedPortsMongoStore{Store: mongoStore}
 	} else {
 		local, err := store.OpenExisting(os.Getenv("ITERION_PORT_KILL_STORE"))
 		if err != nil {
@@ -118,7 +118,7 @@ func nativeProcessKillMongoFixture(t *testing.T, uri string) (portsTestStoreFact
 				t.Error(err)
 			}
 		})
-		return s
+		return &verifiedPortsMongoStore{Store: s}
 	}
 	return factory, func() []string {
 		return []string{

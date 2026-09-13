@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -165,6 +166,9 @@ func (s *transientPortFilesStore) PortBackendIdentity() string {
 		return identified.PortBackendIdentity()
 	}
 	return ""
+}
+func (s *transientPortFilesStore) VerifyPortDistributedActivation(ctx context.Context, record *store.PortActivation, now time.Time) error {
+	return verifyWrappedPortsTestActivation(ctx, s.RunStore, record, now)
 }
 
 func (s *transientPortFilesStore) EnsureRunFilesDir(ctx context.Context, id string) (string, error) {

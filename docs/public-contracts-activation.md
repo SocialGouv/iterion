@@ -59,14 +59,26 @@ run will reach a capable runner.
 The repository has no trusted, complete inventory of every consumer
 authorized to fetch that durable, no freshness-bound participant evidence,
 and no reconciliation against queue-account permissions. The stored
-`consumer_access_evidence` field is a string, not that verification. No
-distributed `contracts probe` or `activate` command exists. Consequently
-there is no safe positive distributed activation procedure in this change.
-Do not enable native launches on a shared queue based on the local proof,
-queue version, or a manually populated evidence string. Before a distributed
-rollout, implement and test a trusted fleet/ACL census and epoch-fenced
-admission, including old consumers, delayed messages, stale/unknown
-participants, revocation and rollback. The default ordering can then be
+`consumer_access_evidence` field is a string, not that verification. The
+production Mongo Store supplies no distributed-access verifier: even a
+manually written, otherwise valid activation record now fails the launch
+gate. Distributed evidence is limited to a 60-second validity window and a
+future-dated proof is refused. Mongo Engine tests inject a separate verifier
+for their isolated fixture; that fixture does not certify a deployment.
+
+The selected authority for a future positive proof is the NATS system
+account together with the Kubernetes API. A live NATS connection census must
+be reconciled with the complete set of workloads that can use the durable,
+including dormant ReplicaSets and scaled-to-zero runners. Because a live
+connection list says nothing about who may connect later, the proof must also
+establish effective NATS subject permissions for
+`$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` and the credentials available
+to each workload. Unknown external clients, unrestricted shared credentials,
+unreadable ACLs or incomplete Kubernetes list permissions fail the probe.
+The activation epoch and access inventory must be rechecked before expiry;
+revocation must stop new launches. No distributed `contracts probe` or
+`activate` command exists yet, so there is no safe positive distributed
+activation procedure in this change. The default ordering can then be
 server-first; runner-first requires a separately verified queue-compatibility
 window.
 

@@ -73,7 +73,8 @@
       "TestNativeProcessKillRecoveryFilesystem",
       "TestNativeProcessKillRecoveryMongo",
       "TestNativeFileCaptureKillRecoveryFilesystem",
-      "TestNativeFileCaptureKillRecoveryMongo"
+      "TestNativeFileCaptureKillRecoveryMongo",
+      "TestNativeManualDistributedEvidenceCannotAuthorizeMongo"
     ]
   }
 }

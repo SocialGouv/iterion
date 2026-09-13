@@ -50,6 +50,9 @@ func (s *blockingPortFileStore) PortBackendIdentity() string {
 	}
 	return ""
 }
+func (s *blockingPortFileStore) VerifyPortDistributedActivation(ctx context.Context, record *store.PortActivation, now time.Time) error {
+	return verifyWrappedPortsTestActivation(ctx, s.RunStore, record, now)
+}
 
 func (s *blockingPortFileStore) PutPortFile(ctx context.Context, ref store.PortFileRef, content io.Reader) error {
 	return store.AsPortFilesStore(s.RunStore).PutPortFile(ctx, ref, &blockAfterFirstByte{ctx: ctx, source: content, marker: s.marker})

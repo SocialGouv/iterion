@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/internal/s3test"
 	"github.com/SocialGouv/iterion/pkg/portsactivation"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	storemongo "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -185,5 +187,57 @@ func portsTestMongoStore(t *testing.T) store.RunStore {
 	if err := s.DB().RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello); err != nil || !hello.Writable || hello.SetName == "" {
 		t.Fatalf("Engine tests need a writable replica set: %+v %v", hello, err)
 	}
-	return s
+	return &verifiedPortsMongoStore{Store: s}
+}
+
+// Engine integration tests exercise Mongo persistence with a deliberately
+// isolated fixture. This explicit test capability stands in for the trusted
+// fleet/ACL authority; the production Mongo Store does not provide it.
+type verifiedPortsMongoStore struct{ *storemongo.Store }
+
+func (s *verifiedPortsMongoStore) VerifyPortDistributedActivation(_ context.Context, record *store.PortActivation, now time.Time) error {
+	if record.ConsumerAccessEvidence != "isolated disposable test consumer" ||
+		record.QueueVersion != queue.SchemaVersion || record.StoreIdentity != s.PortBackendIdentity() ||
+		now.Before(record.VerifiedAt) || !now.Before(record.ExpiresAt) {
+		return store.ErrPortActivation
+	}
+	return nil
+}
+
+func verifyWrappedPortsTestActivation(ctx context.Context, underlying store.RunStore, record *store.PortActivation, now time.Time) error {
+	verifier, ok := underlying.(store.PortDistributedActivationVerifier)
+	if !ok {
+		return store.ErrPortActivation
+	}
+	return verifier.VerifyPortDistributedActivation(ctx, record, now)
+}
+
+func TestNativeManualDistributedEvidenceCannotAuthorizeMongo(t *testing.T) {
+	s := portsTestMongoStore(t).(*verifiedPortsMongoStore)
+	activatePortsTestStore(t, s)
+	ctx := portsTestContext(t)
+	const id = "pc1_manual_distributed_evidence"
+	if err := portsactivation.RequireLaunch(ctx, s.Store, ir.RuntimeSemanticsPortsV1, id); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("raw Mongo store accepted a manually populated consumer evidence string: %v", err)
+	}
+	if err := store.RequirePortActivation(ctx, s.Store, store.PortActivationDistributed, time.Now()); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("raw Mongo store accepted distributed activation without trusted verifier: %v", err)
+	}
+	if err := portsactivation.RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, id); err != nil {
+		t.Fatalf("isolated Engine fixture lost its explicit access verifier: %v", err)
+	}
+	record, err := s.LoadPortActivation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := *record
+	future.Revision++
+	future.VerifiedAt = time.Now().Add(10 * time.Second)
+	future.ExpiresAt = future.VerifiedAt.Add(store.PortDistributedProofMaxAge)
+	if err := s.SavePortActivation(ctx, record.Revision, &future); err != nil {
+		t.Fatal(err)
+	}
+	if err := portsactivation.RequireLaunch(ctx, s, ir.RuntimeSemanticsPortsV1, id); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("fixture accepted a future-dated distributed proof: %v", err)
+	}
 }
