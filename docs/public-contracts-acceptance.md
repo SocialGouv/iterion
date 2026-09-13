@@ -13,26 +13,26 @@ Syntax profiles and runtime semantics are independent.
 
 | Requirement | Evidence required | Current state |
 | --- | --- | --- |
-| Four views in one source model | AST, source/JSON/unparse round trips; every field retained | DSL/AST round trips pass; full interface round trips outstanding |
-| Public inputs, outputs, files, effects, criteria | Resolved contracts, deterministic validators, actionable diagnostics | AST, parser, resolved types and deterministic value/criterion validators pass; runtime publication outstanding |
-| Multiple typed inputs and explicit public/product exports | Supplier, type, optional/default/null/empty and product validation cases | Compiled contracts and Engine value publication pass on FS/Mongo, including connected optional absence; physical files outstanding |
+| Four views in one source model | AST, source/JSON/unparse round trips; every field retained | DSL/AST and a real Studio public edit round trip pass; full authoring/inspection consistency remains outstanding |
+| Public inputs, outputs, files, effects, criteria | Resolved contracts, deterministic validators, actionable diagnostics | AST, parser, resolved types and deterministic validators pass; native file publication passes on FS/Mongo/S3; effect-verifier execution remains outstanding |
+| Multiple typed inputs and explicit public/product exports | Supplier, type, optional/default/null/empty and product validation cases | Compiler and Engine cases pass on FS/Mongo, including connected optional absence and physical files |
 | Native acyclic data graph, including crossed diamonds | Compiled graph inspection and runtime dependency traces | Crossed DAG and committed-producer waiting pass through the actual Engine on FS/Mongo |
 | Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Compiler cases and Engine 0/1/N, broadcast, whole-array collection, limits and order pass on FS/Mongo; file outputs outstanding |
-| Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root value scheduling, iteration reservation and strict cancellation pass; paid bounds, resource/effect completeness and nested admissions outstanding |
-| Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable native file capture and scratch-shadow isolation pass on FS/Mongo/S3; runtime provenance, file schemas and required product completion outstanding |
+| Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root scheduling, iteration reservation, file handling and strict cancellation pass; nested root admission and verifier execution outstanding |
+| Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable file capture, scratch-shadow isolation and runtime freshness/declared-file checks pass on FS/Mongo/S3; actual process-kill recovery remains outstanding |
 | Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine value publication/acknowledgment fault injection pass on FS/Mongo; physical file validation and actual process termination outstanding |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Engine pause/cancel/resume, selective source invalidation, interrupted CAS and manual/idempotent effect decisions pass on FS/Mongo; verifier execution, file recovery and complete source closure outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
-| Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Engine refuses interpreter changes before mutation, including forced resume; queue version/consumers outstanding |
-| Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Outstanding |
-| Rollback | New root launches stop; existing compatible executions remain resumable | Outstanding |
-| Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Outstanding |
+| Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume; complete consumer inventory outstanding |
+| Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Local scope proof and store-bound admission pass; trusted distributed fleet/queue census and access reconciliation outstanding |
+| Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and admitted-run continuation pass; distributed rollback outstanding |
+| Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Outstanding |
-| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Outstanding |
+| Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection and real Chromium save pass; Copi, conversion, runtime cost visibility and composition outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Outstanding |
-| Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Storage and Engine manifests pass with required real Mongo; browser and complete feature acceptance outstanding |
+| Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Storage/Engine manifests pass with real Mongo; all 33 Playwright Chromium cases now pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
@@ -116,8 +116,26 @@ Syntax profiles and runtime semantics are independent.
   staging. Capturing a file does not itself publish a workflow result.
   The native manifest verifies 70 cases without skips; the focused rerun also
   covers ordinary run-file uploading, S3 client round trips and deletion
-  collection coverage. Runtime validation of fresh producer provenance and
-  declared file properties remains outstanding.
+  collection coverage. Separate Engine cases now check fresh producer
+  provenance and declared file properties; process-kill recovery remains open.
+
+- Native activation records and immutable admissions are bound to the
+  canonical filesystem root or Mongo backend identity. Copying proof or an
+  accepted run to another store cannot authorize execution. Local CLI
+  `contracts inspect`, `probe`, `activate` and `deactivate` are wired; no
+  trusted distributed fleet census exists yet.
+- `TestValidateNativeWorkflowReturnsPublicProjection` and
+  `TestPublicViewExposesContractsWithoutTechnicalConfiguration` pass. The
+  generated OpenAPI and TypeScript schemas type `/api/validate`'s native
+  public graph; `iterion validate --json` exposes the same projection.
+- A real Chromium e2e case edits a native responsibility, saves the `.bot`,
+  and reloads it with graph bindings and technical policy intact. The source
+  equivalence check ignores diagnostic spans and JSON formatting while
+  keeping absent, null and empty values distinct.
+- The complete Playwright Chromium suite passed 33/33 cases on the rebuilt
+  branch binary. A preexisting launch-caption assertion was updated to accept
+  both the curated fallback and the cached aggregator source; both retain the
+  required context and unknown-price behavior.
 
 ## Verification rules
 
@@ -140,11 +158,11 @@ also pass after the shared seam changes. Full `pkg/dsl/expr`, `pkg/dsl/ir` and
 `pkg/backend/model` pass with race detection. The full legacy corpus and final
 repository checks remain outstanding.
 
-The native runtime remains incomplete: output-file capture is not wired into
-invocation execution, verifier policies are not executed, paid upper bounds and
-nested root admission are incomplete, and the activation gate and product
-surfaces are not yet wired. Passing these tests does not authorize deployment
-or finish #1165.
+The native runtime remains incomplete: effect verifiers, nested root admission,
+verified composition and adapters, distributed access census and full-source
+pilots are outstanding. File capture, local activation and product publication
+are wired into the native Engine; those passing cases do not authorize a
+distributed rollout or finish #1165.
 
 Run Go 1.26 and Node 24 through the repository's `devbox run` environment.
 Use deterministic executors and declared fake effects; no paid model call is
