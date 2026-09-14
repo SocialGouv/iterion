@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 )
 
 // ---------------------------------------------------------------------------
@@ -181,6 +183,16 @@ func (r *Registry) UnregisterServer(server string) {
 //
 // Returns an error if the tool is not found or is ambiguous.
 func (r *Registry) Resolve(ref string) (*ToolDef, error) {
+	return r.resolve(ref, false)
+}
+
+// ResolveWithAliases adds the manifest-gated alias tier AFTER the complete
+// legacy resolver. Resolve remains unchanged for callers that did not opt in.
+func (r *Registry) ResolveWithAliases(ref string) (*ToolDef, error) {
+	return r.resolve(ref, true)
+}
+
+func (r *Registry) resolve(ref string, aliases bool) (*ToolDef, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -233,6 +245,13 @@ func (r *Registry) Resolve(ref string) (*ToolDef, error) {
 		}
 	}
 
+	if aliases {
+		if canonical := toolcatalog.BuiltinAlias(ref); canonical != "" {
+			if td, ok := r.tools[canonical]; ok && td.Origin.Kind == OriginBuiltin {
+				return td, nil
+			}
+		}
+	}
 	return nil, fmt.Errorf("tool: unknown tool %q", ref)
 }
 

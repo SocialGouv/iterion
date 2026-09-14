@@ -16,6 +16,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -820,6 +822,11 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 // (`{{run.id}}` renders from TemplateData), and deliberately not the ctx
 // RUN IDENTITY that execContext adds: see there.
 func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveScope) context.Context {
+	var manifest *bundle.Manifest
+	if e.bundle != nil {
+		manifest = e.bundle.Manifest
+	}
+	ctx = tool.WithBuiltinAliases(ctx, bundle.AllowsToolAliases(manifest))
 	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 

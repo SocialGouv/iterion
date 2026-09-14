@@ -1,0 +1,47 @@
+package cloudpublisher
+import (
+ "context"
+ "encoding/json"
+ "os"
+ "testing"
+ "strconv"
+ "github.com/SocialGouv/iterion/pkg/dsl/ir"
+ "github.com/SocialGouv/iterion/pkg/bundle"
+ "github.com/SocialGouv/iterion/pkg/dsl/parser"
+ "github.com/SocialGouv/iterion/pkg/queue"
+ "github.com/SocialGouv/iterion/pkg/runview"
+ "github.com/SocialGouv/iterion/pkg/store"
+)
+func TestAliasCompatibilityExport(t *testing.T) {
+ const src=`schema out:
+  answer: string
+prompt p:
+  read proof
+agent probe:
+  backend: claw
+  system: p
+  output: out
+  tools: [Read, Bash, Grep]
+  tool_policy: [Read, Bash, Grep]
+workflow aliases:
+  entry: probe
+  worktree: none
+  mcp:
+    inherit: true
+  probe -> done
+`
+ cr:=ir.Compile(parser.Parse("main.bot",src).File);if cr.HasErrors(){t.Fatalf("compile: %v",cr.Diagnostics)}
+ st,err:=store.New(t.TempDir());if err!=nil{t.Fatal(err)}
+ var msg *queue.RunMessage
+ p:=&Publisher{store:st,publishRun:func(_ context.Context,m *queue.RunMessage)error{msg=m;return nil}}
+ manifest := "name: aliases\nversion: 1.0.0\nrequires:\n  iterion: " + strconv.Quote(">= "+bundle.ToolAliasesSince) + "\n"
+ snap:=&bundle.Snapshot{Root:"aliases",Files:map[string]bundle.SnapshotFile{"aliases/main.bot":{Content:[]byte(src)},"aliases/manifest.yaml":{Content:[]byte(manifest)}}}
+ snapshot,digest,err:=snap.Encode();if err!=nil{t.Fatal(err)}
+ spec:=runview.LaunchSpec{Source:src,BotID:"aliases",BotBundle:&runview.BotBundleRef{TenantID:"platform:",Slug:"aliases",Version:1,Snapshot:snapshot,SnapshotDigest:digest}}
+ if _,err:=p.SubmitLaunch(context.Background(),"aliases-compat",spec,cr.Workflow,"fixture");err!=nil{t.Fatal(err)}
+ raw,err:=json.Marshal(msg);if err!=nil{t.Fatal(err)}
+ out:=os.Getenv("ITERION_ALIAS_COMPAT_DIR");if out==""{t.Fatal("ITERION_ALIAS_COMPAT_DIR required")}
+ if err:=os.WriteFile(out+"/message.json",raw,0600);err!=nil{t.Fatal(err)}
+ if err:=os.WriteFile(out+"/main.bot",[]byte(src),0600);err!=nil{t.Fatal(err)}
+ t.Logf("new SubmitLaunch emitted schema %d; original alias spellings retained",msg.V)
+}

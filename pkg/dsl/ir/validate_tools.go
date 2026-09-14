@@ -140,6 +140,9 @@ func (c *compiler) validateRecoveryAgentTools(w *Workflow, tn *ToolNode) {
 // fixed and known, so unresolvableToolNames accepts them outright and the
 // check keeps its teeth on every other name.
 func (c *compiler) toolDiagReporter(w *Workflow, n Node, name string) toolDiag {
+	if toolcatalog.BuiltinAlias(name) != "" {
+		return toolDiag{report: c.warnfAt, alias: true}
+	}
 	if toolcatalog.IsIdentifiableMistake(name) && !mcpWiringVisible(w, n) {
 		return toolDiag{report: c.errorfAt, blocking: true}
 	}
@@ -153,10 +156,14 @@ func (c *compiler) toolDiagReporter(w *Workflow, n Node, name string) toolDiag {
 type toolDiag struct {
 	report   func(DiagCode, string, string, string, ...any)
 	blocking bool
+	alias    bool
 }
 
 // consequence renders what happens on the node's own backend.
 func (d toolDiag) consequence() string {
+	if d.alias {
+		return "resolves only with the bundle engine-floor opt-in, or as an exact tool / unique MCP shorthand"
+	}
 	if d.blocking {
 		return "cannot resolve — the node fails the moment it dispatches"
 	}
@@ -166,6 +173,9 @@ func (d toolDiag) consequence() string {
 // routeConsequence is the same for a `fallbacks:` route, where the failure
 // lands at the worst possible moment.
 func (d toolDiag) routeConsequence() string {
+	if d.alias {
+		return "resolves only with the bundle engine-floor opt-in, or as an exact tool / unique MCP shorthand"
+	}
 	if d.blocking {
 		return "cannot resolve"
 	}
@@ -183,6 +193,9 @@ func (d toolDiag) routeConsequence() string {
 // remedy for a run the compiler just refused.
 func (d toolDiag) hint(name string) string {
 	h := toolHint(name)
+	if d.alias {
+		return h
+	}
 	if d.blocking {
 		return h + " If the name really is an MCP server's tool, spell it `mcp.<server>.<tool>` — or show the server exists (a top-level `mcp_server:`, or an `mcp:` block on the workflow or the node that names, disables, inherits or autoloads servers; an empty block shows nothing), which softens this to a warning"
 	}
@@ -257,6 +270,9 @@ func unresolvableToolNames(tools []string) []string {
 // Returned with its own leading punctuation so the caller's format string
 // reads as one sentence either way.
 func toolHint(name string) string {
+	if canonical := toolcatalog.BuiltinAlias(name); canonical != "" {
+		return fmt.Sprintf(". Use %q, or declare the tool-alias engine floor in the bundle's requires.iterion to enable the Claw alias. An exact tool or unique MCP suffix still takes precedence; see docs/tool-name-aliases.md", canonical)
+	}
 	if toolcatalog.IsUnexpandedRef(name) {
 		return ". Tool names are the one field iterion does not expand — unlike model:, backend: and command:, a `${VAR}` or `{{ref}}` entry reaches the registry verbatim; name the tool literally."
 	}
@@ -280,7 +296,7 @@ func unresolvableToolsReason(routeBackend string, tools []string, mcpVisible boo
 	}
 	var unresolvable []string
 	for _, name := range unresolvableToolNames(tools) {
-		if toolcatalog.IsIdentifiableMistake(name) {
+		if toolcatalog.BuiltinAlias(name) == "" && toolcatalog.IsIdentifiableMistake(name) {
 			unresolvable = append(unresolvable, name)
 		}
 	}
