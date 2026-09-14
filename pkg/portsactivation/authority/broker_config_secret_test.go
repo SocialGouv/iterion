@@ -105,6 +105,20 @@ func TestNATSBrokerConfigSecretRefusesUnboundOrShadowedSources(t *testing.T) {
 					map[string]any{"name": "shadow", "mountPath": "/etc/nats/main.conf", "readOnly": true})
 			})
 		},
+		"shadowed Secret symlink directory": func(_ *Record, s *WorkloadSnapshot, _ *BrokerConfigSecret) {
+			changeBrokerPodSpec(t, s, func(spec map[string]any) {
+				mounts := spec["containers"].([]any)[0].(map[string]any)["volumeMounts"].([]any)
+				spec["containers"].([]any)[0].(map[string]any)["volumeMounts"] = append(mounts,
+					map[string]any{"name": "shadow", "mountPath": "/etc/nats/..data", "readOnly": true})
+			})
+		},
+		"shadowed Secret symlink target": func(_ *Record, s *WorkloadSnapshot, _ *BrokerConfigSecret) {
+			changeBrokerPodSpec(t, s, func(spec map[string]any) {
+				mounts := spec["containers"].([]any)[0].(map[string]any)["volumeMounts"].([]any)
+				spec["containers"].([]any)[0].(map[string]any)["volumeMounts"] = append(mounts,
+					map[string]any{"name": "shadow", "mountPath": "/etc/nats/..data/main.conf", "readOnly": true})
+			})
+		},
 		"noncanonical shadow mount": func(_ *Record, s *WorkloadSnapshot, _ *BrokerConfigSecret) {
 			changeBrokerPodSpec(t, s, func(spec map[string]any) {
 				mounts := spec["containers"].([]any)[0].(map[string]any)["volumeMounts"].([]any)

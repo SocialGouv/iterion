@@ -179,6 +179,12 @@ func reconcileBrokerConfigSecretsWithReader(ctx context.Context, record *Record,
 					}
 					volumeName = mount.Name
 				} else {
+					// Kubernetes Secret files resolve through ..data symlinks. A
+					// second mount anywhere below the source root can shadow a
+					// symlink target even when no declared filename is covered.
+					if root == "/" || strings.HasPrefix(mount.MountPath, root+"/") {
+						return nil, fmt.Errorf("NATS broker configuration projection is shadowed")
+					}
 					for name := range broker.sources.Files {
 						filePath := path.Join(root, name)
 						if mount.MountPath == filePath ||
