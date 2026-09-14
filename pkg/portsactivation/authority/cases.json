@@ -16,6 +16,7 @@
       "TestAuthorityCensusCorroboratesNamedBuildAndRefusesStaleOrForeignClaims",
       "TestAuthorityCensusAcceptsTwoIndependentlyApprovedBuilds",
       "TestAuthorityProtectedBuildsRefuseDisconnectedOldHolder",
+      "TestAuthorityProtectedBuildsRefusePublishOnlyOldHolder",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",

@@ -2,6 +2,7 @@ package authority
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -41,5 +42,36 @@ func TestAuthorityProtectedBuildsRefuseDisconnectedOldHolder(t *testing.T) {
 	record.BuildApprovals[1].BuildDigest = strings.Repeat("0", 64)
 	if _, err := CorroborateProtectedBuilds(record, static); err == nil {
 		t.Fatal("a build approval for another binary authorized the old holder")
+	}
+}
+
+func TestAuthorityProtectedBuildsRefusePublishOnlyOldHolder(t *testing.T) {
+	record := staticFixture(t)
+	parsed := parsedStaticFixture(false)
+	var accounts map[string]any
+	if err := json.Unmarshal(parsed.Config["accounts"], &accounts); err != nil {
+		t.Fatal(err)
+	}
+	worker := accounts["WORK"].(map[string]any)["users"].([]any)[0].(map[string]any)
+	worker["permissions"] = map[string]any{
+		"publish": []string{record.Queue.RunSubject}, "subscribe": []string{"_INBOX.>"},
+	}
+	encoded, err := json.Marshal(accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Config["accounts"] = encoded
+	static, err := analyzeStaticWithParser(t.Context(), record,
+		func(context.Context, natsconfig.Sources) (*natsconfig.Result, error) { return parsed, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CorroborateProtectedBuilds(record, static); err != nil {
+		t.Fatalf("approved publish-only producer was rejected: %v", err)
+	}
+	record.Holders[0].ImageDigest = "iterion/old-server@sha256:" + strings.Repeat("d", 64)
+	record.Holders[0].BuildDigest = strings.Repeat("e", 64)
+	if _, err := CorroborateProtectedBuilds(record, static); err == nil {
+		t.Fatal("an unapproved publisher could still inject messages into the shared run stream")
 	}
 }

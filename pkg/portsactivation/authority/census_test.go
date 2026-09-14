@@ -68,6 +68,13 @@ func TestAuthorityCensusCorroboratesNamedBuildAndRefusesStaleOrForeignClaims(t *
 			record.Holders = append(record.Holders, other)
 			record.Credentials[0].HolderIDs = append(record.Credentials[0].HolderIDs, other.ID)
 		}},
+		{"unapproved holder with same build", func(record *Record, _ *[]queue.PortCapabilityObservation) {
+			other := record.Holders[0]
+			other.ID = "old-image-holder"
+			other.ImageDigest = "iterion/old-runner@sha256:" + strings.Repeat("d", 64)
+			record.Holders = append(record.Holders, other)
+			record.Credentials[0].HolderIDs = append(record.Credentials[0].HolderIDs, other.ID)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record, observations := censusAuthorityFixture(t, now)

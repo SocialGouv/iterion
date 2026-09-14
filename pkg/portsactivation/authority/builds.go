@@ -23,7 +23,7 @@ type BuildCorroboration struct {
 }
 
 // CorroborateProtectedBuilds refuses a named holder whose credential can
-// consume, acknowledge, alter or spoof the shared queue when its exact image
+// publish, consume, acknowledge, alter or spoof the shared queue when its exact image
 // and build lack operator approval. It checks disconnected holders too. The
 // operator still must supply an exhaustive custody inventory, and an
 // approval must correspond to a genuinely tested immutable binary.
@@ -96,7 +96,7 @@ func requiresCompatibleBuild(access StaticAccess) (bool, error) {
 				protected = true
 			}
 		case "queue_messages":
-			if exposure.Direction == "subscribe" {
+			if exposure.Direction == "publish" || exposure.Direction == "subscribe" {
 				protected = true
 			}
 		case "native_control", "queue_kv":

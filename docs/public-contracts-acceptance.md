@@ -536,7 +536,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   not yet a kind API/RBAC denial test or a verified activation snapshot.
 - The version-2 operator record now names exact image/build/capability/queue
   approvals. Static protected-access analysis requires every named holder of
-  a consuming or mutating NATS principal to match one, including a holder
+  a publishing, consuming or mutating NATS principal to match one, including a holder
   that is currently disconnected. A read-only census reconciler rejects
   stale, foreign, wrong-build or wrong-epoch KV announcements against those
   approvals and the server-supplied backend/queue identity; two approved

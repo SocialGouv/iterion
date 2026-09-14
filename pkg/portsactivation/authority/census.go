@@ -77,10 +77,7 @@ func CorroborateObservedCensus(record *Record, observations []queue.PortCapabili
 		matched := ""
 		for _, holderID := range credential.HolderIDs {
 			holder := holders[holderID]
-			approval, okay := approved[holder.ImageDigest]
-			if !okay || approval.BuildDigest != holder.BuildDigest ||
-				"sha256:"+approval.BuildDigest != claim.BuildDigest ||
-				approval.CapabilityDigest != claim.CapabilityDigest {
+			if "sha256:"+holder.BuildDigest != claim.BuildDigest {
 				continue
 			}
 			if matched != "" {
@@ -90,6 +87,12 @@ func CorroborateObservedCensus(record *Record, observations []queue.PortCapabili
 		}
 		if matched == "" {
 			return nil, fmt.Errorf("distributed capability census build is outside trusted custody")
+		}
+		holder := holders[matched]
+		approval, okay := approved[holder.ImageDigest]
+		if !okay || approval.BuildDigest != holder.BuildDigest ||
+			approval.CapabilityDigest != claim.CapabilityDigest {
+			return nil, fmt.Errorf("distributed capability census build is outside tested approval")
 		}
 		result.Members = append(result.Members, CensusMember{Principal: claim.Principal,
 			Instance: claim.Instance, HolderID: matched, Revision: observed.Revision,
