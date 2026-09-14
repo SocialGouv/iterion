@@ -39,6 +39,12 @@ func TestDistributedContractsConfigIsOptionalAndBounded(t *testing.T) {
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://nats.example:4222" },
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "http://sys:fixture@nats.example" },
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://sys:fixture@host-a,host-b" },
+		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://sys:fixture@nats.example/path" },
+		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://sys:fixture@nats.example?option=1" },
+		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://sys:fixture@nats.example#fragment" },
+		func(d *DistributedContractsConfig) {
+			d.SystemNATSURL = "nats://sys:fixture@" + strings.Repeat("a", 2048)
+		},
 		func(d *DistributedContractsConfig) { d.AuthorityRef = "outside/iterion-authority" },
 		func(d *DistributedContractsConfig) { d.AuthorityRef = "trusted/iterion..authority" },
 		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"trusted", "trusted"} },

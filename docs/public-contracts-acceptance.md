@@ -475,7 +475,9 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   loaded configuration digests and connected principals against the static
   inventory. A pinned 2.14.5 broker and the production parser exercise this
   combined path, including a stale-digest refusal; the NATS CI job requires
-  that case without skips.
+  that case without skips. A dedicated, named system-account dialer avoids the
+  ordinary queue connector's JetStream schema initialization and redacts
+  credential-bearing URL failures.
   The combined observation is still not a distributed activation proof.
 - Explicit `contracts.distributed` configuration loads through the existing
   YAML/environment precedence and validates a server-only authenticated
@@ -569,7 +571,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   connected principal identities. A bounded Secret reader now compares every
   declared NATS source file with the Secret keys selected by a read-only Pod
   volume declaration, including nested includes, and records both Pod and Secret revisions.
-  Thirty-five authority cases pass with race detection. These checks do not
+  Thirty-six authority cases pass with race detection. These checks do not
   discover omitted brokers or disconnected credential holders, establish
   observation freshness, actual kubelet-mounted bytes or a complete Kubernetes
   authorization boundary.

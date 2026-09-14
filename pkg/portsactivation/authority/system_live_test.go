@@ -61,10 +61,11 @@ accounts {
 	}
 	t.Cleanup(func() { _ = command.Process.Kill(); _ = command.Wait() })
 	url := fmt.Sprintf("nats://127.0.0.1:%d", port)
+	systemURL := fmt.Sprintf("nats://sys:fixture@127.0.0.1:%d", port)
 	var system *natsclient.Conn
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		system, err = natsclient.Connect(url, natsclient.UserInfo("sys", "fixture"), natsclient.Timeout(100*time.Millisecond))
+		system, err = DialSystem(t.Context(), systemURL)
 		if err == nil {
 			break
 		}
@@ -110,8 +111,36 @@ accounts {
 		result.Brokers[0].ObservedConnections != 2 {
 		t.Fatalf("live authority did not bind broker and connected principals: %+v %v", result, err)
 	}
+	observed, err := natsconfig.ObserveSystemServer(t.Context(), system, serverID, static.Brokers[0].ConfigDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityNamed := false
+	for _, connection := range observed.Connections {
+		authorityNamed = authorityNamed || connection.Account == "SYS" && connection.User == "sys" &&
+			connection.Name == "iterion-contracts-authority"
+	}
+	if !authorityNamed {
+		t.Fatal("dedicated authority connection was not named at the broker")
+	}
 	static.Brokers[0].ConfigDigest = "sha256:" + strings.Repeat("f", 64)
 	if _, err := ObserveAndCorroborateSystem(t.Context(), system, record, static); err == nil {
 		t.Fatal("live authority accepted a stale parsed configuration digest")
+	}
+}
+
+func TestSystemDialRedactsCredentialURL(t *testing.T) {
+	for _, rawURL := range []string{
+		"nats://sys:private-secret@127.0.0.1:0",
+		"nats://sys:private-secret@127.0.0.1:4222,127.0.0.1:4223",
+	} {
+		connection, err := DialSystem(t.Context(), rawURL)
+		if connection != nil {
+			connection.Close()
+			t.Fatal("unsupported system authority URL was accepted")
+		}
+		if err == nil || strings.Contains(err.Error(), "private-secret") {
+			t.Fatalf("system authority URL leaked in a refusal: %v", err)
+		}
 	}
 }

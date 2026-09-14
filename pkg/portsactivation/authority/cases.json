@@ -33,6 +33,7 @@
       "TestNATSBrokerLaunchRefusesAuthOverridesAndUnpinnedRuntime",
       "TestNATSSystemCorroborationBindsEveryDeclaredBrokerAndPrincipal",
       "TestNATSSystemCorroborationRefusesMissingForeignOrStaleBrokerEvidence",
+      "TestSystemDialRedactsCredentialURL",
       "TestNATSBrokerConfigSecretBindsProjectedSourceBytes",
       "TestNATSBrokerConfigSecretBindsNestedIncludesWithoutShadowMounts",
       "TestNATSBrokerConfigSecretRefusesUnboundOrShadowedSources",
