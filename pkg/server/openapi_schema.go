@@ -39,7 +39,7 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/auth/me":     {response: AuthMeResponse{}},
 
 		// OAuth metadata projections exclude provider UUIDs and sealed secrets.
-		"GET /api/me/oauth/connections":        {response: oauthConnectionsView{}},
+		"GET /api/me/oauth/connections":         {response: oauthConnectionsView{}},
 		"GET /api/teams/{id}/oauth/connections": {response: oauthConnectionsView{}},
 		"GET /api/orgs/{id}/oauth/connections":  {response: oauthConnectionsView{}},
 		"GET /api/admin/llm/oauth/connections":  {response: oauthConnectionsView{}},
