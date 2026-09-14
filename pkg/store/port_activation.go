@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -267,10 +268,13 @@ func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expec
 	if err != nil || proof.Validate() != nil {
 		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
 	}
-	raw, err := json.Marshal(proof)
-	if err != nil {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(proof); err != nil {
 		return err
 	}
+	raw := bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'})
 	return WriteFileAtomic(s.portDistributedProofPath(), raw, filePerm)
 }
 
