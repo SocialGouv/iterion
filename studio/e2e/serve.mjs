@@ -15,10 +15,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createMockOpenAI } from "./mock-openai.mjs";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
 const port = Number(process.env.ITERION_UI_PORT ?? 4899);
 const origin = `http://127.0.0.1:${port}`;
+const copiDemoEnabled = process.env.ITERION_COPI_DEMO === "1";
+const mockOpenAIPort = Number(process.env.ITERION_E2E_OPENAI_PORT ?? port + 1);
+const mockOpenAIOrigin = `http://127.0.0.1:${mockOpenAIPort}`;
 
 // Workspace lives under studio/e2e/.tmp so a failed run is inspectable.
 const ws = path.join(here, ".tmp", "workspace");
@@ -49,6 +54,11 @@ fs.mkdirSync(home, { recursive: true });
 fs.cpSync(path.join(here, "fixtures", "bots"), path.join(ws, "bots"), {
   recursive: true,
 });
+// Keep the established suite's catalog and backend detection unchanged. The
+// deterministic Copi override is enabled only by the focused demo command.
+if (!copiDemoEnabled) {
+  fs.rmSync(path.join(ws, "bots", "copilot"), { recursive: true, force: true });
+}
 
 // The preview fixture's URL must point at this run's own origin so the
 // Browser pane's iframe stays on the loopback test server.
@@ -74,6 +84,19 @@ const childEnv = {
   // Keep the seeded runs' backend resolution offline: nothing in the
   // fixtures calls an LLM, and no host credential must leak into a run.
   ITERION_DEFAULT_BACKEND: "claw",
+  ...(copiDemoEnabled
+    ? {
+        // The demo's generated bot exercises the real Claw/OpenAI adapter
+        // against a strict loopback fake. Never expose an ambient operator
+        // credential to the throwaway server.
+        OPENAI_API_KEY: "iterion-e2e-local-only",
+        OPENAI_BASE_URL: mockOpenAIOrigin,
+        ITERION_OPENAI_USE_OAUTH: "0",
+        // The Copi fixture resolves the new run created by run.launch. Keep
+        // that test-only read explicit instead of relying on cwd.
+        ITERION_E2E_STORE_DIR: storeDir,
+      }
+    : {}),
 };
 
 function run(args, { json = false } = {}) {
@@ -134,6 +157,24 @@ const issue = run(
   { json: true },
 );
 
+// Start the strict fake only after the synchronous seed commands have
+// completed. It still comes up before Studio, so no model request can race
+// past it. The adjacent fixed port makes collisions fail loudly.
+const mockOpenAI = copiDemoEnabled ? createMockOpenAI() : null;
+if (mockOpenAI) {
+  let listeningMockOrigin;
+  try {
+    listeningMockOrigin = await mockOpenAI.listen({ port: mockOpenAIPort });
+  } catch (error) {
+    fail(`could not start mock OpenAI at ${mockOpenAIOrigin}: ${error}`);
+  }
+  if (listeningMockOrigin !== mockOpenAIOrigin) {
+    fail(
+      `mock OpenAI listened at ${listeningMockOrigin}, expected ${mockOpenAIOrigin}`,
+    );
+  }
+}
+
 fs.writeFileSync(
   path.join(ws, "state.json"),
   JSON.stringify(
@@ -144,6 +185,9 @@ fs.writeFileSync(
       fixtureRunId: fixtureRun.run_id,
       previewRunId: previewRun.run_id,
       previewUrl,
+      mockOpenAIControlUrl: mockOpenAI
+        ? `${mockOpenAIOrigin}/__control`
+        : null,
       issueId: issue.id,
       // Mirrors the --max-concurrent-pipelines the studio boots with; the
       // pipelines spec asserts the UI renders exactly this cap.
@@ -179,5 +223,12 @@ const stop = () => {
 };
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-process.on("exit", stop);
-studio.on("exit", (code) => process.exit(code ?? 0));
+studio.on("error", async (error) => {
+  console.error(`[studio-e2e] could not start studio: ${error}`);
+  await mockOpenAI?.close();
+  process.exitCode = 1;
+});
+studio.on("exit", async (code) => {
+  await mockOpenAI?.close();
+  process.exitCode = code ?? 0;
+});

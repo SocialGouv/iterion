@@ -38,6 +38,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/resolve-model", s.handleResolveModel)
 	s.mux.HandleFunc("GET /api/model-capabilities", s.handleModelCapabilities)
 	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
+	// The model registry: known x usable x capabilities x pricing. It is what
+	// turns the studio's free-text model field into an actual picker.
+	s.mux.HandleFunc("GET /api/models", s.handleModels)
 
 	// Bot registry — exposes the bots discoverable on the host (single
 	// .bot files, .botz bundles) with their declared workflow vars +
@@ -111,6 +114,29 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
 	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
+	s.mux.HandleFunc("POST /api/files/dependency", s.handleFileDependency)
+	// Assistant companion-file authoring. The model only proposes exact
+	// replacements; these host-owned endpoints resolve the manifest perimeter,
+	// check optimistic-concurrency tokens, preview, and persist.
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/snapshot", s.handleAuthoringSnapshot)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/preview", s.handleAuthoringPreview)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/commit", s.handleAuthoringCommit)
+	// A separate, perimeter-bound Git commit for files Copi already saved.
+	// Unlike a shell, it cannot choose a repository, command, ref, or paths
+	// outside the active manifest's declared authoring files.
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/git-commit", s.handleAuthoringGitCommit)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/git-push", s.handleAuthoringGitPublish)
+	// A narrow dependency refresh for Copi: the host supplies the current
+	// project, validates one immutable SHA and commits only bots.lock.
+	s.mux.HandleFunc("POST /api/v1/assistant/dependencies/bots-update", s.handleAssistantDependencyBotsUpdate)
+	// Localize one already-materialized dependency into the open consumer
+	// bundle. The host derives the destination and makes two narrow commits.
+	s.mux.HandleFunc("POST /api/v1/assistant/dependencies/bots-localize", s.handleAssistantDependencyBotsLocalize)
+	// Typed page references are resolved against the request-scoped run and
+	// board stores before an assistant turn leaves the studio. This is the
+	// deterministic, cloud-safe alternative to asking a model to guess a
+	// local ~/.iterion store path.
+	s.mux.HandleFunc("POST /api/v1/assistant/context/resolve", s.handleAssistantContextResolve)
 
 	// Project registry — lets the SPA list MRU projects, switch
 	// between them, and add/remove entries. The same on-disk file
@@ -263,6 +289,11 @@ func (s *Server) routes() {
 		s.registerNotificationRoutes()
 	}
 
+	// The operator's remembered model choice for a long-lived surface.
+	if s.cfg.ModelPrefs != nil {
+		s.registerModelPrefRoutes()
+	}
+
 	// Super-admin DLQ inspection/replay (cloud only — needs the queue).
 	if s.authSvc != nil {
 		s.registerQueueAdminRoutes()
@@ -338,6 +369,11 @@ func (s *Server) routes() {
 		// the comment route already gates who may post; the resolver only adds
 		// command→bot routing + the open_mr stamp.
 		s.wireNativeBoardCommands()
+	}
+	if s.runs != nil && s.boardMCPTokens != nil {
+		// Same token-authenticated host surface as board MCP, but bound to
+		// the active project/tenant RunStore and strictly read-only.
+		RegisterRunsMCPRoutes(s.mux.ServeMux, "/api/v1/mcp/runs", s.runs.RunStore(), s.boardMCPTokens)
 	}
 	if s.cfg.Dispatcher != nil {
 		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux.ServeMux, "/api/v1/dispatcher", s.requireAuth)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -23,6 +24,19 @@ var errResumeResolveTransient = errors.New("resume: stored-bot resolution transi
 // store, and its path semantics stay byte-identical to the pre-seam code.
 func (s *Server) resumeSourceFiller(ctx context.Context, run *store.Run, spec *runview.ResumeSpec) (func(), error) {
 	if s.cfg.Mode != "cloud" {
+		if run != nil && spec != nil && spec.Source == "" {
+			resolved, lb, ok, err := s.resolveLegacyCatalogResume(ctx, run, spec.FilePath)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				spec.FilePath = resolved
+				if lb != nil {
+					spec.BundleDir, spec.BotBundle = lb.BundleDir, lb.Ref
+				}
+				return lb.Cleanup, nil
+			}
+		}
 		return nil, nil
 	}
 	filePath := spec.FilePath
@@ -62,9 +76,27 @@ func (s *Server) resumeSourceFiller(ctx context.Context, run *store.Run, spec *r
 // resume must carry inline source UNLESS it names a bot the pod can resolve
 // itself. Duplicating that rule is how the automated path would quietly
 // diverge from the manual one.
-func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, filePath, source, persistedSource string) (string, string, *launchBot, error) {
+func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, filePath, source, persistedSource string, identity ...*store.Run) (string, string, *launchBot, error) {
+	return s.resolveResumeSourceWithFallback(ctx, botSourceTenant, filePath, source, persistedSource, true, identity...)
+}
+
+// resolveResumeSourceWithFallback is the shared resolver with an explicit
+// switch for the persisted inline-source fallback. An omitted file_path is
+// allowed to recover an old dispatcher/worktree path from the trusted launch
+// snapshot; an explicitly supplied file_path must be authoritative and must
+// fail closed when it cannot be resolved.
+func (s *Server) resolveResumeSourceWithFallback(ctx context.Context, botSourceTenant, filePath, source, persistedSource string, allowPersistedFallback bool, identity ...*store.Run) (string, string, *launchBot, error) {
 	if filePath == "" && source == "" {
 		return "", "", nil, fmt.Errorf("file_path or source is required (run has no persisted FilePath)")
+	}
+	if s.cfg.Mode != "cloud" && source == "" && len(identity) > 0 && identity[0] != nil {
+		resolved, lb, ok, err := s.resolveLegacyCatalogResume(ctx, identity[0], filePath)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			return resolved, "", lb, nil
+		}
 	}
 	var lb *launchBot
 	if s.cfg.Mode == "cloud" {
@@ -106,7 +138,7 @@ func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, fileP
 	// Materialise that snapshot into the server-owned inline cache instead.
 	// An explicit source always wins; this fallback only repairs implicit
 	// resume of a path the Studio cannot safely resolve.
-	if err != nil && source == "" && persistedSource != "" {
+	if allowPersistedFallback && err != nil && source == "" && persistedSource != "" {
 		if persistedPath, persistedErr := s.resolveWorkflowPath(filePath, persistedSource); persistedErr == nil {
 			return persistedPath, persistedSource, nil, nil
 		}
@@ -116,6 +148,65 @@ func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, fileP
 		return "", "", nil, fmt.Errorf("invalid file_path: %w", err)
 	}
 	return absPath, source, lb, nil
+}
+
+// resolveLegacyCatalogResume repairs local runs created before catalog bot
+// identity was persisted. Such runs either point at an immutable
+// server-owned inline/embedded source snapshot or at a catalog path outside
+// the active WorkDir. The former is correct for ordinary inline workflows
+// but becomes stale for a catalog bot after the catalog changes; the latter
+// cannot pass safePath even though it is a configured catalog source. Only a
+// server-owned cache or a catalog-shaped path qualifies; arbitrary user paths
+// and stored-bot origins remain untouched. The normal workflow hash check in
+// runview.Resume still decides whether a force resume is needed.
+func (s *Server) resolveLegacyCatalogResume(ctx context.Context, run *store.Run, filePath string) (string, *launchBot, bool, error) {
+	if run == nil {
+		return filePath, nil, false, nil
+	}
+	serverCache := s.isServerOwnedWorkflowCache(filePath)
+	if !serverCache {
+		// A catalog path may live outside WorkDir (the local Copi setup does).
+		// Require safePath to reject it and require the path's catalog shape so
+		// a normal arbitrary workspace file is never rebound by its workflow
+		// name alone.
+		if _, err := s.safePath(filePath); err == nil || inferCatalogBotID(filePath) == "" {
+			return filePath, nil, false, nil
+		}
+	}
+
+	names := make([]string, 0, 4)
+	if inferred := inferCatalogBotID(filePath); inferred != "" {
+		names = append(names, inferred)
+	}
+	names = append(names, run.BotID, run.BundleName, run.WorkflowName)
+	if len(names) == 0 {
+		return filePath, nil, false, nil
+	}
+	seen := make(map[string]struct{}, 3)
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		lb, err := s.resolveBotTiered(ctx, "", name, "")
+		if err != nil {
+			return "", nil, false, fmt.Errorf("resolve catalog bot %q for legacy resume: %w", name, err)
+		}
+		if lb == nil {
+			continue
+		}
+		if lb.Origin != "catalog" {
+			// A legacy cache does not prove whether a stored override supplied
+			// it. Do not silently replace it with a different tier.
+			return filePath, nil, false, nil
+		}
+		return lb.Path, lb, true, nil
+	}
+	return filePath, nil, false, nil
 }
 
 // resolveResumeBot re-resolves the bot a run launched from. With a

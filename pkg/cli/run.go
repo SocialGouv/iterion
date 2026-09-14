@@ -8,7 +8,6 @@ import (
 	"io"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
@@ -40,6 +40,7 @@ type RunOptions struct {
 	BundleDir     string               // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
+	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
 	RunID         string               // explicit run ID (auto-generated if empty)
 	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
 	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
@@ -146,6 +147,10 @@ type RunOptions struct {
 	// judges — a weaker judge still emits a well-formed verdict, so a
 	// blanket launch setting must not reach one. See ADR-087.
 	Fallback string
+	// EffortFor is the same shape for reasoning_effort (repeatable
+	// --effort-for). Model, backend and effort are one decision, so the
+	// selector machinery is shared; an invalid level is a flag error.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -198,6 +203,15 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
 		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
+	// Validate launch overrides independently of executor construction. The
+	// normal CLI path parses them again while building the real executor, but
+	// an injected executor deliberately skips that build (tests and embedders).
+	// buildEngine still stamps the same flags on the run document, so accepting
+	// malformed values only on the injected path would make that seam lie about
+	// production behaviour and silently omit the invalid rows.
+	if _, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err != nil {
+		return err
 	}
 
 	if opts.BranchName != "" {
@@ -282,6 +296,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// studio launch reaches this same line through its `iterion run`
 	// subprocess, so one option covers both.
 	engineOpts = append(engineOpts, runtime.WithBudgetAsk(&opts.Budget))
+	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
+		engineOpts = append(engineOpts, runtime.WithBudgetOverrides(raw))
+	}
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	// Workspace versioning, on the same terms as a studio launch: a run
@@ -390,6 +407,17 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars)
 	if err != nil {
 		return err
+	}
+
+	// Fail here, not at run start: an operator-typed skill name that
+	// resolves to nothing must be an error they see immediately, next to
+	// the command that named it — the same treatment `--preset <unknown>`
+	// gets. The workflow's OWN refs stay soft (a bundle ships its skills;
+	// the library is a fallback), but nobody typed those.
+	if names, _ := ResolveExtraSkills(opts.Skills); len(names) > 0 {
+		if err := runtime.ResolveExtraSkills(storeDir, names); err != nil {
+			return err
+		}
 	}
 
 	// Resolve the credential-derived topology vars (review_mode +
@@ -515,7 +543,7 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
 	if err != nil {
 		return nil, err
 	}
@@ -595,31 +623,24 @@ type subbotDepthKey struct{}
 // resolved `with:` data as inputs, and returns the child's terminal node
 // output (mapped to outputs.<subbot>.<field> by the engine).
 func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
-	parentDir := filepath.Dir(parentPath)
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
-		// Re-attach to an in-flight/finished child from a prior (interrupted)
-		// execution of this subbot node before spawning a fresh one (mirrors
-		// the runview runner so a bot behaves identically on either surface).
+		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
+		}
+		// Resolve first so a resumed bot:// child cannot bypass the lock/hash
+		// check merely because a prior child run is available to re-attach.
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
 			return out, aerr
 		}
-
-		childPath := req.Source
-		if !filepath.IsAbs(childPath) {
-			childPath = filepath.Join(parentDir, childPath)
-		}
-		// The child compiles the way every path does: a bundle's main.bot
-		// promoted to its bundle, prompts/*.md in scope. Its skills are NOT
-		// mirrored here: the child works in the parent's workdir, and a
-		// same-named skill would overwrite the parent's for the rest of its
-		// run (the studio's in-process runner and the cloud runner do mirror
-		// them today, with that hazard).
-		childWf, hash, _, err := runview.CompileWorkflowPath(childPath)
+		childPath := resolvedSource.Path
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -631,8 +652,12 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
+		bundleName := runview.BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
-			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath), nil)
+			runview.ResolveBotID("", bundleName, childPath), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -670,6 +695,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithBundle(childBundle),
 			// The child executes in the parent's sandbox when the parent has
 			// one — the same tree, on every driver, on this host as on the
 			// runner and the studio.
@@ -760,8 +786,25 @@ func buildEngine(
 	bundleHandle *bundle.Bundle,
 	base []runtime.EngineOption,
 ) *runtime.Engine {
+	// Stamp what the operator asked for onto the run document. Without
+	// this the CLI's own --model / --backend / --effort-for were applied to
+	// the executor and then FORGOTTEN: the studio Overview showed no
+	// override, and `iterion resume` had nothing to inherit, so a
+	// CLI-launched run silently reverted to the .bot's own values at the
+	// first resume — the exact failure the resume inheritance was added to
+	// close, still open on the one path that had no other surface.
+	//
+	// The flags were already parsed (and any error surfaced) when the
+	// executor was built, so a parse failure here cannot be new.
+	if ov, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err == nil {
+		if rows := runModelOverrideRows(ov); len(rows) > 0 {
+			base = append(base, runtime.WithModelOverrides(rows))
+		}
+	}
+
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
+	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
 	return runtime.New(wf, s, executor,
 		append(base,
 			runtime.WithWorkflowHash(wfHash),
@@ -780,6 +823,7 @@ func buildEngine(
 			runtime.WithRepoDevbox(opts.RepoDevbox),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
+			runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
 			runtime.WithSource(opts.Source),
 		)...,
 	)
@@ -937,4 +981,26 @@ func ParseAnswersFile(path string) (map[string]any, error) {
 // key this bot's memory on a name that changes with every edit to the bundle.
 func bundleManifestName(b *bundle.Bundle) string {
 	return b.Name()
+}
+
+// runModelOverrideRows converts parsed CLI override directives into the
+// persisted shape the run document carries — the same rows the studio
+// stamps, so `runview.ModelOverridesFromRun` folds a CLI-launched run and a
+// studio-launched one identically on resume.
+func runModelOverrideRows(ov model.ModelOverrides) []store.RunModelOverride {
+	rows := ov.Rows()
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.RunModelOverride{
+			Selector: r.Selector,
+			Backend:  r.Backend,
+			Model:    r.Model,
+			Provider: r.Provider,
+			Effort:   r.Effort,
+		})
+	}
+	return out
 }

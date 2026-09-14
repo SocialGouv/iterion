@@ -1419,6 +1419,9 @@ func TestBranchDailyCapLedgerSurvivesResume(t *testing.T) {
 // process-local seq handed out in goroutine order would leave the pre-pause
 // key in place AND write X+Y under a second key, inflating the day's cap.
 func TestBranchDailyCapLedgerKeyStableAcrossSiblingResume(t *testing.T) {
+	runStore := tmpStore(t)
+	ctx := context.Background()
+	const runID = "branch-daily-cap-sibling-resume"
 	wf := &ir.Workflow{
 		Name:  "fan_out_all_daily_cap_sibling",
 		Entry: "entry",
@@ -1453,6 +1456,28 @@ func TestBranchDailyCapLedgerKeyStableAcrossSiblingResume(t *testing.T) {
 		return map[string]any{"_cost_usd": 2.0}, nil
 	})
 	exec.on("work", func(map[string]any) (map[string]any, error) {
+		// The scenario needs a COMPLETED sibling before the human pause.
+		// Otherwise that pause may cancel "once" before it has even run.
+		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		tick := time.NewTicker(time.Millisecond)
+		defer tick.Stop()
+		for {
+			run, err := runStore.LoadRun(waitCtx, runID)
+			if err != nil {
+				return nil, err
+			}
+			if run.Checkpoint != nil && run.Checkpoint.Parallel != nil {
+				if sibling := run.Checkpoint.Parallel.Branches["branch_dispatch_once"]; sibling != nil && sibling.Completed {
+					break
+				}
+			}
+			select {
+			case <-waitCtx.Done():
+				return nil, fmt.Errorf("wait for completed sibling: %w", waitCtx.Err())
+			case <-tick.C:
+			}
+		}
 		return map[string]any{"_cost_usd": 2.0}, nil
 	})
 	exec.on("judge", func(map[string]any) (map[string]any, error) {
@@ -1460,13 +1485,10 @@ func TestBranchDailyCapLedgerKeyStableAcrossSiblingResume(t *testing.T) {
 	})
 	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
 
-	runStore := tmpStore(t)
 	guard := NewDailyCapGuard(store.AsSpendStore(runStore), clock.Default, DailyCapConfig{MaxCostPerDayUSD: 100})
 	if guard == nil {
 		t.Fatal("expected a non-nil daily-cap guard")
 	}
-	ctx := context.Background()
-	runID := "branch-daily-cap-sibling-resume"
 	eng := New(wf, runStore, exec, WithDailyCap(guard))
 	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("first run = %v, want ErrRunPaused", err)

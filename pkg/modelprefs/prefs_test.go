@@ -1,0 +1,394 @@
+package modelprefs
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+)
+
+// Both stores answer the same questions, so both run the same contract. The
+// file store is what a local studio actually uses; the memory one is what the
+// tests of everything else use, and a divergence between them would only show
+// up as a bug on the operator's machine.
+func TestStoreContract(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(t *testing.T) Store
+	}{
+		{"mem", func(*testing.T) Store { return NewMemStore() }},
+		{"file", func(t *testing.T) Store { return NewFileStore(t.TempDir()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := tc.make(t)
+
+			// Absent means "no preference recorded", not an error — the caller
+			// falls back to the bot's own defaults.
+			got, err := s.Get(ctx, "team1", "user1", "whats-next")
+			if err != nil {
+				t.Fatalf("Get on an empty store: %v", err)
+			}
+			if got != nil {
+				t.Fatalf("expected nil for an unrecorded preference, got %+v", got)
+			}
+
+			want := &Pref{
+				TenantID: "team1", UserID: "user1", Key: "whats-next",
+				Model: "anthropic/claude-opus-5", Backend: "claude_code", Effort: "ultracode",
+			}
+			if err := s.Set(ctx, want); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			got, err = s.Get(ctx, "team1", "user1", "whats-next")
+			if err != nil || got == nil {
+				t.Fatalf("Get after Set: %+v, %v", got, err)
+			}
+			if got.Model != want.Model || got.Backend != want.Backend || got.Effort != want.Effort {
+				t.Errorf("round-trip = %+v, want %+v", got, want)
+			}
+			if got.UpdatedAt.IsZero() {
+				t.Error("Set must stamp UpdatedAt")
+			}
+
+			// Isolation across all three key dimensions.
+			for _, other := range [][3]string{
+				{"team2", "user1", "whats-next"},
+				{"team1", "user2", "whats-next"},
+				{"team1", "user1", "some-other-bot"},
+			} {
+				p, err := s.Get(ctx, other[0], other[1], other[2])
+				if err != nil {
+					t.Fatalf("Get %v: %v", other, err)
+				}
+				if p != nil {
+					t.Errorf("preference leaked across %v: %+v", other, p)
+				}
+			}
+
+			// Overwrite wins, including clearing a dimension.
+			if err := s.Set(ctx, &Pref{
+				TenantID: "team1", UserID: "user1", Key: "whats-next",
+				Model: "openai/gpt-5.5",
+			}); err != nil {
+				t.Fatalf("Set overwrite: %v", err)
+			}
+			got, _ = s.Get(ctx, "team1", "user1", "whats-next")
+			if got.Model != "openai/gpt-5.5" || got.Backend != "" || got.Effort != "" {
+				t.Errorf("overwrite left stale dimensions: %+v", got)
+			}
+
+			if err := s.Delete(ctx, "team1", "user1", "whats-next"); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+			got, _ = s.Get(ctx, "team1", "user1", "whats-next")
+			if got != nil {
+				t.Errorf("Delete left %+v behind", got)
+			}
+			// Deleting what is not there is not an error.
+			if err := s.Delete(ctx, "team1", "user1", "whats-next"); err != nil {
+				t.Errorf("second Delete: %v", err)
+			}
+		})
+	}
+}
+
+func TestBlankKeyIsRejected(t *testing.T) {
+	ctx := context.Background()
+	for _, s := range []Store{NewMemStore(), NewFileStore(t.TempDir())} {
+		if _, err := s.Get(ctx, "t", "u", "  "); err == nil {
+			t.Error("Get with a blank key must error")
+		}
+		if err := s.Set(ctx, &Pref{Key: ""}); err == nil {
+			t.Error("Set with a blank key must error")
+		}
+	}
+}
+
+func TestPreferenceKeyBoundsAndShape(t *testing.T) {
+	for _, valid := range []string{"copilot", "catalog/copilot", "team:bot_v2.1"} {
+		if got, err := NormalizeKey(valid); err != nil || got != valid {
+			t.Errorf("NormalizeKey(%q) = %q, %v", valid, got, err)
+		}
+	}
+	for _, invalid := range []string{
+		strings.Repeat("a", MaxKeyLength+1),
+		"two words",
+		"../escape",
+		"line\nbreak",
+	} {
+		if _, err := NormalizeKey(invalid); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("NormalizeKey(%q) error = %v, want ErrInvalidKey", invalid, err)
+		}
+	}
+}
+
+func TestStoreCardinalityCap(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(*testing.T) Store
+	}{
+		{"mem", func(*testing.T) Store { return NewMemStore() }},
+		{"file", func(t *testing.T) Store { return NewFileStore(t.TempDir()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := tc.make(t)
+			for i := 0; i < MaxPreferencesPerScope; i++ {
+				if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: fmt.Sprintf("bot-%d", i)}); err != nil {
+					t.Fatalf("seed %d: %v", i, err)
+				}
+			}
+			// Existing keys remain editable at the ceiling.
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: "bot-0", Model: "openai/gpt-5.5"}); err != nil {
+				t.Fatalf("update at cap: %v", err)
+			}
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: "one-too-many"}); !errors.Is(err, ErrTooManyPreferences) {
+				t.Fatalf("new key at cap = %v, want ErrTooManyPreferences", err)
+			}
+			// Another owner has an independent allowance.
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "other", Key: "one-too-many"}); err != nil {
+				t.Fatalf("cap leaked across users: %v", err)
+			}
+			if err := s.Delete(ctx, "team", "user", "bot-1"); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: "replacement"}); err != nil {
+				t.Fatalf("slot was not released by delete: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrefEmpty(t *testing.T) {
+	if !(Pref{Key: "k"}).Empty() {
+		t.Error("a preference expressing no choice is Empty")
+	}
+	if (Pref{Key: "k", Effort: "high"}).Empty() {
+		t.Error("an effort-only preference is not Empty")
+	}
+}
+
+// A hand-edited or truncated file must not brick the surface reading it: the
+// worst honest outcome is that the operator re-picks their model.
+func TestFileStoreSurvivesACorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model-prefs.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewFileStore(dir)
+	got, err := s.Get(context.Background(), "", "", "whats-next")
+	if err != nil {
+		t.Fatalf("Get over a corrupt file: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected no preference, got %+v", got)
+	}
+	// And a write repairs it rather than compounding the damage.
+	if err := s.Set(context.Background(), &Pref{Key: "whats-next", Model: "openai/gpt-5.5"}); err != nil {
+		t.Fatalf("Set over a corrupt file: %v", err)
+	}
+	got, _ = s.Get(context.Background(), "", "", "whats-next")
+	if got == nil || got.Model != "openai/gpt-5.5" {
+		t.Errorf("after repair = %+v", got)
+	}
+	backup, err := os.ReadFile(filepath.Join(dir, "model-prefs.json.corrupt.bak"))
+	if err != nil {
+		t.Fatalf("read preserved corrupt bytes: %v", err)
+	}
+	if string(backup) != "{not json" {
+		t.Fatalf("backup = %q, want original corrupt bytes", backup)
+	}
+}
+
+func TestFileStoreBackupFailureDoesNotOverwriteCorruptOriginal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-prefs.json")
+	original := []byte("{the only copy")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the deterministic backup path makes the atomic rename
+	// fail on every platform without relying on chmod (tests may run as root).
+	if err := os.Mkdir(path+".corrupt.bak", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := NewFileStore(dir)
+	if err := s.Set(context.Background(), &Pref{Key: "copilot", Model: "openai/gpt-5.5"}); err == nil {
+		t.Fatal("repair succeeded despite an unavailable backup path")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("corrupt original changed after backup failure: %q", after)
+	}
+}
+
+func TestFileStoreHealthyWriteCreatesNoCorruptBackup(t *testing.T) {
+	dir := t.TempDir()
+	if err := NewFileStore(dir).Set(context.Background(), &Pref{Key: "copilot"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "model-prefs.json.corrupt.bak")); !os.IsNotExist(err) {
+		t.Fatalf("healthy write created a corrupt backup: %v", err)
+	}
+}
+
+// The degrade is deliberate, but it must not be silent: the repairing Set
+// rewrites the file from what loaded, so an unreadable file costs whatever it
+// held. Without a warn that loss has no signal anywhere.
+func TestFileStoreWarnsBeforeDiscardingACorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model-prefs.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	s := NewFileStore(dir)
+	s.SetLogger(iterlog.New(iterlog.LevelWarn, &logs))
+	if _, err := s.Get(context.Background(), "", "", "whats-next"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(logs.String(), "model-prefs.json") {
+		t.Errorf("corrupt file degraded with no warning; logs = %q", logs.String())
+	}
+}
+
+// A healthy file must stay quiet — a warn on every read would train the
+// operator to ignore the one that matters.
+func TestFileStoreDoesNotWarnOnAHealthyFile(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	var logs bytes.Buffer
+	s := NewFileStore(dir)
+	s.SetLogger(iterlog.New(iterlog.LevelWarn, &logs))
+	if err := s.Set(ctx, &Pref{Key: "whats-next", Model: "anthropic/claude-opus-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, "", "", "whats-next"); err != nil {
+		t.Fatal(err)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("healthy file logged %q", logs.String())
+	}
+}
+
+// The file has to survive the process, which is the entire point.
+func TestFileStorePersistsAcrossInstances(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	if err := NewFileStore(dir).Set(ctx, &Pref{Key: "whats-next", Model: "anthropic/claude-opus-5"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewFileStore(dir).Get(ctx, "", "", "whats-next")
+	if err != nil || got == nil {
+		t.Fatalf("reload = %+v, %v", got, err)
+	}
+	if got.Model != "anthropic/claude-opus-5" {
+		t.Errorf("reloaded model = %q", got.Model)
+	}
+}
+
+// A file that PARSES but is not this build's document is the loss the
+// corrupt check is for, arriving through the door it did not watch: each of
+// these decoded into a zero fileDoc with no rows and no error, so the
+// backup was skipped and the next Set rewrote the file holding only its own
+// row. The version field exists precisely to catch the last one — it was
+// written by save and read by nobody.
+func TestFileStoreTreatsAWrongShapeAsCorrupt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"null", `null`},
+		{"null prefs", `{"version":1,"prefs":null}`},
+		{"negative version", `{"version":-1,"prefs":[]}`},
+		{"empty object", `{}`},
+		{"renamed top-level key", `{"version":1,"preferences":[{"key":"whats-next","model":"anthropic/claude-opus-5"}]}`},
+		{"no version", `{"prefs":[{"key":"whats-next","model":"anthropic/claude-opus-5"}]}`},
+		{"version zero", `{"version":0,"prefs":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "model-prefs.json")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s := NewFileStore(dir)
+			if err := s.Set(context.Background(), &Pref{Key: "copilot", Model: "openai/gpt-5.5"}); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			backup, err := os.ReadFile(path + ".corrupt.bak")
+			if err != nil {
+				t.Fatalf("the original was rewritten with no backup: %v", err)
+			}
+			if string(backup) != tc.body {
+				t.Fatalf("backup = %q, want the original bytes %q", backup, tc.body)
+			}
+		})
+	}
+}
+
+// The mirror: the document this build writes must keep round-tripping, or
+// the check above would back up every healthy file on every write.
+func TestFileStoreAcceptsItsOwnDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-prefs.json")
+	s := NewFileStore(dir)
+	if err := s.Set(context.Background(), &Pref{Key: "whats-next", Model: "anthropic/claude-opus-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(context.Background(), &Pref{Key: "copilot", Model: "openai/gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".corrupt.bak"); !os.IsNotExist(err) {
+		t.Fatalf("a healthy round-trip produced a corrupt backup: %v", err)
+	}
+	// The earlier preference survived the second write — the property the
+	// wrong-shape cases above were silently breaking.
+	got, err := s.Get(context.Background(), "", "", "whats-next")
+	if err != nil || got == nil || got.Model != "anthropic/claude-opus-5" {
+		t.Fatalf("first preference after a second write = %+v (err %v)", got, err)
+	}
+}
+
+func TestFileStorePreservesFutureVersionAndExistingBackup(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-prefs.json")
+	original := []byte(`{"version":2,"renamed_preferences":[{"key":"kept"}]}`)
+	backup := []byte("older corruption backup")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".corrupt.bak", backup, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := NewFileStore(dir)
+	if pref, err := st.Get(ctx, "", "", "copilot"); err != nil || pref != nil {
+		t.Fatalf("Get = %v, %v", pref, err)
+	}
+	for _, mutate := range []func() error{
+		func() error { return st.Set(ctx, &Pref{Key: "copilot", Model: "test"}) },
+		func() error { return st.Delete(ctx, "", "", "copilot") },
+	} {
+		if err := mutate(); !errors.Is(err, ErrUnsupportedVersion) {
+			t.Fatalf("mutation = %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("future document changed: %q, %v", got, err)
+		}
+		got, err = os.ReadFile(path + ".corrupt.bak")
+		if err != nil || !bytes.Equal(got, backup) {
+			t.Fatalf("backup changed: %q, %v", got, err)
+		}
+	}
+}

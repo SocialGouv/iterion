@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -46,6 +48,43 @@ func SPAHandler(sub fs.FS) http.Handler {
 		}
 		serveIndex(w, r, sub)
 	})
+}
+
+// ServeInjectedIndex serves index.html after installing immutable bootstrap
+// values in the page. It is shared by the desktop proxy and the browser
+// workspace host so both surfaces use the same scoping contract.
+func ServeInjectedIndex(w http.ResponseWriter, r *http.Request, sub fs.FS, scope string, workspace bool) {
+	data, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var bootstrap bytes.Buffer
+	bootstrap.WriteString("<script>")
+	if scope != "" {
+		encoded, _ := json.Marshal(scope)
+		bootstrap.WriteString("window.__ITERION_SCOPE__=")
+		bootstrap.Write(encoded)
+		bootstrap.WriteString(";")
+	}
+	if workspace {
+		bootstrap.WriteString("window.__ITERION_WORKSPACE__=true;")
+	}
+	bootstrap.WriteString("</script>")
+	inject := bootstrap.Bytes()
+	if i := bytes.Index(data, []byte("<head>")); i >= 0 {
+		out := make([]byte, 0, len(data)+len(inject))
+		out = append(out, data[:i+len("<head>")]...)
+		out = append(out, inject...)
+		data = append(out, data[i+len("<head>"):]...)
+	} else {
+		data = append(inject, data...)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
 }
 
 func serveIndex(w http.ResponseWriter, r *http.Request, sub fs.FS) {

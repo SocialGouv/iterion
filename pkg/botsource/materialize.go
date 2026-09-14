@@ -53,6 +53,14 @@ func ReadBundleDir(dir string) (map[string]string, error) {
 		if werr != nil {
 			return werr
 		}
+		// Operator-owned runtime storage may itself be a symlink. Exclude
+		// that path segment before following or inspecting its contents.
+		if d.Name() == ".iterion" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			switch d.Name() {
 			// Generated / artifact trees that live INSIDE real bundle dirs:
@@ -100,6 +108,14 @@ func ExecutableFiles(dir string) []string {
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
+		}
+		// Operator-owned runtime storage may itself be a symlink. Exclude
+		// that path segment before following or inspecting its contents.
+		if d.Name() == ".iterion" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			switch d.Name() {

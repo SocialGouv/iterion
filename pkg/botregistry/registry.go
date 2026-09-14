@@ -81,6 +81,18 @@ type Entry struct {
 	// opinion — the form renders every var as before.
 	Launch *bundle.LaunchHints `json:"launch,omitempty" yaml:"launch,omitempty"`
 
+	// Chat mirrors the manifest chat: block — the bot's declaration that it
+	// is a conversational bot the studio hosts in its assistant dock. Nil for
+	// every ordinary bot. Carried by discovery because the studio's chat
+	// registry IS this list: without it the surface falls back to a
+	// hard-coded const, and a second chat bot needs a studio release.
+	Chat *bundle.ChatSurface `json:"chat,omitempty" yaml:"chat,omitempty"`
+
+	// Authoring mirrors the manifest's bounded companion-file edit surface.
+	// The Studio uses this declaration only as metadata; server-side snapshot
+	// and commit handlers re-load and enforce the manifest independently.
+	Authoring *bundle.AuthoringSpec `json:"authoring,omitempty" yaml:"authoring,omitempty"`
+
 	// Produces / Consumes mirror the manifest's run-to-run hand-off blocks:
 	// what this bot leaves behind for a later run, and what it wants handed to
 	// it at launch. Carried by discovery because the hand-off is resolved AT
@@ -213,23 +225,111 @@ func FindByName(opts ListOptions, name string) (Entry, bool, error) {
 // duplicate name there is what makes `iterion run <name>` and dispatcher
 // routing ambiguous.
 func EnsureNameFree(opts ListOptions, name string) error {
-	existing, found, err := FindByName(opts, name)
+	// ONE discovery walk: the entries and the diagnostics must come from
+	// the same filesystem snapshot, or a bundle repaired between two
+	// walks is neither found nor reported.
+	entries, diags, err := ListWithDiagnostics(opts)
 	if err != nil {
 		return err
 	}
-	if found {
-		return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
+	// Normalize like ResolveBotPath and the cross-root dedupe do: a bot
+	// created as "my_bot" while "my-bot" exists would be permanently
+	// shadowed by the dedupe and unreachable by its own name.
+	nn := NormalizeName(name)
+	for _, existing := range entries {
+		if NormalizeName(existing.Name) == nn {
+			return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
+		}
+	}
+	// A malformed bundle produces no entry, but its directory still HOLDS
+	// the name: creating a second bot under it would shadow the first the
+	// day its manifest is fixed (discovery's dedupe keeps the first
+	// occurrence). Declare the name taken, with the cause attached.
+	if d := diagForName(diags, name); d != nil {
+		return fmt.Errorf("%w: %q matches a bundle that failed to load at %s (%s) — fix or remove it first", ErrNameTaken, name, d.Path, d.Error)
+	}
+	return nil
+}
+
+// diagForName matches a requested bot name against the discovery
+// diagnostics. Only bot-source diagnostics (a bundle dir or a loose
+// file that failed to load) are considered — an unreadable plain
+// directory never claimed a bot name. The only handle a malformed
+// source offers is its directory / file base (normalized the way
+// ResolveBotPath resolves); the extension trim applies to files only,
+// so a bundle dir with a dot in its name keeps it.
+func diagForName(diags []DiscoveryError, name string) *DiscoveryError {
+	nn := NormalizeName(name)
+	for i := range diags {
+		d := &diags[i]
+		if d.Kind != DiscoveryErrorBundle && d.Kind != DiscoveryErrorFile {
+			continue
+		}
+		base := filepath.Base(d.Path)
+		if d.Kind == DiscoveryErrorFile {
+			base = strings.TrimSuffix(base, filepath.Ext(base))
+		}
+		if NormalizeName(base) == nn {
+			return d
+		}
 	}
 	return nil
 }
 
 // List walks Opts.Paths and returns the discovered bots sorted by
 // name. A missing path is treated as empty (not an error) so callers
-// can pass optimistic defaults.
+// can pass optimistic defaults. A malformed bundle or unreadable bot
+// file is SKIPPED rather than failing the list — one bad source must
+// not blank its valid siblings; the diagnostic rides the structured
+// channel ListWithDiagnostics returns.
 func List(opts ListOptions) ([]Entry, error) {
-	entries, err := discoverBots(opts.Paths)
+	entries, _, err := ListWithDiagnostics(opts)
+	return entries, err
+}
+
+// DiscoveryErrorKind identifies what kind of source a DiscoveryError is
+// about — recorded at skip time so consumers (name resolution, the
+// catalog-regen guard) don't have to re-stat the path to guess.
+type DiscoveryErrorKind string
+
+const (
+	// DiscoveryErrorBundle is a bundle directory whose manifest failed to
+	// load (parse or validation error).
+	DiscoveryErrorBundle DiscoveryErrorKind = "bundle"
+	// DiscoveryErrorFile is a loose .bot file that failed to read.
+	DiscoveryErrorFile DiscoveryErrorKind = "file"
+	// DiscoveryErrorWalk is a path the filesystem walk itself could not
+	// read (e.g. a permission-denied directory). It may or may not hold a
+	// bot source — the contents are unknown.
+	DiscoveryErrorWalk DiscoveryErrorKind = "walk"
+)
+
+// DiscoveryError is one skipped bot source: the bundle directory or bot
+// file at Path failed to load, so it produced no Entry. Discovery is
+// per-entry fault-tolerant — one malformed manifest (e.g. an invalid
+// chat: block, which validateChatSurface fails on purpose) must not
+// blank discovery for every otherwise-valid bot in the workspace — and
+// the failure rides this structured channel to the CLI/API/Studio
+// instead of aborting the walk.
+type DiscoveryError struct {
+	// Path is the bundle directory or bot file that failed to load.
+	Path string `json:"path" yaml:"path"`
+	// Error is the load diagnostic (parse or validation failure).
+	Error string `json:"error" yaml:"error"`
+	// Kind is what the skipped source is known to be. Only "bundle" and
+	// "file" name an actual bot source; "walk" is an unreadable path
+	// whose contents are unknown.
+	Kind DiscoveryErrorKind `json:"kind" yaml:"kind"`
+}
+
+// ListWithDiagnostics is List plus the per-entry discovery errors: one
+// DiscoveryError per skipped bundle directory or bot file. The returned
+// error stays reserved for FATAL failures (an unstat-able root, a
+// broken workspace overlay) — a partial one never fails the list.
+func ListWithDiagnostics(opts ListOptions) ([]Entry, []DiscoveryError, error) {
+	entries, diags, err := discoverBots(opts.Paths)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Compose the workspace overlay over each bot's manifest `enabled`
 	// default so Entry.Enabled is the resolved catalog-visibility
@@ -239,7 +339,7 @@ func List(opts ListOptions) ([]Entry, error) {
 	if opts.Workdir != "" {
 		ov, err := LoadOverrides(opts.Workdir)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for i := range entries {
 			entries[i].Enabled = ResolveEnabled(entries[i].Name, entries[i].Enabled, ov)
@@ -247,9 +347,20 @@ func List(opts ListOptions) ([]Entry, error) {
 				entries[i].RelPath = filepath.ToSlash(rel)
 			}
 		}
+		// Same treatment for the diagnostics: the studio surfaces them, so
+		// give them the workspace-relative path it can open too. Manifest
+		// loading also embeds the absolute path in Error; strip the same
+		// workspace prefix there before the diagnostic crosses an API boundary.
+		workdirPrefix := filepath.Clean(opts.Workdir) + string(filepath.Separator)
+		for i := range diags {
+			if rel, relErr := filepath.Rel(opts.Workdir, diags[i].Path); relErr == nil && !strings.HasPrefix(rel, "..") {
+				diags[i].Path = filepath.ToSlash(rel)
+			}
+			diags[i].Error = strings.ReplaceAll(diags[i].Error, workdirPrefix, "")
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return entries, nil
+	return entries, diags, nil
 }
 
 // WorkdirFromPaths recovers the workspace root from a set of discovery
@@ -270,9 +381,12 @@ func WorkdirFromPaths(paths []string) string {
 
 // ResolveBotPath looks up a bot by name across paths and returns the
 // path to its workflow source file (bundle's main.bot or loose .bot).
-// Returns os.ErrNotExist when no bot with that name is found.
+// Returns os.ErrNotExist when no bot with that name is found — unless a
+// skipped (malformed) bundle matches by directory name, in which case
+// the load diagnostic explains WHY the bot is unavailable instead of a
+// bare "not found".
 func ResolveBotPath(name string, paths []string) (string, error) {
-	entries, err := List(ListOptions{Paths: paths})
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: paths})
 	if err != nil {
 		return "", err
 	}
@@ -291,6 +405,12 @@ func ResolveBotPath(name string, paths []string) (string, error) {
 		if NormalizeName(e.Name) == nn {
 			return e.MainFile(), nil
 		}
+	}
+	// A malformed bundle has no parseable name, so it can only match by
+	// its directory / file base — enough to turn "bot not found" into the
+	// actual cause on the launch/dispatch path.
+	if d := diagForName(diags, name); d != nil {
+		return "", fmt.Errorf("bot %q is unavailable — its bundle failed to load: %s", name, d.Error)
 	}
 	return "", fmt.Errorf("bot %q not found in %v: %w", name, paths, os.ErrNotExist)
 }
@@ -333,10 +453,50 @@ func DefaultPaths(workDir string) []string {
 // bot. Bundles (directories with manifest.yaml + main.bot) collapse
 // into one entry; individual .bot files become one entry each.
 // Missing roots are skipped silently so callers can pass optimistic
-// default paths.
-func discoverBots(roots []string) ([]Entry, error) {
+// default paths. A source that fails to load (malformed manifest,
+// unreadable file or subdirectory) is recorded as a DiscoveryError and
+// skipped — the walk continues so one bad bundle cannot blank its valid
+// siblings. The error return stays for fatal failures (an unstat-able
+// or misconfigured explicit root).
+func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	var entries []Entry
+	var diags []DiscoveryError
 	seen := map[string]bool{}
+	// Names are claimed as sources are encountered, not in a final pass.
+	// This preserves root precedence even when the higher-precedence source
+	// is malformed: bots/foo must reserve "foo" so a stale .botz/foo cannot
+	// silently become runnable in its place.
+	seenName := map[string]bool{}
+	addEntry := func(e *Entry) {
+		if e == nil || seen[e.Path] {
+			return
+		}
+		seen[e.Path] = true
+		key := NormalizeName(e.Name)
+		if seenName[key] {
+			return
+		}
+		seenName[key] = true
+		entries = append(entries, *e)
+	}
+	// Diags dedupe by path the way entries do: overlapping roots (e.g. an
+	// explicit "." beside "./bots") would otherwise report the same
+	// malformed bundle once per root that reaches it.
+	seenDiag := map[string]bool{}
+	recordDiag := func(path string, kind DiscoveryErrorKind, err error) {
+		if kind == DiscoveryErrorBundle || kind == DiscoveryErrorFile {
+			base := filepath.Base(path)
+			if kind == DiscoveryErrorFile {
+				base = strings.TrimSuffix(base, filepath.Ext(base))
+			}
+			seenName[NormalizeName(base)] = true
+		}
+		if seenDiag[path] {
+			return
+		}
+		seenDiag[path] = true
+		diags = append(diags, DiscoveryError{Path: path, Error: err.Error(), Kind: kind})
+	}
 
 	for _, root := range roots {
 		info, err := os.Stat(root)
@@ -344,25 +504,28 @@ func discoverBots(roots []string) ([]Entry, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("bots: stat %s: %w", root, err)
+			return nil, nil, fmt.Errorf("bots: stat %s: %w", root, err)
 		}
 		if !info.IsDir() {
 			if !workflowfile.IsWorkflowFile(root) {
-				return nil, fmt.Errorf("bots: unsupported bot file extension for %s (expected .bot)", root)
+				return nil, nil, fmt.Errorf("bots: unsupported bot file extension for %s (expected .bot)", root)
 			}
 			e, err := parseBotFile(root)
 			if err != nil {
-				return nil, err
+				recordDiag(root, DiscoveryErrorFile, err)
+				continue
 			}
-			if e != nil && !seen[e.Path] {
-				entries = append(entries, *e)
-				seen[e.Path] = true
-			}
+			addEntry(e)
 			continue
 		}
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
+				// An unreadable subdirectory (permission denied) is the
+				// same failure shape as a malformed bundle — one bad branch
+				// must not blank the rest of the workspace. Record and
+				// carry on (for a directory, WalkDir skips its contents).
+				recordDiag(path, DiscoveryErrorWalk, walkErr)
+				return nil
 			}
 			if d.IsDir() {
 				manifest := filepath.Join(path, bundle.ManifestFile)
@@ -370,12 +533,12 @@ func discoverBots(roots []string) ([]Entry, error) {
 				if fileExists(manifest) && fileExists(mainBot) {
 					e, err := parseBundle(path)
 					if err != nil {
-						return err
+						recordDiag(path, DiscoveryErrorBundle, err)
+						// SkipDir either way: a malformed bundle must not
+						// leak its main.bot back in as a loose bot file.
+						return filepath.SkipDir
 					}
-					if e != nil && !seen[e.Path] {
-						entries = append(entries, *e)
-						seen[e.Path] = true
-					}
+					addEntry(e)
 					return filepath.SkipDir
 				}
 				return nil
@@ -386,37 +549,17 @@ func discoverBots(roots []string) ([]Entry, error) {
 			}
 			e, err := parseBotFile(path)
 			if err != nil {
-				return err
+				recordDiag(path, DiscoveryErrorFile, err)
+				return nil
 			}
-			if e != nil && !seen[e.Path] {
-				entries = append(entries, *e)
-				seen[e.Path] = true
-			}
+			addEntry(e)
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	// Dedupe by bundle name across roots, keeping the first occurrence.
-	// Roots are walked in precedence order (DefaultPaths = bots, examples,
-	// .botz), so a source bot in bots/ shadows a stray packed copy of the
-	// same bot in a later root — e.g. a local `iterion bundle pack`
-	// artifact under the gitignored .botz/, which otherwise duplicates the
-	// catalog card and the routing target. Keyed on NormalizeName so
-	// kebab/snake spellings of the same bot collapse the way ResolveBotPath
-	// already resolves them.
-	seenName := make(map[string]bool, len(entries))
-	deduped := entries[:0]
-	for _, e := range entries {
-		key := NormalizeName(e.Name)
-		if seenName[key] {
-			continue
-		}
-		seenName[key] = true
-		deduped = append(deduped, e)
-	}
-	return deduped, nil
+	return entries, diags, nil
 }
 
 func parseBundle(dir string) (*Entry, error) {
@@ -451,6 +594,8 @@ func parseBundle(dir string) (*Entry, error) {
 		Repo:            m.Repo,
 		ConfigShare:     m.ConfigShare,
 		Launch:          m.Launch,
+		Chat:            m.Chat,
+		Authoring:       m.Authoring,
 		Produces:        m.Produces,
 		Consumes:        m.Consumes,
 		Invocations:     bundle.EffectiveInvocations(m),

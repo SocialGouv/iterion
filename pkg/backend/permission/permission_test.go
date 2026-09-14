@@ -112,6 +112,72 @@ func TestEvaluate_DenyModeUnmatchedIsDeny(t *testing.T) {
 	}
 }
 
+func TestEvaluate_ExactDiagnosticShellAllowDoesNotPermitShellVariants(t *testing.T) {
+	p := mustPolicy(t,
+		ModeDeny,
+		[]string{"diagnostic_shell(iterion --help)"},
+		[]string{"diagnostic_shell"},
+		nil,
+	)
+
+	cases := []struct {
+		name    string
+		command string
+		want    Decision
+	}{
+		{"exact audited help is allowed", "iterion --help", Allow},
+		{"trailing whitespace stays approval-gated", "iterion --help ", Ask},
+		{"leading whitespace stays approval-gated", " iterion --help", Ask},
+		{"absolute executable path stays approval-gated", "/usr/local/bin/iterion --help", Ask},
+		{"environment assignment stays approval-gated", "FOO=1 iterion --help", Ask},
+		{"shell sequence stays approval-gated", "iterion --help; id", Ask},
+		{"multiline shell sequence stays approval-gated", "iterion --help\nid", Ask},
+		{"redirection stays approval-gated", "iterion --help > /tmp/help", Ask},
+		{"substitution stays approval-gated", "$(iterion --help)", Ask},
+		{"other Iterion command stays approval-gated", "iterion run example.bot", Ask},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := p.Evaluate("diagnostic_shell", map[string]any{"command": tc.command})
+			if got != tc.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluate_LiteralScopedAllowOverridesOnlyBareExactAsk(t *testing.T) {
+	diagnostic := map[string]any{"command": "iterion --help"}
+
+	cases := []struct {
+		name  string
+		allow []string
+		ask   []string
+		deny  []string
+		tool  string
+		want  Decision
+	}{
+		{"literal allow overrides bare ask", []string{"diagnostic_shell(iterion --help)"}, []string{"diagnostic_shell"}, nil, "diagnostic_shell", Allow},
+		{"source order does not matter", []string{"diagnostic_shell(iterion --help)"}, []string{"diagnostic_shell"}, nil, "diagnostic_shell", Allow},
+		{"generic allow does not override bare ask", []string{"diagnostic_shell"}, []string{"diagnostic_shell"}, nil, "diagnostic_shell", Ask},
+		{"scoped ask overrides literal allow", []string{"diagnostic_shell(iterion --help)"}, []string{"diagnostic_shell", "diagnostic_shell(iterion --help)"}, nil, "diagnostic_shell", Ask},
+		{"wildcard allow does not override bare ask", []string{"diagnostic_shell(iterion --help:*)"}, []string{"diagnostic_shell"}, nil, "diagnostic_shell", Ask},
+		{"different tool does not override ask", []string{"bash(iterion --help)"}, []string{"diagnostic_shell"}, nil, "diagnostic_shell", Ask},
+		{"deny keeps precedence", []string{"diagnostic_shell(iterion --help)"}, []string{"diagnostic_shell"}, []string{"diagnostic_shell(iterion --help)"}, "diagnostic_shell", Deny},
+		{"catch-all ask keeps precedence", []string{"diagnostic_shell(iterion --help)"}, []string{"*"}, nil, "diagnostic_shell", Ask},
+		{"without scoped allow help still asks", nil, []string{"diagnostic_shell"}, nil, "diagnostic_shell", Ask},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mustPolicy(t, ModeDeny, tc.allow, tc.ask, tc.deny)
+			got, _ := p.Evaluate(tc.tool, diagnostic)
+			if got != tc.want {
+				t.Errorf("Evaluate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEvaluate_OffModeIsAllowAll(t *testing.T) {
 	p := mustPolicy(t, ModeOff, nil, nil, []string{"Bash(rm:*)"})
 	if p.Enabled() {
@@ -221,6 +287,7 @@ func TestMarkExempt(t *testing.T) {
 
 func TestPolicyConfigRoundTrip(t *testing.T) {
 	p := mustPolicy(t, ModeDeny, []string{"Bash(go test:*)"}, []string{"WebFetch(domain:example.com)"}, []string{"Read(.env*)"})
+	p.AddGrantRule("WebFetch(domain:example.com)")
 	p.MarkExempt("my_internal_tool")
 	rebuilt, err := NewPolicyFromConfig(p.Config())
 	if err != nil {
@@ -246,13 +313,29 @@ func TestPolicyConfigRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAddAllowRule_AllowAlways(t *testing.T) {
-	p := mustPolicy(t, ModeAsk, nil, nil, nil)
-	if got, _ := p.Evaluate("Bash", map[string]any{"command": "go build"}); got != Ask {
-		t.Fatalf("pre-grant = %v, want Ask", got)
+func TestTrustedGrantOverridesAskButNotDeny(t *testing.T) {
+	p := mustPolicy(t, ModeDeny, []string{"diagnostic_shell"}, []string{"diagnostic_shell"}, []string{"Bash"})
+	diagnostic := map[string]any{"command": "git status --short"}
+	if got, _ := p.Evaluate("diagnostic_shell", diagnostic); got != Ask {
+		t.Fatalf("workflow ask must override workflow allow: got %v, want Ask", got)
 	}
-	p.AddAllowRule("Bash(go build:*)")
-	if got, _ := p.Evaluate("Bash", map[string]any{"command": "go build ./..."}); got != Allow {
-		t.Errorf("post-grant = %v, want Allow", got)
+	p.AddGrantRule("diagnostic_shell")
+	if got, _ := p.Evaluate("diagnostic_shell", diagnostic); got != Allow {
+		t.Errorf("granted diagnostic_shell = %v, want Allow", got)
+	}
+	if got, _ := p.Evaluate("Bash", diagnostic); got != Deny {
+		t.Errorf("explicit deny after trusted grant = %v, want Deny", got)
+	}
+}
+
+func TestTrustedGrantOnceMatchesOnlyApprovedArgument(t *testing.T) {
+	p := mustPolicy(t, ModeAsk, nil, []string{"diagnostic_shell"}, nil)
+	approved := map[string]any{"command": "git status --short"}
+	p.AddGrantRule(GrantRuleFor("diagnostic_shell", approved, false))
+	if got, _ := p.Evaluate("diagnostic_shell", approved); got != Allow {
+		t.Errorf("approved argument = %v, want Allow", got)
+	}
+	if got, _ := p.Evaluate("diagnostic_shell", map[string]any{"command": "git log --oneline"}); got != Ask {
+		t.Errorf("different argument = %v, want Ask", got)
 	}
 }

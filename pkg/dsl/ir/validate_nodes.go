@@ -1037,6 +1037,21 @@ func lookupEnv(name string) string { return LookupEnv(name) }
 // inside-out. os.Expand isn't recursive and would stop at the first
 // `}`, leaving a trailing brace literal — so we cannot rely on it.
 func ExpandEnvWithDefault(s string) string {
+	return ExpandWithDefault(s, lookupEnv)
+}
+
+// ExpandWithDefault is ExpandEnvWithDefault over an arbitrary lookup. The
+// runtime needs it because a `vars:` default resolves against more than the
+// process environment — ${PROJECT_DIR} and ${BUNDLE_DIR} are engine-supplied
+// — while still owing the author the same `${VAR:-default}` semantics the
+// rest of the DSL honours.
+//
+// An empty lookup result means "unset", so `:-` fires: that is shell `:-`
+// (as opposed to `-`), and it is what ExpandEnvWithDefault already promised.
+func ExpandWithDefault(s string, lookup func(string) string) string {
+	if lookup == nil {
+		lookup = lookupEnv
+	}
 	var b strings.Builder
 	for i := 0; i < len(s); {
 		// Bare `$NAME` form (no braces) — delegate to os.Expand for
@@ -1047,7 +1062,7 @@ func ExpandEnvWithDefault(s string) string {
 				end++
 			}
 			if end > i+1 {
-				b.WriteString(lookupEnv(s[i+1 : end]))
+				b.WriteString(lookup(s[i+1 : end]))
 				i = end
 				continue
 			}
@@ -1076,16 +1091,16 @@ func ExpandEnvWithDefault(s string) string {
 				// Recurse so a nested ${...} inside the fallback
 				// gets expanded before we apply the default-value
 				// rule on this level.
-				expanded := ExpandEnvWithDefault(inner)
+				expanded := ExpandWithDefault(inner, lookup)
 				if idx := strings.Index(expanded, ":-"); idx >= 0 {
 					name, fallback := expanded[:idx], expanded[idx+2:]
-					if v := lookupEnv(name); v != "" {
+					if v := lookup(name); v != "" {
 						b.WriteString(v)
 					} else {
 						b.WriteString(fallback)
 					}
 				} else {
-					b.WriteString(lookupEnv(expanded))
+					b.WriteString(lookup(expanded))
 				}
 				i = j + 1
 				continue

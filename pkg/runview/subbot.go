@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sync"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
 // maxSubbotDepth bounds nested subbot recursion so a child that (directly or
@@ -83,30 +83,22 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 	if runLogger == nil {
 		runLogger = s.logger
 	}
-	base := s.workDir
-	if parentPath != "" {
-		base = filepath.Dir(parentPath)
-	}
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{ParentlessBaseDir: s.workDir, WorkDir: s.workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
-		// Re-attach to an in-flight/finished child from a prior (interrupted)
-		// execution of this subbot node before spawning a fresh one.
+		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
+		}
 		if out, aerr, handled := ReattachSubbotChild(ctx, s.store, req, runLogger); handled {
 			return out, aerr
 		}
-
-		childPath := req.Source
-		if !filepath.IsAbs(childPath) {
-			childPath = filepath.Join(base, childPath)
-		}
-		// The child compiles the way every path does: a bundle's main.bot
-		// promoted to its bundle, prompts/*.md in scope, and the engine gets
-		// the same handle for its skills.
-		childWf, hash, childBundle, err := CompileWorkflowPath(childPath)
+		childPath := resolvedSource.Path
+		childWf, hash, childBundle, err := CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -124,6 +116,10 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// active pass returns (before any park below).
 		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
 
+		bundleName := BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
 		// A subbot is a run of its own and resolves its own `action:` nodes:
 		// the child's catalog is the SERVICE's workspace, not the child
 		// bundle's directory, since the project tier belongs to the checkout
@@ -149,7 +145,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// to the child WORKFLOW's name, and the same subbot bundle ends up
 			// with two memory spaces depending on which surface launched the
 			// parent.
-			BotID:           ResolveBotID("", BundleNameForPath(childPath), childPath),
+			BotID:           ResolveBotID("", bundleName, childPath),
 			BoardRegister:   s.boardRegister,
 			LocalSecrets:    s.localSecrets,
 			LocalSealer:     s.localSealer,
@@ -161,6 +157,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			releaseChild()
 			return nil, err
 		}
+		childExec.SetRunExtraEnv(s.runEnv)
 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result, composing with the service's watch-stamping
@@ -197,6 +194,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithBundle(childBundle),
 			runtime.WithExecutionContext(childContext),
 			// The child executes in the parent's sandbox when the parent has
 			// one — the same tree, on every driver.

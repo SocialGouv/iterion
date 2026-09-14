@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useLocation, useSearch } from "wouter";
 import { ChevronLeftIcon, ChevronRightIcon } from "@radix-ui/react-icons";
@@ -18,6 +18,13 @@ import { useAutoValidation } from "@/hooks/useAutoValidation";
 import { useAutoOpenDiagnosticsOnError } from "@/hooks/useAutoOpenDiagnosticsOnError";
 import { useFileWatcher } from "@/hooks/useFileWatcher";
 import { editorDeepLinkTargetsDocument } from "@/lib/editorDeepLink";
+import {
+  useAssistantPageContext,
+  type AssistantPageContextContribution,
+  type PageContextValue,
+} from "@/lib/chatDock/pageContext";
+import { findNodeDecl } from "@/lib/defaults";
+import { useTabsStore } from "@/store/tabs";
 
 interface EditorViewProps {
   // Whether this editor tab is currently the visible one. EditorTabsView
@@ -45,7 +52,110 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const toggleInspectorCollapsed = useUIStore((s) => s.toggleInspectorCollapsed);
   const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
+  const iterDocument = useDocumentStore((s) => s.document);
+  const dirty = useDocumentStore(
+    (s) => s._generation !== s._savedGeneration,
+  );
+  const diagnosticCount = useDocumentStore((s) => s.diagnostics.length);
+  const warningCount = useDocumentStore((s) => s.warnings.length);
+  const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
+  const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
+  const activeSidebarTab = useUIStore((s) => s.activeTab);
+  const editingItem = useUIStore((s) => s.editingItem);
+  const activeEditorTab = useTabsStore((s) =>
+    s.tabs.find((tab) => tab.id === s.activeEditorTabId),
+  );
+
+  const assistantContext = useMemo<AssistantPageContextContribution>(() => {
+    const selectedNode =
+      iterDocument && selectedNodeId
+        ? findNodeDecl(iterDocument, selectedNodeId)
+        : null;
+    const visibleItem = (() => {
+      if (!iterDocument || !editingItem) return null;
+      if (editingItem.kind === "prompt") {
+        return iterDocument.prompts.find((item) => item.name === editingItem.name) ?? {
+          kind: "prompt",
+          name: editingItem.name,
+        };
+      }
+      if (editingItem.kind === "schema") {
+        return iterDocument.schemas.find((item) => item.name === editingItem.name) ?? {
+          kind: "schema",
+          name: editingItem.name,
+        };
+      }
+      // Variable values may resolve to credentials. Naming the visible item
+      // disambiguates "cette variable" without forwarding its value.
+      return { kind: "var", name: editingItem.name };
+    })();
+
+    const selection: Record<string, PageContextValue> = {};
+    if (selectedNode) {
+      selection.node = {
+        kind: selectedNode.kind,
+        name: selectedNode.decl.name,
+        configuration: selectedNode.decl as unknown as PageContextValue,
+      };
+    }
+    if (selectedEdgeId) selection.edgeId = selectedEdgeId;
+    if (visibleItem) {
+      selection.editingItem = visibleItem as unknown as PageContextValue;
+    }
+
+    const file = currentFilePath ?? activeEditorTab?.params.file;
+    const draftRunId = activeEditorTab?.params.draft;
+    const entityId = file ?? (draftRunId ? `draft/${draftRunId}` : activeEditorTab?.id);
+    const section = editingItem
+      ? `${editingItem.kind}-editor`
+      : selectedNode
+        ? `${selectedNode.kind}-inspector`
+        : selectedEdgeId
+          ? "edge-inspector"
+          : sourceViewOpen
+            ? "canvas-and-source"
+            : activeSidebarTab;
+
+    return {
+      title: activeEditorTab?.label || file || "Bot editor",
+      section,
+      ...(entityId
+        ? {
+            entity: {
+              type: "bot",
+              id: entityId,
+              label: activeEditorTab?.label || file || "Untitled bot",
+            },
+          }
+        : {}),
+      state: {
+        dirty,
+        view: sourceViewOpen ? "canvas-and-source" : "canvas",
+        ...(file ? { file } : {}),
+        ...(draftRunId ? { draftRunId } : {}),
+        ...(activeWorkflowName ? { activeWorkflow: activeWorkflowName } : {}),
+        diagnosticCount,
+        warningCount,
+        ...(Object.keys(selection).length > 0 ? { selection } : {}),
+      },
+    };
+  }, [
+    iterDocument,
+    selectedNodeId,
+    selectedEdgeId,
+    editingItem,
+    currentFilePath,
+    activeEditorTab,
+    dirty,
+    sourceViewOpen,
+    activeSidebarTab,
+    activeWorkflowName,
+    diagnosticCount,
+    warningCount,
+  ]);
+  useAssistantPageContext(assistantContext, active);
 
   const search = useSearch();
   const [, setLocation] = useLocation();

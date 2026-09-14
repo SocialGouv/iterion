@@ -545,6 +545,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/assistant-watches/{watchID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/assistant-watches/{watchID} */
+        delete: operations["deleteAssistantWatchesByWatchID"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/desktop/exchange": {
         parameters: {
             query?: never;
@@ -962,6 +981,23 @@ export interface paths {
         get: operations["getFiles"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/dependency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/files/dependency */
+        post: operations["postFilesDependency"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1610,6 +1646,23 @@ export interface paths {
         };
         /** GET /api/model-capabilities */
         get: operations["getModelCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/models */
+        get: operations["getModels"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2521,6 +2574,105 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/assistant-missions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-missions */
+        get: operations["getRunsByIdAssistantMissions"];
+        put?: never;
+        /** POST /api/runs/{id}/assistant-missions */
+        post: operations["postRunsByIdAssistantMissions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-missions/{missionID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-missions/{missionID} */
+        get: operations["getRunsByIdAssistantMissionsByMissionID"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-missions/{missionID}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/assistant-missions/{missionID}/stop */
+        post: operations["postRunsByIdAssistantMissionsByMissionIDStop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-watch-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-watch-health */
+        get: operations["getRunsByIdAssistantWatchHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-watches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/assistant-watches */
+        get: operations["getRunsByIdAssistantWatches"];
+        put?: never;
+        /** POST /api/runs/{id}/assistant-watches */
+        post: operations["postRunsByIdAssistantWatches"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/attachments/{name}": {
         parameters: {
             query?: never;
@@ -2862,6 +3014,25 @@ export interface paths {
         put?: never;
         /** POST /api/runs/{id}/fork */
         post: operations["postRunsByIdFork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/host-event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/host-event */
+        post: operations["postRunsByIdHostEvent"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3443,6 +3614,25 @@ export interface paths {
         post: operations["postRunsByIdWatchByIssueID"];
         /** DELETE /api/runs/{id}/watch/{issueID} */
         delete: operations["deleteRunsByIdWatchByIssueID"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/watching": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/watching */
+        get: operations["getRunsByIdWatching"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4630,6 +4820,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/authoring/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/commit */
+        post: operations["postV1AssistantAuthoringCommit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/git-commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/git-commit */
+        post: operations["postV1AssistantAuthoringGitCommit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/git-push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/git-push */
+        post: operations["postV1AssistantAuthoringGitPush"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/preview */
+        post: operations["postV1AssistantAuthoringPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/snapshot */
+        post: operations["postV1AssistantAuthoringSnapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/context/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/context/resolve */
+        post: operations["postV1AssistantContextResolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/dependencies/bots-localize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/dependencies/bots-localize */
+        post: operations["postV1AssistantDependenciesBotsLocalize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/dependencies/bots-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/dependencies/bots-update */
+        post: operations["postV1AssistantDependenciesBotsUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots": {
         parameters: {
             query?: never;
@@ -5341,6 +5667,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/preferences/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/preferences/model */
+        get: operations["getV1PreferencesModel"];
+        /** PUT /api/v1/preferences/model */
+        put: operations["putV1PreferencesModel"];
+        post?: never;
+        /** DELETE /api/v1/preferences/model */
+        delete: operations["deleteV1PreferencesModel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/repos": {
         parameters: {
             query?: never;
@@ -5645,6 +5990,13 @@ export interface components {
             orgs: components["schemas"]["OrgTreeView"][];
             user: components["schemas"]["UserView"];
         };
+        BackendStatus: {
+            auth: string;
+            available: boolean;
+            hints?: string[];
+            name: string;
+            sources: string[];
+        };
         BackendUsage: {
             backend: string;
             model?: string;
@@ -5760,6 +6112,16 @@ export interface components {
             start_node_id: string;
             terminal_node_id?: string;
             terminated_at_done?: boolean;
+        };
+        Catalog: {
+            backends?: components["schemas"]["BackendStatus"][];
+            invalid_specs?: components["schemas"]["InvalidSpec"][];
+            models: components["schemas"]["Entry"][];
+            reachability?: string;
+            recommended_spec?: string;
+            refresh_error?: string;
+            refreshed?: boolean;
+            resolved_default_backend?: string;
         };
         Checkpoint: {
             artifact_owners?: {
@@ -5967,6 +6329,28 @@ export interface components {
             status: string;
             version: number;
         };
+        Entry: {
+            backends?: string[];
+            context_window: number;
+            credential_provider: string;
+            credential_source?: string;
+            input_cost_per_m?: number;
+            max_output_tokens?: number;
+            model: string;
+            output_cost_per_m?: number;
+            price_known: boolean;
+            provider: string;
+            reachability: string;
+            reasoning: boolean;
+            recommended?: boolean;
+            source: string;
+            spec: string;
+            temperature: boolean;
+            tool_call: boolean;
+            ultracode_capable: boolean;
+            unusable_reason?: string;
+            usable: boolean;
+        };
         ExecutionContext: {
             business_stores?: components["schemas"]["ContextRef"][];
             launch_surface?: string;
@@ -6064,6 +6448,10 @@ export interface components {
             loop?: string;
             negated?: boolean;
             to: string;
+        };
+        InvalidSpec: {
+            reason: string;
+            spec: string;
         };
         Issue: {
             assignee?: string;
@@ -6280,6 +6668,7 @@ export interface components {
             title: string;
         };
         PipelineBoardPendingReview: {
+            batch_key?: string;
             bot_id?: string;
             depth: number;
             instructions?: string;
@@ -6346,6 +6735,13 @@ export interface components {
             reason?: string;
             status?: string;
             to: string;
+        };
+        ProviderStatus: {
+            available: boolean;
+            name: string;
+            overridden_sources?: string[];
+            source: string;
+            suggested_model?: string;
         };
         PublicContract: {
             criteria?: components["schemas"]["PublicCriterion"][];
@@ -6416,6 +6812,12 @@ export interface components {
             full_name: string;
             private: boolean;
             web_url?: string;
+        };
+        Report: {
+            backends: components["schemas"]["BackendStatus"][];
+            preference_order: string[];
+            providers: components["schemas"]["ProviderStatus"][];
+            resolved_default: string;
         };
         RoutingPolicy: {
             allowed_actions?: string[];
@@ -6495,6 +6897,7 @@ export interface components {
             permission_mode?: string;
             project_path?: string;
             queue_position?: number;
+            rewindable?: boolean;
             routing_policy?: components["schemas"]["RoutingPolicy"];
             shard_count?: number;
             shard_index?: number;
@@ -6522,6 +6925,7 @@ export interface components {
         };
         RunModelOverride: {
             backend?: string;
+            effort?: string;
             model?: string;
             provider?: string;
             selector: string;
@@ -6539,6 +6943,8 @@ export interface components {
             run: components["schemas"]["RunHeader"];
         };
         RunSource: {
+            client_id?: string;
+            conversation_id?: string;
             issue_id?: string;
             issue_identifier?: string;
             issue_title?: string;
@@ -6579,6 +6985,7 @@ export interface components {
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
+            source?: components["schemas"]["RunSource"];
             source_kind?: string;
             status: string;
             /** Format: date-time */
@@ -6891,6 +7298,19 @@ export interface components {
             temperature?: boolean;
             tool_call?: boolean;
         };
+        modelPrefRequest: {
+            backend?: string;
+            effort?: string;
+            key: string;
+            model?: string;
+        };
+        modelPrefResponse: {
+            backend?: string;
+            effort?: string;
+            key: string;
+            model?: string;
+            set: boolean;
+        };
         orgView: {
             created_at?: string;
             id: string;
@@ -6969,6 +7389,52 @@ export interface components {
             targets?: {
                 [key: string]: string;
             };
+        };
+        previewBackendOption: {
+            unavailable_reason?: string;
+            warning?: string;
+        };
+        previewCostNode: {
+            cost_max_usd: number;
+            cost_min_usd: number;
+            effort?: string;
+            kind: string;
+            model?: string;
+            node_id: string;
+            tokens_in: number;
+            tokens_out: number;
+        };
+        previewCostRequest: {
+            backend?: string;
+            backend_names?: string[];
+            file_path?: string;
+            permission?: string;
+            source?: string;
+        };
+        previewCostResponse: {
+            backend_options?: {
+                [key: string]: {
+                    [key: string]: components["schemas"]["previewBackendOption"];
+                };
+            };
+            cost_max_usd: number;
+            cost_min_usd: number;
+            effective?: components["schemas"]["previewEffectiveSettings"];
+            nodes: components["schemas"]["previewCostNode"][];
+            notes?: string[];
+            tokens_max: number;
+            tokens_min: number;
+        };
+        previewEffectiveKnob: {
+            effective: string;
+            node_pinned?: boolean;
+            source: string;
+        };
+        previewEffectiveSettings: {
+            auto_memory: components["schemas"]["previewEffectiveKnob"];
+            backend: components["schemas"]["previewEffectiveKnob"];
+            compress: components["schemas"]["previewEffectiveKnob"];
+            permission: components["schemas"]["previewEffectiveKnob"];
         };
         setOrgStatusReq: {
             reason?: string;
@@ -7883,6 +8349,26 @@ export interface operations {
             };
         };
     };
+    deleteAssistantWatchesByWatchID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postAuthDesktopExchange: {
         parameters: {
             query?: never;
@@ -8214,12 +8700,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
             };
         };
     };
@@ -8340,6 +8828,24 @@ export interface operations {
         };
     };
     getFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postFilesDependency: {
         parameters: {
             query?: never;
             header?: never;
@@ -9271,6 +9777,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["modelCapabilitiesResponse"];
+                };
+            };
+        };
+    };
+    getModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalog"];
                 };
             };
         };
@@ -10322,14 +10848,20 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["previewCostRequest"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["previewCostResponse"];
+                };
             };
         };
     };
@@ -10503,6 +11035,148 @@ export interface operations {
                 id: string;
                 node: string;
                 version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantMissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdAssistantMissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantMissionsByMissionID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdAssistantMissionsByMissionIDStop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                missionID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantWatchHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdAssistantWatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdAssistantWatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };
@@ -10888,6 +11562,26 @@ export interface operations {
         };
     };
     postRunsByIdFork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdHostEvent: {
         parameters: {
             query?: never;
             header?: never;
@@ -11561,6 +12255,26 @@ export interface operations {
             path: {
                 id: string;
                 issueID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdWatching: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };
@@ -13527,6 +14241,150 @@ export interface operations {
             };
         };
     };
+    postV1AssistantAuthoringCommit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringGitCommit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringGitPush: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantContextResolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantDependenciesBotsLocalize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantDependenciesBotsUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getV1Bots: {
         parameters: {
             query?: never;
@@ -14415,6 +15273,70 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
+            };
+        };
+    };
+    putV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["modelPrefRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
+            };
+        };
+    };
+    deleteV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
             };
         };
     };

@@ -24,7 +24,6 @@ import {
 
 import FileDiffDialog from "./FileDiffDialog";
 import FileEditDialog from "./FileEditDialog";
-import FloatingChatPanel from "./FloatingChatPanel";
 import OperatorPauseBanner from "./OperatorPauseBanner";
 import LeftPanel, {
   clampLeftWidth,
@@ -161,19 +160,15 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     handleSetBottomTab,
     bottomTabPinned,
     setBottomTabPinned,
-    chatDock,
-    setChatDock,
     resetLayout,
   } = useRunConsoleLayout();
 
   // Horizontal layout handle is dock-mode-dependent — see
   // useHorizontalLayout for the picking logic.
   const browserRightDocked = browserDock === "right" && browserAvailable;
-  const chatDockedRight = chatDock === "docked-right";
-  // Browser + Chat share one tabbed right-hand Side dock (SideDock), so a
-  // single "is the side dock open?" bit drives the horizontal layout.
-  const sideDockOpen = browserRightDocked || chatDockedRight;
-  const horiz = useHorizontalLayout({ sideDockOpen });
+  // Steering is a permanent run-scoped right dock. Browser joins it as a
+  // tab when moved right, so the horizontal layout always reserves SideDock.
+  const horiz = useHorizontalLayout({ sideDockOpen: true });
 
   const onResetLayout = () => {
     // Each layout's reset() bumps its own groupKey, remounting the Groups so
@@ -525,29 +520,22 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                 </Panel>
               </>
             )}
-            {sideDockOpen && (
-              <>
-                <ResizeSeparator orientation="horizontal" />
-                <Panel
-                  id="side"
-                  defaultSize={horiz.sideSize}
-                  minSize={18}
-                  className="min-h-0"
-                >
-                  <SideDock
-                    runId={runId}
-                    chatDockedRight={chatDockedRight}
-                    browserRightDocked={browserRightDocked}
-                    scrubSeq={scrubSeq}
-                    browserDock={browserDock}
-                    onBrowserDockChange={setBrowserDock}
-                    chatInputDisabled={chatInputDisabled}
-                    onUndockChat={() => setChatDock("floating")}
-                    onCloseChat={() => setChatDock("closed")}
-                  />
-                </Panel>
-              </>
-            )}
+            <ResizeSeparator orientation="horizontal" />
+            <Panel
+              id="side"
+              defaultSize={horiz.sideSize}
+              minSize={18}
+              className="min-h-0"
+            >
+              <SideDock
+                runId={runId}
+                browserRightDocked={browserRightDocked}
+                scrubSeq={scrubSeq}
+                browserDock={browserDock}
+                onBrowserDockChange={setBrowserDock}
+                chatInputDisabled={chatInputDisabled}
+              />
+            </Panel>
           </Group>
         </Panel>
         {!eventlogCollapsed && (
@@ -597,7 +585,10 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
 
   return (
     <ReactFlowProvider>
-      <div className="h-full w-full overflow-hidden flex flex-col">
+      <div
+        data-testid="run-console-root"
+        className="h-full w-full min-w-0 overflow-hidden flex flex-col"
+      >
         {/* Unified header block: the identity/actions rows + the live-
             vitals ribbon (+ scrubber) read as one bordered unit. Both
             children render `bare` so this container owns the single
@@ -629,28 +620,36 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             </>
           )}
         </div>
-      <div className="flex-1 min-h-0 flex">
-        <LeftPanel
-          runId={runId}
-          run={snapshot.run}
-          collapsed={leftCollapsed}
-          onToggleCollapsed={toggleLeftCollapsed}
-          width={leftWidth}
-          onResize={onLeftResize}
-          onSelectFile={handleSelectFile}
-          onEditFile={onEditFile}
-          onMergeComplete={refreshSnapshot}
-          onJumpToFailed={handleJumpToFailed}
-        />
-        <div className="flex-1 min-h-0 flex flex-col">{centerColumn}</div>
-        {detailCollapsed && (
-          <ExpandStrip
-            orientation="right"
-            label="Show details panel"
-            onClick={toggleDetailCollapsed}
+        <div className="flex-1 min-h-0 min-w-0 flex">
+          <LeftPanel
+            runId={runId}
+            run={snapshot.run}
+            collapsed={leftCollapsed}
+            onToggleCollapsed={toggleLeftCollapsed}
+            width={leftWidth}
+            onResize={onLeftResize}
+            onSelectFile={handleSelectFile}
+            onEditFile={onEditFile}
+            onMergeComplete={refreshSnapshot}
+            onJumpToFailed={handleJumpToFailed}
           />
-        )}
-      </div>
+          {/* A flex item defaults to min-width:auto. The run canvas, long log
+              rows and Steering transcript can therefore lend this column a
+              multi-thousand-pixel min-content width. Because the console root
+              is an overflow container, the browser then scrolls that root
+              horizontally and shifts the header off-screen. min-w-0 is the
+              shrink permission both this column and its flex row need. */}
+          <div className="flex-1 min-h-0 min-w-0 flex flex-col">
+            {centerColumn}
+          </div>
+          {detailCollapsed && (
+            <ExpandStrip
+              orientation="right"
+              label="Show details panel"
+              onClick={toggleDetailCollapsed}
+            />
+          )}
+        </div>
         <FileDiffDialog
           runId={runId}
           file={diffFile}
@@ -662,12 +661,6 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
           runId={runId}
           path={editFile}
           onClose={closeEdit}
-        />
-        <FloatingChatPanel
-          runId={runId}
-          dock={chatDock}
-          onDockChange={setChatDock}
-          inputDisabled={chatInputDisabled}
         />
       </div>
     </ReactFlowProvider>

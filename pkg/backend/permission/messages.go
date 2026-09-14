@@ -71,7 +71,7 @@ func ParseAnswer(s string) (allow bool, always bool) {
 		return false, false
 	case strings.Contains(t, "always"):
 		return true, true
-	case t == "allow" || t == "yes" || t == "y" || t == "approve" || t == "ok" || t == "once":
+	case t == "allow" || t == "allow once" || t == "yes" || t == "y" || t == "approve" || t == "ok" || t == "once":
 		return true, false
 	default:
 		return false, false
@@ -89,21 +89,31 @@ func GrantRuleFor(toolName string, input map[string]any, always bool) string {
 		name = "*"
 	}
 	if !always {
-		if arg := briefArg(toolName, input); arg != "" {
+		if arg := grantArg(toolName, input); arg != "" {
 			return fmt.Sprintf("%s(%s)", name, arg)
 		}
 	}
 	return name
 }
 
-// briefArg renders the most identifying argument of a tool call for
-// human/model messages (the command, path, url, …).
-func briefArg(toolName string, input map[string]any) string {
+// grantArg renders the complete identifying argument of a tool call for an
+// authorization rule. Unlike briefArg, it must not truncate: Evaluate matches
+// its scoped rules against the full summary of the re-issued tool call.
+func grantArg(toolName string, input map[string]any) string {
 	s := summarize(canonicalToolName(toolName), input)
-	// summarize may join several candidates with '\n'; show the first.
+	// summarize may join several candidates with '\n'; scope the approval to
+	// the same first candidate presented to the operator.
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
+	return s
+}
+
+// briefArg renders the most identifying argument of a tool call for
+// human/model messages (the command, path, url, …). It is display-only and
+// must never feed an authorization rule.
+func briefArg(toolName string, input map[string]any) string {
+	s := grantArg(toolName, input)
 	const max = 200
 	if len(s) > max {
 		s = s[:max] + "…"

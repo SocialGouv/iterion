@@ -367,7 +367,13 @@ interface BotSourceFilesResponse {
 
 export async function openFile(
   path: string,
-): Promise<{ source: string; document: IterDocument; diagnostics: string[]; path: string }> {
+): Promise<{
+  source: string;
+  document: IterDocument;
+  diagnostics: string[];
+  path: string;
+  confirmed_disk_path?: string;
+}> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
     const bundle = await apiRequest<BotSourceFilesResponse>(
@@ -386,19 +392,55 @@ export async function openFile(
 export async function saveFile(
   path: string,
   document: IterDocument,
+  options?: { createOnly?: boolean },
 ): Promise<SaveFileResponse> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
+    if (options?.createOnly) {
+      throw new Error("Save As is not available for a cloud bot source.");
+    }
     const source = await unparse(document);
+    // Carry the botsource CAS token. The old per-file editor write omitted it,
+    // so two tabs could silently overwrite one another even though the store
+    // already supported optimistic concurrency.
+    const current = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
     await apiRequest(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
-      { method: "PUT", body: JSON.stringify({ content: source }) },
+      { method: "PUT", body: JSON.stringify({ content: source, version: current.version }) },
     );
     return { path, source };
   }
   return request("/files/save", {
     method: "POST",
-    body: JSON.stringify({ path, document }),
+    body: JSON.stringify({
+      path,
+      document,
+      ...(options?.createOnly ? { create_only: true } : {}),
+    }),
+  });
+}
+
+export interface SharedBundleFileMetadata {
+  name: string;
+  version?: string;
+  workflow?: string;
+  bundle_sha256?: string;
+  verified: boolean;
+}
+
+export interface FileDependencyMetadata {
+  read_only: boolean;
+  shared_bundle?: SharedBundleFileMetadata;
+}
+
+export async function getFileDependencyMetadata(
+  path: string,
+): Promise<FileDependencyMetadata> {
+  return request("/files/dependency", {
+    method: "POST",
+    body: JSON.stringify({ path }),
   });
 }
 

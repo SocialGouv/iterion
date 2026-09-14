@@ -3,11 +3,71 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
+
+func clawSessionFingerprint(model string) string {
+	provider, _, err := ParseModelSpec(model)
+	if err != nil || strings.TrimSpace(provider) == "" {
+		return "claw:unknown"
+	}
+	return "claw:" + strings.ToLower(strings.TrimSpace(provider))
+}
+
+// A Claw fingerprint identifies a provider, not a provider-owned CLI session.
+// Only recognized fingerprints can share the provider-neutral persisted slot.
+func knownClawSessionFingerprint(fingerprint string) bool {
+	provider, ok := strings.CutPrefix(fingerprint, "claw:")
+	return ok && provider != "" && provider != "unknown" && !strings.ContainsAny(provider, ":/ \t\r\n")
+}
+
+// Persistent Claw pauses can resume on another provider. Keep the exact
+// operator response and pending call, but remove provider-specific reasoning
+// and unrelated incomplete tool calls before the backend appends the result.
+func sanitizeClawPersistResume(task *delegate.Task) error {
+	if len(task.ResumeConversation) == 0 {
+		return nil
+	}
+	var messages []api.Message
+	if err := json.Unmarshal(task.ResumeConversation, &messages); err != nil {
+		return fmt.Errorf("claw persisted resume: decode conversation: %w", err)
+	}
+	pending := task.ResumePendingToolUseID
+	uses, results := 0, 0
+	for _, message := range messages {
+		for _, block := range message.Content {
+			if block.Type == "tool_use" && block.ID == pending {
+				if message.Role != "assistant" || block.Name == "" {
+					return fmt.Errorf("claw persisted resume: invalid pending tool call")
+				}
+				uses++
+			}
+			if block.Type == "tool_result" && block.ToolUseID == pending {
+				results++
+			}
+		}
+	}
+	if pending == "" || uses != 1 || results != 0 {
+		return fmt.Errorf("claw persisted resume: expected exactly one unanswered pending tool call")
+	}
+	messages, _ = sanitizeToolPairs(messages, map[string]struct{}{pending: {}}, true)
+	var err error
+	task.ResumeConversation, err = json.Marshal(messages)
+	return err
+}
+
+func taskSessionKey(task delegate.Task) string {
+	if task.SessionSlot != "" {
+		return task.SessionSlot
+	}
+	return task.NodeID
+}
 
 // nodeSessionStore stashes per-(runID, nodeID) message history so the
 // recovery dispatcher's CompactAndRetry action has something concrete
@@ -151,7 +211,7 @@ func (s *nodeSessionStore) compact(runID, nodeID string, cfg clawrt.CompactionCo
 	if !ok || len(sess.messages) == 0 {
 		return 0, false
 	}
-	res := clawrt.CompactMessages(sess.messages, cfg)
+	res := compactMessagesToolSafe(sess.messages, cfg, nil)
 	if res == nil {
 		return 0, false
 	}

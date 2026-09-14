@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +78,24 @@ func TestInvocationInputPathsAreScopedWithoutChangingLogicalReferences(t *testin
 	}
 	if got := logical["source"].(map[string]any)["path"]; got != "published/input/0/abc" {
 		t.Fatalf("logical checkpoint input was mutated: %v", got)
+	}
+}
+
+func TestSetRunExtraEnvMergesAndLetsTheNewestValueWin(t *testing.T) {
+	e := &ClawExecutor{}
+	e.SetRunExtraEnv([]string{"PROJECT_ONLY=one", "PATH=/project/bin"})
+	e.SetRunExtraEnv([]string{"PATH=/devbox/bin", "DEVBOX_ONLY=two"})
+	got := map[string]string{}
+	for _, entry := range e.runExtraEnv {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			got[key] = value
+		}
+	}
+	if got["PROJECT_ONLY"] != "one" || got["DEVBOX_ONLY"] != "two" {
+		t.Fatalf("merged environment = %#v", got)
+	}
+	if got["PATH"] != "/devbox/bin" {
+		t.Fatalf("PATH = %q, want newest value", got["PATH"])
 	}
 }

@@ -528,7 +528,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider, Command: a.Command,
 			Input: a.Input, Output: a.Output, Publish: a.Publish, ArtifactLabels: a.ArtifactLabels,
-			System: a.System, User: a.User, Session: a.Session,
+			System: a.System, User: a.User, Session: a.Session, SessionSlot: a.SessionSlot,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Timeout:  a.Timeout,
@@ -565,7 +565,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider, Command: j.Command,
 			Input: j.Input, Output: j.Output, Publish: j.Publish, ArtifactLabels: j.ArtifactLabels,
-			System: j.System, User: j.User, Session: j.Session,
+			System: j.System, User: j.User, Session: j.Session, SessionSlot: j.SessionSlot,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Timeout:  j.Timeout,
@@ -1436,6 +1436,7 @@ type llmFields struct {
 	ArtifactLabels                      []string
 	System, User                        string
 	Session                             ast.SessionMode
+	SessionSlot                         string
 	Tools, ToolPolicy                   []string
 	Capabilities                        []string
 	Skills                              []string
@@ -1490,6 +1491,9 @@ func writeAgentFields(b *buf, f llmFields) {
 	// `session: fresh` line that wasn't in the source).
 	if f.Session != ast.SessionFresh {
 		writeProp(b, "session", f.Session.String())
+	}
+	if f.SessionSlot != "" {
+		writeIdentProp(b, "session_slot", f.SessionSlot)
 	}
 	if len(f.Tools) > 0 {
 		fmt.Fprintf(b, "  tools: [%s]\n", strings.Join(f.Tools, ", "))

@@ -184,6 +184,17 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
 		// the runner applies them after loading the workflow, under its
 		// multitenant cloud ceiling.
+		// Fail before persisting/publishing a queued run. The runner repeats
+		// this check in BuildExecutor, but discovering an unsafe backend only
+		// after queue admission would leave a paid launch to fail remotely.
+		// Admission and the runner receive the same run-level permission
+		// override, so one authoritative resolution is sufficient.
+		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+			return nil, err
+		}
+		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
+			return nil, err
+		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
 		if err != nil {
 			return nil, err
@@ -290,6 +301,12 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	if spec.Budget != nil {
 		ir.ApplyBudgetOverrides(wf, *spec.Budget)
 	}
+	rawBudget := RunBudgetOverrides(spec.Budget)
+
+	// Local launch and resume both replay the same persisted override.
+	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+		return nil, err
+	}
 
 	_, runLogger := s.prepareRunLog(runID)
 
@@ -310,6 +327,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// observers via ExecutorSpec.EventObservers; engine events fire them
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
+	workDir := s.effectiveWorkDir(spec.WorkDir)
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow:       wf,
 		Vars:           spec.Vars,
@@ -318,6 +336,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
+		WorkDir:        workDir,
 		Inbox:          s.inboxBinder(),
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
@@ -344,6 +363,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		s.dropRunLog(runID)
 		return nil, err
 	}
+	executor.SetRunExtraEnv(s.runEnv)
 
 	// Fold the bundle's file-based presets (presets/<name>.md) into wf so a
 	// studio `--preset <name>` selection resolves a file-based sous-bot — not
@@ -408,10 +428,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		precreateInputs = nil
 	}
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, spec.Timeout, false,
-		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
+		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -448,6 +468,9 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
+	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+		return err
+	}
 	spec.BundleDir = resumeBundleDir(r, spec)
 	wf, hash, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
@@ -476,6 +499,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if spec.RunID == "" {
 		return nil, errors.New("runview: run_id is required")
+	}
+	if spec.ExpectedStatus == store.RunStatusCancelled {
+		return nil, fmt.Errorf("runview: durable resume refuses cancelled run %q", spec.RunID)
 	}
 	if spec.FilePath == "" {
 		return nil, errors.New("runview: file_path is required")
@@ -524,6 +550,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			r = reconciled
 		}
 	}
+	if spec.ExpectedStatus != "" && r.Status != spec.ExpectedStatus {
+		return nil, fmt.Errorf("runview: run %q status changed: got %s, expected %s", r.ID, r.Status, spec.ExpectedStatus)
+	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return nil, err
 	}
@@ -539,6 +568,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		}
 		if cleanup != nil {
 			defer cleanup()
+		}
+	}
+	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+		return nil, err
+	}
+	if s.resumePolicyFiller != nil {
+		if err := s.resumePolicyFiller(parent, r, &spec); err != nil {
+			return nil, fmt.Errorf("runview: resolve resume policy: %w", err)
 		}
 	}
 
@@ -589,6 +626,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		artifactPreflight = nil
 	}
 
+	rawBudget := runtime.MergeResumeBudgetAsk(spec.Budget, r.BudgetOverrides)
 	// The budget a resume executes against composes, per field, the ask
 	// persisted at launch (the doc's replay source) and THIS resume's
 	// ask — non-zero wins, zero inherits — applied to wf BEFORE the
@@ -644,8 +682,19 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		}
 	}
 
+	if detachedEnabled() && (spec.ExpectedStatus != "" || spec.ReceiptID != "") {
+		return nil, errors.New("runview: durable mission resume is unavailable in detached mode")
+	}
 	if detachedEnabled() {
-		return s.resumeDetached(parent, spec)
+		spec.Budget = rawBudget
+		// The permission gate is replayed from the run doc, exactly as
+		// resumeExecutorSpec does for the in-process path. ResumeSpec
+		// carries no Permission of its own and `iterion resume` never
+		// reads the persisted override, so without this the subprocess
+		// re-resolves the gate from the workflow — usually `off` — and an
+		// operator's launch-time "deny" quietly stops applying at the
+		// first resume.
+		return s.resumeDetached(parent, spec, r.PermissionOverride)
 	}
 
 	_, runLogger := s.prepareRunLog(spec.RunID)
@@ -659,36 +708,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
-	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow: wf,
-		Store:    s.store,
-		RunID:    spec.RunID,
-		Logger:   runLogger,
-		StoreDir: s.storeDir,
-		// Same hook-seam wiring as a launch: a resume-spawned supervisor
-		// (or any live subscriber) is otherwise blind to assistant_text /
-		// tool_* events, which never fire the engine's observer.
-		EventObservers: s.hookEventObservers(nil),
-		Inbox:          s.inboxBinder(),
-		AsyncAsk:       s.asyncAskBinder(),
-		// Resolved, not read raw: only a cloud launch persists BotID, so a
-		// studio-launched bundle would otherwise fall back to the workflow
-		// name here and aim the resumed run at a different space than its own
-		// earlier nodes wrote to — an empty memory, and notes landing where
-		// nothing will read them again.
-		BotID:           BotIDForRun(r),
-		AutoMemory:      spec.AutoMemory,
-		BoardRegister:   s.boardRegister,
-		LocalSecrets:    s.localSecrets,
-		LocalSealer:     s.localSealer,
-		Connectors:      connectors,
-		ConnectorClient: connectorClient,
-		UsageCapSource:  s.usageCapSource,
-	})
+	executorSpec := s.resumeExecutorSpec(wf, r, runLogger, spec.AutoMemory)
+	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
+	executor, err := BuildExecutor(executorSpec)
 	if err != nil {
 		s.dropRunLog(spec.RunID)
 		return nil, err
 	}
+	executor.SetRunExtraEnv(s.runEnv)
 	if len(r.Inputs) > 0 {
 		executor.SetVars(r.Inputs)
 	}
@@ -710,9 +737,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
+		// r.ExtraSkills, re-read from the run record, is what makes an
+		// operator-added skill survive the SECOND turn of a conversation:
+		// the dock drives one resume per message.
 		launchExtras{
 			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
+			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
 			artifactResumePreflight: artifactPreflight,
+			budgetOverrides:         RunBudgetOverrides(rawBudget),
+			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
 		},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
@@ -722,25 +755,97 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			if err != nil {
 				return err
 			}
+			if spec.ExpectedStatus != "" && r2.Status != spec.ExpectedStatus {
+				return fmt.Errorf("runview: run %q status changed: got %s, expected %s", r2.ID, r2.Status, spec.ExpectedStatus)
+			}
 			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err
 			}
-			return eng.Resume(ctx, spec.RunID, spec.Answers)
+			return eng.ResumeWithHostInputs(ctx, spec.RunID, spec.Answers, spec.HostInputs)
 		})
 }
 
-// validateResumable returns nil if r is in a state from which Resume can
-// proceed; otherwise it returns a descriptive error. When automatic is true
-// the check uses CanAutoResume() — machinery must never override an operator's
-// cancel — else it falls back to the wider CanOperatorResume() (paused,
-// failed_resumable, cancelled). Same predicate ride SubmitResume.
-func validateResumable(r *store.Run, answers map[string]any, automatic bool) error {
-	if automatic {
+// resumeExecutorSpec is the executor a resume rebuilds for an EXISTING run.
+//
+// The one thing it must not do is forget what the run was launched with. A
+// resume gets no LaunchSpec — the operator is continuing a run, not starting
+// one — so every launch-time decision has to come back off the run document.
+// Model/backend/effort overrides are persisted there precisely for this, and
+// omitting them does not fail loudly: the executor quietly falls back to the
+// .bot's own model:/backend:/reasoning_effort: while the studio header goes
+// on displaying the choice the operator made.
+//
+// It matters most where it is least visible. A conversational run pauses on
+// its chat node and every operator reply is a Resume, so the chosen model
+// applied to exactly the first turn and nothing after it.
+func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
+	runWorkDir := ""
+	if r != nil {
+		runWorkDir = r.WorkDir
+	}
+	spec := ExecutorSpec{
+		Workflow: wf,
+		Store:    s.store,
+		Logger:   runLogger,
+		StoreDir: s.storeDir,
+		WorkDir:  s.effectiveWorkDir(runWorkDir),
+		Inbox:    s.inboxBinder(),
+		AsyncAsk: s.asyncAskBinder(),
+		// Same hook-seam wiring as a launch: a resume-spawned supervisor
+		// (or any live subscriber) is otherwise blind to assistant_text /
+		// tool_* events, which never fire the engine's observer.
+		EventObservers: s.hookEventObservers(nil),
+		AutoMemory:     autoMemory,
+		BoardRegister:  s.boardRegister,
+		LocalSecrets:   s.localSecrets,
+		LocalSealer:    s.localSealer,
+		UsageCapSource: s.usageCapSource,
+		// Resolved, not read raw: only a cloud launch persists BotID, so a
+		// studio-launched bundle would otherwise fall back to the workflow
+		// name here and aim the resumed run at a different space than its own
+		// earlier nodes wrote to — an empty memory, and notes landing where
+		// nothing will read them again. It stays IN the literal (nil-safe)
+		// rather than being assigned below: the bot-identity guard reads the
+		// composite literal, and a field-by-field BotID reads to it as a site
+		// that decided nothing.
+		BotID: BotIDForRun(r),
+	}
+	if r != nil {
+		spec.RunID = r.ID
+		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
+		spec.Permission = r.PermissionOverride
+	}
+	return spec
+}
+
+// effectiveWorkDir is the one workspace precedence used by both executor
+// construction and engine launch: a per-run override wins, otherwise the
+// service root is used. Keeping it shared prevents Claw tools and ${PROJECT_DIR}
+// from silently targeting different projects.
+func (s *Service) effectiveWorkDir(override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	return s.workDir
+}
+
+// validateResumable returns nil if r is in a state from which Resume
+// can proceed; otherwise it returns a descriptive error.
+// ErrRunNotResumable marks a resume refused because the run's STATUS no
+// longer admits one — most often because something else resumed it a moment
+// earlier. Since a parked gate has two legitimate resumers (the operator and
+// the assistant-watch coordinator, both through this same call), the loser of
+// that race must be able to tell "you were beaten to it" from "your request
+// was malformed" and re-route its intent instead of surfacing a raw error.
+var ErrRunNotResumable = errors.New("run cannot be resumed")
+
+func validateResumable(r *store.Run, answers map[string]any, automatic ...bool) error {
+	if len(automatic) > 0 && automatic[0] {
 		if !r.Status.CanAutoResume() {
-			return fmt.Errorf("run %q cannot be auto-resumed (status: %s) — CanAutoResume() excludes it deliberately", r.ID, r.Status)
+			return fmt.Errorf("run %q cannot be auto-resumed (status: %s) — CanAutoResume() excludes it deliberately: %w", r.ID, r.Status, ErrRunNotResumable)
 		}
 	} else if !r.Status.CanOperatorResume() {
-		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
+		return fmt.Errorf("run %q cannot be resumed (status: %s): %w", r.ID, r.Status, ErrRunNotResumable)
 	}
 	if r.Status.RequiresResumeAnswers() && len(answers) == 0 {
 		return fmt.Errorf("no answers provided; resume of paused run requires answers")
@@ -842,6 +947,34 @@ func (s *Service) spawnRun(
 		}
 	}
 
+	// Persist the RAW budget intent while this runner owns the run lock. The
+	// launch engine also stamps it through WithBudgetOverrides, but Resume does
+	// not call runtime.runResolveDoc; without this explicit write, a debug-mode
+	// activation would enforce correctly for one turn and then disappear on the
+	// next HTTP/WS/watch-driven resume. SaveRun is a full-document replacement,
+	// hence doing it here rather than in the HTTP handler is the race-safe seam.
+	if ex.budgetOverrides != nil {
+		var saveErr error
+		if patcher := store.AsRunBudgetOverridesPatcher(s.store); patcher != nil {
+			saveErr = patcher.PatchRunBudgetOverrides(context.Background(), runID, ex.budgetOverrides)
+		} else {
+			r, loadErr := s.store.LoadRun(context.Background(), runID)
+			if loadErr != nil {
+				saveErr = loadErr
+			} else {
+				copy := *ex.budgetOverrides
+				r.BudgetOverrides = &copy
+				saveErr = s.store.SaveRun(context.Background(), r)
+			}
+		}
+		if saveErr != nil {
+			s.manager.Deregister(runID)
+			_ = lock.Unlock()
+			s.dropRunLog(runID)
+			return nil, fmt.Errorf("runview: persist budget override: %w", saveErr)
+		}
+	}
+
 	var cancelTimeout context.CancelFunc
 	if timeout > 0 {
 		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
@@ -862,6 +995,9 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	if len(ex.extraSkills) > 0 {
+		opts = append(opts, runtime.WithExtraSkills(ex.extraSkills, ex.extraSkillsOrigin))
 	}
 	if parentRunID != "" {
 		opts = append(opts, runtime.WithParentRunID(parentRunID))
@@ -1036,7 +1172,10 @@ type launchExtras struct {
 	source   *store.RunSource
 	// routingPolicy mirrors LaunchSpec.RoutingPolicy: the launch-frozen
 	// outcome contract, handed to the engine for doc persistence.
-	routingPolicy *store.RoutingPolicy
+	routingPolicy      *store.RoutingPolicy
+	worktreeBaseCommit string
+	botOrigin          *store.BotOrigin
+	delegation         *store.RunDelegation
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
@@ -1051,10 +1190,25 @@ type launchExtras struct {
 	// run-level override for the back-edge affordability guard, the level
 	// above the workflow's own `loop_budget_guard:`.
 	loopBudgetGuard string
+	// extraSkills are the skill-library skills the OPERATOR added to this
+	// run, carried on BOTH paths for different reasons: on launch it is the
+	// caller's request, on resume it is re-read from the run record.
+	//
+	// The resume half is the load-bearing one. A conversational bot resumes
+	// on every turn, and the dock drives those resumes — so a list applied
+	// only at launch would be gone by the operator's second message, on a
+	// run they launched from the CLI with --skill precisely to get it.
+	extraSkills []string
+	// extraSkillsOrigin is "flag" | "env" | "flag+env" | "resume", reported
+	// on the skills_injected event so the run says where the list came from.
+	extraSkillsOrigin string
 	// supervisors mirrors LaunchSpec/ResumeSpec.Supervisors: the
 	// run-level kill switch for DSL-declared supervisor watchers,
 	// resolved above ITERION_SUPERVISORS.
 	supervisors string
+	// permission is the strongest-precedence run-level gate choice. It is
+	// supplied on launch and replayed from the run document on resume.
+	permission string
 	// budgetAsk mirrors LaunchSpec.Budget: the operator's launch-time
 	// budget ask, handed to the engine so the run doc persists it as the
 	// replay source every resume surface reads (runtime.WithBudgetAsk).
@@ -1065,6 +1219,12 @@ type launchExtras struct {
 	// artifactResumePreflight is confined to a synchronous same-process resume.
 	// It must never cross a detached process or queue boundary.
 	artifactResumePreflight *runtime.ArtifactResumePreflight
+	// budgetOverrides is the raw run-level intent, not the effective budget
+	// snapshot. It is replayed before executor construction and persisted under
+	// the run lock so automatic/non-HTTP resumers inherit the same semantics.
+	budgetOverrides      *store.RunBudgetOverrides
+	expectedResumeStatus store.RunStatus
+	resumeReceiptID      string
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -1083,6 +1243,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		runtime.WithEventObserver(s.broker.Publish),
 		runtime.WithOnNodeFinished(s.stampWatchedFromOutput),
 	}
+	if len(s.runEnv) > 0 {
+		opts = append(opts, runtime.WithRunEnv(s.runEnv))
+	}
 	// Global sandbox default (sandbox-by-default): injected by the
 	// PRODUCT constructors (studio/server/dispatch daemons) via
 	// WithSandboxDefault. A Service built without it (tests, embedders)
@@ -1093,15 +1256,33 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if ex.loopBudgetGuard != "" {
 		opts = append(opts, runtime.WithLoopBudgetGuard(ex.loopBudgetGuard))
 	}
+	if ex.permission != "" {
+		opts = append(opts, runtime.WithPermissionOverride(ex.permission))
+	}
+	if ex.budgetOverrides != nil {
+		opts = append(opts, runtime.WithBudgetOverrides(ex.budgetOverrides))
+	}
+	if ex.expectedResumeStatus != "" {
+		opts = append(opts, runtime.WithExpectedResumeStatus(ex.expectedResumeStatus))
+	}
+	if ex.resumeReceiptID != "" {
+		opts = append(opts, runtime.WithResumeReceiptID(ex.resumeReceiptID))
+	}
 	// Per-launch WorkDir (ADR-046) overrides the service default; the
 	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}
 	// resolves there, not the daemon's cwd.
-	workDir := s.workDir
-	if ex.workDir != "" {
-		workDir = ex.workDir
-	}
+	workDir := s.effectiveWorkDir(ex.workDir)
 	if workDir != "" {
 		opts = append(opts, runtime.WithWorkDir(workDir))
+	}
+	if ex.worktreeBaseCommit != "" {
+		opts = append(opts, runtime.WithWorktreeBaseCommit(ex.worktreeBaseCommit))
+	}
+	if ex.botOrigin != nil {
+		opts = append(opts, runtime.WithBotOrigin(ex.botOrigin))
+	}
+	if ex.delegation != nil {
+		opts = append(opts, runtime.WithDelegation(ex.delegation))
 	}
 	if s.boardMCPHandler != nil {
 		opts = append(opts, runtime.WithBoardMCP(s.boardMCPHandler))

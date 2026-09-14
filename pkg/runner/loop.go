@@ -289,6 +289,20 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // attempt (QueuedAt) and from its history (the checkpoint) before
 // letting a launch through.
 func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
+	// A successful rewind deliberately parks at paused_operator, but an old
+	// launch delivery must not turn that visible pause into a silent replay of
+	// an edited workflow. The marker survives the explicit resume's queued
+	// hand-off and is consumed only when that resume claims running.
+	if run.ResumeRequiresExplicit && msg.Resume == nil {
+		return preconditionOutcome{
+			finalStatus: string(run.Status),
+			op:          "ack-explicit-resume-required",
+			action:      actionAck,
+			level:       logInfo,
+			logFmt:      "runner: run %s was rewound — dropping stale delivery (explicit resume required to continue)",
+			logArgs:     []any{msg.RunID},
+		}
+	}
 	switch run.Status {
 	case store.RunStatusCancelled:
 		// Cancelled is terminal for a redelivery — checkpoint or not, resume
@@ -2387,6 +2401,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// This was previously dropped on the floor.
 		engineOpts = append(engineOpts, runtime.WithForceResume(true))
 	}
+	if msg.Resume != nil && msg.Resume.ReceiptID != "" {
+		// The publisher already consumed ExpectedStatus in its exact CAS to
+		// queued. The runner claims queued, but must retain the durable
+		// receipt so reconciliation can prove whether the action happened.
+		engineOpts = append(engineOpts, runtime.WithResumeReceiptID(msg.Resume.ReceiptID))
+	}
 	// Live steering: hand the engine the override channel processOne
 	// registered for this run, so bump_loop / raise_budget commands
 	// arriving on iterion.steer.<run_id> reach the execution loop.
@@ -2426,7 +2446,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 
 	var runErr error
 	if msg.Resume != nil {
-		runErr = engine.Resume(ctx, msg.RunID, msg.Resume.Answers)
+		runErr = engine.ResumeWithHostInputs(ctx, msg.RunID, msg.Resume.Answers, msg.Resume.HostInputs)
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 	}
@@ -2641,8 +2661,8 @@ func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *ite
 		return fmt.Errorf("runner: launch budget override: %w", err)
 	}
 	ir.ApplyBudgetOverrides(wf, o)
-	logger.Info("runner: launch budget overrides applied (cost=%.2f tokens=%d duration=%q iterations=%d branches=%d)",
-		o.MaxCostUSD, o.MaxTokens, o.MaxDuration, o.MaxIterations, o.MaxParallelBranches)
+	logger.Info("runner: launch budget overrides applied (cost=%.2f tokens=%d duration=%q iterations=%d branches=%d unlimited_workflow=%t)",
+		o.MaxCostUSD, o.MaxTokens, o.MaxDuration, o.MaxIterations, o.MaxParallelBranches, o.UnlimitedWorkflow)
 	return nil
 }
 
@@ -2772,16 +2792,20 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
-		AutoMemory:  msg.AutoMemory,
-		MemoryStore: r.cfg.MemoryStore,
+		AutoMemory: msg.AutoMemory,
+		// Keep this as the ExecutorSpec's run-level override: folding it into
+		// wf.Permission would let a node-level `off` beat an operator `deny`.
+		Permission: msg.Permission,
+		// The launch-time model/backend/provider/effort choice. Without this
+		// the pod silently runs the bot's DSL defaults while the run record
+		// advertises the model the operator picked — see
+		// queue.RunMessage.ModelOverrides.
+		ModelOverrides: runview.ModelOverridesFromRun(modelOverridesFromWire(msg.ModelOverrides)),
+		MemoryStore:    r.cfg.MemoryStore,
 		// The operator's subscription ceiling, published to the shared
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
-		// The operator's launch-time model/backend pins, replayed from the
-		// wire. Before this, the cloud path persisted them display-only:
-		// the studio showed an override the delegates never honoured.
-		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
 		// The operator's run-level fallback chain, carried on the wire for
 		// the same reason as the pins above — and applied through the SAME
 		// ir.ApplyRunFallback screen a local launch passes, so a pod can
@@ -2803,6 +2827,27 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
 	}
 	return spec, usage, nil
+}
+
+// modelOverridesFromWire lifts the queue's override rows back into the
+// persisted shape runview.ModelOverridesFromRun folds. The two types are
+// field-identical by design: queue keeps a local mirror so the schema package
+// stays dependency-free, and this is the one place they meet.
+func modelOverridesFromWire(rows []queue.ModelOverride) []store.RunModelOverride {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.RunModelOverride{
+			Selector: r.Selector,
+			Backend:  r.Backend,
+			Model:    r.Model,
+			Provider: r.Provider,
+			Effort:   r.Effort,
+		})
+	}
+	return out
 }
 
 // stringifyVars converts the wire payload's free-form vars into the
@@ -2869,7 +2914,7 @@ func runFallbackFromMsg(entries queue.RunFallback) []ir.Fallback {
 func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 	out := make([]model.OverrideEntry, len(entries))
 	for i, e := range entries {
-		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
 	return model.OverridesFrom(out)
 }

@@ -28,6 +28,8 @@ func TestIsRetryable(t *testing.T) {
 		{"clawapi 400 (Retryable=false)", &clawapi.APIError{StatusCode: 400, Message: "bad", Retryable: false}, false},
 		{"clawapi 500 without Retryable flag", &clawapi.APIError{StatusCode: 500, Retryable: false}, false},
 		{"wrapped local APIError", fmt.Errorf("model: %w", &APIError{StatusCode: 502, IsRetryable: true}), true},
+		{"typed Claw stream idle", &StreamIdleError{Phase: StreamIdleCold, Idle: time.Minute}, true},
+		{"parent deadline", context.DeadlineExceeded, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -70,6 +72,8 @@ func TestIsDelegateRetryable(t *testing.T) {
 		{"ErrTransient typed", &delegate.ErrTransient{Provider: "claude_code", Reason: "subprocess killed"}, true},
 		{"ErrRateLimited typed", &delegate.ErrRateLimited{Provider: "claw", Detail: "quota"}, true},
 		{"wrapped ErrTransient", fmt.Errorf("wrap: %w", &delegate.ErrTransient{Reason: "x"}), true},
+		{"typed Claw stream idle", &StreamIdleError{Phase: StreamIdleCold, Idle: time.Minute}, true},
+		{"parent deadline", context.DeadlineExceeded, false},
 		{"signal kill", errors.New("subprocess died: signal: killed"), true},
 		{"exit status 137 (OOM)", errors.New("exec failed: exit status 137"), true},
 		{"exit status 143 (SIGTERM)", errors.New("exec failed: exit status 143"), true},

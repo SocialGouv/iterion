@@ -117,8 +117,17 @@ import (
 // v=15: RuntimeSemantics and reserved native run IDs select a different
 // interpreter and checkpoint namespace. Supported v14 consumers must reject
 // these messages before reading a store. Legacy launches continue to emit
-// v14 while an older fleet may still be present.
-const SchemaVersion = 15
+// v14 while an older fleet may still be present. ModelOverride.Effort and the
+// run-level Permission override also became explicit wire intent at this
+// version.
+// v=16 (2026-08-29): ResumeSpec.HostInputs carries host-attested derived
+// context (currently bounded chat history) to the runner without recording it
+// as operator answers. A stale runner dropping it would accept an assistant
+// turn while silently removing the continuity fallback, so it must reject.
+// v=17 (2026-09-11): mission resume receipts cross the queue and are stamped
+// on run_resumed. A stale runner would execute the mutation but drop its
+// reconciliation identity, so this additive field changes operator intent.
+const SchemaVersion = 17
 const LegacySchemaVersion = 14
 
 func SchemaVersionForSemantics(semantics string) (int, error) {
@@ -208,6 +217,10 @@ type RunMessage struct {
 	// precedence level. Empty means the caller expressed nothing and the
 	// pod's ITERION_SUPERVISORS (then the default on) decides.
 	Supervisors string `json:"supervisors,omitempty"`
+	// Permission is the operator's run-level tool-permission-gate override.
+	// It must remain distinct from the workflow permission because it sits
+	// ABOVE node declarations in the precedence chain.
+	Permission string `json:"permission,omitempty"`
 	// BotBundle carries the server-resolved immutable collection in v13.
 	// Legacy refs without a snapshot still resolve a stored row with a version
 	// check. Nil retains the legacy baked/loose-bot resource lookup.
@@ -312,18 +325,24 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+	UnlimitedWorkflow   bool    `json:"unlimited_workflow,omitempty"`
 	CapImposed          bool    `json:"cap_imposed,omitempty"`
 }
 
-// ModelOverride is one launch-time selector→override directive (the wire
-// mirror of store.RunModelOverride, kept local so this schema package
-// stays dependency-free). Selector semantics are the executor's: exact
-// node id, id glob, kind keyword ("agent"|"judge"|…) or "*".
+// ModelOverride is one launch-time retargeting rule: every LLM node matching
+// Selector (a node id, an id glob like "reviewer_*", or a node kind keyword
+// such as "agent"/"judge") runs on the named backend/model/provider/effort
+// instead of its DSL value. The wire mirror of store.RunModelOverride, kept
+// local so this schema package stays dependency-free.
+//
+// Empty fields inherit: a rule carrying only Model retargets the model and
+// leaves the node's backend alone.
 type ModelOverride struct {
 	Selector string `json:"selector"`
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // RunFallbackEntry is one stage of the operator's run-level fallback
@@ -412,8 +431,11 @@ type BackendConfig struct {
 // ResumeSpec is non-nil for resume publishes; the runner threads its
 // fields into `runtime.Engine.Resume`.
 type ResumeSpec struct {
-	Answers map[string]any `json:"answers,omitempty"`
-	Force   bool           `json:"force"`
+	Answers        map[string]any  `json:"answers,omitempty"`
+	HostInputs     map[string]any  `json:"host_inputs,omitempty"`
+	Force          bool            `json:"force"`
+	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
+	ReceiptID      string          `json:"receipt_id,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so

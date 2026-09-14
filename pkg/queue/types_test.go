@@ -240,9 +240,13 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// the dual-accept window advances to MinSchemaVersion=10.
 	// v=12 (2026-09-02) adds the runner rollout epoch. A stale consumer must
 	// reject it rather than silently ignore the fence.
-	// v=15 carries native interpreter identity; old consumers must reject it.
-	if SchemaVersion != 15 || LegacySchemaVersion != 14 {
-		t.Errorf("SchemaVersion = %d, LegacySchemaVersion = %d, want 15 and 14", SchemaVersion, LegacySchemaVersion)
+	// v=14 carries the execution context; old consumers must not ignore it.
+	// v=15 carries native interpreter identity, reasoning effort and the
+	// run-level permission override.
+	// v=16 carries host-attested resume inputs.
+	// v=17 carries durable assistant-mission receipt identity.
+	if SchemaVersion != 17 || LegacySchemaVersion != 14 {
+		t.Errorf("SchemaVersion = %d, LegacySchemaVersion = %d, want 17 and 14", SchemaVersion, LegacySchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -389,6 +393,55 @@ func TestRunMessage_LoopBudgetGuardSurvivesTheWire(t *testing.T) {
 	}
 }
 
+// TestModelOverridesSurviveTheWire pins the field that carries an operator's
+// model choice to the runner. A silent drop here is invisible — the run record
+// still shows the chosen model while the pod executes the DSL default — so the
+// round-trip is asserted rather than assumed.
+func TestModelOverridesSurviveTheWire(t *testing.T) {
+	in := &RunMessage{
+		V:            SchemaVersion,
+		RunID:        "r1",
+		WorkflowName: "wf",
+		IRCompiled:   json.RawMessage(`{}`),
+		ModelOverrides: []ModelOverride{
+			{Selector: "reviewer_*", Model: "anthropic/claude-opus-5", Effort: "xhigh"},
+			{Selector: "agent", Backend: "claw", Provider: "anthropic"},
+		},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out RunMessage
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := out.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.ModelOverrides) != 2 {
+		t.Fatalf("ModelOverrides len = %d, want 2 (dropped on the wire)", len(out.ModelOverrides))
+	}
+	if got := out.ModelOverrides[0]; got.Selector != "reviewer_*" || got.Model != "anthropic/claude-opus-5" || got.Effort != "xhigh" {
+		t.Errorf("first override round-tripped as %+v", got)
+	}
+	if got := out.ModelOverrides[1]; got.Backend != "claw" || got.Provider != "anthropic" {
+		t.Errorf("second override round-tripped as %+v", got)
+	}
+}
+
+// TestModelOverridesOmittedWhenEmpty keeps the common launch (no overrides)
+// off the wire entirely rather than publishing an empty array.
+func TestModelOverridesOmittedWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(&RunMessage{V: SchemaVersion, RunID: "r1", WorkflowName: "wf"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte("model_overrides")) {
+		t.Errorf("empty overrides should be omitted, got %s", raw)
+	}
+}
+
 // TestRunMessage_SupervisorsSurvivesTheWire is the same composition for
 // the supervisors kill switch: a pod re-deciding it from its own env
 // would spawn LLM watchers the operator explicitly declined.
@@ -421,6 +474,29 @@ func TestRunMessage_SupervisorsSurvivesTheWire(t *testing.T) {
 		}
 		if err := out.Validate(); err != nil {
 			t.Errorf("validate: %v", err)
+		}
+	}
+}
+
+func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
+	for _, want := range []string{"off", "ask", "deny", ""} {
+		in := RunMessage{
+			V: SchemaVersion, RunID: "r1", WorkflowName: "w",
+			IRCompiled: json.RawMessage(`{}`), Permission: want,
+		}
+		blob, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == "" && bytes.Contains(blob, []byte(`"permission"`)) {
+			t.Errorf("unset permission was serialised: %s", blob)
+		}
+		var out RunMessage
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Permission != want {
+			t.Errorf("Permission = %q after round trip, want %q", out.Permission, want)
 		}
 	}
 }

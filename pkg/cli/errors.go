@@ -30,6 +30,32 @@ var ErrUserInput = errors.New("user input")
 // the stream.
 var ErrReported = errors.New("already reported")
 
+// AttentionError means the requested read completed, but the projection
+// found an unhealthy or uncovered condition that deserves operator
+// attention. It has its own exit status so scripts can distinguish "health
+// is degraded" from a transport/internal failure.
+type AttentionError struct {
+	Code    string
+	Summary string
+}
+
+func (e *AttentionError) Error() string {
+	if e == nil {
+		return "attention required"
+	}
+	if e.Summary == "" {
+		return "attention required: " + e.Code
+	}
+	if e.Code == "" {
+		return "attention required: " + e.Summary
+	}
+	return "attention required (" + e.Code + "): " + e.Summary
+}
+
+func NewAttentionError(code, summary string) error {
+	return &AttentionError{Code: code, Summary: summary}
+}
+
 // UserInputError wraps err with ErrUserInput so the CLI exits with
 // status 2. Returns nil when err is nil so the caller can chain
 // `return cli.UserInputError(maybeErr)` without a nil check.

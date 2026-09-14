@@ -517,6 +517,7 @@ type LLMDecl struct {
 	System            string           // prompt reference name
 	User              string           // prompt reference name
 	Session           SessionMode      // defaults to SessionFresh
+	SessionSlot       string           // optional durable slot shared by compatible persist nodes
 	Tools             []string         // tool capability names
 	ToolPolicy        []string         // per-node tool policy patterns (nil = inherit workflow)
 	Capabilities      []string         // host-side capabilities granted to the node (e.g. board.create)
@@ -644,12 +645,13 @@ const (
 type InteractionMode = types.InteractionMode
 
 const (
-	InteractionNone       = types.InteractionNone
-	InteractionHuman      = types.InteractionHuman
-	InteractionLLM        = types.InteractionLLM
-	InteractionLLMOrHuman = types.InteractionLLMOrHuman
-	InteractionReview     = types.InteractionReview
-	InteractionAsync      = types.InteractionAsync
+	InteractionNone        = types.InteractionNone
+	InteractionHuman       = types.InteractionHuman
+	InteractionLLM         = types.InteractionLLM
+	InteractionLLMOrHuman  = types.InteractionLLMOrHuman
+	InteractionReview      = types.InteractionReview
+	InteractionAsync       = types.InteractionAsync
+	InteractionHumanOrHost = types.InteractionHumanOrHost
 )
 
 // ---------------------------------------------------------------------------

@@ -249,3 +249,32 @@ func TestSubmitResume_ConcurrentRequestsPublishOnce(t *testing.T) {
 		t.Fatalf("concurrent resumes: successes=%d raced=%d publishes=%d, want 1/1/1", successes, raced, publishes.Load())
 	}
 }
+
+func TestSubmitResume_MissionExpectedStatusAndReceiptCrossPublisherCAS(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team", "alice")
+	const runID = "run-mission-receipt"
+	if err := st.SaveRun(ctx, &store.Run{ID: runID, TenantID: "team", OwnerID: "alice", Status: store.RunStatusFailedResumable}); err != nil {
+		t.Fatal(err)
+	}
+	var published *queue.RunMessage
+	p := &Publisher{store: st, publishRun: func(_ context.Context, msg *queue.RunMessage) error { published = msg; return nil }}
+	wf := &ir.Workflow{Name: "wf"}
+	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n", ExpectedStatus: store.RunStatusPausedOperator, ReceiptID: "receipt-1"}
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err == nil || !strings.Contains(err.Error(), "status changed") {
+		t.Fatalf("mismatched expected status = %v", err)
+	}
+	if published != nil {
+		t.Fatal("mismatched expected status reached the queue")
+	}
+	spec.ExpectedStatus = store.RunStatusFailedResumable
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if published == nil || published.Resume == nil || published.Resume.ExpectedStatus != store.RunStatusFailedResumable || published.Resume.ReceiptID != "receipt-1" {
+		t.Fatalf("mission wire fields lost: %#v", published)
+	}
+}

@@ -1,4 +1,5 @@
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
+import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
 import {
   STATUS_VARIANT,
   labelForStatus,
@@ -20,7 +21,16 @@ interface Props {
 export default function ExternalActiveRunsNotice({ cards }: Props) {
   const { runs, error } = useGlobalActiveRuns();
   const { dir: projectDir } = useProjectInfo();
-  const external = externalActiveRuns(runs, cards, projectDir);
+  const assistant = useAssistantDock();
+  // `source_kind: studio_chat` covers every newly launched dock run. The
+  // explicit ids also hide pre-provenance conversations already owned by a
+  // tab, which must stay alive but are not project pipelines.
+  const assistantRunIDs = new Set(
+    assistant?.conversations.flatMap((conversation) =>
+      conversation.runId ? [conversation.runId] : [],
+    ),
+  );
+  const external = externalActiveRuns(runs, cards, projectDir, assistantRunIDs);
 
   if (error && typeof console !== "undefined") {
     console.warn("PipelineBoard: listGlobalActiveRuns failed:", error);

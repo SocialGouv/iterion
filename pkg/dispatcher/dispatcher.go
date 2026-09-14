@@ -37,6 +37,7 @@ type Options struct {
 	Workspaces *Workspaces
 	Logger     *iterlog.Logger
 	StoreDir   string
+	BaseEnv    []string
 
 	// HostMarker is the claim marker the dispatcher writes to the
 	// tracker when it claims an issue. Defaults to "<hostname>-<pid>".
@@ -68,6 +69,7 @@ type Dispatcher struct {
 	workspaces *Workspaces
 	logger     *iterlog.Logger
 	storeDir   string
+	baseEnv    []string
 	hostMarker string
 	// claims journals this process's in-flight tracker claims so a
 	// successor daemon can release the ones a crash left behind — the
@@ -184,6 +186,7 @@ func New(opts Options) (*Dispatcher, error) {
 		workspaces: opts.Workspaces,
 		logger:     opts.Logger,
 		storeDir:   opts.StoreDir,
+		baseEnv:    append([]string(nil), opts.BaseEnv...),
 		hostMarker: opts.HostMarker,
 		state:      newState(),
 		cmds:       make(chan cmd, cmdBufferSize(opts.Config.Agent.MaxConcurrent)),

@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.143.0](https://github.com/SocialGouv/iterion/compare/v3.142.6...v3.143.0) (2026-09-13)
+
+### Features
+
+* ship the iterion assistant epic ([#480](https://github.com/SocialGouv/iterion/issues/480)) ([6eea0ce](https://github.com/SocialGouv/iterion/commit/6eea0ce899956b6fdaedec3df55f0e0ccb66b95b)), closes [#482](https://github.com/SocialGouv/iterion/issues/482), references [#14](https://github.com/SocialGouv/iterion/issues/14) [#333](https://github.com/SocialGouv/iterion/issues/333) [#334](https://github.com/SocialGouv/iterion/issues/334) [#333](https://github.com/SocialGouv/iterion/issues/333) [#333](https://github.com/SocialGouv/iterion/issues/333) [#476](https://github.com/SocialGouv/iterion/issues/476) [#476](https://github.com/SocialGouv/iterion/issues/476) [#493](https://github.com/SocialGouv/iterion/issues/493) [#481](https://github.com/SocialGouv/iterion/issues/481) [#485](https://github.com/SocialGouv/iterion/issues/485) [#486](https://github.com/SocialGouv/iterion/issues/486) [#489](https://github.com/SocialGouv/iterion/issues/489) [#485](https://github.com/SocialGouv/iterion/issues/485) [#487](https://github.com/SocialGouv/iterion/issues/487) [#488](https://github.com/SocialGouv/iterion/issues/488) [#490](https://github.com/SocialGouv/iterion/issues/490) [#491](https://github.com/SocialGouv/iterion/issues/491) [#493](https://github.com/SocialGouv/iterion/issues/493) [#566](https://github.com/SocialGouv/iterion/issues/566) [#1135](https://github.com/SocialGouv/iterion/issues/1135)
+
+    <details><summary>why</summary>
+
+    The three dock presentations (closed / floating / docked-right), the lg breakpoint rule and the persistence helpers were private to FloatingChatPanel, so nothing outside /runs/:id could reuse them. They now live in @/lib/chatDock/dockState with openedDock() taking an injectable viewport width, which makes the breakpoint rule testable without a DOM. FloatingChatPanel keeps a ChatDock type alias so the run console's existing imports keep resolving.
+
+    </details>
+
 ## [3.142.6](https://github.com/SocialGouv/iterion/compare/v3.142.5...v3.142.6) (2026-09-13)
 
 ### Bug Fixes

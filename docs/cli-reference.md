@@ -222,6 +222,10 @@ is read from. Budget accounting, loop counters, and `events.jsonl` are
 preserved; artifacts the dropped nodes published get a superseding `rewound`
 marker version.
 
+A successful rewind leaves the run in `paused_operator` at that checkpoint.
+It does not execute anything until an explicit `resume`; stale cloud launch
+deliveries are ignored while the rewind guard is present.
+
 **The workspace is restored too, on BOTH run shapes** — a `worktree: auto` run
 through git, an in-place run through
 [workspace versioning](workspace-versioning.md). On an in-place run that
@@ -436,6 +440,8 @@ iterion bots templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
 iterion bots install <git-url|path> [--path <bundle>] [--ref <git-ref>] [--name <id>] [--dest <dir>] [--force]
+iterion bots sync [--workdir <dir>]
+iterion bots update <name> [--ref <git-ref>] [--workdir <dir>] [--allow-dirty]
 iterion bots regen-catalog
 ```
 
@@ -453,6 +459,14 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
+
+`bots sync` materializes every dependency pinned by the project-root
+`bots.lock` into `.botz/` and rejects content whose bundle hash differs from
+the lock. `bots update <name>` fetches that dependency again, computes its
+content hash, atomically rewrites the pin, and syncs only that bundle. A local
+Git source records its current commit and must be clean; `--allow-dirty` is an
+explicit, non-reproducible development escape hatch. Commit local source
+changes before updating whenever the pin is meant to be shared.
 
 ### `iterion marketplace`
 
@@ -517,9 +531,22 @@ iterion models pricing --check          # non-zero exit on drift, for CI
 ```bash
 iterion studio --dir . --port 4891
 iterion studio --bots-path ./bots --no-browser
+iterion studio --workspace --port 4891
 ```
 
 The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so use it only on trusted networks. Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
+
+`--workspace` imports projects from the legacy `instances.conf`, pins each
+project to its existing run store, and hosts the registered local runtimes in
+one process and one browser window. Each project keeps a stable `/x/<project-id>/`
+URL, its own environment and bot catalogue, and its own Copi conversations.
+Copi can request a confirmed `workspace.handoff` action to open a new
+conversation in another ready project using a short, single-use summary. That
+target conversation reports its verified completion or failure through a
+host-bound `workspace.handoff.complete` receipt. The workspace host persists
+the correlation and retries delivery to the originating Copi conversation;
+the notification does not switch the visible project.
+`GET /readyz` reports ready only when every pinned runtime is available.
 
 ### `iterion dispatch`
 
@@ -647,6 +674,20 @@ The watcher evaluates on turn boundaries/monitor matches and injects node-scoped
 ## Remote, benchmarks, and utility commands
 
 `iterion remote` exposes typed cloud domains for runs, bots, marketplace, issues/boards, dispatcher, triggers, schedules, orgs/teams/users, tokens, secrets/keys/bindings, webhooks/forge, audit/usage/limits, memory, plugins, the credential pool, SSO/admin, routes/OpenAPI, and raw API access. CI can use `ITERION_REMOTE_URL`, `ITERION_REMOTE_TOKEN`, and optional team/org selectors without a config file. The complete reference is [cloud CLI](cloud-cli.md).
+
+Durable assistant missions are available under `remote runs mission`:
+
+```bash
+iterion remote runs mission start TARGET --watch WATCH \
+  --actions run.resume,run.rewind --ttl-seconds 7200 --max-actions 6
+iterion remote runs mission list TARGET
+iterion remote runs mission get TARGET MISSION
+iterion remote runs mission stop TARGET MISSION
+```
+
+`--invocation` is the stable idempotency key; it defaults to `goal:TARGET`.
+`--assistant` can resolve the one exact active watch when `--watch` is omitted.
+All four commands support the remote command's normal `--output json` mode.
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 

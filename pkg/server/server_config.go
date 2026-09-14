@@ -5,6 +5,7 @@ import (
 	"embed"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/assistantmission"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -26,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -33,6 +35,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/portsactivation/authority"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -53,12 +56,21 @@ var StaticFS embed.FS
 
 // Config holds the server configuration.
 type Config struct {
-	Port        int    // HTTP port (default 4891). Pass 0 for an OS-assigned random port.
-	Bind        string // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
-	ExamplesDir string // path to examples directory
-	WorkDir     string // root directory for file operations
-	StoreDir    string // run store directory (default: <WorkDir>/.iterion)
-	OpenBrowser bool   // open browser on start
+	Port        int      // HTTP port (default 4891). Pass 0 for an OS-assigned random port.
+	Bind        string   // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
+	ExamplesDir string   // path to examples directory
+	WorkDir     string   // root directory for file operations
+	StoreDir    string   // run store directory (default: <WorkDir>/.iterion)
+	RunEnv      []string // project-specific child environment; never installed process-wide
+	OpenBrowser bool     // open browser on start
+
+	// RecoveryPassive is a local, loopback-only operational-recovery mode.
+	// The HTTP surface, assistant chat and explicit run actions stay live, but
+	// ListenAndServe starts no autonomous worker: no dispatcher, watch sweep,
+	// admission/reconciliation loop, notification delivery or cleanup reaper.
+	// It exists to let an operator safely ask the assistant for a recovery
+	// proposal before normal automation is allowed to observe the same store.
+	RecoveryPassive bool
 
 	// DistributedAuthority is the server-only operator path for probing and
 	// activating a distributed native deployment. Nil keeps the feature
@@ -355,6 +367,15 @@ type Config struct {
 	// directly. Plan §F (T-30).
 	Store store.RunStore
 
+	// RunWatches persists assistant→target run watches and their delivery
+	// episodes. Cloud wiring supplies the Mongo implementation; local mode
+	// derives a filesystem store beside the run store when this is nil.
+	RunWatches runwatch.Store
+
+	// AssistantMissions persists bounded assistant control loops. Cloud
+	// wiring supplies Mongo; local mode derives an FS twin beside run.json.
+	AssistantMissions assistantmission.Store
+
 	// LaunchPublisher, when non-nil, routes the run console's Launch /
 	// Resume / Cancel through the cloud queue instead of spawning the
 	// runtime in-process. Used by `iterion server` in cloud mode
@@ -460,6 +481,13 @@ type Config struct {
 	PushSubscriptions webpush.SubscriptionStore
 	NotificationPrefs usernotify.PrefsStore
 	NotificationSent  usernotify.SentStore
+
+	// ModelPrefs persists an operator's chosen model/backend/effort per
+	// opaque scope key (the studio passes a bot id), so the assistant's model
+	// survives the session instead of being re-picked on every launch. File-
+	// backed in local mode, Mongo in cloud. nil ⇒ /api/v1/preferences/model
+	// 404s and the studio falls back to per-launch choices.
+	ModelPrefs modelprefs.Store
 	// WebPushVAPIDPublicKey / WebPushVAPIDPrivateKey are the shared VAPID
 	// sender identity (public key is exposed via server_info by design);
 	// WebPushSubscriber is the VAPID contact (mailto:).

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -22,6 +23,10 @@ import (
 // account config under ~/.grok/), so ResolveEnv is nil — same posture as
 // kimi. See ADR-065.
 const BackendGrok = "grok"
+
+// grokMaxTurnsCeiling keeps workflow-provided limits within the same
+// defensive bound used by the Claude CLI delegate.
+const grokMaxTurnsCeiling = 200
 
 // grokProtocol describes the xAI Grok Build CLI headless invocation.
 //
@@ -52,13 +57,30 @@ var grokProtocol = CLIAgentProtocol{
 		"--permission-mode", "bypassPermissions",
 		"--always-approve",
 	},
+	ExtraArgsFor: grokExtraArgsFor,
 	PermissionHook: &CLIAgentPermissionHook{
-		HomeEnv:           "GROK_HOME",
-		DefaultHome:       ".grok",
-		ExcludedEntries:   []string{"hooks"},
+		HomeEnv:          "HOME",
+		DefaultHome:      ".grok",
+		ParentHomeLayout: true,
+		// Model selection and permission mode are explicit argv, while auth.json
+		// remains linked below. Grok discovers its state below HOME; do not
+		// inherit the operator config, whose MCP declarations would start
+		// unrelated services for a headless reviewer.
+		ExcludedEntries:   []string{"hooks", "config.toml"},
 		WriteRegistration: writeGrokPermissionHook,
 	},
 	// ResolveEnv nil: grok reads its own credentials from ~/.grok / OAuth.
+}
+
+func grokExtraArgsFor(task Task) []string {
+	if task.ToolMaxSteps <= 0 {
+		return nil
+	}
+	turns := task.ToolMaxSteps
+	if turns > grokMaxTurnsCeiling {
+		turns = grokMaxTurnsCeiling
+	}
+	return []string{"--max-turns", strconv.Itoa(turns)}
 }
 
 func writeGrokPermissionHook(realHome, shadowHome, command string) error {

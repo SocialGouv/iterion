@@ -186,10 +186,13 @@ type Engine struct {
 	validateOutputs          bool                                 // when true, validate node outputs against declared schemas
 	outputCorrectionBudget   int                                  // bounded invalid-output correction calls per node episode
 	forceResume              bool                                 // when true, skip workflow hash check on resume
+	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
+	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume
 	artifactResumePreflight  *ArtifactResumePreflight             // same-run snapshot from the synchronous in-process resume boundary
 	workDir                  string                               // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
+	runEnv                   []string                             // project-specific child environment snapshot
 	workDirDelegated         bool                                 // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
 	repoRoot                 string                               // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
 	containerWorkspace       string                               // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
@@ -219,6 +222,13 @@ type Engine struct {
 	sharedSandbox            *SharedSandbox                       // optional: a PARENT run's live sandbox this engine executes in, instead of starting its own (a subbot child). Set via WithSharedSandbox; nil = this engine decides its own sandbox.
 	activeShare              *SharedSandbox                       // the facts of the sandbox this run executes in (own or shared), handed to subbot children through SubbotRequest.ParentSandbox; nil when the run has no sandbox
 	answersBell              answersDoorbell                      // in-process fast-path waking await_answers nodes when an async interaction is answered (ADR-081); rung via NotifyInteractionAnswered
+	extraSkills              []string                             // operator-added skills, additive to the workflow
+	extraSkillsOrigin        string                               // flag, env, or resume
+	permissionOverride       string                               // persisted run-level tool gate choice
+	botOrigin                *store.BotOrigin                     // workflow code provenance, distinct from the triggering action
+	delegation               *store.RunDelegation                 // optional host-owned worker linkage
+	worktreeBaseCommit       string                               // explicit verified base for delegated worktrees
+	budgetOverrides          *store.RunBudgetOverrides            // raw launch/resume budget intent, persisted for every later engine rebuild
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an

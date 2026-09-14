@@ -227,7 +227,7 @@ func stashPauseConversation(toolErr error, messages []api.Message, opts Generati
 	if !errors.As(toolErr, &askErr) {
 		return
 	}
-	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)); mErr == nil {
+	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
 		askErr.Conversation = convBytes
 	}
 }
@@ -509,12 +509,15 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 				}
 				return partial(totalUsage), fmt.Errorf("parse structured output: %w (raw: %s)", err, raw)
 			}
+			conversation := append([]api.Message(nil), messages...)
+			conversation = append(conversation, api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: tu.PartialJSON}}})
 			return &ObjectResult[T]{
 				Object:       obj,
 				Text:         agg.text,
 				Steps:        []StepResult{stepResult},
 				TotalUsage:   totalUsage,
 				FinishReason: finishReason,
+				Messages:     conversation,
 			}, nil
 		}
 	}
