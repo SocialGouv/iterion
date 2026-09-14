@@ -31,7 +31,7 @@ func RunPortActivation(t *testing.T, factory Factory) {
 		t.Fatal(err)
 	}
 	admission := &store.PortLaunchAdmission{Scope: store.PortActivationLocal, StoreIdentity: identity, ProofDigest: first.ProofDigest,
-		CapabilityDigest: first.CapabilityDigest, ActivationRevision: first.Revision,
+		CapabilityDigest: first.CapabilityDigest, ResumeDigest: strings.Repeat("d", 64), ActivationRevision: first.Revision,
 		AdmittedAt: now.Truncate(time.Millisecond), ExpiresAt: first.ExpiresAt.Truncate(time.Millisecond)}
 	createCtx := store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, admission), store.RuntimeSemanticsPortsV1)
 	if _, err := s.CreateRun(createCtx, "pc1_activation_admission", "fixture", nil); err != nil {
@@ -43,6 +43,16 @@ func RunPortActivation(t *testing.T, factory Factory) {
 	}
 	if err := s.SaveRun(ctx, accepted); err != nil {
 		t.Fatalf("unchanged admission could not round-trip: %v", err)
+	}
+	accepted, err = s.LoadRun(ctx, "pc1_activation_admission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedResume := *accepted.PortLaunch
+	changedResume.ResumeDigest = strings.Repeat("e", 64)
+	accepted.PortLaunch = &changedResume
+	if err := s.SaveRun(ctx, accepted); !errors.Is(err, store.ErrRunSemantics) {
+		t.Fatalf("native recovery compatibility was mutable through SaveRun: %v", err)
 	}
 	accepted, err = s.LoadRun(ctx, "pc1_activation_admission")
 	if err != nil {

@@ -86,10 +86,10 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 		t.Fatalf("bare native ID counted as prior admission: %v", err)
 	}
 	changed := *run.PortLaunch
-	changed.CapabilityDigest = strings.Repeat("0", 64)
+	changed.ResumeDigest = strings.Repeat("0", 64)
 	tampered.PortLaunch = &changed
 	if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
-		t.Fatalf("changed binary capability retained admission: %v", err)
+		t.Fatalf("changed resume compatibility retained admission: %v", err)
 	}
 	if err := s.SaveRun(ctx, &tampered); !errors.Is(err, store.ErrRunSemantics) {
 		t.Fatalf("persisted native admission was mutable: %v", err)

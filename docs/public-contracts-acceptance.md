@@ -25,7 +25,7 @@ Syntax profiles and runtime semantics are independent.
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume. Runner now treats a queued native run with durable `PortExecution` as a resume on redelivery; complete consumer inventory and real mixed-fleet delivery proof remain outstanding |
 | Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Local scope proof and store-bound admission pass; production Mongo now refuses manually populated distributed evidence without a trusted verifier. NATS system/Kubernetes census, ACL reconciliation and positive distributed activation remain outstanding |
-| Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and admitted-run continuation pass; distributed rollback outstanding |
+| Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and two-build admission continuation pass; distributed rollback outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
 | Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local read/write and validation, and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds and complete source on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect and MCP run get summarize native invocation/map/product status and reported usage, with unknown cost called out. A real Copi authoring session, bundles, full runtime cost attribution and composition remain outstanding |
@@ -340,7 +340,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   authority's subject-and-sequence-bounded cleanup removes entries and
   tombstones older than 24 hours while preserving concurrent publications.
   The retention cutoff is advanced in tests; no 24-hour soak is claimed.
-- The distributed-primitives manifest passes 23 cases with race detection,
+- The distributed-primitives manifest passes 24 cases with race detection,
   real Mongo and NATS 2.14, including an actual pinned-main `EnsureSchema`
   caller. `go vet` passes for activation, Store and NATS packages. These are
   storage and census primitives: the production authority observer, effective
@@ -401,11 +401,30 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   cases pass with race detection, and the subsequent complete `task test`
   pass succeeds. These fixes change verification coverage, not admission rules.
 
-### Remaining compatibility audit
+### Admission and compatible-build recovery
 
-The current admission capability digest includes the build commit and
-activation-record format. Existing-run recovery also compares that digest.
-A two-build upgrade test is still required to establish whether an admitted
-native run remains resumable by a different but runtime-compatible build;
-current rollback tests exercise disablement within the same build. Do not
-claim that those tests establish compatibility across binary upgrades.
+New launches continue to require the exact probed binary capability, including
+its build fingerprint and activation format. An admitted run now also carries
+an immutable resume-compatibility digest over its native semantics, persisted
+format, namespace and explicit interpreter compatibility version. Recovery
+checks that digest and the store/creation identity without consulting an
+enabled or fresh launch proof. A missing or changed digest is refused.
+
+`TestNativeAdmissionSurvivesCompatibleBuildUpgrade` builds two real fixture
+executables with distinct embedded version and commit values. The first
+admits a native run; the second cannot start a new root under that build's
+proof, disables launches, then accepts the persisted run for recovery. The
+test proves a build-fingerprint change with otherwise identical runtime code;
+it does not certify arbitrary code upgrades. Incompatible interpreter changes
+must advance `ResumeCompatibilityVersion`, and the resumed execution's
+persisted identity is checked separately. Filesystem and real-Mongo Store
+tests also refuse mutation of the persisted recovery digest. Distributed
+rollback and live redelivery remain open acceptance items.
+
+After this change, the full repository `task test` passes with the real Mongo
+replica set and historical binary fixtures configured. The race-instrumented
+distributed-primitives manifest verifies all 24 named cases executed without
+skips, including the new two-build case; the targeted native Engine rollback
+suite passes on filesystem and Mongo. The first attempted broad race command
+omitted the required old-executable fixture and failed only those two fixture
+preconditions; the subsequent focused command and full suite supplied it.

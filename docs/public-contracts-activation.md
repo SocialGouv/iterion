@@ -12,7 +12,7 @@ draft never changes its interpreter.
 | Run ID and records | Ordinary ID under `runs/` or legacy Mongo collection | Reserved `pc1_` ID under `port_runs_v1/` or native Mongo collection | Supported older list/delete/prune/repair paths cannot address the native closure. |
 | Blobs and files | Existing key families | `ports-v1/` blob prefix and immutable output captures | Old blind blob deletion cannot sweep the native family. |
 | Queue | Legacy launches emit v14 | Native launches require v15 plus explicit semantics and reserved ID | New runners accept supported old envelopes; v14 runners reject v15 before Store access. Rejection alone does not guarantee delivery. |
-| Activation | No native gate | Exact store identity, current binary capability, expiring proof and immutable run admission | Rollback disables new launches; an already admitted compatible run can resume. |
+| Activation | No native gate | Exact store identity, current binary capability, expiring proof and immutable run admission | Rollback disables new launches; an already admitted run can resume with a compatible native runtime. |
 
 ## Local private-store procedure
 
@@ -46,6 +46,11 @@ iterion contracts --store-dir /path/to/private-store inspect --json
 Keep a compatible binary and its native storage namespace available until
 those admitted runs finish or are deliberately resolved. Deactivation is a
 revisioned storage write, so it does not erase their admission records.
+New launches require a proof for the exact current build. An admitted run
+carries a separate recovery-compatibility digest: a changed build fingerprint
+alone does not invalidate it, while a changed native format or declared
+interpreter compatibility version does. Deployments must keep a runtime that
+can read the stored execution state through the rollback window.
 
 ## Rewind an admitted native run
 

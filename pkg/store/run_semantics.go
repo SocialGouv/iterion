@@ -170,7 +170,7 @@ func samePortLaunchAdmission(a, b *PortLaunchAdmission) bool {
 		return a == nil && b == nil
 	}
 	return a.Scope == b.Scope && a.StoreIdentity == b.StoreIdentity && a.ProofDigest == b.ProofDigest &&
-		a.CapabilityDigest == b.CapabilityDigest && a.ActivationRevision == b.ActivationRevision &&
+		a.CapabilityDigest == b.CapabilityDigest && a.ResumeDigest == b.ResumeDigest && a.ActivationRevision == b.ActivationRevision &&
 		a.AdmittedAt.Equal(b.AdmittedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
 }
 

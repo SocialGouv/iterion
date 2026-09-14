@@ -56,6 +56,7 @@ type PortLaunchAdmission struct {
 	StoreIdentity      string    `json:"store_identity" bson:"store_identity"`
 	ProofDigest        string    `json:"proof_digest" bson:"proof_digest"`
 	CapabilityDigest   string    `json:"capability_digest" bson:"capability_digest"`
+	ResumeDigest       string    `json:"resume_digest" bson:"resume_digest"`
 	ActivationRevision uint64    `json:"activation_revision" bson:"activation_revision"`
 	AdmittedAt         time.Time `json:"admitted_at" bson:"admitted_at"`
 	ExpiresAt          time.Time `json:"expires_at" bson:"expires_at"`
@@ -65,6 +66,7 @@ func (a *PortLaunchAdmission) Validate() error {
 	if a == nil || (a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) ||
 		a.StoreIdentity == "" || a.ActivationRevision == 0 || len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
 		len(a.CapabilityDigest) != 64 || strings.Trim(a.CapabilityDigest, "0123456789abcdef") != "" ||
+		len(a.ResumeDigest) != 64 || strings.Trim(a.ResumeDigest, "0123456789abcdef") != "" ||
 		a.AdmittedAt.IsZero() || !a.AdmittedAt.Before(a.ExpiresAt) {
 		return fmt.Errorf("%w: malformed native run admission", ErrPortActivation)
 	}
