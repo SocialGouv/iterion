@@ -27,8 +27,12 @@ type PolicyContext struct {
 	NodeID   string
 	NodeKind string // "agent", "judge", "tool", etc.
 	ToolName string
-	Input    json.RawMessage // nil when unavailable
-	Vars     map[string]any  // workflow vars, read-only
+	// QualifiedToolName is the registry identity before provider-name sanitization.
+	// Alias patterns must compare against this identity, not a potentially colliding
+	// name exposed by an LLM API. Empty uses ToolName for non-registry callers.
+	QualifiedToolName string
+	Input             json.RawMessage // nil when unavailable
+	Vars              map[string]any  // workflow vars, read-only
 
 	// Deterministic marks a call whose admission MUST be decided without a
 	// model — a connector action (ADR-098), whose whole promise is that the

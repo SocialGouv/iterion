@@ -257,6 +257,45 @@ weakened.
 - The local `iterion` binary was at **v3.69.0** against a v3.144.0 tree, which
   is why the repo-targeting flags appeared not to exist at all. Check
   `iterion version` before concluding a flag is missing.
+
+## 2026-09-14 — #1207: aliases, release admission and a missed identity collision
+
+- Status: **review published, delivery blocked** — [review 5194520777](https://github.com/SocialGouv/iterion/pull/1207#pullrequestreview-5194520777), run
+  [01a09e8e-c39f-73c1-8ac6-b7808b16ed0f](https://iterion.cloud/runs/01a09e8e-c39f-73c1-8ac6-b7808b16ed0f),
+  head `3a434c2e729f3784ff845e8aa84f67f81a14e117`. The PR stays draft.
+- Method: manual `/revi` on the draft. The effective reviewer and synthesis
+  both used `openai/gpt-5.6-sol` through `claw`; high-effort review reported
+  873,828 tokens and medium-effort synthesis 26,606, totalling 900,434
+  accumulated tokens. The run finished in approximately 7m38s.
+- Result: one high finding, **Rda4616**, correctly identifies the unresolved
+  production release floor. `3.144.0` is provisional, not evidence that the
+  feature shipped. Before merge, align `ToolAliasesSince` with the actual first
+  release containing the resolver and rerun the pinned old-runner probe. Keep
+  this finding open; neither lowering the floor nor overriding the gate would
+  establish compatibility.
+- Independent counterexample: while Revi reviewed the published head, the
+  interactive session reproduced a policy identity collision. Policy `Read`
+  resolved to `mcp.one.Read` but matched its provider name `mcp_one_Read`, which
+  could also name a distinct registered builtin. Revi did **not** report this
+  defect. `TestAliasPolicyUsesRegistryIdentityNotProviderName` failed against
+  the reviewed implementation and passes after carrying the registry identity
+  separately through policy admission. Unchanged policy patterns retain their
+  existing matching semantics.
+- Validation of the correction: complete tool/model suites pass with `-race`,
+  the real Claw tool/fallback/recovery/resume matrix passes, and scoped
+  golangci-lint reports zero issues. The initial feature also passed a real
+  new `Publisher.SubmitLaunch` to old `Runner.executeRun` probe, using an
+  immutable bundle snapshot and old code `882c76afbb` (3.143.0): queue schema
+  and AST decode, then admission rejects `BOT_REQUIRES_NEWER_ENGINE` before
+  backend execution. Reproduction instructions live in
+  [scripts/compat/tool-aliases/](../../scripts/compat/tool-aliases/).
+- Billy: the red gate launched run `01a09e96-bcc7-7414-8108-5fc3b5aa5988`,
+  blocked before execution by the hard seven-day cap at 99%. It was cancelled
+  before any manual push; see the [Billy bilan](branch-improve-loop.md).
+- Lesson: a real nonzero review and working source/tool/publication paths do
+  not establish perfect defect recall. Preserve the missed red-to-green
+  counterexample alongside the successful review evidence.
+
 ## 2026-09-14 — #1212: verified account meters and credential preview (#945)
 
 - **Result:** automatic [Revi run `01a09ec6-b5b3-7660-8ef1-295031b7260d`](https://iterion.cloud/runs/01a09ec6-b5b3-7660-8ef1-295031b7260d) finished and published [review 5195055206](https://github.com/SocialGouv/iterion/pull/1212#pullrequestreview-5195055206) at 07:37:30 UTC: zero findings, `revi/review=success` on `fdca64e5d9c95da493ccb9740f51ffd83541d9b8`. No manual `/revi` or Billy launch. The run list since before PR creation contained only two completed Revi runs; the other belongs to #1211, with no Billy on #1212.
