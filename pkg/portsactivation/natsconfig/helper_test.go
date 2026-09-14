@@ -222,7 +222,7 @@ func TestNATSConfigDigestMatchesBroker(t *testing.T) {
 	clientPort := clientListener.Addr().(*net.TCPAddr).Port
 	_ = clientListener.Close()
 	sources := Sources{Entry: "main.conf", Files: map[string]string{
-		"main.conf": fmt.Sprintf("listen: 127.0.0.1:%d\nhttp: 127.0.0.1:%d\ninclude \"auth.conf\"\n", clientPort, port),
+		"main.conf": fmt.Sprintf("listen: 127.0.0.1:%d\nhttp: 127.0.0.1:%d\njetstream: true\ninclude \"auth.conf\"\n", clientPort, port),
 		"auth.conf": "accounts { SYS {users: [{user: sys, password: fixture}]}; WORK {users: [{user: runner, password: fixture}]} }\nsystem_account: SYS\n",
 	}}
 	parsed, err := parseFixture(t.Context(), sources)
@@ -255,6 +255,10 @@ func TestNATSConfigDigestMatchesBroker(t *testing.T) {
 			if err := exec.CommandContext(t.Context(), binary, "--signal", fmt.Sprintf("reload=%d", cmd.Process.Pid)).Run(); err != nil {
 				t.Fatalf("reload disposable broker: %v", err)
 			}
+		}
+		profile, err := LoadProfile(parsed)
+		if err != nil || profile.ConfigDigest != parsed.Digest || profile.SystemAccount != "SYS" || len(profile.Principals) != 2 {
+			t.Fatalf("loaded broker configuration did not yield the supported authorization profile: %+v %v", profile, err)
 		}
 		matched := false
 		deadline := time.Now().Add(5 * time.Second)

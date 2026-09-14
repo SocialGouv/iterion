@@ -371,27 +371,42 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   `config_digest`, through HTTP and authenticated system VARZ both before and
   after reload. The static production build, queue/activation race suites and
   relevant `go vet` checks pass. The existing NATS CI job now builds the old
-  and current fixture executables and runs these tests. Effective ACL
-  evaluation and Kubernetes/credential-custody reconciliation remain pending;
-  parsing a matching configuration does not establish that authority.
+  and current fixture executables and runs these tests. Protected-API exclusion
+  and Kubernetes/credential-custody reconciliation remain pending; parsing a
+  matching configuration does not establish that authority.
 - Static subject-permission analysis now checks the complete intersection of
   protected patterns and allowed subjects minus the union of denies. A finite
   alphabet partition covers unnamed literals; `>` consumes one or more tokens.
   Unsupported patterns, queue-qualified rules and excessive analysis complexity
-  refuse a conclusion. The loader must still refuse dynamic reply permissions
-  and other unsupported auth paths before using this bounded evaluator.
+  refuse a conclusion. The bounded static-profile loader now refuses dynamic
+  reply permissions and other unsupported auth paths before using this evaluator.
 - Actual NATS 2.14.5 publish/subscription tests match the evaluator for seven
   permission arrangements, including inherited default denial, an explicit
   empty permissions block overriding those defaults, and an empty configured
   allow list permitting access. API, ACK and KV subjects plus a generated
   wildcard witness are exercised. This is permission-language evidence, not
   the complete protected-API census or an exclusion proof for the deployment.
-  The combined parser/permissions manifest passes 39 cases with race detection
-  without skips; the package also passes `go vet`.
+  The parser/permission cases remain in the required manifest and the package
+  passes `go vet`.
 - The helper's output limiter uses a private buffer rather than embedding
   `bytes.Buffer`: an inherited `ReadFrom` method would let `io.Copy` bypass
   the capped `Write` path. A pipe-copy regression passes with race detection,
-  bringing the combined parser/permission manifest to 40 required cases.
+  bringing the earlier combined parser/permission manifest to 40 cases.
+- The supported NATS 2.14.5 static-profile loader now projects effective
+  publish/subscribe allow and deny rules for named password and public-nkey
+  users. It applies account defaults only when a user omits permissions; an
+  explicit empty block overrides them, matching broker delivery. It accepts
+  top-level `VAR_` local variables resolved by the upstream parser, confines
+  operational and authorization keys to a closed schema, and refuses dynamic
+  responses, imports/exports, queue-qualified rules and unreviewed access
+  paths. The returned profile excludes passwords. A real pinned broker agrees
+  for inherited defaults and a signed nkey, denies anonymous access, and
+  reports the same parsed digest through HTTP and authenticated system VARZ
+  before and after reload. The race-instrumented manifest now verifies all
+  **69** named parser/profile/permission cases without skips; `go vet` and a
+  static production build pass. This is still an isolated source projection:
+  the protected JetStream/KV API catalog, credential-holder inventory,
+  Kubernetes reconciliation and production verifier remain outstanding.
 - A complete `task test` pass initially found two fixture/CI omissions:
   `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
   test called a Mongo factory without checking the optional fixture gate.

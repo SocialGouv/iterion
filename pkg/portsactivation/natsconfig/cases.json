@@ -1,5 +1,5 @@
 {
-  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. Does not establish ACL effectiveness, custody or Kubernetes authority. Also checks bounded whole-language wildcard/deny analysis against actual publish and subscribe delivery for seven static permission arrangements. The complete supported-profile loader and protected-API inventory remain outstanding.",
+  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. A bounded static-profile loader projects credential-free effective permissions for named password/nkey users and rejects unreviewed auth paths; actual broker delivery tests cover inherited defaults, explicit empty overrides and nkeys. This does not establish complete protected-API coverage, credential custody, Kubernetes authority or distributed activation.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig": [
       "TestNATSConfigSourcesConfineIncludes",
@@ -41,7 +41,36 @@
       "TestNATSPermissionsAgreeWithPinnedBroker/wildcard-minus-deny",
       "TestNATSPermissionsAgreeWithPinnedBroker/deny-union",
       "TestNATSPermissionsAgreeWithPinnedBroker/protected-family",
-      "TestNATSConfigOutputLimitAppliesToPipeCopy"
+      "TestNATSConfigOutputLimitAppliesToPipeCopy",
+      "TestNATSProfileAgreesWithPinnedBroker",
+      "TestNATSProfileAgreesWithPinnedBroker/password_default",
+      "TestNATSProfileAgreesWithPinnedBroker/public_nkey",
+      "TestNATSProfileProjectsStaticEffectivePermissions",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/duplicate_principal",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/password_aliases",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/typed_identity",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/unaddressable_census_identity",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/unknown_account_key",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/unknown_permission_key",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/unknown_user_key",
+      "TestNATSProfileRejectsAmbiguousOrMalformedEffectiveIdentity/username_aliases",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/account_exports",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/account_imports",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/anonymous_user",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/auth_callout",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/authorization_token",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/cluster",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/dynamic_responses",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/gateway",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/leaf_node",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/mqtt",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/operator_JWT",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/operator_resolver",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/queue-qualified_subscribe",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/subject_mapping",
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/websocket"
     ]
   }
 }
