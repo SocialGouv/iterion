@@ -64,6 +64,33 @@ func TestRetiredNamesAndVendorRenames(t *testing.T) {
 	}
 }
 
+func TestNewOperationAvoidsAnExistingOverlayPublicName(t *testing.T) {
+	lock := identity.New("probe")
+	first := generated(t, map[string]string{"/old": "issueListIssues"}, nil)
+	if err := lock.Reconcile(first); err != nil {
+		t.Fatal(err)
+	}
+	first.Ops[0].Operations[0].ID = "probe.issue.list" // authored public name
+	if err := lock.ObservePublic(first); err != nil {
+		t.Fatal(err)
+	}
+	second := generated(t, map[string]string{"/old": "issueListIssues", "/new": "issueList"}, nil)
+	if err := lock.Reconcile(second); err != nil {
+		t.Fatal(err)
+	}
+	for i := range second.Ops {
+		for j := range second.Ops[i].Operations {
+			op := &second.Ops[i].Operations[j]
+			if op.HTTP.Path == "/old" {
+				op.ID = "probe.issue.list"
+			}
+		}
+	}
+	if err := lock.ObservePublic(second); err != nil {
+		t.Fatalf("new operation should receive a free name without breaking the existing overlay: %v", err)
+	}
+}
+
 func TestAuthIdentitySurvivesVendorKeyRenameAndRefusesAmbiguousShapes(t *testing.T) {
 	key := func(name string) map[string]any {
 		return map[string]any{"type": "apiKey", "in": "header", "name": name}

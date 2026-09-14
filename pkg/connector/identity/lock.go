@@ -193,6 +193,16 @@ func (l *Lock) Reconcile(p *spec.Package) error {
 	for key, entry := range l.Operations {
 		owners[entry.GeneratedID] = key
 	}
+	// New proposals must also leave authored public names available to their
+	// owners. Existing generated entries are restored directly, so an authored
+	// name never renames an older generated identity through this reservation.
+	for key, entry := range l.Operations {
+		for _, id := range entry.PublicIDs {
+			if _, exists := owners[id]; !exists {
+				owners[id] = key
+			}
+		}
+	}
 	for _, op := range p.Operations() {
 		key := operationKey(op)
 		if _, exists := l.Operations[key]; !exists {
