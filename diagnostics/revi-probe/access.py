@@ -1,0 +1,23 @@
+"""Select active report grants for the requesting tenant.
+
+The caller has already authenticated tenant_id. This module does not perform
+I/O; callers fetch returned grant IDs and expose their reports to that tenant.
+See CONTRACT.md for the authorization and expiration rules.
+"""
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Grant:
+    grant_id: str
+    tenant_id: str
+    expires_at: int
+
+
+def active_grants(grants: list[Grant], tenant_id: str, now: int) -> list[str]:
+    """Return eligible grant IDs in the original order."""
+    return [
+        grant.grant_id
+        for grant in grants
+        if grant.tenant_id == tenant_id and grant.expires_at > now
+    ]
