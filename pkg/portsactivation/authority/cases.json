@@ -1,5 +1,5 @@
 {
-  "scope": "Read-only bounded kubectl authority/credential Secret, standard workload and RBAC listing, strict versioned operator records, static NATS source/profile and explicit workload credential-reference reconciliation. Actual credential key bytes remain private. RBAC analysis is corroboration only; exhaustive custody, other authorizers and distributed activation remain unproved.",
+  "scope": "Read-only bounded kubectl authority/credential Secret, standard workload and RBAC listing, strict versioned operator records, static NATS source/profile, broker Pod launch, per-broker system observation and explicit workload credential-reference reconciliation. Actual credential key bytes remain private. These are corroborating layers only; exhaustive custody, other authorizers, freshness and distributed activation remain unproved.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
@@ -28,7 +28,11 @@
       "TestKubernetesRBACSnapshotRefusesPartialOrUnsupportedEvidence",
       "TestKubernetesRBACBoundaryAcceptsSeparatedWorkerAndNamedWriters",
       "TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants",
-      "TestKubernetesRBACBoundaryRefusesPodAndControllerSubresourceGrants"
+      "TestKubernetesRBACBoundaryRefusesPodAndControllerSubresourceGrants",
+      "TestNATSBrokerLaunchRequiresExactRunningPodAndConfigInvocation",
+      "TestNATSBrokerLaunchRefusesAuthOverridesAndUnpinnedRuntime",
+      "TestNATSSystemCorroborationBindsEveryDeclaredBrokerAndPrincipal",
+      "TestNATSSystemCorroborationRefusesMissingForeignOrStaleBrokerEvidence"
     ]
   }
 }
