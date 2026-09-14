@@ -5,7 +5,10 @@
       "TestLocalProbeActivateAndRollback",
       "TestNativeAdmissionSurvivesCompatibleBuildUpgrade",
       "TestNativeChildInheritsRootAdmissionAcrossRollbackAndExpiry",
-      "TestNativeChildAdmissionRefusesBrokenLineage"
+      "TestNativeChildAdmissionRefusesBrokenLineage",
+      "TestNativeIndependentlyAdmittedChildKeepsRecoveryAfterUpgrade",
+      "TestNativeChildOfCompatibleVersionZeroRootIsCreated",
+      "TestNativeChildDepthIsCheckedBeforeCreation"
     ],
     "github.com/SocialGouv/iterion/pkg/store": [
       "TestNativeActivationFilesystem",

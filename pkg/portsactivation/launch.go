@@ -95,8 +95,40 @@ func AdmittedChildContext(ctx context.Context, s store.RunStore, parentID, child
 	if err := RequireExistingAdmission(ctx, s, parent); err != nil {
 		return nil, err
 	}
+	if err := requireProspectiveChildDepth(ctx, s, parent); err != nil {
+		return nil, err
+	}
 	copy := *parent.PortLaunch
+	if copy.Version == 0 {
+		// A compatible older root remains authoritative, but newly written
+		// child records must use the current admission representation.
+		copy.Version = store.PortLaunchAdmissionVersion
+		copy.ResumeDigest = ResumeCompatibilityDigest(copy.Scope)
+	}
 	return store.WithPortLaunchAdmission(ctx, &copy), nil
+}
+
+const maxNativeAdmissionLineageDepth = 32
+
+// A new child must fit within the physical run tree even if an older child
+// had its own independent launch proof that ended its proof lineage early.
+func requireProspectiveChildDepth(ctx context.Context, s store.RunStore, parent *store.Run) error {
+	seen := make(map[string]bool)
+	for depth := 1; ; depth++ {
+		if parent == nil || !store.IsNativeRunID(parent.ID) || seen[parent.ID] ||
+			depth >= maxNativeAdmissionLineageDepth {
+			return fmt.Errorf("%w: native child exceeds the supported lineage depth", store.ErrPortActivation)
+		}
+		seen[parent.ID] = true
+		if !store.IsNativeRunID(parent.ParentRunID) {
+			return nil
+		}
+		var err error
+		parent, err = s.LoadRun(ctx, parent.ParentRunID)
+		if err != nil {
+			return fmt.Errorf("%w: native child has an unavailable ancestor", store.ErrPortActivation)
+		}
+	}
 }
 
 // RequireExistingAdmission admits only a run that carries the immutable
@@ -110,7 +142,7 @@ func requireExistingAdmission(ctx context.Context, s store.RunStore, r *store.Ru
 	if r == nil || r.PortLaunch == nil {
 		return fmt.Errorf("%w: native run has no launch admission", store.ErrPortActivation)
 	}
-	if depth >= 32 || seen[r.ID] || !store.IsNativeRunID(r.ID) || store.ValidateRunID(r.ID) != nil {
+	if depth >= maxNativeAdmissionLineageDepth || seen[r.ID] || !store.IsNativeRunID(r.ID) || store.ValidateRunID(r.ID) != nil {
 		return fmt.Errorf("%w: native admission lineage is invalid", store.ErrPortActivation)
 	}
 	seen[r.ID] = true
@@ -134,26 +166,33 @@ func requireExistingAdmission(ctx context.Context, s store.RunStore, r *store.Ru
 		r.FormatVersion != store.NativeRunFormatVersion || r.CreatedAt.Before(a.AdmittedAt) {
 		return fmt.Errorf("%w: native run admission does not match this store, runtime or creation time", store.ErrPortActivation)
 	}
-	if r.ParentRunID == "" || !store.IsNativeRunID(r.ParentRunID) {
-		if r.RuntimeSemantics != ir.RuntimeSemanticsPortsV1 || !r.CreatedAt.Before(a.ExpiresAt) {
-			return fmt.Errorf("%w: native root is not admitted under its proof", store.ErrPortActivation)
-		}
+	// Before inherited admissions existed, every native child obtained a
+	// fresh launch proof. Its own unexpired-at-creation proof is sufficient
+	// even when its parent has a different activation revision or no longer
+	// exists. Preserve that already accepted recovery contract.
+	if r.RuntimeSemantics == ir.RuntimeSemanticsPortsV1 && r.CreatedAt.Before(a.ExpiresAt) {
 		return nil
+	}
+	if r.ParentRunID == "" || !store.IsNativeRunID(r.ParentRunID) {
+		return fmt.Errorf("%w: native run has no admitted ancestor", store.ErrPortActivation)
 	}
 	if r.RuntimeSemantics != store.RuntimeSemanticsPortsV1 && r.RuntimeSemantics != store.RuntimeSemanticsLegacyAdapterV1 {
 		return fmt.Errorf("%w: native child has an unsupported interpreter", store.ErrPortActivation)
 	}
 	parent, err := s.LoadRun(ctx, r.ParentRunID)
 	if err != nil || parent == nil || r.CreatedAt.Before(parent.CreatedAt) ||
-		parent.PortLaunch == nil || !sameLaunchAdmission(a, parent.PortLaunch) {
+		parent.PortLaunch == nil || !sameInheritedAdmission(a, parent.PortLaunch) {
 		return fmt.Errorf("%w: native child cannot inherit its parent's admission", store.ErrPortActivation)
 	}
 	return requireExistingAdmission(ctx, s, parent, seen, depth+1)
 }
 
-func sameLaunchAdmission(a, b *store.PortLaunchAdmission) bool {
-	return a.Version == b.Version && a.Scope == b.Scope && a.StoreIdentity == b.StoreIdentity &&
-		a.ProofDigest == b.ProofDigest && a.CapabilityDigest == b.CapabilityDigest &&
-		a.ResumeDigest == b.ResumeDigest && a.ActivationRevision == b.ActivationRevision &&
-		a.AdmittedAt.Equal(b.AdmittedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
+func sameInheritedAdmission(child, parent *store.PortLaunchAdmission) bool {
+	common := child.Scope == parent.Scope && child.StoreIdentity == parent.StoreIdentity &&
+		child.ProofDigest == parent.ProofDigest && child.CapabilityDigest == parent.CapabilityDigest &&
+		child.ActivationRevision == parent.ActivationRevision &&
+		child.AdmittedAt.Equal(parent.AdmittedAt) && child.ExpiresAt.Equal(parent.ExpiresAt)
+	return common && ((child.Version == parent.Version && child.ResumeDigest == parent.ResumeDigest) ||
+		(parent.Version == 0 && child.Version == store.PortLaunchAdmissionVersion &&
+			parent.ResumeDigest == "" && child.ResumeDigest == ResumeCompatibilityDigest(parent.Scope)))
 }

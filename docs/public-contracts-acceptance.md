@@ -37,9 +37,13 @@ Syntax profiles and runtime semantics are independent.
 
 ## Evidence recorded during implementation
 
-- Native child admission now follows a bounded, ID-linked run lineage to the
+- Inherited native child admission follows a bounded, ID-linked run lineage to the
   originally admitted root. A new root still needs a fresh activation, while
   descendants inherit the root's immutable proof after Disable or expiry.
+  Native children independently admitted by older launchers retain their own
+  valid proof after upgrade. A compatible version-zero parent can create a
+  child with a current-format inherited admission, and a 33rd run-tree level
+  is refused before insertion.
   The internal `legacy-adapter-v1` interpreter executes legacy control flow
   within the native run namespace; a paused human gate resumes under a fresh
   Engine on filesystem and real Mongo without a native ports checkpoint.
@@ -49,7 +53,7 @@ Syntax profiles and runtime semantics are independent.
   expose a verified public adapter node or share root budgets and permits with
   executable descendants.
   The race-instrumented Engine manifest verifies 75 cases and the activation
-  manifest verifies 30 cases without skips, with real Mongo, NATS and pinned
+  manifest verifies 33 cases without skips, with real Mongo, NATS and pinned
   legacy executables where required.
 - The NATS capability heartbeat now lets an already-started broker PUT return
   under its bounded operation timeout before cleanup, rather than discarding
