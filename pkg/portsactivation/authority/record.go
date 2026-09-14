@@ -8,9 +8,10 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
+	"github.com/SocialGouv/iterion/pkg/queue"
 )
 
-const RecordVersion = 1
+const RecordVersion = 2
 
 // Record is an operator assertion with concrete source and custody entries.
 // Parsing it does not verify its completeness, the live broker configuration,
@@ -25,6 +26,7 @@ type Record struct {
 	Brokers            []Broker                 `json:"brokers"`
 	Credentials        []CredentialCustody      `json:"credentials"`
 	Holders            []CredentialHolder       `json:"holders"`
+	BuildApprovals     []BuildApproval          `json:"build_approvals"`
 	Issuers            []CredentialIssuer       `json:"issuers"`
 	PermittedWriters   []OperatorWriter         `json:"permitted_writers"`
 }
@@ -109,6 +111,16 @@ type CredentialHolder struct {
 	CredentialRef  string `json:"credential_ref"`
 }
 
+// A trusted operator binds an immutable deployed image to a tested binary
+// build and its native capability. Listing a build is an administrative
+// approval, not a claim made by a heartbeat or inferred from an image tag.
+type BuildApproval struct {
+	ImageDigest      string `json:"image_digest"`
+	BuildDigest      string `json:"build_digest"`
+	CapabilityDigest string `json:"capability_digest"`
+	QueueVersion     int    `json:"queue_version"`
+}
+
 type CredentialIssuer struct {
 	ID             string `json:"id"`
 	Kind           string `json:"kind"` // kubernetes or external
@@ -155,6 +167,7 @@ func (r *Record) validate() error {
 		!r.Assertions.CredentialCustody || !r.Assertions.IssuerScope || !r.Assertions.WriterScope ||
 		len(r.Namespaces) == 0 || len(r.Namespaces) > 16 || len(r.Brokers) == 0 || len(r.Brokers) > 16 ||
 		len(r.Credentials) == 0 || len(r.Credentials) > 128 || len(r.Holders) == 0 || len(r.Holders) > 256 ||
+		len(r.BuildApprovals) == 0 || len(r.BuildApprovals) > 32 ||
 		len(r.Issuers) == 0 || len(r.Issuers) > 64 || len(r.PermittedWriters) == 0 || len(r.PermittedWriters) > 32 ||
 		r.Queue.Validate() != nil {
 		return fmt.Errorf("Kubernetes authority record is incomplete or outside the supported profile")
@@ -208,6 +221,15 @@ func (r *Record) validate() error {
 			return fmt.Errorf("Kubernetes authority record has an unsupported holder kind")
 		}
 		holders[holder.ID] = true
+	}
+	approvedImages := make(map[string]bool, len(r.BuildApprovals))
+	for _, approval := range r.BuildApprovals {
+		if !imageDigest(approval.ImageDigest) || !sha256Hex(approval.BuildDigest) ||
+			!sha256Hex(approval.CapabilityDigest) || approval.QueueVersion != queue.SchemaVersion ||
+			approvedImages[approval.ImageDigest] {
+			return fmt.Errorf("Kubernetes authority record has an invalid tested-build approval")
+		}
+		approvedImages[approval.ImageDigest] = true
 	}
 	issuers := make(map[string]bool, len(r.Issuers))
 	for _, issuer := range r.Issuers {
@@ -344,6 +366,7 @@ const (
 	keySourceFiles
 	keyCredential
 	keyHolder
+	keyBuildApproval
 	keyIssuer
 	keyWriter
 	keyScalar
@@ -358,7 +381,8 @@ var recordKeys = map[recordKeyScope]map[string]recordKeyScope{
 		"version": keyScalar, "deployment_revision": keyScalar, "epoch": keyScalar,
 		"assertions": keyAssertions, "namespaces": keyScalar, "queue": keyQueue,
 		"brokers": keyBroker, "credentials": keyCredential, "holders": keyHolder,
-		"issuers": keyIssuer, "permitted_writers": keyWriter,
+		"build_approvals": keyBuildApproval,
+		"issuers":         keyIssuer, "permitted_writers": keyWriter,
 	},
 	keyAssertions: {
 		"broker_scope": keyScalar, "configuration": keyScalar, "workload_scope": keyScalar,
@@ -386,6 +410,10 @@ var recordKeys = map[recordKeyScope]map[string]recordKeyScope{
 		"workload_kind": keyScalar, "workload_name": keyScalar, "container": keyScalar,
 		"service_account": keyScalar, "image_digest": keyScalar, "build_digest": keyScalar,
 		"access_scope": keyScalar, "credential_ref": keyScalar,
+	},
+	keyBuildApproval: {
+		"image_digest": keyScalar, "build_digest": keyScalar,
+		"capability_digest": keyScalar, "queue_version": keyScalar,
 	},
 	keyIssuer: {
 		"id": keyScalar, "kind": keyScalar, "namespace": keyScalar,

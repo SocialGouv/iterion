@@ -42,6 +42,7 @@ func TestDeploymentObservationRequiresEveryCorroboratingLayer(t *testing.T) {
 	}
 	result, err := corroborateDeploymentEvidence(t.Context(), record, source, static, workloads, rbac, readers)
 	if err != nil || result.AuthoritySecretUID != source.UID || result.Epoch != record.Epoch ||
+		len(result.Builds.Bindings) != 1 ||
 		len(result.BrokerLaunches) != 1 || len(result.BrokerSources) != 1 ||
 		len(result.Credentials.Bindings) != 2 || len(result.Workloads.Bindings) != 4 ||
 		len(result.System.Brokers) != 1 || len(result.RBAC.WorkerServiceAccounts) != 1 {

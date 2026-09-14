@@ -29,12 +29,11 @@ func censusAuthorityFixture(t *testing.T, now time.Time) (*Record, []queue.PortC
 func TestAuthorityCensusCorroboratesNamedBuildAndRefusesStaleOrForeignClaims(t *testing.T) {
 	now := time.Now().UTC()
 	const backend = "mongodb:fixture"
-	capability := strings.Repeat("a", 64)
 	record, observations := censusAuthorityFixture(t, now)
 	second := observations[0]
 	second.Capability.Instance = "pod-a"
 	observations = append(observations, second)
-	result, err := CorroborateObservedCensus(record, observations, backend, capability, 7, now)
+	result, err := CorroborateObservedCensus(record, observations, backend, 7, now)
 	if err != nil || len(result.Members) != 2 || result.Members[0].Instance != "pod-a" ||
 		result.Members[1].HolderID != "worker-1" || result.Members[1].RecordedAt.IsZero() {
 		t.Fatalf("known capable instances did not bind to their declared holder: %+v %v", result, err)
@@ -73,9 +72,34 @@ func TestAuthorityCensusCorroboratesNamedBuildAndRefusesStaleOrForeignClaims(t *
 		t.Run(tc.name, func(t *testing.T) {
 			record, observations := censusAuthorityFixture(t, now)
 			tc.mutate(record, &observations)
-			if _, err := CorroborateObservedCensus(record, observations, backend, capability, 7, now); err == nil {
+			if _, err := CorroborateObservedCensus(record, observations, backend, 7, now); err == nil {
 				t.Fatal("contradictory or ambiguous capability announcement was accepted")
 			}
 		})
+	}
+}
+
+func TestAuthorityCensusAcceptsTwoIndependentlyApprovedBuilds(t *testing.T) {
+	now := time.Now().UTC()
+	record, observations := censusAuthorityFixture(t, now)
+	secondHolder := record.Holders[0]
+	secondHolder.ID = "worker-2"
+	secondHolder.ImageDigest = "iterion/runner@sha256:" + strings.Repeat("d", 64)
+	secondHolder.BuildDigest = strings.Repeat("e", 64)
+	record.Holders = append(record.Holders, secondHolder)
+	record.Credentials[0].HolderIDs = append(record.Credentials[0].HolderIDs, secondHolder.ID)
+	record.BuildApprovals = append(record.BuildApprovals, BuildApproval{
+		ImageDigest: secondHolder.ImageDigest, BuildDigest: secondHolder.BuildDigest,
+		CapabilityDigest: strings.Repeat("f", 64), QueueVersion: queuecore.SchemaVersion,
+	})
+	second := observations[0]
+	second.Capability.Instance = "pod-a"
+	second.Capability.BuildDigest = "sha256:" + secondHolder.BuildDigest
+	second.Capability.CapabilityDigest = record.BuildApprovals[1].CapabilityDigest
+	observations = append(observations, second)
+	result, err := CorroborateObservedCensus(record, observations, "mongodb:fixture", 7, now)
+	if err != nil || len(result.Members) != 2 || result.Members[0].HolderID != secondHolder.ID ||
+		result.Members[1].HolderID != "worker-1" {
+		t.Fatalf("compatible rollout builds were not bound individually: %+v %v", result, err)
 	}
 }

@@ -222,6 +222,7 @@ esac
 		len(result.ObservationDigest) != 64 ||
 		result.StartedAt.IsZero() || result.CompletedAt.Before(result.StartedAt) ||
 		len(result.BrokerSources) != 1 || len(result.Credentials.Bindings) != 2 ||
+		len(result.Builds.Bindings) != 1 ||
 		len(result.System.Brokers) != 1 || result.System.Brokers[0].ServerID != serverID {
 		t.Fatalf("production deployment observer did not bind live NATS and Kubernetes sources: %+v %v", result, err)
 	}

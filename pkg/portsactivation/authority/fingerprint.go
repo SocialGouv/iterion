@@ -46,11 +46,13 @@ type deploymentObservationIdentity struct {
 	Brokers                 []brokerFingerprintClaim        `json:"brokers"`
 	Custody                 []CredentialCustody             `json:"custody"`
 	Holders                 []CredentialHolder              `json:"holders"`
+	BuildApprovals          []BuildApproval                 `json:"build_approvals"`
 	Issuers                 []CredentialIssuer              `json:"issuers"`
 	Writers                 []OperatorWriter                `json:"writers"`
 	StaticBrokers           []StaticBroker                  `json:"static_brokers"`
 	SystemBrokers           []systemFingerprintBroker       `json:"system_brokers"`
 	Access                  []StaticAccess                  `json:"access"`
+	BuildBindings           []BuildBinding                  `json:"build_bindings"`
 	WorkloadRevisions       []kubernetesFingerprintRevision `json:"workload_revisions"`
 	Roles                   []RBACRole                      `json:"roles"`
 	Bindings                []RBACBinding                   `json:"bindings"`
@@ -72,7 +74,7 @@ type deploymentObservationIdentity struct {
 func fingerprintDeploymentObservation(record *Record, result *DeploymentCorroboration,
 	workloads *WorkloadSnapshot, rbac *RBACSnapshot) (string, error) {
 	if record == nil || record.validate() != nil || result == nil || workloads == nil || rbac == nil ||
-		result.Static == nil || result.System == nil || result.Workloads == nil ||
+		result.Static == nil || result.Builds == nil || result.System == nil || result.Workloads == nil ||
 		result.Credentials == nil || result.RBAC == nil || result.Queue != record.Queue ||
 		result.Epoch != record.Epoch || result.DeploymentRevision != record.DeploymentRevision ||
 		result.AuthoritySecretUID == "" || result.AuthoritySecretRevision == "" {
@@ -99,6 +101,10 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 	})
 	holders := slices.Clone(record.Holders)
 	slices.SortFunc(holders, func(a, b CredentialHolder) int { return strings.Compare(a.ID, b.ID) })
+	buildApprovals := slices.Clone(record.BuildApprovals)
+	slices.SortFunc(buildApprovals, func(a, b BuildApproval) int {
+		return strings.Compare(a.ImageDigest, b.ImageDigest)
+	})
 	issuers := slices.Clone(record.Issuers)
 	slices.SortFunc(issuers, func(a, b CredentialIssuer) int { return strings.Compare(a.ID, b.ID) })
 	writers := slices.Clone(record.PermittedWriters)
@@ -125,6 +131,11 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 	slices.SortFunc(access, func(a, b StaticAccess) int {
 		return strings.Compare(a.ServerID+"\x00"+a.Account+"\x00"+a.Identity,
 			b.ServerID+"\x00"+b.Account+"\x00"+b.Identity)
+	})
+	buildBindings := slices.Clone(result.Builds.Bindings)
+	slices.SortFunc(buildBindings, func(a, b BuildBinding) int {
+		return strings.Compare(a.Account+"\x00"+a.Principal+"\x00"+a.HolderID,
+			b.Account+"\x00"+b.Principal+"\x00"+b.HolderID)
 	})
 	workloadRevisions := make([]kubernetesFingerprintRevision, 0, len(workloads.Workloads))
 	for _, workload := range workloads.Workloads {
@@ -166,8 +177,9 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 		AuthoritySecretRevision: result.AuthoritySecretRevision,
 		DeploymentRevision:      result.DeploymentRevision, Epoch: result.Epoch,
 		Namespaces: namespaces, Queue: result.Queue, Brokers: brokers, Custody: custody,
-		Holders: holders, Issuers: issuers, Writers: writers, StaticBrokers: staticBrokers,
-		SystemBrokers: systemBrokers, Access: access, WorkloadRevisions: workloadRevisions,
+		Holders: holders, BuildApprovals: buildApprovals, Issuers: issuers, Writers: writers,
+		StaticBrokers: staticBrokers, SystemBrokers: systemBrokers, Access: access,
+		BuildBindings: buildBindings, WorkloadRevisions: workloadRevisions,
 		Roles: roles, Bindings: bindings, Launches: launches, BrokerSources: brokerSources,
 		CredentialBindings: credentialBindings, ExternalHolders: externalHolders,
 		WorkloadBindings: workloadBindings, WorkerAccounts: workerAccounts,

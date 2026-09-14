@@ -30,18 +30,22 @@ type CensusCorroboration struct {
 
 // CorroborateObservedCensus rejects stale, unknown or incompatible claims in
 // the complete snapshot returned by Conn.PortCapabilities. The server supplies
-// its own backend, capability and runner-epoch values; no value from a tenant
+// its own backend and runner-epoch values; the operator's immutable-build
+// approvals bind each observed capability. No value from a tenant
 // request can substitute for them. The result is not an activation proof.
 func CorroborateObservedCensus(record *Record, observations []queue.PortCapabilityObservation,
-	storeIdentity, capabilityDigest string, runnerEpoch uint64, now time.Time) (*CensusCorroboration, error) {
+	storeIdentity string, runnerEpoch uint64, now time.Time) (*CensusCorroboration, error) {
 	if record == nil || record.validate() != nil || storeIdentity == "" ||
-		len(capabilityDigest) != 64 || strings.Trim(capabilityDigest, "0123456789abcdef") != "" ||
 		now.IsZero() || len(observations) == 0 || len(observations) > 10000 {
 		return nil, fmt.Errorf("distributed capability census has an invalid authority scope")
 	}
 	holders := make(map[string]CredentialHolder, len(record.Holders))
 	for _, holder := range record.Holders {
 		holders[holder.ID] = holder
+	}
+	approved := make(map[string]BuildApproval, len(record.BuildApprovals))
+	for _, approval := range record.BuildApprovals {
+		approved[approval.ImageDigest] = approval
 	}
 	credentials := make(map[string]CredentialCustody)
 	for _, credential := range record.Credentials {
@@ -61,7 +65,7 @@ func CorroborateObservedCensus(record *Record, observations []queue.PortCapabili
 		if err != nil || seen[key] || observed.Revision == 0 || claim.Validate() != nil || !observed.Fresh(now) ||
 			claim.Account != record.Queue.Account || claim.Stream != record.Queue.Stream ||
 			claim.Consumer != record.Queue.Consumer || claim.StoreIdentity != storeIdentity ||
-			claim.CapabilityDigest != capabilityDigest || claim.RunnerEpoch != runnerEpoch ||
+			claim.RunnerEpoch != runnerEpoch ||
 			claim.AuthorityEpoch != record.Epoch {
 			return nil, fmt.Errorf("distributed capability census has a stale or contradictory instance")
 		}
@@ -72,7 +76,11 @@ func CorroborateObservedCensus(record *Record, observations []queue.PortCapabili
 		}
 		matched := ""
 		for _, holderID := range credential.HolderIDs {
-			if "sha256:"+holders[holderID].BuildDigest != claim.BuildDigest {
+			holder := holders[holderID]
+			approval, okay := approved[holder.ImageDigest]
+			if !okay || approval.BuildDigest != holder.BuildDigest ||
+				"sha256:"+approval.BuildDigest != claim.BuildDigest ||
+				approval.CapabilityDigest != claim.CapabilityDigest {
 				continue
 			}
 			if matched != "" {

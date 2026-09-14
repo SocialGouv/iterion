@@ -1,5 +1,5 @@
 {
-  "scope": "Read-only bounded kubectl authority/credential/configuration Secret, standard workload and RBAC listing, strict versioned operator records, static NATS source/profile, broker Pod launch and mounted source-byte binding, per-broker system observation and explicit workload credential-reference reconciliation. Actual credential and configuration bytes remain private. These are corroborating layers only; exhaustive custody, other authorizers, freshness and distributed activation remain unproved.",
+  "scope": "Read-only bounded kubectl authority/credential/configuration Secret, standard workload and RBAC listing, strict versioned operator records with tested-build approvals, static NATS source/profile, broker Pod launch and mounted source-byte binding, per-broker system observation, explicit workload credential-reference reconciliation, protected-holder build exclusion and observed capability-census reconciliation. Actual credential and configuration bytes remain private. These are corroborating layers only; exhaustive custody, other authorizers, production census reading and distributed activation remain unproved.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
@@ -14,6 +14,8 @@
       "TestDeploymentObservationRequiresEveryCorroboratingLayer",
       "TestDeploymentObservationDigestBindsStableAuthorityAndIgnoresVolatileCounts",
       "TestAuthorityCensusCorroboratesNamedBuildAndRefusesStaleOrForeignClaims",
+      "TestAuthorityCensusAcceptsTwoIndependentlyApprovedBuilds",
+      "TestAuthorityProtectedBuildsRefuseDisconnectedOldHolder",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",

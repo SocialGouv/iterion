@@ -58,6 +58,9 @@ func TestDeploymentObservationDigestBindsStableAuthorityAndIgnoresVolatileCounts
 		{"holder build", func(record *Record, _ *DeploymentCorroboration, _ *WorkloadSnapshot, _ *RBACSnapshot) {
 			record.Holders[0].BuildDigest = strings.Repeat("f", 64)
 		}},
+		{"build approval", func(record *Record, _ *DeploymentCorroboration, _ *WorkloadSnapshot, _ *RBACSnapshot) {
+			record.BuildApprovals[0].CapabilityDigest = strings.Repeat("f", 64)
+		}},
 		{"workload revision", func(_ *Record, _ *DeploymentCorroboration, workloads *WorkloadSnapshot, _ *RBACSnapshot) {
 			workloads.Workloads[0].ResourceVersion = "new-workload-revision"
 		}},

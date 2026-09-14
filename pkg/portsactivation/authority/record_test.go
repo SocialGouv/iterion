@@ -7,13 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	queuecore "github.com/SocialGouv/iterion/pkg/queue"
 	queue "github.com/SocialGouv/iterion/pkg/queue/nats"
 )
 
 func validRecordFixture(t *testing.T) map[string]any {
 	t.Helper()
 	return map[string]any{
-		"version": 1, "deployment_revision": "release-17", "epoch": 3,
+		"version": RecordVersion, "deployment_revision": "release-17", "epoch": 3,
 		"assertions": map[string]any{"broker_scope": true, "configuration": true,
 			"workload_scope": true, "credential_custody": true, "issuer_scope": true, "writer_scope": true},
 		"namespaces": []string{"trusted", "worker"},
@@ -36,6 +37,11 @@ func validRecordFixture(t *testing.T) map[string]any {
 			"image_digest": "iterion/runner@sha256:" + strings.Repeat("c", 64),
 			"build_digest": strings.Repeat("b", 64), "access_scope": "runner",
 			"credential_ref": "worker/nats-worker:NATS_URL"}},
+		"build_approvals": []any{map[string]any{
+			"image_digest":      "iterion/runner@sha256:" + strings.Repeat("c", 64),
+			"build_digest":      strings.Repeat("b", 64),
+			"capability_digest": strings.Repeat("a", 64), "queue_version": queuecore.SchemaVersion,
+		}},
 		"issuers":           []any{map[string]any{"id": "operator", "kind": "external", "identity": "deploy-operator"}},
 		"permitted_writers": []any{map[string]any{"kind": "user", "name": "deploy-operator"}},
 	}
@@ -55,7 +61,7 @@ func TestAuthorityRecordKeepsConcreteSourcesPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Version != 1 || record.Epoch != 3 || len(record.Brokers) != 1 ||
+	if record.Version != RecordVersion || record.Epoch != 3 || len(record.Brokers) != 1 ||
 		record.Brokers[0].Sources().Files["main.conf"] != "private_password: super-secret" {
 		t.Fatal("authority record lost its concrete deployment source")
 	}
@@ -83,6 +89,7 @@ func TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody(t *testing.T) {
 		name   string
 		mutate func(map[string]any)
 	}{
+		{"old-version", func(f map[string]any) { f["version"] = RecordVersion - 1 }},
 		{"missing-completeness", func(f map[string]any) { f["assertions"].(map[string]any)["credential_custody"] = false }},
 		{"case-aliased-completeness", func(f map[string]any) {
 			f["assertions"].(map[string]any)["credential_custody"] = false
@@ -109,6 +116,16 @@ func TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody(t *testing.T) {
 			f["credentials"].([]any)[0].(map[string]any)["issuer_ids"] = []string{"operator", "operator"}
 		}},
 		{"mutable-image", func(f map[string]any) { f["holders"].([]any)[0].(map[string]any)["image_digest"] = "iterion:latest" }},
+		{"missing-build-approvals", func(f map[string]any) { f["build_approvals"] = []any{} }},
+		{"duplicate-build-image", func(f map[string]any) {
+			f["build_approvals"] = append(f["build_approvals"].([]any), f["build_approvals"].([]any)[0])
+		}},
+		{"unsupported-build-capability", func(f map[string]any) {
+			f["build_approvals"].([]any)[0].(map[string]any)["capability_digest"] = "unverified"
+		}},
+		{"unsupported-build-queue", func(f map[string]any) {
+			f["build_approvals"].([]any)[0].(map[string]any)["queue_version"] = queuecore.SchemaVersion - 1
+		}},
 		{"cross-namespace-secret", func(f map[string]any) {
 			f["holders"].([]any)[0].(map[string]any)["credential_ref"] = "trusted/nats-worker:NATS_URL"
 		}},

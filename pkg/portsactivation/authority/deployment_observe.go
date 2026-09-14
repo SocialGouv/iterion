@@ -25,6 +25,7 @@ type DeploymentCorroboration struct {
 	Epoch                   uint64                    `json:"epoch"`
 	Queue                   natsconfig.QueueTopology  `json:"queue"`
 	Static                  *StaticAnalysis           `json:"static"`
+	Builds                  *BuildCorroboration       `json:"builds"`
 	System                  *SystemCorroboration      `json:"system"`
 	Workloads               *WorkloadReconciliation   `json:"workloads"`
 	BrokerLaunches          []BrokerLaunch            `json:"broker_launches"`
@@ -130,6 +131,10 @@ func corroborateDeploymentEvidence(ctx context.Context, record *Record, source S
 	if err != nil {
 		return nil, err
 	}
+	builds, err := CorroborateProtectedBuilds(record, static)
+	if err != nil {
+		return nil, err
+	}
 	launches, err := ReconcileBrokerLaunch(record, snapshot)
 	if err != nil {
 		return nil, err
@@ -167,6 +172,6 @@ func corroborateDeploymentEvidence(ctx context.Context, record *Record, source S
 	}
 	return &DeploymentCorroboration{AuthoritySecretUID: source.UID,
 		AuthoritySecretRevision: source.ResourceVersion, DeploymentRevision: record.DeploymentRevision,
-		Epoch: record.Epoch, Queue: record.Queue, Static: static, System: system, Workloads: workloads,
+		Epoch: record.Epoch, Queue: record.Queue, Static: static, Builds: builds, System: system, Workloads: workloads,
 		BrokerLaunches: launches, BrokerSources: brokerSources, Credentials: credentials, RBAC: boundary}, nil
 }
