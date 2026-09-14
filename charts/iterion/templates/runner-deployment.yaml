@@ -103,6 +103,32 @@ spec:
               value: {{ .Values.config.rollout.runnerEpoch | int64 | quote }}
             - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY
               value: {{ .Values.config.rollout.epochMismatchDelay | quote }}
+            {{- if .Values.runner.portCapability.enabled }}
+            {{- if not .Values.runner.portCapability.account }}{{ fail "runner.portCapability.account is required when portCapability is enabled" }}{{ end }}
+            {{- if not .Values.runner.portCapability.buildDigest }}{{ fail "runner.portCapability.buildDigest is required when portCapability is enabled" }}{{ end }}
+            {{- if not .Values.runner.portCapability.authorityEpoch }}{{ fail "runner.portCapability.authorityEpoch is required when portCapability is enabled" }}{{ end }}
+            - name: ITERION_PORT_CAPABILITY_ENABLED
+              value: "true"
+            {{- with .Values.runner.portCapability.principal }}
+            - name: ITERION_PORT_CAPABILITY_PRINCIPAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.runner.portCapability.instance }}
+            - name: ITERION_PORT_CAPABILITY_INSTANCE
+              value: {{ . | quote }}
+            {{- else }}
+            - name: ITERION_PORT_CAPABILITY_INSTANCE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- end }}
+            - name: ITERION_PORT_CAPABILITY_ACCOUNT
+              value: {{ .Values.runner.portCapability.account | quote }}
+            - name: ITERION_PORT_CAPABILITY_BUILD_DIGEST
+              value: {{ .Values.runner.portCapability.buildDigest | quote }}
+            - name: ITERION_PORT_CAPABILITY_AUTHORITY_EPOCH
+              value: {{ .Values.runner.portCapability.authorityEpoch | int64 | quote }}
+            {{- end }}
             {{- if .Values.runner.sandbox.enabled }}
             # Downward API: ITERION_POD_IP is required for the kubernetes
             # sandbox driver's ProxyConfig() (pkg/sandbox/kubernetes), so

@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/portsactivation/authority"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
 	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
@@ -139,6 +140,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: build mongo store: %w", err)
 	}
 	defer closeCloudStoreWithTimeout(st)
+	st.SetPortDistributedActivationVerifier(authority.StoredProofVerifier{Proofs: st, StoreIdentity: st.PortBackendIdentity()})
 
 	// 4. Prometheus metrics + the kubelet probes on a dedicated port.
 	//    Bound before the runner is built so a port conflict surfaces at
@@ -380,6 +382,20 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch superseded while bootstrapping — staying live but non-ready; no queue consumer started")
 		<-rootCtx.Done()
 		return nil
+	}
+	if capability, enabled, err := runnerPortCapabilityFromEnv(cfg, natsConn, st.PortBackendIdentity(), selfEpoch); err != nil {
+		return fmt.Errorf("runner: capability census: %w", err)
+	} else if enabled {
+		errtrack.Go("runner.portCapabilityHeartbeat", func() {
+			onHeartbeatError := func(err error) {
+				if err != nil {
+					logger.Warn("runner: capability census heartbeat: %v", err)
+				}
+			}
+			if err := natsConn.RunPortCapabilityHeartbeat(rootCtx, capability, onHeartbeatError); err != nil && err != context.Canceled && err != context.DeadlineExceeded {
+				logger.Warn("runner: capability census heartbeat stopped: %v", err)
+			}
+		})
 	}
 
 	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck

@@ -98,6 +98,18 @@ server:
 runner:
   enabled: true
   replicas: 1
+  # Optional native distributed capability heartbeat. Enabling this makes
+  # each runner publish a credential-free, broker-timestamped claim under
+  # the rollout KV bucket; the trusted authority still requires the matching
+  # operator custody record before activation. Keep this disabled for legacy
+  # deployments until the worker build and authority epoch are recorded.
+  portCapability:
+    enabled: false
+    principal: ""       # empty derives the ordinary NATS URL user name
+    instance: ""        # empty uses the pod hostname
+    account: ""         # account containing the shared runner consumer
+    buildDigest: ""     # immutable binary build, sha256:<64 hex chars>
+    authorityEpoch: 0
   strategy:
     type: RollingUpdate
     rollingUpdate:
