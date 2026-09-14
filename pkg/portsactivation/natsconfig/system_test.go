@@ -130,6 +130,86 @@ func TestNATSSystemBrokerSetRejectsAmbiguousReplies(t *testing.T) {
 	}
 }
 
+func TestNATSSystemBrokerSetDetectsUndeclaredClusterPeer(t *testing.T) {
+	binary := os.Getenv("ITERION_TEST_NATS_SERVER")
+	if binary == "" {
+		if os.Getenv("ITERION_TEST_REQUIRED") == "1" {
+			t.Fatal("broker-set observation requires the pinned NATS broker")
+		}
+		t.Skip("ITERION_TEST_NATS_SERVER not set")
+	}
+	freePort := func() int {
+		t.Helper()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		return listener.Addr().(*net.TCPAddr).Port
+	}
+	clientPorts := [2]int{freePort(), freePort()}
+	routePorts := [2]int{freePort(), freePort()}
+	connections := make([]*natsclient.Conn, 2)
+	for i := range connections {
+		config := fmt.Sprintf(`listen: 127.0.0.1:%d
+server_name: nats-%d.example
+system_account: SYS
+accounts { SYS {users: [{user: sys, password: fixture}]}}
+cluster {
+  name: TEST
+  listen: 127.0.0.1:%d
+  routes: ["nats-route://127.0.0.1:%d"]
+}`, clientPorts[i], i, routePorts[i], routePorts[1-i])
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "main.conf")
+		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.CommandContext(t.Context(), binary, "-c", configPath)
+		command.Dir = dir
+		var brokerLog bytes.Buffer
+		command.Stderr = &brokerLog
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = command.Process.Kill(); _ = command.Wait() })
+		url := fmt.Sprintf("nats://127.0.0.1:%d", clientPorts[i])
+		deadline := time.Now().Add(5 * time.Second)
+		var err error
+		for time.Now().Before(deadline) {
+			connections[i], err = natsclient.Connect(url, natsclient.UserInfo("sys", "fixture"),
+				natsclient.Timeout(100*time.Millisecond))
+			if err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("cluster broker %d did not start: %s", i, brokerLog.String())
+		}
+		defer connections[i].Close()
+	}
+	expected := []SystemBrokerIdentity{
+		{ServerID: connections[0].ConnectedServerId(), ServerName: "nats-0.example"},
+		{ServerID: connections[1].ConnectedServerId(), ServerName: "nats-1.example"},
+	}
+	var err error
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err = ObserveSystemBrokerSet(t.Context(), connections[0], expected)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("system account did not observe both clustered brokers: %v", err)
+	}
+	if _, err := ObserveSystemBrokerSet(t.Context(), connections[0], expected[:1]); err == nil || !strings.Contains(err.Error(), "IDZ response disagrees") {
+		t.Fatalf("system census did not detect an undeclared cluster peer: %v", err)
+	}
+}
+
 func TestNATSSystemObservationRefusesUnboundBroker(t *testing.T) {
 	for _, id := range []string{"", "broker.*", "broker.>"} {
 		if _, err := ObserveSystemServer(t.Context(), nil, id, "sha256:"+fmt.Sprintf("%064x", 1)); err == nil {

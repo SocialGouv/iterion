@@ -448,7 +448,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   purge grant clears the run stream, and a Core subscription receives its
   run payload. The distinct system account is reported as privileged authority
   exposure rather than being treated as a harmless other account. The full
-  race-instrumented NATS manifest has 92 cases without skips. The classifier
+  race-instrumented NATS manifest has 93 cases without skips. The classifier
   still needs authoritative live topology, credential
   custody and workload reconciliation before its result can admit a root.
 - The same classifier treats system-account access to `$SYS.>` requests or
@@ -465,8 +465,9 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   establish that every broker or disconnected credential holder was inventoried.
 - A bounded system-account `PING.IDZ` comparison now checks every promptly
   responding broker against the declared ID/name set and refuses missing,
-  duplicate, foreign or malformed replies. The pinned 2.14.5 broker confirms
-  the actual multi-response path. Silence or a network partition can still
+  duplicate, foreign or malformed replies. A pinned 2.14.5 two-broker cluster
+  confirms that both peers respond and an omitted peer is rejected. Silence or
+  a network partition can still
   hide a broker, so this remains corroboration of the operator's exhaustive
   inventory assertion, not an independent completeness proof.
 - A read-only authority observation now combines the declared `PING.IDZ`
