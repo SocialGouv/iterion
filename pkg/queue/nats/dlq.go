@@ -68,7 +68,7 @@ func (c *Conn) PublishDLQ(ctx context.Context, d *Delivery, reason string) error
 	h.Set(dlqHeaderTenant, env.TenantID)
 	h.Set(dlqHeaderDelivered, fmt.Sprintf("%d", d.NumDelivered()))
 	_, err = c.js.PublishMsg(ctx, &nats.Msg{
-		Subject: SubjectRunsDLQ,
+		Subject: c.cfg.DLQSubject,
 		Header:  h,
 		Data:    d.raw.Data(),
 	})
@@ -171,7 +171,7 @@ func (c *Conn) RepublishDLQ(ctx context.Context, seq uint64) (string, error) {
 	h := nats.Header{}
 	h.Set("Nats-Msg-Id", fmt.Sprintf("%s|dlq-replay-%d", view.RunID, seq))
 	if _, err := c.js.PublishMsg(ctx, &nats.Msg{
-		Subject: SubjectRuns,
+		Subject: c.cfg.RunSubject,
 		Header:  h,
 		Data:    payload,
 	}); err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/s3test"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/portsactivation"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
@@ -168,7 +169,7 @@ func nativeRewindStore(t *testing.T, cloud bool) store.RunStore {
 	record := &store.PortActivation{Version: store.PortActivationVersion, ProofRevision: 1, Revision: 1, Enabled: true, Scope: store.PortActivationLocal,
 		StoreIdentity: identity, ProofDigest: strings.Repeat("a", 64), VerifiedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if cloud {
-		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, 15, "isolated rewind fixture"
+		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, queue.SchemaVersion, "isolated rewind fixture"
 		record.ExpiresAt = now.Add(store.PortDistributedProofMaxAge)
 	}
 	record.CapabilityDigest = portsactivation.CapabilityDigest(record.Scope)
@@ -193,7 +194,7 @@ func nativeRewindStore(t *testing.T, cloud bool) store.RunStore {
 type nativeRewindMongo struct{ *storemongo.Store }
 
 func (s *nativeRewindMongo) VerifyPortDistributedActivation(_ context.Context, a *store.PortActivation, now time.Time) error {
-	if a.ConsumerAccessEvidence != "isolated rewind fixture" || a.StoreIdentity != s.PortBackendIdentity() || a.QueueVersion != 15 || now.Before(a.VerifiedAt) || !now.Before(a.ExpiresAt) {
+	if a.ConsumerAccessEvidence != "isolated rewind fixture" || a.StoreIdentity != s.PortBackendIdentity() || a.QueueVersion != queue.SchemaVersion || now.Before(a.VerifiedAt) || !now.Before(a.ExpiresAt) {
 		return store.ErrPortActivation
 	}
 	return nil
@@ -343,19 +344,21 @@ type nativeRewindRaceStore struct {
 	raced bool
 }
 
+func (s *nativeRewindRaceStore) underlying() store.RunStore { return s.RunStore }
+
 func (s *nativeRewindRaceStore) SaveRun(ctx context.Context, run *store.Run) error {
 	if !s.raced {
 		s.raced = true
-		current, err := s.RunStore.LoadRun(ctx, run.ID)
+		current, err := s.underlying().LoadRun(ctx, run.ID)
 		if err != nil {
 			return err
 		}
 		current.Status = store.RunStatusRunning
-		if err := s.RunStore.SaveRun(ctx, current); err != nil {
+		if err := s.underlying().SaveRun(ctx, current); err != nil {
 			return err
 		}
 	}
-	return s.RunStore.SaveRun(ctx, run)
+	return s.underlying().SaveRun(ctx, run)
 }
 
 func TestNativeRewindLosesCASWithoutInvalidating(t *testing.T) {

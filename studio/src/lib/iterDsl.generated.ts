@@ -27,6 +27,7 @@ export const iterDslKeywords = [
   "compress",
   "compute",
   "condition",
+  "contract",
   "cursor",
   "cursors",
   "default_backend",
@@ -49,6 +50,7 @@ export const iterDslKeywords = [
   "fork",
   "fresh",
   "full_access",
+  "graph",
   "group",
   "human",
   "image",
@@ -84,6 +86,7 @@ export const iterDslKeywords = [
   "over",
   "permission",
   "persist",
+  "port_policy",
   "pre_compact_inject",
   "preserve_recent",
   "presets",
@@ -99,6 +102,7 @@ export const iterDslKeywords = [
   "resources",
   "round_robin",
   "router",
+  "runtime_semantics",
   "sandbox",
   "schema",
   "scope",
@@ -140,6 +144,7 @@ export const iterDslDeclarations = [
   "agent",
   "await_answers",
   "compute",
+  "contract",
   "cursor",
   "emit",
   "fail",
@@ -147,6 +152,7 @@ export const iterDslDeclarations = [
   "human",
   "judge",
   "mcp_server",
+  "port_policy",
   "prompt",
   "router",
   "schema",
@@ -239,6 +245,41 @@ export const iterDslPropertiesByKind = {
     "output",
     "publish"
   ],
+  "contract": [
+    "criteria",
+    "display_name",
+    "effects",
+    "inputs",
+    "outputs",
+    "responsibility",
+    "version"
+  ],
+  "contract.criteria": [],
+  "contract.criterion": [
+    "kind",
+    "params",
+    "port"
+  ],
+  "contract.effect": [
+    "description",
+    "paid"
+  ],
+  "contract.effects": [],
+  "contract.file": [
+    "media_type",
+    "min_bytes",
+    "schema"
+  ],
+  "contract.port": [
+    "default",
+    "description",
+    "file",
+    "max_items",
+    "min_items",
+    "nullable",
+    "required"
+  ],
+  "contract.ports": [],
   "cursor": [
     "bands",
     "description",
@@ -270,6 +311,20 @@ export const iterDslPropertiesByKind = {
     "provider",
     "when"
   ],
+  "graph": [
+    "bindings",
+    "exports",
+    "nodes",
+    "products"
+  ],
+  "graph.bindings": [],
+  "graph.exports": [],
+  "graph.node": [
+    "contract",
+    "implementation",
+    "policy"
+  ],
+  "graph.nodes": [],
   "group": [],
   "human": [
     "artifact_labels",
@@ -355,6 +410,16 @@ export const iterDslPropertiesByKind = {
     "write"
   ],
   "params": [],
+  "port_policy": [
+    "effects",
+    "max_map_items"
+  ],
+  "port_policy.effect": [
+    "recovery",
+    "resource",
+    "verifier"
+  ],
+  "port_policy.effects": [],
   "presets": [],
   "prompt": [],
   "recovery": [
@@ -472,15 +537,19 @@ export const iterDslPropertiesByKind = {
     "capabilities",
     "compaction",
     "compress",
+    "contract",
     "default_backend",
     "deny",
     "entry",
+    "graph",
     "interaction",
     "loop_budget_guard",
     "mcp",
     "permission",
+    "port_policy",
     "repo_devbox",
     "resources",
+    "runtime_semantics",
     "sandbox",
     "skills",
     "tool_policy",

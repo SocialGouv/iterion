@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/portsactivation"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -25,7 +26,7 @@ func seedRefreshActivation(t *testing.T) (*Store, *store.PortActivation) {
 		Version: store.PortActivationVersion, Revision: 1, ProofRevision: 1, Enabled: true,
 		Scope: store.PortActivationDistributed, StoreIdentity: identity,
 		ProofDigest: strings.Repeat("a", 64), CapabilityDigest: portsactivation.CapabilityDigest(store.PortActivationDistributed),
-		QueueVersion: 15, ConsumerAccessEvidence: "test observations, not production authority",
+		QueueVersion: queue.SchemaVersion, ConsumerAccessEvidence: "test observations, not production authority",
 		VerifiedAt: now.Add(-30 * time.Second), ExpiresAt: now.Add(30 * time.Second),
 	}
 	if err := s.SavePortActivation(t.Context(), 0, a); err != nil {

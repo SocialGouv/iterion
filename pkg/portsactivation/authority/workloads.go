@@ -59,12 +59,12 @@ func (w Workload) Status() json.RawMessage  { return bytes.Clone(w.status) }
 // Missing list access or unrecognized object shapes fail closed.
 func ReadWorkloadSnapshot(ctx context.Context, kubectlBinary, kubeContext string, namespaces []string) (*WorkloadSnapshot, error) {
 	if kubectlBinary == "" || len(namespaces) == 0 || len(namespaces) > 16 {
-		return nil, fmt.Errorf("Kubernetes workload inventory requires a bounded namespace scope")
+		return nil, fmt.Errorf("authority: Kubernetes workload inventory requires a bounded namespace scope")
 	}
 	seenNamespaces := make(map[string]bool, len(namespaces))
 	for _, namespace := range namespaces {
 		if !dnsLabel(namespace) || seenNamespaces[namespace] {
-			return nil, fmt.Errorf("Kubernetes workload inventory has an invalid namespace scope")
+			return nil, fmt.Errorf("authority: Kubernetes workload inventory has an invalid namespace scope")
 		}
 		seenNamespaces[namespace] = true
 	}
@@ -78,7 +78,7 @@ func ReadWorkloadSnapshot(ctx context.Context, kubectlBinary, kubeContext string
 		args = append(args, "--namespace", namespace, "get", workloadResources, "-o", "json")
 		output, err := runKubectl(ctx, kubectlBinary, args, maxWorkloadResponse)
 		if err != nil {
-			return nil, fmt.Errorf("Kubernetes workload inventory could not be read")
+			return nil, fmt.Errorf("authority: Kubernetes workload inventory could not be read")
 		}
 		var document struct {
 			APIVersion string `json:"apiVersion"`
@@ -93,7 +93,7 @@ func ReadWorkloadSnapshot(ctx context.Context, kubectlBinary, kubeContext string
 			document.APIVersion != "v1" || document.Kind != "List" || document.Items == nil ||
 			document.Metadata.Continue != "" ||
 			len(document.Items) > maxWorkloads-len(snapshot.Workloads) {
-			return nil, fmt.Errorf("Kubernetes workload inventory returned an incomplete or oversized list")
+			return nil, fmt.Errorf("authority: Kubernetes workload inventory returned an incomplete or oversized list")
 		}
 		for _, raw := range document.Items {
 			workload, err := parseWorkload(raw, namespace)
@@ -102,7 +102,7 @@ func ReadWorkloadSnapshot(ctx context.Context, kubectlBinary, kubeContext string
 			}
 			key := [3]string{workload.Kind, workload.Namespace, workload.Name}
 			if seenObjects[key] {
-				return nil, fmt.Errorf("Kubernetes workload inventory contains duplicate objects")
+				return nil, fmt.Errorf("authority: Kubernetes workload inventory contains duplicate objects")
 			}
 			seenObjects[key] = true
 			snapshot.Workloads = append(snapshot.Workloads, workload)
@@ -145,14 +145,14 @@ func parseWorkload(raw json.RawMessage, namespace string) (Workload, error) {
 	if json.Unmarshal(raw, &item) != nil || item.Metadata.Namespace != namespace ||
 		!dnsSubdomain(item.Metadata.Name) || item.Metadata.UID == "" || item.Metadata.ResourceVersion == "" ||
 		len(item.Spec) == 0 {
-		return Workload{}, fmt.Errorf("Kubernetes workload inventory contains an unidentified object")
+		return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory contains an unidentified object")
 	}
 	if !supportedWorkloadVersion(item.Kind, item.APIVersion) {
-		return Workload{}, fmt.Errorf("Kubernetes workload inventory contains an unsupported kind or version")
+		return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory contains an unsupported kind or version")
 	}
 	var spec map[string]json.RawMessage
 	if json.Unmarshal(item.Spec, &spec) != nil {
-		return Workload{}, fmt.Errorf("Kubernetes workload inventory has an invalid pod template")
+		return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory has an invalid pod template")
 	}
 	podSpec := item.Spec
 	if item.Kind != "Pod" {
@@ -169,21 +169,21 @@ func parseWorkload(raw json.RawMessage, namespace string) (Workload, error) {
 		} `json:"containers"`
 	}
 	if len(podSpec) == 0 || json.Unmarshal(podSpec, &template) != nil || len(template.Containers) == 0 {
-		return Workload{}, fmt.Errorf("Kubernetes workload inventory has an incomplete pod template")
+		return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory has an incomplete pod template")
 	}
 	for _, container := range template.Containers {
 		if !dnsLabel(container.Name) || container.Image == "" {
-			return Workload{}, fmt.Errorf("Kubernetes workload inventory has an unnamed container")
+			return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory has an unnamed container")
 		}
 	}
 	if len(item.Metadata.OwnerReferences) > 8 {
-		return Workload{}, fmt.Errorf("Kubernetes workload inventory has too many owners")
+		return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory has too many owners")
 	}
 	owners := make([]OwnerReference, 0, len(item.Metadata.OwnerReferences))
 	controllerCount := 0
 	for _, owner := range item.Metadata.OwnerReferences {
 		if !supportedWorkloadVersion(owner.Kind, owner.APIVersion) || !dnsSubdomain(owner.Name) || owner.UID == "" {
-			return Workload{}, fmt.Errorf("Kubernetes workload inventory has an unsupported owner")
+			return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory has an unsupported owner")
 		}
 		if owner.Controller {
 			controllerCount++
@@ -192,7 +192,7 @@ func parseWorkload(raw json.RawMessage, namespace string) (Workload, error) {
 			Name: owner.Name, UID: owner.UID, Controller: owner.Controller})
 	}
 	if controllerCount > 1 {
-		return Workload{}, fmt.Errorf("Kubernetes workload inventory has ambiguous controlling owners")
+		return Workload{}, fmt.Errorf("authority: Kubernetes workload inventory has ambiguous controlling owners")
 	}
 	return Workload{APIVersion: item.APIVersion, Kind: item.Kind,
 		Namespace: namespace, Name: item.Metadata.Name, UID: item.Metadata.UID,

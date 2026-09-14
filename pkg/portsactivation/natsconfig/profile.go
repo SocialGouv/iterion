@@ -161,7 +161,7 @@ func profileVariableName(name string) bool {
 		return false
 	}
 	for _, c := range name[4:] {
-		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+		if !profileVariableRune(c) {
 			return false
 		}
 	}
@@ -182,11 +182,19 @@ func profileAccountName(name string) bool {
 		return false
 	}
 	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if !profileAccountRune(c) {
 			return false
 		}
 	}
 	return true
+}
+
+func profileVariableRune(c rune) bool {
+	return c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+}
+
+func profileAccountRune(c rune) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
 }
 
 func profileJSON(raw json.RawMessage) (any, error) {

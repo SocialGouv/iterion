@@ -113,6 +113,8 @@ type Config struct {
 	ConnectionName  string        // diagnostic client role, never an authorization identity
 	StreamName      string        // default StreamRuns
 	DLQStream       string        // default StreamRunsDLQ
+	RunSubject      string        // default SubjectRuns; literal subject stored in StreamName
+	DLQSubject      string        // default SubjectRunsDLQ; literal subject stored in DLQStream
 	KVBucket        string        // default KVRunLocks
 	RolloutKVBucket string        // default KVRolloutEpochs (persistent, no TTL)
 	StreamReplicas  int           // default 1
@@ -212,7 +214,7 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("queue/nats: invalid diagnostic connection name")
 	}
 	for _, ch := range cfg.ConnectionName {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+		if !validConnectionNameRune(ch) {
 			return nil, fmt.Errorf("queue/nats: invalid diagnostic connection name")
 		}
 	}
@@ -251,6 +253,10 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	// (plan §F T-41).
 	EnsureDefaultPropagator()
 	return c, nil
+}
+
+func validConnectionNameRune(ch rune) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_'
 }
 
 // Close releases the NATS connection. Safe to call multiple times.
@@ -305,6 +311,24 @@ func (c *Conn) NATS() *nats.Conn { return c.nc }
 // JetStream exposes the JetStream interface for advanced consumers
 // (paginated lookups, custom consumer geometry).
 func (c *Conn) JetStream() jetstream.JetStream { return c.js }
+
+// RunSubject returns the configured live-run subject. It is useful to
+// integrations that publish a raw message while retaining the connection's
+// isolated queue topology.
+func (c *Conn) RunSubject() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.RunSubject
+}
+
+// DLQSubject returns the configured dead-letter subject.
+func (c *Conn) DLQSubject() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.DLQSubject
+}
 
 // KV exposes the run-lock KV bucket so MongoRunStore.LockRun (T-26)
 // can layer a CAS lease on top of it without re-resolving the bucket.
@@ -363,7 +387,7 @@ type schemaResources struct {
 func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:       cfg.StreamName,
-		Subjects:   []string{SubjectRuns},
+		Subjects:   []string{cfg.RunSubject},
 		Retention:  jetstream.WorkQueuePolicy,
 		MaxAge:     cfg.MaxAge,
 		Storage:    jetstream.FileStorage,
@@ -375,7 +399,7 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaReso
 
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      cfg.DLQStream,
-		Subjects:  []string{SubjectRunsDLQ},
+		Subjects:  []string{cfg.DLQSubject},
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    cfg.DLQMaxAge,
 		Storage:   jetstream.FileStorage,
@@ -474,7 +498,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return c.js.PublishMsg(pubCtx, &nats.Msg{
-		Subject: SubjectRuns,
+		Subject: c.cfg.RunSubject,
 		Data:    body,
 		Header:  headers,
 	})
@@ -604,7 +628,7 @@ func (c *Conn) PrepareConsumer(ctx context.Context) (*Consumer, error) {
 		MaxAckPending: c.cfg.MaxAckPending,
 		MaxDeliver:    c.cfg.MaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
-		FilterSubject: SubjectRuns,
+		FilterSubject: c.cfg.RunSubject,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: consumer: %w", err)
@@ -769,6 +793,12 @@ func applyDefaults(c Config) Config {
 	}
 	if c.DLQStream == "" {
 		c.DLQStream = StreamRunsDLQ
+	}
+	if c.RunSubject == "" {
+		c.RunSubject = SubjectRuns
+	}
+	if c.DLQSubject == "" {
+		c.DLQSubject = SubjectRunsDLQ
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = KVRunLocks

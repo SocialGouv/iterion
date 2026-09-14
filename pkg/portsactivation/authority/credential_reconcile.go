@@ -39,7 +39,7 @@ func ReconcileCredentialSecrets(ctx context.Context, record *Record, kubectlBina
 func reconcileCredentialSecretsWithReader(ctx context.Context, record *Record,
 	read func(context.Context, string, string, string) (*CredentialSecretKey, error)) (*CredentialReconciliation, error) {
 	if record == nil || record.validate() != nil || read == nil {
-		return nil, fmt.Errorf("Kubernetes NATS credential reconciliation requires a valid operator record")
+		return nil, fmt.Errorf("authority: Kubernetes NATS credential reconciliation requires a valid operator record")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -59,36 +59,36 @@ func reconcileCredentialSecretsWithReader(ctx context.Context, record *Record,
 		}
 		entries := principals[holder.ID]
 		if len(entries) != 1 {
-			return nil, fmt.Errorf("Kubernetes NATS holder must map to exactly one configured principal")
+			return nil, fmt.Errorf("authority: Kubernetes NATS holder must map to exactly one configured principal")
 		}
 		ref := strings.Split(holder.CredentialRef, "/")
 		nameKey := strings.Split(ref[1], ":")
 		key := credentialKey{ref[0], nameKey[0], nameKey[1]}
 		if key.namespace != holder.Namespace {
-			return nil, fmt.Errorf("Kubernetes NATS holder references a foreign namespace")
+			return nil, fmt.Errorf("authority: Kubernetes NATS holder references a foreign namespace")
 		}
 		secret := readKeys[key]
 		if secret == nil {
 			var err error
 			secret, err = read(ctx, key.namespace, key.name, key.key)
 			if err != nil || secret == nil {
-				return nil, fmt.Errorf("Kubernetes NATS credential source is unavailable")
+				return nil, fmt.Errorf("authority: Kubernetes NATS credential source is unavailable")
 			}
 			if secret.Namespace != key.namespace || secret.Name != key.name || secret.Key != key.key ||
 				secret.UID == "" || secret.ResourceVersion == "" {
-				return nil, fmt.Errorf("Kubernetes NATS credential source identity changed")
+				return nil, fmt.Errorf("authority: Kubernetes NATS credential source identity changed")
 			}
 			readKeys[key] = secret
 		}
 		versionKey := [2]string{key.namespace, key.name}
 		version := secretVersion{secret.UID, secret.ResourceVersion}
 		if previous, exists := secretVersions[versionKey]; exists && previous != version {
-			return nil, fmt.Errorf("Kubernetes NATS Secret changed during credential inventory")
+			return nil, fmt.Errorf("authority: Kubernetes NATS Secret changed during credential inventory")
 		}
 		secretVersions[versionKey] = version
 		identity, err := secret.Identity()
 		if err != nil || identity != entries[0].Identity {
-			return nil, fmt.Errorf("Kubernetes NATS Secret user differs from configured principal custody")
+			return nil, fmt.Errorf("authority: Kubernetes NATS Secret user differs from configured principal custody")
 		}
 		result.Bindings = append(result.Bindings, CredentialSourceBinding{
 			HolderID: holder.ID, Account: entries[0].Account, Identity: identity,

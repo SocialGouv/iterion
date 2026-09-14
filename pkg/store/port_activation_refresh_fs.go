@@ -26,8 +26,8 @@ func (s *FilesystemRunStore) DisablePortActivation(ctx context.Context, expected
 	if err != nil {
 		return nil, err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -65,8 +65,8 @@ func (s *FilesystemRunStore) ClaimPortActivationRefresh(ctx context.Context, pol
 	if err != nil {
 		return nil, err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -102,8 +102,8 @@ func (s *FilesystemRunStore) RenewPortActivation(ctx context.Context, renewal Po
 	if err != nil {
 		return nil, err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -260,8 +260,8 @@ func (s *FilesystemRunStore) RenewPortActivationWithProof(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return nil, err
 	}

@@ -31,24 +31,24 @@ func (c CredentialSecretKey) Value() []byte    { return bytes.Clone(c.value) }
 func (c CredentialSecretKey) Identity() (string, error) {
 	if len(c.value) == 0 || len(c.value) > maxCredentialURLBytes ||
 		strings.TrimSpace(string(c.value)) != string(c.value) || strings.Contains(string(c.value), ",") {
-		return "", fmt.Errorf("Kubernetes NATS credential URL is malformed")
+		return "", fmt.Errorf("authority: Kubernetes NATS credential URL is malformed")
 	}
 	parsed, err := url.Parse(string(c.value))
 	if err != nil || parsed == nil || parsed.Scheme != "nats" && parsed.Scheme != "tls" ||
 		parsed.Hostname() == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.User == nil || parsed.User.Username() == "" {
-		return "", fmt.Errorf("Kubernetes NATS credential URL has unsupported authentication")
+		return "", fmt.Errorf("authority: Kubernetes NATS credential URL has unsupported authentication")
 	}
 	password, ok := parsed.User.Password()
 	if !ok || password == "" {
-		return "", fmt.Errorf("Kubernetes NATS credential URL requires named userinfo authentication")
+		return "", fmt.Errorf("authority: Kubernetes NATS credential URL requires named userinfo authentication")
 	}
 	return parsed.User.Username(), nil
 }
 
 func ReadCredentialSecretKey(ctx context.Context, kubectlBinary, kubeContext, namespace, name, key string) (*CredentialSecretKey, error) {
 	if kubectlBinary == "" || !dnsLabel(namespace) || !dnsSubdomain(name) || !validSecretDataKey(key) {
-		return nil, fmt.Errorf("Kubernetes NATS credential requires a literal namespace, Secret name and key")
+		return nil, fmt.Errorf("authority: Kubernetes NATS credential requires a literal namespace, Secret name and key")
 	}
 	args := make([]string, 0, 9)
 	if kubeContext != "" {
@@ -57,7 +57,7 @@ func ReadCredentialSecretKey(ctx context.Context, kubectlBinary, kubeContext, na
 	args = append(args, "--namespace", namespace, "get", "secret", name, "-o", "json")
 	output, err := runKubectl(ctx, kubectlBinary, args, maxSecretResponse)
 	if err != nil {
-		return nil, fmt.Errorf("Kubernetes NATS credential Secret could not be read")
+		return nil, fmt.Errorf("authority: Kubernetes NATS credential Secret could not be read")
 	}
 	var document struct {
 		APIVersion string `json:"apiVersion"`
@@ -75,15 +75,15 @@ func ReadCredentialSecretKey(ctx context.Context, kubectlBinary, kubeContext, na
 		document.APIVersion != "v1" || document.Kind != "Secret" || document.Type != "Opaque" ||
 		document.Metadata.Namespace != namespace || document.Metadata.Name != name ||
 		document.Metadata.UID == "" || document.Metadata.ResourceVersion == "" {
-		return nil, fmt.Errorf("Kubernetes NATS credential Secret identity or shape is unsupported")
+		return nil, fmt.Errorf("authority: Kubernetes NATS credential Secret identity or shape is unsupported")
 	}
 	encoded, ok := document.Data[key]
 	if !ok || len(encoded) > base64.StdEncoding.EncodedLen(maxCredentialURLBytes) {
-		return nil, fmt.Errorf("Kubernetes NATS credential Secret is missing a bounded key")
+		return nil, fmt.Errorf("authority: Kubernetes NATS credential Secret is missing a bounded key")
 	}
 	value, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil || len(value) == 0 || len(value) > maxCredentialURLBytes {
-		return nil, fmt.Errorf("Kubernetes NATS credential Secret has malformed key data")
+		return nil, fmt.Errorf("authority: Kubernetes NATS credential Secret has malformed key data")
 	}
 	credential := &CredentialSecretKey{Namespace: namespace, Name: name, Key: key,
 		UID: document.Metadata.UID, ResourceVersion: document.Metadata.ResourceVersion, value: value}
@@ -98,10 +98,14 @@ func validSecretDataKey(key string) bool {
 		return false
 	}
 	for _, c := range key {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
-			c == '-' || c == '_' || c == '.') {
+		if !validSecretDataKeyRune(c) {
 			return false
 		}
 	}
 	return true
+}
+
+func validSecretDataKeyRune(c rune) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		c == '-' || c == '_' || c == '.'
 }

@@ -79,7 +79,7 @@ func TestEpochRolloutOldRunnerDefersToNewRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload, jetstream.WithMsgID(runID)); err != nil {
+	if _, err := conn.JetStream().Publish(ctx, conn.RunSubject(), payload, jetstream.WithMsgID(runID)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	cons, err := conn.NewConsumer(ctx)
@@ -159,7 +159,7 @@ func TestEpochRolloutFinalDeliveryIsRecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload, jetstream.WithMsgID(runID)); err != nil {
+	if _, err := conn.JetStream().Publish(ctx, conn.RunSubject(), payload, jetstream.WithMsgID(runID)); err != nil {
 		t.Fatalf("publish future-epoch payload: %v", err)
 	}
 	cons, err := conn.NewConsumer(ctx)
@@ -233,6 +233,8 @@ func TestRunnerEpochHighWaterRejectsLiveRegression(t *testing.T) {
 		URL:             uri,
 		StreamName:      "ITERION_RUNS_EPOCH_TEST_" + suffix,
 		DLQStream:       "ITERION_RUNS_EPOCH_DLQ_TEST_" + suffix,
+		RunSubject:      "iterion.test.runs." + suffix,
+		DLQSubject:      "iterion.test.runs.dlq." + suffix,
 		KVBucket:        "test-epoch-run-locks-" + suffix,
 		RolloutKVBucket: "test-epoch-high-water-" + suffix,
 		ConsumerName:    "test-epoch-runners-" + suffix,
@@ -303,12 +305,16 @@ func schemaRolloutConn(t *testing.T, uri string) (*natsq.Conn, string) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	stream := "ITERION_RUNS_TEST_" + suffix
 	dlq := "ITERION_RUNS_DLQ_TEST_" + suffix
+	runSubject := "iterion.test.runs." + suffix
+	dlqSubject := "iterion.test.runs.dlq." + suffix
 	kv := "test-run-locks-" + suffix
 	rolloutKV := "test-runner-rollout-" + suffix
 	conn, err := natsq.Connect(context.Background(), natsq.Config{
 		URL:             uri,
 		StreamName:      stream,
 		DLQStream:       dlq,
+		RunSubject:      runSubject,
+		DLQSubject:      dlqSubject,
 		KVBucket:        kv,
 		RolloutKVBucket: rolloutKV,
 		ConsumerName:    "test-runners-" + suffix,
@@ -369,7 +375,7 @@ func publishForeignVersion(t *testing.T, conn *natsq.Conn, v int, runID, tenantI
 	}
 	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
-	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload, jetstream.WithMsgID(runID)); err != nil {
+	if _, err := conn.JetStream().Publish(ctx, conn.RunSubject(), payload, jetstream.WithMsgID(runID)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	return payload

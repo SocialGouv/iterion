@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -25,7 +26,7 @@ func TestNativeActivationMongoPublishesProofAndPolicyAtomically(t *testing.T) {
 	activation := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1,
 		ProofRevision: 1, Enabled: true, Scope: store.PortActivationDistributed,
 		StoreIdentity: identity, ProofDigest: proof.ProofDigest,
-		CapabilityDigest: strings.Repeat("b", 64), QueueVersion: 15,
+		CapabilityDigest: strings.Repeat("b", 64), QueueVersion: queue.SchemaVersion,
 		ConsumerAccessEvidence: "verified deployment authority observation", VerifiedAt: now,
 		ExpiresAt: now.Add(30 * time.Second)}
 	if err := s.SavePortDistributedActivation(t.Context(), 0, proof, activation); err != nil {
@@ -68,7 +69,7 @@ func TestNativeActivationMongoRenewsProofAndPolicyAtomically(t *testing.T) {
 	activation := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1,
 		ProofRevision: 1, Enabled: true, Scope: store.PortActivationDistributed,
 		StoreIdentity: identity, ProofDigest: proof.ProofDigest,
-		CapabilityDigest: strings.Repeat("b", 64), QueueVersion: 15,
+		CapabilityDigest: strings.Repeat("b", 64), QueueVersion: queue.SchemaVersion,
 		ConsumerAccessEvidence: "verified deployment authority observation", VerifiedAt: now,
 		ExpiresAt: now.Add(30 * time.Second)}
 	if err := s.SavePortDistributedActivation(t.Context(), 0, proof, activation); err != nil {
@@ -114,7 +115,7 @@ func TestNativeActivationMongoReactivatesAfterDisableWithRetainedProof(t *testin
 	activation := &store.PortActivation{Version: store.PortActivationVersion, Revision: 1,
 		ProofRevision: 1, Enabled: true, Scope: store.PortActivationDistributed,
 		StoreIdentity: identity, ProofDigest: proof.ProofDigest,
-		CapabilityDigest: strings.Repeat("b", 64), QueueVersion: 15,
+		CapabilityDigest: strings.Repeat("b", 64), QueueVersion: queue.SchemaVersion,
 		ConsumerAccessEvidence: "verified deployment authority observation", VerifiedAt: now,
 		ExpiresAt: now.Add(30 * time.Second)}
 	if err := s.SavePortDistributedActivation(t.Context(), 0, proof, activation); err != nil {

@@ -144,7 +144,7 @@ func (r Record) GoString() string { return r.String() }
 // only source validation; callers must not turn a parsed Record into a proof.
 func ParseRecord(source SecretSource) (*Record, error) {
 	if len(source.material) == 0 || len(source.material) > maxAuthorityMaterial {
-		return nil, fmt.Errorf("Kubernetes authority record is missing or oversized")
+		return nil, fmt.Errorf("authority: Kubernetes authority record is missing or oversized")
 	}
 	if err := rejectDuplicateKeys(source.material); err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func ParseRecord(source SecretSource) (*Record, error) {
 	decoder := json.NewDecoder(bytes.NewReader(source.material))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF {
-		return nil, fmt.Errorf("Kubernetes authority record has an unsupported shape")
+		return nil, fmt.Errorf("authority: Kubernetes authority record has an unsupported shape")
 	}
 	if err := record.validate(); err != nil {
 		return nil, err
@@ -170,12 +170,12 @@ func (r *Record) validate() error {
 		len(r.BuildApprovals) == 0 || len(r.BuildApprovals) > 32 ||
 		len(r.Issuers) == 0 || len(r.Issuers) > 64 || len(r.PermittedWriters) == 0 || len(r.PermittedWriters) > 32 ||
 		r.Queue.Validate() != nil {
-		return fmt.Errorf("Kubernetes authority record is incomplete or outside the supported profile")
+		return fmt.Errorf("authority: Kubernetes authority record is incomplete or outside the supported profile")
 	}
 	namespaces := make(map[string]bool, len(r.Namespaces))
 	for _, namespace := range r.Namespaces {
 		if !dnsLabel(namespace) || namespaces[namespace] {
-			return fmt.Errorf("Kubernetes authority record has an invalid namespace inventory")
+			return fmt.Errorf("authority: Kubernetes authority record has an invalid namespace inventory")
 		}
 		namespaces[namespace] = true
 	}
@@ -188,7 +188,7 @@ func (r *Record) validate() error {
 			brokers[broker.ServerID] || brokerNames[broker.ServerName] || brokerPods[pod] ||
 			!namespaces[broker.Namespace] || !dnsSubdomain(broker.PodName) || !dnsLabel(broker.Container) ||
 			!imageDigest(broker.ImageDigest) || !absoluteConfigPath(broker.ConfigPath) || broker.sources.Validate() != nil {
-			return fmt.Errorf("Kubernetes authority record has an invalid broker inventory")
+			return fmt.Errorf("authority: Kubernetes authority record has an invalid broker inventory")
 		}
 		brokers[broker.ServerID] = true
 		brokerNames[broker.ServerName] = true
@@ -199,26 +199,26 @@ func (r *Record) validate() error {
 		if !boundedID(holder.ID) || holders[holder.ID] || !imageDigest(holder.ImageDigest) ||
 			!sha256Hex(holder.BuildDigest) || !oneOf(holder.AccessScope, "server", "runner", "cli", "automation", "authority") ||
 			!boundedID(holder.CredentialRef) {
-			return fmt.Errorf("Kubernetes authority record has an invalid holder inventory")
+			return fmt.Errorf("authority: Kubernetes authority record has an invalid holder inventory")
 		}
 		switch holder.Kind {
 		case "kubernetes":
 			if !namespaces[holder.Namespace] || !oneOf(holder.WorkloadKind,
 				"Pod", "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Job", "CronJob", "ReplicationController") ||
 				!dnsSubdomain(holder.WorkloadName) || !dnsLabel(holder.Container) || !dnsSubdomain(holder.ServiceAccount) {
-				return fmt.Errorf("Kubernetes authority record has an incomplete workload holder")
+				return fmt.Errorf("authority: Kubernetes authority record has an incomplete workload holder")
 			}
 			refNamespace, valid := kubeSecretRefNamespace(holder.CredentialRef)
 			if !valid || refNamespace != holder.Namespace {
-				return fmt.Errorf("Kubernetes authority workload credential reference is unsupported")
+				return fmt.Errorf("authority: Kubernetes authority workload credential reference is unsupported")
 			}
 		case "cli", "automation":
 			if holder.Namespace != "" || holder.WorkloadKind != "" || holder.WorkloadName != "" ||
 				holder.Container != "" || holder.ServiceAccount != "" {
-				return fmt.Errorf("Kubernetes authority record mixes external and workload holders")
+				return fmt.Errorf("authority: Kubernetes authority record mixes external and workload holders")
 			}
 		default:
-			return fmt.Errorf("Kubernetes authority record has an unsupported holder kind")
+			return fmt.Errorf("authority: Kubernetes authority record has an unsupported holder kind")
 		}
 		holders[holder.ID] = true
 	}
@@ -227,26 +227,26 @@ func (r *Record) validate() error {
 		if !imageDigest(approval.ImageDigest) || !sha256Hex(approval.BuildDigest) ||
 			!sha256Hex(approval.CapabilityDigest) || approval.QueueVersion != queue.SchemaVersion ||
 			approvedImages[approval.ImageDigest] {
-			return fmt.Errorf("Kubernetes authority record has an invalid tested-build approval")
+			return fmt.Errorf("authority: Kubernetes authority record has an invalid tested-build approval")
 		}
 		approvedImages[approval.ImageDigest] = true
 	}
 	issuers := make(map[string]bool, len(r.Issuers))
 	for _, issuer := range r.Issuers {
 		if !boundedID(issuer.ID) || issuers[issuer.ID] {
-			return fmt.Errorf("Kubernetes authority record has an invalid issuer inventory")
+			return fmt.Errorf("authority: Kubernetes authority record has an invalid issuer inventory")
 		}
 		switch issuer.Kind {
 		case "kubernetes":
 			if !namespaces[issuer.Namespace] || !dnsSubdomain(issuer.ServiceAccount) || issuer.Identity != "" {
-				return fmt.Errorf("Kubernetes authority record has an incomplete Kubernetes issuer")
+				return fmt.Errorf("authority: Kubernetes authority record has an incomplete Kubernetes issuer")
 			}
 		case "external":
 			if issuer.Namespace != "" || issuer.ServiceAccount != "" || !boundedID(issuer.Identity) {
-				return fmt.Errorf("Kubernetes authority record mixes external and Kubernetes issuers")
+				return fmt.Errorf("authority: Kubernetes authority record mixes external and Kubernetes issuers")
 			}
 		default:
-			return fmt.Errorf("Kubernetes authority record has an unsupported issuer kind")
+			return fmt.Errorf("authority: Kubernetes authority record has an unsupported issuer kind")
 		}
 		issuers[issuer.ID] = true
 	}
@@ -254,19 +254,19 @@ func (r *Record) validate() error {
 	for _, writer := range r.PermittedWriters {
 		key := [3]string{writer.Kind, writer.Namespace, writer.Name}
 		if writers[key] || !boundedID(writer.Name) {
-			return fmt.Errorf("Kubernetes authority record has invalid permitted writers")
+			return fmt.Errorf("authority: Kubernetes authority record has invalid permitted writers")
 		}
 		switch writer.Kind {
 		case "service_account":
 			if !namespaces[writer.Namespace] || !dnsSubdomain(writer.Name) {
-				return fmt.Errorf("Kubernetes authority record has unsupported writer identity")
+				return fmt.Errorf("authority: Kubernetes authority record has unsupported writer identity")
 			}
 		case "user", "group":
 			if writer.Namespace != "" {
-				return fmt.Errorf("Kubernetes authority record has unsupported writer identity")
+				return fmt.Errorf("authority: Kubernetes authority record has unsupported writer identity")
 			}
 		default:
-			return fmt.Errorf("Kubernetes authority record has unsupported writer kind")
+			return fmt.Errorf("authority: Kubernetes authority record has unsupported writer kind")
 		}
 		writers[key] = true
 	}
@@ -278,13 +278,13 @@ func (r *Record) validate() error {
 		if !boundedID(credential.Account) || !boundedID(credential.Identity) || credentials[key] ||
 			len(credential.HolderIDs) == 0 || len(credential.HolderIDs) > 64 ||
 			len(credential.IssuerIDs) == 0 || len(credential.IssuerIDs) > 32 {
-			return fmt.Errorf("Kubernetes authority record has an invalid credential inventory")
+			return fmt.Errorf("authority: Kubernetes authority record has an invalid credential inventory")
 		}
 		credentials[key] = true
 		seenHolders := make(map[string]bool, len(credential.HolderIDs))
 		for _, id := range credential.HolderIDs {
 			if !holders[id] || seenHolders[id] {
-				return fmt.Errorf("Kubernetes authority record has ambiguous or unaccounted holders")
+				return fmt.Errorf("authority: Kubernetes authority record has ambiguous or unaccounted holders")
 			}
 			seenHolders[id] = true
 			usedHolders[id] = true
@@ -292,14 +292,14 @@ func (r *Record) validate() error {
 		seenIssuers := make(map[string]bool, len(credential.IssuerIDs))
 		for _, id := range credential.IssuerIDs {
 			if !issuers[id] || seenIssuers[id] {
-				return fmt.Errorf("Kubernetes authority record has ambiguous or unaccounted issuers")
+				return fmt.Errorf("authority: Kubernetes authority record has ambiguous or unaccounted issuers")
 			}
 			seenIssuers[id] = true
 			usedIssuers[id] = true
 		}
 	}
 	if len(usedHolders) != len(holders) || len(usedIssuers) != len(issuers) {
-		return fmt.Errorf("Kubernetes authority record leaves holder or issuer entries unaccounted")
+		return fmt.Errorf("authority: Kubernetes authority record leaves holder or issuer entries unaccounted")
 	}
 	return nil
 }
@@ -309,12 +309,16 @@ func boundedID(value string) bool {
 		return false
 	}
 	for _, c := range value {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
-			c == '-' || c == '_' || c == '.' || c == '/' || c == ':') {
+		if !boundedIDRune(c) {
 			return false
 		}
 	}
 	return true
+}
+
+func boundedIDRune(c rune) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		c == '-' || c == '_' || c == '.' || c == '/' || c == ':'
 }
 
 func oneOf(value string, allowed ...string) bool {
@@ -431,11 +435,11 @@ func rejectDuplicateKeys(raw []byte) error {
 	var walk func(int, recordKeyScope) error
 	walk = func(depth int, scope recordKeyScope) error {
 		if depth > 64 {
-			return fmt.Errorf("Kubernetes authority record exceeds supported depth")
+			return fmt.Errorf("authority: Kubernetes authority record exceeds supported depth")
 		}
 		token, err := decoder.Token()
 		if err != nil {
-			return fmt.Errorf("Kubernetes authority record contains invalid JSON")
+			return fmt.Errorf("authority: Kubernetes authority record contains invalid JSON")
 		}
 		delim, ok := token.(json.Delim)
 		if !ok {
@@ -448,7 +452,7 @@ func rejectDuplicateKeys(raw []byte) error {
 				key, err := decoder.Token()
 				name, ok := key.(string)
 				if err != nil || !ok || keys[name] {
-					return fmt.Errorf("Kubernetes authority record has duplicate or invalid keys")
+					return fmt.Errorf("authority: Kubernetes authority record has duplicate or invalid keys")
 				}
 				keys[name] = true
 				child := keyScalar
@@ -456,7 +460,7 @@ func rejectDuplicateKeys(raw []byte) error {
 					var known bool
 					child, known = recordKeys[scope][name]
 					if !known {
-						return fmt.Errorf("Kubernetes authority record has duplicate or unsupported keys")
+						return fmt.Errorf("authority: Kubernetes authority record has duplicate or unsupported keys")
 					}
 				}
 				if err := walk(depth+1, child); err != nil {
@@ -470,10 +474,10 @@ func rejectDuplicateKeys(raw []byte) error {
 				}
 			}
 		default:
-			return fmt.Errorf("Kubernetes authority record contains invalid delimiters")
+			return fmt.Errorf("authority: Kubernetes authority record contains invalid delimiters")
 		}
 		if _, err := decoder.Token(); err != nil {
-			return fmt.Errorf("Kubernetes authority record contains invalid JSON")
+			return fmt.Errorf("authority: Kubernetes authority record contains invalid JSON")
 		}
 		return nil
 	}
@@ -481,7 +485,7 @@ func rejectDuplicateKeys(raw []byte) error {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return fmt.Errorf("Kubernetes authority record contains trailing content")
+		return fmt.Errorf("authority: Kubernetes authority record contains trailing content")
 	}
 	return nil
 }

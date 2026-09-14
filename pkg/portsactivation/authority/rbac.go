@@ -61,12 +61,12 @@ type RBACBinding struct {
 // bindings and operator assertions before producing a proof.
 func ReadRBACSnapshot(ctx context.Context, kubectlBinary, kubeContext string, namespaces []string) (*RBACSnapshot, error) {
 	if kubectlBinary == "" || len(namespaces) == 0 || len(namespaces) > 16 {
-		return nil, fmt.Errorf("Kubernetes RBAC inventory requires a bounded namespace scope")
+		return nil, fmt.Errorf("authority: Kubernetes RBAC inventory requires a bounded namespace scope")
 	}
 	seenNamespaces := make(map[string]bool)
 	for _, namespace := range namespaces {
 		if !dnsLabel(namespace) || seenNamespaces[namespace] {
-			return nil, fmt.Errorf("Kubernetes RBAC inventory has an invalid namespace")
+			return nil, fmt.Errorf("authority: Kubernetes RBAC inventory has an invalid namespace")
 		}
 		seenNamespaces[namespace] = true
 	}
@@ -85,7 +85,7 @@ func ReadRBACSnapshot(ctx context.Context, kubectlBinary, kubeContext string, na
 		args = append(args, "get", resources, "-o", "json")
 		output, err := runKubectl(ctx, kubectlBinary, args, maxRBACResponse)
 		if err != nil {
-			return fmt.Errorf("Kubernetes RBAC inventory could not be read")
+			return fmt.Errorf("authority: Kubernetes RBAC inventory could not be read")
 		}
 		var list struct {
 			APIVersion string `json:"apiVersion"`
@@ -99,7 +99,7 @@ func ReadRBACSnapshot(ctx context.Context, kubectlBinary, kubeContext string, na
 		if decoder.Decode(&list) != nil || decoder.Decode(new(any)) != io.EOF || list.APIVersion != "v1" ||
 			list.Kind != "List" || list.Items == nil || list.Metadata.Continue != "" ||
 			len(list.Items) > maxRBACObjects-len(seen) {
-			return fmt.Errorf("Kubernetes RBAC inventory returned an incomplete or oversized list")
+			return fmt.Errorf("authority: Kubernetes RBAC inventory returned an incomplete or oversized list")
 		}
 		for _, raw := range list.Items {
 			kind, name, role, binding, err := parseRBACObject(raw, namespace)
@@ -108,7 +108,7 @@ func ReadRBACSnapshot(ctx context.Context, kubectlBinary, kubeContext string, na
 			}
 			key := [3]string{kind, namespace, name}
 			if seen[key] {
-				return fmt.Errorf("Kubernetes RBAC inventory contains duplicate objects")
+				return fmt.Errorf("authority: Kubernetes RBAC inventory contains duplicate objects")
 			}
 			seen[key] = true
 			if role != nil {
@@ -165,20 +165,20 @@ func parseRBACObject(raw json.RawMessage, namespace string) (string, string, *RB
 	if json.Unmarshal(raw, &item) != nil || item.APIVersion != "rbac.authorization.k8s.io/v1" ||
 		item.Metadata.Namespace != namespace || !rbacName(item.Metadata.Name) ||
 		item.Metadata.UID == "" || item.Metadata.ResourceVersion == "" {
-		return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory contains an unidentified object")
+		return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory contains an unidentified object")
 	}
 	switch item.Kind {
 	case "Role", "ClusterRole":
 		if item.Kind == "Role" && namespace == "" || item.Kind == "ClusterRole" && namespace != "" ||
 			len(item.Rules) > 256 {
-			return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory has an unsupported role scope")
+			return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory has an unsupported role scope")
 		}
 		role := &RBACRole{Kind: item.Kind, Namespace: namespace, Name: item.Metadata.Name,
 			UID: item.Metadata.UID, ResourceVersion: item.Metadata.ResourceVersion,
 			Aggregated: len(item.AggregationRule) != 0 && string(item.AggregationRule) != "null"}
 		for _, rule := range item.Rules {
 			if len(rule.Verbs) == 0 {
-				return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory contains an incomplete policy rule")
+				return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory contains an incomplete policy rule")
 			}
 			role.Rules = append(role.Rules, RBACRule{APIGroups: rule.APIGroups, Resources: rule.Resources,
 				Verbs: rule.Verbs, ResourceNames: rule.ResourceNames, NonResourceURLs: rule.NonResourceURLs})
@@ -189,10 +189,10 @@ func parseRBACObject(raw json.RawMessage, namespace string) (string, string, *RB
 			item.RoleRef.APIGroup != "rbac.authorization.k8s.io" ||
 			!oneOf(item.RoleRef.Kind, "Role", "ClusterRole") || !rbacName(item.RoleRef.Name) ||
 			len(item.Subjects) > 256 {
-			return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory has an unsupported binding scope")
+			return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory has an unsupported binding scope")
 		}
 		if item.Kind == "ClusterRoleBinding" && item.RoleRef.Kind != "ClusterRole" {
-			return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory has a noncluster role binding")
+			return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory has a noncluster role binding")
 		}
 		for i := range item.Subjects {
 			subject := &item.Subjects[i]
@@ -201,7 +201,7 @@ func parseRBACObject(raw json.RawMessage, namespace string) (string, string, *RB
 			}
 			if !oneOf(subject.Kind, "User", "Group", "ServiceAccount") || subject.Name == "" ||
 				subject.Kind == "ServiceAccount" && (!dnsLabel(subject.Namespace) || !dnsSubdomain(subject.Name)) {
-				return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory contains an invalid subject")
+				return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory contains an invalid subject")
 			}
 		}
 		binding := &RBACBinding{Kind: item.Kind, Namespace: namespace, Name: item.Metadata.Name,
@@ -209,7 +209,7 @@ func parseRBACObject(raw json.RawMessage, namespace string) (string, string, *RB
 			Subjects: item.Subjects, RoleKind: item.RoleRef.Kind, RoleName: item.RoleRef.Name}
 		return item.Kind, item.Metadata.Name, nil, binding, nil
 	default:
-		return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory contains an unsupported kind")
+		return "", "", nil, nil, fmt.Errorf("authority: Kubernetes RBAC inventory contains an unsupported kind")
 	}
 }
 

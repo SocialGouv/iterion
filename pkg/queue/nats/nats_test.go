@@ -47,6 +47,12 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.DLQStream != StreamRunsDLQ {
 		t.Errorf("DLQStream: got %q want %q", got.DLQStream, StreamRunsDLQ)
 	}
+	if got.RunSubject != SubjectRuns {
+		t.Errorf("RunSubject: got %q want %q", got.RunSubject, SubjectRuns)
+	}
+	if got.DLQSubject != SubjectRunsDLQ {
+		t.Errorf("DLQSubject: got %q want %q", got.DLQSubject, SubjectRunsDLQ)
+	}
 	if got.KVBucket != KVRunLocks {
 		t.Errorf("KVBucket: got %q want %q", got.KVBucket, KVRunLocks)
 	}
@@ -97,6 +103,8 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		ConnectionName:      "iterion-explicit",
 		StreamName:          "X",
 		DLQStream:           "Y",
+		RunSubject:          "runs.explicit",
+		DLQSubject:          "runs.explicit.dlq",
 		KVBucket:            "Z",
 		RolloutKVBucket:     "R",
 		StreamReplicas:      3,
@@ -120,7 +128,7 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 
 func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
 	recorder := &recordingSchemaManager{}
-	cfg := applyDefaults(Config{StreamReplicas: 3})
+	cfg := applyDefaults(Config{StreamReplicas: 3, RunSubject: "runs.test", DLQSubject: "runs.test.dlq"})
 	if _, err := ensureSchema(context.Background(), recorder, cfg); err != nil {
 		t.Fatalf("ensureSchema: %v", err)
 	}
@@ -135,6 +143,12 @@ func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
 		delete(wantStreams, stream.Name)
 		if stream.Replicas != 3 {
 			t.Errorf("stream %s replicas: got %d want 3", stream.Name, stream.Replicas)
+		}
+		if stream.Name == cfg.StreamName && (len(stream.Subjects) != 1 || stream.Subjects[0] != cfg.RunSubject) {
+			t.Errorf("run stream subjects: got %v want [%s]", stream.Subjects, cfg.RunSubject)
+		}
+		if stream.Name == cfg.DLQStream && (len(stream.Subjects) != 1 || stream.Subjects[0] != cfg.DLQSubject) {
+			t.Errorf("DLQ stream subjects: got %v want [%s]", stream.Subjects, cfg.DLQSubject)
 		}
 	}
 	if len(wantStreams) != 0 {

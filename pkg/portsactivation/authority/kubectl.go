@@ -16,7 +16,7 @@ type boundedKubectlOutput struct {
 
 func (b *boundedKubectlOutput) Write(p []byte) (int, error) {
 	if len(p) > b.limit-b.buffer.Len() {
-		return 0, errors.New("Kubernetes response exceeds supported size")
+		return 0, errors.New("authority: Kubernetes response exceeds supported size")
 	}
 	return b.buffer.Write(p)
 }
@@ -26,7 +26,7 @@ func (b *boundedKubectlOutput) Write(p []byte) (int, error) {
 // exposes stderr because kubectl diagnostics can quote Secret or env content.
 func runKubectl(ctx context.Context, kubectlBinary string, args []string, limit int) ([]byte, error) {
 	if kubectlBinary == "" || limit <= 0 {
-		return nil, fmt.Errorf("Kubernetes read transport is unavailable")
+		return nil, fmt.Errorf("authority: Kubernetes read transport is unavailable")
 	}
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -35,7 +35,7 @@ func runKubectl(ctx context.Context, kubectlBinary string, args []string, limit 
 	output := &boundedKubectlOutput{limit: limit}
 	command.Stdout = output
 	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("Kubernetes read transport failed")
+		return nil, fmt.Errorf("authority: Kubernetes read transport failed")
 	}
 	return bytes.Clone(output.buffer.Bytes()), nil
 }

@@ -392,8 +392,8 @@ func (s *FilesystemRunStore) LoadPortDistributedProof(ctx context.Context) (*Por
 	if err != nil {
 		return nil, err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -411,8 +411,8 @@ func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expec
 	if err != nil {
 		return err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return err
 	}
@@ -498,7 +498,7 @@ func (s *FilesystemRunStore) SavePortDistributedProofCandidate(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	proof.Snapshot, err = canonicalPortSnapshot(proof.Snapshot)
 	if err != nil || proof.Validate() != nil {
 		return fmt.Errorf("%w: invalid distributed proof candidate", ErrPortActivation)
@@ -520,7 +520,7 @@ func (s *FilesystemRunStore) ClearPortDistributedProofCandidate(ctx context.Cont
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	if err := os.Remove(s.portDistributedProofCandidatePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -535,8 +535,8 @@ func (s *FilesystemRunStore) LoadPortActivation(ctx context.Context) (*PortActiv
 	if err != nil {
 		return nil, err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -557,8 +557,8 @@ func (s *FilesystemRunStore) SavePortActivation(ctx context.Context, expectedRev
 	if err != nil {
 		return err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return err
 	}
@@ -605,8 +605,8 @@ func (s *FilesystemRunStore) SavePortDistributedActivation(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	defer activation.Unlock()
-	defer proofLock.Unlock()
+	defer func() { _ = activation.Unlock() }()
+	defer func() { _ = proofLock.Unlock() }()
 	if err := s.recoverDistributedStateLocked(ctx); err != nil {
 		return err
 	}

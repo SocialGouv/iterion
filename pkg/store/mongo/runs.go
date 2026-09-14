@@ -349,10 +349,14 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 			SchemaVersion  int               `bson:"v"`
 		}
 		if ferr := s.collectionForRun(r.ID, s.runs).FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
-			options.FindOne().SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})).Decode(&cur); ferr == nil &&
-			cur.MergeStatus == store.MergeStatusMerging {
-			r.MergeStatus = cur.MergeStatus
-			r.MergeClaimedAt = cur.MergeClaimedAt
+			options.FindOne().SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1, "v": 1})).Decode(&cur); ferr == nil {
+			if cur.SchemaVersion > schemaVersionForRun(r.ID) {
+				return fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", r.ID, cur.SchemaVersion)
+			}
+			if cur.MergeStatus == store.MergeStatusMerging {
+				r.MergeStatus = cur.MergeStatus
+				r.MergeClaimedAt = cur.MergeClaimedAt
+			}
 		}
 	}
 	// The notDeleted predicate closes the guard's TOCTOU window: a

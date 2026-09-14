@@ -338,7 +338,7 @@ func TestHeldLockFinalDeliveryArchivesOnNATS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload); err != nil {
+	if _, err := conn.JetStream().Publish(ctx, conn.RunSubject(), payload); err != nil {
 		t.Fatal(err)
 	}
 	consumer, err := conn.NewConsumer(ctx)

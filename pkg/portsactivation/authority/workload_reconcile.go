@@ -75,7 +75,7 @@ type credentialContainer struct {
 func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadReconciliation, error) {
 	if record == nil || record.validate() != nil || snapshot == nil ||
 		!sameStrings(record.Namespaces, snapshot.Namespaces) || len(snapshot.Workloads) > maxWorkloads {
-		return nil, fmt.Errorf("Kubernetes workload reconciliation requires matching bounded authority scope")
+		return nil, fmt.Errorf("authority: Kubernetes workload reconciliation requires matching bounded authority scope")
 	}
 	workloads := make(map[workloadKey]Workload, len(snapshot.Workloads))
 	for _, workload := range snapshot.Workloads {
@@ -83,7 +83,7 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 		if !slices.Contains(record.Namespaces, workload.Namespace) || workloads[key].UID != "" ||
 			workload.UID == "" || !supportedWorkloadVersion(workload.Kind, workload.APIVersion) ||
 			len(workload.podSpec) == 0 {
-			return nil, fmt.Errorf("Kubernetes workload reconciliation has an invalid object inventory")
+			return nil, fmt.Errorf("authority: Kubernetes workload reconciliation has an invalid object inventory")
 		}
 		workloads[key] = workload
 	}
@@ -95,7 +95,7 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 		}
 		key := workloadKey{holder.Namespace, holder.WorkloadKind, holder.WorkloadName}
 		if workloads[key].UID == "" {
-			return nil, fmt.Errorf("Kubernetes authority holder has no matching declared or running workload")
+			return nil, fmt.Errorf("authority: Kubernetes authority holder has no matching declared or running workload")
 		}
 		holders[key] = append(holders[key], holder)
 		secretName := strings.Split(strings.Split(holder.CredentialRef, ":")[0], "/")
@@ -106,7 +106,7 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 	for _, workload := range snapshot.Workloads {
 		var spec podCredentialSpec
 		if json.Unmarshal(workload.podSpec, &spec) != nil || len(spec.Containers) == 0 {
-			return nil, fmt.Errorf("Kubernetes workload reconciliation has an unreadable pod specification")
+			return nil, fmt.Errorf("authority: Kubernetes workload reconciliation has an unreadable pod specification")
 		}
 		if spec.ServiceAccountName == "" {
 			spec.ServiceAccountName = "default"
@@ -121,11 +121,11 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 		}
 		for _, volume := range spec.Volumes {
 			if knownSecrets[workload.Namespace+"/"+volume.Secret.SecretName] && volume.Secret.SecretName != "" {
-				return nil, fmt.Errorf("Kubernetes NATS credential is mounted outside the supported explicit environment path")
+				return nil, fmt.Errorf("authority: Kubernetes NATS credential is mounted outside the supported explicit environment path")
 			}
 			for _, source := range volume.Projected.Sources {
 				if knownSecrets[workload.Namespace+"/"+source.Secret.Name] && source.Secret.Name != "" {
-					return nil, fmt.Errorf("Kubernetes NATS credential is projected outside the supported explicit environment path")
+					return nil, fmt.Errorf("authority: Kubernetes NATS credential is projected outside the supported explicit environment path")
 				}
 			}
 		}
@@ -133,30 +133,30 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 		for _, container := range containers {
 			for _, arg := range append(slices.Clone(container.Command), container.Args...) {
 				if strings.Contains(arg, "nats://") || strings.Contains(arg, "tls://") {
-					return nil, fmt.Errorf("Kubernetes NATS credential appears in literal launch arguments")
+					return nil, fmt.Errorf("authority: Kubernetes NATS credential appears in literal launch arguments")
 				}
 			}
 			for _, envFrom := range container.EnvFrom {
 				if envFrom.SecretRef != nil && knownSecrets[workload.Namespace+"/"+envFrom.SecretRef.Name] {
-					return nil, fmt.Errorf("Kubernetes NATS credential is imported through unsupported envFrom")
+					return nil, fmt.Errorf("authority: Kubernetes NATS credential is imported through unsupported envFrom")
 				}
 			}
 			seenEnv := make(map[string]bool)
 			for _, env := range container.Env {
 				monitored := env.Name == ordinaryNATSEnv || env.Name == systemNATSEnv
 				if monitored && seenEnv[env.Name] {
-					return nil, fmt.Errorf("Kubernetes NATS environment contains duplicate credential variables")
+					return nil, fmt.Errorf("authority: Kubernetes NATS environment contains duplicate credential variables")
 				}
 				seenEnv[env.Name] = true
 				ref := env.ValueFrom.SecretKeyRef
 				if !monitored {
 					if ref != nil && knownSecrets[workload.Namespace+"/"+ref.Name] {
-						return nil, fmt.Errorf("Kubernetes NATS credential is supplied under an unreviewed variable")
+						return nil, fmt.Errorf("authority: Kubernetes NATS credential is supplied under an unreviewed variable")
 					}
 					continue
 				}
 				if env.Value != "" || ref == nil || ref.Optional || !dnsSubdomain(ref.Name) || ref.Key == "" {
-					return nil, fmt.Errorf("Kubernetes NATS URL requires a mandatory named SecretKeyRef")
+					return nil, fmt.Errorf("authority: Kubernetes NATS URL requires a mandatory named SecretKeyRef")
 				}
 				credentialRef := workload.Namespace + "/" + ref.Name + ":" + ref.Key
 				var selected *CredentialHolder
@@ -170,13 +170,13 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 						holder.Container == container.Name && holder.ImageDigest == container.Image &&
 						holder.ServiceAccount == spec.ServiceAccountName {
 						if selected != nil {
-							return nil, fmt.Errorf("Kubernetes NATS credential matches ambiguous holder declarations")
+							return nil, fmt.Errorf("authority: Kubernetes NATS credential matches ambiguous holder declarations")
 						}
 						selected = holder
 					}
 				}
 				if selected == nil {
-					return nil, fmt.Errorf("Kubernetes NATS credential has an unknown or incompatible workload holder")
+					return nil, fmt.Errorf("authority: Kubernetes NATS credential has an unknown or incompatible workload holder")
 				}
 				key := [2]string{workload.UID, selected.ID}
 				matched[key] = true
@@ -184,11 +184,11 @@ func ReconcileWorkloads(record *Record, snapshot *WorkloadSnapshot) (*WorkloadRe
 			}
 		}
 		if len(spec.EphemeralContainers) != 0 && len(candidates) != 0 {
-			return nil, fmt.Errorf("Kubernetes authority workload has an unreviewed ephemeral container")
+			return nil, fmt.Errorf("authority: Kubernetes authority workload has an unreviewed ephemeral container")
 		}
 		for _, holder := range holders[workloadKey{workload.Namespace, workload.Kind, workload.Name}] {
 			if !matched[[2]string{workload.UID, holder.ID}] {
-				return nil, fmt.Errorf("Kubernetes declared credential holder lacks its explicit SecretKeyRef")
+				return nil, fmt.Errorf("authority: Kubernetes declared credential holder lacks its explicit SecretKeyRef")
 			}
 		}
 	}
@@ -206,7 +206,7 @@ func workloadAncestors(workload Workload, index map[workloadKey]Workload) ([]Wor
 	seen := make(map[string]bool)
 	for depth := 0; depth < 8; depth++ {
 		if seen[workload.UID] {
-			return nil, fmt.Errorf("Kubernetes workload ownership contains a cycle")
+			return nil, fmt.Errorf("authority: Kubernetes workload ownership contains a cycle")
 		}
 		seen[workload.UID] = true
 		ancestors = append(ancestors, workload)
@@ -214,7 +214,7 @@ func workloadAncestors(workload Workload, index map[workloadKey]Workload) ([]Wor
 		for i := range workload.Owners {
 			if workload.Owners[i].Controller {
 				if owner != nil {
-					return nil, fmt.Errorf("Kubernetes workload has ambiguous controlling owners")
+					return nil, fmt.Errorf("authority: Kubernetes workload has ambiguous controlling owners")
 				}
 				owner = &workload.Owners[i]
 			}
@@ -224,11 +224,11 @@ func workloadAncestors(workload Workload, index map[workloadKey]Workload) ([]Wor
 		}
 		parent := index[workloadKey{workload.Namespace, owner.Kind, owner.Name}]
 		if parent.UID == "" || parent.UID != owner.UID || parent.APIVersion != owner.APIVersion {
-			return nil, fmt.Errorf("Kubernetes workload controlling owner is missing or changed")
+			return nil, fmt.Errorf("authority: Kubernetes workload controlling owner is missing or changed")
 		}
 		workload = parent
 	}
-	return nil, fmt.Errorf("Kubernetes workload ownership exceeds supported depth")
+	return nil, fmt.Errorf("authority: Kubernetes workload ownership exceeds supported depth")
 }
 
 func sameStrings(a, b []string) bool {

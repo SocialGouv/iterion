@@ -73,7 +73,7 @@ func alphanumeric(c byte) bool {
 // evidence before constructing any distributed activation proof.
 func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namespace, name string) (*SecretSource, error) {
 	if kubectlBinary == "" || !dnsLabel(namespace) || !dnsSubdomain(name) {
-		return nil, fmt.Errorf("Kubernetes authority requires a literal namespace and Secret name")
+		return nil, fmt.Errorf("authority: Kubernetes authority requires a literal namespace and Secret name")
 	}
 	args := make([]string, 0, 9)
 	if kubeContext != "" {
@@ -82,7 +82,7 @@ func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namesp
 	args = append(args, "--namespace", namespace, "get", "secret", name, "-o", "json")
 	output, err := runKubectl(ctx, kubectlBinary, args, maxSecretResponse)
 	if err != nil {
-		return nil, fmt.Errorf("Kubernetes authority Secret could not be read")
+		return nil, fmt.Errorf("authority: Kubernetes authority Secret could not be read")
 	}
 	var document struct {
 		APIVersion string `json:"apiVersion"`
@@ -100,15 +100,15 @@ func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namesp
 		document.APIVersion != "v1" || document.Kind != "Secret" || document.Type != "Opaque" ||
 		document.Metadata.Namespace != namespace || document.Metadata.Name != name ||
 		document.Metadata.UID == "" || document.Metadata.ResourceVersion == "" || len(document.Data) != 1 {
-		return nil, fmt.Errorf("Kubernetes authority Secret identity or shape is unsupported")
+		return nil, fmt.Errorf("authority: Kubernetes authority Secret identity or shape is unsupported")
 	}
 	encoded, ok := document.Data["authority.json"]
 	if !ok || len(encoded) > base64.StdEncoding.EncodedLen(maxAuthorityMaterial) {
-		return nil, fmt.Errorf("Kubernetes authority Secret is missing bounded material")
+		return nil, fmt.Errorf("authority: Kubernetes authority Secret is missing bounded material")
 	}
 	material, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil || len(material) == 0 || len(material) > maxAuthorityMaterial || !json.Valid(material) {
-		return nil, fmt.Errorf("Kubernetes authority Secret material is malformed")
+		return nil, fmt.Errorf("authority: Kubernetes authority Secret material is malformed")
 	}
 	return &SecretSource{Namespace: namespace, Name: name, UID: document.Metadata.UID,
 		ResourceVersion: document.Metadata.ResourceVersion, material: material}, nil

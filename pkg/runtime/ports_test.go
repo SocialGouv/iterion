@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/portsactivation"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -170,7 +171,7 @@ func activatePortsTestStore(t *testing.T, s store.RunStore) {
 	record := &store.PortActivation{Version: store.PortActivationVersion, ProofRevision: 1, Revision: 1, Enabled: true, Scope: scope, StoreIdentity: identity,
 		ProofDigest: strings.Repeat("a", 64), VerifiedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	if s.Root() == "" {
-		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, 15, "isolated disposable test consumer"
+		record.Scope, record.QueueVersion, record.ConsumerAccessEvidence = store.PortActivationDistributed, queue.SchemaVersion, "isolated disposable test consumer"
 		record.ExpiresAt = record.VerifiedAt.Add(store.PortDistributedProofMaxAge)
 	}
 	record.CapabilityDigest = portsactivation.CapabilityDigest(record.Scope)

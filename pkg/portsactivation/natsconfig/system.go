@@ -137,12 +137,16 @@ func systemBrokerName(value string) bool {
 		return false
 	}
 	for _, c := range value {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
-			c == '-' || c == '_' || c == '.' || c == '/' || c == ':') {
+		if !systemBrokerRune(c) {
 			return false
 		}
 	}
 	return true
+}
+
+func systemBrokerRune(c rune) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		c == '-' || c == '_' || c == '.' || c == '/' || c == ':'
 }
 
 // SystemConnection is a current broker observation. It can contradict a
@@ -208,9 +212,7 @@ func completeSystemConnections(serverID string, response *systemEnvelope[systemC
 			return nil, fmt.Errorf("NATS system CONNZ has an unidentified or duplicate connection")
 		}
 		seen[connection.CID] = true
-		connections = append(connections, SystemConnection{
-			CID: connection.CID, Account: connection.Account, User: connection.User, Name: connection.Name,
-		})
+		connections = append(connections, SystemConnection(connection))
 	}
 	return connections, nil
 }

@@ -54,7 +54,7 @@ func (s *Store) loadPortDistributedProof(ctx context.Context, id string) (*store
 	if err != nil {
 		return nil, err
 	}
-	if err := doc.PortDistributedProof.Validate(); err != nil {
+	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
 	return &doc.PortDistributedProof, nil
@@ -166,7 +166,7 @@ func (s *Store) SavePortDistributedActivation(ctx context.Context, expectedPolic
 			}
 			return nil, err
 		}
-		if err := currentActivation.PortActivation.Validate(); err != nil {
+		if err := currentActivation.Validate(); err != nil {
 			return nil, err
 		}
 		currentProof, err := s.loadPortDistributedProof(txctx, "current")
@@ -216,7 +216,7 @@ func (s *Store) LoadPortActivation(ctx context.Context) (*store.PortActivation, 
 	if err != nil {
 		return nil, err
 	}
-	if err := doc.PortActivation.Validate(); err != nil {
+	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
 	return &doc.PortActivation, nil
@@ -424,7 +424,7 @@ func (s *Store) updatePortActivation(ctx context.Context, filter, update bson.M)
 	if err != nil {
 		return nil, err
 	}
-	if err := doc.PortActivation.Validate(); err != nil {
+	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
 	return &doc.PortActivation, nil

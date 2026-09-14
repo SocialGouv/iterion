@@ -114,7 +114,8 @@ type PortFileSnapshot struct {
 }
 
 func (s *PortFileSnapshot) Close() error {
-	return errors.Join(s.File.Close(), os.Remove(s.File.Name()))
+	file := s.File
+	return errors.Join(file.Close(), os.Remove(file.Name()))
 }
 
 // PreparePortFile snapshots and verifies content before a backend can expose

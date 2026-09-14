@@ -24,7 +24,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 		authoritySecret.Namespace == "" || authoritySecret.Name == "" ||
 		authoritySecret.UID == "" || authoritySecret.ResourceVersion == "" ||
 		!slices.Contains(record.Namespaces, authoritySecret.Namespace) {
-		return nil, fmt.Errorf("Kubernetes RBAC boundary requires matching authority and inventory scope")
+		return nil, fmt.Errorf("authority: Kubernetes RBAC boundary requires matching authority and inventory scope")
 	}
 	roles := make(map[roleIdentity]RBACRole, len(snapshot.Roles))
 	for _, role := range snapshot.Roles {
@@ -32,7 +32,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 		if roles[key].UID != "" || role.UID == "" || role.ResourceVersion == "" ||
 			!oneOf(role.Kind, "Role", "ClusterRole") || role.Kind == "Role" &&
 			!slices.Contains(snapshot.Namespaces, role.Namespace) || role.Kind == "ClusterRole" && role.Namespace != "" {
-			return nil, fmt.Errorf("Kubernetes RBAC boundary has an incomplete role inventory")
+			return nil, fmt.Errorf("authority: Kubernetes RBAC boundary has an incomplete role inventory")
 		}
 		roles[key] = role
 	}
@@ -41,7 +41,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 		if holder.Kind == "kubernetes" {
 			if holder.Namespace == authoritySecret.Namespace && !oneOf(holder.AccessScope, "server", "authority") ||
 				holder.Namespace != authoritySecret.Namespace && holder.AccessScope == "authority" {
-				return nil, fmt.Errorf("Kubernetes worker shares the authority Secret namespace")
+				return nil, fmt.Errorf("authority: Kubernetes worker shares the authority Secret namespace")
 			}
 			if holder.Namespace != authoritySecret.Namespace {
 				workers[serviceAccountIdentity{holder.Namespace, holder.ServiceAccount}] = true
@@ -49,7 +49,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 		}
 	}
 	if len(workers) == 0 {
-		return nil, fmt.Errorf("Kubernetes RBAC boundary has no named worker identity")
+		return nil, fmt.Errorf("authority: Kubernetes RBAC boundary has no named worker identity")
 	}
 	permitted := make(map[[3]string]bool, len(record.PermittedWriters))
 	for _, writer := range record.PermittedWriters {
@@ -69,7 +69,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 			!oneOf(binding.Kind, "RoleBinding", "ClusterRoleBinding") ||
 			binding.Kind == "RoleBinding" && !slices.Contains(snapshot.Namespaces, binding.Namespace) ||
 			binding.Kind == "ClusterRoleBinding" && binding.Namespace != "" {
-			return nil, fmt.Errorf("Kubernetes RBAC boundary has an incomplete binding inventory")
+			return nil, fmt.Errorf("authority: Kubernetes RBAC boundary has an incomplete binding inventory")
 		}
 		seenBindings[key] = true
 		roleNamespace := binding.Namespace
@@ -78,7 +78,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 		}
 		role, exists := roles[roleIdentity{binding.RoleKind, roleNamespace, binding.RoleName}]
 		if !exists || role.Aggregated {
-			return nil, fmt.Errorf("Kubernetes RBAC boundary references an unresolved or dynamic role")
+			return nil, fmt.Errorf("authority: Kubernetes RBAC boundary references an unresolved or dynamic role")
 		}
 		appliesToTrusted := binding.Kind == "ClusterRoleBinding" || binding.Namespace == authoritySecret.Namespace
 		if !appliesToTrusted {
@@ -91,7 +91,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 			for _, subject := range binding.Subjects {
 				writerKey, okay := subjectWriterKey(subject)
 				if !okay || !permitted[writerKey] || broadCredentialWriter(subject) {
-					return nil, fmt.Errorf("Kubernetes authority Secret has an unapproved RBAC writer")
+					return nil, fmt.Errorf("authority: Kubernetes authority Secret has an unapproved RBAC writer")
 				}
 			}
 		}
@@ -101,7 +101,7 @@ func AnalyzeRBACBoundary(record *Record, authoritySecret SecretSource, snapshot 
 			}
 			for _, rule := range role.Rules {
 				if ruleCrossesTrustedBoundary(rule) {
-					return nil, fmt.Errorf("Kubernetes worker can cross the authority namespace boundary")
+					return nil, fmt.Errorf("authority: Kubernetes worker can cross the authority namespace boundary")
 				}
 			}
 		}
