@@ -2036,6 +2036,10 @@ committed, PR-reviewable record. Index + template:
 
 ## CI/CD
 
+The ARC Actions-runner image has a separate version and build pipeline; see
+[ci/arc-runner/README.md](ci/arc-runner/README.md) for the C/race smoke check,
+immutable publication and the activation proofs required before job routing.
+
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`.
