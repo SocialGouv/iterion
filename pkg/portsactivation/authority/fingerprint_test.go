@@ -2,6 +2,7 @@ package authority
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -96,5 +97,27 @@ func TestDeploymentObservationDigestBindsStableAuthorityAndIgnoresVolatileCounts
 				t.Fatal("changed authority evidence retained the same observation identity")
 			}
 		})
+	}
+}
+
+func TestBuildDistributedProofPublishesOnlySafeObservationProjection(t *testing.T) {
+	record, result, workloads, rbac := observedFingerprintFixture(t)
+	digest, err := fingerprintDeploymentObservation(record, result, workloads, rbac)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.ObservationDigest = digest
+	result.CompletedAt = time.Now().UTC()
+	proof, err := BuildDistributedProof(record, result, "mongodb:fixture", 4, 1,
+		result.CompletedAt.Add(30*time.Second))
+	if err != nil || proof == nil || proof.ProofDigest != digest || proof.SnapshotDigest == "" {
+		t.Fatalf("safe observation proof was not built: %+v %v", proof, err)
+	}
+	if strings.Contains(string(proof.Snapshot), "private-password") || strings.Contains(string(proof.Snapshot), "super-secret") {
+		t.Fatal("distributed proof snapshot exposed private source material")
+	}
+	var snapshot DeploymentCorroboration
+	if err := json.Unmarshal(proof.Snapshot, &snapshot); err != nil || !snapshot.StartedAt.IsZero() || !snapshot.CompletedAt.IsZero() {
+		t.Fatal("volatile observation timings entered the proof snapshot")
 	}
 }
