@@ -27,29 +27,26 @@ type SecretSource struct {
 	material []byte
 }
 
-func (s *SecretSource) Material() []byte {
-	if s == nil {
-		return nil
-	}
+func (s SecretSource) Material() []byte {
 	return bytes.Clone(s.material)
 }
 
-func (s *SecretSource) String() string {
+func (s SecretSource) String() string {
 	return "Kubernetes authority Secret [material redacted]"
 }
 
-func (s *SecretSource) GoString() string { return s.String() }
+func (s SecretSource) GoString() string { return s.String() }
 
 type boundedSecretOutput struct {
-	bytes.Buffer
-	limit int
+	buffer bytes.Buffer
+	limit  int
 }
 
 func (b *boundedSecretOutput) Write(p []byte) (int, error) {
-	if len(p) > b.limit-b.Len() {
+	if len(p) > b.limit-b.buffer.Len() {
 		return 0, errors.New("Kubernetes authority response exceeds supported size")
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }
 
 func dnsLabel(name string) bool {
@@ -101,6 +98,7 @@ func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namesp
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	command := exec.CommandContext(requestContext, kubectlBinary, args...)
+	command.WaitDelay = time.Second
 	output := &boundedSecretOutput{limit: maxSecretResponse}
 	command.Stdout = output
 	// Kubectl diagnostics can include credential-bearing source snippets.
@@ -120,7 +118,7 @@ func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namesp
 		} `json:"metadata"`
 		Data map[string]string `json:"data"`
 	}
-	if output.Len() == 0 || json.Unmarshal(output.Bytes(), &document) != nil ||
+	if output.buffer.Len() == 0 || json.Unmarshal(output.buffer.Bytes(), &document) != nil ||
 		document.APIVersion != "v1" || document.Kind != "Secret" || document.Type != "Opaque" ||
 		document.Metadata.Namespace != namespace || document.Metadata.Name != name ||
 		document.Metadata.UID == "" || document.Metadata.ResourceVersion == "" || len(document.Data) != 1 {

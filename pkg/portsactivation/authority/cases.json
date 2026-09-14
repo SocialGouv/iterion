@@ -3,7 +3,9 @@
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
-      "TestReadAuthoritySecretRefusesUnboundNamesAndOversizedResponses"
+      "TestReadAuthoritySecretRefusesUnboundNamesAndOversizedResponses",
+      "TestReadAuthoritySecretBoundsActualKubectlPipe",
+      "TestReadAuthoritySecretCancellationBoundsInheritedPipe"
     ]
   }
 }

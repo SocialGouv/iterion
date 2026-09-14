@@ -2,6 +2,7 @@ package authority
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadAuthoritySecretBindsNamedKubernetesSource(t *testing.T) {
@@ -49,8 +51,13 @@ func TestReadAuthoritySecretBindsNamedKubernetesSource(t *testing.T) {
 	if source.UID != "uid-1" || source.ResourceVersion != "17" || !bytes.Equal(source.Material(), material) {
 		t.Fatal("Kubernetes Secret source lost identity or exact material")
 	}
-	if strings.Contains(fmt.Sprintf("%+v", source), "sources") {
-		t.Fatal("formatted authority source exposed confidential material")
+	for _, rendered := range []string{
+		fmt.Sprintf("%+v", source), fmt.Sprintf("%+v", *source),
+		fmt.Sprintf("%#v", source), fmt.Sprintf("%#v", *source),
+	} {
+		if rendered != "Kubernetes authority Secret [material redacted]" {
+			t.Fatal("formatted authority source exposed confidential material")
+		}
 	}
 	encodedSource, err := json.Marshal(source)
 	if err != nil || bytes.Contains(encodedSource, []byte("sources")) {
@@ -87,5 +94,64 @@ func TestReadAuthoritySecretRefusesUnboundNamesAndOversizedResponses(t *testing.
 	}
 	if _, err := b.Write([]byte("5")); err == nil {
 		t.Fatal("oversized Kubernetes response was not bounded")
+	}
+}
+
+func TestReadAuthoritySecretBoundsActualKubectlPipe(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "kubectl")
+	fixture := filepath.Join(dir, "response.json")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\ncat \"$ITERION_AUTH_FIXTURE_PATH\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_AUTH_FIXTURE_PATH", fixture)
+	// The trailing JSON would be accepted if os/exec bypassed Write by
+	// calling the promoted bytes.Buffer.ReadFrom method.
+	valid := []byte(`{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"namespace":"trusted","name":"authority","uid":"uid","resourceVersion":"1"},"data":{"authority.json":"e30="}}`)
+	response := append(bytes.Repeat([]byte(" "), maxSecretResponse+1), valid...)
+	if err := os.WriteFile(fixture, response, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadAuthoritySecret(t.Context(), binary, "", "trusted", "authority"); err == nil {
+		t.Fatal("oversized kubectl pipe was accepted despite a small valid material payload")
+	}
+}
+
+func TestReadAuthoritySecretCancellationBoundsInheritedPipe(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "kubectl")
+	ready := filepath.Join(dir, "ready")
+	// The shell exits on cancellation, but its child retains the stdout
+	// descriptor. Without WaitDelay, os/exec waits for that child to exit.
+	script := "#!/bin/sh\nsleep 5 &\nprintf ready > \"$ITERION_AUTH_READY_PATH\"\nwait\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_AUTH_READY_PATH", ready)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReadAuthoritySecret(ctx, binary, "", "trusted", "authority")
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(ready); err != nil {
+		t.Fatal("kubectl wrapper did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled authority read was accepted")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("authority read waited for an inherited stdout pipe after cancellation")
 	}
 }

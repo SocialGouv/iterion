@@ -452,8 +452,10 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   authority loading and Kubernetes verification are still outstanding.
 - A bounded server-side `kubectl get secret` reader now retrieves only the
   named authority Secret, checks Kubernetes object identity and resource
-  version, and keeps the JSON material out of formatted or marshaled source
-  metadata. The two-case required manifest uses a disposable kubectl shim and
+  version, and keeps the JSON material out of pointer/value formatting or
+  marshaled source metadata. The four-case required manifest exercises the
+  actual bounded subprocess pipe and cancellation with an inherited stdout
+  descriptor using a disposable kubectl shim, and
   is wired into the existing Go CI job. This is source acquisition only:
   record schema, permitted-writer and custody verification remain outstanding.
 - After the authority config changes, a complete `task test` run passed.
