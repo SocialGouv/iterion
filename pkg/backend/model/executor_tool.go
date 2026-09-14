@@ -457,7 +457,8 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 		// function is the single check every recipe goes through, so reading
 		// the property here is what makes a future recipe inherit the rule
 		// instead of having to remember it.
-		Deterministic: node.Action != "",
+		Deterministic:  node.Action != "",
+		ResolvePattern: e.policyPatternResolver(ctx, node),
 	}
 	if err := e.toolPolicy.CheckContext(pctx); err != nil {
 		if e.hooks.OnToolCall != nil {

@@ -839,6 +839,10 @@ Code:
   honest by a conformance test against the real registry. `list_files` /
   `run_command` / `git_diff` / `search_codebase` circulate in older
   examples and have never been registered — use `glob` / `bash` / `grep`.
+  Exact Claude spellings `Read`/`Bash`/`Grep` have a manifest-gated Claw alias
+  tier after MCP shorthand; see [docs/tool-name-aliases.md](docs/tool-name-aliases.md)
+  for the engine floor, precedence and compatibility probe (unreleased floor
+  must be finalized before merge).
 
 The `bypassPermissions` note above describes the default (`permission:
 off`). The opt-in **permission gate** (`permission: ask|deny`, see the

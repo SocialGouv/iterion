@@ -7,6 +7,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -33,16 +35,25 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 	}
 
 	var tools []delegate.ToolDef
+	seen := make(map[string]string, len(expanded))
 	for _, name := range expanded {
-		t, ok, err := e.resolveSingleToolForNode(ctx, node, name)
+		definition, ok, err := e.resolveSingleToolForNode(ctx, node, name)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
+		t := definition.ToDelegateDef()
+		if prior, exists := seen[t.Name]; exists {
+			if prior != definition.QualifiedName {
+				return nil, fmt.Errorf("model: tools %q and %q have the same model tool name %q", prior, definition.QualifiedName, t.Name)
+			}
+			continue
+		}
+		seen[t.Name] = definition.QualifiedName
 		if e.toolPolicy != nil {
-			t = e.guardTool(t, node)
+			t = e.guardTool(ctx, t, node)
 		}
 		tools = append(tools, t)
 	}
@@ -135,23 +146,38 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 }
 
 // resolveSingleToolForNode resolves one tool name in the context of a node.
-func (e *ClawExecutor) resolveSingleToolForNode(ctx context.Context, node ir.Node, name string) (delegate.ToolDef, bool, error) {
+func (e *ClawExecutor) resolveSingleToolForNode(ctx context.Context, node ir.Node, name string) (*tool.ToolDef, bool, error) {
 	if err := e.ensureMCPServers(ctx, node, []string{name}); err != nil {
-		return delegate.ToolDef{}, false, err
+		return nil, false, err
 	}
 
 	if e.toolRegistry == nil {
-		return delegate.ToolDef{}, false, fmt.Errorf("no tool registry configured")
+		return nil, false, fmt.Errorf("no tool registry configured")
 	}
 
-	td, err := e.toolRegistry.Resolve(name)
+	td, err := e.resolveToolReference(ctx, name)
 	if err != nil {
-		return delegate.ToolDef{}, false, err
+		return nil, false, err
 	}
 	if err := e.checkNodeToolAccess(node, td.QualifiedName); err != nil {
-		return delegate.ToolDef{}, false, err
+		return nil, false, err
 	}
-	return td.ToDelegateDef(), true, nil
+	return td, true, nil
+}
+
+func (e *ClawExecutor) resolveToolReference(ctx context.Context, name string) (*tool.ToolDef, error) {
+	if tool.BuiltinAliasesEnabled(ctx) {
+		return e.toolRegistry.ResolveWithAliases(name)
+	}
+	td, err := e.toolRegistry.Resolve(name)
+	if err != nil && toolcatalog.BuiltinAlias(name) != "" {
+		// Only add the opt-in remedy when the alias actually resolves. In particular,
+		// an ambiguous MCP name must keep its diagnostic and cannot suggest a bypass.
+		if _, aliasErr := e.toolRegistry.ResolveWithAliases(name); aliasErr == nil {
+			return nil, fmt.Errorf("%w; Claw alias %q requires a bundle declaring requires.iterion >= %s (or use %q)", err, name, bundle.ToolAliasesSince, toolcatalog.BuiltinAlias(name))
+		}
+	}
+	return td, err
 }
 
 func (e *ClawExecutor) ensureMCPServers(ctx context.Context, node ir.Node, names []string) error {
@@ -232,7 +258,7 @@ func (e *ClawExecutor) checkNodeToolAccess(node ir.Node, qualified string) error
 // guardTool wraps a tool's Execute function with a policy check.
 // If the tool is denied, Execute returns an ErrToolDenied error without
 // invoking the underlying implementation.
-func (e *ClawExecutor) guardTool(t delegate.ToolDef, node ir.Node) delegate.ToolDef {
+func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDef, node ir.Node) delegate.ToolDef {
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
@@ -241,12 +267,13 @@ func (e *ClawExecutor) guardTool(t delegate.ToolDef, node ir.Node) delegate.Tool
 	vars := e.vars
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		pctx := tool.PolicyContext{
-			Ctx:      ctx,
-			NodeID:   nodeID,
-			NodeKind: nodeKind,
-			ToolName: name,
-			Input:    input,
-			Vars:     vars,
+			Ctx:            ctx,
+			NodeID:         nodeID,
+			NodeKind:       nodeKind,
+			ToolName:       name,
+			Input:          input,
+			Vars:           vars,
+			ResolvePattern: e.policyPatternResolver(executionCtx, node),
 		}
 		if err := policy.CheckContext(pctx); err != nil {
 			return "", err
@@ -254,4 +281,26 @@ func (e *ClawExecutor) guardTool(t delegate.ToolDef, node ir.Node) delegate.Tool
 		return original(ctx, input)
 	}
 	return t
+}
+
+func (e *ClawExecutor) policyPatternResolver(ctx context.Context, node ir.Node) func(string) (string, error) {
+	if !tool.BuiltinAliasesEnabled(ctx) {
+		return nil
+	}
+	return func(pattern string) (string, error) {
+		if toolcatalog.BuiltinAlias(pattern) == "" {
+			return pattern, nil
+		}
+		if e.toolRegistry == nil {
+			return "", fmt.Errorf("no tool registry configured")
+		}
+		definition, err := e.resolveToolReference(ctx, pattern)
+		if err != nil {
+			return "", err
+		}
+		if err := e.checkNodeToolAccess(node, definition.QualifiedName); err != nil {
+			return "", err
+		}
+		return definition.ToDelegateDef().Name, nil
+	}
 }

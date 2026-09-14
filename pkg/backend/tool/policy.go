@@ -46,6 +46,11 @@ type PolicyContext struct {
 	// deployment setting the variable put a model call in front of every
 	// action node, on a path documented as having none.
 	Deterministic bool
+
+	// ResolvePattern, when set, resolves an exact policy name against the node's
+	// registry before matching. Wildcards and names outside the alias catalog
+	// are left unchanged by the caller. Resolution failures deny the call.
+	ResolvePattern func(string) (string, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,9 +120,19 @@ func (p *Policy) Check(qualifiedName string) error {
 }
 
 // CheckContext implements ToolChecker for the static Policy.
-// It delegates to Check, ignoring all context fields except ToolName.
+// It matches ToolName after the caller's optional per-node pattern resolution.
 func (p *Policy) CheckContext(ctx PolicyContext) error {
-	return p.Check(ctx.ToolName)
+	if p == nil {
+		return nil
+	}
+	matched, err := patternsMatchContext(p.AllowedTools, ctx)
+	if err != nil {
+		return err
+	}
+	if matched {
+		return nil
+	}
+	return fmt.Errorf("%w: tool %q is not in the allowlist", ErrToolDenied, ctx.ToolName)
 }
 
 // ---------------------------------------------------------------------------
