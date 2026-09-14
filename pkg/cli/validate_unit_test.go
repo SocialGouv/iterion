@@ -100,6 +100,7 @@ type validateDiagnosticsJSON struct {
 		Code     string `json:"code"`
 		Severity string `json:"severity"`
 		File     string `json:"file"`
+		Message  string `json:"message"`
 	} `json:"diagnostics"`
 }
 
@@ -113,4 +114,39 @@ func runValidateDiagnosticsJSON(t *testing.T, path string) (validateDiagnosticsJ
 		t.Fatalf("unmarshal validate JSON: %v\nraw: %s", jsonErr, buf.String())
 	}
 	return res, err
+}
+
+// TestRunValidate_NamesAFragmentValidatedAlone: a file under lib/ holds no
+// workflow by design; validated alone it can only fail, so the refusal
+// says what it is and where it is validated.
+func TestRunValidate_NamesAFragmentValidatedAlone(t *testing.T) {
+	dir := t.TempDir()
+	writeValidateUnit(t, dir, map[string]string{"main.bot": validateUnitMain, "lib/nodes.bot": validateUnitNodes})
+	res, err := runValidateDiagnosticsJSON(t, filepath.Join(dir, "lib", "nodes.bot"))
+	if err == nil || res.Valid {
+		t.Fatalf("a fragment validated alone passed: valid=%v err=%v", res.Valid, err)
+	}
+	named := false
+	for _, d := range res.Diagnostics {
+		if strings.Contains(d.Message, "fragment") && strings.Contains(d.Message, "imports it") && strings.HasSuffix(d.File, filepath.Join("lib", "nodes.bot")) {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("the refusal does not name the fragment and its main: %+v", res.Diagnostics)
+	}
+	// A loose file with no workflow, not under lib/, is refused as before.
+	loose := filepath.Join(dir, "loose.bot")
+	if err := os.WriteFile(loose, []byte("agent a:\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = runValidateDiagnosticsJSON(t, loose)
+	if err == nil || res.Valid {
+		t.Fatalf("a loose file with no workflow passed: valid=%v err=%v", res.Valid, err)
+	}
+	for _, d := range res.Diagnostics {
+		if strings.Contains(d.Message, "fragment") {
+			t.Fatalf("a loose file was called a fragment: %+v", d)
+		}
+	}
 }

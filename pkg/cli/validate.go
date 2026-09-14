@@ -246,13 +246,27 @@ func RunValidate(path string, p *Printer) error {
 
 	if u.Merged == nil || len(u.Merged.Workflows) == 0 {
 		result.Valid = false
+		why := "no workflow found"
+		// A file under lib/ is a fragment: a piece of the bot whose main
+		// imports it, and it holds no workflow by design. Validated alone
+		// it can only fail; the remedy is the main.
+		if filepath.Base(filepath.Dir(parsePath)) == unit.FragmentDir {
+			why = "no workflow found: " + filepath.Base(parsePath) + " is a fragment under " + unit.FragmentDir + "/, validated through the main that imports it"
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "parse",
+				Severity: "error",
+				File:     parsePath,
+				Message:  why,
+				Hint:     "run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + filepath.Base(parsePath) + "\"`)",
+			})
+		}
 		sortValidateDiagnostics(result.Diagnostics)
 		if p.Format == OutputJSON {
 			p.JSON(result)
 		} else {
 			p.Header("Validate: " + path)
 			printDiagnostics(p, result.Diagnostics)
-			p.Line("  result: INVALID (no workflow found)")
+			p.Line("  result: INVALID (" + why + ")")
 		}
 		return validationFailed(p)
 	}
