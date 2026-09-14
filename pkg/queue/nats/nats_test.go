@@ -94,6 +94,7 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	logger := iterlog.New(iterlog.LevelDebug, nil)
 	in := Config{
+		ConnectionName:      "iterion-explicit",
 		StreamName:          "X",
 		DLQStream:           "Y",
 		KVBucket:            "Z",

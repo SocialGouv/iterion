@@ -100,6 +100,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// disagree about the same broker. LockTTL is what just drifted.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:                 cfg.NATS.URL,
+		ConnectionName:      "iterion-runner",
 		StreamName:          cfg.NATS.Stream,
 		DLQStream:           cfg.NATS.DLQStream,
 		KVBucket:            cfg.NATS.KVBucket,

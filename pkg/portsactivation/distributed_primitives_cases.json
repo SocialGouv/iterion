@@ -33,6 +33,7 @@
       "TestNativeActivationMongoRenewalRejectsChangedEvidence/expired_lease"
     ],
     "github.com/SocialGouv/iterion/pkg/queue/nats": [
+      "TestNATSConnectionNamesDistinguishProcessRoles",
       "TestPortCensusIdentityAndFreshness",
       "TestPortCensusRoundTripAndShutdown",
       "TestPortCensusRejectsMalformedOrMismatchedRecords",

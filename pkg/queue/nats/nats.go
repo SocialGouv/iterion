@@ -110,6 +110,7 @@ const (
 // Config carries the connection settings for the cloud queue.
 type Config struct {
 	URL             string        // nats://host:port — required
+	ConnectionName  string        // diagnostic client role, never an authorization identity
 	StreamName      string        // default StreamRuns
 	DLQStream       string        // default StreamRunsDLQ
 	KVBucket        string        // default KVRunLocks
@@ -207,6 +208,14 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("queue/nats: URL is required")
 	}
 	cfg = applyDefaults(cfg)
+	if len(cfg.ConnectionName) == 0 || len(cfg.ConnectionName) > 64 {
+		return nil, fmt.Errorf("queue/nats: invalid diagnostic connection name")
+	}
+	for _, ch := range cfg.ConnectionName {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+			return nil, fmt.Errorf("queue/nats: invalid diagnostic connection name")
+		}
+	}
 	if cfg.StreamReplicas < 1 {
 		return nil, fmt.Errorf("queue/nats: stream replicas %d invalid (want >= 1)", cfg.StreamReplicas)
 	}
@@ -214,7 +223,7 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	nc, err := nats.Connect(cfg.URL,
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(2*time.Second),
-		nats.Name("iterion"),
+		nats.Name(cfg.ConnectionName),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: connect: %w", err)
@@ -752,6 +761,9 @@ func (d *Delivery) PropagateTraceTo(ctx context.Context) context.Context {
 }
 
 func applyDefaults(c Config) Config {
+	if c.ConnectionName == "" {
+		c.ConnectionName = "iterion"
+	}
 	if c.StreamName == "" {
 		c.StreamName = StreamRuns
 	}

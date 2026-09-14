@@ -544,6 +544,10 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   exhaustive custody and evidence that each approved immutable build was
   actually tested. Per-principal KV write ACLs, production census reading,
   complete authorization proof and admission remain outstanding.
+- Cloud server and runner queue connections now use distinct bounded NATS
+  diagnostic names (`iterion-server` and `iterion-runner`). A real broker
+  connection test checks the names supplied to NATS. These names are not
+  authorization evidence and do not replace credential identities or ACLs.
 - A bounded Kubernetes workload reader now lists Pods, Deployments,
   ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs and
   ReplicationControllers in each declared namespace. It retains private pod
