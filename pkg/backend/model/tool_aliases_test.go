@@ -111,3 +111,18 @@ func TestAliasDedupDoesNotHideDifferentToolsWithTheSameProviderName(t *testing.T
 		t.Fatalf("provider-name collision hidden by dedup: %v", err)
 	}
 }
+
+func TestAliasPolicyUsesRegistryIdentityNotProviderName(t *testing.T) {
+	tr := tool.NewRegistry()
+	_ = tr.RegisterMCP("one", "Read", "", nil, jsonExec("MCP"))
+	_ = tr.RegisterBuiltin("mcp_one_Read", "", nil, jsonExec("different builtin"))
+	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(tr), WithToolPolicy(tool.NewPolicy("Read")))
+	defs, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"mcp_one_Read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = defs[0].Execute(context.Background(), nil)
+	if !errors.Is(err, tool.ErrToolDenied) {
+		t.Fatalf("MCP alias granted a different registry identity: %v", err)
+	}
+}

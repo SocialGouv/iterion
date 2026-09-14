@@ -53,7 +53,7 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 		}
 		seen[t.Name] = definition.QualifiedName
 		if e.toolPolicy != nil {
-			t = e.guardTool(ctx, t, node)
+			t = e.guardTool(ctx, t, node, definition.QualifiedName)
 		}
 		tools = append(tools, t)
 	}
@@ -258,7 +258,7 @@ func (e *ClawExecutor) checkNodeToolAccess(node ir.Node, qualified string) error
 // guardTool wraps a tool's Execute function with a policy check.
 // If the tool is denied, Execute returns an ErrToolDenied error without
 // invoking the underlying implementation.
-func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDef, node ir.Node) delegate.ToolDef {
+func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDef, node ir.Node, qualifiedName string) delegate.ToolDef {
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
@@ -267,13 +267,14 @@ func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDe
 	vars := e.vars
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		pctx := tool.PolicyContext{
-			Ctx:            ctx,
-			NodeID:         nodeID,
-			NodeKind:       nodeKind,
-			ToolName:       name,
-			Input:          input,
-			Vars:           vars,
-			ResolvePattern: e.policyPatternResolver(executionCtx, node),
+			Ctx:               ctx,
+			NodeID:            nodeID,
+			NodeKind:          nodeKind,
+			ToolName:          name,
+			QualifiedToolName: qualifiedName,
+			Input:             input,
+			Vars:              vars,
+			ResolvePattern:    e.policyPatternResolver(executionCtx, node),
 		}
 		if err := policy.CheckContext(pctx); err != nil {
 			return "", err
@@ -301,6 +302,6 @@ func (e *ClawExecutor) policyPatternResolver(ctx context.Context, node ir.Node) 
 		if err := e.checkNodeToolAccess(node, definition.QualifiedName); err != nil {
 			return "", err
 		}
-		return definition.ToDelegateDef().Name, nil
+		return definition.QualifiedName, nil
 	}
 }

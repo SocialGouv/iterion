@@ -448,11 +448,12 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 		return nil
 	}
 	pctx := tool.PolicyContext{
-		Ctx:      ctx,
-		NodeID:   node.ID,
-		NodeKind: ir.NodeTool.String(),
-		ToolName: toolName,
-		Vars:     e.vars,
+		Ctx:               ctx,
+		NodeID:            node.ID,
+		NodeKind:          ir.NodeTool.String(),
+		ToolName:          toolName,
+		QualifiedToolName: toolName,
+		Vars:              e.vars,
 		// Derived from the NODE rather than passed by each call site: this
 		// function is the single check every recipe goes through, so reading
 		// the property here is what makes a future recipe inherit the rule
