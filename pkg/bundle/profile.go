@@ -1,7 +1,9 @@
 package bundle
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -110,20 +112,49 @@ func maxSyntaxProfile(read func(rel string) (string, sourceState)) (int, []strin
 		case sourceMissing:
 			return
 		}
-		pr := parser.Parse(rel, src)
-		p := pr.File.EffectiveProfile()
-		switch {
-		case p > profile:
-			profile = p
-			declaredBy = nil
-			if p > 1 {
-				declaredBy = []string{rel}
-			}
-		case p == profile && p > 1:
-			declaredBy = append(declaredBy, rel)
-		}
+		// The workflow's unit: the file and the fragments its imports reach,
+		// each read where the workflow is; a fragment that resolves outside
+		// is unread, like a child that does, and a child a fragment
+		// declares is followed like the main's own.
 		base := filepath.ToSlash(filepath.Dir(rel))
-		for _, sb := range pr.File.Subbots {
+		join := func(frag string) string {
+			if base == "." {
+				return frag
+			}
+			return path.Join(base, frag)
+		}
+		main := path.Base(rel)
+		u := unit.Load(func(frag string) ([]byte, error) {
+			if frag == main {
+				return []byte(src), nil
+			}
+			body, state := read(join(frag))
+			switch state {
+			case sourceOutside:
+				unread = append(unread, join(frag))
+				return nil, unit.ErrOutside
+			case sourceMissing:
+				return nil, os.ErrNotExist
+			}
+			return []byte(body), nil
+		}, main, join)
+		for _, f := range u.Files {
+			p := f.Profile
+			switch {
+			case p > profile:
+				profile = p
+				declaredBy = nil
+				if p > 1 {
+					declaredBy = []string{f.Name}
+				}
+			case p == profile && p > 1:
+				declaredBy = append(declaredBy, f.Name)
+			}
+		}
+		if u.Merged == nil {
+			return
+		}
+		for _, sb := range u.Merged.Subbots {
 			if sb.Source == "" {
 				continue
 			}
