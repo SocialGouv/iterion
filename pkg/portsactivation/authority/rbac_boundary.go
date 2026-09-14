@@ -147,12 +147,14 @@ func subjectWriterKey(subject RBACSubject) ([3]string, bool) {
 }
 
 func broadCredentialWriter(subject RBACSubject) bool {
-	return subject.Kind == "Group" && (subject.Name == "system:authenticated" ||
-		subject.Name == "system:serviceaccounts" || strings.HasPrefix(subject.Name, "system:serviceaccounts:"))
+	return subject.Kind == "User" && subject.Name == "system:anonymous" ||
+		subject.Kind == "Group" && (subject.Name == "system:anonymous" || subject.Name == "system:unauthenticated" ||
+			subject.Name == "system:authenticated" || subject.Name == "system:serviceaccounts" ||
+			strings.HasPrefix(subject.Name, "system:serviceaccounts:"))
 }
 
 func ruleCanWriteSecret(rule RBACRule) bool {
-	return listIntersects(rule.APIGroups, "", "*") && listIntersects(rule.Resources, "secrets", "*") &&
+	return listIntersects(rule.APIGroups, "", "*") && rbacResourceMatches(rule.Resources, "secrets") &&
 		listIntersects(rule.Verbs, "create", "update", "patch", "delete", "deletecollection", "*")
 }
 
@@ -166,46 +168,66 @@ func ruleCrossesTrustedBoundary(rule RBACRule) bool {
 	if !listIntersects(rule.Verbs, "get", "list", "watch", "create", "update", "patch", "delete", "deletecollection", "*") {
 		return false
 	}
-	if listIntersects(rule.APIGroups, "", "*") && (listIntersects(rule.Resources,
-		"secrets", "pods", "serviceaccounts", "serviceaccounts/token", "users", "groups",
-		"configmaps", "replicationcontrollers", "namespaces", "nodes", "nodes/proxy", "*") ||
-		resourcesWithPrefix(rule.Resources, "pods/")) {
+	if listIntersects(rule.APIGroups, "", "*") && rbacAnyResourceMatches(rule.Resources,
+		"secrets", "pods", "pods/exec", "pods/attach", "pods/portforward", "pods/proxy",
+		"pods/ephemeralcontainers", "pods/log", "serviceaccounts", "serviceaccounts/token",
+		"users", "groups", "configmaps", "replicationcontrollers", "namespaces", "nodes", "nodes/proxy") {
 		return true
 	}
-	if listIntersects(rule.APIGroups, "apps", "*") && listIntersects(rule.Resources,
-		"deployments", "replicasets", "statefulsets", "daemonsets", "*") {
+	if listIntersects(rule.APIGroups, "apps", "*") && rbacAnyResourceMatches(rule.Resources,
+		"deployments", "deployments/scale", "deployments/status",
+		"replicasets", "replicasets/scale", "replicasets/status",
+		"statefulsets", "statefulsets/scale", "statefulsets/status",
+		"daemonsets", "daemonsets/status") {
 		return true
 	}
-	if listIntersects(rule.APIGroups, "batch", "*") && listIntersects(rule.Resources,
-		"jobs", "cronjobs", "*") {
+	if listIntersects(rule.APIGroups, "batch", "*") && rbacAnyResourceMatches(rule.Resources,
+		"jobs", "jobs/status", "cronjobs", "cronjobs/status") {
 		return true
 	}
 	if listIntersects(rule.APIGroups, "rbac.authorization.k8s.io", "*") &&
-		listIntersects(rule.Resources, "roles", "rolebindings", "clusterroles", "clusterrolebindings", "*") {
+		rbacAnyResourceMatches(rule.Resources, "roles", "rolebindings", "clusterroles", "clusterrolebindings") {
 		return true
 	}
 	if listIntersects(rule.APIGroups, "authentication.k8s.io", "*") &&
-		listIntersects(rule.Resources, "userextras", "*") {
+		rbacAnyResourceMatches(rule.Resources, "userextras") {
 		return true
 	}
 	if listIntersects(rule.APIGroups, "certificates.k8s.io", "*") &&
-		listIntersects(rule.Resources, "certificatesigningrequests", "certificatesigningrequests/approval", "*") {
+		rbacAnyResourceMatches(rule.Resources, "certificatesigningrequests", "certificatesigningrequests/approval") {
 		return true
 	}
 	if listIntersects(rule.APIGroups, "admissionregistration.k8s.io", "*") &&
-		listIntersects(rule.Resources, "mutatingwebhookconfigurations", "validatingwebhookconfigurations", "*") {
+		rbacAnyResourceMatches(rule.Resources, "mutatingwebhookconfigurations", "validatingwebhookconfigurations") {
 		return true
 	}
 	if listIntersects(rule.APIGroups, "apiextensions.k8s.io", "*") &&
-		listIntersects(rule.Resources, "customresourcedefinitions", "*") {
+		rbacAnyResourceMatches(rule.Resources, "customresourcedefinitions") {
 		return true
 	}
 	return false
 }
 
-func resourcesWithPrefix(resources []string, prefix string) bool {
-	for _, resource := range resources {
-		if strings.HasPrefix(resource, prefix) {
+func rbacAnyResourceMatches(grants []string, protected ...string) bool {
+	for _, resource := range protected {
+		if rbacResourceMatches(grants, resource) {
+			return true
+		}
+	}
+	return false
+}
+
+// Mirrors the Kubernetes RBAC ResourceMatches rule for the finite protected
+// catalog: '*' grants all, exact names grant one, and '*/subresource' grants
+// the named subresource on every resource in the API group.
+func rbacResourceMatches(grants []string, protected string) bool {
+	subresource := ""
+	if index := strings.IndexByte(protected, '/'); index >= 0 {
+		subresource = protected[index+1:]
+	}
+	for _, grant := range grants {
+		if grant == "*" || grant == protected ||
+			subresource != "" && grant == "*/"+subresource {
 			return true
 		}
 	}

@@ -64,6 +64,35 @@ func TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants(t *testing.T
 			r.PermittedWriters = append(r.PermittedWriters, OperatorWriter{Kind: "group", Name: "system:authenticated"})
 			s.Bindings[0].Subjects = []RBACSubject{{Kind: "Group", Name: "system:authenticated"}}
 		}},
+		{"anonymous group writer", func(r *Record, s *RBACSnapshot) {
+			r.PermittedWriters = append(r.PermittedWriters, OperatorWriter{Kind: "group", Name: "system:unauthenticated"})
+			s.Bindings[0].Subjects = []RBACSubject{{Kind: "Group", Name: "system:unauthenticated"}}
+		}},
+		{"anonymous user writer", func(r *Record, s *RBACSnapshot) {
+			r.PermittedWriters = append(r.PermittedWriters, OperatorWriter{Kind: "user", Name: "system:anonymous"})
+			s.Bindings[0].Subjects = []RBACSubject{{Kind: "User", Name: "system:anonymous"}}
+		}},
+		{"worker can exec through wildcard subresource", func(_ *Record, s *RBACSnapshot) {
+			s.Roles = append(s.Roles, RBACRole{Kind: "Role", Namespace: "trusted", Name: "exec", UID: "uid-exec", ResourceVersion: "18",
+				Rules: []RBACRule{{APIGroups: []string{""}, Resources: []string{"*/exec"}, Verbs: []string{"create"}}}})
+			s.Bindings = append(s.Bindings, RBACBinding{Kind: "RoleBinding", Namespace: "trusted", Name: "exec", UID: "uid-exec-binding", ResourceVersion: "18",
+				Subjects: []RBACSubject{{Kind: "ServiceAccount", Namespace: "worker", Name: "iterion-runner"}},
+				RoleKind: "Role", RoleName: "exec"})
+		}},
+		{"worker can mint tokens through wildcard subresource", func(_ *Record, s *RBACSnapshot) {
+			s.Roles = append(s.Roles, RBACRole{Kind: "Role", Namespace: "trusted", Name: "token", UID: "uid-token", ResourceVersion: "18",
+				Rules: []RBACRule{{APIGroups: []string{""}, Resources: []string{"*/token"}, Verbs: []string{"create"}}}})
+			s.Bindings = append(s.Bindings, RBACBinding{Kind: "RoleBinding", Namespace: "trusted", Name: "token", UID: "uid-token-binding", ResourceVersion: "18",
+				Subjects: []RBACSubject{{Kind: "ServiceAccount", Namespace: "worker", Name: "iterion-runner"}},
+				RoleKind: "Role", RoleName: "token"})
+		}},
+		{"worker can scale authority broker", func(_ *Record, s *RBACSnapshot) {
+			s.Roles = append(s.Roles, RBACRole{Kind: "Role", Namespace: "trusted", Name: "scale", UID: "uid-scale", ResourceVersion: "18",
+				Rules: []RBACRule{{APIGroups: []string{"apps"}, Resources: []string{"deployments/scale"}, Verbs: []string{"patch"}}}})
+			s.Bindings = append(s.Bindings, RBACBinding{Kind: "RoleBinding", Namespace: "trusted", Name: "scale", UID: "uid-scale-binding", ResourceVersion: "18",
+				Subjects: []RBACSubject{{Kind: "ServiceAccount", Namespace: "worker", Name: "iterion-runner"}},
+				RoleKind: "Role", RoleName: "scale"})
+		}},
 		{"unresolved aggregated role", func(_ *Record, s *RBACSnapshot) { s.Roles[0].Aggregated = true }},
 		{"missing role reference", func(_ *Record, s *RBACSnapshot) { s.Bindings[0].RoleName = "missing" }},
 		{"authority holder outside trusted namespace", func(r *Record, _ *RBACSnapshot) { r.Holders[0].AccessScope = "authority" }},
@@ -79,8 +108,12 @@ func TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants(t *testing.T
 	}
 	for _, rule := range []RBACRule{
 		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"*/exec"}, Verbs: []string{"create"}},
 		{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"rolebindings"}, Verbs: []string{"patch"}},
 		{APIGroups: []string{""}, Resources: []string{"serviceaccounts/token"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"*/token"}, Verbs: []string{"create"}},
+		{APIGroups: []string{"apps"}, Resources: []string{"replicasets/scale"}, Verbs: []string{"patch"}},
+		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets/scale"}, Verbs: []string{"patch"}},
 		{APIGroups: []string{""}, Resources: []string{"users"}, Verbs: []string{"impersonate"}},
 	} {
 		if !ruleCrossesTrustedBoundary(rule) {
