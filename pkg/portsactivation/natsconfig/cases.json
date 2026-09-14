@@ -70,7 +70,9 @@
       "TestNATSProfileRejectsUnsupportedAuthorizationPaths/operator_resolver",
       "TestNATSProfileRejectsUnsupportedAuthorizationPaths/queue-qualified_subscribe",
       "TestNATSProfileRejectsUnsupportedAuthorizationPaths/subject_mapping",
-      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/websocket"
+      "TestNATSProfileRejectsUnsupportedAuthorizationPaths/websocket",
+      "TestNATSConfigRejectsInvalidUTF8Source",
+      "TestNATSConfigRejectsLossyParsedSubjects"
     ]
   }
 }

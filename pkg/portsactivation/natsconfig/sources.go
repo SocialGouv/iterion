@@ -9,6 +9,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -47,6 +48,9 @@ func (s Sources) Validate() error {
 	for name, body := range s.Files {
 		if !sourceName(name) {
 			return fmt.Errorf("NATS authority source path is outside the supported relative-file profile")
+		}
+		if !utf8.ValidString(body) {
+			return fmt.Errorf("NATS authority source contains unsupported non-UTF-8 bytes")
 		}
 		size += len(body)
 		if size > MaxSourceBytes {

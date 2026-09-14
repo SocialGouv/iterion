@@ -403,10 +403,16 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   for inherited defaults and a signed nkey, denies anonymous access, and
   reports the same parsed digest through HTTP and authenticated system VARZ
   before and after reload. The race-instrumented manifest now verifies all
-  **69** named parser/profile/permission cases without skips; `go vet` and a
+  **71** named parser/profile/permission cases without skips; `go vet` and a
   static production build pass. This is still an isolated source projection:
   the protected JetStream/KV API catalog, credential-holder inventory,
   Kubernetes reconciliation and production verifier remain outstanding.
+- Source bytes and all upstream parsed keys/values are checked for UTF-8 before
+  JSON serialization. The pinned broker accepts an escaped non-UTF-8 subject
+  byte and distinguishes it from U+FFFD in effective permissions, while JSON
+  would otherwise replace the byte and collapse allow/deny rules. The helper
+  now refuses this lossy configuration; a real-broker differential test and
+  an invalid-source test cover both sides of that boundary.
 - A complete `task test` pass initially found two fixture/CI omissions:
   `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
   test called a Mongo factory without checking the optional fixture gate.

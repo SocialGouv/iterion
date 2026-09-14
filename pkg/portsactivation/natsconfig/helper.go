@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nats-io/nats-server/v2/conf"
 )
@@ -126,6 +127,9 @@ func RunHelper(in io.Reader, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("NATS authority configuration is invalid or requires an external variable")
 	}
+	if err := validateParsedUTF8(parsed); err != nil {
+		return err
+	}
 	result := Result{ParserVersion: ParserVersion, Digest: digest, Config: make(map[string]json.RawMessage, len(parsed))}
 	for name, value := range parsed {
 		if token, ok := value.(interface{ IsUsedVariable() bool }); ok && token.IsUsedVariable() {
@@ -139,4 +143,49 @@ func RunHelper(in io.Reader, out io.Writer) error {
 	}
 	slices.Sort(result.Variables)
 	return json.NewEncoder(out).Encode(result)
+}
+
+// The upstream parser can decode byte escapes into invalid UTF-8 strings.
+// encoding/json silently replaces those bytes with U+FFFD, which can make
+// distinct allow and deny subjects appear identical to the ACL evaluator.
+// Walk the token wrappers before ANY JSON serialization and refuse lossy
+// projections, including keys and nested variables.
+func validateParsedUTF8(value any) error {
+	visits := 0
+	var walk func(any, int) error
+	walk = func(value any, depth int) error {
+		visits++
+		if depth > 128 || visits > 100000 {
+			return fmt.Errorf("NATS authority parsed configuration exceeds supported structure")
+		}
+		switch item := value.(type) {
+		case interface{ Value() any }:
+			return walk(item.Value(), depth+1)
+		case string:
+			if !utf8.ValidString(item) {
+				return fmt.Errorf("NATS authority configuration contains unsupported non-UTF-8 values")
+			}
+		case map[string]any:
+			for key, nested := range item {
+				if !utf8.ValidString(key) {
+					return fmt.Errorf("NATS authority configuration contains unsupported non-UTF-8 keys")
+				}
+				if err := walk(nested, depth+1); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, nested := range item {
+				if err := walk(nested, depth+1); err != nil {
+					return err
+				}
+			}
+		case nil, bool, int, int64, float64:
+			// These values have a lossless JSON representation in this parser.
+		default:
+			return fmt.Errorf("NATS authority parsed configuration contains an unsupported value type")
+		}
+		return nil
+	}
+	return walk(value, 0)
 }

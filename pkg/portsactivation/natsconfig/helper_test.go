@@ -64,6 +64,13 @@ func TestNATSConfigSourcesConfineIncludes(t *testing.T) {
 	}
 }
 
+func TestNATSConfigRejectsInvalidUTF8Source(t *testing.T) {
+	source := Sources{Entry: "main.conf", Files: map[string]string{"main.conf": "port: " + string([]byte{0xff})}}
+	if source.Validate() == nil {
+		t.Fatal("non-UTF-8 source bytes would be silently changed by the pipe JSON encoding")
+	}
+}
+
 func TestNATSConfigUsesLocalVariablesAndIncludedDefaults(t *testing.T) {
 	sources := Sources{Entry: "main.conf", Files: map[string]string{
 		"main.conf":     "PORT = 4223\nport: $PORT\ninclude \"accounts.conf\"\n",
