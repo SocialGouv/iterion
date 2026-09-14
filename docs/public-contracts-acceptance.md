@@ -513,6 +513,15 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   role references. Twenty-four authority cases pass with race detection. The
   source is not yet an effective permission analysis, nor evidence that RBAC
   is the cluster's only authorizer.
+- A conservative RBAC boundary analyzer now resolves referenced roles and
+  worker ServiceAccount/group grants across trusted RoleBindings and all
+  ClusterRoleBindings. It refuses trusted-namespace Secret/pod/RBAC access,
+  pod-producing controllers, token/impersonation and similar privilege paths,
+  plus unapproved direct writers of the authority Secret. Aggregated or
+  missing referenced roles fail closed. Twenty-six authority cases pass with
+  race detection. This is RBAC corroboration only: admission controllers,
+  non-RBAC authorizers, indirect writer paths and live worker-identity denials
+  remain unverified.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot

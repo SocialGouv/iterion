@@ -25,7 +25,9 @@
       "TestKubernetesCredentialReconciliationRefusesWrongIdentityAndChangingSecret",
       "TestKubernetesCredentialReconciliationKeepsExternalHoldersUnresolved",
       "TestKubernetesRBACSnapshotKeepsNamespacedAndClusterBindings",
-      "TestKubernetesRBACSnapshotRefusesPartialOrUnsupportedEvidence"
+      "TestKubernetesRBACSnapshotRefusesPartialOrUnsupportedEvidence",
+      "TestKubernetesRBACBoundaryAcceptsSeparatedWorkerAndNamedWriters",
+      "TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants"
     ]
   }
 }
