@@ -518,8 +518,9 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   ClusterRoleBindings. It refuses trusted-namespace Secret/pod/RBAC access,
   pod-producing controllers, token/impersonation and similar privilege paths,
   plus unapproved direct writers of the authority Secret. Aggregated or
-  missing referenced roles fail closed. Twenty-six authority cases pass with
-  race detection. This is RBAC corroboration only: admission controllers,
+  missing referenced roles fail closed. Pod subresources, controller scale
+  subresources and anonymous Secret writers are also denied. Twenty-seven
+  authority cases pass with race detection. This is RBAC corroboration only: admission controllers,
   non-RBAC authorizers, indirect writer paths and live worker-identity denials
   remain unverified.
 - After the authority config changes, a complete `task test` run passed.

@@ -1,5 +1,5 @@
 {
-  "scope": "Read-only bounded kubectl authority/credential Secret and standard workload listing, strict versioned operator records, static NATS source/profile and explicit workload credential-reference reconciliation. Actual credential key bytes remain private. These layers do not prove exhaustive custody, RBAC or distributed activation.",
+  "scope": "Read-only bounded kubectl authority/credential Secret, standard workload and RBAC listing, strict versioned operator records, static NATS source/profile and explicit workload credential-reference reconciliation. Actual credential key bytes remain private. RBAC analysis is corroboration only; exhaustive custody, other authorizers and distributed activation remain unproved.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
@@ -27,7 +27,8 @@
       "TestKubernetesRBACSnapshotKeepsNamespacedAndClusterBindings",
       "TestKubernetesRBACSnapshotRefusesPartialOrUnsupportedEvidence",
       "TestKubernetesRBACBoundaryAcceptsSeparatedWorkerAndNamedWriters",
-      "TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants"
+      "TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants",
+      "TestKubernetesRBACBoundaryRefusesPodAndControllerSubresourceGrants"
     ]
   }
 }

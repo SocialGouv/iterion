@@ -168,11 +168,21 @@ func ruleCrossesTrustedBoundary(rule RBACRule) bool {
 	if !listIntersects(rule.Verbs, "get", "list", "watch", "create", "update", "patch", "delete", "deletecollection", "*") {
 		return false
 	}
-	if listIntersects(rule.APIGroups, "", "*") && rbacAnyResourceMatches(rule.Resources,
-		"secrets", "pods", "pods/exec", "pods/attach", "pods/portforward", "pods/proxy",
-		"pods/ephemeralcontainers", "pods/log", "serviceaccounts", "serviceaccounts/token",
-		"users", "groups", "configmaps", "replicationcontrollers", "namespaces", "nodes", "nodes/proxy") {
-		return true
+	if listIntersects(rule.APIGroups, "", "*") {
+		// A Pod subresource can mutate or disclose a trusted Pod independently
+		// of access to pods itself. Reject every explicit pods/ grant, including
+		// future subresources, and every */subresource grant in this API group.
+		for _, resource := range rule.Resources {
+			if strings.HasPrefix(resource, "pods/") || strings.HasPrefix(resource, "*/") {
+				return true
+			}
+		}
+		if rbacAnyResourceMatches(rule.Resources,
+			"secrets", "pods", "serviceaccounts", "serviceaccounts/token",
+			"users", "groups", "configmaps", "replicationcontrollers", "replicationcontrollers/scale",
+			"namespaces", "nodes", "nodes/proxy") {
+			return true
+		}
 	}
 	if listIntersects(rule.APIGroups, "apps", "*") && rbacAnyResourceMatches(rule.Resources,
 		"deployments", "deployments/scale", "deployments/status",

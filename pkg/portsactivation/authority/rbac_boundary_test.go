@@ -114,6 +114,12 @@ func TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants(t *testing.T
 		{APIGroups: []string{""}, Resources: []string{"*/token"}, Verbs: []string{"create"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"replicasets/scale"}, Verbs: []string{"patch"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets/scale"}, Verbs: []string{"patch"}},
+		{APIGroups: []string{""}, Resources: []string{"replicationcontrollers/scale"}, Verbs: []string{"patch"}},
+		{APIGroups: []string{""}, Resources: []string{"*/scale"}, Verbs: []string{"patch"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"*/status"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/eviction"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"*/eviction"}, Verbs: []string{"create"}},
 		{APIGroups: []string{""}, Resources: []string{"users"}, Verbs: []string{"impersonate"}},
 	} {
 		if !ruleCrossesTrustedBoundary(rule) {
@@ -122,5 +128,32 @@ func TestKubernetesRBACBoundaryRefusesCrossNamespaceAndWriterGrants(t *testing.T
 	}
 	if ruleCrossesTrustedBoundary(RBACRule{Verbs: []string{"get"}, NonResourceURLs: []string{"/api"}}) {
 		t.Fatal("ordinary discovery permission was misclassified")
+	}
+}
+
+func TestKubernetesRBACBoundaryRefusesPodAndControllerSubresourceGrants(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		rule RBACRule
+	}{
+		{"pod status", RBACRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"get"}}},
+		{"wildcard pod status", RBACRule{APIGroups: []string{""}, Resources: []string{"*/status"}, Verbs: []string{"get"}}},
+		{"pod eviction", RBACRule{APIGroups: []string{""}, Resources: []string{"pods/eviction"}, Verbs: []string{"create"}}},
+		{"wildcard pod eviction", RBACRule{APIGroups: []string{""}, Resources: []string{"*/eviction"}, Verbs: []string{"create"}}},
+		{"replication controller scale", RBACRule{APIGroups: []string{""}, Resources: []string{"replicationcontrollers/scale"}, Verbs: []string{"patch"}}},
+		{"wildcard replication controller scale", RBACRule{APIGroups: []string{""}, Resources: []string{"*/scale"}, Verbs: []string{"patch"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			record, secret, snapshot := rbacBoundaryFixture(t)
+			snapshot.Roles = append(snapshot.Roles, RBACRole{Kind: "Role", Namespace: "trusted",
+				Name: "subresource", UID: "uid-subresource", ResourceVersion: "18", Rules: []RBACRule{test.rule}})
+			snapshot.Bindings = append(snapshot.Bindings, RBACBinding{Kind: "RoleBinding", Namespace: "trusted",
+				Name: "subresource", UID: "uid-subresource-binding", ResourceVersion: "18",
+				Subjects: []RBACSubject{{Kind: "ServiceAccount", Namespace: "worker", Name: "iterion-runner"}},
+				RoleKind: "Role", RoleName: "subresource"})
+			if _, err := AnalyzeRBACBoundary(record, secret, snapshot); err == nil {
+				t.Fatal("worker Pod or controller subresource grant was accepted")
+			}
+		})
 	}
 }
