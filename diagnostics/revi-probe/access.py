@@ -16,7 +16,7 @@ class Grant:
 
 def is_current(grant: Grant, now: int) -> bool:
     """A report grant expires at its exact expiry timestamp."""
-    return grant.expires_at >= now
+    return now < grant.expires_at
 
 
 def active_grants(grants: list[Grant], tenant_id: str, now: int) -> list[str]:
@@ -24,5 +24,5 @@ def active_grants(grants: list[Grant], tenant_id: str, now: int) -> list[str]:
     return [
         grant.grant_id
         for grant in grants
-        if is_current(grant, now)
+        if is_current(grant, now) and grant.tenant_id == tenant_id
     ]
