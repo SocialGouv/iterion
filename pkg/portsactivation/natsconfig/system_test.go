@@ -92,6 +92,42 @@ accounts {
 	if _, err := ObserveSystemServer(ctx, system, system.ConnectedServerId(), "sha256:"+fmt.Sprintf("%064x", 1)); err == nil {
 		t.Fatal("mismatched loaded configuration digest was accepted")
 	}
+	pingCtx, stopPing := context.WithTimeout(t.Context(), 4*time.Second)
+	defer stopPing()
+	brokers, err := ObserveSystemBrokerSet(pingCtx, system, []SystemBrokerIdentity{{
+		ServerID: observed.ServerID, ServerName: observed.ServerName,
+	}})
+	if err != nil || len(brokers) != 1 || brokers[0].ServerID != observed.ServerID {
+		t.Fatalf("system PING.IDZ did not corroborate the declared broker: %+v %v", brokers, err)
+	}
+	if _, err := ObserveSystemBrokerSet(t.Context(), system, []SystemBrokerIdentity{{
+		ServerID: observed.ServerID, ServerName: "wrong-name",
+	}}); err == nil {
+		t.Fatal("system PING.IDZ accepted a different declared broker name")
+	}
+}
+
+func TestNATSSystemBrokerSetRejectsAmbiguousReplies(t *testing.T) {
+	declared := map[string]string{"BROKER": "known"}
+	for _, raw := range []string{
+		`{"name":"other","host":"127.0.0.1","id":"BROKER"}`,
+		`{"name":"known","host":"127.0.0.1","id":"UNKNOWN"}`,
+		`{"name":"known","host":"127.0.0.1","id":"BROKER","id":"BROKER"}`,
+		`{"name":"known","host":"127.0.0.1","id":"BROKER","extra":true}`,
+		`{"name":"known","host":"","id":"BROKER"}`,
+	} {
+		if err := recordSystemBrokerReply([]byte(raw), declared, map[string]bool{}); err == nil {
+			t.Fatalf("untrusted IDZ response was accepted: %s", raw)
+		}
+	}
+	seen := map[string]bool{}
+	valid := []byte(`{"name":"known","host":"127.0.0.1","id":"BROKER"}`)
+	if err := recordSystemBrokerReply(valid, declared, seen); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordSystemBrokerReply(valid, declared, seen); err == nil {
+		t.Fatal("duplicate IDZ response was accepted")
+	}
 }
 
 func TestNATSSystemObservationRefusesUnboundBroker(t *testing.T) {

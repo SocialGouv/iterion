@@ -1,5 +1,5 @@
 {
-  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. A bounded static-profile loader projects credential-free effective permissions for named password/nkey users and rejects unreviewed auth paths. Conservative queue, JetStream API, ACK, KV, control-subject and system-account classification is compared with real durable fetch, purge, request/reply injection and core run delivery. A read-only per-server system observation binds VARZ and one complete bounded authenticated CONNZ snapshot to a named broker and parsed digest; it cannot prove broker or credential-holder census completeness. This does not establish Kubernetes authority, stored-proof verification or distributed activation.",
+  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. A bounded static-profile loader projects credential-free effective permissions for named password/nkey users and rejects unreviewed auth paths. Conservative queue, JetStream API, ACK, KV, control-subject and system-account classification is compared with real durable fetch, purge, request/reply injection and core run delivery. Read-only system observations bind VARZ and one complete bounded authenticated CONNZ snapshot to named brokers, plus a timed PING.IDZ comparison with the operator broker list; they cannot prove broker or credential-holder census completeness. This does not establish Kubernetes authority, stored-proof verification or distributed activation.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig": [
       "TestNATSConfigSourcesConfineIncludes",
@@ -91,6 +91,7 @@
       "TestNATSProtectedAccessHonorsConfiguredDenyBudget",
       "TestNATSProtectedAccessRefusesUnboundTopology",
       "TestNATSSystemObservationMatchesPinnedBroker",
+      "TestNATSSystemBrokerSetRejectsAmbiguousReplies",
       "TestNATSSystemObservationRejectsEqualTotalPageChurn",
       "TestNATSSystemObservationRefusesUnboundBroker"
     ]
