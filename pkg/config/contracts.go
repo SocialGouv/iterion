@@ -41,7 +41,7 @@ func (d DistributedContractsConfig) validate(mode Mode) error {
 		return fmt.Errorf("distributed contracts system NATS URL requires a userinfo password")
 	}
 	parts := strings.Split(d.AuthorityRef, "/")
-	if len(parts) != 2 || !kubernetesDNSLabel(parts[0]) || !kubernetesDNSLabel(parts[1]) {
+	if len(parts) != 2 || !kubernetesDNSLabel(parts[0]) || !kubernetesDNSSubdomain(parts[1]) {
 		return fmt.Errorf("distributed contracts authority Secret reference must be namespace/name")
 	}
 	seen := make(map[string]bool, len(d.KubernetesNamespaces))
@@ -58,7 +58,7 @@ func (d DistributedContractsConfig) validate(mode Mode) error {
 }
 
 func kubernetesDNSLabel(name string) bool {
-	if len(name) == 0 || len(name) > 63 || !kubernetesAlphaNumeric(rune(name[0])) ||
+	if len(name) == 0 || len(name) > 63 || name[0] < 'a' || name[0] > 'z' ||
 		!kubernetesAlphaNumeric(rune(name[len(name)-1])) {
 		return false
 	}
@@ -72,4 +72,22 @@ func kubernetesDNSLabel(name string) bool {
 
 func kubernetesAlphaNumeric(c rune) bool {
 	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+func kubernetesDNSSubdomain(name string) bool {
+	if len(name) == 0 || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 || !kubernetesAlphaNumeric(rune(label[0])) ||
+			!kubernetesAlphaNumeric(rune(label[len(label)-1])) {
+			return false
+		}
+		for _, c := range label {
+			if !kubernetesAlphaNumeric(c) && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }

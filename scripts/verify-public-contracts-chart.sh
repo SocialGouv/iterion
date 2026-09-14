@@ -18,9 +18,11 @@ helm template trusted "$chart_dir" --namespace trusted --set image.tag=edge \
   --set server.distributedAuthority.authorityRef=trusted/authority \
   '--set=server.distributedAuthority.kubernetesNamespaces[0]=trusted' \
   '--set=server.distributedAuthority.kubernetesNamespaces[1]=workers' \
+  --set config.nats.urlSecretName=trusted-nats \
   --set-string config.nats.url=nats://shared-broker:4222 \
   --set-string config.mongo.uri=mongodb://shared-store:27017 > "$render_dir/trusted.yaml"
 grep -Fq 'name: "system-nats"' "$render_dir/trusted.yaml"
+grep -Fq 'name: "trusted-nats"' "$render_dir/trusted.yaml"
 grep -Fq 'value: "trusted/authority"' "$render_dir/trusted.yaml"
 grep -Fq 'value: "trusted,workers"' "$render_dir/trusted.yaml"
 grep -Fq 'serviceAccountName: trusted-sa' "$render_dir/trusted.yaml"
@@ -36,9 +38,15 @@ fi
 helm template workers "$chart_dir" --namespace workers --set image.tag=edge \
   --set serviceAccount.name=worker-sa --set server.replicas=0 \
   --set server.hpa.enabled=false --set runner.enabled=true \
+  --set config.nats.urlSecretName=worker-nats \
   --set-string config.nats.url=nats://shared-broker:4222 \
   --set-string config.mongo.uri=mongodb://shared-store:27017 > "$render_dir/workers.yaml"
 grep -Fq 'serviceAccountName: worker-sa' "$render_dir/workers.yaml"
+grep -Fq 'name: "worker-nats"' "$render_dir/workers.yaml"
+if grep -Fq 'name: "trusted-nats"' "$render_dir/workers.yaml"; then
+  echo 'worker release received trusted NATS credentials' >&2
+  exit 1
+fi
 grep -Fq 'replicas: 0' "$render_dir/workers.yaml"
 if grep -Fq 'ITERION_CONTRACTS_DISTRIBUTED_SYSTEM_NATS_URL' "$render_dir/workers.yaml"; then
   echo 'worker release received the system NATS URL' >&2
@@ -50,10 +58,37 @@ if grep -Fq 'kind: HorizontalPodAutoscaler' "$render_dir/workers.yaml"; then
 fi
 if helm template unsafe "$chart_dir" --set image.tag=edge \
   --set server.distributedAuthority.enabled=true \
+  --set config.nats.urlSecretName=trusted-nats \
   --set server.distributedAuthority.systemNatsSecretName=system-nats \
   --set server.distributedAuthority.authorityRef=trusted/authority \
   '--set=server.distributedAuthority.kubernetesNamespaces[0]=trusted' >/dev/null 2>&1; then
   echo 'shared server/runner release accepted privileged authority wiring' >&2
+  exit 1
+fi
+if helm template sandbox-rbac "$chart_dir" --set image.tag=edge \
+  --set runner.enabled=false --set runner.sandbox.enabled=true \
+  --set server.distributedAuthority.enabled=true \
+  --set config.nats.urlSecretName=trusted-nats \
+  --set server.distributedAuthority.systemNatsSecretName=system-nats \
+  --set server.distributedAuthority.authorityRef=trusted/authority \
+  '--set=server.distributedAuthority.kubernetesNamespaces[0]=trusted' >/dev/null 2>&1; then
+  echo 'trusted server release accepted the sandbox RBAC grant' >&2
+  exit 1
+fi
+if helm template inline-url "$chart_dir" --set image.tag=edge \
+  --set runner.enabled=false --set server.distributedAuthority.enabled=true \
+  --set config.nats.urlSecretName=trusted-nats \
+  --set-string config.nats.url=nats://user@broker:4222 \
+  --set server.distributedAuthority.systemNatsSecretName=system-nats \
+  --set server.distributedAuthority.authorityRef=trusted/authority \
+  '--set=server.distributedAuthority.kubernetesNamespaces[0]=trusted' >/dev/null 2>&1; then
+  echo 'privileged release accepted a credential-bearing shared NATS URL' >&2
+  exit 1
+fi
+if helm template leaked "$chart_dir" --set image.tag=edge \
+  --set-string config.extraEnv.ITERION_CONTRACTS_DISTRIBUTED_SYSTEM_NATS_URL=placeholder \
+  >/dev/null 2>&1; then
+  echo 'shared ConfigMap accepted privileged authority credentials' >&2
   exit 1
 fi
 

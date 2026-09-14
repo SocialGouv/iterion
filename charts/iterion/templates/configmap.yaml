@@ -147,5 +147,8 @@ data:
   {{- end }}
   {{- end }}
   {{- range $key, $value := .Values.config.extraEnv }}
+  {{- if hasPrefix "ITERION_CONTRACTS_DISTRIBUTED_" $key }}
+  {{- fail "distributed contracts authority keys must be server-only, not config.extraEnv" }}
+  {{- end }}
   {{ $key }}: {{ $value | quote }}
   {{- end }}

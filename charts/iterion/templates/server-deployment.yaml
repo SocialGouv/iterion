@@ -74,9 +74,19 @@ spec:
           # Literal PodTemplate values are load-bearing: an old ReplicaSet
           # scaled after the ConfigMap changes must keep its old epoch.
           env:
+            {{- with .Values.config.nats.urlSecretName }}
+            - name: ITERION_NATS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ required "config.nats.urlSecretKey is required when urlSecretName is set" $.Values.config.nats.urlSecretKey | quote }}
+            {{- end }}
             {{- if .Values.server.distributedAuthority.enabled }}
             {{- if ne .Values.mode "cloud" }}{{ fail "server.distributedAuthority requires cloud mode" }}{{ end }}
             {{- if .Values.runner.enabled }}{{ fail "server.distributedAuthority requires runner.enabled=false in this release" }}{{ end }}
+            {{- if .Values.runner.sandbox.enabled }}{{ fail "server.distributedAuthority requires runner.sandbox.enabled=false to exclude sandbox RBAC" }}{{ end }}
+            {{- if not .Values.config.nats.urlSecretName }}{{ fail "server.distributedAuthority requires config.nats.urlSecretName" }}{{ end }}
+            {{- if contains "@" .Values.config.nats.url }}{{ fail "server.distributedAuthority cannot use a credential-bearing ConfigMap NATS URL" }}{{ end }}
             - name: ITERION_CONTRACTS_DISTRIBUTED_SYSTEM_NATS_URL
               valueFrom:
                 secretKeyRef:

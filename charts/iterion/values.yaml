@@ -274,6 +274,11 @@ config:
     eventsTtlDays: 90
   nats:
     url: ""           # required when mode=cloud and nats.enabled=false
+    # Optional per-release credential-bearing URL. An explicit container env
+    # overrides the shared ConfigMap URL for server and runner in this release.
+    # Use distinct Secrets for trusted-server and worker releases.
+    urlSecretName: ""
+    urlSecretKey: url
     # KEDA NATS JetStream scaler scrapes the HTTP monitoring endpoint
     # (default port 8222), NOT the client URL above. Format is
     # "host:port" — no scheme. When using the bundled nats sub-chart,

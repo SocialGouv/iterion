@@ -444,7 +444,10 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   system URL, operator Secret reference and bounded namespace scope. The Helm
   chart defaults to no authority wiring; an opt-in trusted release receives
   the system URL through a named Secret key while a distinct worker release
-  has zero server replicas, no server HPA and no system URL. The chart profile
+  has zero server replicas, no server HPA and no system URL. Each release can
+  override the shared non-secret NATS URL with its own Secret-backed account
+  URL. Authority templates reject sandbox RBAC, credential-bearing shared
+  NATS URLs and reserved authority keys in `config.extraEnv`. The chart profile
   script passes locally and is wired into the existing Helm CI job. Runtime
   authority loading and Kubernetes verification are still outstanding.
 - A complete `task test` pass initially found two fixture/CI omissions:

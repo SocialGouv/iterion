@@ -89,6 +89,13 @@ spec:
           args:
             {{- toYaml .Values.runner.args | nindent 12 }}
           env:
+            {{- with .Values.config.nats.urlSecretName }}
+            - name: ITERION_NATS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ required "config.nats.urlSecretKey is required when urlSecretName is set" $.Values.config.nats.urlSecretKey | quote }}
+            {{- end }}
             # Literal PodTemplate values are load-bearing: KEDA/proportional
             # scaling may create a new pod from an old ReplicaSet after the
             # shared ConfigMap changed. That pod must retain epoch N.

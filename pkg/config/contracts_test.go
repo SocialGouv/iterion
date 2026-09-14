@@ -18,13 +18,20 @@ func TestDistributedContractsConfigIsOptionalAndBounded(t *testing.T) {
 	if err := good.validate(ModeCloud); err != nil {
 		t.Fatalf("bounded server authority config failed: %v", err)
 	}
+	dotted := good
+	dotted.AuthorityRef = "trusted/iterion.authority"
+	if err := dotted.validate(ModeCloud); err != nil {
+		t.Fatalf("valid Kubernetes Secret subdomain name was refused: %v", err)
+	}
 	for index, mutate := range []func(*DistributedContractsConfig){
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "" },
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://nats.example:4222" },
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "http://sys:fixture@nats.example" },
 		func(d *DistributedContractsConfig) { d.AuthorityRef = "outside/iterion-authority" },
+		func(d *DistributedContractsConfig) { d.AuthorityRef = "trusted/iterion..authority" },
 		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"trusted", "trusted"} },
 		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"trusted", ""} },
+		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"1trusted", "workers"} },
 	} {
 		candidate := good
 		mutate(&candidate)
