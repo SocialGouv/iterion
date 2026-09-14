@@ -180,6 +180,9 @@ func (s *Server) routes() {
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
 	}
+	if s.authSvc != nil {
+		s.registerCredentialPreviewRoutes()
+	}
 	// Per-credential usage views (#641): what the org bucket cannot answer.
 	if s.credUsage != nil && s.authSvc != nil {
 		s.registerCredUsageRoutes()

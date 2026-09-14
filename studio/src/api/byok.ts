@@ -37,6 +37,12 @@ export type OAuthKind = "claude_code" | "codex";
 
 export interface OAuthConnection {
   kind: OAuthKind;
+  rank?: number;
+  account_email?: string;
+  account_checked_at?: string;
+  account_error?: string;
+  account_verified?: boolean;
+  same_account_ranks?: number[];
   scopes?: string[];
   access_token_expires_at?: string;
   last_refreshed_at?: string;
@@ -158,18 +164,22 @@ export async function listOAuthConnections(scope: OAuthScope = { mine: true }): 
 export async function startOAuthAuthorize(
   kind: OAuthKind,
   scope: OAuthScope = { mine: true },
+  rank = 0,
 ): Promise<OAuthAuthorizeStart> {
-  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/authorize/start`, { method: "POST" });
+  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/authorize/start${accountLabelQuery(undefined, rank)}`, { method: "POST" });
 }
 
 // completeOAuthAuthorize finishes the browser flow with the code the user
 // pasted from Anthropic's callback page (`code#state` accepted whole).
-// accountLabelQuery names the account on a connect call. An unnamed
-// connect keeps the previous name only when the fingerprint is unchanged
-// (server rule), so naming here is what keeps a rotation from un-naming.
-function accountLabelQuery(accountLabel?: string): string {
-  const label = accountLabel?.trim();
-  return label ? `?account_label=${encodeURIComponent(label)}` : "";
+// accountLabelQuery names the account on a connect call. An unnamed connect
+// preserves a custom name for the same verified account; otherwise the server
+// derives the label from the verified profile when it is available.
+function accountLabelQuery(accountLabel?: string, rank = 0): string {
+  const params = new URLSearchParams();
+  if (accountLabel?.trim()) params.set("account_label", accountLabel.trim());
+  if (rank !== 0) params.set("rank", String(rank));
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 export async function completeOAuthAuthorize(
@@ -177,9 +187,10 @@ export async function completeOAuthAuthorize(
   input: { code: string; state?: string },
   scope: OAuthScope = { mine: true },
   accountLabel?: string,
+  rank = 0,
 ): Promise<OAuthConnection> {
   return send(
-    `${oauthBase(scope)}/${encodeURIComponent(kind)}/authorize/complete${accountLabelQuery(accountLabel)}`,
+    `${oauthBase(scope)}/${encodeURIComponent(kind)}/authorize/complete${accountLabelQuery(accountLabel, rank)}`,
     {
       method: "POST",
       body: JSON.stringify(input),
@@ -192,8 +203,9 @@ export async function uploadOAuthCredentials(
   blob: string,
   scope: OAuthScope = { mine: true },
   accountLabel?: string,
+  rank = 0,
 ): Promise<OAuthConnection> {
-  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/credentials${accountLabelQuery(accountLabel)}`, {
+  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/credentials${accountLabelQuery(accountLabel, rank)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: blob,
@@ -206,8 +218,9 @@ export async function renameOAuth(
   kind: OAuthKind,
   accountLabel: string,
   scope: OAuthScope = { mine: true },
+  rank = 0,
 ): Promise<OAuthConnection> {
-  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}`, {
+  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}${accountLabelQuery(undefined, rank)}`, {
     method: "PATCH",
     body: JSON.stringify({ account_label: accountLabel.trim() }),
   });
@@ -216,12 +229,13 @@ export async function renameOAuth(
 export async function refreshOAuth(
   kind: OAuthKind,
   scope: OAuthScope = { mine: true },
+  rank = 0,
 ): Promise<OAuthConnection> {
-  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/refresh`, { method: "POST" });
+  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/refresh${accountLabelQuery(undefined, rank)}`, { method: "POST" });
 }
 
-export async function deleteOAuth(kind: OAuthKind, scope: OAuthScope = { mine: true }): Promise<void> {
-  await send(`${oauthBase(scope)}/${encodeURIComponent(kind)}`, { method: "DELETE" });
+export async function deleteOAuth(kind: OAuthKind, scope: OAuthScope = { mine: true }, rank = 0): Promise<void> {
+  await send(`${oauthBase(scope)}/${encodeURIComponent(kind)}${accountLabelQuery(undefined, rank)}`, { method: "DELETE" });
 }
 
 // ---- Team management (a thin slice — full surface lives elsewhere) ----

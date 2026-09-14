@@ -206,10 +206,14 @@ the hours this one spent.
   name), when asking **which key
   paid for a run** (the `cloudpublisher: … used/SKIPPED … fp=` lines, the only
   place the credential, the window and the reopening are named — a run's own
-  error names none of the three), and before trusting a **fallback**: a Claude
-  blob carries no account id, so one subscription connected twice is two
-  fingerprints and two meters, and a fleet can look redundant while sharing a
-  single provider window.
+  error names none of the three), and before trusting a **fallback**:
+  browser/profile-capable Claude connections now identify the provider account
+  outside the blob and share one usage meter across owners/ranks. Unverified
+  setup tokens remain explicitly unidentified. The runbook covers the required
+  reader-first rollout, Studio rank selection and duplicate-account warnings,
+  and `iterion remote credentials preview` (personal or real webhook source):
+  the actual candidate order, observed quotas, and conditional later tiers,
+  without opening secrets, probing providers or reserving capacity.
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising

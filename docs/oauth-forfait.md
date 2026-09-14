@@ -16,23 +16,29 @@ for **developing and testing bots** — see the ToS note below.
 
 ## How a run resolves a forfait
 
-At launch the cloud publisher resolves OAuth credentials **user-primary
-with an org fallback**, per kind:
+The publisher resolves BYOK keys and OAuth subscriptions per provider wire,
+with personal, team, organization, pool and platform rules. A connected API
+key can take precedence over a subscription. See the maintained
+[resolution guide](cloud-llm-credentials.md) and
+[pool conditions](credential-pool.md#resolution-order-where-the-pool-sits).
 
-1. **The run owner's personal forfait** wins. An interactive run launched
-   from the studio/CLI by an authenticated developer carries that
-   developer's `OwnerID`, so their connected subscription is used.
-2. **The org/team forfait** is used as a fallback for any kind the owner
-   hasn't connected. Automated runs (webhook / dispatcher / scheduler)
-   carry a *synthetic* owner (`webhook:<id>`, …) with no personal
-   forfait, so they fall back to the org credential when one is set.
-3. Otherwise the run falls back to **API keys** (BYOK), then host env.
+Within an OAuth owner/kind, rank `0` is the primary and higher ranks are tried
+in order when a previous provider window is closed. Interactive runs use the
+authenticated launcher's personal connections; automated runs carry their
+own synthetic owner and do not inherit the operator's personal subscription.
+The Studio selector addresses the chosen rank for connect, rename, refresh
+and disconnect, and can add another fallback without replacing the primary.
 
-Only the **`claude_code`** backend consumes the forfait (it *is* the
-Claude Code CLI — the ToS-clean path; the runner materialises the sealed
-blob into a temp dir and points the CLI at it via `CLAUDE_CONFIG_DIR`).
-`claw` nodes (judges/reviewers, in-process) are **not** wired for
-Anthropic OAuth and keep using API keys.
+Both the Claude Code CLI and Claw's Anthropic path can consume a Claude
+subscription. The runner supplies the resolved credential to the selected
+backend. The presence of an OAuth record alone is not proof it paid for a
+particular run: inspect the run's credential tiers and publisher grant.
+
+When profile scope is present, connecting also verifies the provider account
+and displays its email. Multiple connections of that verified account share
+one meter; Studio flags duplicate accounts within the visible owner. See
+[verified accounts](cloud-llm-credentials.md#verified-accounts-share-one-provider-meter)
+for lookup failures and rollout requirements.
 
 ## Connecting — browser flow (no `claude login`, no file paste)
 
@@ -59,6 +65,12 @@ Access tokens expire (hours). A background **refresh worker** rotates
 every connected forfait (personal *and* org) ~30 min before expiry, so
 long-running and automated runs never read a stale token. A manual
 **Refresh tokens** button is also available per connection.
+
+Claude refreshes verify the identity of the returned bearer before associating
+it with a shared account meter. If the profile is unavailable, the refreshed
+tokens remain usable but the UI reports that account identity is unverified;
+a later successful lookup restores the correlation. A reconnect replacing a
+credential also invalidates refresh work based on the previous snapshot.
 
 ## Configuration
 

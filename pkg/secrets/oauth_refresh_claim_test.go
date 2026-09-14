@@ -341,3 +341,25 @@ func TestOAuthTokenUpdateWrite_FencesOnTheClaim(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthRefreshWorker_ReconnectBeforeClaimDoesNotExchange(t *testing.T) {
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	store := NewMemoryOAuthStore()
+	seedCodexRecord(t, store, sealer, "snapshot-worker", time.Now().Add(5*time.Minute))
+	srv := newFakeOAuthServer(`{"access_token":"unused","refresh_token":"unused"}`, http.StatusOK)
+	defer srv.Close()
+	interleaved := &reconnectAtClaimStore{OAuthStore: store, before: func(ctx context.Context) error {
+		rec, err := store.Get(ctx, "snapshot-worker", OAuthKindCodex)
+		if err != nil {
+			return err
+		}
+		// A reconnect seals a fresh payload and clears its previous claim.
+		rec.SealedPayload = []byte("replacement never opened by the stale worker")
+		return store.Upsert(ctx, rec)
+	}}
+	w := &OAuthRefreshWorker{Store: interleaved, Sealer: sealer, HTTP: redirectingClient(srv.URL), Lead: 30 * time.Minute}
+	n, err := w.RunOnce(t.Context())
+	if err != nil || n != 0 || atomic.LoadInt32(&srv.hits) != 0 {
+		t.Fatalf("stale worker exchanged: n=%d err=%v hits=%d", n, err, atomic.LoadInt32(&srv.hits))
+	}
+}

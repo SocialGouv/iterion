@@ -114,7 +114,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			return refreshed, fmt.Errorf("secrets: oauth refresh sweep: %w", oerr)
 		}
 		now := time.Now().UTC()
-		claimed, cerr := w.Store.ClaimRefresh(ctx, rec.ID, owner, now, now.Add(RefreshClaimTTL))
+		claimed, cerr := ClaimRefreshRecord(ctx, w.Store, rec, owner, now, now.Add(RefreshClaimTTL))
 		if cerr != nil {
 			failures++
 			if firstErr == nil {
@@ -130,13 +130,12 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			// rather than wait the lease out. Best-effort: a claim we no
 			// longer own has already been superseded, and there is nothing
 			// to give back.
-			_ = w.Store.ReleaseRefreshClaim(ctx, rec.ID, owner, nil)
 			if errors.Is(err, ErrNotRefreshable) {
 				// Self-heal legacy records sealed before NotRefreshable
 				// existed so future sweeps skip them without decrypting.
 				// A partial write: the flag is the only thing learned here,
 				// and the record read a round trip ago may already be stale.
-				if uerr := w.Store.UpdateTokens(ctx, rec.ID, OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
+				if uerr := w.Store.UpdateTokens(ctx, rec.ID, OAuthTokenUpdate{NotRefreshable: true}.WithClaim(owner)); uerr != nil && !errors.Is(uerr, ErrRefreshClaimLost) {
 					failures++
 					if firstErr == nil {
 						firstErr = fmt.Errorf("mark not-refreshable %s/%s: %w", rec.UserID, rec.Kind, uerr)
@@ -144,6 +143,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 				}
 				continue
 			}
+			_ = w.Store.ReleaseRefreshClaim(ctx, rec.ID, owner, nil)
 			failures++
 			if firstErr == nil {
 				firstErr = fmt.Errorf("refresh %s/%s: %w", rec.UserID, rec.Kind, err)
