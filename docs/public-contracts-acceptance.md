@@ -528,10 +528,13 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   command-line authorization overrides and stale runtime images. A separate
   reconciliation matches every declared broker to one per-server system-account
   observation, including version, name, configuration digest and currently
-  connected principal identities. Thirty-one authority cases pass with race
-  detection. These checks do not discover omitted brokers or disconnected
-  credential holders, establish observation freshness or prove that the Pod's
-  mounted configuration bytes equal the declared sources.
+  connected principal identities. A bounded Secret reader now compares every
+  declared NATS source file with the Secret keys selected by a read-only Pod
+  volume declaration, including nested includes, and records both Pod and Secret revisions.
+  Thirty-five authority cases pass with race detection. These checks do not
+  discover omitted brokers or disconnected credential holders, establish
+  observation freshness, actual kubelet-mounted bytes or a complete Kubernetes
+  authorization boundary.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot
