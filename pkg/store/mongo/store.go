@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -100,26 +101,27 @@ type LockProvider interface {
 
 // Store implements store.RunStore on top of Mongo + a blob backend.
 type Store struct {
-	client              *mongo.Client
-	db                  *mongo.Database
-	runs                *mongo.Collection
-	routeDecisions      *mongo.Collection
-	events              *mongo.Collection
-	runSeq              *mongo.Collection
-	runLogs             *mongo.Collection
-	interactions        *mongo.Collection
-	userMessages        *mongo.Collection
-	runGitMeta          *mongo.Collection
-	runPlans            *mongo.Collection
-	runNotes            *mongo.Collection
-	runTurns            *mongo.Collection
-	runTags             *mongo.Collection
-	retryCircuits       *mongo.Collection
-	blob                blob.Client
-	logger              *iterlog.Logger
-	lockProv            LockProvider
-	maxAttachmentBytes  int64
-	portBackendIdentity string
+	client                  *mongo.Client
+	db                      *mongo.Database
+	runs                    *mongo.Collection
+	routeDecisions          *mongo.Collection
+	events                  *mongo.Collection
+	runSeq                  *mongo.Collection
+	runLogs                 *mongo.Collection
+	interactions            *mongo.Collection
+	userMessages            *mongo.Collection
+	runGitMeta              *mongo.Collection
+	runPlans                *mongo.Collection
+	runNotes                *mongo.Collection
+	runTurns                *mongo.Collection
+	runTags                 *mongo.Collection
+	retryCircuits           *mongo.Collection
+	blob                    blob.Client
+	logger                  *iterlog.Logger
+	lockProv                LockProvider
+	maxAttachmentBytes      int64
+	portBackendIdentity     string
+	portDistributedVerifier store.PortDistributedActivationVerifier
 
 	// logPositionFn stamps Event.LogOffset at AppendEvent time from the
 	// runner's per-run log writer total (the cloud twin of the
@@ -136,6 +138,20 @@ type Store struct {
 	// twin of the filesystem store's hook). Guarded by logPositionMu.
 	// nil disables stamping. See runlogs.go.
 	activeDurationFn store.ActiveDurationFn
+}
+
+// SetPortDistributedActivationVerifier installs the explicitly trusted
+// launch-time verifier. A raw Mongo Store remains fail-closed; callers must
+// opt into a verifier backed by the server-produced structured snapshot.
+func (s *Store) SetPortDistributedActivationVerifier(verifier store.PortDistributedActivationVerifier) {
+	s.portDistributedVerifier = verifier
+}
+
+func (s *Store) VerifyPortDistributedActivation(ctx context.Context, record *store.PortActivation, now time.Time) error {
+	if s.portDistributedVerifier == nil {
+		return store.ErrPortActivation
+	}
+	return s.portDistributedVerifier.VerifyPortDistributedActivation(ctx, record, now)
 }
 
 // Registry returns the BSON codec registry the store's Mongo client is

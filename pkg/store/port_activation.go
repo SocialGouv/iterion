@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -114,6 +115,29 @@ type PortDistributedActivationVerifier interface {
 	VerifyPortDistributedActivation(context.Context, *PortActivation, time.Time) error
 }
 
+// ValidatePortDistributedActivationWrite checks the complete state transition
+// before a backend enters its atomic publication primitive. Keeping this
+// check in the store package means filesystem and Mongo writers enforce the
+// same revision, digest and freshness invariants.
+func ValidatePortDistributedActivationWrite(expectedPolicy uint64, proof *PortDistributedProof, next *PortActivation) error {
+	if expectedPolicy >= math.MaxInt64-1 || proof == nil || next == nil {
+		return fmt.Errorf("%w: distributed activation revision cannot advance", ErrPortActivation)
+	}
+	if err := proof.Validate(); err != nil {
+		return err
+	}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	if next.Revision != expectedPolicy+1 || proof.PolicyRevision != next.Revision ||
+		proof.ProofRevision != next.ProofRevision || proof.StoreIdentity != next.StoreIdentity ||
+		proof.ProofDigest != next.ProofDigest || next.Scope != PortActivationDistributed ||
+		!next.Enabled || next.RefreshLease != nil {
+		return fmt.Errorf("%w: distributed proof and activation do not describe one transition", ErrPortActivation)
+	}
+	return nil
+}
+
 func verifyPortDistributedActivation(ctx context.Context, s RunStore, record *PortActivation, now time.Time) error {
 	if record.Scope != PortActivationDistributed {
 		return nil
@@ -219,7 +243,26 @@ func (s *FilesystemRunStore) portDistributedProofPath() string {
 	return filepath.Join(s.root, "port_distributed_proof_v1.json")
 }
 
-func (s *FilesystemRunStore) LoadPortDistributedProof(ctx context.Context) (*PortDistributedProof, error) {
+func (s *FilesystemRunStore) portDistributedProofCandidatePath() string {
+	return filepath.Join(s.root, "port_distributed_proof_candidate_v1.json")
+}
+
+func (s *FilesystemRunStore) portDistributedActivationTxnPath() string {
+	return filepath.Join(s.root, "port_distributed_activation_txn_v1.json")
+}
+
+func (s *FilesystemRunStore) portDistributedRenewalTxnPath() string {
+	return filepath.Join(s.root, "port_distributed_renewal_txn_v1.json")
+}
+
+type portDistributedActivationTxn struct {
+	Version        int                  `json:"version"`
+	ExpectedPolicy uint64               `json:"expected_policy"`
+	Proof          PortDistributedProof `json:"proof"`
+	Activation     PortActivation       `json:"activation"`
+}
+
+func (s *FilesystemRunStore) loadPortDistributedProofUnlocked(ctx context.Context) (*PortDistributedProof, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -240,45 +283,7 @@ func (s *FilesystemRunStore) LoadPortDistributedProof(ctx context.Context) (*Por
 	return &proof, nil
 }
 
-func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expectedPolicy uint64, proof *PortDistributedProof) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	lock, err := acquireFileLockRetry(filepath.Join(s.root, ".port_distributed_proof_v1.lock"), "distributed proof", 5*time.Second)
-	if err != nil {
-		return err
-	}
-	defer lock.Unlock()
-	current, err := s.LoadPortDistributedProof(ctx)
-	if err != nil {
-		return err
-	}
-	actual := uint64(0)
-	if current != nil {
-		actual = current.PolicyRevision
-	}
-	if actual != expectedPolicy {
-		return fmt.Errorf("%w: distributed proof policy changed", ErrRunConflict)
-	}
-	if proof == nil || (expectedPolicy == 0 && proof.PolicyRevision != 1) ||
-		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy && proof.PolicyRevision != expectedPolicy+1) {
-		return fmt.Errorf("%w: invalid distributed proof write", ErrPortActivation)
-	}
-	proof.Snapshot, err = canonicalPortSnapshot(proof.Snapshot)
-	if err != nil || proof.Validate() != nil {
-		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
-	}
-	var encoded bytes.Buffer
-	encoder := json.NewEncoder(&encoded)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(proof); err != nil {
-		return err
-	}
-	raw := bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'})
-	return WriteFileAtomic(s.portDistributedProofPath(), raw, filePerm)
-}
-
-func (s *FilesystemRunStore) LoadPortActivation(ctx context.Context) (*PortActivation, error) {
+func (s *FilesystemRunStore) loadPortActivationUnlocked(ctx context.Context) (*PortActivation, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -299,6 +304,245 @@ func (s *FilesystemRunStore) LoadPortActivation(ctx context.Context) (*PortActiv
 	return &record, nil
 }
 
+func (s *FilesystemRunStore) distributedActivationLocks() (RunLock, RunLock, error) {
+	activation, err := acquireFileLockRetry(filepath.Join(s.root, ".port_activation_v1.lock"), "native activation", 5*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	proof, err := acquireFileLockRetry(filepath.Join(s.root, ".port_distributed_proof_v1.lock"), "distributed proof", 5*time.Second)
+	if err != nil {
+		_ = activation.Unlock()
+		return nil, nil, err
+	}
+	return activation, proof, nil
+}
+
+func (s *FilesystemRunStore) recoverDistributedActivationLocked(ctx context.Context) error {
+	raw, err := os.ReadFile(s.portDistributedActivationTxnPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var txn portDistributedActivationTxn
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&txn); err != nil || decoder.Decode(new(any)) != io.EOF || txn.Version != 1 ||
+		ValidatePortDistributedActivationWrite(txn.ExpectedPolicy, &txn.Proof, &txn.Activation) != nil {
+		return fmt.Errorf("%w: unreadable distributed activation transaction", ErrPortActivation)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	currentActivation, err := s.loadPortActivationUnlocked(ctx)
+	if err != nil {
+		return err
+	}
+	currentProof, err := s.loadPortDistributedProofUnlocked(ctx)
+	if err != nil {
+		return err
+	}
+	actualPolicy := uint64(0)
+	if currentActivation != nil {
+		actualPolicy = currentActivation.Revision
+	}
+	if actualPolicy != txn.ExpectedPolicy && actualPolicy != txn.Activation.Revision {
+		return fmt.Errorf("%w: distributed activation transaction conflicts with current policy", ErrRunConflict)
+	}
+	if currentActivation != nil && actualPolicy == txn.Activation.Revision &&
+		(currentActivation.ProofRevision != txn.Activation.ProofRevision || currentActivation.ProofDigest != txn.Activation.ProofDigest || !currentActivation.Enabled) {
+		return fmt.Errorf("%w: distributed activation transaction conflicts with current activation", ErrRunConflict)
+	}
+	if currentProof != nil && currentProof.PolicyRevision == txn.Proof.PolicyRevision &&
+		(currentProof.ProofRevision != txn.Proof.ProofRevision || currentProof.ProofDigest != txn.Proof.ProofDigest) {
+		return fmt.Errorf("%w: distributed activation transaction conflicts with current proof", ErrRunConflict)
+	}
+	if currentProof == nil || currentProof.PolicyRevision != txn.Proof.PolicyRevision {
+		if err := writePortDistributedProof(s, &txn.Proof); err != nil {
+			return err
+		}
+	}
+	if currentActivation == nil || currentActivation.Revision != txn.Activation.Revision {
+		if err := writePortActivation(s, &txn.Activation); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(s.portDistributedActivationTxnPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return fsyncDir(s.root)
+}
+
+// recoverDistributedStateLocked completes either durable distributed
+// publication journal before a reader or writer observes the two documents.
+// Both journal operations use the same activation-then-proof lock order.
+func (s *FilesystemRunStore) recoverDistributedStateLocked(ctx context.Context) error {
+	if err := s.recoverDistributedActivationLocked(ctx); err != nil {
+		return err
+	}
+	return s.recoverDistributedRenewalLocked(ctx)
+}
+
+func (s *FilesystemRunStore) LoadPortDistributedProof(ctx context.Context) (*PortDistributedProof, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	activation, proofLock, err := s.distributedActivationLocks()
+	if err != nil {
+		return nil, err
+	}
+	defer activation.Unlock()
+	defer proofLock.Unlock()
+	if err := s.recoverDistributedStateLocked(ctx); err != nil {
+		return nil, err
+	}
+	return s.loadPortDistributedProofUnlocked(ctx)
+}
+
+func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expectedPolicy uint64, proof *PortDistributedProof) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if expectedPolicy >= math.MaxInt64 {
+		return fmt.Errorf("%w: distributed proof policy cannot advance", ErrRunConflict)
+	}
+	activation, proofLock, err := s.distributedActivationLocks()
+	if err != nil {
+		return err
+	}
+	defer activation.Unlock()
+	defer proofLock.Unlock()
+	if err := s.recoverDistributedStateLocked(ctx); err != nil {
+		return err
+	}
+	current, err := s.loadPortDistributedProofUnlocked(ctx)
+	if err != nil {
+		return err
+	}
+	currentActivation, err := s.loadPortActivationUnlocked(ctx)
+	if err != nil {
+		return err
+	}
+	if expectedPolicy == 0 && currentActivation != nil {
+		return fmt.Errorf("%w: distributed activation already exists", ErrRunConflict)
+	}
+	if expectedPolicy != 0 && currentActivation != nil && currentActivation.Revision != expectedPolicy {
+		return fmt.Errorf("%w: distributed activation policy changed", ErrRunConflict)
+	}
+	actual := uint64(0)
+	if current != nil {
+		actual = current.PolicyRevision
+	}
+	if actual != expectedPolicy {
+		return fmt.Errorf("%w: distributed proof policy changed", ErrRunConflict)
+	}
+	if proof == nil || (expectedPolicy == 0 && proof.PolicyRevision != 1) ||
+		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy && proof.PolicyRevision != expectedPolicy+1) {
+		return fmt.Errorf("%w: invalid distributed proof write", ErrPortActivation)
+	}
+	proof.Snapshot, err = canonicalPortSnapshot(proof.Snapshot)
+	if err != nil || proof.Validate() != nil {
+		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
+	}
+	return writePortDistributedProof(s, proof)
+}
+
+func writePortDistributedProof(s *FilesystemRunStore, proof *PortDistributedProof) error {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(proof); err != nil {
+		return err
+	}
+	return WriteFileAtomic(s.portDistributedProofPath(), bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'}), filePerm)
+}
+
+func writePortActivation(s *FilesystemRunStore, activation *PortActivation) error {
+	raw, err := json.Marshal(activation)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(s.portActivationPath(), raw, filePerm)
+}
+
+func (s *FilesystemRunStore) LoadPortDistributedProofCandidate(ctx context.Context) (*PortDistributedProof, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(s.portDistributedProofCandidatePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var proof PortDistributedProof
+	if err := json.Unmarshal(raw, &proof); err != nil {
+		return nil, fmt.Errorf("%w: unreadable distributed proof candidate", ErrPortActivation)
+	}
+	if err := proof.Validate(); err != nil {
+		return nil, err
+	}
+	return &proof, nil
+}
+
+func (s *FilesystemRunStore) SavePortDistributedProofCandidate(ctx context.Context, proof *PortDistributedProof) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if proof == nil {
+		return fmt.Errorf("%w: invalid distributed proof candidate", ErrPortActivation)
+	}
+	lock, err := acquireFileLockRetry(filepath.Join(s.root, ".port_distributed_proof_candidate_v1.lock"), "distributed proof candidate", 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	proof.Snapshot, err = canonicalPortSnapshot(proof.Snapshot)
+	if err != nil || proof.Validate() != nil {
+		return fmt.Errorf("%w: invalid distributed proof candidate", ErrPortActivation)
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(proof); err != nil {
+		return err
+	}
+	return WriteFileAtomic(s.portDistributedProofCandidatePath(), bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'}), filePerm)
+}
+
+func (s *FilesystemRunStore) ClearPortDistributedProofCandidate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lock, err := acquireFileLockRetry(filepath.Join(s.root, ".port_distributed_proof_candidate_v1.lock"), "distributed proof candidate", 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	if err := os.Remove(s.portDistributedProofCandidatePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *FilesystemRunStore) LoadPortActivation(ctx context.Context) (*PortActivation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	activation, proofLock, err := s.distributedActivationLocks()
+	if err != nil {
+		return nil, err
+	}
+	defer activation.Unlock()
+	defer proofLock.Unlock()
+	if err := s.recoverDistributedStateLocked(ctx); err != nil {
+		return nil, err
+	}
+	return s.loadPortActivationUnlocked(ctx)
+}
+
 func (s *FilesystemRunStore) SavePortActivation(ctx context.Context, expectedRevision uint64, next *PortActivation) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -306,15 +550,19 @@ func (s *FilesystemRunStore) SavePortActivation(ctx context.Context, expectedRev
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	if next.Revision != expectedRevision+1 {
+	if expectedRevision >= math.MaxInt64 || next.Revision != expectedRevision+1 || next.RefreshLease != nil {
 		return fmt.Errorf("%w: activation revision", ErrRunConflict)
 	}
-	lock, err := acquireFileLockRetry(filepath.Join(s.root, ".port_activation_v1.lock"), "native activation", 5*time.Second)
+	activation, proofLock, err := s.distributedActivationLocks()
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
-	current, err := s.LoadPortActivation(ctx)
+	defer activation.Unlock()
+	defer proofLock.Unlock()
+	if err := s.recoverDistributedStateLocked(ctx); err != nil {
+		return err
+	}
+	current, err := s.loadPortActivationUnlocked(ctx)
 	if err != nil {
 		return err
 	}
@@ -330,4 +578,80 @@ func (s *FilesystemRunStore) SavePortActivation(ctx context.Context, expectedRev
 		return err
 	}
 	return WriteFileAtomic(s.portActivationPath(), raw, filePerm)
+}
+
+// SavePortDistributedActivation atomically publishes a proof and its
+// activation. The transaction journal is durable before either target file is
+// replaced; a later reader completes it after a process or power failure.
+func (s *FilesystemRunStore) SavePortDistributedActivation(ctx context.Context, expectedPolicy uint64,
+	proof *PortDistributedProof, next *PortActivation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if proof == nil {
+		return fmt.Errorf("%w: distributed activation is missing its proof", ErrPortActivation)
+	}
+	canonical, err := canonicalPortSnapshot(proof.Snapshot)
+	if err != nil {
+		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
+	}
+	normalizedProof := *proof
+	normalizedProof.Snapshot = canonical
+	proof = &normalizedProof
+	if err := ValidatePortDistributedActivationWrite(expectedPolicy, proof, next); err != nil {
+		return err
+	}
+	activation, proofLock, err := s.distributedActivationLocks()
+	if err != nil {
+		return err
+	}
+	defer activation.Unlock()
+	defer proofLock.Unlock()
+	if err := s.recoverDistributedStateLocked(ctx); err != nil {
+		return err
+	}
+	currentActivation, err := s.loadPortActivationUnlocked(ctx)
+	if err != nil {
+		return err
+	}
+	actual := uint64(0)
+	if currentActivation != nil {
+		actual = currentActivation.Revision
+	}
+	if actual != expectedPolicy {
+		return fmt.Errorf("%w: activation revision %d != %d", ErrRunConflict, actual, expectedPolicy)
+	}
+	currentProof, err := s.loadPortDistributedProofUnlocked(ctx)
+	if err != nil {
+		return err
+	}
+	if currentProof != nil {
+		acceptableProofPolicy := expectedPolicy
+		if currentActivation != nil && !currentActivation.Enabled {
+			// Disable preserves the last proof while advancing only the
+			// operator policy. An explicit reactivation may replace that
+			// retained proof with the newly probed candidate.
+			acceptableProofPolicy = expectedPolicy - 1
+		}
+		if currentProof.PolicyRevision != acceptableProofPolicy {
+			return fmt.Errorf("%w: distributed proof policy changed", ErrRunConflict)
+		}
+		if proof.ProofRevision <= currentProof.ProofRevision {
+			return fmt.Errorf("%w: distributed proof revision did not advance", ErrRunConflict)
+		}
+		if currentActivation != nil && currentProof.StoreIdentity != currentActivation.StoreIdentity {
+			return fmt.Errorf("%w: distributed proof identity disagrees with activation", ErrRunConflict)
+		}
+	}
+	txn := portDistributedActivationTxn{Version: 1, ExpectedPolicy: expectedPolicy, Proof: *proof, Activation: *next}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(txn); err != nil {
+		return err
+	}
+	if err := WriteFileAtomic(s.portDistributedActivationTxnPath(), bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'}), filePerm); err != nil {
+		return err
+	}
+	return s.recoverDistributedStateLocked(ctx)
 }

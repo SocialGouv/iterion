@@ -32,7 +32,7 @@ type PortDistributedProof struct {
 }
 
 func (p *PortDistributedProof) Validate() error {
-	if p == nil || p.Version != PortDistributedProofVersion || p.PolicyRevision == 0 || p.ProofRevision == 0 ||
+	if p == nil || p.Version != PortDistributedProofVersion || p.PolicyRevision == 0 || p.PolicyRevision > math.MaxInt64 || p.ProofRevision == 0 || p.ProofRevision > math.MaxInt64 ||
 		p.AuthorityEpoch == 0 || p.StoreIdentity == "" || !isPortDigest(p.ProofDigest) ||
 		!isPortDigest(p.ObservationDigest) || !isPortDigest(p.SnapshotDigest) || len(p.Snapshot) == 0 ||
 		len(p.Snapshot) > 1<<20 || !json.Valid(p.Snapshot) || p.VerifiedAt.IsZero() ||
@@ -85,12 +85,12 @@ func (l *PortActivationRefreshLease) Validate() error {
 // privileged observer must compare its verified fingerprint with ProofDigest
 // before invoking this operation; an observation is never caller supplied.
 type PortActivationRenewal struct {
-	PolicyRevision uint64
-	ProofRevision  uint64
-	ProofDigest    string
-	Lease          PortActivationRefreshLease
-	VerifiedAt     time.Time
-	ExpiresAt      time.Time
+	PolicyRevision uint64                     `json:"policy_revision"`
+	ProofRevision  uint64                     `json:"proof_revision"`
+	ProofDigest    string                     `json:"proof_digest"`
+	Lease          PortActivationRefreshLease `json:"lease"`
+	VerifiedAt     time.Time                  `json:"verified_at"`
+	ExpiresAt      time.Time                  `json:"expires_at"`
 }
 
 func (r PortActivationRenewal) Validate(now time.Time) error {
@@ -100,6 +100,37 @@ func (r PortActivationRenewal) Validate(now time.Time) error {
 		r.VerifiedAt.IsZero() || r.VerifiedAt.After(now) || !now.Before(r.ExpiresAt) ||
 		!r.ExpiresAt.After(r.VerifiedAt) || r.ExpiresAt.After(r.VerifiedAt.Add(PortDistributedProofMaxAge)) {
 		return fmt.Errorf("%w: invalid or expired authority renewal", ErrPortActivation)
+	}
+	return nil
+}
+
+// ValidatePortDistributedRenewalWrite checks the proof and activation payload
+// that a backend is about to publish together. The renewal itself identifies
+// the pre-write activation; the proof must be the next revision and carry the
+// exact freshness interval observed by the authority.
+func ValidatePortDistributedRenewalWrite(renewal PortActivationRenewal, proof *PortDistributedProof, next *PortActivation, now time.Time) error {
+	if err := renewal.Validate(now); err != nil {
+		return err
+	}
+	if proof == nil || next == nil {
+		return fmt.Errorf("%w: distributed renewal is missing its proof or activation", ErrPortActivation)
+	}
+	if err := proof.Validate(); err != nil {
+		return err
+	}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	if proof.PolicyRevision != renewal.PolicyRevision || proof.ProofRevision != renewal.ProofRevision+1 ||
+		proof.ProofDigest != renewal.ProofDigest || proof.StoreIdentity != next.StoreIdentity ||
+		!proof.VerifiedAt.Equal(renewal.VerifiedAt) ||
+		!proof.ExpiresAt.Equal(renewal.ExpiresAt) || next.Revision != renewal.PolicyRevision ||
+		next.ProofRevision != proof.ProofRevision || next.ProofDigest != proof.ProofDigest ||
+		next.Scope != PortActivationDistributed || !next.Enabled || next.RefreshLease == nil ||
+		next.RefreshLease.Owner != renewal.Lease.Owner || next.RefreshLease.Token != renewal.Lease.Token ||
+		!next.RefreshLease.ExpiresAt.Equal(renewal.Lease.ExpiresAt) || !next.VerifiedAt.Equal(renewal.VerifiedAt) ||
+		!next.ExpiresAt.Equal(renewal.ExpiresAt) {
+		return fmt.Errorf("%w: distributed proof and renewal do not describe one transition", ErrPortActivation)
 	}
 	return nil
 }
@@ -116,6 +147,14 @@ type PortActivationRefreshStore interface {
 	RenewPortActivation(context.Context, PortActivationRenewal) (*PortActivation, error)
 }
 
+// PortDistributedRenewalWriter atomically publishes a refreshed proof and the
+// activation freshness fields that reference it. Production authority paths
+// must use this interface; the lower-level RenewPortActivation method remains
+// for storage/CAS conformance tests and cannot by itself publish a proof.
+type PortDistributedRenewalWriter interface {
+	RenewPortActivationWithProof(context.Context, PortActivationRenewal, *PortDistributedProof) (*PortActivation, error)
+}
+
 // PortActivationDisabler changes operator policy independently of ongoing
 // freshness revisions. Implementations leave the latest observations intact.
 type PortActivationDisabler interface {
@@ -127,4 +166,23 @@ type PortActivationDisabler interface {
 type PortDistributedProofStore interface {
 	LoadPortDistributedProof(context.Context) (*PortDistributedProof, error)
 	SavePortDistributedProof(context.Context, uint64, *PortDistributedProof) error
+}
+
+// PortDistributedActivationWriter publishes a new distributed proof and the
+// activation that references it as one fenced state transition. Implementors
+// must leave both the previous proof and previous activation untouched when
+// the expected policy revision no longer matches. This is deliberately
+// separate from PortActivationStore: ordinary activation writes do not carry
+// enough information to publish a proof safely.
+type PortDistributedActivationWriter interface {
+	SavePortDistributedActivation(context.Context, uint64, *PortDistributedProof, *PortActivation) error
+}
+
+// PortDistributedProofCandidateStore holds the latest probe result separately
+// from the proof currently referenced by an enabled activation. Probing can
+// therefore be repeated without temporarily invalidating live admission.
+type PortDistributedProofCandidateStore interface {
+	LoadPortDistributedProofCandidate(context.Context) (*PortDistributedProof, error)
+	SavePortDistributedProofCandidate(context.Context, *PortDistributedProof) error
+	ClearPortDistributedProofCandidate(context.Context) error
 }
