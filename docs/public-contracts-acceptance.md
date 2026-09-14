@@ -506,6 +506,13 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   NATS client would otherwise give later servers different authentication.
   Twenty-two authority cases pass with race detection. Broker acceptance,
   exclusive custody and cross-namespace RBAC remain unverified.
+- A bounded read-only RBAC source now lists namespaced Roles/RoleBindings and
+  cluster-wide ClusterRoles/ClusterRoleBindings, preserving policy rules,
+  subjects, referenced roles, aggregation flags and resource versions. It
+  rejects missing lists, continuation pages, foreign objects and unsupported
+  role references. Twenty-four authority cases pass with race detection. The
+  source is not yet an effective permission analysis, nor evidence that RBAC
+  is the cluster's only authorizer.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot

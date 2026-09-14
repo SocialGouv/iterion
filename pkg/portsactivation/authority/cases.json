@@ -23,7 +23,9 @@
       "TestKubernetesCredentialSecretRefusesForeignOrUnsupportedMaterial",
       "TestKubernetesCredentialReconciliationBindsSecretRevisionsToPrincipals",
       "TestKubernetesCredentialReconciliationRefusesWrongIdentityAndChangingSecret",
-      "TestKubernetesCredentialReconciliationKeepsExternalHoldersUnresolved"
+      "TestKubernetesCredentialReconciliationKeepsExternalHoldersUnresolved",
+      "TestKubernetesRBACSnapshotKeepsNamespacedAndClusterBindings",
+      "TestKubernetesRBACSnapshotRefusesPartialOrUnsupportedEvidence"
     ]
   }
 }
