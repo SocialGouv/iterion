@@ -35,12 +35,6 @@ type systemFingerprintBroker struct {
 	ConfigDigest string `json:"config_digest"`
 }
 
-type systemFingerprintPrincipal struct {
-	ServerID  string `json:"server_id"`
-	Account   string `json:"account"`
-	Principal string `json:"principal"`
-}
-
 type deploymentObservationIdentity struct {
 	Version                 int                             `json:"version"`
 	AuthoritySecretUID      string                          `json:"authority_secret_uid"`
@@ -59,7 +53,6 @@ type deploymentObservationIdentity struct {
 	Writers                 []OperatorWriter                `json:"writers"`
 	StaticBrokers           []StaticBroker                  `json:"static_brokers"`
 	SystemBrokers           []systemFingerprintBroker       `json:"system_brokers"`
-	SystemPrincipals        []systemFingerprintPrincipal    `json:"system_principals"`
 	Access                  []StaticAccess                  `json:"access"`
 	BuildBindings           []BuildBinding                  `json:"build_bindings"`
 	WorkloadRevisions       []kubernetesFingerprintRevision `json:"workload_revisions"`
@@ -129,23 +122,6 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 	slices.SortFunc(systemBrokers, func(a, b systemFingerprintBroker) int {
 		return strings.Compare(a.ServerID, b.ServerID)
 	})
-	principalSet := make(map[string]systemFingerprintPrincipal)
-	for serverID, connections := range result.System.connections {
-		for _, principal := range connections {
-			binding := systemFingerprintPrincipal{
-				ServerID: serverID, Account: principal.account, Principal: principal.user}
-			key := binding.ServerID + "\x00" + binding.Account + "\x00" + binding.Principal
-			principalSet[key] = binding
-		}
-	}
-	systemPrincipals := make([]systemFingerprintPrincipal, 0, len(principalSet))
-	for _, binding := range principalSet {
-		systemPrincipals = append(systemPrincipals, binding)
-	}
-	slices.SortFunc(systemPrincipals, func(a, b systemFingerprintPrincipal) int {
-		return strings.Compare(a.ServerID+"\x00"+a.Account+"\x00"+a.Principal,
-			b.ServerID+"\x00"+b.Account+"\x00"+b.Principal)
-	})
 	access := slices.Clone(result.Static.Access)
 	for i := range access {
 		access[i].Exposures = slices.Clone(access[i].Exposures)
@@ -209,7 +185,7 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 		Namespaces: namespaces, Queue: result.Queue, QueueClientAccount: queueAccount,
 		QueueClientPrincipal: queuePrincipal, Brokers: brokers, Custody: custody,
 		Holders: holders, BuildApprovals: buildApprovals, Issuers: issuers, Writers: writers,
-		StaticBrokers: staticBrokers, SystemBrokers: systemBrokers, SystemPrincipals: systemPrincipals, Access: access,
+		StaticBrokers: staticBrokers, SystemBrokers: systemBrokers, Access: access,
 		BuildBindings: buildBindings, WorkloadRevisions: workloadRevisions,
 		Roles: roles, Bindings: bindings, Launches: launches, BrokerSources: brokerSources,
 		CredentialBindings: credentialBindings, ExternalHolders: externalHolders,

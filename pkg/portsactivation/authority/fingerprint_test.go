@@ -77,16 +77,6 @@ func TestDeploymentObservationDigestBindsStableAuthorityAndIgnoresVolatileCounts
 		{"system broker config", func(_ *Record, result *DeploymentCorroboration, _ *WorkloadSnapshot, _ *RBACSnapshot) {
 			result.System.Brokers[0].ConfigDigest = "sha256:" + strings.Repeat("f", 64)
 		}},
-		{"connected principal", func(_ *Record, result *DeploymentCorroboration, _ *WorkloadSnapshot, _ *RBACSnapshot) {
-			for serverID, connections := range result.System.connections {
-				for clientID, principal := range connections {
-					principal.user = "changed-principal"
-					connections[clientID] = principal
-					result.System.connections[serverID] = connections
-					return
-				}
-			}
-		}},
 		{"credential Secret", func(_ *Record, result *DeploymentCorroboration, _ *WorkloadSnapshot, _ *RBACSnapshot) {
 			result.Credentials.Bindings[0].ResourceVersion = "new-secret-revision"
 		}},
