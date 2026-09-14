@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3158,13 +3159,20 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	if r == nil {
 		return
 	}
-	sourceChanged := src != "" && src != r.WorkflowSource
+	var files []store.WorkflowSourceFile
+	if src != "" {
+		files = e.resolveWorkflowSources()
+	}
+	sourceChanged := src != "" && (src != r.WorkflowSource || !slices.Equal(files, r.WorkflowSources))
 	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""
 	if !sourceChanged && !recordArtifactCompatibility {
 		return
 	}
 	if sourceChanged {
 		r.WorkflowSource = src
+		// The unit's files follow the main, or go with it: a bot that is
+		// one file again records none.
+		r.WorkflowSources = files
 		if e.workflowHash != "" {
 			r.WorkflowHash = e.workflowHash
 		}
@@ -3178,6 +3186,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		// fail safely while still allowing later resumes at the accepted hash.
 		if src == "" && r.WorkflowHash != e.workflowHash {
 			r.WorkflowSource = ""
+			r.WorkflowSources = nil
 		}
 		r.WorkflowHash = e.workflowHash
 		r.ArtifactCompatibilityRevision = e.workflowHash
@@ -3202,6 +3211,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		return
 	}
 	fresh.WorkflowSource = r.WorkflowSource
+	fresh.WorkflowSources = r.WorkflowSources
 	fresh.WorkflowHash = r.WorkflowHash
 	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
 	// Preserve every execution-context field from the freshly loaded record.

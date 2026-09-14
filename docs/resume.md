@@ -403,6 +403,13 @@ now, and rewinds to the earliest node the edit affects — so the loop is *edit,
 rewind, resume*, with nothing to translate by hand. It prints what it detected,
 so you can confirm it understood the change before resuming.
 
+A bot in several files (`import "lib/x.bot"`) records every file of its unit
+on the run (`workflow_sources`, beside `workflow_source` for the main), so an
+edit in a fragment is seen like one in the main. A run of such a bot that
+recorded its main alone — launched before the unit's files were recorded, or
+over the 1 MiB cap — is refused rather than diffed on the main, and asks for
+`--node`.
+
 Detection is declaration-granular and resolves indirection:
 
 | You edited | `--auto` rewinds to |

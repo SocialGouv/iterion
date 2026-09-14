@@ -3,6 +3,7 @@ package botregistry
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,7 +15,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // EntryWithSchema augments Entry with the bot workflow's declared
@@ -91,12 +91,14 @@ type PresetValue struct {
 }
 
 // schemaCache memoises the (vars, presets) extracted from a workflow
-// source file. Keyed by absolute path. The cached entry is invalidated
-// when the file's modtime advances, so an editor save picks up
+// source. Keyed by absolute path; the entry is reused while the unit's
+// digest is the one it was built from, so an editor save picks up
 // instantly without a server restart.
 type cachedSchema struct {
-	mtime   int64
-	size    int64
+	// digest is the unit's source identity — every file's path and
+	// content — so an edit to a fragment, or one of the same size at a
+	// restored mtime, is a miss.
+	digest  string
 	vars    *VarsBlock
 	presets *PresetsBlock
 	err     string
@@ -173,21 +175,26 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 
 // LoadSchema parses the bot's main file, compiles to AST, and returns
 // the vars + presets blocks from the first workflow declaration. Uses
-// the package-level cache keyed by absolute path + mtime so repeated
-// calls within a request batch are O(1).
+// the package-level cache keyed by absolute path and the unit's digest, so
+// repeated calls within a request batch parse nothing.
 func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 	mainFile := e.MainFile()
 	abs, err := filepath.Abs(mainFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return nil, nil, err
+	// The unit's files are read on every call — a handful of small files
+	// per bot — because a stat of the main cannot see a fragment edited,
+	// nor an edit of the same size at a restored mtime.
+	u := unit.LoadDir(abs)
+	if len(u.Files) == 0 {
+		if _, err := os.Stat(abs); err != nil {
+			return nil, nil, err
+		}
 	}
 	if v, ok := schemaCache.Load(abs); ok {
 		c := v.(cachedSchema)
-		if c.mtime == info.ModTime().UnixNano() && c.size == info.Size() {
+		if c.digest == u.Digest {
 			var schemaErr error
 			if c.err != "" {
 				schemaErr = fmt.Errorf("%s", c.err)
@@ -198,10 +205,9 @@ func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 			return c.vars, mergeFilePresets(e, c.presets), schemaErr
 		}
 	}
-	vars, presets, schemaErr := loadSchemaUncached(abs)
+	vars, presets, schemaErr := loadSchemaFromUnit(u)
 	cached := cachedSchema{
-		mtime:   info.ModTime().UnixNano(),
-		size:    info.Size(),
+		digest:  u.Digest,
 		vars:    vars,
 		presets: presets, // cache the in-source block only; file presets merge fresh
 	}
@@ -281,20 +287,15 @@ func presetLiteralFromYAML(v any) *Literal {
 	}
 }
 
-func loadSchemaUncached(path string) (*VarsBlock, *PresetsBlock, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	pr := parser.Parse(path, string(src))
-	if pr.File == nil {
+func loadSchemaFromUnit(u *unit.Unit) (*VarsBlock, *PresetsBlock, error) {
+	if u.Merged == nil {
 		return nil, nil, fmt.Errorf("parse failed: file empty")
 	}
 	// Serialize the AST and pluck out workflow vars + presets. Re-using
 	// the AST's existing jsonenc keeps the wire shape identical to what
 	// /api/files/open already returns to the studio — VarFieldInput
 	// reads the same struct without any translation.
-	raw, err := ast.MarshalFile(pr.File)
+	raw, err := ast.MarshalFile(u.Merged)
 	if err != nil {
 		return nil, nil, err
 	}

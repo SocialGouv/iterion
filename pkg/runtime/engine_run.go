@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,33 @@ func (e *Engine) resolveWorkflowSource() string {
 		return ""
 	}
 	return string(b)
+}
+
+// resolveWorkflowSources returns every file of the unit the run executes,
+// main first, to persist beside the main's text — read from the path
+// given to WithFilePath, since a unit lives beside its main. Nil when the
+// caller supplied the text itself (an upload has no unit beside it), when
+// the bot is one file (WorkflowSource carries it), when the unit does not
+// load, or when its files together bust the cap: each leaves
+// `rewind --auto` to refuse a unit run, never to diff its main alone.
+func (e *Engine) resolveWorkflowSources() []store.WorkflowSourceFile {
+	if e.workflowSource != "" || e.filePath == "" {
+		return nil
+	}
+	u := unit.LoadDir(e.filePath)
+	if u.HasErrors() || len(u.Files) < 2 {
+		return nil
+	}
+	total := 0
+	out := make([]store.WorkflowSourceFile, 0, len(u.Files))
+	for _, f := range u.Files {
+		total += len(f.Source)
+		if total > maxPersistedWorkflowSource {
+			return nil
+		}
+		out = append(out, store.WorkflowSourceFile{Path: f.Rel, Text: string(f.Source)})
+	}
+	return out
 }
 
 func (e *Engine) inferredBotOrigin() *store.BotOrigin {
@@ -338,6 +366,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		if src := e.resolveWorkflowSource(); src != "" {
 			run.WorkflowSource = src
+			run.WorkflowSources = e.resolveWorkflowSources()
 		}
 		if e.parentRunID != "" {
 			run.ParentRunID = e.parentRunID

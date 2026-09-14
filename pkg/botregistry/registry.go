@@ -13,6 +13,7 @@ package botregistry
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -528,6 +529,12 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				return nil
 			}
 			if d.IsDir() {
+				if path != root && isFragmentDir(path) {
+					// A bot's fragments live under lib/ beside its main
+					// (`import "lib/x.bot"`): parts of that bot, never bots
+					// of their own.
+					return filepath.SkipDir
+				}
 				manifest := filepath.Join(path, bundle.ManifestFile)
 				mainBot := filepath.Join(path, bundle.MainBotFile)
 				if fileExists(manifest) && fileExists(mainBot) {
@@ -704,4 +711,22 @@ func isDecorationLine(body string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// isFragmentDir reports a `lib/` directory beside a workflow file: where a
+// bot in several files keeps the fragments its main imports.
+func isFragmentDir(dir string) bool {
+	if filepath.Base(dir) != unit.FragmentDir {
+		return false
+	}
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && workflowfile.IsWorkflowFile(e.Name()) {
+			return true
+		}
+	}
+	return false
 }
