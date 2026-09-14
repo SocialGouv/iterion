@@ -58,7 +58,7 @@ func (d DistributedContractsConfig) validate(mode Mode) error {
 }
 
 func kubernetesDNSLabel(name string) bool {
-	if len(name) == 0 || len(name) > 63 || name[0] < 'a' || name[0] > 'z' ||
+	if len(name) == 0 || len(name) > 63 || !kubernetesAlphaNumeric(rune(name[0])) ||
 		!kubernetesAlphaNumeric(rune(name[len(name)-1])) {
 		return false
 	}
@@ -79,7 +79,7 @@ func kubernetesDNSSubdomain(name string) bool {
 		return false
 	}
 	for _, label := range strings.Split(name, ".") {
-		if len(label) == 0 || len(label) > 63 || !kubernetesAlphaNumeric(rune(label[0])) ||
+		if len(label) == 0 || !kubernetesAlphaNumeric(rune(label[0])) ||
 			!kubernetesAlphaNumeric(rune(label[len(label)-1])) {
 			return false
 		}

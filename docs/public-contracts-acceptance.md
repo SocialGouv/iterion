@@ -450,6 +450,11 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   NATS URLs and reserved authority keys in `config.extraEnv`. The chart profile
   script passes locally and is wired into the existing Helm CI job. Runtime
   authority loading and Kubernetes verification are still outstanding.
+- After the authority config changes, a complete `task test` run passed.
+  An earlier run concurrent with the automatic reviewer exceeded the frozen
+  Town zero-item latency ceiling; the isolated Town case and all nine pilot
+  scenarios passed afterward, as did the complete uncontended run. Pilot
+  thresholds and implementation were not changed to resolve that variance.
 - A complete `task test` pass initially found two fixture/CI omissions:
   `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
   test called a Mongo factory without checking the optional fixture gate.

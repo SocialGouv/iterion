@@ -23,6 +23,17 @@ func TestDistributedContractsConfigIsOptionalAndBounded(t *testing.T) {
 	if err := dotted.validate(ModeCloud); err != nil {
 		t.Fatalf("valid Kubernetes Secret subdomain name was refused: %v", err)
 	}
+	longName := good
+	longName.AuthorityRef = "trusted/" + strings.Repeat("a", 64)
+	if err := longName.validate(ModeCloud); err != nil {
+		t.Fatalf("valid long single-segment Secret name was refused: %v", err)
+	}
+	numericNamespace := good
+	numericNamespace.AuthorityRef = "1trusted/authority"
+	numericNamespace.KubernetesNamespaces = []string{"1trusted", "workers"}
+	if err := numericNamespace.validate(ModeCloud); err != nil {
+		t.Fatalf("valid numeric-initial namespace was refused: %v", err)
+	}
 	for index, mutate := range []func(*DistributedContractsConfig){
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "" },
 		func(d *DistributedContractsConfig) { d.SystemNATSURL = "nats://nats.example:4222" },
@@ -31,7 +42,6 @@ func TestDistributedContractsConfigIsOptionalAndBounded(t *testing.T) {
 		func(d *DistributedContractsConfig) { d.AuthorityRef = "trusted/iterion..authority" },
 		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"trusted", "trusted"} },
 		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"trusted", ""} },
-		func(d *DistributedContractsConfig) { d.KubernetesNamespaces = []string{"1trusted", "workers"} },
 	} {
 		candidate := good
 		mutate(&candidate)
