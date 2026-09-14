@@ -73,6 +73,11 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 	if strings.TrimSpace(opts.Out) == "" {
 		opts.Out = filepath.Join("connectors", opts.ID)
 	}
+	generationLock, err := lockConnectorGeneration(opts.Out)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = generationLock.Unlock() }()
 
 	data, source, err := readSpec(opts.Spec)
 	if err != nil {
@@ -113,38 +118,24 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 	// the end judges what will actually run, rather than announcing a package
 	// incomplete because its authored half has not been merged into the half
 	// that must never carry it.
-	merged := pkg
 	if opts.KeepOverlay {
 		ov, err = overlay.Load(opts.Out)
 		if err != nil {
 			return err
 		}
-		if ov != nil {
-			probe, _, gerr := gen.Generate(data, gen.Options{
-				ConnectorID:             opts.ID,
-				Version:                 opts.Version,
-				SpecURL:                 source,
-				SpecLicense:             opts.License,
-				Redistributable:         opts.Redistributable,
-				OperatorSuppliedBaseURL: opts.OperatorSuppliedBaseURL,
-				GeneratedBy:             "iterion " + appinfo.Version,
-			})
-			if gerr != nil {
-				return gerr
-			}
-			if err := overlay.Apply(probe, ov); err != nil {
-				return fmt.Errorf("the existing overlay no longer applies to the regenerated package: %w", err)
-			}
-			merged = probe
-		}
+	} else if _, err := os.Stat(filepath.Join(opts.Out, overlay.File)); err == nil {
+		return fmt.Errorf("connectors: an existing overlay must be checked for identity preservation; use --keep-overlay or remove the overlay explicitly")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	lock, merged, err := connectorIdentity(opts.Out, pkg, ov)
+	if err != nil {
+		return err
 	}
 
 	// The PURE package: what ops/ must hold for the two halves to stay
 	// separable.
-	if err := writePackage(opts.Out, pkg); err != nil {
-		return err
-	}
-	size, err := spec.Measure(opts.Out)
+	size, err := writeLockedConnector(opts.Out, pkg, lock)
 	if err != nil {
 		return err
 	}

@@ -181,6 +181,9 @@ worked. A five-minute write-up now saves the next session (or the next dev)
 the hours this one spent.
 
 **Operational runbook index** (the discovery entry point — extend it):
+- [docs/connector-identities.md](docs/connector-identities.md) — connector
+  regeneration identity locks, authored renames, retired names and recovery
+  after an interrupted package replacement.
 - [docs/cloud-llm-credentials.md](docs/cloud-llm-credentials.md) — provisioning
   a cloud run's LLM credential (BYOK vs Anthropic OAuth-forfait vs OpenAI
   ChatGPT-forfait, the CGU guard, `ITERION_OPENAI_USE_OAUTH`, the
