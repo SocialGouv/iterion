@@ -20,7 +20,10 @@
       "TestKubernetesWorkloadReconciliationBindsDeclaredAndRunningDescendants",
       "TestKubernetesWorkloadReconciliationRefusesDormantOrUnknownCredentialPaths",
       "TestKubernetesCredentialSecretBindsNamedKeyAndRedactsURL",
-      "TestKubernetesCredentialSecretRefusesForeignOrUnsupportedMaterial"
+      "TestKubernetesCredentialSecretRefusesForeignOrUnsupportedMaterial",
+      "TestKubernetesCredentialReconciliationBindsSecretRevisionsToPrincipals",
+      "TestKubernetesCredentialReconciliationRefusesWrongIdentityAndChangingSecret",
+      "TestKubernetesCredentialReconciliationKeepsExternalHoldersUnresolved"
     ]
   }
 }

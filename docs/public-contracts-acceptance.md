@@ -497,6 +497,15 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   authority cases pass with race detection. A named, well-formed Secret key
   still does not prove that its principal matches the static NATS configuration
   or that no other holder has copied the credential.
+- Credential-source reconciliation now compares every Kubernetes holder's
+  named Secret key with its declared NATS principal and records the exact
+  Secret UID/resourceVersion. It refuses a user mismatch or two revisions of
+  one Secret observed in a probe, while reporting external CLI/automation
+  holders as unresolved. The single-URL profile rejects comma-separated NATS
+  server lists in both Secret values and configured system URLs, because the
+  NATS client would otherwise give later servers different authentication.
+  Twenty-two authority cases pass with race detection. Broker acceptance,
+  exclusive custody and cross-namespace RBAC remain unverified.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot
