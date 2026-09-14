@@ -32,7 +32,8 @@ func (d DistributedContractsConfig) validate(mode Mode) error {
 		return fmt.Errorf("distributed contracts authority requires cloud mode, system NATS URL, authority Secret reference and Kubernetes namespaces")
 	}
 	parsed, err := url.Parse(d.SystemNATSURL)
-	if err != nil || parsed == nil || parsed.Scheme != "nats" && parsed.Scheme != "tls" ||
+	if err != nil || parsed == nil || strings.Contains(d.SystemNATSURL, ",") ||
+		parsed.Scheme != "nats" && parsed.Scheme != "tls" ||
 		parsed.Hostname() == "" || parsed.User == nil || parsed.User.Username() == "" {
 		return fmt.Errorf("distributed contracts system NATS URL requires supported URL userinfo authentication")
 	}

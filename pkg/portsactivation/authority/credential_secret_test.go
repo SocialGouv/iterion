@@ -82,6 +82,7 @@ func TestKubernetesCredentialSecretRefusesForeignOrUnsupportedMaterial(t *testin
 		"foreign namespace": credentialSecretDocument("other", "nats-worker", "NATS_URL", "nats://worker:secret@nats:4222"),
 		"missing key":       credentialSecretDocument("worker", "nats-worker", "OTHER_URL", "nats://worker:secret@nats:4222"),
 		"anonymous URL":     credentialSecretDocument("worker", "nats-worker", "NATS_URL", "nats://nats:4222"),
+		"server list":       credentialSecretDocument("worker", "nats-worker", "NATS_URL", "nats://worker:secret@host-a,host-b"),
 		"query credentials": credentialSecretDocument("worker", "nats-worker", "NATS_URL", "nats://worker:secret@nats:4222?token=private"),
 		"oversized URL":     credentialSecretDocument("worker", "nats-worker", "NATS_URL", "nats://worker:secret@nats:4222/"+strings.Repeat("a", maxCredentialURLBytes)),
 	} {

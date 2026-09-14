@@ -30,7 +30,7 @@ func (c CredentialSecretKey) Value() []byte    { return bytes.Clone(c.value) }
 
 func (c CredentialSecretKey) Identity() (string, error) {
 	if len(c.value) == 0 || len(c.value) > maxCredentialURLBytes ||
-		strings.TrimSpace(string(c.value)) != string(c.value) {
+		strings.TrimSpace(string(c.value)) != string(c.value) || strings.Contains(string(c.value), ",") {
 		return "", fmt.Errorf("Kubernetes NATS credential URL is malformed")
 	}
 	parsed, err := url.Parse(string(c.value))
