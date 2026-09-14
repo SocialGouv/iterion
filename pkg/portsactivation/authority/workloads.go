@@ -27,15 +27,24 @@ type WorkloadSnapshot struct {
 }
 
 type Workload struct {
-	APIVersion      string `json:"api_version"`
-	Kind            string `json:"kind"`
-	Namespace       string `json:"namespace"`
-	Name            string `json:"name"`
-	UID             string `json:"uid"`
-	ResourceVersion string `json:"resource_version"`
-	Generation      int64  `json:"generation"`
+	APIVersion      string           `json:"api_version"`
+	Kind            string           `json:"kind"`
+	Namespace       string           `json:"namespace"`
+	Name            string           `json:"name"`
+	UID             string           `json:"uid"`
+	ResourceVersion string           `json:"resource_version"`
+	Generation      int64            `json:"generation"`
+	Owners          []OwnerReference `json:"owners,omitempty"`
 	podSpec         json.RawMessage
 	status          json.RawMessage
+}
+
+type OwnerReference struct {
+	APIVersion string `json:"api_version"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	Controller bool   `json:"controller"`
 }
 
 func (WorkloadSnapshot) String() string     { return "Kubernetes workload snapshot [pod specs redacted]" }
@@ -132,6 +141,13 @@ func parseWorkload(raw json.RawMessage, namespace string) (Workload, error) {
 			UID             string `json:"uid"`
 			ResourceVersion string `json:"resourceVersion"`
 			Generation      int64  `json:"generation"`
+			OwnerReferences []struct {
+				APIVersion string `json:"apiVersion"`
+				Kind       string `json:"kind"`
+				Name       string `json:"name"`
+				UID        string `json:"uid"`
+				Controller bool   `json:"controller"`
+			} `json:"ownerReferences"`
 		} `json:"metadata"`
 		Spec   json.RawMessage `json:"spec"`
 		Status json.RawMessage `json:"status"`
@@ -170,10 +186,28 @@ func parseWorkload(raw json.RawMessage, namespace string) (Workload, error) {
 			return Workload{}, fmt.Errorf("Kubernetes workload inventory has an unnamed container")
 		}
 	}
+	if len(item.Metadata.OwnerReferences) > 8 {
+		return Workload{}, fmt.Errorf("Kubernetes workload inventory has too many owners")
+	}
+	owners := make([]OwnerReference, 0, len(item.Metadata.OwnerReferences))
+	controllerCount := 0
+	for _, owner := range item.Metadata.OwnerReferences {
+		if !supportedWorkloadVersion(owner.Kind, owner.APIVersion) || !dnsSubdomain(owner.Name) || owner.UID == "" {
+			return Workload{}, fmt.Errorf("Kubernetes workload inventory has an unsupported owner")
+		}
+		if owner.Controller {
+			controllerCount++
+		}
+		owners = append(owners, OwnerReference{APIVersion: owner.APIVersion, Kind: owner.Kind,
+			Name: owner.Name, UID: owner.UID, Controller: owner.Controller})
+	}
+	if controllerCount > 1 {
+		return Workload{}, fmt.Errorf("Kubernetes workload inventory has ambiguous controlling owners")
+	}
 	return Workload{APIVersion: item.APIVersion, Kind: item.Kind,
 		Namespace: namespace, Name: item.Metadata.Name, UID: item.Metadata.UID,
 		ResourceVersion: item.Metadata.ResourceVersion, Generation: item.Metadata.Generation,
-		podSpec: bytes.Clone(podSpec), status: bytes.Clone(item.Status)}, nil
+		Owners: owners, podSpec: bytes.Clone(podSpec), status: bytes.Clone(item.Status)}, nil
 }
 
 func nestedJSON(root map[string]json.RawMessage, path ...string) json.RawMessage {

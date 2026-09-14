@@ -16,7 +16,9 @@
       "TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder",
       "TestKubernetesWorkloadSnapshotIncludesDormantControllersAndPodTemplates",
       "TestKubernetesWorkloadSnapshotRefusesMissingOrForeignObjects",
-      "TestKubernetesWorkloadSnapshotBoundsActualKubectlPipe"
+      "TestKubernetesWorkloadSnapshotBoundsActualKubectlPipe",
+      "TestKubernetesWorkloadReconciliationBindsDeclaredAndRunningDescendants",
+      "TestKubernetesWorkloadReconciliationRefusesDormantOrUnknownCredentialPaths"
     ]
   }
 }

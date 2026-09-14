@@ -49,6 +49,10 @@ func TestKubernetesWorkloadSnapshotIncludesDormantControllersAndPodTemplates(t *
 	cron := workloadItem("CronJob", "batch/v1", "nightly", map[string]any{
 		"jobTemplate": map[string]any{"spec": map[string]any{"template": template}}})
 	pod := workloadItem("Pod", "v1", "running", template["spec"])
+	pod["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{
+		"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "old-runner",
+		"uid": "uid-old-runner", "controller": true,
+	}}
 	pod["status"] = map[string]any{"containerStatuses": []any{map[string]any{"name": "runner", "imageID": "sha256:abc"}}}
 	binary, _, argsPath := workloadShim(t, workloadList(oldReplica, cron, pod))
 	snapshot, err := ReadWorkloadSnapshot(t.Context(), binary, "fixture-context", []string{"trusted"})
@@ -58,7 +62,8 @@ func TestKubernetesWorkloadSnapshotIncludesDormantControllersAndPodTemplates(t *
 	if len(snapshot.Workloads) != 3 || snapshot.Workloads[0].Kind != "CronJob" ||
 		snapshot.Workloads[1].Kind != "Pod" || snapshot.Workloads[2].Kind != "ReplicaSet" ||
 		!bytes.Contains(snapshot.Workloads[2].PodSpec(), []byte("super-secret")) ||
-		!bytes.Contains(snapshot.Workloads[1].Status(), []byte("imageID")) {
+		!bytes.Contains(snapshot.Workloads[1].Status(), []byte("imageID")) ||
+		len(snapshot.Workloads[1].Owners) != 1 || snapshot.Workloads[1].Owners[0].UID != "uid-old-runner" {
 		t.Fatal("Kubernetes workload inventory lost a dormant controller, pod template or runtime status")
 	}
 	for _, rendered := range []string{
