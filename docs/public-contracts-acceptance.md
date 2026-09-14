@@ -473,6 +473,15 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   reader/schema/static cases pass with race detection. These fields are
   operator assertions only: Kubernetes RBAC, live broker digests, workload
   coverage and credential custody have not yet been reconciled.
+- A bounded Kubernetes workload reader now lists Pods, Deployments,
+  ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs and
+  ReplicationControllers in each declared namespace. It retains private pod
+  templates and running-pod status for later launch and credential-reference
+  checks, including scaled-to-zero templates; unsupported objects, partial
+  lists and oversized subprocess output refuse the read. The 15-case authority
+  manifest passes with race detection. This inventory does not establish that
+  custom controllers, cross-namespace RBAC or external credential holders are
+  absent; no distributed activation proof is produced.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot

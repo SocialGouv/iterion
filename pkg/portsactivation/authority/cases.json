@@ -1,5 +1,5 @@
 {
-  "scope": "Read-only bounded kubectl Secret loading, strict versioned operator records and static NATS source/profile reconciliation. Every principal must map to named custody and protected ACL exposures are classified. This is not live broker, Kubernetes or distributed activation verification.",
+  "scope": "Read-only bounded kubectl Secret and standard workload listing, strict versioned operator records and static NATS source/profile reconciliation. Every principal maps to named custody and protected ACL exposures are classified. Workload projection alone is not complete Kubernetes custody, RBAC or distributed activation verification.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
@@ -13,7 +13,10 @@
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",
-      "TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder"
+      "TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder",
+      "TestKubernetesWorkloadSnapshotIncludesDormantControllersAndPodTemplates",
+      "TestKubernetesWorkloadSnapshotRefusesMissingOrForeignObjects",
+      "TestKubernetesWorkloadSnapshotBoundsActualKubectlPipe"
     ]
   }
 }
