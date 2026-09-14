@@ -1,0 +1,458 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+)
+
+// unitInfo describes the unit a document was opened from: a bot in several
+// files (`import "lib/x.bot"`), merged into one document whose every
+// declaration names its file. The revision is the unit's digest — every
+// file's path and content — and a save presents it back, so a file edited
+// on disk in between is a conflict, never a silent overwrite.
+type unitInfo struct {
+	// Root is the unit's directory, as the request named its main.
+	Root string `json:"root"`
+	// Main is the main file's path from Root.
+	Main     string         `json:"main"`
+	Revision string         `json:"revision"`
+	Files    []unitFileInfo `json:"files"`
+}
+
+type unitFileInfo struct {
+	Rel     string   `json:"rel"`
+	Profile int      `json:"profile,omitempty"`
+	Imports []string `json:"imports,omitempty"`
+}
+
+func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
+	info := &unitInfo{Root: filepath.ToSlash(filepath.Dir(reqPath)), Main: u.Main, Revision: u.Digest}
+	for _, f := range u.Files {
+		fi := unitFileInfo{Rel: f.Rel}
+		if f.AST != nil {
+			fi.Profile = f.AST.Profile
+			for _, im := range f.AST.Imports {
+				fi.Imports = append(fi.Imports, im.Path)
+			}
+		}
+		info.Files = append(info.Files, fi)
+	}
+	return info
+}
+
+// hasProvenance reports whether any declaration, block or comment of the
+// document names a file: what MarshalFileWithProvenance writes and the
+// transport never does.
+func hasProvenance(f *ast.File) bool {
+	found := false
+	walkCarriers(f, func(span ast.Span) { found = found || span.Start.File != "" })
+	return found
+}
+
+// walkCarriers visits the span of every top-level declaration, comment,
+// keyed block and block entry of a document — every carrier of provenance.
+func walkCarriers(f *ast.File, visit func(ast.Span)) {
+	dv := reflect.ValueOf(f).Elem()
+	for i := 0; i < dv.NumField(); i++ {
+		fv := dv.Field(i)
+		switch fv.Kind() {
+		case reflect.Slice:
+			for j := 0; j < fv.Len(); j++ {
+				if span, ok := spanOf(fv.Index(j)); ok {
+					visit(span)
+				}
+			}
+		case reflect.Pointer:
+			if fv.IsNil() {
+				continue
+			}
+			if span, ok := spanOf(fv); ok {
+				visit(span)
+			}
+			if entries := entriesOf(fv.Elem()); entries.IsValid() {
+				for j := 0; j < entries.Len(); j++ {
+					if span, ok := spanOf(entries.Index(j)); ok {
+						visit(span)
+					}
+				}
+			}
+		}
+	}
+}
+
+var spanType = reflect.TypeOf(ast.Span{})
+
+func spanOf(v reflect.Value) (ast.Span, bool) {
+	for v.IsValid() && v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return ast.Span{}, false
+		}
+		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return ast.Span{}, false
+	}
+	sf := v.FieldByName("Span")
+	if !sf.IsValid() || sf.Type() != spanType {
+		return ast.Span{}, false
+	}
+	return sf.Interface().(ast.Span), true
+}
+
+// entriesOf is the one slice field of a keyed block (Fields, Entries).
+func entriesOf(block reflect.Value) reflect.Value {
+	for i := 0; i < block.NumField(); i++ {
+		if block.Field(i).Kind() == reflect.Slice {
+			return block.Field(i)
+		}
+	}
+	return reflect.Value{}
+}
+
+// splitByProvenance takes a document of a merged unit apart, file by file:
+// each declaration, comment and block entry goes to the file its
+// provenance names — to the main when it names none, which is where the
+// editor puts a new declaration — on a skeleton that keeps each file's own
+// header (its profile and its import lines, which the editor does not
+// edit). A provenance naming a file the unit does not have is refused.
+func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error) {
+	parts := make(map[string]*ast.File, len(u.Files))
+	for _, f := range u.Files {
+		skel := &ast.File{}
+		if f.AST != nil {
+			skel.Profile = f.AST.Profile
+			skel.Imports = f.AST.Imports
+		}
+		parts[f.Rel] = skel
+	}
+	owner := func(span ast.Span) (*ast.File, error) {
+		if span.Start.File == "" {
+			return parts[u.Main], nil
+		}
+		p, ok := parts[span.Start.File]
+		if !ok {
+			return nil, fmt.Errorf("the document places a declaration in %q, which is not a file of this bot (%s)", span.Start.File, strings.Join(unitRels(u), ", "))
+		}
+		return p, nil
+	}
+	dv := reflect.ValueOf(doc).Elem()
+	dt := dv.Type()
+	for i := 0; i < dv.NumField(); i++ {
+		field := dt.Field(i)
+		fv := dv.Field(i)
+		if field.Name == "Imports" || field.Name == "Profile" {
+			continue
+		}
+		switch fv.Kind() {
+		case reflect.Slice:
+			for j := 0; j < fv.Len(); j++ {
+				el := fv.Index(j)
+				span, _ := spanOf(el)
+				p, err := owner(span)
+				if err != nil {
+					return nil, err
+				}
+				pf := reflect.ValueOf(p).Elem().Field(i)
+				pf.Set(reflect.Append(pf, el))
+			}
+		case reflect.Pointer:
+			if fv.IsNil() {
+				continue
+			}
+			// The block itself goes where its header was written, so an
+			// empty block keeps its owner; each entry goes where it was.
+			blockSpan, _ := spanOf(fv)
+			p, err := owner(blockSpan)
+			if err != nil {
+				return nil, err
+			}
+			ensureBlock(reflect.ValueOf(p).Elem().Field(i), fv.Type())
+			entries := entriesOf(fv.Elem())
+			if !entries.IsValid() {
+				continue
+			}
+			for j := 0; j < entries.Len(); j++ {
+				el := entries.Index(j)
+				span, _ := spanOf(el)
+				q, err := owner(span)
+				if err != nil {
+					return nil, err
+				}
+				target := reflect.ValueOf(q).Elem().Field(i)
+				ensureBlock(target, fv.Type())
+				te := entriesOf(target.Elem())
+				te.Set(reflect.Append(te, el))
+			}
+		}
+	}
+	return parts, nil
+}
+
+func ensureBlock(field reflect.Value, t reflect.Type) {
+	if field.IsNil() {
+		field.Set(reflect.New(t.Elem()))
+	}
+}
+
+func unitRels(u *unit.Unit) []string {
+	out := make([]string, 0, len(u.Files))
+	for _, f := range u.Files {
+		out = append(out, f.Rel)
+	}
+	return out
+}
+
+// sameProgram reports whether two files are the same program: the same
+// declarations, headers and imports, positions aside.
+func sameProgram(a, b *ast.File) bool {
+	ja, errA := ast.MarshalFile(a)
+	jb, errB := ast.MarshalFile(b)
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
+}
+
+// stagedUnitFile is one file of a unit the save rewrites.
+type stagedUnitFile struct {
+	rel, abs string
+	before   []byte
+	after    string
+}
+
+// saveUnit saves a document of a bot in several files back into them:
+// each declaration to the file its provenance names, only the files whose
+// program changed rewritten — byte for byte untouched otherwise — every
+// main of the directory that imports a rewritten fragment checked to still
+// compile, and the writes published as one journaled transaction under
+// the files' locks, after the revision the document was opened at is
+// found unchanged on disk.
+func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRequest, absPath string, doc *ast.File, current []byte) {
+	if req.CreateOnly {
+		httpError(w, http.StatusUnprocessableEntity, "a bot in several files cannot be saved as a new file: save it in place, or write the flattened program by hand")
+		return
+	}
+	u := unit.LoadDirWithMain(absPath, absPath, current)
+	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
+		httpError(w, http.StatusUnprocessableEntity, "the bot's files do not load as one unit (%s): fix them on disk before saving from the studio", d)
+		return
+	}
+	if req.Revision == "" {
+		httpError(w, http.StatusUnprocessableEntity, "%s is a bot in several files and the document names no revision: reopen the file in the studio (an older client saves a single file)", req.Path)
+		return
+	}
+	if req.Revision != u.Digest {
+		httpError(w, http.StatusConflict, "the files of %s changed on disk since the document was opened: reopen it and redo the edit", req.Path)
+		return
+	}
+	if !hasProvenance(doc) {
+		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen %s in the studio (an older client would fold every file into the main)", req.Path)
+		return
+	}
+	parts, err := splitByProvenance(doc, u)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	var staged []stagedUnitFile
+	stagedText := map[string][]byte{}
+	for _, f := range u.Files {
+		part := parts[f.Rel]
+		if f.AST != nil && sameProgram(part, f.AST) {
+			continue
+		}
+		text := unparse.Unparse(part)
+		if err := unparse.Verify(part, text); err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved as .bot source without changing it: %v", f.Rel, err)
+			return
+		}
+		staged = append(staged, stagedUnitFile{rel: f.Rel, abs: f.Name, before: f.Source, after: text})
+		stagedText[f.Rel] = []byte(text)
+	}
+	mainText := string(current)
+	if t, ok := stagedText[u.Main]; ok {
+		mainText = string(t)
+	}
+	if len(staged) == 0 {
+		writeJSON(w, saveFileResponse{Path: req.Path, Source: mainText, ConfirmedDiskPath: absPath, Revision: u.Digest})
+		return
+	}
+	if err := siblingImportersStillCompile(u, stagedText); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	paths := make([]string, 0, len(staged))
+	for _, f := range staged {
+		paths = append(paths, f.abs)
+	}
+	locks, err := acquireAuthoringLocalLocks(r.Context(), paths)
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	defer closeAuthoringLocalLocks(locks)
+	// Under the locks: the unit is still the one the document was opened at.
+	if again := unit.LoadDir(absPath); again.Digest != u.Digest {
+		httpError(w, http.StatusConflict, "the files of %s changed on disk while the save waited for their locks: reopen it and redo the edit", req.Path)
+		return
+	}
+	previews := make([]authoringPreviewFile, 0, len(staged))
+	for _, f := range staged {
+		previews = append(previews, authoringPreviewFile{Scope: "unit", Path: f.rel, Operation: "update", Before: string(f.before), After: f.after})
+	}
+	if _, err := s.publishAuthoringLocal(r.Context(), locks, previews); err != nil {
+		var conflict authoringConflictError
+		if errors.As(err, &conflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "write error: %v", err)
+		return
+	}
+	written := make([]string, 0, len(staged))
+	for _, f := range staged {
+		written = append(written, f.rel)
+	}
+	writeJSON(w, saveFileResponse{Path: req.Path, Source: mainText, ConfirmedDiskPath: absPath, Revision: unit.LoadDir(absPath).Digest, Files: written})
+}
+
+// siblingImportersStillCompile reloads every other workflow file of the
+// unit's directory that imports a fragment about to be rewritten, against
+// the staged contents, and refuses the save when one of them no longer
+// loads or compiles: a fragment shared by two mains must not break the
+// other in silence.
+func siblingImportersStillCompile(u *unit.Unit, staged map[string][]byte) error {
+	entries, err := os.ReadDir(u.Root)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == u.Main || !workflowfile.IsWorkflowFile(e.Name()) {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sibling := filepath.Join(u.Root, name)
+		before := unit.LoadDir(sibling)
+		imports := false
+		for _, f := range before.Files {
+			if _, ok := staged[f.Rel]; ok && f.Rel != before.Main {
+				imports = true
+			}
+		}
+		if !imports {
+			continue
+		}
+		after := unit.LoadDirStaged(sibling, staged)
+		if d := firstErrorDiagnostic(after.Diagnostics); d != "" {
+			return fmt.Errorf("saving would break %s, which imports a rewritten fragment: %s", name, d)
+		}
+		if after.Merged == nil {
+			return fmt.Errorf("saving would break %s, which imports a rewritten fragment: no workflow found", name)
+		}
+		if cr := ir.Compile(after.Merged); cr.HasErrors() {
+			for _, d := range cr.Diagnostics {
+				if d.Severity == ir.SeverityError {
+					return fmt.Errorf("saving would break %s, which imports a rewritten fragment: %s", name, d.Error())
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func firstErrorDiagnostic(diags []parser.Diagnostic) string {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return d.Error()
+		}
+	}
+	return ""
+}
+
+// authoringStepHook is a test seam: called before each transition of every
+// authoring transaction with the transition's name, a fault it returns
+// interrupts the write there. Nil outside tests.
+var authoringStepHook func(string) error
+
+// publishAuthoringLocal writes a set of files as one journaled transaction:
+// every candidate is prepared before any byte is exposed, then each is
+// published in turn, and a failure rolls the published ones back. The
+// recovery records name what was retained; nothing is replayed by itself.
+func (s *Server) publishAuthoringLocal(ctx context.Context, locks []*authoringLocalLock, previews []authoringPreviewFile) ([]authoringRecovery, error) {
+	var ignore func(string)
+	s.stateMu.RLock()
+	if s.watcher != nil {
+		ignore = s.watcher.IgnorePath
+	}
+	s.stateMu.RUnlock()
+	transactions := make([]*authoringLocalTransaction, 0, len(previews))
+	defer func() {
+		for _, tx := range transactions {
+			tx.close()
+		}
+	}()
+	recovery := func() []authoringRecovery {
+		out := make([]authoringRecovery, 0, len(transactions))
+		for _, tx := range transactions {
+			out = append(out, tx.recovery())
+		}
+		return out
+	}
+	failure := func(err error) ([]authoringRecovery, error) {
+		locations := make([]string, 0, len(transactions))
+		for _, tx := range transactions {
+			locations = append(locations, tx.recovery().Record)
+		}
+		return recovery(), fmt.Errorf("%w; recovery records (retained without automatic replay): %s", err, strings.Join(locations, "; "))
+	}
+	for i, preview := range previews {
+		tx, err := prepareAuthoringLocal(locks[i], preview, ignore, authoringStepHook)
+		if tx != nil {
+			transactions = append(transactions, tx)
+		}
+		if err != nil {
+			return failure(err)
+		}
+	}
+	for _, tx := range transactions {
+		err := ctx.Err()
+		if err == nil {
+			err = tx.publish()
+		}
+		if err != nil {
+			rollbackErrs := s.rollbackAuthoring(transactions)
+			if len(rollbackErrs) > 0 {
+				return failure(fmt.Errorf("write %s:%s failed: %w; rollback incomplete: %s", tx.preview.Scope, tx.preview.Path, err, strings.Join(rollbackErrs, "; ")))
+			}
+			return failure(fmt.Errorf("write %s:%s failed: %w; earlier files were rolled back", tx.preview.Scope, tx.preview.Path, err))
+		}
+	}
+	return recovery(), nil
+}
+
+// unitOpenResponse is the open response of a bot in several files.
+type unitOpenResponse struct {
+	Source            string          `json:"source"`
+	Document          json.RawMessage `json:"document"`
+	Diagnostics       []string        `json:"diagnostics,omitempty"`
+	Path              string          `json:"path"`
+	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	Unit              *unitInfo       `json:"unit"`
+}

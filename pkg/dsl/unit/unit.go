@@ -97,16 +97,24 @@ func LoadDir(mainPath string) *Unit {
 	return loadDir(mainPath, "", nil)
 }
 
+// LoadDirStaged is LoadDir with some files' contents supplied — keyed by
+// slash path from the main's directory — in place of what is on disk: a
+// save checks, before it writes, that every importer of a rewritten
+// fragment still loads against the staged text.
+func LoadDirStaged(mainPath string, staged map[string][]byte) *Unit {
+	return loadDir(mainPath, "", staged)
+}
+
 // LoadDirWithMain is LoadDir with the main's text supplied — an editor's
 // document, saved or not — while the fragments are read beside the main
 // on disk. The main is parsed under mainName when given (the name the
 // caller compiles the document as; an include in it resolves beside that
 // name), the fragments under their own absolute paths.
 func LoadDirWithMain(mainPath, mainName string, source []byte) *Unit {
-	return loadDir(mainPath, mainName, source)
+	return loadDir(mainPath, mainName, map[string][]byte{filepath.Base(mainPath): source})
 }
 
-func loadDir(mainPath, mainName string, source []byte) *Unit {
+func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 	abs, err := filepath.Abs(mainPath)
 	if err != nil {
 		abs = mainPath
@@ -118,8 +126,8 @@ func loadDir(mainPath, mainName string, source []byte) *Unit {
 		realRoot = r
 	}
 	read := func(rel string) ([]byte, error) {
-		if source != nil && rel == mainRel {
-			return source, nil
+		if src, ok := staged[rel]; ok {
+			return src, nil
 		}
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		info, err := os.Lstat(full)
