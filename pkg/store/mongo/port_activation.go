@@ -3,6 +3,7 @@ package mongo
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -63,7 +64,11 @@ func (s *Store) SavePortDistributedProof(ctx context.Context, expectedPolicy uin
 		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy && proof.PolicyRevision != expectedPolicy+1) {
 		return fmt.Errorf("%w: invalid distributed proof write", store.ErrPortActivation)
 	}
-	proof.Snapshot = bytes.TrimSpace(proof.Snapshot)
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, proof.Snapshot); err != nil {
+		return fmt.Errorf("%w: invalid distributed proof snapshot", store.ErrPortActivation)
+	}
+	proof.Snapshot = bytes.Clone(compact.Bytes())
 	if err := proof.Validate(); err != nil {
 		return err
 	}

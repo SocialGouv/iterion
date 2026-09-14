@@ -39,7 +39,11 @@ func (p *PortDistributedProof) Validate() error {
 		!p.ExpiresAt.After(p.VerifiedAt) || p.ExpiresAt.After(p.VerifiedAt.Add(PortDistributedProofMaxAge)) {
 		return fmt.Errorf("%w: malformed distributed proof snapshot", ErrPortActivation)
 	}
-	sum := sha256.Sum256(bytes.TrimSpace(p.Snapshot))
+	canonical, err := canonicalPortSnapshot(p.Snapshot)
+	if err != nil {
+		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
+	}
+	sum := sha256.Sum256(canonical)
 	if hex.EncodeToString(sum[:]) != p.SnapshotDigest {
 		return fmt.Errorf("%w: distributed proof snapshot digest mismatch", ErrPortActivation)
 	}
