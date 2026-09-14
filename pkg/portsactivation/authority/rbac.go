@@ -194,7 +194,11 @@ func parseRBACObject(raw json.RawMessage, namespace string) (string, string, *RB
 		if item.Kind == "ClusterRoleBinding" && item.RoleRef.Kind != "ClusterRole" {
 			return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory has a noncluster role binding")
 		}
-		for _, subject := range item.Subjects {
+		for i := range item.Subjects {
+			subject := &item.Subjects[i]
+			if subject.Kind == "ServiceAccount" && subject.Namespace == "" && item.Kind == "RoleBinding" {
+				subject.Namespace = namespace
+			}
 			if !oneOf(subject.Kind, "User", "Group", "ServiceAccount") || subject.Name == "" ||
 				subject.Kind == "ServiceAccount" && (!dnsLabel(subject.Namespace) || !dnsSubdomain(subject.Name)) {
 				return "", "", nil, nil, fmt.Errorf("Kubernetes RBAC inventory contains an invalid subject")
@@ -210,14 +214,8 @@ func parseRBACObject(raw json.RawMessage, namespace string) (string, string, *RB
 }
 
 func rbacName(name string) bool {
-	if len(name) == 0 || len(name) > 253 || name == "." || name == ".." {
-		return false
-	}
-	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
-			c == '-' || c == '_' || c == '.' || c == ':') {
-			return false
-		}
-	}
-	return true
+	// Kubernetes RBAC object names use path-segment validation: only exact
+	// dot segments and '/' or '%' are forbidden. These names are read from
+	// the API and never interpolated into a shell command.
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/%")
 }

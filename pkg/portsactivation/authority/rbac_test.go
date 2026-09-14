@@ -15,7 +15,7 @@ func rbacItem(kind, namespace, name string) map[string]any {
 }
 
 func rbacList(items ...map[string]any) []byte {
-	encoded, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": items})
+	encoded, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": append([]map[string]any{}, items...)})
 	return encoded
 }
 
@@ -47,19 +47,23 @@ func TestKubernetesRBACSnapshotKeepsNamespacedAndClusterBindings(t *testing.T) {
 	binding := rbacItem("RoleBinding", "trusted", "worker-cross-access")
 	binding["roleRef"] = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "secret-reader"}
 	binding["subjects"] = []any{map[string]any{"kind": "ServiceAccount", "name": "runner", "namespace": "worker"}}
+	localBinding := rbacItem("RoleBinding", "trusted", "local-reader")
+	localBinding["roleRef"] = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "secret-reader"}
+	localBinding["subjects"] = []any{map[string]any{"kind": "ServiceAccount", "name": "local-reader"}}
 	clusterRole := rbacItem("ClusterRole", "", "system:discovery")
 	clusterRole["rules"] = []any{map[string]any{"verbs": []string{"get"}, "nonResourceURLs": []string{"/api"}}}
 	clusterBinding := rbacItem("ClusterRoleBinding", "", "system:discovery")
 	clusterBinding["roleRef"] = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "system:discovery"}
 	clusterBinding["subjects"] = []any{map[string]any{"kind": "Group", "name": "system:authenticated"}}
-	binary, _, _ := rbacShim(t, rbacList(role, binding), rbacList(clusterRole, clusterBinding))
+	binary, _, _ := rbacShim(t, rbacList(role, binding, localBinding), rbacList(clusterRole, clusterBinding))
 	snapshot, err := ReadRBACSnapshot(t.Context(), binary, "fixture-context", []string{"trusted"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Roles) != 2 || len(snapshot.Bindings) != 2 ||
+	if len(snapshot.Roles) != 2 || len(snapshot.Bindings) != 3 ||
 		snapshot.Roles[0].Kind != "ClusterRole" || snapshot.Roles[0].Name != "system:discovery" ||
-		snapshot.Bindings[1].Subjects[0].Namespace != "worker" {
+		snapshot.Bindings[1].Subjects[0].Namespace != "trusted" ||
+		snapshot.Bindings[2].Subjects[0].Namespace != "worker" {
 		t.Fatalf("RBAC namespace or cluster evidence was lost: %+v", snapshot)
 	}
 }
@@ -87,10 +91,18 @@ func TestKubernetesRBACSnapshotRefusesPartialOrUnsupportedEvidence(t *testing.T)
 	clusterBinding := rbacItem("ClusterRoleBinding", "", "system:discovery")
 	clusterBinding["roleRef"] = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "reader"}
 	binary, _, _ := rbacShim(t, rbacList(), rbacList(clusterBinding))
-	if _, err := ReadRBACSnapshot(t.Context(), binary, "", []string{"trusted"}); err == nil {
-		t.Fatal("cluster binding to a namespaced Role was accepted")
+	if _, err := ReadRBACSnapshot(t.Context(), binary, "", []string{"trusted"}); err == nil ||
+		!strings.Contains(err.Error(), "noncluster role binding") {
+		t.Fatalf("cluster binding to a namespaced Role was accepted or test stopped early: %v", err)
 	}
-	if !rbacName("system:basic-user") || rbacName("../secret") || rbacName(strings.Repeat("a", 254)) {
+	clusterBinding["roleRef"] = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "system:discovery"}
+	clusterBinding["subjects"] = []any{map[string]any{"kind": "ServiceAccount", "name": "runner"}}
+	binary, _, _ = rbacShim(t, rbacList(), rbacList(clusterBinding))
+	if _, err := ReadRBACSnapshot(t.Context(), binary, "", []string{"trusted"}); err == nil {
+		t.Fatal("cluster RoleBinding accepted a ServiceAccount without an explicit namespace")
+	}
+	if !rbacName("system:basic-user") || !rbacName("alice@example.com+prod") ||
+		rbacName("../secret") || rbacName("%2F") {
 		t.Fatal("RBAC path-segment names were validated incorrectly")
 	}
 }
