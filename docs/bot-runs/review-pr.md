@@ -8,6 +8,80 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-14 — falsifiable Claw / GPT review proof (#1203)
+
+- Status: **validated end to end on both controls**. The isolated draft [PR #1204](https://github.com/SocialGouv/iterion/pull/1204)
+  is closed, unmerged and still draft. Its base contains a small
+  standard-library Python module, its contract and four tests; the reviewed
+  diff changes only the source. Expected defects were recorded before the
+  first model call, outside the reviewed checkout and launch prompt.
+  The compact [event evidence](evidence/revi-1203.json) contains only selected
+  metadata and tool observations, without prompts or credentials.
+- Configuration: the platform `review-pr` catalog override, a real repository
+  checkout pinned to each head, the existing forge connection, mono GPT,
+  `post_to_board=false`, `ticket_context=off`, `gate_enabled=false`,
+  `arm_automerge=false`, `merge_into=none`, `auto_merge=false`. The last four
+  settings keep intentional defects away from the automatic fixer/merge lane;
+  no integration, credential, quota or deployment was changed.
+- Positive oracle: removing the authenticated-tenant filter exposes another
+  tenant's report; accepting `expires_at == now` violates the exclusive expiry
+  contract. The reference tree passes all four tests; the candidate fails
+  exactly these two while preserving the empty-input and order/duplicate tests.
+- Positive run: [01a09e7b-bbe3-708a-919c-211ea943745c](https://iterion.cloud/runs/01a09e7b-bbe3-708a-919c-211ea943745c),
+  head `65658c94b1835ad12b34a5cfea397ade294e008c`, base
+  `b1f9823f94` (fixture base). `delegate_started` names `claw` /
+  `openai/gpt-5.6-sol`; `llm_request` names `gpt-5.6-sol` at requested effort
+  `high`. The agent actually executes the git diff, reads `access.py`, then
+  discovers and reads `CONTRACT.md` and `test_access.py` outside the diff. Its
+  own `bash` test execution reports `FAILED (failures=2)` and `UNITTEST_EXIT=1`
+  at event 73. These are tool results, not statements inferred from a finished
+  run or the model's summary. The [published review](https://github.com/SocialGouv/iterion/pull/1204#pullrequestreview-5194327519)
+  retains exactly two findings: [R36090a, high, line 27](https://github.com/SocialGouv/iterion/pull/1204#discussion_r4002544764)
+  and [R467bfc, medium, line 19](https://github.com/SocialGouv/iterion/pull/1204#discussion_r4002544781),
+  with correct suggested replacements. Both anchor to the reviewed head;
+  neither expected defect was missed and no additional finding was invented.
+- Corrected control: head `949edb2b82c93db2ac22497efba549a91aa744b7`
+  restores both invariants but retains an equivalent nonempty diff against the
+  fixture base, so the empty-diff short circuit cannot explain a clean result.
+  [Run 01a09e7f-c697-7f11-9846-36c681ad0fb2](https://iterion.cloud/runs/01a09e7f-c697-7f11-9846-36c681ad0fb2)
+  uses exactly the same launch settings and independently reruns all four
+  checks: event 73 reports `Ran 4 tests` / `OK`. Its [published clean review](https://github.com/SocialGouv/iterion/pull/1204#pullrequestreview-5194358316)
+  names the corrected head. No stale or additional inline finding is posted.
+- Validation: assertions over the retrieved run events and GitHub responses
+  verify both terminal states, exact commits, GPT/Claw request metadata,
+  source/contract/test reads, the expected red/green test outputs and both
+  original inline anchors. The reviewer uses `bash`, `read_file` and `glob`;
+  synthesis writes and reads back its report before deterministic publication.
+  No fixture code is included in this documentation change, and no runtime
+  code change was needed to pass the probe. Billy was not launched on the
+  intentional defects; the two per-run disabled gates prevented automatic
+  fixing, and no fixer was active before the controlled correction.
+
+### Earlier clean reviews were often the second pass
+
+The same deployed GPT/Claw route had already published concrete findings:
+[PR #1191](https://github.com/SocialGouv/iterion/pull/1191) received three on
+`b418765b` and another on `2672578d`; [PR #1199](https://github.com/SocialGouv/iterion/pull/1199)
+received two on `ed30f3d4`; [PR #1201](https://github.com/SocialGouv/iterion/pull/1201)
+received `R9f2eac` on `abbce695` before the clean review of corrected
+`cc75aa83`. That last clean run,
+[01a09c8c-102e-707d-bc10-a2a752c841ce](https://iterion.cloud/runs/01a09c8c-102e-707d-bc10-a2a752c841ce),
+has real source-reading and command events too.
+
+### What this does not establish
+
+A finite positive/negative probe measures detection of its seeded regressions,
+not general review recall. A clean verdict does not certify the complete test
+suite: the existing #1201 run's broad Go test timed out at 30 seconds, although
+it continued targeted inspection. The optional ambient Sentry MCP discovery
+failed; this does not prevent the required git/source tools from working and
+is not proof that every connected MCP works. The synthesis also tried a denied
+`todo_write` and a read of a report directory that did not yet exist, then
+continued. Engine request/delegate events establish the routed backend/model
+and real tool execution; they are not independent attestation of the provider's
+internal model implementation. Tokens in the review table are cumulative
+usage, not proof of source access or test coverage.
+
 ## 2026-09-13 — concise review and linked run ID (#1172)
 
 - Status: **validated in production** — [published review](https://github.com/SocialGouv/iterion/pull/1122#pullrequestreview-5190500941), `published=true`, `revi/review=success` on `929f4197541390901737f356b7caa800929a6e4e`; run [01a09a7d-9d70-79aa-b5e7-b198118c9ebc](https://iterion.cloud/runs/01a09a7d-9d70-79aa-b5e7-b198118c9ebc).

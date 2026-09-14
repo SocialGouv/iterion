@@ -1,0 +1,360 @@
+{
+  "issue": 1203,
+  "probe_pr": 1204,
+  "purpose": "Real production review-pr positive/negative control; fixture never merged",
+  "base_ref": "codex/devthejo-revi-probe-base-1203",
+  "base_commit": "b1f9823f94",
+  "expected_defects": [
+    {
+      "name": "cross-tenant authorization",
+      "positive_anchor": 27,
+      "finding_id": "R36090a"
+    },
+    {
+      "name": "exclusive expiration boundary",
+      "positive_anchor": 19,
+      "finding_id": "R467bfc"
+    }
+  ],
+  "runs": {
+    "positive": {
+      "id": "01a09e7b-bbe3-708a-919c-211ea943745c",
+      "status": "finished",
+      "created_at": "2026-09-14T05:55:04.301Z",
+      "finished_at": "2026-09-14T05:57:56.702Z",
+      "nodes_served": {
+        "converge": {
+          "backend": "claw",
+          "declared_model": "openai/gpt-5.6-sol"
+        },
+        "reviewer_gpt": {
+          "backend": "claw",
+          "declared_model": "openai/gpt-5.6-sol"
+        }
+      },
+      "nodes": {
+        "reviewer_gpt": {
+          "requests": 10,
+          "request_models": [
+            "gpt-5.6-sol"
+          ],
+          "requested_efforts": [
+            "high"
+          ],
+          "exposed_tool_counts": [
+            74
+          ],
+          "successful_tools": {
+            "todo_write": 4,
+            "bash": 4,
+            "read_file": 3,
+            "glob": 1
+          },
+          "tokens": 229630
+        },
+        "converge": {
+          "requests": 5,
+          "request_models": [
+            "gpt-5.6-sol"
+          ],
+          "requested_efforts": [
+            "medium"
+          ],
+          "exposed_tool_counts": [
+            12
+          ],
+          "successful_tools": {
+            "glob": 1,
+            "write_file": 1,
+            "read_file": 1
+          },
+          "tokens": 26051
+        }
+      },
+      "observations": [
+        {
+          "seq": 22,
+          "type": "mcp_server_degraded",
+          "server": "sentry",
+          "error": "mcp: discover tools for \"sentry\": mcp: connect to \"sentry\": connection closed: calling \"initialize\": client is closing: EOF"
+        },
+        {
+          "seq": 33,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "git -C /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c diff --stat $(git -C /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c merge-base codex/devthejo-revi-probe-base-1203 HEAD)"
+          }
+        },
+        {
+          "seq": 35,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "git -C /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c diff --name-only $(git -C /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c merge-base codex/devthejo-revi-probe-base-1203 HEAD)"
+          }
+        },
+        {
+          "seq": 37,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "git -C /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c diff $(git -C /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c merge-base codex/devthejo-revi-probe-base-1203 HEAD)"
+          }
+        },
+        {
+          "seq": 48,
+          "type": "tool_started",
+          "tool": "read_file",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c/diagnostics/revi-probe/access.py"
+          }
+        },
+        {
+          "seq": 50,
+          "type": "tool_started",
+          "tool": "glob",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c/diagnostics/revi-probe",
+            "pattern": "**/*"
+          }
+        },
+        {
+          "seq": 55,
+          "type": "tool_started",
+          "tool": "read_file",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c/diagnostics/revi-probe/CONTRACT.md"
+          }
+        },
+        {
+          "seq": 57,
+          "type": "tool_started",
+          "tool": "read_file",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c/diagnostics/revi-probe/test_access.py"
+          }
+        },
+        {
+          "seq": 67,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "cd /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c && python3 -m unittest discover -s diagnostics/revi-probe -v"
+          }
+        },
+        {
+          "seq": 68,
+          "type": "tool_error",
+          "test_result": "FAIL (2 of 4)",
+          "duration_ms": 142,
+          "error": "command exited with error: exit status 1"
+        },
+        {
+          "seq": 72,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "cd /tmp/iterion/repos/01a09e7b-bbe3-708a-919c-211ea943745c && python3 -m unittest discover -s diagnostics/revi-probe -v; status=$?; printf '\\nUNITTEST_EXIT=%s\\n' \"$status\""
+          }
+        },
+        {
+          "seq": 73,
+          "type": "tool_called",
+          "test_result": "FAIL (2 of 4)",
+          "duration_ms": 82,
+          "error": null
+        },
+        {
+          "seq": 95,
+          "type": "tool_error",
+          "tool": "todo_write",
+          "result": "denied by converge permission policy; synthesis continued"
+        }
+      ],
+      "engine": {
+        "engine_commit": "505c54c16b60e8bfbda3e758079abbe451fb7c6e",
+        "engine_version": "v3.132.0",
+        "launched_by_version": "v3.142.1+f1230b15956f",
+        "workflow_hash": "a294594bb1d1ed5e4664292839d5e6b09b20a94a7ac86753d873d7f60945d27a"
+      }
+    },
+    "negative": {
+      "id": "01a09e7f-c697-7f11-9846-36c681ad0fb2",
+      "status": "finished",
+      "created_at": "2026-09-14T05:59:29.181Z",
+      "finished_at": "2026-09-14T06:02:34.853Z",
+      "nodes_served": {
+        "converge": {
+          "backend": "claw",
+          "declared_model": "openai/gpt-5.6-sol"
+        },
+        "reviewer_gpt": {
+          "backend": "claw",
+          "declared_model": "openai/gpt-5.6-sol"
+        }
+      },
+      "nodes": {
+        "reviewer_gpt": {
+          "requests": 12,
+          "request_models": [
+            "gpt-5.6-sol"
+          ],
+          "requested_efforts": [
+            "high"
+          ],
+          "exposed_tool_counts": [
+            74
+          ],
+          "successful_tools": {
+            "todo_write": 5,
+            "bash": 4,
+            "read_file": 3,
+            "glob": 1
+          },
+          "tokens": 274816
+        },
+        "converge": {
+          "requests": 5,
+          "request_models": [
+            "gpt-5.6-sol"
+          ],
+          "requested_efforts": [
+            "medium"
+          ],
+          "exposed_tool_counts": [
+            12
+          ],
+          "successful_tools": {
+            "write_file": 1,
+            "read_file": 1
+          },
+          "tokens": 24611
+        }
+      },
+      "observations": [
+        {
+          "seq": 22,
+          "type": "mcp_server_degraded",
+          "server": "sentry",
+          "error": "mcp: discover tools for \"sentry\": mcp: connect to \"sentry\": connection closed: calling \"initialize\": client is closing: EOF"
+        },
+        {
+          "seq": 33,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "git -C /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 diff --name-only $(git -C /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 merge-base codex/devthejo-revi-probe-base-1203 HEAD)"
+          }
+        },
+        {
+          "seq": 35,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "git -C /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 diff --stat $(git -C /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 merge-base codex/devthejo-revi-probe-base-1203 HEAD)"
+          }
+        },
+        {
+          "seq": 46,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "git -C /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 diff $(git -C /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 merge-base codex/devthejo-revi-probe-base-1203 HEAD) -- diagnostics/revi-probe/access.py"
+          }
+        },
+        {
+          "seq": 51,
+          "type": "tool_started",
+          "tool": "read_file",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2/diagnostics/revi-probe/access.py"
+          }
+        },
+        {
+          "seq": 56,
+          "type": "tool_started",
+          "tool": "glob",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2/diagnostics/revi-probe",
+            "pattern": "*"
+          }
+        },
+        {
+          "seq": 60,
+          "type": "tool_started",
+          "tool": "read_file",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2/diagnostics/revi-probe/CONTRACT.md"
+          }
+        },
+        {
+          "seq": 62,
+          "type": "tool_started",
+          "tool": "read_file",
+          "input": {
+            "path": "/tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2/diagnostics/revi-probe/test_access.py"
+          }
+        },
+        {
+          "seq": 72,
+          "type": "tool_started",
+          "tool": "bash",
+          "input": {
+            "command": "cd /tmp/iterion/repos/01a09e7f-c697-7f11-9846-36c681ad0fb2 && python3 -m unittest discover -s diagnostics/revi-probe -v"
+          }
+        },
+        {
+          "seq": 73,
+          "type": "tool_called",
+          "test_result": "PASS (4 of 4)",
+          "duration_ms": 111,
+          "error": null
+        },
+        {
+          "seq": 101,
+          "type": "tool_error",
+          "tool": "todo_write",
+          "result": "denied by converge permission policy; synthesis continued"
+        }
+      ],
+      "engine": {
+        "engine_commit": "505c54c16b60e8bfbda3e758079abbe451fb7c6e",
+        "engine_version": "v3.132.0",
+        "launched_by_version": "v3.142.1+f1230b15956f",
+        "workflow_hash": "a294594bb1d1ed5e4664292839d5e6b09b20a94a7ac86753d873d7f60945d27a"
+      }
+    }
+  },
+  "publication": [
+    {
+      "id": 5194327519,
+      "head": "65658c94b1835ad12b34a5cfea397ade294e008c",
+      "url": "https://github.com/SocialGouv/iterion/pull/1204#pullrequestreview-5194327519",
+      "verdict": "**Revi \u2014 2 probl\u00e8mes \u00e0 corriger.**"
+    },
+    {
+      "id": 5194358316,
+      "head": "949edb2b82c93db2ac22497efba549a91aa744b7",
+      "url": "https://github.com/SocialGouv/iterion/pull/1204#pullrequestreview-5194358316",
+      "verdict": "**Revi \u2014 aucun probl\u00e8me d\u00e9tect\u00e9 dans le p\u00e9rim\u00e8tre revu.**"
+    }
+  ],
+  "inline_findings": [
+    {
+      "id": "R36090a",
+      "path": "diagnostics/revi-probe/access.py",
+      "line": 27,
+      "head": "65658c94b1835ad12b34a5cfea397ade294e008c",
+      "url": "https://github.com/SocialGouv/iterion/pull/1204#discussion_r4002544764"
+    },
+    {
+      "id": "R467bfc",
+      "path": "diagnostics/revi-probe/access.py",
+      "line": 19,
+      "head": "65658c94b1835ad12b34a5cfea397ade294e008c",
+      "url": "https://github.com/SocialGouv/iterion/pull/1204#discussion_r4002544781"
+    }
+  ],
+  "verification": "All assertions passed: exact heads, two seeded findings, clean corrected control, real source reads and focused test execution."
+}
