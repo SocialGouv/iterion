@@ -36,8 +36,10 @@ const (
 	DiagRemovedInProfile   DiagCode = "E043" // a property the file's profile removed (`project_root:` from profile 2)
 
 	// Import errors (the multi-file unit, ADR-098 §3)
-	DiagMisplacedImport DiagCode = "E044" // an `import` after the file's first declaration
-	DiagBadImportPath   DiagCode = "E045" // an import path that is not a quoted, relative, slash-separated `.bot` path into lib/
+	DiagMisplacedImport  DiagCode = "E044" // an `import` after the file's first declaration
+	DiagBadImportPath    DiagCode = "E045" // an import path that is not a quoted, relative, slash-separated `.bot` path into lib/
+	DiagImportUnreadable DiagCode = "E046" // an imported fragment that cannot be read: missing, or beyond what the unit may read
+	DiagImportCycle      DiagCode = "E047" // a fragment that imports itself, through however many files
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -65,6 +67,8 @@ var hints = map[DiagCode]string{
 	DiagRemovedInProfile:    "Keep the file in profile 1 (drop the `dsl: 2` header), or redesign the memory scope: `visibility:` is a different axis (C171), not a drop-in replacement for `project_root:`.",
 	DiagMisplacedImport:     "Move the `import` lines to the head of the file — after the `dsl:` header and the leading comments, before the first block or node.",
 	DiagBadImportPath:       "Write `import \"lib/<name>.bot\"`: a quoted, relative, slash-separated path to a `.bot` fragment under the bot's `lib/` directory, one import per line.",
+	DiagImportUnreadable:    "Create the fragment under the bot's `lib/` directory, or fix the path; a symlink, an absolute path or a path leaving the bot's directory is never read.",
+	DiagImportCycle:         "A fragment may not import a file that imports it back: move the shared declarations into a third fragment both import.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is
