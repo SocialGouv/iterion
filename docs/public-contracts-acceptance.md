@@ -468,7 +468,8 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   analysis parses every declared broker source with the
   pinned profile, reconciles all configured NATS principals to custody entries,
   classifies protected ACL exposure and refuses inconsistent broker ACLs or
-  system credentials assigned outside the authority role. Eleven required
+  system credentials assigned outside the authority role. Equivalent ACL rule
+  order is normalized across brokers. Twelve required
   reader/schema/static cases pass with race detection. These fields are
   operator assertions only: Kubernetes RBAC, live broker digests, workload
   coverage and credential custody have not yet been reconciled.

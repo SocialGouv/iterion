@@ -12,7 +12,8 @@
       "TestAuthorityRecordPreservesCaseSensitiveSourceFiles",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
-      "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift"
+      "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",
+      "TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder"
     ]
   }
 }

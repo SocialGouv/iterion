@@ -68,8 +68,8 @@ func analyzeStaticWithParser(ctx context.Context, record *Record,
 			return nil, fmt.Errorf("NATS authority source disagrees with declared account or credential custody")
 		}
 		if index == 0 {
-			baseline = profile.Principals
-		} else if !reflect.DeepEqual(profile.Principals, baseline) {
+			baseline = normalizedPrincipals(profile.Principals)
+		} else if !reflect.DeepEqual(normalizedPrincipals(profile.Principals), baseline) {
 			return nil, fmt.Errorf("NATS authority brokers have inconsistent effective principal permissions")
 		}
 		analysis.Brokers = append(analysis.Brokers, StaticBroker{ServerID: broker.ServerID, ConfigDigest: profile.ConfigDigest})
@@ -109,4 +109,25 @@ func analyzeStaticWithParser(ctx context.Context, record *Record,
 		return strings.Compare(a.Identity, b.Identity)
 	})
 	return analysis, nil
+}
+
+func normalizedPrincipals(principals []natsconfig.Principal) []natsconfig.Principal {
+	normalized := make([]natsconfig.Principal, len(principals))
+	for i, principal := range principals {
+		principal.Publish.Allow = normalizedRules(principal.Publish.Allow)
+		principal.Publish.Deny = normalizedRules(principal.Publish.Deny)
+		principal.Subscribe.Allow = normalizedRules(principal.Subscribe.Allow)
+		principal.Subscribe.Deny = normalizedRules(principal.Subscribe.Deny)
+		normalized[i] = principal
+	}
+	return normalized
+}
+
+func normalizedRules(rules []string) []string {
+	if len(rules) == 0 {
+		return nil
+	}
+	normalized := slices.Clone(rules)
+	slices.Sort(normalized)
+	return slices.Compact(normalized)
 }

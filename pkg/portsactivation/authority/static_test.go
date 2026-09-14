@@ -43,6 +43,24 @@ func parsedStaticFixture(wildcard bool) *natsconfig.Result {
 			"system_account": json.RawMessage(`"SYS"`), "accounts": json.RawMessage(accounts)}}
 }
 
+func reorderedStaticFixture(t *testing.T) *natsconfig.Result {
+	t.Helper()
+	result := parsedStaticFixture(false)
+	var accounts map[string]any
+	if err := json.Unmarshal(result.Config["accounts"], &accounts); err != nil {
+		t.Fatal(err)
+	}
+	worker := accounts["WORK"].(map[string]any)["users"].([]any)[0].(map[string]any)
+	publish := worker["permissions"].(map[string]any)["publish"].([]any)
+	publish[0], publish[1] = publish[1], publish[0]
+	encoded, err := json.Marshal(accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Config["accounts"] = encoded
+	return result
+}
+
 func TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal(t *testing.T) {
 	record := staticFixture(t)
 	analysis, err := analyzeStaticWithParser(t.Context(), record,
@@ -120,5 +138,26 @@ func TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift(t *testing.T) {
 		})
 	if err == nil {
 		t.Fatal("brokers with different effective protected permissions were accepted")
+	}
+}
+
+func TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder(t *testing.T) {
+	record := staticFixture(t)
+	second := record.Brokers[0]
+	second.ServerID = "NC456"
+	second.ServerName = "nats-1"
+	second.PodName = "nats-1"
+	second.sources = second.Sources()
+	second.sources.Files["main.conf"] = "same permissions, opposite rule order"
+	record.Brokers = append(record.Brokers, second)
+	analysis, err := analyzeStaticWithParser(t.Context(), record,
+		func(_ context.Context, sources natsconfig.Sources) (*natsconfig.Result, error) {
+			if sources.Files["main.conf"] == "same permissions, opposite rule order" {
+				return reorderedStaticFixture(t), nil
+			}
+			return parsedStaticFixture(false), nil
+		})
+	if err != nil || len(analysis.Brokers) != 2 {
+		t.Fatalf("equivalent reordered ACLs were rejected: %v", err)
 	}
 }
