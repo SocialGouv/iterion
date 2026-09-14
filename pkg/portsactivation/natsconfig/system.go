@@ -10,7 +10,6 @@ import (
 	natsclient "github.com/nats-io/nats.go"
 )
 
-const systemConnPageSize = 128
 const systemConnLimit = 4096
 const systemResponseLimit = 1 << 20
 
@@ -33,11 +32,55 @@ type SystemObservation struct {
 }
 
 type systemEnvelope[T any] struct {
-	Server *struct {
-		ID string `json:"id"`
-	} `json:"server"`
-	Data  *T              `json:"data"`
-	Error json.RawMessage `json:"error"`
+	Server *systemServerInfo `json:"server"`
+	Data   *T                `json:"data"`
+	Error  json.RawMessage   `json:"error"`
+}
+
+type systemServerInfo struct {
+	ID string `json:"id"`
+}
+
+type systemConnzEntry struct {
+	CID     uint64 `json:"cid"`
+	Account string `json:"account"`
+	User    string `json:"authorized_user"`
+	Name    string `json:"name"`
+}
+
+type systemConnz struct {
+	ID       string             `json:"server_id"`
+	Total    int                `json:"total"`
+	Offset   int                `json:"offset"`
+	NumConns int                `json:"num_connections"`
+	Conns    []systemConnzEntry `json:"connections"`
+}
+
+// The pinned broker constructs one CONNZ response from a single snapshot.
+// Offset pagination cannot be made a complete census by comparing totals:
+// a disconnect and reconnect between pages can keep the total unchanged
+// while shifting a continuously connected holder across the boundary.
+func completeSystemConnections(serverID string, response *systemEnvelope[systemConnz]) ([]SystemConnection, error) {
+	if response == nil || response.Server == nil || response.Data == nil || response.Server.ID != serverID {
+		return nil, fmt.Errorf("NATS system CONNZ response has an inconsistent broker identity")
+	}
+	page := response.Data
+	if page.ID != serverID || page.Total < 0 || page.Total > systemConnLimit || page.Offset != 0 ||
+		page.NumConns != page.Total || len(page.Conns) != page.Total {
+		return nil, fmt.Errorf("NATS system CONNZ did not return one complete bounded snapshot")
+	}
+	seen := make(map[uint64]bool, page.Total)
+	connections := make([]SystemConnection, 0, page.Total)
+	for _, connection := range page.Conns {
+		if connection.CID == 0 || connection.Account == "" || connection.User == "" || seen[connection.CID] {
+			return nil, fmt.Errorf("NATS system CONNZ has an unidentified or duplicate connection")
+		}
+		seen[connection.CID] = true
+		connections = append(connections, SystemConnection{
+			CID: connection.CID, Account: connection.Account, User: connection.User, Name: connection.Name,
+		})
+	}
+	return connections, nil
 }
 
 func systemRequest[T any](ctx context.Context, nc *natsclient.Conn, subject string, request any) (*systemEnvelope[T], error) {
@@ -92,51 +135,16 @@ func ObserveSystemServer(ctx context.Context, nc *natsclient.Conn, serverID, exp
 	}
 	result := &SystemObservation{ServerID: serverID, ServerName: varz.Data.Name,
 		Version: varz.Data.Version, ConfigDigest: varz.Data.ConfigDigest}
-	seen := make(map[uint64]bool)
-	total := -1
-	for offset := 0; ; offset += systemConnPageSize {
-		connz, err := systemRequest[struct {
-			ID       string `json:"server_id"`
-			Total    int    `json:"total"`
-			Offset   int    `json:"offset"`
-			NumConns int    `json:"num_connections"`
-			Conns    []struct {
-				CID     uint64 `json:"cid"`
-				Account string `json:"account"`
-				User    string `json:"authorized_user"`
-				Name    string `json:"name"`
-			} `json:"connections"`
-		}](ctx, nc, "$SYS.REQ.SERVER."+serverID+".CONNZ", struct {
-			Auth   bool `json:"auth"`
-			Offset int  `json:"offset"`
-			Limit  int  `json:"limit"`
-		}{true, offset, systemConnPageSize})
-		if err != nil {
-			return nil, err
-		}
-		page := connz.Data
-		if connz.Server.ID != serverID || page.ID != serverID || page.Total < 0 || page.Total > systemConnLimit ||
-			page.Offset != offset || page.NumConns != len(page.Conns) || len(page.Conns) > systemConnPageSize ||
-			(total >= 0 && page.Total != total) {
-			return nil, fmt.Errorf("NATS system CONNZ changed or returned incomplete pagination")
-		}
-		if total < 0 {
-			total = page.Total
-		}
-		for _, connection := range page.Conns {
-			if connection.CID == 0 || connection.Account == "" || connection.User == "" || seen[connection.CID] {
-				return nil, fmt.Errorf("NATS system CONNZ has an unidentified or duplicate connection")
-			}
-			seen[connection.CID] = true
-			result.Connections = append(result.Connections, SystemConnection{
-				CID: connection.CID, Account: connection.Account, User: connection.User, Name: connection.Name,
-			})
-		}
-		if len(result.Connections) == total {
-			return result, nil
-		}
-		if len(page.Conns) != systemConnPageSize || len(result.Connections) > total {
-			return nil, fmt.Errorf("NATS system CONNZ omitted current connections")
-		}
+	connz, err := systemRequest[systemConnz](ctx, nc, "$SYS.REQ.SERVER."+serverID+".CONNZ", struct {
+		Auth  bool `json:"auth"`
+		Limit int  `json:"limit"`
+	}{true, systemConnLimit})
+	if err != nil {
+		return nil, err
 	}
+	result.Connections, err = completeSystemConnections(serverID, connz)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

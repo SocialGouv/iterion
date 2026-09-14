@@ -31,18 +31,30 @@ func loadYAML(path string, cfg *Config) error {
 // field would zero the default. Only fields explicitly present in the
 // YAML overwrite cfg.
 type yamlConfig struct {
-	Mode    *string            `yaml:"mode"`
-	Sandbox *yamlSandboxConfig `yaml:"sandbox"`
-	NATS    *yamlNATSConfig    `yaml:"nats"`
-	Mongo   *yamlMongoConfig   `yaml:"mongo"`
-	S3      *yamlS3Config      `yaml:"s3"`
-	Runner  *yamlRunnerConfig  `yaml:"runner"`
-	Rollout *yamlRolloutConfig `yaml:"rollout"`
-	Server  *yamlServerConfig  `yaml:"server"`
-	Metrics *yamlMetricsConfig `yaml:"metrics"`
-	Log     *yamlLogConfig     `yaml:"log"`
-	Auth    *yamlAuthConfig    `yaml:"auth"`
-	Alerts  *yamlAlertsConfig  `yaml:"alerts"`
+	Mode      *string              `yaml:"mode"`
+	Sandbox   *yamlSandboxConfig   `yaml:"sandbox"`
+	NATS      *yamlNATSConfig      `yaml:"nats"`
+	Mongo     *yamlMongoConfig     `yaml:"mongo"`
+	S3        *yamlS3Config        `yaml:"s3"`
+	Runner    *yamlRunnerConfig    `yaml:"runner"`
+	Rollout   *yamlRolloutConfig   `yaml:"rollout"`
+	Server    *yamlServerConfig    `yaml:"server"`
+	Metrics   *yamlMetricsConfig   `yaml:"metrics"`
+	Log       *yamlLogConfig       `yaml:"log"`
+	Auth      *yamlAuthConfig      `yaml:"auth"`
+	Alerts    *yamlAlertsConfig    `yaml:"alerts"`
+	Contracts *yamlContractsConfig `yaml:"contracts"`
+}
+
+type yamlContractsConfig struct {
+	Distributed *yamlDistributedContractsConfig `yaml:"distributed"`
+}
+
+type yamlDistributedContractsConfig struct {
+	SystemNATSURL        *string   `yaml:"system_nats_url"`
+	AuthorityRef         *string   `yaml:"authority_ref"`
+	KubernetesContext    *string   `yaml:"kubernetes_context"`
+	KubernetesNamespaces *[]string `yaml:"kubernetes_namespaces"`
 }
 
 type yamlAlertsConfig struct {
@@ -159,6 +171,15 @@ type yamlLogConfig struct {
 }
 
 func (y *yamlConfig) applyTo(cfg *Config) error {
+	if y.Contracts != nil && y.Contracts.Distributed != nil {
+		d := y.Contracts.Distributed
+		applyString(d.SystemNATSURL, &cfg.Contracts.Distributed.SystemNATSURL)
+		applyString(d.AuthorityRef, &cfg.Contracts.Distributed.AuthorityRef)
+		applyString(d.KubernetesContext, &cfg.Contracts.Distributed.KubernetesContext)
+		if d.KubernetesNamespaces != nil {
+			cfg.Contracts.Distributed.KubernetesNamespaces = *d.KubernetesNamespaces
+		}
+	}
 	if y.Mode != nil {
 		cfg.Mode = Mode(*y.Mode)
 	}

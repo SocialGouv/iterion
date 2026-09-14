@@ -74,6 +74,23 @@ spec:
           # Literal PodTemplate values are load-bearing: an old ReplicaSet
           # scaled after the ConfigMap changes must keep its old epoch.
           env:
+            {{- if .Values.server.distributedAuthority.enabled }}
+            {{- if ne .Values.mode "cloud" }}{{ fail "server.distributedAuthority requires cloud mode" }}{{ end }}
+            {{- if .Values.runner.enabled }}{{ fail "server.distributedAuthority requires runner.enabled=false in this release" }}{{ end }}
+            - name: ITERION_CONTRACTS_DISTRIBUTED_SYSTEM_NATS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "server.distributedAuthority.systemNatsSecretName is required" .Values.server.distributedAuthority.systemNatsSecretName | quote }}
+                  key: {{ required "server.distributedAuthority.systemNatsSecretKey is required" .Values.server.distributedAuthority.systemNatsSecretKey | quote }}
+            - name: ITERION_CONTRACTS_DISTRIBUTED_AUTHORITY_REF
+              value: {{ required "server.distributedAuthority.authorityRef is required" .Values.server.distributedAuthority.authorityRef | quote }}
+            {{- with .Values.server.distributedAuthority.kubernetesContext }}
+            - name: ITERION_CONTRACTS_DISTRIBUTED_KUBERNETES_CONTEXT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ITERION_CONTRACTS_DISTRIBUTED_KUBERNETES_NAMESPACES
+              value: {{ required "server.distributedAuthority.kubernetesNamespaces is required" .Values.server.distributedAuthority.kubernetesNamespaces | join "," | quote }}
+            {{- end }}
             - name: ITERION_RUNNER_EPOCH
               value: {{ .Values.config.rollout.runnerEpoch | int64 | quote }}
             - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY

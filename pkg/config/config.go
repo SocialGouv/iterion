@@ -41,19 +41,20 @@ const (
 type Config struct {
 	Mode Mode `yaml:"mode"`
 
-	NATS    NATSConfig    `yaml:"nats"`
-	Mongo   MongoConfig   `yaml:"mongo"`
-	Redis   RedisConfig   `yaml:"redis"`
-	S3      S3Config      `yaml:"s3"`
-	Runner  RunnerConfig  `yaml:"runner"`
-	Rollout RolloutConfig `yaml:"rollout"`
-	Server  ServerConfig  `yaml:"server"`
-	Metrics MetricsConfig `yaml:"metrics"`
-	Log     LogConfig     `yaml:"log"`
-	Sandbox SandboxConfig `yaml:"sandbox"`
-	Auth    AuthConfig    `yaml:"auth"`
-	Alerts  AlertsConfig  `yaml:"alerts"`
-	WebPush WebPushConfig `yaml:"webpush"`
+	NATS      NATSConfig      `yaml:"nats"`
+	Mongo     MongoConfig     `yaml:"mongo"`
+	Redis     RedisConfig     `yaml:"redis"`
+	S3        S3Config        `yaml:"s3"`
+	Runner    RunnerConfig    `yaml:"runner"`
+	Rollout   RolloutConfig   `yaml:"rollout"`
+	Server    ServerConfig    `yaml:"server"`
+	Metrics   MetricsConfig   `yaml:"metrics"`
+	Log       LogConfig       `yaml:"log"`
+	Sandbox   SandboxConfig   `yaml:"sandbox"`
+	Auth      AuthConfig      `yaml:"auth"`
+	Alerts    AlertsConfig    `yaml:"alerts"`
+	WebPush   WebPushConfig   `yaml:"webpush"`
+	Contracts ContractsConfig `yaml:"contracts"`
 }
 
 // WebPushConfig holds the VAPID identity for browser push notifications
@@ -502,6 +503,9 @@ func Load(opts LoadOptions) (Config, error) {
 // membership). Returns the first failure as an error suitable for
 // surfacing on CLI startup.
 func (c *Config) Validate() error {
+	if err := c.Contracts.Distributed.validate(c.Mode); err != nil {
+		return err
+	}
 	switch c.Mode {
 	case ModeLocal, ModeCloud:
 	default:

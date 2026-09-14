@@ -13,6 +13,12 @@ import (
 // running iterion without any new env vars set leaves Defaults() and
 // the YAML file untouched.
 func loadEnv(cfg *Config) error {
+	lookupString("ITERION_CONTRACTS_DISTRIBUTED_SYSTEM_NATS_URL", &cfg.Contracts.Distributed.SystemNATSURL)
+	lookupString("ITERION_CONTRACTS_DISTRIBUTED_AUTHORITY_REF", &cfg.Contracts.Distributed.AuthorityRef)
+	lookupString("ITERION_CONTRACTS_DISTRIBUTED_KUBERNETES_CONTEXT", &cfg.Contracts.Distributed.KubernetesContext)
+	if v, ok := lookup("ITERION_CONTRACTS_DISTRIBUTED_KUBERNETES_NAMESPACES"); ok {
+		cfg.Contracts.Distributed.KubernetesNamespaces = strings.Split(v, ",")
+	}
 	if v, ok := lookup("ITERION_MODE"); ok {
 		cfg.Mode = Mode(v)
 	}

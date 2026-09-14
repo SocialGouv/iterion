@@ -403,7 +403,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   for inherited defaults and a signed nkey, denies anonymous access, and
   reports the same parsed digest through HTTP and authenticated system VARZ
   before and after reload. The race-instrumented manifest now verifies all
-  **90** named parser/profile/permission cases without skips; `go vet` and a
+  **91** named parser/profile/permission cases without skips; `go vet` and a
   static production build pass. This is still an isolated source projection:
   live JetStream/KV topology reconciliation, credential-holder inventory,
   Kubernetes reconciliation and production verifier remain outstanding.
@@ -424,7 +424,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   purge grant clears the run stream, and a Core subscription receives its
   run payload. The distinct system account is reported as privileged authority
   exposure rather than being treated as a harmless other account. The full
-  race-instrumented NATS manifest has 90 cases without skips. The classifier
+  race-instrumented NATS manifest has 91 cases without skips. The classifier
   still needs authoritative live topology, credential
   custody and workload reconciliation before its result can admit a root.
 - The same classifier treats system-account access to `$SYS.>` requests or
@@ -434,10 +434,19 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   not authenticate its responder.
 - A read-only system-account observer now binds one named broker's VARZ
   identity, pinned version and loaded digest to the parsed source, then reads
-  authenticated CONNZ pages with explicit bounds and stable pagination. A
+  one complete authenticated CONNZ snapshot within explicit size bounds. A
   pinned broker confirms both system and worker identities appear and a wrong
-  digest refuses observation. This detects current contradictions; it cannot
+  digest refuses observation. An equal-total connection-churn regression
+  shows why partial offset pages are refused. This detects current contradictions; it cannot
   establish that every broker or disconnected credential holder was inventoried.
+- Explicit `contracts.distributed` configuration loads through the existing
+  YAML/environment precedence and validates a server-only authenticated
+  system URL, operator Secret reference and bounded namespace scope. The Helm
+  chart defaults to no authority wiring; an opt-in trusted release receives
+  the system URL through a named Secret key while a distinct worker release
+  has zero server replicas, no server HPA and no system URL. The chart profile
+  script passes locally and is wired into the existing Helm CI job. Runtime
+  authority loading and Kubernetes verification are still outstanding.
 - A complete `task test` pass initially found two fixture/CI omissions:
   `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
   test called a Mongo factory without checking the optional fixture gate.

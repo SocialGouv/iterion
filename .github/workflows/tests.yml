@@ -735,6 +735,8 @@ jobs:
         run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - name: helm lint --strict (values-prod.yaml)
         run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+      - name: public-contract authority chart boundaries
+        run: bash scripts/verify-public-contracts-chart.sh
       # `helm lint` renders nothing image-shaped, and cloud-e2e only ever
       # installs via image.tag — so without these two the digest branch of
       # `iterion.image` is exercised by no CI job at all, and a refactor could

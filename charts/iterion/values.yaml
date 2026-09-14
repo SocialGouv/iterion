@@ -26,6 +26,16 @@ fullnameOverride: ""
 # --- Server (HTTP API + studio) ---------------------------------
 server:
   replicas: 1
+  # Optional server-only native distributed authority. This is configuration
+  # plumbing, not activation: the runtime still requires a verified proof.
+  # Use a separate trusted release/namespace with runner.enabled=false.
+  distributedAuthority:
+    enabled: false
+    systemNatsSecretName: ""
+    systemNatsSecretKey: url
+    authorityRef: "" # namespace/name of an operator-owned Secret
+    kubernetesContext: "" # empty uses the in-cluster ServiceAccount
+    kubernetesNamespaces: [] # complete declared deployment scope
   # Full surge keeps the current serving capacity while the new ReplicaSet
   # becomes ready. It is a capacity/SLO aid; the runner epoch is the safety
   # invariant under HPA/KEDA proportional scaling.

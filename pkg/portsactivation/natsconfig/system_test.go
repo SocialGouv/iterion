@@ -101,3 +101,33 @@ func TestNATSSystemObservationRefusesUnboundBroker(t *testing.T) {
 		}
 	}
 }
+
+func TestNATSSystemObservationRejectsEqualTotalPageChurn(t *testing.T) {
+	// Under offset pagination, removing CID 1 and adding CID 257 between
+	// pages leaves both totals at 256 while CID 129 remains connected but
+	// shifts across the boundary and is never observed.
+	first := &systemEnvelope[systemConnz]{Server: &systemServerInfo{ID: "BROKER"},
+		Data: &systemConnz{ID: "BROKER", Total: 256, NumConns: 128}}
+	second := &systemEnvelope[systemConnz]{Server: &systemServerInfo{ID: "BROKER"},
+		Data: &systemConnz{ID: "BROKER", Total: 256, Offset: 128, NumConns: 128}}
+	for cid := uint64(1); cid <= 128; cid++ {
+		first.Data.Conns = append(first.Data.Conns, systemConnzEntry{CID: cid, Account: "WORK", User: "worker"})
+	}
+	for cid := uint64(130); cid <= 257; cid++ {
+		second.Data.Conns = append(second.Data.Conns, systemConnzEntry{CID: cid, Account: "WORK", User: "worker"})
+	}
+	for _, partial := range []*systemEnvelope[systemConnz]{first, second} {
+		if _, err := completeSystemConnections("BROKER", partial); err == nil {
+			t.Fatal("a partial CONNZ page was accepted as a complete census")
+		}
+	}
+	complete := &systemEnvelope[systemConnz]{Server: &systemServerInfo{ID: "BROKER"},
+		Data: &systemConnz{ID: "BROKER", Total: 256, NumConns: 256}}
+	for cid := uint64(1); cid <= 256; cid++ {
+		complete.Data.Conns = append(complete.Data.Conns, systemConnzEntry{CID: cid, Account: "WORK", User: "worker"})
+	}
+	connections, err := completeSystemConnections("BROKER", complete)
+	if err != nil || len(connections) != 256 {
+		t.Fatalf("complete single response was refused: count=%d err=%v", len(connections), err)
+	}
+}
