@@ -112,6 +112,28 @@ accounts {
 		result.Brokers[0].ObservedConnections != 2 {
 		t.Fatalf("live authority did not bind broker and connected principals: %+v %v", result, err)
 	}
+	queueBinding, err := BindQueueConnection(record, result, worker)
+	if err != nil || queueBinding.ServerID != serverID || queueBinding.ClientID == 0 ||
+		queueBinding.Account != "WORK" || queueBinding.Principal != "worker-user" {
+		t.Fatalf("live queue connection was not bound to its broker account: %+v %v", queueBinding, err)
+	}
+	if _, err := BindQueueConnection(record, result, system); err == nil {
+		t.Fatal("system-account connection was accepted as the ordinary queue account")
+	}
+	foreign := *record
+	foreign.Credentials = append([]CredentialCustody(nil), record.Credentials...)
+	foreign.Credentials[0].Identity = "different-worker"
+	if _, err := BindQueueConnection(&foreign, result, worker); err == nil {
+		t.Fatal("queue client was accepted outside the bound credential inventory")
+	}
+	late, err := natsclient.Connect(url, natsclient.UserInfo("worker-user", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer late.Close()
+	if _, err := BindQueueConnection(record, result, late); err == nil {
+		t.Fatal("a client absent from the observed CONNZ snapshot was accepted")
+	}
 	observed, err := natsconfig.ObserveSystemServer(t.Context(), system, serverID, static.Brokers[0].ConfigDigest)
 	if err != nil {
 		t.Fatal(err)

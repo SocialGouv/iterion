@@ -43,6 +43,8 @@ type deploymentObservationIdentity struct {
 	Epoch                   uint64                          `json:"epoch"`
 	Namespaces              []string                        `json:"namespaces"`
 	Queue                   natsconfig.QueueTopology        `json:"queue"`
+	QueueClientAccount      string                          `json:"queue_client_account,omitempty"`
+	QueueClientPrincipal    string                          `json:"queue_client_principal,omitempty"`
 	Brokers                 []brokerFingerprintClaim        `json:"brokers"`
 	Custody                 []CredentialCustody             `json:"custody"`
 	Holders                 []CredentialHolder              `json:"holders"`
@@ -172,11 +174,16 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 	slices.Sort(permittedWriters)
 	namespaces := slices.Clone(record.Namespaces)
 	slices.Sort(namespaces)
+	queueAccount, queuePrincipal := "", ""
+	if result.QueueClient != nil {
+		queueAccount, queuePrincipal = result.QueueClient.Account, result.QueueClient.Principal
+	}
 	identity := deploymentObservationIdentity{
 		Version: 1, AuthoritySecretUID: result.AuthoritySecretUID,
 		AuthoritySecretRevision: result.AuthoritySecretRevision,
 		DeploymentRevision:      result.DeploymentRevision, Epoch: result.Epoch,
-		Namespaces: namespaces, Queue: result.Queue, Brokers: brokers, Custody: custody,
+		Namespaces: namespaces, Queue: result.Queue, QueueClientAccount: queueAccount,
+		QueueClientPrincipal: queuePrincipal, Brokers: brokers, Custody: custody,
 		Holders: holders, BuildApprovals: buildApprovals, Issuers: issuers, Writers: writers,
 		StaticBrokers: staticBrokers, SystemBrokers: systemBrokers, Access: access,
 		BuildBindings: buildBindings, WorkloadRevisions: workloadRevisions,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
+	natsclient "github.com/nats-io/nats.go"
 )
 
 // DeploymentCorroboration contains no Secret values or NATS configuration
@@ -27,6 +28,7 @@ type DeploymentCorroboration struct {
 	Static                  *StaticAnalysis           `json:"static"`
 	Builds                  *BuildCorroboration       `json:"builds"`
 	System                  *SystemCorroboration      `json:"system"`
+	QueueClient             *ObservedClientBinding    `json:"queue_client,omitempty"`
 	Workloads               *WorkloadReconciliation   `json:"workloads"`
 	BrokerLaunches          []BrokerLaunch            `json:"broker_launches"`
 	BrokerSources           []BrokerConfigBinding     `json:"broker_sources"`
@@ -38,6 +40,7 @@ type deploymentEvidenceReaders struct {
 	credential   func(context.Context, string, string, string) (*CredentialSecretKey, error)
 	brokerSource func(context.Context, string, string) (*BrokerConfigSecret, error)
 	system       func(context.Context, *Record, *StaticAnalysis) (*SystemCorroboration, error)
+	queueClient  *natsclient.Conn
 }
 
 // ObserveDeployment performs the privileged read-only portion of a
@@ -46,6 +49,26 @@ type deploymentEvidenceReaders struct {
 // compatibility/exclusion and persist a restricted structured proof.
 func ObserveDeployment(ctx context.Context, kubectlBinary, kubeContext, authorityRef string,
 	namespaces []string, expectedQueue natsconfig.QueueTopology, systemURL string) (*DeploymentCorroboration, error) {
+	return observeDeployment(ctx, kubectlBinary, kubeContext, authorityRef,
+		namespaces, expectedQueue, systemURL, nil)
+}
+
+// ObserveDeploymentWithQueue additionally binds the caller's ordinary NATS
+// connection to its broker-assigned client ID, account and principal. It is
+// still read-only corroboration and cannot authorize a native launch.
+func ObserveDeploymentWithQueue(ctx context.Context, kubectlBinary, kubeContext, authorityRef string,
+	namespaces []string, expectedQueue natsconfig.QueueTopology, systemURL string,
+	queueClient *natsclient.Conn) (*DeploymentCorroboration, error) {
+	if queueClient == nil {
+		return nil, fmt.Errorf("distributed authority needs an ordinary NATS queue connection")
+	}
+	return observeDeployment(ctx, kubectlBinary, kubeContext, authorityRef,
+		namespaces, expectedQueue, systemURL, queueClient)
+}
+
+func observeDeployment(ctx context.Context, kubectlBinary, kubeContext, authorityRef string,
+	namespaces []string, expectedQueue natsconfig.QueueTopology, systemURL string,
+	queueClient *natsclient.Conn) (*DeploymentCorroboration, error) {
 	started := time.Now().UTC()
 	probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -83,6 +106,7 @@ func ObserveDeployment(ctx context.Context, kubectlBinary, kubeContext, authorit
 	}
 	result, err := corroborateDeploymentEvidence(probeCtx, record, *source, static, workloads, rbac,
 		deploymentEvidenceReaders{
+			queueClient: queueClient,
 			credential: func(ctx context.Context, namespace, name, key string) (*CredentialSecretKey, error) {
 				return ReadCredentialSecretKey(ctx, kubectlBinary, kubeContext, namespace, name, key)
 			},
@@ -170,8 +194,16 @@ func corroborateDeploymentEvidence(ctx context.Context, record *Record, source S
 			return nil, err
 		}
 	}
+	var queueBinding *ObservedClientBinding
+	if readers.queueClient != nil {
+		queueBinding, err = BindQueueConnection(record, system, readers.queueClient)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &DeploymentCorroboration{AuthoritySecretUID: source.UID,
 		AuthoritySecretRevision: source.ResourceVersion, DeploymentRevision: record.DeploymentRevision,
-		Epoch: record.Epoch, Queue: record.Queue, Static: static, Builds: builds, System: system, Workloads: workloads,
+		Epoch: record.Epoch, Queue: record.Queue, Static: static, Builds: builds, System: system,
+		QueueClient: queueBinding, Workloads: workloads,
 		BrokerLaunches: launches, BrokerSources: brokerSources, Credentials: credentials, RBAC: boundary}, nil
 }

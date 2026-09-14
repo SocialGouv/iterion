@@ -16,7 +16,20 @@ import (
 // observations. It does not discover brokers omitted by the operator inventory,
 // prove disconnected credential custody, or establish observation freshness.
 type SystemCorroboration struct {
-	Brokers []ObservedBroker `json:"brokers"`
+	Brokers     []ObservedBroker `json:"brokers"`
+	connections map[string]map[uint64]observedPrincipal
+}
+
+type observedPrincipal struct {
+	account string
+	user    string
+}
+
+type ObservedClientBinding struct {
+	ServerID  string `json:"server_id"`
+	ClientID  uint64 `json:"client_id"`
+	Account   string `json:"account"`
+	Principal string `json:"principal"`
 }
 
 type ObservedBroker struct {
@@ -71,7 +84,14 @@ func ObserveAndCorroborateSystem(ctx context.Context, nc *natsclient.Conn,
 	if err := group.Wait(); err != nil {
 		return nil, err
 	}
-	return CorroborateSystemObservations(record, static, observations)
+	result, err := CorroborateSystemObservations(record, static, observations)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := bindObservedConnection(result, nc, record.Queue.SystemAccount); err != nil {
+		return nil, fmt.Errorf("NATS system observation is not bound to the declared authority account")
+	}
+	return result, nil
 }
 
 // CorroborateSystemObservations rejects any missing, duplicate, unexpected or
@@ -115,7 +135,8 @@ func CorroborateSystemObservations(record *Record, static *StaticAnalysis,
 		}
 		identities[key] = true
 	}
-	result := &SystemCorroboration{Brokers: make([]ObservedBroker, 0, len(observations))}
+	result := &SystemCorroboration{Brokers: make([]ObservedBroker, 0, len(observations)),
+		connections: make(map[string]map[uint64]observedPrincipal, len(observations))}
 	seen := make(map[string]bool, len(observations))
 	for _, observed := range observations {
 		broker := brokers[observed.ServerID]
@@ -126,16 +147,68 @@ func CorroborateSystemObservations(record *Record, static *StaticAnalysis,
 		}
 		seen[observed.ServerID] = true
 		connectionIDs := make(map[uint64]bool, len(observed.Connections))
+		result.connections[observed.ServerID] = make(map[uint64]observedPrincipal, len(observed.Connections))
 		for _, connection := range observed.Connections {
 			key := [3]string{observed.ServerID, connection.Account, connection.User}
 			if connection.CID == 0 || connectionIDs[connection.CID] || !identities[key] {
 				return nil, fmt.Errorf("NATS broker has an unidentified or uninventoried connection")
 			}
 			connectionIDs[connection.CID] = true
+			result.connections[observed.ServerID][connection.CID] = observedPrincipal{connection.Account, connection.User}
 		}
 		result.Brokers = append(result.Brokers, ObservedBroker{ServerID: observed.ServerID,
 			ConfigDigest: observed.ConfigDigest, ObservedConnections: len(observed.Connections)})
 	}
 	slices.SortFunc(result.Brokers, func(a, b ObservedBroker) int { return strings.Compare(a.ServerID, b.ServerID) })
 	return result, nil
+}
+
+// BindQueueConnection locates this exact live queue client in the corroborated
+// broker CONNZ snapshot. The broker's server/client IDs establish account and
+// principal identity; the client-supplied connection name is not consulted.
+// Reconnection or a client absent from the bounded snapshot refuses the bind.
+func BindQueueConnection(record *Record, system *SystemCorroboration,
+	queueConnection *natsclient.Conn) (*ObservedClientBinding, error) {
+	if record == nil || record.validate() != nil {
+		return nil, fmt.Errorf("NATS queue connection has no valid authority record")
+	}
+	binding, err := bindObservedConnection(system, queueConnection, record.Queue.Account)
+	if err != nil {
+		return nil, err
+	}
+	knownBroker, knownPrincipal := false, false
+	for _, broker := range record.Brokers {
+		knownBroker = knownBroker || broker.ServerID == binding.ServerID
+	}
+	for _, credential := range record.Credentials {
+		knownPrincipal = knownPrincipal || credential.Account == binding.Account &&
+			credential.Identity == binding.Principal
+	}
+	if !knownBroker || !knownPrincipal {
+		return nil, fmt.Errorf("NATS queue connection is outside declared broker or principal custody")
+	}
+	return binding, nil
+}
+
+func bindObservedConnection(system *SystemCorroboration, connection *natsclient.Conn,
+	expectedAccount string) (*ObservedClientBinding, error) {
+	if system == nil || connection == nil || !connection.IsConnected() || expectedAccount == "" {
+		return nil, fmt.Errorf("NATS client identity cannot be observed")
+	}
+	serverID := connection.ConnectedServerId()
+	clientID, err := connection.GetClientID()
+	if err != nil || serverID == "" || clientID == 0 {
+		return nil, fmt.Errorf("NATS client identity is unavailable")
+	}
+	principal, found := system.connections[serverID][clientID]
+	if !found || principal.account != expectedAccount || principal.user == "" ||
+		!connection.IsConnected() || connection.ConnectedServerId() != serverID {
+		return nil, fmt.Errorf("NATS client account or connection changed during observation")
+	}
+	latestID, err := connection.GetClientID()
+	if err != nil || latestID != clientID {
+		return nil, fmt.Errorf("NATS client changed during observation")
+	}
+	return &ObservedClientBinding{ServerID: serverID, ClientID: clientID,
+		Account: principal.account, Principal: principal.user}, nil
 }

@@ -216,19 +216,30 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("ITERION_AUTH_FIXTURE_DIR", dir)
-	result, err := ObserveDeployment(t.Context(), kubectl, "fixture", "trusted/iterion-authority",
-		[]string{"trusted", "worker"}, record.Queue, systemURL)
+	result, err := ObserveDeploymentWithQueue(t.Context(), kubectl, "fixture", "trusted/iterion-authority",
+		[]string{"trusted", "worker"}, record.Queue, systemURL, worker)
 	if err != nil || result.AuthoritySecretRevision != "17" || result.Queue != record.Queue ||
 		len(result.ObservationDigest) != 64 ||
+		result.QueueClient == nil || result.QueueClient.Account != "WORK" ||
+		result.QueueClient.Principal != "worker-user" ||
 		result.StartedAt.IsZero() || result.CompletedAt.Before(result.StartedAt) ||
 		len(result.BrokerSources) != 1 || len(result.Credentials.Bindings) != 2 ||
 		len(result.Builds.Bindings) != 1 ||
 		len(result.System.Brokers) != 1 || result.System.Brokers[0].ServerID != serverID {
 		t.Fatalf("production deployment observer did not bind live NATS and Kubernetes sources: %+v %v", result, err)
 	}
+	systemClient, err := DialSystem(t.Context(), systemURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer systemClient.Close()
+	if _, err := ObserveDeploymentWithQueue(t.Context(), kubectl, "fixture", "trusted/iterion-authority",
+		[]string{"trusted", "worker"}, record.Queue, systemURL, systemClient); err == nil {
+		t.Fatal("deployment observer treated a system-account connection as the ordinary queue client")
+	}
 	t.Setenv("ITERION_AUTH_ROTATE", "1")
-	if _, err := ObserveDeployment(t.Context(), kubectl, "fixture", "trusted/iterion-authority",
-		[]string{"trusted", "worker"}, record.Queue, systemURL); err == nil ||
+	if _, err := ObserveDeploymentWithQueue(t.Context(), kubectl, "fixture", "trusted/iterion-authority",
+		[]string{"trusted", "worker"}, record.Queue, systemURL, worker); err == nil ||
 		!strings.Contains(err.Error(), "changed during observation") {
 		t.Fatalf("production deployment observer accepted an authority Secret rotation: %v", err)
 	}

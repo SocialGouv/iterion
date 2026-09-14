@@ -532,6 +532,10 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   RBAC identities; it excludes timestamps and live connection counts. A
   pinned broker plus a bounded `kubectl`
   transport shim exercise the production observer and source-rotation refusal.
+  The broker-assigned server/client ID now binds the dedicated system client
+  to the declared system account and the ordinary queue client to the queue
+  account and principal; an account-swapped client is refused. Client names
+  remain diagnostic and are excluded from the stable digest.
   The digest omits backend identity and compatible-build exclusion. This is
   not yet a kind API/RBAC denial test or a verified activation snapshot.
 - The version-2 operator record now names exact image/build/capability/queue
