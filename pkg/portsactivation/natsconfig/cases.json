@@ -82,10 +82,12 @@
       "TestNATSProtectedAccessClassifiesWholePermissionLanguages/exact_fetch_and_reply",
       "TestNATSProtectedAccessClassifiesWholePermissionLanguages/native_cancellation",
       "TestNATSProtectedAccessClassifiesWholePermissionLanguages/native_steering",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/reply_injection",
       "TestNATSProtectedAccessClassifiesWholePermissionLanguages/system_authority",
       "TestNATSProtectedAccessClassifiesWholePermissionLanguages/unknown_API_variant",
       "TestNATSProtectedAccessClassifiesWholePermissionLanguages/unrelated_grant",
       "TestNATSProtectedAccessMatchesPinnedJetStream",
+      "TestNATSProtectedAccessHonorsConfiguredDenyBudget",
       "TestNATSProtectedAccessRefusesUnboundTopology"
     ]
   }

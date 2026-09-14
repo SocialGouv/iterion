@@ -1,6 +1,7 @@
 package natsconfig
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -31,6 +32,7 @@ func TestNATSProtectedAccessClassifiesWholePermissionLanguages(t *testing.T) {
 		{"exact fetch and reply", Principal{Account: "WORK", Identity: "runner", Publish: SubjectPermissions{Allow: []string{"$JS.API.CONSUMER.MSG.NEXT.ITERION_RUNS.iterion-runners"}}, Subscribe: SubjectPermissions{Allow: []string{"_INBOX.>"}}}, []string{"jetstream_api", "jetstream_reply"}, []string{"unreviewed_jetstream_api", "acknowledgment"}},
 		{"unknown API variant", Principal{Account: "WORK", Identity: "broad", Publish: SubjectPermissions{Allow: []string{"$JS.API.SERVER.REMOVE"}}}, []string{"jetstream_api", "unreviewed_jetstream_api"}, nil},
 		{"acknowledgment", Principal{Account: "WORK", Identity: "acker", Publish: SubjectPermissions{Allow: []string{"$JS.ACK.>"}}}, []string{"acknowledgment"}, []string{"jetstream_api"}},
+		{"reply injection", Principal{Account: "WORK", Identity: "injector", Publish: SubjectPermissions{Allow: []string{"_INBOX.>"}}, Subscribe: SubjectPermissions{Allow: []string{"$JS.API.>"}}}, []string{"jetstream_request_visibility", "jetstream_reply_injection"}, []string{"queue_messages", "unreviewed_jetstream_api"}},
 		{"direct run subscription", Principal{Account: "WORK", Identity: "reader", Publish: SubjectPermissions{Allow: []string{"safe.>"}}, Subscribe: SubjectPermissions{Allow: []string{"iterion.queue.>"}}}, []string{"queue_messages"}, []string{"jetstream_api"}},
 		{"KV backing-stream mutation", Principal{Account: "WORK", Identity: "mutator", Publish: SubjectPermissions{Allow: []string{"$JS.API.STREAM.PURGE.KV_iterion-runner-rollout"}}}, []string{"jetstream_api"}, []string{"unreviewed_jetstream_api"}},
 		{"KV core write", Principal{Account: "WORK", Identity: "kv", Publish: SubjectPermissions{Allow: []string{"$KV.iterion-runner-rollout.>"}}}, []string{"queue_kv"}, []string{"jetstream_api"}},
@@ -60,6 +62,22 @@ func TestNATSProtectedAccessClassifiesWholePermissionLanguages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNATSProtectedAccessHonorsConfiguredDenyBudget(t *testing.T) {
+	for _, count := range []int{46, 128} {
+		denies := make([]string, count)
+		for i := range denies {
+			denies[i] = fmt.Sprintf("unrelated.%d", i)
+		}
+		principal := Principal{Account: "WORK", Identity: "restricted", Publish: SubjectPermissions{
+			Allow: []string{"$JS.API.CONSUMER.MSG.NEXT.ITERION_RUNS.iterion-runners"}, Deny: denies,
+		}, Subscribe: SubjectPermissions{Allow: []string{"safe.>"}}}
+		exposures, err := AnalyzeProtectedAccess(principal, protectedFixture())
+		if err != nil || !hasExposure(exposures, "jetstream_api") || hasExposure(exposures, "unreviewed_jetstream_api") {
+			t.Fatalf("%d configured denies must not be displaced by catalog rules: %+v %v", count, exposures, err)
+		}
 	}
 }
 

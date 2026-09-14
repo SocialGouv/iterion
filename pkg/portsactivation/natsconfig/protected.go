@@ -2,7 +2,6 @@ package natsconfig
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	queue "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -104,6 +103,8 @@ func AnalyzeProtectedAccess(principal Principal, topology QueueTopology) ([]Acce
 		{"native_control", "publish", control},
 		{"native_control", "subscribe", control},
 		{"jetstream_api", "publish", []string{"$JS.API.>"}},
+		{"jetstream_request_visibility", "subscribe", []string{"$JS.API.>"}},
+		{"jetstream_reply_injection", "publish", []string{"_INBOX.>"}},
 		{"jetstream_reply", "subscribe", []string{"_INBOX.>"}},
 		{"acknowledgment", "publish", []string{"$JS.ACK.>", "$ACK.>"}},
 		{"queue_kv", "publish", kv},
@@ -122,7 +123,7 @@ func AnalyzeProtectedAccess(principal Principal, topology QueueTopology) ([]Acce
 		}
 		if found {
 			exposures = append(exposures, AccessExposure{candidate.name, candidate.direction, witness})
-			apiGranted = apiGranted || candidate.name == "jetstream_api"
+			apiGranted = apiGranted || candidate.name == "jetstream_api" && candidate.direction == "publish"
 		}
 	}
 	if !apiGranted {
@@ -132,9 +133,7 @@ func AnalyzeProtectedAccess(principal Principal, topology QueueTopology) ([]Acce
 	if len(known) > 128 {
 		return nil, fmt.Errorf("NATS protected API catalog exceeds supported size")
 	}
-	remaining := principal.Publish
-	remaining.Deny = slices.Concat(principal.Publish.Deny, known)
-	witness, found, err := remaining.Intersects([]string{"$JS.API.>"})
+	witness, found, err := principal.Publish.intersects([]string{"$JS.API.>"}, known)
 	if err != nil {
 		return nil, err
 	}

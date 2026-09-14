@@ -63,16 +63,23 @@ func (p subjectPattern) step(state int, token string) int {
 // jointly cover a grant. NATS's trailing > consumes at least one token.
 // Exceeding the finite search bound is an error, never proof of exclusion.
 func (p SubjectPermissions) Intersects(protected []string) (string, bool, error) {
-	if len(p.Allow) > 128 || len(p.Deny) > 128 || len(protected) == 0 || len(protected) > 128 {
+	return p.intersects(protected, nil)
+}
+
+// Extra exclusions are trusted catalog rules, not configured ACL rules.
+// They share the deny semantics but cannot consume the profile's 128-rule
+// budget for an operator's actual deny list.
+func (p SubjectPermissions) intersects(protected, extraExclusions []string) (string, bool, error) {
+	if len(p.Allow) > 128 || len(p.Deny) > 128 || len(protected) == 0 || len(protected) > 128 || len(extraExclusions) > 128 {
 		return "", false, fmt.Errorf("NATS permissions exceed the supported rule count")
 	}
 	allow := p.Allow
 	if len(allow) == 0 {
 		allow = []string{">"}
 	}
-	patterns := make([]subjectPattern, 0, len(protected)+len(allow)+len(p.Deny))
+	patterns := make([]subjectPattern, 0, len(protected)+len(allow)+len(p.Deny)+len(extraExclusions))
 	alphabet := make(map[string]bool)
-	for _, group := range [][]string{protected, allow, p.Deny} {
+	for _, group := range [][]string{protected, allow, p.Deny, extraExclusions} {
 		for _, text := range group {
 			pattern, err := parseSubjectPattern(text)
 			if err != nil {

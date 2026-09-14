@@ -39,6 +39,7 @@ accounts {
     {user: observer, password: fixture, permissions: {}},
     {user: fetcher, password: fixture, permissions: {publish: ["$JS.API.CONSUMER.MSG.NEXT.ITERION_RUNS.iterion-runners"], subscribe: ["_INBOX.>"]}},
     {user: purger, password: fixture, permissions: {publish: ["$JS.API.STREAM.PURGE.ITERION_RUNS"], subscribe: ["_INBOX.>"]}},
+    {user: injector, password: fixture, permissions: {publish: ["_INBOX.>"], subscribe: ["$JS.API.>"]}},
     {user: reader, password: fixture, permissions: {publish: ["safe.>"], subscribe: ["iterion.queue.runs"]}}
   ]}
 }`, port)
@@ -61,6 +62,7 @@ accounts {
 	}{
 		{"fetcher", "jetstream_api"},
 		{"purger", "jetstream_api"},
+		{"injector", "jetstream_reply_injection"},
 		{"reader", "queue_messages"},
 		{"observer", "unreviewed_jetstream_api"},
 		{"sys", "system_authority"},
@@ -133,6 +135,42 @@ accounts {
 		[]byte(`{"batch":1,"expires":1000000000}`), time.Second)
 	if err != nil || !bytes.Equal(msg.Data, []byte("queued native run")) {
 		t.Fatalf("exact fetch permission did not receive shared durable delivery: %+v %v", msg, err)
+	}
+	injector, err := natsclient.Connect(url, natsclient.UserInfo("injector", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer injector.Close()
+	requests, err := injector.SubscribeSync("$JS.API.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injector.FlushTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	type requestResult struct {
+		message *natsclient.Msg
+		err     error
+	}
+	resultCh := make(chan requestResult, 1)
+	go func() {
+		response, requestErr := observer.Request("$JS.API.CONSUMER.MSG.NEXT."+queue.StreamRuns+"."+queue.ConsumerRunners,
+			[]byte(`{"batch":1,"expires":1000000000}`), 2*time.Second)
+		resultCh <- requestResult{response, requestErr}
+	}()
+	request, err := requests.NextMsg(time.Second)
+	if err != nil || request.Reply == "" {
+		t.Fatalf("API subscriber could not see the pull request reply address: %+v %v", request, err)
+	}
+	if err := injector.Publish(request.Reply, []byte("injected delivery")); err != nil {
+		t.Fatal(err)
+	}
+	if err := injector.FlushTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	result := <-resultCh
+	if result.err != nil || !bytes.Equal(result.message.Data, []byte("injected delivery")) {
+		t.Fatalf("reply publisher could not inject a pull response: %+v %v", result.message, result.err)
 	}
 	reader, err := natsclient.Connect(url, natsclient.UserInfo("reader", "fixture"))
 	if err != nil {

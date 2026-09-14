@@ -403,7 +403,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   for inherited defaults and a signed nkey, denies anonymous access, and
   reports the same parsed digest through HTTP and authenticated system VARZ
   before and after reload. The race-instrumented manifest now verifies all
-  **85** named parser/profile/permission cases without skips; `go vet` and a
+  **87** named parser/profile/permission cases without skips; `go vet` and a
   static production build pass. This is still an isolated source projection:
   live JetStream/KV topology reconciliation, credential-holder inventory,
   Kubernetes reconciliation and production verifier remain outstanding.
@@ -415,7 +415,8 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   an invalid-source test cover both sides of that boundary.
 - A queue-account ACL classifier now reports concrete witnesses for Core run
   and DLQ subjects, native cancel/heartbeat/steer subjects, reply inboxes,
-  JetStream requests, both ACK prefixes and both KV buckets. It includes the
+  JetStream requests and their request/reply injection directions, both ACK
+  prefixes and both KV buckets. It includes the
   KV backing streams in the known API forms and separately flags unreviewed
   `$JS.API.>` variants; domain and cross-account import/export routes are
   excluded by the supported profile. A pinned 2.14.5 broker confirms that
@@ -423,7 +424,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   purge grant clears the run stream, and a Core subscription receives its
   run payload. The distinct system account is reported as privileged authority
   exposure rather than being treated as a harmless other account. The full
-  race-instrumented NATS manifest has 85 cases without skips. The classifier
+  race-instrumented NATS manifest has 87 cases without skips. The classifier
   still needs authoritative live topology, credential
   custody and workload reconciliation before its result can admit a root.
 - A complete `task test` pass initially found two fixture/CI omissions:
