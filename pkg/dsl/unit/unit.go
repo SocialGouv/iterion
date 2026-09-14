@@ -48,6 +48,9 @@ type File struct {
 	Source  []byte
 	AST     *ast.File
 	Profile int
+	// ProfileReads lists, for a file read as profile 1, the places
+	// profile 2 would read otherwise (C144 is each file's own).
+	ProfileReads []parser.ProfileRead
 }
 
 // Unit is the loaded and merged compilation unit.
@@ -235,7 +238,7 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 	l.stack = append(l.stack, rel)
 	pr := parser.Parse(name, string(src))
 	l.u.Diagnostics = append(l.u.Diagnostics, pr.Diagnostics...)
-	f := File{Rel: rel, Name: name, Source: src, AST: pr.File}
+	f := File{Rel: rel, Name: name, Source: src, AST: pr.File, ProfileReads: pr.ProfileReads}
 	if pr.File != nil {
 		f.Profile = pr.File.EffectiveProfile()
 	}

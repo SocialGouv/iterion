@@ -2,6 +2,7 @@ package botreplay
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,15 +56,17 @@ func CompileBot(bot string) (*ir.Workflow, error) {
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs // an include resolves beside the file named in full
 	}
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("botreplay: read %s: %w", path, err)
+	// The bot's unit: the file and the fragments its imports reach.
+	u := unit.LoadDir(path)
+	for _, d := range u.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			return nil, fmt.Errorf("botreplay: parse %s: %s", path, d.Error())
+		}
 	}
-	pr := parser.Parse(path, string(src))
-	if pr.File == nil {
+	if u.Merged == nil {
 		return nil, fmt.Errorf("botreplay: parse %s returned nil AST", path)
 	}
-	cr := ir.Compile(pr.File)
+	cr := ir.Compile(u.Merged)
 	if cr.HasErrors() {
 		var msgs []string
 		for _, d := range cr.Diagnostics {

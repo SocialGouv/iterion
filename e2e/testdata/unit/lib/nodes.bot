@@ -1,0 +1,11 @@
+schema out:
+  ok: bool
+
+prompt mission:
+  Do the thing.
+
+agent worker:
+  backend: "claude_code"
+  model: "anthropic/claude-opus-4-8"
+  system: mission
+  output: out
