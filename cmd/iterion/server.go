@@ -46,6 +46,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
+	"github.com/SocialGouv/iterion/pkg/portsactivation/authority"
+	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -220,6 +223,72 @@ func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
 	return func(tenantID string) native.BoardStore { return factory(tenantID) }
 }
 
+// distributedQueueMatchesConfig binds the queue identity in the operator
+// Secret to the ordinary cloud configuration. Account and system-account are
+// deliberately taken from the trusted record; all other names are fixed by
+// the existing NATS/JetStream wiring and therefore cannot be supplied by an
+// activation caller.
+func distributedQueueMatchesConfig(q natsconfig.QueueTopology, cfg iterconfig.Config) error {
+	rollout := natsq.KVRolloutEpochs
+	if cfg.NATS.KVBucket != "" && cfg.NATS.KVBucket != natsq.KVRunLocks {
+		rollout = cfg.NATS.KVBucket + "-rollout"
+	}
+	want := natsconfig.QueueTopology{
+		Account: q.Account, SystemAccount: q.SystemAccount,
+		Stream: cfg.NATS.Stream, Consumer: natsq.ConsumerRunners,
+		DLQStream: cfg.NATS.DLQStream, RunSubject: natsq.SubjectRuns,
+		DLQSubject: natsq.SubjectRunsDLQ, LockBucket: cfg.NATS.KVBucket,
+		RolloutBucket: rollout,
+	}
+	if err := want.Validate(); err != nil || q != want {
+		return fmt.Errorf("distributed authority queue identity differs from the configured NATS stream, consumer or KV scope")
+	}
+	return nil
+}
+
+func buildDistributedAuthority(cfg iterconfig.Config, natsConn *natsq.Conn, st *mongostore.Store, logger *iterlog.Logger) (*authority.Authority, *authority.Refresher) {
+	d := cfg.Contracts.Distributed
+	if d.SystemNATSURL == "" || d.AuthorityRef == "" || len(d.KubernetesNamespaces) == 0 || natsConn == nil || st == nil {
+		return nil, nil
+	}
+	kubectlBinary := strings.TrimSpace(os.Getenv("ITERION_KUBECTL_BINARY"))
+	if kubectlBinary == "" {
+		kubectlBinary = "kubectl"
+	}
+	adapter := &authority.DeploymentAdapter{Config: authority.AdapterConfig{
+		KubectlBinary: kubectlBinary, KubernetesContext: d.KubernetesContext,
+		AuthorityRef: d.AuthorityRef, KubernetesNamespaces: append([]string(nil), d.KubernetesNamespaces...),
+		SystemNATSURL: d.SystemNATSURL, QueueClient: natsConn.NATS(), RequireCensus: true,
+	}}
+	adapter.Record = func(ctx context.Context, ac authority.AdapterConfig) (*authority.Record, error) {
+		record, _, err := authority.ReadDeploymentRecordUnbound(ctx, ac.KubectlBinary, ac.KubernetesContext,
+			ac.AuthorityRef, ac.KubernetesNamespaces)
+		if err != nil {
+			return nil, err
+		}
+		if err := distributedQueueMatchesConfig(record.Queue, cfg); err != nil {
+			return nil, err
+		}
+		return record, nil
+	}
+	adapter.Config.Census = func(ctx context.Context, record *authority.Record, now time.Time) (*authority.CensusCorroboration, error) {
+		observations, err := natsConn.PortCapabilities(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return authority.CorroborateObservedCensus(record, observations, st.PortBackendIdentity(), cfg.Rollout.RunnerEpoch, now)
+	}
+	auth := &authority.Authority{Adapter: adapter, Activations: st, Proofs: st, Candidates: st,
+		StoreIdentity: st.PortBackendIdentity(), CapabilityDigest: portsactivation.CapabilityDigest(store.PortActivationDistributed)}
+	host, _ := os.Hostname()
+	leaseSource := natsq.NewPortAuthorityRefreshLeaseSource(natsConn, natsq.AuthorityRefreshLeaseOwner(host, os.Getpid()))
+	refresher := &authority.Refresher{Authority: auth, Leases: leaseSource, Interval: authority.DefaultRefreshInterval}
+	if logger != nil {
+		logger.Info("distributed contracts authority enabled (namespaces=%d, refresh=%s)", len(d.KubernetesNamespaces), authority.DefaultRefreshInterval)
+	}
+	return auth, refresher
+}
+
 func runServer(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         serverOpts.configPath,
@@ -308,6 +377,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: build mongo store: %w", err)
 	}
 	defer closeCloudStoreWithTimeout(st)
+	st.SetPortDistributedActivationVerifier(authority.StoredProofVerifier{Proofs: st, StoreIdentity: st.PortBackendIdentity()})
 
 	// Prometheus registry: built early so cloudpublisher + runstream
 	// + the run-console WS handler all share the same registry.
@@ -317,6 +387,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
 		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live in diagnostic-only mode; background workers and run publication are fenced")
 	}
+
+	distributedAuthority, distributedRefresher := buildDistributedAuthority(cfg, natsConn, st, logger)
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
@@ -585,12 +657,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv := server.New(server.Config{
-		Port:        serverOpts.port,
-		Bind:        serverOpts.bind,
-		Bots:        server.BotsConfig{Paths: botsPaths},
-		ExamplesDir: examplesDir,
-		WorkDir:     serverOpts.dir,
-		Store:       st,
+		Port:                 serverOpts.port,
+		Bind:                 serverOpts.bind,
+		Bots:                 server.BotsConfig{Paths: botsPaths},
+		ExamplesDir:          examplesDir,
+		WorkDir:              serverOpts.dir,
+		Store:                st,
+		DistributedAuthority: distributedAuthority,
+		DistributedRefresher: distributedRefresher,
 		// The launch guard's cross-clock comparison type-asserts ServerNow
 		// on what THIS factory returns. No compile pin covers this seam —
 		// a decorator wrapped around the returned closure compiles fine

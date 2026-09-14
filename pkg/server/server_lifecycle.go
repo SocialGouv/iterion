@@ -100,6 +100,25 @@ func (s *Server) ListenAndServe() error {
 		})
 		return s.server.Serve(ln)
 	}
+	// The distributed authority refresher is present only on the trusted
+	// server release. It is started after the final rollout claim so a
+	// superseded generation can never renew or fence an activation. The
+	// refresher owns its own 20-second cadence and ignores transient
+	// observations; the stored proof's 60-second expiry remains the hard
+	// admission bound.
+	if s.cfg.DistributedRefresher != nil {
+		errtrack.Go("server.distributedAuthorityRefresher", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			if err := s.cfg.DistributedRefresher.Run(ctx); err != nil && err != context.Canceled && err != context.DeadlineExceeded && s.logger != nil {
+				s.logger.Warn("distributed authority refresher stopped: %v", err)
+			}
+		})
+	}
 	// Sweep abandoned upload staging dirs in the background. Without
 	// this, attachments uploaded for runs that never launched (operator
 	// closed the modal, browser crashed mid-upload, etc.) accumulate

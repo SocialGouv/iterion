@@ -309,6 +309,12 @@ func (s *Server) routes() {
 	// and the runtime-mutable sandbox default image.
 	s.registerAdminSettingsFamilyRoutes()
 
+	// Distributed native activation is deliberately a server-side operator
+	// surface. The route registration itself is opt-in: a deployment without
+	// a fully wired authority has no probe/activate endpoint to confuse with a
+	// local direct-filesystem contract command.
+	s.registerDistributedContractsRoutes()
+
 	// Dispatcher + native tracker — both optional. Each handler is
 	// registered through requireAuth so a server bound to a non-loopback
 	// address (devcontainer / LAN / SSH tunnel) can't have its kanban

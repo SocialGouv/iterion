@@ -30,6 +30,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/portsactivation/authority"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -58,6 +59,12 @@ type Config struct {
 	WorkDir     string // root directory for file operations
 	StoreDir    string // run store directory (default: <WorkDir>/.iterion)
 	OpenBrowser bool   // open browser on start
+
+	// DistributedAuthority is the server-only operator path for probing and
+	// activating a distributed native deployment. Nil keeps the feature
+	// default-off and leaves ordinary server/runner admission fail-closed.
+	DistributedAuthority *authority.Authority
+	DistributedRefresher *authority.Refresher
 
 	// SkipProjectRegistration disables the boot-time call to the
 	// shared project registry (~/.config/Iterion/config.json's
