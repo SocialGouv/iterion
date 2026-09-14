@@ -524,7 +524,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   non-RBAC authorizers, indirect writer paths and live worker-identity denials
   remain unverified.
 - The broker Pod launch checker requires a running, ready Pod with the declared
-  immutable image and an exact `nats-server -c <config>` invocation; it rejects
+  immutable image and an exact `/nats-server -c <config>` invocation; it rejects
   command-line authorization overrides and stale runtime images. A separate
   reconciliation matches every declared broker to one per-server system-account
   observation, including version, name, configuration digest and currently

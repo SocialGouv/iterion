@@ -12,7 +12,7 @@ func brokerLaunchFixture(t *testing.T) (*Record, *WorkloadSnapshot) {
 	broker := record.Brokers[0]
 	spec, err := json.Marshal(map[string]any{"containers": []any{map[string]any{
 		"name": broker.Container, "image": broker.ImageDigest,
-		"command": []string{"nats-server"}, "args": []string{"-c", broker.ConfigPath},
+		"command": []string{"/nats-server"}, "args": []string{"-c", broker.ConfigPath},
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +51,22 @@ func TestNATSBrokerLaunchRefusesAuthOverridesAndUnpinnedRuntime(t *testing.T) {
 			var spec map[string]any
 			_ = json.Unmarshal(s.Workloads[0].podSpec, &spec)
 			spec["containers"].([]any)[0].(map[string]any)["command"] = []string{"sh", "-c"}
+			s.Workloads[0].podSpec, _ = json.Marshal(spec)
+		},
+		"PATH executable wrapper": func(_ *Record, s *WorkloadSnapshot) {
+			var spec map[string]any
+			_ = json.Unmarshal(s.Workloads[0].podSpec, &spec)
+			container := spec["containers"].([]any)[0].(map[string]any)
+			container["command"] = []string{"nats-server"}
+			container["env"] = []any{map[string]any{"name": "PATH", "value": "/shim:/usr/bin"}}
+			container["volumeMounts"] = []any{map[string]any{"name": "wrapper", "mountPath": "/shim"}}
+			s.Workloads[0].podSpec, _ = json.Marshal(spec)
+		},
+		"absolute executable shadowed": func(_ *Record, s *WorkloadSnapshot) {
+			var spec map[string]any
+			_ = json.Unmarshal(s.Workloads[0].podSpec, &spec)
+			container := spec["containers"].([]any)[0].(map[string]any)
+			container["volumeMounts"] = []any{map[string]any{"name": "wrapper", "mountPath": "/nats-server"}}
 			s.Workloads[0].podSpec, _ = json.Marshal(spec)
 		},
 		"wrong image digest": func(_ *Record, s *WorkloadSnapshot) {

@@ -3,6 +3,7 @@ package authority
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 )
@@ -15,7 +16,7 @@ type BrokerLaunch struct {
 }
 
 // ReconcileBrokerLaunch binds each operator-declared broker to a running Pod
-// and one explicit nats-server -c invocation. Other launch forms are outside
+// and one explicit /nats-server -c invocation. Other launch forms are outside
 // the initial static-auth profile because command-line auth overrides could
 // otherwise defeat configuration-digest matching. This still needs live VARZ
 // and cluster-scope reconciliation before it can contribute to a proof.
@@ -43,10 +44,13 @@ func ReconcileBrokerLaunch(record *Record, snapshot *WorkloadSnapshot) ([]Broker
 		}
 		var spec struct {
 			Containers []struct {
-				Name    string   `json:"name"`
-				Image   string   `json:"image"`
-				Command []string `json:"command"`
-				Args    []string `json:"args"`
+				Name         string   `json:"name"`
+				Image        string   `json:"image"`
+				Command      []string `json:"command"`
+				Args         []string `json:"args"`
+				VolumeMounts []struct {
+					MountPath string `json:"mountPath"`
+				} `json:"volumeMounts"`
 			} `json:"containers"`
 		}
 		var status struct {
@@ -67,9 +71,15 @@ func ReconcileBrokerLaunch(record *Record, snapshot *WorkloadSnapshot) ([]Broker
 				continue
 			}
 			if matched || container.Image != broker.ImageDigest || len(container.Command) != 1 ||
-				!oneOf(container.Command[0], "nats-server", "/nats-server") || len(container.Args) != 2 ||
+				container.Command[0] != "/nats-server" || len(container.Args) != 2 ||
 				!oneOf(container.Args[0], "-c", "--config") || container.Args[1] != broker.ConfigPath {
 				return nil, fmt.Errorf("NATS broker launch has an unsupported command or image override")
+			}
+			for _, mount := range container.VolumeMounts {
+				if !strings.HasPrefix(mount.MountPath, "/") ||
+					oneOf(path.Clean(mount.MountPath), "/", "/nats-server") {
+					return nil, fmt.Errorf("NATS broker executable is shadowed by a volume mount")
+				}
 			}
 			matched = true
 		}
