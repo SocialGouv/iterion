@@ -21,8 +21,7 @@ func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 	documentSurfaces := map[string]string{
 		"pkg/botimport/validate.go":        "an imported draft is one generated file",
 		"pkg/botscaffold/shapes.go":        "a scaffold shape is one generated file",
-		"pkg/botregistry/schema.go":        "the launch form's schema; the unit's vars enter with the registry cache (lot 3, run sources)",
-		"pkg/runview/rewind_auto.go":       "diffs the edited document against the run's recorded source; fails closed on a unit (lot 3, run sources)",
+		"pkg/runview/rewind_auto.go":       "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
 		"pkg/server/bot_sources_routes.go": "the cloud editor validates a document of the source's files map (lot 3, cloud editor)",
 		"pkg/server/cost_preview.go":       "previews an uploaded document, the flattened unit (lot 3, remote launch)",
 		"pkg/server/server_dsl.go":         "the studio's parse endpoint and the embedded example hand the EDITOR a document; the unit is compiled at launch and validate",
