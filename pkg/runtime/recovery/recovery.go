@@ -174,6 +174,12 @@ func SchemaUnusableRecipe() Recipe {
 	})
 }
 
+func CapabilityUnsupportedRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{Kind: ActionFailTerminal, Reason: "the selected backend cannot serve a declared capability — change the backend or its transport, then resume"}
+	})
+}
+
 // ModelUnavailableRecipe: no retry at all. The provider answered about
 // the MODEL, not about this request, so a second call from the same
 // image asks the same question and is told the same thing — and the
@@ -343,6 +349,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
 		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
+		runtime.ErrCodeCapabilityUnsupported: CapabilityUnsupportedRecipe(),
 		runtime.ErrCodeAmbiguousEffect:       AmbiguousEffectRecipe(),
 	}
 }
@@ -424,6 +431,10 @@ func Classify(err error) runtime.ErrorCode {
 	// The node's own declaration is what the backend refused. Checked by
 	// TYPE first, like the credential above: the needle below only
 	// catches today's wording.
+	var unsupported *delegate.ErrCapabilityUnsupported
+	if errors.As(err, &unsupported) {
+		return runtime.ErrCodeCapabilityUnsupported
+	}
 	var schemaUnusable *delegate.ErrSchemaUnusable
 	if errors.As(err, &schemaUnusable) {
 		return runtime.ErrCodeSchemaUnusable

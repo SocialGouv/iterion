@@ -3,6 +3,7 @@ package spec
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,39 @@ func TestSpliceRefusesUnbalancedRegions(t *testing.T) {
 	}
 }
 
+func TestMonacoRegenerationDetectsKeywordDriftAndMissingModule(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range Files {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("<!-- dsl-spec:begin skill -->\nstale\n<!-- dsl-spec:end -->\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keywords := []string{"agent", "dsl"}
+	changed, err := Regenerate(root, keywords)
+	if err != nil || !slices.Contains(changed, MonacoFile) {
+		t.Fatalf("module was not generated: changed=%v err=%v", changed, err)
+	}
+	if stale, err := Stale(root, keywords); err != nil || len(stale) != 0 {
+		t.Fatalf("fresh generation reports stale files: %v %v", stale, err)
+	}
+	if stale, err := Stale(root, append(keywords, "new_lexer_keyword")); err != nil || !slices.Equal(stale, []string{MonacoFile}) {
+		t.Fatalf("lexer keyword drift must stale the module: %v %v", stale, err)
+	}
+	if changed, err := Regenerate(root, keywords); err != nil || len(changed) != 0 {
+		t.Fatalf("second generation should not rewrite anything: %v %v", changed, err)
+	}
+	if err := os.Remove(filepath.Join(root, MonacoFile)); err != nil {
+		t.Fatal(err)
+	}
+	if stale, err := Stale(root, keywords); err != nil || !slices.Equal(stale, []string{MonacoFile}) {
+		t.Fatalf("missing module must be reported stale: %v %v", stale, err)
+	}
+}
+
 // Regenerate leaves every file as it was when one of them cannot be spliced.
 func TestRegenerateIsAllOrNothing(t *testing.T) {
 	root := t.TempDir()
@@ -54,7 +88,7 @@ func TestRegenerateIsAllOrNothing(t *testing.T) {
 		}
 		write(rel, body)
 	}
-	changed, err := Regenerate(root)
+	changed, err := Regenerate(root, []string{"agent"})
 	if err == nil {
 		t.Fatal("a broken document did not fail Regenerate")
 	}

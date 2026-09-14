@@ -4,8 +4,10 @@
 ## questions only the operator can answer with `ask_user_async` and
 ## KEEPS WORKING — answers arrive in its conversation whenever the
 ## operator replies (studio question cards, or `iterion runs answer`).
-## The tools reach every backend: claude_code through iterion's ask-user
-## MCP server, claw in-process, pi through its extension (ADR-081).
+## Supported backends: claude_code through iterion's ask-user MCP server,
+## claw in-process, pi through its RPC extension (ADR-081).
+## codex, kimi and grok are refused at compile time (C267); Pi print
+## mode is refused at runtime before the CLI starts.
 ## The `await_answers` node is the DETERMINISTIC sync point: the run
 ## parks there, and only there, until every posted question is answered
 ## (mandatory timeout), then the finalizer resolves the placeholders.

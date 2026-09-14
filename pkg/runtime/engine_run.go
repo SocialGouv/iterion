@@ -816,6 +816,9 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		return
 	}
 	if loopErr != nil {
+		if e.reclaimEarlyRefusalWorktree(ctx, runID, wtCtx, cleanup) {
+			return
+		}
 		if e.logger != nil {
 			e.logger.Info("runtime: worktree preserved for inspection: %s", e.workDir)
 		}

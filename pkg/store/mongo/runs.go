@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -327,10 +328,25 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// must not disavow it through this full-document replace. Version-
 	// checked at the final write: a claim landing after the caller loaded
 	// its copy refuses the save, including inside this read/write window.
-	if r.MergeStatus != store.MergeStatusMerging {
+	// Keep the raw pre-image as well: an older writer cannot serialize fields
+	// only a newer Run/Checkpoint struct knows. The final version CAS makes
+	// this read and the replacement one optimistic transaction.
+	var previous bson.M
+	previousRaw, ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID}))).Raw()
+	if ferr != nil && !errors.Is(ferr, mongo.ErrNoDocuments) {
+		return fmt.Errorf("store/mongo: read run %s before replacement: %w", r.ID, ferr)
+	}
+	if ferr == nil {
+		// Decode without the public payload registry: unknown values must
+		// retain their BSON types too (its int32 -> int64 normalization is
+		// useful to engine consumers, but this is a lossless storage copy).
+		if err := bson.Unmarshal(previousRaw, &previous); err != nil {
+			return err
+		}
 		var cur struct {
 			MergeStatus    store.MergeStatus `bson:"merge_status"`
 			MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
+			SchemaVersion  int               `bson:"v"`
 		}
 		if ferr := s.collectionForRun(r.ID, s.runs).FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
 			options.FindOne().SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})).Decode(&cur); ferr == nil &&
@@ -381,6 +397,13 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	var doc bson.M
 	if err := bson.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("store/mongo: remarshal run %s: %w", r.ID, err)
+	}
+	if previous != nil {
+		merged, err := preserveUnknownBSON(previous, doc, reflect.TypeFor[store.Run]())
+		if err != nil {
+			return fmt.Errorf("store/mongo: preserve unknown fields of run %s: %w", r.ID, err)
+		}
+		doc = merged.(bson.M)
 	}
 	delete(doc, "outcome_seq")
 	delete(doc, "continuation_state")

@@ -3,6 +3,54 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.142.6](https://github.com/SocialGouv/iterion/compare/v3.142.5...v3.142.6) (2026-09-13)
+
+### Bug Fixes
+
+* **mongo:** preserve future run state across older writers ([#1185](https://github.com/SocialGouv/iterion/issues/1185)) ([2ea41f0](https://github.com/SocialGouv/iterion/commit/2ea41f0bf301288fd7adca1952bf9cb97e19ab43))
+
+## [3.142.5](https://github.com/SocialGouv/iterion/compare/v3.142.4...v3.142.5) (2026-09-13)
+
+### Bug Fixes
+
+* **studio:** generate Monaco vocabulary from the DSL registry ([#1183](https://github.com/SocialGouv/iterion/issues/1183)) ([ba7e6a4](https://github.com/SocialGouv/iterion/commit/ba7e6a4fc542335462af759028e5f27c11a43c71))
+
+## [3.142.4](https://github.com/SocialGouv/iterion/compare/v3.142.3...v3.142.4) (2026-09-13)
+
+### Bug Fixes
+
+* **runtime:** release pristine worktrees after early refusals ([#1181](https://github.com/SocialGouv/iterion/issues/1181)) ([f176718](https://github.com/SocialGouv/iterion/commit/f1767186eee9f549a7972ca9d6d65ae427684ac2))
+
+## [3.142.3](https://github.com/SocialGouv/iterion/compare/v3.142.2...v3.142.3) (2026-09-13)
+
+### Bug Fixes
+
+* **engine:** refuse unsupported async backend capabilities ([#1180](https://github.com/SocialGouv/iterion/issues/1180)) ([9f47bca](https://github.com/SocialGouv/iterion/commit/9f47bca0721cff5260417e477fad16140f28178f))
+
+## [3.142.2](https://github.com/SocialGouv/iterion/compare/v3.142.1...v3.142.2) (2026-09-13)
+
+### Bug Fixes
+
+* **import:** emit profile two drafts with DSL string quoting ([#1179](https://github.com/SocialGouv/iterion/issues/1179)) ([3b78eba](https://github.com/SocialGouv/iterion/commit/3b78eba6190ae6ae078e9d8fb649cead5618209d))
+
+## [3.142.1](https://github.com/SocialGouv/iterion/compare/v3.142.0...v3.142.1) (2026-09-13)
+
+### Bug Fixes
+
+* **studio:** restore run deep links after sign-in ([#1176](https://github.com/SocialGouv/iterion/issues/1176)) ([1b001e6](https://github.com/SocialGouv/iterion/commit/1b001e60338c259970b8f6f438620752aa259eb7))
+
+## [3.142.0](https://github.com/SocialGouv/iterion/compare/v3.141.0...v3.142.0) (2026-09-13)
+
+### Features
+
+* **bots:** concise Revi reviews with linked run details ([#1173](https://github.com/SocialGouv/iterion/issues/1173)) ([7f695b3](https://github.com/SocialGouv/iterion/commit/7f695b31852a7e4c16f701d5ba6da5701b9a4949)), references [#1172](https://github.com/SocialGouv/iterion/issues/1172) [#1172](https://github.com/SocialGouv/iterion/issues/1172)
+
+    <details><summary>why</summary>
+
+    Keep clean reviews to one visible sentence and retain actionable details in inline comments or explicit fallbacks when anchors are unavailable. Move review scope and method into the existing collapsed run details, and ask only questions that require a material maintainer decision.
+
+    </details>
+
 ## [3.141.0](https://github.com/SocialGouv/iterion/compare/v3.140.3...v3.141.0) (2026-09-13)
 
 ### Features

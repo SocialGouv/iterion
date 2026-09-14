@@ -1531,8 +1531,8 @@ func builtinConcat(args []any) (any, error) {
 		if a == nil {
 			continue
 		}
-		arr, ok := a.([]any)
-		if !ok {
+		arr, err := toElemSlice(a)
+		if err != nil {
 			return nil, fmt.Errorf("expr: concat() argument %d is %T, want array", i+1, a)
 		}
 		out = append(out, arr...)

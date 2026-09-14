@@ -3,6 +3,8 @@ package botimport
 import (
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
 // emit renders the lowered model as .bot source, IMPORT REPORT first.
@@ -19,7 +21,7 @@ func emit(m *model) string {
 	for _, c := range m.HeaderComments {
 		b.WriteString(c + "\n")
 	}
-	b.WriteString("\n")
+	b.WriteString("\ndsl: 2\n\n")
 
 	if len(m.Vars) > 0 {
 		b.WriteString("vars:\n")
@@ -71,7 +73,7 @@ func emit(m *model) string {
 		case "agent":
 			fmt.Fprintf(&b, "agent %s:\n", n.id)
 			if n.model != "" {
-				fmt.Fprintf(&b, "  model: %q\n", n.model)
+				fmt.Fprintf(&b, "  model: %s\n", unparse.QuoteStrict(n.model))
 			}
 			if n.effort != "" {
 				fmt.Fprintf(&b, "  reasoning_effort: %s\n", n.effort)
@@ -87,14 +89,14 @@ func emit(m *model) string {
 			fmt.Fprintf(&b, "router %s:\n", n.id)
 			fmt.Fprintf(&b, "  mode: %s\n", n.routerMode)
 			if n.over != "" {
-				fmt.Fprintf(&b, "  over: %q\n", n.over)
+				fmt.Fprintf(&b, "  over: %s\n", unparse.QuoteStrict(n.over))
 			}
 			if n.alias != "" {
 				fmt.Fprintf(&b, "  as: %s\n", n.alias)
 			}
 		case "tool":
 			fmt.Fprintf(&b, "tool %s:\n", n.id)
-			fmt.Fprintf(&b, "  command: %q\n", n.command)
+			fmt.Fprintf(&b, "  command: %s\n", unparse.QuoteStrict(n.command))
 			if n.awaitAll {
 				b.WriteString("  await: wait_all\n")
 			}
@@ -115,7 +117,7 @@ func emit(m *model) string {
 			if e.whenBare {
 				b.WriteString(" when " + e.when)
 			} else {
-				fmt.Fprintf(&b, " when %q", e.when)
+				fmt.Fprintf(&b, " when %s", unparse.QuoteStrict(e.when))
 			}
 		}
 		if e.isElse {
@@ -136,7 +138,7 @@ func emit(m *model) string {
 func quoteList(vals []string) string {
 	quoted := make([]string, len(vals))
 	for i, v := range vals {
-		quoted[i] = fmt.Sprintf("%q", v)
+		quoted[i] = unparse.QuoteStrict(v)
 	}
 	return strings.Join(quoted, ", ")
 }

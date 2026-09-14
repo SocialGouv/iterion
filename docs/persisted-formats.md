@@ -463,3 +463,24 @@ separate interaction record is lost.
 - `Event.Data` remains schemaless by design.
 - Filesystem paths are an implementation of store interfaces, not a portable
   cloud storage contract.
+
+### Mongo saves during a rolling upgrade
+
+Mongo `SaveRun` preserves additive BSON fields absent from the writer's Go
+schema, including fields nested in checkpoints and retained branch records.
+A rename by an older replica therefore keeps the newer replica's execution
+state and its BSON value types. The replacement still uses the loaded run
+version for compare-and-swap: a concurrent update produces `ErrRunConflict`,
+and a stored schema version newer than the writer supports refuses the save.
+
+Known fields remain owned by the caller. Clearing a checkpoint removes that
+whole subtree; deleting a branch or an output map entry removes it and its
+extensions. Lists of records retain extensions only for entries with the
+same complete known value, including when reordered. A changed record is a
+replacement, since an older writer cannot infer the meaning of its opaque
+extensions. Arbitrary input/output payloads are replaced as supplied.
+
+This preservation takes effect only once every writer has this safeguard;
+binaries predating it can still truncate newer fields. It does not make an
+older runner capable of executing newer checkpoint semantics or relax the
+deployment ordering required for new consumers.

@@ -11,6 +11,17 @@ agent left behind. Nothing used to come back for those: `iterion runs
 prune` only touches `runs/`, and [`iterion clean`](cli-reference.md#iterion-clean)
 is a command you have to know exists and remember to run.
 
+An early **terminal configuration refusal** is the exception: if only
+`compute` / `fail` nodes have started (or no node has started), HEAD still
+equals the launch commit, and there is no output to inspect, the engine
+releases its checkout immediately. Dirty files, including ignored logs,
+commits, parallel branches, executable nodes and resumable runs retain their
+checkout. The engine's mirrored `.claude/` scaffold is not run output.
+A checkout containing its own recorded workflow source is retained too.
+The checkpoint and a protected baseline ref survive; `worktree_reclaimed`
+records this deliberate removal, so an explicit rewind reconstructs that
+same baseline rather than using the repository's current HEAD.
+
 So a store whose runs fail grew by one full checkout per failure, with no
 ceiling and no signal. On 2026-08-22 a studio left unattended for forty
 minutes reached **32 worktrees and 12 GB**, on a host where the store had

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Route, Switch, useLocation } from "wouter";
+import { Redirect, Route, Switch, useLocation } from "wouter";
 
 import AppShell from "@/components/shared/AppShell";
 import BootLoading from "@/components/shared/BootLoading";
@@ -74,6 +74,7 @@ import { DesktopEvent } from "@/lib/desktopEvents";
 import { isScopedPane, scopePrefix } from "@/lib/scope";
 import { showRunAlertNotification, type RunAlertPayload } from "@/lib/desktopNotify";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
+import { signInURL } from "@/auth/returnTo";
 import { setUnauthorizedHandler } from "@/api/client";
 import { getOrCreateDocumentStore } from "@/store/document";
 import { useTabsStore } from "@/store/tabs";
@@ -111,6 +112,11 @@ function ScopedPaneReauth() {
       <p className="text-xs">Reconnect from the desktop — the sign-in prompt should appear.</p>
     </div>
   );
+}
+
+function RunSignIn() {
+  const { pathname, search, hash } = window.location;
+  return <Redirect to={signInURL(pathname + search + hash)} replace />;
 }
 
 // AuthGate decides between the Login view and the full editor based
@@ -156,6 +162,8 @@ function AuthGate() {
               auth side-doors' navigate("/login") land on the plain
               SignInCard instead of scrolling the marketing landing. */}
           <Route path="/login" component={Login} />
+          <Route path="/runs" component={RunSignIn} />
+          <Route path="/runs/:id" component={RunSignIn} />
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />
@@ -189,6 +197,10 @@ function AuthGate() {
         </Switch>
       </Suspense>
     );
+  }
+  // An existing session may reach a saved /login?next= link too.
+  if (location === "/login") {
+    return <Suspense fallback={<BootLoading />}><Login /></Suspense>;
   }
   // Authenticated paths that don't belong in the AppShell go here (the
   // invitation accept needs the AuthContext but not the full shell). Kept

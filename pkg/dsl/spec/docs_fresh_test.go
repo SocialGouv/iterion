@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
@@ -13,7 +14,7 @@ import (
 // --write`) and commit the result.
 func TestGeneratedDSLDocsAreFresh(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	stale, err := spec.Stale(root)
+	stale, err := spec.Stale(root, parser.Keywords())
 	if err != nil {
 		t.Fatal(err)
 	}

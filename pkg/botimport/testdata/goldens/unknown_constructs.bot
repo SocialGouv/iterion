@@ -21,6 +21,8 @@
 ##   - js:21 const `total` = <dynamic JS> dropped — becomes a hole where referenced
 
 
+dsl: 2
+
 vars:
   hole_1: string = ""   ## IMPORT hole: dynamic fragment — JS: helper('hi')
 
