@@ -19,13 +19,12 @@ import (
 // entry whose file no longer parses a document is removed.
 func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 	documentSurfaces := map[string]string{
-		"pkg/botimport/validate.go":        "an imported draft is one generated file",
-		"pkg/botscaffold/shapes.go":        "a scaffold shape is one generated file",
-		"pkg/runview/rewind_auto.go":       "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
-		"pkg/server/bot_sources_routes.go": "the cloud editor validates a document of the source's files map (lot 3, cloud editor)",
-		"pkg/server/cost_preview.go":       "previews an uploaded document, the flattened unit (lot 3, remote launch)",
-		"pkg/server/server_dsl.go":         "the studio's parse endpoint and the embedded example hand the EDITOR a document; the unit is compiled at launch and validate",
-		"pkg/server/server_files.go":       "the save guard normalises the document being saved",
+		"pkg/botimport/validate.go":  "an imported draft is one generated file",
+		"pkg/botscaffold/shapes.go":  "a scaffold shape is one generated file",
+		"pkg/runview/rewind_auto.go": "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
+		"pkg/server/cost_preview.go": "previews an uploaded document, the flattened unit (lot 3, remote launch)",
+		"pkg/server/server_dsl.go":   "the studio's parse endpoint and the embedded example hand the EDITOR a document; the unit is compiled at launch and validate",
+		"pkg/server/server_files.go": "the save guard normalises the document being saved",
 	}
 	root := filepath.Join("..", "..", "..")
 	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}

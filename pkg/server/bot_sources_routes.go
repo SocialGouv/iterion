@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -554,26 +555,27 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 	}
 	b, _ := bundle.OpenDir(dir)
 	for _, rel := range paths {
-		path := filepath.Join(dir, filepath.FromSlash(rel))
-		src, err := os.ReadFile(path)
-		if err != nil {
-			diags = append(diags, rel+": internal: "+err.Error())
+		// A fragment under lib/ holds no workflow by design: it is validated
+		// through the main that imports it.
+		if strings.HasPrefix(rel, unit.FragmentDir+"/") {
 			continue
 		}
-		pr := parser.Parse(path, string(src))
-		for _, d := range pr.Diagnostics {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		// The workflow's unit: the file and the fragments its imports reach.
+		u := unit.LoadDir(path)
+		for _, d := range u.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				diags = append(diags, rel+": "+d.Error())
 			}
 		}
-		if pr.File == nil || len(pr.File.Workflows) == 0 {
+		if u.Merged == nil || len(u.Merged.Workflows) == 0 {
 			diags = append(diags, rel+": no workflow found")
 			continue
 		}
 		if b != nil {
-			_ = runview.MergeBundlePrompts(pr.File, b)
+			_ = runview.MergeBundlePrompts(u.Merged, b)
 		}
-		cr := ir.Compile(pr.File)
+		cr := ir.Compile(u.Merged)
 		for _, d := range cr.Diagnostics {
 			if d.Severity == ir.SeverityError {
 				diags = append(diags, rel+": "+d.Error())

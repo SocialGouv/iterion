@@ -62,6 +62,13 @@ export function useDocumentSaveAs() {
         );
         return false;
       }
+      if (request.store.getState().unit) {
+        addToast(
+          "Save As isn't available for a bot in several files — save it in place; its fragments stay in lib/.",
+          "warning",
+        );
+        return false;
+      }
       if (!request.store.getState().document) return false;
       pending.current = request;
       setFileName(suggestedFileName(request.store));

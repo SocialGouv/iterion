@@ -27,12 +27,20 @@ import (
 
 type parseRequest struct {
 	Source string `json:"source"`
+	// Files and Main describe a bot in several files — a cloud bundle's
+	// files map, keyed by path from the bundle's root — parsed as its
+	// unit: the document then carries each declaration's file, and the
+	// response the unit's revision.
+	Files map[string]string `json:"files,omitempty"`
+	Main  string            `json:"main,omitempty"`
 }
 
 type parseResponse struct {
 	Document    json.RawMessage `json:"document"`
 	Diagnostics []string        `json:"diagnostics,omitempty"`
 	Issues      []DiagnosticDTO `json:"issues,omitempty"`
+	// Unit is set when the request parsed a bot in several files.
+	Unit *unitInfo `json:"unit,omitempty"`
 }
 
 // DiagnosticDTO is the wire-safe shape of an ir.Diagnostic. It carries the
@@ -64,10 +72,19 @@ func irDiagToDTO(d ir.Diagnostic) DiagnosticDTO {
 
 type unparseRequest struct {
 	Document json.RawMessage `json:"document"`
+	// Files and Main, when given, are the bot in several files the
+	// document was opened from: the response then holds every file the
+	// document rewrites, by path, and only those.
+	Files map[string]string `json:"files,omitempty"`
+	Main  string            `json:"main,omitempty"`
 }
 
 type unparseResponse struct {
 	Source string `json:"source"`
+	// Files holds the rewritten files of a bot in several files, by path
+	// from the bundle's root; a file whose program did not change is
+	// absent.
+	Files map[string]string `json:"files,omitempty"`
 }
 
 type validateRequest struct {
@@ -98,6 +115,10 @@ type validateResponse struct {
 func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 	var req parseRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Files) > 0 {
+		s.parseUnitFiles(w, req)
 		return
 	}
 
@@ -134,6 +155,10 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
+		return
+	}
+	if len(req.Files) > 0 {
+		s.unparseUnitFiles(w, req, f)
 		return
 	}
 

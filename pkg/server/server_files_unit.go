@@ -456,3 +456,76 @@ type unitOpenResponse struct {
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	Unit              *unitInfo       `json:"unit"`
 }
+
+// parseUnitFiles parses a bot in several files, given as a files map, as its
+// unit: one document with each declaration's file on it, and the unit's
+// revision — what the cloud editor opens a bundle's main with.
+func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
+	main := req.Main
+	if main == "" {
+		main = "main.bot"
+	}
+	u := unit.LoadMap(req.Files, main)
+	var diags []string
+	for _, d := range u.Diagnostics {
+		diags = append(diags, d.Error())
+	}
+	if u.Merged == nil {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	docJSON, err := ast.MarshalFileWithProvenance(u.Merged, "")
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	info := unitInfoOf(u, main)
+	info.Root = ""
+	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info})
+}
+
+// unparseUnitFiles writes a document of a bot in several files back into
+// them, by provenance, and returns the files whose program changed — and
+// only those, so the caller patches them into the bundle it holds.
+func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
+	main := req.Main
+	if main == "" {
+		main = "main.bot"
+	}
+	u := unit.LoadMap(req.Files, main)
+	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
+		httpError(w, http.StatusUnprocessableEntity, "the bundle's files do not load as one unit (%s): fix them before saving", d)
+		return
+	}
+	if u.Merged == nil {
+		httpError(w, http.StatusUnprocessableEntity, "the bundle's files hold no program")
+		return
+	}
+	if len(u.Files) > 1 && !hasProvenance(doc) {
+		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen the bot (an older client would fold every file into the main)")
+		return
+	}
+	parts, err := splitByProvenance(doc, u)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	out := map[string]string{}
+	for _, f := range u.Files {
+		part := parts[f.Rel]
+		if f.AST != nil && sameProgram(part, f.AST) {
+			continue
+		}
+		text := unparse.Unparse(part)
+		if err := unparse.Verify(part, text); err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "%s cannot be rendered as .bot source without changing it: %v", f.Rel, err)
+			return
+		}
+		out[f.Rel] = text
+	}
+	source := req.Files[main]
+	if t, ok := out[main]; ok {
+		source = t
+	}
+	writeJSON(w, unparseResponse{Source: source, Files: out})
+}
