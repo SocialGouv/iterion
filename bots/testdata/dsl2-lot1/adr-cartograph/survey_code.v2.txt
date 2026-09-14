@@ -62,7 +62,7 @@ Survey the code in /fixture/repo and produce the
 ADR-worthy decisions list + the feature-completeness gaps list.
 
 Code surface (empty = whole workspace minus excluded_dirs):
- - code_scope_globs: 
+ - code_scope_globs: src/**
  - excluded_dirs:    .iterion,.works,.claude,vendor,node_modules,.git,dist,build,out
  - bundle_self_path: /fixture/bundle/main.bot
 

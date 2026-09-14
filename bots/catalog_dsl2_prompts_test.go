@@ -164,6 +164,7 @@ func captureDSL2Prompt(t *testing.T, wf *ir.Workflow, id string) string {
 	vars["workspace_dir"] = "/fixture/repo"
 	vars["scratch_dir"] = "/fixture/scratch"
 	vars["bundle_self_path"] = "/fixture/bundle/main.bot"
+	vars["code_scope_globs"] = "src/**"
 	executor.SetVars(vars)
 	// Visible sentinels make every input substitution reviewable. They
 	// deliberately contain a paragraph themselves: input values must not be
