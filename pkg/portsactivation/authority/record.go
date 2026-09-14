@@ -167,13 +167,19 @@ func (r *Record) validate() error {
 		namespaces[namespace] = true
 	}
 	brokers := make(map[string]bool, len(r.Brokers))
+	brokerNames := make(map[string]bool, len(r.Brokers))
+	brokerPods := make(map[[3]string]bool, len(r.Brokers))
 	for _, broker := range r.Brokers {
-		if !boundedID(broker.ServerID) || !boundedID(broker.ServerName) || brokers[broker.ServerID] ||
+		pod := [3]string{broker.Namespace, broker.PodName, broker.Container}
+		if !boundedID(broker.ServerID) || !boundedID(broker.ServerName) ||
+			brokers[broker.ServerID] || brokerNames[broker.ServerName] || brokerPods[pod] ||
 			!namespaces[broker.Namespace] || !dnsSubdomain(broker.PodName) || !dnsLabel(broker.Container) ||
 			!imageDigest(broker.ImageDigest) || !absoluteConfigPath(broker.ConfigPath) || broker.sources.Validate() != nil {
 			return fmt.Errorf("Kubernetes authority record has an invalid broker inventory")
 		}
 		brokers[broker.ServerID] = true
+		brokerNames[broker.ServerName] = true
+		brokerPods[pod] = true
 	}
 	holders := make(map[string]bool, len(r.Holders))
 	for _, holder := range r.Holders {
@@ -356,10 +362,14 @@ func rejectDuplicateKeys(raw []byte) error {
 			for decoder.More() {
 				key, err := decoder.Token()
 				name, ok := key.(string)
-				if err != nil || !ok || keys[name] {
+				// encoding/json also matches struct fields case-insensitively.
+				// Reject a second spelling that could overwrite an earlier
+				// authority assertion during typed decoding.
+				folded := strings.ToLower(name)
+				if err != nil || !ok || keys[folded] {
 					return fmt.Errorf("Kubernetes authority record has duplicate or invalid keys")
 				}
-				keys[name] = true
+				keys[folded] = true
 				if err := walk(depth + 1); err != nil {
 					return err
 				}

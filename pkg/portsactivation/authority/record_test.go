@@ -59,6 +59,11 @@ func TestAuthorityRecordKeepsConcreteSourcesPrivate(t *testing.T) {
 		record.Brokers[0].Sources().Files["main.conf"] != "private_password: super-secret" {
 		t.Fatal("authority record lost its concrete deployment source")
 	}
+	copyOfSources := record.Brokers[0].Sources()
+	copyOfSources.Files["main.conf"] = "tampered"
+	if record.Brokers[0].Sources().Files["main.conf"] != "private_password: super-secret" {
+		t.Fatal("authority source accessor exposed a mutable internal map")
+	}
 	for _, value := range []any{record, *record, record.Brokers[0], &record.Brokers[0]} {
 		for _, rendering := range []string{fmt.Sprintf("%+v", value), fmt.Sprintf("%#v", value)} {
 			if strings.Contains(rendering, "super-secret") {
@@ -79,6 +84,10 @@ func TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody(t *testing.T) {
 		mutate func(map[string]any)
 	}{
 		{"missing-completeness", func(f map[string]any) { f["assertions"].(map[string]any)["credential_custody"] = false }},
+		{"case-aliased-completeness", func(f map[string]any) {
+			f["assertions"].(map[string]any)["credential_custody"] = false
+			f["assertions"].(map[string]any)["CREDENTIAL_CUSTODY"] = true
+		}},
 		{"unknown-field", func(f map[string]any) { f["consumer_access_evidence"] = "approved" }},
 		{"missing-source", func(f map[string]any) {
 			f["brokers"].([]any)[0].(map[string]any)["sources"] = map[string]any{"entry": "missing.conf", "files": map[string]string{"main.conf": ""}}
@@ -121,6 +130,7 @@ func TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody(t *testing.T) {
 func TestAuthorityRecordRejectsDuplicateJSONKeys(t *testing.T) {
 	for _, raw := range [][]byte{
 		[]byte(`{"version":1,"version":1}`),
+		[]byte(`{"version":1,"VERSION":1}`),
 		[]byte(`{"sources":{"files":{"main.conf":"first","main.conf":"second"}}}`),
 	} {
 		if _, err := ParseRecord(SecretSource{material: raw}); err == nil || !strings.Contains(err.Error(), "duplicate") {
