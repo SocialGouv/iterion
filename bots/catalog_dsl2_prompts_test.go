@@ -72,8 +72,8 @@ func TestCatalogDSL2RenderedPrompts(t *testing.T) {
 			}
 			for _, id := range ids {
 				t.Run(id, func(t *testing.T) {
-					v1 := captureDSL2Prompt(t, before, id)
-					v2 := captureDSL2Prompt(t, after, id)
+					v1 := captureDSL2Prompt(t, before, id, "src/**")
+					v2 := captureDSL2Prompt(t, after, id, "src/**")
 					if v1 == v2 || parser.CanonicalPromptBody(v1) != parser.CanonicalPromptBody(v2) {
 						t.Fatal("rendered requests must differ only by paragraph breaks")
 					}
@@ -96,6 +96,16 @@ func TestCatalogDSL2RenderedPrompts(t *testing.T) {
 						}
 					}
 				})
+			}
+			if bot == "adr-cartograph" {
+				// Keep the empty-default case covered without trimming the real
+				// renderer or checking trailing spaces into the review artifact.
+				for _, wf := range []*ir.Workflow{before, after} {
+					body := captureDSL2Prompt(t, wf, "survey_code", "")
+					if !strings.Contains(body, " - code_scope_globs: \n") {
+						t.Error("an empty code scope must render as empty, preserving the authored space and newline")
+					}
+				}
 			}
 		})
 	}
@@ -134,7 +144,7 @@ func (c *dsl2PromptCapture) Execute(_ context.Context, task delegate.Task) (dele
 	return delegate.Result{}, errDSL2RequestCaptured
 }
 
-func captureDSL2Prompt(t *testing.T, wf *ir.Workflow, id string) string {
+func captureDSL2Prompt(t *testing.T, wf *ir.Workflow, id, codeScope string) string {
 	t.Helper()
 	capture := &dsl2PromptCapture{}
 	backends := delegate.NewRegistry()
@@ -164,7 +174,7 @@ func captureDSL2Prompt(t *testing.T, wf *ir.Workflow, id string) string {
 	vars["workspace_dir"] = "/fixture/repo"
 	vars["scratch_dir"] = "/fixture/scratch"
 	vars["bundle_self_path"] = "/fixture/bundle/main.bot"
-	vars["code_scope_globs"] = "src/**"
+	vars["code_scope_globs"] = codeScope
 	executor.SetVars(vars)
 	// Visible sentinels make every input substitution reviewable. They
 	// deliberately contain a paragraph themselves: input values must not be

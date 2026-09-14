@@ -57,6 +57,9 @@ line and `{{input.*}}` text; these remain literal input data under both
 profiles. Variables use the workflow defaults and fixed fixture paths.
 The code-scope example is `src/**`; an empty scope would render a trailing
 space in its inventory line, obscuring whitespace-only review of the goldens.
+A separate assertion preserves coverage of that exact empty value, including
+its trailing space and newline, under both profiles; no renderer output is
+trimmed to make a fixture pass.
 
 `TestCatalogDSL2RenderedPrompts` compares the complete compiled workflow after
 normalizing only prompt paragraphs, then compares all five real requests to
