@@ -457,7 +457,15 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   actual bounded subprocess pipe and cancellation with an inherited stdout
   descriptor using a disposable kubectl shim, and
   is wired into the existing Go CI job. This is source acquisition only:
-  record schema, permitted-writer and custody verification remain outstanding.
+  permitted-writer and custody verification remain outstanding.
+- Version-1 operator records now require bounded concrete NATS source bundles,
+  broker pod identities, namespace scope, every declared credential holder and
+  issuer, and named permitted writers. The strict parser rejects unknown or
+  duplicate JSON keys, ambiguous custody references and mutable image tags;
+  sensitive NATS configuration is omitted from record formatting and JSON.
+  Seven required reader/schema cases pass with race detection. These fields
+  are operator assertions only: Kubernetes RBAC, live broker digests, workload
+  coverage and credential custody have not yet been reconciled.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot

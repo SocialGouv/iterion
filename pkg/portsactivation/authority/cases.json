@@ -1,11 +1,14 @@
 {
-  "scope": "Read-only bounded kubectl access to a named operator Secret, exact object identity and version, private JSON material, refusal of unsupported names and oversized responses. This is source loading only, not credential custody verification or distributed activation.",
+  "scope": "Read-only bounded kubectl access to a named operator Secret and strict versioned authority-record parsing. Concrete NATS sources, brokers, credential holders, issuers and permitted writers are required and sensitive source text is private. Parsing does not verify completeness or enable distributed activation.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
       "TestReadAuthoritySecretRefusesUnboundNamesAndOversizedResponses",
       "TestReadAuthoritySecretBoundsActualKubectlPipe",
-      "TestReadAuthoritySecretCancellationBoundsInheritedPipe"
+      "TestReadAuthoritySecretCancellationBoundsInheritedPipe",
+      "TestAuthorityRecordKeepsConcreteSourcesPrivate",
+      "TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody",
+      "TestAuthorityRecordRejectsDuplicateJSONKeys"
     ]
   }
 }
