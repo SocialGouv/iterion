@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -142,5 +143,39 @@ func TestSystemDialRedactsCredentialURL(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), "private-secret") {
 			t.Fatalf("system authority URL leaked in a refusal: %v", err)
 		}
+	}
+}
+
+func TestSystemDialCancelsStalledHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		connection, err := listener.Accept()
+		close(accepted)
+		if err == nil {
+			defer connection.Close()
+			<-release // Intentionally never send the NATS INFO handshake.
+		}
+	}()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		<-accepted
+		cancel()
+	}()
+	start := time.Now()
+	connection, err := DialSystem(ctx, fmt.Sprintf("nats://sys:fixture@%s", listener.Addr()))
+	if connection != nil {
+		connection.Close()
+		t.Fatal("stalled authority connection was accepted")
+	}
+	if !errors.Is(err, context.Canceled) || time.Since(start) > time.Second {
+		t.Fatalf("stalled NATS handshake was not promptly interrupted: %v", err)
 	}
 }
