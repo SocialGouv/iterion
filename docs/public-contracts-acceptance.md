@@ -463,8 +463,14 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   issuer, and named permitted writers. The strict parser rejects unknown or
   duplicate JSON keys, ambiguous custody references and mutable image tags;
   sensitive NATS configuration is omitted from record formatting and JSON.
-  Seven required reader/schema cases pass with race detection. These fields
-  are operator assertions only: Kubernetes RBAC, live broker digests, workload
+  The parser requires canonical schema field names, rejecting Unicode and
+  ASCII aliases while preserving case-distinct NATS source filenames. Static
+  analysis parses every declared broker source with the
+  pinned profile, reconciles all configured NATS principals to custody entries,
+  classifies protected ACL exposure and refuses inconsistent broker ACLs or
+  system credentials assigned outside the authority role. Eleven required
+  reader/schema/static cases pass with race detection. These fields are
+  operator assertions only: Kubernetes RBAC, live broker digests, workload
   coverage and credential custody have not yet been reconciled.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen

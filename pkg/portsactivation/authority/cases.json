@@ -1,5 +1,5 @@
 {
-  "scope": "Read-only bounded kubectl access to a named operator Secret and strict versioned authority-record parsing. Concrete NATS sources, brokers, credential holders, issuers and permitted writers are required and sensitive source text is private. Parsing does not verify completeness or enable distributed activation.",
+  "scope": "Read-only bounded kubectl Secret loading, strict versioned operator records and static NATS source/profile reconciliation. Every principal must map to named custody and protected ACL exposures are classified. This is not live broker, Kubernetes or distributed activation verification.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
@@ -8,7 +8,11 @@
       "TestReadAuthoritySecretCancellationBoundsInheritedPipe",
       "TestAuthorityRecordKeepsConcreteSourcesPrivate",
       "TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody",
-      "TestAuthorityRecordRejectsDuplicateJSONKeys"
+      "TestAuthorityRecordRejectsDuplicateJSONKeys",
+      "TestAuthorityRecordPreservesCaseSensitiveSourceFiles",
+      "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
+      "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
+      "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift"
     ]
   }
 }
