@@ -1,7 +1,9 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.7
+version: 3.5.8
+## 3.5.8 — DSL profile 2 preserves authored prompt paragraph breaks.
+## Gate expressions, termination schemas and all non-prompt behavior stay unchanged.
 ## 3.5.7 — scan_hints stops manufacturing the same false positives every
 ## pass. A link written `/dsl` is SITE-absolute: every static-site
 ## generator routes it from the site root, but `os.path.join` drops
@@ -292,3 +294,6 @@ invocations:
 launch:
   primary: [scope_notes, open_mr]
   hidden: [bundle_self_path]
+
+requires:
+  iterion: ">= 3.143.0"

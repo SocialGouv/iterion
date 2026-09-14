@@ -67,6 +67,8 @@
 ## ─────────────────────────────────────────────────────────────────
 
 
+dsl: 2
+
 vars:
   ## The workspace root the run operates against. Resolved to the
   ## worktree when worktree: auto is set on the workflow.

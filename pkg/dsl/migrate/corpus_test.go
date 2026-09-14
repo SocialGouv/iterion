@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -26,7 +27,12 @@ func TestMigrateDryRunOverTheCorpus(t *testing.T) {
 			t.Errorf("%s: %v", path, err)
 			continue
 		}
-		if !res.Changed {
+		before := parser.Parse(path, string(src))
+		if before.File.EffectiveProfile() == 2 {
+			if res.Changed || !bytes.Equal(src, res.Migrated) || len(res.Changes) != 0 || len(res.Prompts) != 0 {
+				t.Errorf("%s: migrating an already-profile-2 file must be byte-idempotent", path)
+			}
+		} else if !res.Changed {
 			t.Errorf("%s: a profile-1 file that did not change", path)
 			continue
 		}

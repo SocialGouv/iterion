@@ -140,6 +140,9 @@ the syntax that drifted apart are the defect this closes.
 - `dsl: 2` and `import` are additive to the catalogue: the 35 shipped bots
   stay v1 until migrated in a reviewed lot of their own, and
   `catalog_parse_compile_test.go` stays the floor at every step.
+  The first prepared lot is `docs-refresh` + `adr-cartograph`; its
+  [rendered prompt fixtures and rollout prerequisites](../catalogue-dsl2-lot1.md)
+  make the paragraph change reviewable separately from activation (#1159).
 - A reader of a `.bot` learns its reading from its first line, and an
   agent authoring one is told which build to validate against
   (`requires.iterion`, C138/C040 for a builtin the floor lacks).
