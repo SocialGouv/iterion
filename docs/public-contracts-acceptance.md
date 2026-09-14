@@ -18,13 +18,13 @@ Syntax profiles and runtime semantics are independent.
 | Multiple typed inputs and explicit public/product exports | Supplier, type, optional/default/null/empty and product validation cases | Compiler and Engine cases pass on FS/Mongo, including connected optional absence and physical files |
 | Native acyclic data graph, including crossed diamonds | Compiled graph inspection and runtime dependency traces | Crossed DAG and committed-producer waiting pass through the actual Engine on FS/Mongo |
 | Automatic one-axis map, scalar broadcast, whole-array transport | 0/1/N, ambiguous axes, limits and stable order cases | Compiler cases and Engine 0/1/N, broadcast, whole-array collection, limits and order pass on FS/Mongo; native file outputs are separately captured and validated |
-| Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root scheduling, iteration reservation, file handling, strict cancellation and verifier capability refusal pass; nested root admission and production verifier wiring outstanding |
+| Existing Engine and admission seams | Shared root budgets/resources/effects, nested concurrency and cancellation cases | Single-root scheduling, iteration reservation, file handling, strict cancellation and verifier capability refusal pass; the stored distributed verifier is wired into cloud server/runner paths, while nested root admission remains outstanding |
 | Validate artifacts before publishing outputs | Missing/invalid/stale files; required unconsumed product prevents success | Immutable file capture, scratch-shadow isolation and runtime freshness/declared-file checks pass on FS/Mongo/S3; real process kill after the first captured byte leaves no published file and recovers on FS/Mongo |
-| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine publication/acknowledgment fault injection pass on FS/Mongo; real child-process SIGKILL after effect dispatch and during file capture passes on both stores. The local orphan scan recognizes native checkpoints; cloud lease adoption remains to be proven end to end |
+| Durable invocation identity and atomic publication | Filesystem and real Mongo replica-set crash injection cases | Store and Engine publication/acknowledgment fault injection pass on FS/Mongo; distributed proof plus activation publication and refresh now use atomic FS/Mongo paths; real child-process SIGKILL after effect dispatch and during file capture passes on both stores. The local orphan scan recognizes native checkpoints; cloud lease adoption remains to be proven end to end |
 | Pause, cancel, crash and compatible resume | Persisted states, valid reuse, descendant invalidation, uncertain effect recovery | Engine pause/cancel/resume, selective source and corrupt-file invalidation, interrupted CAS and manual/idempotent/verified effect decisions pass on FS/Mongo; real process-kill recovery passes on both stores after the explicit orphan status transition; complete child source closure remains outstanding |
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume. Runner now treats a queued native run with durable `PortExecution` as a resume on redelivery; complete consumer inventory and real mixed-fleet delivery proof remain outstanding |
-| Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Local scope proof and store-bound admission pass; production Mongo now refuses manually populated distributed evidence without a trusted verifier. NATS system/Kubernetes census, ACL reconciliation and positive distributed activation remain outstanding |
+| Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Local scope proof and store-bound admission pass; the server-only deployment adapter, structured stored verifier, capability heartbeat, refresher and operator probe/activate routes are wired and unit-tested. NATS system/Kubernetes live integration, ACL reconciliation and positive distributed activation remain outstanding |
 | Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation, two-build continuation and inherited admission for native descendants after disablement or proof expiry pass; distributed rollback outstanding |
 | Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | An internal legacy-control adapter child now runs and resumes in the native namespace under its parent's immutable admission on FS/Mongo; public adapter verification, child-source capture and shared root admission remain outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
@@ -675,3 +675,29 @@ its Mongo-specific paths are covered by the separate real-Mongo race run.
 The full native storage manifest now verifies 72 named cases without skips
 against filesystem, real Mongo and the historical executable fixture.
 `go vet` passes for activation, Store, Mongo and runtime packages.
+
+### Distributed authority wiring added after the primitive evidence
+
+The trusted cloud server now constructs a server-only `DeploymentAdapter` from
+the configured Kubernetes authority Secret, system-account NATS URL, ordinary
+queue connection and Mongo backend. It starts the 20-second refresher only
+after the final rollout epoch claim. Runners install the same stored-proof
+verifier without receiving system NATS or Kubernetes credentials; their
+credential-free capability heartbeat is opt-in and is disabled by default.
+
+The existing server exposes authenticated operator-only status, probe and
+activate handlers. Probe stores a candidate snapshot without changing the
+active policy; activate accepts only an explicit expected policy revision and
+the server-owned candidate. The chart renders the authority URL only through a
+server Secret and refuses the shared server/runner profile or sandbox RBAC when
+authority mode is enabled.
+
+Filesystem publication and Mongo replica-set transactions now pair each
+distributed proof with its activation. Freshness renewal likewise pairs the
+new proof and activation, with durable filesystem recovery journals and fenced
+Mongo CAS. Disable retains the last proof while advancing policy, so an
+explicit reactivation can safely replace it. Focused filesystem, authority,
+NATS, server and CLI tests pass; the new Mongo publication, renewal and
+post-disable reactivation cases pass with race detection against the disposable
+replica set. The production positive adapter/e2e path, live Kubernetes denial
+checks, exhaustive custody proof and distributed rollback remain unrun.
