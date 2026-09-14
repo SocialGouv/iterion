@@ -12,6 +12,7 @@
       "TestAuthorityRecordPreservesCaseSensitiveSourceFiles",
       "TestDeploymentRecordBindsSecretToConfiguredQueueAndNamespaces",
       "TestDeploymentObservationRequiresEveryCorroboratingLayer",
+      "TestDeploymentObservationDigestBindsStableAuthorityAndIgnoresVolatileCounts",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",

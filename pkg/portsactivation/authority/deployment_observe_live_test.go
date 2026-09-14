@@ -219,6 +219,7 @@ esac
 	result, err := ObserveDeployment(t.Context(), kubectl, "fixture", "trusted/iterion-authority",
 		[]string{"trusted", "worker"}, record.Queue, systemURL)
 	if err != nil || result.AuthoritySecretRevision != "17" || result.Queue != record.Queue ||
+		len(result.ObservationDigest) != 64 ||
 		result.StartedAt.IsZero() || result.CompletedAt.Before(result.StartedAt) ||
 		len(result.BrokerSources) != 1 || len(result.Credentials.Bindings) != 2 ||
 		len(result.System.Brokers) != 1 || result.System.Brokers[0].ServerID != serverID {

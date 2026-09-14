@@ -527,9 +527,13 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   Secret bytes, credential Secret identities and RBAC boundaries. It re-reads
   the authority Secret and rejects a UID, revision or material change during
   observation, recording start and completion times so future freshness checks
-  can account for the oldest evidence. A pinned broker plus a bounded `kubectl`
+  can account for the oldest evidence. Its SHA-256 observation digest binds
+  authority, queue, build, broker, credential Secret, workload and effective
+  RBAC identities; it excludes timestamps and live connection counts. A
+  pinned broker plus a bounded `kubectl`
   transport shim exercise the production observer and source-rotation refusal.
-  This is not yet a kind API/RBAC denial test or a verified activation snapshot.
+  The digest omits backend identity and compatible-build exclusion. This is
+  not yet a kind API/RBAC denial test or a verified activation snapshot.
 - A bounded Kubernetes workload reader now lists Pods, Deployments,
   ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs and
   ReplicationControllers in each declared namespace. It retains private pod

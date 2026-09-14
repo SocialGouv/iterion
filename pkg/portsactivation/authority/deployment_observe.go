@@ -20,6 +20,7 @@ type DeploymentCorroboration struct {
 	CompletedAt             time.Time                 `json:"completed_at"`
 	AuthoritySecretUID      string                    `json:"authority_secret_uid"`
 	AuthoritySecretRevision string                    `json:"authority_secret_revision"`
+	ObservationDigest       string                    `json:"observation_digest"`
 	DeploymentRevision      string                    `json:"deployment_revision"`
 	Epoch                   uint64                    `json:"epoch"`
 	Queue                   natsconfig.QueueTopology  `json:"queue"`
@@ -106,6 +107,10 @@ func ObserveDeployment(ctx context.Context, kubectlBinary, kubeContext, authorit
 		return nil, fmt.Errorf("distributed authority Secret changed during observation")
 	}
 	if err := probeCtx.Err(); err != nil {
+		return nil, err
+	}
+	result.ObservationDigest, err = fingerprintDeploymentObservation(record, result, workloads, rbac)
+	if err != nil {
 		return nil, err
 	}
 	result.StartedAt = started
