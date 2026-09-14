@@ -138,17 +138,22 @@ func TestNATSSystemBrokerSetDetectsUndeclaredClusterPeer(t *testing.T) {
 		}
 		t.Skip("ITERION_TEST_NATS_SERVER not set")
 	}
-	freePort := func() int {
-		t.Helper()
+	ports := [4]int{}
+	reservations := make([]net.Listener, len(ports))
+	for i := range reservations {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer listener.Close()
-		return listener.Addr().(*net.TCPAddr).Port
+		reservations[i] = listener
+		ports[i] = listener.Addr().(*net.TCPAddr).Port
+		t.Cleanup(func() { _ = listener.Close() })
 	}
-	clientPorts := [2]int{freePort(), freePort()}
-	routePorts := [2]int{freePort(), freePort()}
+	for _, listener := range reservations {
+		_ = listener.Close()
+	}
+	clientPorts := [2]int{ports[0], ports[1]}
+	routePorts := [2]int{ports[2], ports[3]}
 	connections := make([]*natsclient.Conn, 2)
 	for i := range connections {
 		config := fmt.Sprintf(`listen: 127.0.0.1:%d
