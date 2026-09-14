@@ -34,6 +34,7 @@ type DeploymentCorroboration struct {
 	BrokerSources           []BrokerConfigBinding     `json:"broker_sources"`
 	Credentials             *CredentialReconciliation `json:"credentials"`
 	RBAC                    *RBACBoundary             `json:"rbac"`
+	Census                  *CensusCorroboration      `json:"census,omitempty"`
 }
 
 type deploymentEvidenceReaders struct {
@@ -41,6 +42,7 @@ type deploymentEvidenceReaders struct {
 	brokerSource func(context.Context, string, string) (*BrokerConfigSecret, error)
 	system       func(context.Context, *Record, *StaticAnalysis) (*SystemCorroboration, error)
 	queueClient  *natsclient.Conn
+	census       func(context.Context, *Record, time.Time) (*CensusCorroboration, error)
 }
 
 // ObserveDeployment performs the privileged read-only portion of a
@@ -50,7 +52,7 @@ type deploymentEvidenceReaders struct {
 func ObserveDeployment(ctx context.Context, kubectlBinary, kubeContext, authorityRef string,
 	namespaces []string, expectedQueue natsconfig.QueueTopology, systemURL string) (*DeploymentCorroboration, error) {
 	return observeDeployment(ctx, kubectlBinary, kubeContext, authorityRef,
-		namespaces, expectedQueue, systemURL, nil)
+		namespaces, expectedQueue, systemURL, nil, nil)
 }
 
 // ObserveDeploymentWithQueue additionally binds the caller's ordinary NATS
@@ -63,12 +65,30 @@ func ObserveDeploymentWithQueue(ctx context.Context, kubectlBinary, kubeContext,
 		return nil, fmt.Errorf("distributed authority needs an ordinary NATS queue connection")
 	}
 	return observeDeployment(ctx, kubectlBinary, kubeContext, authorityRef,
-		namespaces, expectedQueue, systemURL, queueClient)
+		namespaces, expectedQueue, systemURL, queueClient, nil)
+}
+
+// ObserveDeploymentWithQueueAndCensus is the server-only variant used by the
+// production authority adapter. The callback reads the ordinary connection's
+// capability snapshot and validates it against the already corroborated
+// record, store identity and runner epoch. Keeping the callback outside this
+// package avoids giving the authority observer a second NATS connection or
+// access to queue credentials.
+func ObserveDeploymentWithQueueAndCensus(ctx context.Context, kubectlBinary, kubeContext, authorityRef string,
+	namespaces []string, expectedQueue natsconfig.QueueTopology, systemURL string,
+	queueClient *natsclient.Conn,
+	census func(context.Context, *Record, time.Time) (*CensusCorroboration, error)) (*DeploymentCorroboration, error) {
+	if queueClient == nil {
+		return nil, fmt.Errorf("distributed authority needs an ordinary NATS queue connection")
+	}
+	return observeDeployment(ctx, kubectlBinary, kubeContext, authorityRef,
+		namespaces, expectedQueue, systemURL, queueClient, census)
 }
 
 func observeDeployment(ctx context.Context, kubectlBinary, kubeContext, authorityRef string,
 	namespaces []string, expectedQueue natsconfig.QueueTopology, systemURL string,
-	queueClient *natsclient.Conn) (*DeploymentCorroboration, error) {
+	queueClient *natsclient.Conn,
+	census func(context.Context, *Record, time.Time) (*CensusCorroboration, error)) (*DeploymentCorroboration, error) {
 	started := time.Now().UTC()
 	probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -121,6 +141,7 @@ func observeDeployment(ctx context.Context, kubectlBinary, kubeContext, authorit
 				defer connection.Close()
 				return ObserveAndCorroborateSystem(ctx, connection, record, static)
 			},
+			census: census,
 		})
 	if err != nil {
 		return nil, err
@@ -201,9 +222,20 @@ func corroborateDeploymentEvidence(ctx context.Context, record *Record, source S
 			return nil, err
 		}
 	}
+	var census *CensusCorroboration
+	if readers.census != nil {
+		census, err = readers.census(ctx, record, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		if census == nil {
+			return nil, fmt.Errorf("distributed capability census returned no corroboration")
+		}
+	}
 	return &DeploymentCorroboration{AuthoritySecretUID: source.UID,
 		AuthoritySecretRevision: source.ResourceVersion, DeploymentRevision: record.DeploymentRevision,
 		Epoch: record.Epoch, Queue: record.Queue, Static: static, Builds: builds, System: system,
 		QueueClient: queueBinding, Workloads: workloads,
-		BrokerLaunches: launches, BrokerSources: brokerSources, Credentials: credentials, RBAC: boundary}, nil
+		BrokerLaunches: launches, BrokerSources: brokerSources, Credentials: credentials, RBAC: boundary,
+		Census: census}, nil
 }

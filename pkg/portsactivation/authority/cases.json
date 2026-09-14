@@ -47,7 +47,12 @@
       "TestNATSBrokerConfigSecretBindsProjectedSourceBytes",
       "TestNATSBrokerConfigSecretBindsNestedIncludesWithoutShadowMounts",
       "TestNATSBrokerConfigSecretRefusesUnboundOrShadowedSources",
-      "TestKubernetesBrokerConfigSecretReaderBindsIdentityAndRedactsData"
+      "TestKubernetesBrokerConfigSecretReaderBindsIdentityAndRedactsData",
+      "TestAuthorityProbeAndActivateKeepCandidateSeparateFromLiveProof",
+      "TestAuthorityRefusesSecondActivationWithoutAtomicBackendWriter",
+      "TestAuthorityCanReactivateAfterDisableWithRetainedProof",
+      "TestAuthorityRefresherRenewsWithoutChangingPolicy",
+      "TestAuthorityRefresherRequiresStableFingerprint"
     ]
   }
 }
