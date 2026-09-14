@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
@@ -52,6 +55,62 @@ func TestNativeActivationFilesystem(t *testing.T) {
 		}
 		return s
 	})
+}
+
+func TestNativeLegacyAdmissionFilesystemRemainsReadable(t *testing.T) {
+	root := t.TempDir()
+	s, err := store.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	identity, err := store.PortStoreIdentity(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	admission := &store.PortLaunchAdmission{Version: store.PortLaunchAdmissionVersion,
+		Scope: store.PortActivationLocal, StoreIdentity: identity,
+		ProofDigest: strings.Repeat("a", 64), CapabilityDigest: strings.Repeat("b", 64),
+		ResumeDigest: strings.Repeat("c", 64), ActivationRevision: 1,
+		AdmittedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+	ctx = store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, admission), store.RuntimeSemanticsPortsV1)
+	const id = "pc1_legacy_admission_fs"
+	if _, err := s.CreateRun(ctx, id, "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, store.NativeRunsDirectory, id, "run.ports-v1.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	oldAdmission := document["port_launch"].(map[string]any)
+	delete(oldAdmission, "admission_version")
+	delete(oldAdmission, "resume_digest")
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.LoadRun(ctx, id)
+	if err != nil || loaded.PortLaunch == nil || loaded.PortLaunch.Version != 0 || loaded.PortLaunch.ResumeDigest != "" {
+		t.Fatalf("old native record unreadable: %+v %v", loaded, err)
+	}
+	if ids, err := s.ListRuns(ctx); err != nil || !reflect.DeepEqual(ids, []string{id}) {
+		t.Fatalf("old native record hidden from list: %v %v", ids, err)
+	}
+	if err := portsactivation.RequireExistingAdmission(s, loaded); err != nil {
+		t.Fatalf("compatible old admission refused recovery: %v", err)
+	}
+	if err := s.SaveRun(ctx, loaded); err != nil {
+		t.Fatalf("old admission could not survive an ordinary metadata save: %v", err)
+	}
 }
 
 func TestNativeFilesystemRefusesUnsupportedRecordBeforeMutation(t *testing.T) {

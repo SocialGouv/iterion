@@ -30,10 +30,16 @@ func RunPortActivation(t *testing.T, factory Factory) {
 	if err := capability.SavePortActivation(ctx, 0, first); err != nil {
 		t.Fatal(err)
 	}
-	admission := &store.PortLaunchAdmission{Scope: store.PortActivationLocal, StoreIdentity: identity, ProofDigest: first.ProofDigest,
+	admission := &store.PortLaunchAdmission{Version: store.PortLaunchAdmissionVersion, Scope: store.PortActivationLocal, StoreIdentity: identity, ProofDigest: first.ProofDigest,
 		CapabilityDigest: first.CapabilityDigest, ResumeDigest: strings.Repeat("d", 64), ActivationRevision: first.Revision,
 		AdmittedAt: now.Truncate(time.Millisecond), ExpiresAt: first.ExpiresAt.Truncate(time.Millisecond)}
 	createCtx := store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, admission), store.RuntimeSemanticsPortsV1)
+	legacyAtCreation := *admission
+	legacyAtCreation.Version, legacyAtCreation.ResumeDigest = 0, ""
+	legacyCtx := store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, &legacyAtCreation), store.RuntimeSemanticsPortsV1)
+	if _, err := s.CreateRun(legacyCtx, "pc1_reject_old_admission_creation", "fixture", nil); !errors.Is(err, store.ErrPortActivation) {
+		t.Fatalf("new native run accepted a legacy-shaped admission: %v", err)
+	}
 	if _, err := s.CreateRun(createCtx, "pc1_activation_admission", "fixture", nil); err != nil {
 		t.Fatal(err)
 	}

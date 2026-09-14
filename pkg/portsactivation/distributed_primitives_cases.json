@@ -6,10 +6,12 @@
       "TestNativeAdmissionSurvivesCompatibleBuildUpgrade"
     ],
     "github.com/SocialGouv/iterion/pkg/store": [
-      "TestNativeActivationFilesystem"
+      "TestNativeActivationFilesystem",
+      "TestNativeLegacyAdmissionFilesystemRemainsReadable"
     ],
     "github.com/SocialGouv/iterion/pkg/store/mongo": [
       "TestNativeActivationMongo",
+      "TestNativeLegacyAdmissionMongoRemainsReadable",
       "TestNativeActivationMongoRenewalPreservesPolicy",
       "TestNativeActivationMongoRefresherFencing",
       "TestNativeActivationMongoDisableWinsRenewal",

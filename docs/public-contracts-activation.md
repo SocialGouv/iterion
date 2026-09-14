@@ -51,6 +51,10 @@ carries a separate recovery-compatibility digest: a changed build fingerprint
 alone does not invalidate it, while a changed native format or declared
 interpreter compatibility version does. Deployments must keep a runtime that
 can read the stored execution state through the rollback window.
+Native records created before the separate digest existed remain readable and
+resumable while compatibility version 1 supports their persisted format. New
+records always carry versioned recovery evidence; old-shaped admissions cannot
+be used for new creations.
 
 ## Rewind an admitted native run
 

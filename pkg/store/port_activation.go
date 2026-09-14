@@ -13,6 +13,7 @@ import (
 )
 
 const PortActivationVersion = 4
+const PortLaunchAdmissionVersion = 1
 
 const PortDistributedProofMaxAge = time.Minute
 
@@ -52,6 +53,9 @@ type PortActivation struct {
 // run was created. It lets a queued or pre-created run continue after the
 // operator disables new launches, without treating a bare native ID as proof.
 type PortLaunchAdmission struct {
+	// An absent version identifies admissions persisted before the separate
+	// recovery digest existed. They remain readable and immutable.
+	Version            int       `json:"admission_version,omitempty" bson:"admission_version,omitempty"`
 	Scope              string    `json:"scope" bson:"scope"`
 	StoreIdentity      string    `json:"store_identity" bson:"store_identity"`
 	ProofDigest        string    `json:"proof_digest" bson:"proof_digest"`
@@ -63,10 +67,13 @@ type PortLaunchAdmission struct {
 }
 
 func (a *PortLaunchAdmission) Validate() error {
+	legacy := a != nil && a.Version == 0 && a.ResumeDigest == ""
+	current := a != nil && a.Version == PortLaunchAdmissionVersion &&
+		len(a.ResumeDigest) == 64 && strings.Trim(a.ResumeDigest, "0123456789abcdef") == ""
 	if a == nil || (a.Scope != PortActivationLocal && a.Scope != PortActivationDistributed) ||
 		a.StoreIdentity == "" || a.ActivationRevision == 0 || len(a.ProofDigest) != 64 || strings.Trim(a.ProofDigest, "0123456789abcdef") != "" ||
 		len(a.CapabilityDigest) != 64 || strings.Trim(a.CapabilityDigest, "0123456789abcdef") != "" ||
-		len(a.ResumeDigest) != 64 || strings.Trim(a.ResumeDigest, "0123456789abcdef") != "" ||
+		(!legacy && !current) ||
 		a.AdmittedAt.IsZero() || !a.AdmittedAt.Before(a.ExpiresAt) {
 		return fmt.Errorf("%w: malformed native run admission", ErrPortActivation)
 	}

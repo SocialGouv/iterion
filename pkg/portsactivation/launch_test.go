@@ -94,4 +94,16 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 	if err := s.SaveRun(ctx, &tampered); !errors.Is(err, store.ErrRunSemantics) {
 		t.Fatalf("persisted native admission was mutable: %v", err)
 	}
+	for _, invalid := range []store.PortLaunchAdmission{
+		{Version: 0, ResumeDigest: run.PortLaunch.ResumeDigest},
+		{Version: store.PortLaunchAdmissionVersion, ResumeDigest: ""},
+		{Version: store.PortLaunchAdmissionVersion + 1, ResumeDigest: run.PortLaunch.ResumeDigest},
+	} {
+		candidate := *run.PortLaunch
+		candidate.Version, candidate.ResumeDigest = invalid.Version, invalid.ResumeDigest
+		tampered.PortLaunch = &candidate
+		if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
+			t.Fatalf("malformed admission version %d accepted: %v", invalid.Version, err)
+		}
+	}
 }

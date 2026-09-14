@@ -57,7 +57,7 @@ func AuthorizeLaunch(ctx context.Context, s store.RunStore, semantics, runID str
 	if scope == store.PortActivationDistributed && record.QueueVersion != queue.SchemaVersion {
 		return nil, fmt.Errorf("%w: distributed queue schema %d does not match this binary's %d", store.ErrPortActivation, record.QueueVersion, queue.SchemaVersion)
 	}
-	admission := &store.PortLaunchAdmission{Scope: scope, StoreIdentity: record.StoreIdentity, ProofDigest: record.ProofDigest,
+	admission := &store.PortLaunchAdmission{Version: store.PortLaunchAdmissionVersion, Scope: scope, StoreIdentity: record.StoreIdentity, ProofDigest: record.ProofDigest,
 		CapabilityDigest: record.CapabilityDigest, ResumeDigest: ResumeCompatibilityDigest(scope), ActivationRevision: record.Revision,
 		AdmittedAt: now.Truncate(time.Millisecond), ExpiresAt: record.ExpiresAt.UTC().Truncate(time.Millisecond)}
 	if err := admission.Validate(); err != nil {
@@ -93,7 +93,15 @@ func RequireExistingAdmission(s store.RunStore, r *store.Run) error {
 		scope = store.PortActivationDistributed
 	}
 	identity, err := store.PortStoreIdentity(s)
-	if err != nil || a.Scope != scope || a.StoreIdentity != identity || a.ResumeDigest != ResumeCompatibilityDigest(scope) ||
+	compatible := a.Version == store.PortLaunchAdmissionVersion && a.ResumeDigest == ResumeCompatibilityDigest(scope)
+	if a.Version == 0 && ResumeCompatibilityVersion == 1 {
+		// Version 0 was written with the same native run format before the
+		// recovery digest existed. Its build-bound capability remains in the
+		// immutable record, but an otherwise compatible upgrade may resume it.
+		compatible = true
+	}
+	if err != nil || a.Scope != scope || a.StoreIdentity != identity || !compatible ||
+		r.RuntimeSemantics != ir.RuntimeSemanticsPortsV1 || r.FormatVersion != store.NativeRunFormatVersion ||
 		r.CreatedAt.Before(a.AdmittedAt) || !r.CreatedAt.Before(a.ExpiresAt) {
 		return fmt.Errorf("%w: native run admission does not match this store, runtime or creation time", store.ErrPortActivation)
 	}

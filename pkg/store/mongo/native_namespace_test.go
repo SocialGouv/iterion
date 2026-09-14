@@ -7,8 +7,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/storetest"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -107,6 +109,44 @@ func TestNativeFileCaptureMongo(t *testing.T) {
 
 func TestNativeActivationMongo(t *testing.T) {
 	storetest.RunPortActivation(t, func(t *testing.T) store.RunStore { return nativeNamespaceStore(t) })
+}
+
+func TestNativeLegacyAdmissionMongoRemainsReadable(t *testing.T) {
+	s := nativeNamespaceStore(t)
+	base, cancel := mongotest.Ctx(t)
+	defer cancel()
+	ctx := store.WithoutTenantFilter(base)
+	identity, err := store.PortStoreIdentity(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	admission := &store.PortLaunchAdmission{Version: store.PortLaunchAdmissionVersion,
+		Scope: store.PortActivationDistributed, StoreIdentity: identity,
+		ProofDigest: strings.Repeat("a", 64), CapabilityDigest: strings.Repeat("b", 64),
+		ResumeDigest: strings.Repeat("c", 64), ActivationRevision: 1,
+		AdmittedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+	ctx = store.WithRuntimeSemantics(store.WithPortLaunchAdmission(ctx, admission), store.RuntimeSemanticsPortsV1)
+	const id = "pc1_legacy_admission_mongo"
+	if _, err := s.CreateRun(ctx, id, "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.collectionForRun(id, s.runs).UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$unset": bson.M{
+		"port_launch.admission_version": "", "port_launch.resume_digest": "",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.LoadRun(ctx, id)
+	if err != nil || loaded.PortLaunch == nil || loaded.PortLaunch.Version != 0 || loaded.PortLaunch.ResumeDigest != "" {
+		t.Fatalf("old native record unreadable: %+v %v", loaded, err)
+	}
+	if err := portsactivation.RequireExistingAdmission(s, loaded); err != nil {
+		t.Fatalf("compatible old admission refused recovery: %v", err)
+	}
+	if err := s.SaveRun(ctx, loaded); err != nil {
+		t.Fatalf("old admission could not survive an ordinary metadata save: %v", err)
+	}
 }
 
 func TestNativeMongoRefusesUnsupportedRecordBeforeMutation(t *testing.T) {

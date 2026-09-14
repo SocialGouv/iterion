@@ -84,6 +84,9 @@ func StampRunSemantics(ctx context.Context, r *Run) error {
 	if IsNativeRunID(r.ID) {
 		r.FormatVersion = NativeRunFormatVersion
 		if admission, _ := ctx.Value(portLaunchKey{}).(*PortLaunchAdmission); admission != nil {
+			if admission.Version != PortLaunchAdmissionVersion {
+				return fmt.Errorf("%w: new native admission requires the current recovery format", ErrPortActivation)
+			}
 			copy := *admission
 			r.PortLaunch = &copy
 		}
@@ -169,7 +172,7 @@ func samePortLaunchAdmission(a, b *PortLaunchAdmission) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return a.Scope == b.Scope && a.StoreIdentity == b.StoreIdentity && a.ProofDigest == b.ProofDigest &&
+	return a.Version == b.Version && a.Scope == b.Scope && a.StoreIdentity == b.StoreIdentity && a.ProofDigest == b.ProofDigest &&
 		a.CapabilityDigest == b.CapabilityDigest && a.ResumeDigest == b.ResumeDigest && a.ActivationRevision == b.ActivationRevision &&
 		a.AdmittedAt.Equal(b.AdmittedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
 }

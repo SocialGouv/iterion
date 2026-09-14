@@ -32,7 +32,7 @@ Syntax profiles and runtime semantics are independent.
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 70 store, 73 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 72 store, 73 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
@@ -81,7 +81,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the native scheduler or deployment barrier is implemented.
 - Native store tests pass on filesystem and a real Mongo 8 replica set with
   `ITERION_TEST_REQUIRED=1`, `ITERION_TEST_MONGO_URI` and `go test -race -json`.
-  `scripts/verify-port-tests.mjs` verified all 70 expected cases in
+  `scripts/verify-port-tests.mjs` verified all 72 expected cases in
   `pkg/store/storetest/native_namespaces.json` passed without skips. They cover
   metadata and blob round trips, exact public inputs, descendant namespaces,
   no legacy shadow fallback, unsupported-record refusal and deletion closure.
@@ -123,7 +123,7 @@ Syntax profiles and runtime semantics are independent.
   Native reads and the final scratch upload cannot substitute a scratch
   shadow for a captured file. Run deletion removes captured files and private
   staging. Capturing a file does not itself publish a workflow result.
-  The native manifest verifies 70 cases without skips; the focused rerun also
+  The native manifest verifies 72 cases without skips; the focused rerun also
   covers ordinary run-file uploading, S3 client round trips and deletion
   collection coverage. Separate Engine cases now check fresh producer
   provenance and declared file properties; separate process-kill cases now
@@ -164,7 +164,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the effect did not occur allows replay. Unknown or empty
   evidence leaves the invocation uncertain. A default executor without the
   capability refuses admission before dispatch. The final race JSON manifest
-  verifies 70 store and 73 Engine cases without skips.
+  verifies 72 store and 73 Engine cases without skips.
 - `TestNativeProcessKillRecoveryFilesystem` and its Mongo counterpart kill a
   separate test process after the effect-dispatched checkpoint. After an
   explicit supervisor-equivalent status transition, resume refuses to replay
@@ -340,7 +340,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   authority's subject-and-sequence-bounded cleanup removes entries and
   tombstones older than 24 hours while preserving concurrent publications.
   The retention cutoff is advanced in tests; no 24-hour soak is claimed.
-- The distributed-primitives manifest passes 24 cases with race detection,
+- The distributed-primitives manifest passes 26 cases with race detection,
   real Mongo and NATS 2.14, including an actual pinned-main `EnsureSchema`
   caller. `go vet` passes for activation, Store and NATS packages. These are
   storage and census primitives: the production authority observer, effective
@@ -408,7 +408,12 @@ its build fingerprint and activation format. An admitted run now also carries
 an immutable resume-compatibility digest over its native semantics, persisted
 format, namespace and explicit interpreter compatibility version. Recovery
 checks that digest and the store/creation identity without consulting an
-enabled or fresh launch proof. A missing or changed digest is refused.
+enabled or fresh launch proof. New admissions carry version 1 and require this
+digest. Admissions written before this field existed have absent version and
+digest; they remain readable and resumable while the original native format
+and declared recovery compatibility version 1 are supported. New creations
+cannot use the old shape. Unknown admission versions and malformed mixed
+shapes are refused.
 
 `TestNativeAdmissionSurvivesCompatibleBuildUpgrade` builds two real fixture
 executables with distinct embedded version and commit values. The first
@@ -421,10 +426,17 @@ persisted identity is checked separately. Filesystem and real-Mongo Store
 tests also refuse mutation of the persisted recovery digest. Distributed
 rollback and live redelivery remain open acceptance items.
 
-After this change, the full repository `task test` passes with the real Mongo
-replica set and historical binary fixtures configured. The race-instrumented
-distributed-primitives manifest verifies all 24 named cases executed without
-skips, including the new two-build case; the targeted native Engine rollback
-suite passes on filesystem and Mongo. The first attempted broad race command
-omitted the required old-executable fixture and failed only those two fixture
-preconditions; the subsequent focused command and full suite supplied it.
+The first revision of this change made `resume_digest` mandatory for every
+decoded record. Automatic review caught that it would hide existing native
+runs from filesystem lists and make both filesystem and Mongo loads fail.
+The versioned read path and raw old-shape filesystem/Mongo regression cases
+fix that compatibility break. The race-instrumented distributed-primitives
+manifest verifies all 26 named cases executed without skips, including the
+two-build and both old-record cases; targeted native Engine rollback passes on
+filesystem and Mongo. The full repository `task test` passed before this
+review correction with the real Mongo replica set and historical binaries.
+A complete rerun after correction also passes with the historical binaries;
+its Mongo-specific paths are covered by the separate real-Mongo race run.
+The full native storage manifest now verifies 72 named cases without skips
+against filesystem, real Mongo and the historical executable fixture.
+`go vet` passes for activation, Store, Mongo and runtime packages.
