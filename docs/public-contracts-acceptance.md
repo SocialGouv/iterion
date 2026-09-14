@@ -403,7 +403,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   for inherited defaults and a signed nkey, denies anonymous access, and
   reports the same parsed digest through HTTP and authenticated system VARZ
   before and after reload. The race-instrumented manifest now verifies all
-  **87** named parser/profile/permission cases without skips; `go vet` and a
+  **90** named parser/profile/permission cases without skips; `go vet` and a
   static production build pass. This is still an isolated source projection:
   live JetStream/KV topology reconciliation, credential-holder inventory,
   Kubernetes reconciliation and production verifier remain outstanding.
@@ -424,9 +424,20 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   purge grant clears the run stream, and a Core subscription receives its
   run payload. The distinct system account is reported as privileged authority
   exposure rather than being treated as a harmless other account. The full
-  race-instrumented NATS manifest has 87 cases without skips. The classifier
+  race-instrumented NATS manifest has 90 cases without skips. The classifier
   still needs authoritative live topology, credential
   custody and workload reconciliation before its result can admit a root.
+- The same classifier treats system-account access to `$SYS.>` requests or
+  events and `_INBOX.>` replies in either direction as privileged. The pinned
+  broker confirms that a user allowed to read system requests and publish
+  inbox replies can forge a monitoring response; a VARZ request alone does
+  not authenticate its responder.
+- A read-only system-account observer now binds one named broker's VARZ
+  identity, pinned version and loaded digest to the parsed source, then reads
+  authenticated CONNZ pages with explicit bounds and stable pagination. A
+  pinned broker confirms both system and worker identities appear and a wrong
+  digest refuses observation. This detects current contradictions; it cannot
+  establish that every broker or disconnected credential holder was inventoried.
 - A complete `task test` pass initially found two fixture/CI omissions:
   `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
   test called a Mongo factory without checking the optional fixture gate.

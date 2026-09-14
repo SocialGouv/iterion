@@ -39,6 +39,7 @@ func TestNATSProtectedAccessClassifiesWholePermissionLanguages(t *testing.T) {
 		{"native cancellation", Principal{Account: "WORK", Identity: "canceller", Publish: SubjectPermissions{Allow: []string{"iterion.cancel.*"}}}, []string{"native_control"}, []string{"jetstream_api"}},
 		{"native steering", Principal{Account: "WORK", Identity: "steerer", Subscribe: SubjectPermissions{Allow: []string{"iterion.steer.>"}}, Publish: SubjectPermissions{Allow: []string{"safe.>"}}}, []string{"native_control"}, []string{"jetstream_api"}},
 		{"system authority", Principal{Account: "SYS", Identity: "sys"}, []string{"system_authority"}, []string{"jetstream_api", "queue_messages", "acknowledgment"}},
+		{"system reply injection", Principal{Account: "SYS", Identity: "spoof", Publish: SubjectPermissions{Allow: []string{"_INBOX.>"}}, Subscribe: SubjectPermissions{Allow: []string{"$SYS.REQ.>"}}}, []string{"system_authority"}, []string{"jetstream_api", "queue_messages", "acknowledgment"}},
 		{"account isolation", Principal{Account: "OTHER", Identity: "other"}, nil, []string{"system_authority", "jetstream_api", "queue_messages", "acknowledgment"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +55,15 @@ func TestNATSProtectedAccessClassifiesWholePermissionLanguages(t *testing.T) {
 			for _, surface := range tc.refuse {
 				if hasExposure(exposures, surface) {
 					t.Errorf("unexpected %s exposure: %+v", surface, exposures)
+				}
+			}
+			if tc.name == "system reply injection" {
+				for _, direction := range []string{"publish", "subscribe"} {
+					if !slices.ContainsFunc(exposures, func(exposure AccessExposure) bool {
+						return exposure.Surface == "system_authority" && exposure.Direction == direction
+					}) {
+						t.Errorf("missing %s system authority exposure: %+v", direction, exposures)
+					}
 				}
 			}
 			for _, exposure := range exposures {

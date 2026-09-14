@@ -34,7 +34,10 @@ func TestNATSProtectedAccessMatchesPinnedJetStream(t *testing.T) {
 jetstream: true
 system_account: SYS
 accounts {
-  SYS {users: [{user: sys, password: fixture}]}
+  SYS {users: [
+    {user: sys, password: fixture},
+    {user: systeminjector, password: fixture, permissions: {publish: ["_INBOX.>"], subscribe: ["$SYS.REQ.>"]}}
+  ]}
   WORK {jetstream: true, users: [
     {user: observer, password: fixture, permissions: {}},
     {user: fetcher, password: fixture, permissions: {publish: ["$JS.API.CONSUMER.MSG.NEXT.ITERION_RUNS.iterion-runners"], subscribe: ["_INBOX.>"]}},
@@ -66,6 +69,7 @@ accounts {
 		{"reader", "queue_messages"},
 		{"observer", "unreviewed_jetstream_api"},
 		{"sys", "system_authority"},
+		{"systeminjector", "system_authority"},
 	} {
 		exposures, err := AnalyzeProtectedAccess(principals[tc.identity], topology)
 		if err != nil || !hasExposure(exposures, tc.surface) {
@@ -171,6 +175,43 @@ accounts {
 	result := <-resultCh
 	if result.err != nil || !bytes.Equal(result.message.Data, []byte("injected delivery")) {
 		t.Fatalf("reply publisher could not inject a pull response: %+v %v", result.message, result.err)
+	}
+	system, err := natsclient.Connect(url, natsclient.UserInfo("sys", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer system.Close()
+	systemInjector, err := natsclient.Connect(url, natsclient.UserInfo("systeminjector", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer systemInjector.Close()
+	systemRequests, err := systemInjector.SubscribeSync("$SYS.REQ.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := systemInjector.FlushTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	systemResultCh := make(chan requestResult, 1)
+	go func() {
+		response, requestErr := system.Request("$SYS.REQ.SERVER.MISSING.VARZ", nil, 2*time.Second)
+		systemResultCh <- requestResult{response, requestErr}
+	}()
+	systemRequest, err := systemRequests.NextMsg(time.Second)
+	if err != nil || systemRequest.Reply == "" {
+		t.Fatalf("system subscriber could not see the VARZ reply address: %+v %v", systemRequest, err)
+	}
+	forged := []byte(`{"server":{"id":"MISSING"},"data":{"config_digest":"sha256:forged"}}`)
+	if err := systemInjector.Publish(systemRequest.Reply, forged); err != nil {
+		t.Fatal(err)
+	}
+	if err := systemInjector.FlushTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	systemResult := <-systemResultCh
+	if systemResult.err != nil || !bytes.Equal(systemResult.message.Data, forged) {
+		t.Fatalf("system account could not inject a monitoring response: %+v %v", systemResult.message, systemResult.err)
 	}
 	reader, err := natsclient.Connect(url, natsclient.UserInfo("reader", "fixture"))
 	if err != nil {

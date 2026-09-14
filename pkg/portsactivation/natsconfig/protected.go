@@ -71,14 +71,26 @@ func AnalyzeProtectedAccess(principal Principal, topology QueueTopology) ([]Acce
 		if principal.Identity == "" {
 			return nil, fmt.Errorf("NATS system authority requires a named principal")
 		}
-		witness, found, err := principal.Publish.Intersects([]string{"$SYS.REQ.>"})
-		if err != nil {
-			return nil, err
+		// System requests and events can be observed or forged through $SYS;
+		// their NATS request inboxes can likewise be read or injected. A
+		// single reply forged before the broker's answer can falsify VARZ.
+		var exposures []AccessExposure
+		for _, candidate := range []struct {
+			direction   string
+			permissions SubjectPermissions
+		}{
+			{"publish", principal.Publish},
+			{"subscribe", principal.Subscribe},
+		} {
+			witness, found, err := candidate.permissions.Intersects([]string{"$SYS.>", "_INBOX.>"})
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				exposures = append(exposures, AccessExposure{"system_authority", candidate.direction, witness})
+			}
 		}
-		if found {
-			return []AccessExposure{{"system_authority", "publish", witness}}, nil
-		}
-		return nil, nil
+		return exposures, nil
 	}
 	if principal.Account != topology.Account {
 		return nil, nil
