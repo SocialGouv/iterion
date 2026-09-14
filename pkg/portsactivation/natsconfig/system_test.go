@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func TestNATSSystemObservationMatchesPinnedBroker(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	config := fmt.Sprintf(`listen: 127.0.0.1:%d
+server_name: nats-0.example
 jetstream: true
 system_account: SYS
 accounts {
@@ -92,9 +94,7 @@ accounts {
 	if _, err := ObserveSystemServer(ctx, system, system.ConnectedServerId(), "sha256:"+fmt.Sprintf("%064x", 1)); err == nil {
 		t.Fatal("mismatched loaded configuration digest was accepted")
 	}
-	pingCtx, stopPing := context.WithTimeout(t.Context(), 4*time.Second)
-	defer stopPing()
-	brokers, err := ObserveSystemBrokerSet(pingCtx, system, []SystemBrokerIdentity{{
+	brokers, err := ObserveSystemBrokerSet(t.Context(), system, []SystemBrokerIdentity{{
 		ServerID: observed.ServerID, ServerName: observed.ServerName,
 	}})
 	if err != nil || len(brokers) != 1 || brokers[0].ServerID != observed.ServerID {
@@ -102,8 +102,8 @@ accounts {
 	}
 	if _, err := ObserveSystemBrokerSet(t.Context(), system, []SystemBrokerIdentity{{
 		ServerID: observed.ServerID, ServerName: "wrong-name",
-	}}); err == nil {
-		t.Fatal("system PING.IDZ accepted a different declared broker name")
+	}}); err == nil || !strings.Contains(err.Error(), "IDZ response disagrees") {
+		t.Fatalf("system PING.IDZ did not reject a different declared broker name: %v", err)
 	}
 }
 

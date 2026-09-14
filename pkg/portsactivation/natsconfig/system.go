@@ -36,10 +36,12 @@ func ObserveSystemBrokerSet(ctx context.Context, nc *natsclient.Conn, expected [
 	if nc == nil || len(expected) == 0 || len(expected) > systemBrokerLimit {
 		return nil, fmt.Errorf("NATS system broker census requires a bounded declared inventory")
 	}
+	opCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
 	declared := make(map[string]string, len(expected))
 	names := make(map[string]bool, len(expected))
 	for _, broker := range expected {
-		if !profileAccountName(broker.ServerID) || !profileAccountName(broker.ServerName) ||
+		if !profileAccountName(broker.ServerID) || !systemBrokerName(broker.ServerName) ||
 			declared[broker.ServerID] != "" || names[broker.ServerName] {
 			return nil, fmt.Errorf("NATS system broker census has an invalid declared identity")
 		}
@@ -55,16 +57,16 @@ func ObserveSystemBrokerSet(ctx context.Context, nc *natsclient.Conn, expected [
 		return nil, fmt.Errorf("NATS system broker census could not subscribe: %w", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	if err := nc.FlushWithContext(ctx); err != nil {
+	if err := nc.FlushWithContext(opCtx); err != nil {
 		return nil, fmt.Errorf("NATS system broker census subscription is unavailable: %w", err)
 	}
 	if err := nc.PublishRequest("$SYS.REQ.SERVER.PING.IDZ", inbox, nil); err != nil {
 		return nil, fmt.Errorf("NATS system broker census request was refused: %w", err)
 	}
-	if err := nc.FlushWithContext(ctx); err != nil {
+	if err := nc.FlushWithContext(opCtx); err != nil {
 		return nil, fmt.Errorf("NATS system broker census request was not sent: %w", err)
 	}
-	window, cancel := context.WithTimeout(ctx, systemPingWindow)
+	window, cancel := context.WithTimeout(opCtx, systemPingWindow)
 	defer cancel()
 	seen := make(map[string]bool, len(expected))
 	for {
@@ -72,6 +74,9 @@ func ObserveSystemBrokerSet(ctx context.Context, nc *natsclient.Conn, expected [
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("NATS system broker census was interrupted: %w", ctx.Err())
+			}
+			if opCtx.Err() != nil {
+				return nil, fmt.Errorf("NATS system broker census exceeded its operation deadline: %w", opCtx.Err())
 			}
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, natsclient.ErrTimeout) {
 				break
@@ -117,12 +122,27 @@ func recordSystemBrokerReply(raw []byte, declared map[string]string, seen map[st
 	}
 	end, err := decoder.Token()
 	if err != nil || end != json.Delim('}') || decoder.Decode(new(any)) != io.EOF ||
-		!profileAccountName(fields["id"]) || !profileAccountName(fields["name"]) || fields["host"] == "" ||
+		!profileAccountName(fields["id"]) || !systemBrokerName(fields["name"]) || fields["host"] == "" ||
 		declared[fields["id"]] != fields["name"] || seen[fields["id"]] {
 		return fmt.Errorf("NATS system broker IDZ response disagrees with the declared inventory")
 	}
 	seen[fields["id"]] = true
 	return nil
+}
+
+// Match the authority record's bounded broker-name alphabet. Server IDs
+// remain NATS-generated tokens; names may include dots, slashes and colons.
+func systemBrokerName(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			c == '-' || c == '_' || c == '.' || c == '/' || c == ':') {
+			return false
+		}
+	}
+	return true
 }
 
 // SystemConnection is a current broker observation. It can contradict a
