@@ -10,6 +10,7 @@
       "TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody",
       "TestAuthorityRecordRejectsDuplicateJSONKeys",
       "TestAuthorityRecordPreservesCaseSensitiveSourceFiles",
+      "TestDeploymentRecordBindsSecretToConfiguredQueueAndNamespaces",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",
