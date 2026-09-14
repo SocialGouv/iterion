@@ -264,8 +264,8 @@ func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expec
 		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy && proof.PolicyRevision != expectedPolicy+1) {
 		return fmt.Errorf("%w: invalid distributed proof write", ErrPortActivation)
 	}
-	proof.Snapshot, err = canonicalPortSnapshot(proof.Snapshot)
-	if err != nil || proof.Validate() != nil {
+	proof.Snapshot = bytes.TrimSpace(proof.Snapshot)
+	if proof.Validate() != nil {
 		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
 	}
 	var encoded bytes.Buffer

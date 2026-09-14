@@ -129,12 +129,18 @@ func fingerprintDeploymentObservation(record *Record, result *DeploymentCorrobor
 	slices.SortFunc(systemBrokers, func(a, b systemFingerprintBroker) int {
 		return strings.Compare(a.ServerID, b.ServerID)
 	})
-	systemPrincipals := make([]systemFingerprintPrincipal, 0)
+	principalSet := make(map[string]systemFingerprintPrincipal)
 	for serverID, connections := range result.System.connections {
 		for _, principal := range connections {
-			systemPrincipals = append(systemPrincipals, systemFingerprintPrincipal{
-				ServerID: serverID, Account: principal.account, Principal: principal.user})
+			binding := systemFingerprintPrincipal{
+				ServerID: serverID, Account: principal.account, Principal: principal.user}
+			key := binding.ServerID + "\x00" + binding.Account + "\x00" + binding.Principal
+			principalSet[key] = binding
 		}
+	}
+	systemPrincipals := make([]systemFingerprintPrincipal, 0, len(principalSet))
+	for _, binding := range principalSet {
+		systemPrincipals = append(systemPrincipals, binding)
 	}
 	slices.SortFunc(systemPrincipals, func(a, b systemFingerprintPrincipal) int {
 		return strings.Compare(a.ServerID+"\x00"+a.Account+"\x00"+a.Principal,
