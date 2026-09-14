@@ -522,6 +522,14 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   namespaces or durable NATS queue identity differ from the server's configured
   scope before live inspection. It keeps the source material private and does
   not treat a matching record as an activation proof.
+- A read-only deployment observer now assembles parsed NATS sources, live
+  broker identity and connections, Kubernetes workloads, broker launch/config
+  Secret bytes, credential Secret identities and RBAC boundaries. It re-reads
+  the authority Secret and rejects a UID, revision or material change during
+  observation, recording start and completion times so future freshness checks
+  can account for the oldest evidence. A pinned broker plus a bounded `kubectl`
+  transport shim exercise the production observer and source-rotation refusal.
+  This is not yet a kind API/RBAC denial test or a verified activation snapshot.
 - A bounded Kubernetes workload reader now lists Pods, Deployments,
   ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs and
   ReplicationControllers in each declared namespace. It retains private pod
@@ -580,7 +588,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   connected principal identities. A bounded Secret reader now compares every
   declared NATS source file with the Secret keys selected by a read-only Pod
   volume declaration, including nested includes, and records both Pod and Secret revisions.
-  Thirty-nine authority cases pass with race detection. These checks do not
+  Forty authority cases pass with race detection. These checks do not
   discover omitted brokers or disconnected credential holders, establish
   observation freshness, actual kubelet-mounted bytes or a complete Kubernetes
   authorization boundary.

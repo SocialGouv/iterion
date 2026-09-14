@@ -501,7 +501,7 @@ jobs:
           ITERION_TEST_CURRENT_BINARY: ${{ runner.temp }}/ports-current
         run: |
           go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/... ./pkg/portsactivation/natsconfig
-          ITERION_TEST_REQUIRED=1 go test -mod=vendor -json -count=1 -run '^TestAuthorityLiveSystemCorroboratesNamedBroker$' ./pkg/portsactivation/authority > /tmp/iterion-authority-live.jsonl
+          ITERION_TEST_REQUIRED=1 go test -mod=vendor -json -count=1 -run '^TestAuthorityLive(SystemCorroboratesNamedBroker|DeploymentObservationRejectsSourceRotation)$' ./pkg/portsactivation/authority > /tmp/iterion-authority-live.jsonl
           node scripts/verify-port-tests.mjs pkg/portsactivation/authority/live_cases.json /tmp/iterion-authority-live.jsonl
 
   cloud-e2e:
