@@ -136,7 +136,8 @@ recommendation to the operator, with the exact command they'd run.
 When a subbot cannot read its skills/tools, or its parent sees child resources
 later, consult [Child bundle resources](../../../docs/groups-iteration-subbots.md#child-bundle-resources).
 Check the child's `FilePath`/`BundlePath` and `sandbox_devbox_provisioned`
-event (`target`, `bin_dirs`, `errors`). `step.bot` beside `main.bot` is a bare
-workflow. Shared-workspace resources are borrowed for each active pass and
-restored on return, including pauses; child devbox PATH never replaces the
+event (`target`, `bin_dirs`, `errors`). A workflow inside a bundle, including
+`step.bot` beside `main.bot`, inherits that bundle; a standalone file outside
+one has no bundle resources. Shared-workspace resources are borrowed for each
+active pass and restored on return, including pauses; child devbox PATH never replaces the
 parent's. A restoration error names a retained backup to inspect.
