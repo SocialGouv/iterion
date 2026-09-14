@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatCredentialFingerprint, formatDateTime } from "@/lib/format";
 import { useState } from "react";
+import { Select } from "@/components/ui/Select";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/Badge";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -309,7 +310,7 @@ function ScopedOAuthConnections({
 
                 <label className="text-xs text-fg-muted flex items-center gap-2">
                   Fallback order
-                  <select
+                  <Select
                     aria-label={`${display} chain entry`}
                     className="bg-surface-1 border border-border-subtle rounded px-2 py-1 text-fg"
                     value={rankFor(kind)}
@@ -321,7 +322,7 @@ function ScopedOAuthConnections({
                       return <option key={rank} value={rank}>{rank === 0 ? "Primary" : `Fallback ${rank}`}{entry ? ` — ${entry.account_email || entry.account_label || "unnamed"}` : " — not connected"}</option>;
                     })}
                     <option value={nextRank}>Add fallback {nextRank}</option>
-                  </select>
+                  </Select>
                 </label>
 
                 {/* Whose subscription this is: the name beside the fingerprint the
