@@ -450,6 +450,12 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   NATS URLs and reserved authority keys in `config.extraEnv`. The chart profile
   script passes locally and is wired into the existing Helm CI job. Runtime
   authority loading and Kubernetes verification are still outstanding.
+- A bounded server-side `kubectl get secret` reader now retrieves only the
+  named authority Secret, checks Kubernetes object identity and resource
+  version, and keeps the JSON material out of formatted or marshaled source
+  metadata. The two-case required manifest uses a disposable kubectl shim and
+  is wired into the existing Go CI job. This is source acquisition only:
+  record schema, permitted-writer and custody verification remain outstanding.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot

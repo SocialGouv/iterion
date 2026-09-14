@@ -218,6 +218,11 @@ jobs:
         # are everything but e2e; the e2e step is the only e2e run.
         run: go test -mod=vendor $(go list -mod=vendor ./... | grep -v '/e2e$')
 
+      - name: Authority Secret source contract
+        run: |
+          go test -mod=vendor -json -count=1 ./pkg/portsactivation/authority > /tmp/iterion-authority-tests.jsonl
+          node scripts/verify-port-tests.mjs pkg/portsactivation/authority/cases.json /tmp/iterion-authority-tests.jsonl
+
       - name: E2E tests
         # The ONLY run of the e2e package in this job (the unit step excludes
         # it). The number bounds a HANG, not a slow machine: a timeout that a

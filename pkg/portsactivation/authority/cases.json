@@ -1,0 +1,9 @@
+{
+  "scope": "Read-only bounded kubectl access to a named operator Secret, exact object identity and version, private JSON material, refusal of unsupported names and oversized responses. This is source loading only, not credential custody verification or distributed activation.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
+      "TestReadAuthoritySecretBindsNamedKubernetesSource",
+      "TestReadAuthoritySecretRefusesUnboundNamesAndOversizedResponses"
+    ]
+  }
+}
