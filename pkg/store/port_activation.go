@@ -243,9 +243,29 @@ func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	lock, err := acquireFileLockRetry(filepath.Join(s.root, ".port_distributed_proof_v1.lock"), "distributed proof", 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	current, err := s.LoadPortDistributedProof(ctx)
+	if err != nil {
+		return err
+	}
+	actual := uint64(0)
+	if current != nil {
+		actual = current.PolicyRevision
+	}
+	if actual != expectedPolicy {
+		return fmt.Errorf("%w: distributed proof policy changed", ErrRunConflict)
+	}
 	if proof == nil || (expectedPolicy == 0 && proof.PolicyRevision != 1) ||
-		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy) || proof.Validate() != nil {
+		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy && proof.PolicyRevision != expectedPolicy+1) {
 		return fmt.Errorf("%w: invalid distributed proof write", ErrPortActivation)
+	}
+	proof.Snapshot, err = canonicalPortSnapshot(proof.Snapshot)
+	if err != nil || proof.Validate() != nil {
+		return fmt.Errorf("%w: invalid distributed proof snapshot", ErrPortActivation)
 	}
 	raw, err := json.Marshal(proof)
 	if err != nil {

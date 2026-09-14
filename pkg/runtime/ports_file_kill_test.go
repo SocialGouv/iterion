@@ -53,6 +53,20 @@ func (s *blockingPortFileStore) PortBackendIdentity() string {
 func (s *blockingPortFileStore) VerifyPortDistributedActivation(ctx context.Context, record *store.PortActivation, now time.Time) error {
 	return verifyWrappedPortsTestActivation(ctx, s.RunStore, record, now)
 }
+func (s *blockingPortFileStore) LoadPortDistributedProof(ctx context.Context) (*store.PortDistributedProof, error) {
+	p, ok := s.RunStore.(store.PortDistributedProofStore)
+	if !ok {
+		return nil, store.ErrPortActivation
+	}
+	return p.LoadPortDistributedProof(ctx)
+}
+func (s *blockingPortFileStore) SavePortDistributedProof(ctx context.Context, revision uint64, proof *store.PortDistributedProof) error {
+	p, ok := s.RunStore.(store.PortDistributedProofStore)
+	if !ok {
+		return store.ErrPortActivation
+	}
+	return p.SavePortDistributedProof(ctx, revision, proof)
+}
 
 func (s *blockingPortFileStore) PutPortFile(ctx context.Context, ref store.PortFileRef, content io.Reader) error {
 	return store.AsPortFilesStore(s.RunStore).PutPortFile(ctx, ref, &blockAfterFirstByte{ctx: ctx, source: content, marker: s.marker})

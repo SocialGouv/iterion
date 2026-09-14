@@ -29,6 +29,20 @@ func (s *portInterruptedStore) LoadPortActivation(ctx context.Context) (*store.P
 func (s *portInterruptedStore) SavePortActivation(ctx context.Context, revision uint64, next *store.PortActivation) error {
 	return store.AsPortActivationStore(s.RunStore).SavePortActivation(ctx, revision, next)
 }
+func (s *portInterruptedStore) LoadPortDistributedProof(ctx context.Context) (*store.PortDistributedProof, error) {
+	p, ok := s.RunStore.(store.PortDistributedProofStore)
+	if !ok {
+		return nil, store.ErrPortActivation
+	}
+	return p.LoadPortDistributedProof(ctx)
+}
+func (s *portInterruptedStore) SavePortDistributedProof(ctx context.Context, revision uint64, proof *store.PortDistributedProof) error {
+	p, ok := s.RunStore.(store.PortDistributedProofStore)
+	if !ok {
+		return store.ErrPortActivation
+	}
+	return p.SavePortDistributedProof(ctx, revision, proof)
+}
 func (s *portInterruptedStore) PortBackendIdentity() string {
 	if identified, ok := s.RunStore.(interface{ PortBackendIdentity() string }); ok {
 		return identified.PortBackendIdentity()

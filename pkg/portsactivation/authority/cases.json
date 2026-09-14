@@ -17,6 +17,7 @@
       "TestAuthorityCensusAcceptsTwoIndependentlyApprovedBuilds",
       "TestAuthorityProtectedBuildsRefuseDisconnectedOldHolder",
       "TestAuthorityProtectedBuildsRefusePublishOnlyOldHolder",
+      "TestBuildDistributedProofPublishesOnlySafeObservationProjection",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",

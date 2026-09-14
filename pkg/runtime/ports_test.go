@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
@@ -174,6 +176,18 @@ func activatePortsTestStore(t *testing.T, s store.RunStore) {
 	record.CapabilityDigest = portsactivation.CapabilityDigest(record.Scope)
 	if err := store.AsPortActivationStore(s).SavePortActivation(context.Background(), 0, record); err != nil {
 		t.Fatal(err)
+	}
+	if record.Scope == store.PortActivationDistributed {
+		snapshot := []byte(`{"fixture":"distributed"}`)
+		digest := sha256.Sum256(snapshot)
+		proof := &store.PortDistributedProof{Version: store.PortDistributedProofVersion, PolicyRevision: record.Revision, ProofRevision: record.ProofRevision, AuthorityEpoch: 1, StoreIdentity: identity, ProofDigest: record.ProofDigest, ObservationDigest: strings.Repeat("b", 64), SnapshotDigest: hex.EncodeToString(digest[:]), Snapshot: snapshot, VerifiedAt: record.VerifiedAt, ExpiresAt: record.ExpiresAt}
+		ps, ok := s.(store.PortDistributedProofStore)
+		if !ok {
+			t.Fatal("distributed fixture lacks proof store")
+		}
+		if err := ps.SavePortDistributedProof(context.Background(), 0, proof); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

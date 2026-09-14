@@ -46,6 +46,14 @@ func (p *PortDistributedProof) Validate() error {
 	return nil
 }
 
+func canonicalPortSnapshot(raw json.RawMessage) (json.RawMessage, error) {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return nil, err
+	}
+	return bytes.Clone(compact.Bytes()), nil
+}
+
 func isPortDigest(value string) bool {
 	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
 }

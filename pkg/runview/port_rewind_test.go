@@ -2,6 +2,8 @@ package runview
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -172,6 +174,18 @@ func nativeRewindStore(t *testing.T, cloud bool) store.RunStore {
 	record.CapabilityDigest = portsactivation.CapabilityDigest(record.Scope)
 	if err := store.AsPortActivationStore(result).SavePortActivation(ctx, 0, record); err != nil {
 		t.Fatal(err)
+	}
+	if cloud {
+		snapshot := []byte(`{"fixture":"rewind"}`)
+		digest := sha256.Sum256(snapshot)
+		proof := &store.PortDistributedProof{Version: store.PortDistributedProofVersion, PolicyRevision: record.Revision, ProofRevision: record.ProofRevision, AuthorityEpoch: 1, StoreIdentity: identity, ProofDigest: record.ProofDigest, ObservationDigest: strings.Repeat("b", 64), SnapshotDigest: hex.EncodeToString(digest[:]), Snapshot: snapshot, VerifiedAt: record.VerifiedAt, ExpiresAt: record.ExpiresAt}
+		ps, ok := result.(store.PortDistributedProofStore)
+		if !ok {
+			t.Fatal("distributed rewind fixture lacks proof store")
+		}
+		if err := ps.SavePortDistributedProof(ctx, 0, proof); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return result
 }
