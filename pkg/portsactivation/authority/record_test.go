@@ -88,6 +88,10 @@ func TestAuthorityRecordRejectsAmbiguousOrUnaccountedCustody(t *testing.T) {
 			f["assertions"].(map[string]any)["credential_custody"] = false
 			f["assertions"].(map[string]any)["CREDENTIAL_CUSTODY"] = true
 		}},
+		{"unicode-aliased-completeness", func(f map[string]any) {
+			f["assertions"].(map[string]any)["credential_custody"] = false
+			f["assertions"].(map[string]any)["credential_cuſtody"] = true
+		}},
 		{"unknown-field", func(f map[string]any) { f["consumer_access_evidence"] = "approved" }},
 		{"missing-source", func(f map[string]any) {
 			f["brokers"].([]any)[0].(map[string]any)["sources"] = map[string]any{"entry": "missing.conf", "files": map[string]string{"main.conf": ""}}
@@ -136,5 +140,20 @@ func TestAuthorityRecordRejectsDuplicateJSONKeys(t *testing.T) {
 		if _, err := ParseRecord(SecretSource{material: raw}); err == nil || !strings.Contains(err.Error(), "duplicate") {
 			t.Fatalf("duplicate authority key was accepted or misdiagnosed: %v", err)
 		}
+	}
+}
+
+func TestAuthorityRecordPreservesCaseSensitiveSourceFiles(t *testing.T) {
+	fixture := validRecordFixture(t)
+	files := fixture["brokers"].([]any)[0].(map[string]any)["sources"].(map[string]any)["files"].(map[string]string)
+	files["A.conf"] = "port: 4222"
+	files["a.conf"] = "port: 4223"
+	record, err := parseFixture(t, fixture)
+	if err != nil {
+		t.Fatalf("case-distinct NATS source paths were rejected: %v", err)
+	}
+	got := record.Brokers[0].Sources().Files
+	if got["A.conf"] == got["a.conf"] {
+		t.Fatal("case-distinct NATS source files were collapsed")
 	}
 }

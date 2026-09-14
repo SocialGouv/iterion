@@ -339,12 +339,75 @@ func absoluteConfigPath(value string) bool {
 		!strings.Contains(value, "..") && !strings.ContainsAny(value, "\x00\n\r")
 }
 
+type recordKeyScope uint8
+
+const (
+	keyRecord recordKeyScope = iota
+	keyAssertions
+	keyQueue
+	keyBroker
+	keySources
+	keySourceFiles
+	keyCredential
+	keyHolder
+	keyIssuer
+	keyWriter
+	keyScalar
+)
+
+// Struct fields must use their exact public spelling. encoding/json silently
+// accepts Unicode case-folded aliases (including U+017F for ASCII 's'), so
+// DisallowUnknownFields is insufficient. Source filenames are different:
+// their map keys remain case-sensitive and may differ only by case.
+var recordKeys = map[recordKeyScope]map[string]recordKeyScope{
+	keyRecord: {
+		"version": keyScalar, "deployment_revision": keyScalar, "epoch": keyScalar,
+		"assertions": keyAssertions, "namespaces": keyScalar, "queue": keyQueue,
+		"brokers": keyBroker, "credentials": keyCredential, "holders": keyHolder,
+		"issuers": keyIssuer, "permitted_writers": keyWriter,
+	},
+	keyAssertions: {
+		"broker_scope": keyScalar, "configuration": keyScalar, "workload_scope": keyScalar,
+		"credential_custody": keyScalar, "issuer_scope": keyScalar, "writer_scope": keyScalar,
+	},
+	keyQueue: {
+		"account": keyScalar, "system_account": keyScalar, "stream": keyScalar,
+		"consumer": keyScalar, "dlq_stream": keyScalar, "run_subject": keyScalar,
+		"dlq_subject": keyScalar, "lock_bucket": keyScalar, "rollout_bucket": keyScalar,
+	},
+	keyBroker: {
+		"server_id": keyScalar, "server_name": keyScalar, "namespace": keyScalar,
+		"pod_name": keyScalar, "container": keyScalar, "image_digest": keyScalar,
+		"config_path": keyScalar, "sources": keySources,
+	},
+	keySources: {
+		"entry": keyScalar, "files": keySourceFiles,
+	},
+	keyCredential: {
+		"account": keyScalar, "identity": keyScalar, "holder_ids": keyScalar,
+		"issuer_ids": keyScalar,
+	},
+	keyHolder: {
+		"id": keyScalar, "kind": keyScalar, "namespace": keyScalar,
+		"workload_kind": keyScalar, "workload_name": keyScalar, "container": keyScalar,
+		"service_account": keyScalar, "image_digest": keyScalar, "build_digest": keyScalar,
+		"access_scope": keyScalar, "credential_ref": keyScalar,
+	},
+	keyIssuer: {
+		"id": keyScalar, "kind": keyScalar, "namespace": keyScalar,
+		"service_account": keyScalar, "identity": keyScalar,
+	},
+	keyWriter: {
+		"kind": keyScalar, "name": keyScalar, "namespace": keyScalar,
+	},
+}
+
 // Duplicate JSON keys are ambiguous authorization input, including within
-// nested source maps. DisallowUnknownFields alone does not reject them.
+// nested source maps. Canonical struct names also prevent decoder aliases.
 func rejectDuplicateKeys(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	var walk func(int) error
-	walk = func(depth int) error {
+	var walk func(int, recordKeyScope) error
+	walk = func(depth int, scope recordKeyScope) error {
 		if depth > 64 {
 			return fmt.Errorf("Kubernetes authority record exceeds supported depth")
 		}
@@ -362,21 +425,25 @@ func rejectDuplicateKeys(raw []byte) error {
 			for decoder.More() {
 				key, err := decoder.Token()
 				name, ok := key.(string)
-				// encoding/json also matches struct fields case-insensitively.
-				// Reject a second spelling that could overwrite an earlier
-				// authority assertion during typed decoding.
-				folded := strings.ToLower(name)
-				if err != nil || !ok || keys[folded] {
+				if err != nil || !ok || keys[name] {
 					return fmt.Errorf("Kubernetes authority record has duplicate or invalid keys")
 				}
-				keys[folded] = true
-				if err := walk(depth + 1); err != nil {
+				keys[name] = true
+				child := keyScalar
+				if scope != keySourceFiles {
+					var known bool
+					child, known = recordKeys[scope][name]
+					if !known {
+						return fmt.Errorf("Kubernetes authority record has duplicate or unsupported keys")
+					}
+				}
+				if err := walk(depth+1, child); err != nil {
 					return err
 				}
 			}
 		case '[':
 			for decoder.More() {
-				if err := walk(depth + 1); err != nil {
+				if err := walk(depth+1, scope); err != nil {
 					return err
 				}
 			}
@@ -388,7 +455,7 @@ func rejectDuplicateKeys(raw []byte) error {
 		}
 		return nil
 	}
-	if err := walk(0); err != nil {
+	if err := walk(0, keyRecord); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
