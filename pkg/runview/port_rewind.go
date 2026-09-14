@@ -15,7 +15,7 @@ import (
 // CAS. Physical immutable output captures remain available for audit, but no
 // invalidated publication can satisfy a later consumer or workflow export.
 func (s *Service) rewindPortRun(ctx context.Context, run *store.Run, spec RewindSpec) (*RewindResult, error) {
-	if err := portsactivation.RequireExistingAdmission(s.store, run); err != nil {
+	if err := portsactivation.RequireExistingAdmission(ctx, s.store, run); err != nil {
 		return nil, err
 	}
 	if !run.Status.CanNativeResume() {

@@ -76,7 +76,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			if err := e.checkNativeSemanticIdentity(runID, current); err != nil {
 				return err
 			}
-			if err := portsactivation.RequireExistingAdmission(e.store, current); err != nil {
+			if err := portsactivation.RequireExistingAdmission(ctx, e.store, current); err != nil {
 				return err
 			}
 			if current.PortExecution != nil {
@@ -85,19 +85,28 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		} else if !errors.Is(loadErr, store.ErrRunNotFound) {
 			return loadErr
 		} else {
+			if e.workflow.RuntimeSemantics == store.RuntimeSemanticsLegacyAdapterV1 && !store.IsNativeRunID(e.parentRunID) {
+				return fmt.Errorf("runtime: new legacy adapter requires a native parent: %w", store.ErrRunSemantics)
+			}
 			// A pre-created queued/running record was admitted by its launch
 			// authority. Rollback stops only new launches; work already
 			// accepted before rollback must still be claimable.
-			ctx, err = portsactivation.AdmittedContext(ctx, e.store, e.workflow.RuntimeSemantics, runID)
+			if store.IsNativeRunID(e.parentRunID) {
+				ctx, err = portsactivation.AdmittedChildContext(ctx, e.store, e.parentRunID, runID, e.workflow.RuntimeSemantics)
+			} else {
+				ctx, err = portsactivation.AdmittedContext(ctx, e.store, e.workflow.RuntimeSemantics, runID)
+			}
 			if err != nil {
 				return err
 			}
 		}
-		inputs, err = e.nativeRootInputs(inputs)
-		if err != nil {
-			return err
+		if e.workflow.RuntimeSemantics == ir.RuntimeSemanticsPortsV1 {
+			inputs, err = e.nativeRootInputs(inputs)
+			if err != nil {
+				return err
+			}
 		}
-		ctx = store.WithRuntimeSemantics(ctx, ir.RuntimeSemanticsPortsV1)
+		ctx = store.WithRuntimeSemantics(ctx, e.workflow.RuntimeSemantics)
 	}
 	run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
@@ -294,7 +303,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			if err := e.checkNativeSemanticIdentity(runID, existing); err != nil {
 				return nil, err
 			}
-			if err := portsactivation.RequireExistingAdmission(e.store, existing); err != nil {
+			if err := portsactivation.RequireExistingAdmission(ctx, e.store, existing); err != nil {
 				return nil, err
 			}
 		}
@@ -343,8 +352,12 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// `subbot` node. Service.Launch already closed it the same way.
 		var created *store.Run
 		var err error
-		if pc := store.AsParentedRunCreator(e.store); pc != nil && e.parentRunID != "" {
-			created, err = pc.CreateChildRun(ctx, runID, e.workflow.Name, e.parentRunID, inputs)
+		parentedCreator := store.AsParentedRunCreator(e.store)
+		if store.IsNativeRunID(runID) && e.parentRunID != "" && parentedCreator == nil {
+			return nil, fmt.Errorf("runtime: native child requires atomic parented creation: %w", store.ErrRunSemantics)
+		}
+		if parentedCreator != nil && e.parentRunID != "" {
+			created, err = parentedCreator.CreateChildRun(ctx, runID, e.workflow.Name, e.parentRunID, inputs)
 		} else {
 			created, err = e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
 		}

@@ -241,7 +241,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		if openErr != nil {
 			return openErr
 		}
-		if err := portsactivation.RequireLaunch(ctx, activationStore, wf.RuntimeSemantics, runID); err != nil {
+		if err := requireNativeCLIStart(ctx, activationStore, wf.RuntimeSemantics, runID); err != nil {
 			return err
 		}
 	} else if err := store.ValidateRunID(runID); err != nil {

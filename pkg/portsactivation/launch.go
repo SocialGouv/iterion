@@ -77,13 +77,43 @@ func AdmittedContext(ctx context.Context, s store.RunStore, semantics, runID str
 	return store.WithPortLaunchAdmission(ctx, admission), nil
 }
 
+// AdmittedChildContext carries a native parent's immutable admission into a
+// child. Descendants are work already admitted by that root: disabling new
+// roots or letting its short-lived proof expire must not strand them.
+func AdmittedChildContext(ctx context.Context, s store.RunStore, parentID, childID, semantics string) (context.Context, error) {
+	if !store.IsNativeRunID(parentID) || !store.IsNativeRunID(childID) ||
+		(semantics != store.RuntimeSemanticsPortsV1 && semantics != store.RuntimeSemanticsLegacyAdapterV1) {
+		return nil, fmt.Errorf("%w: native child requires a supported parent and interpreter", store.ErrPortActivation)
+	}
+	if err := store.ValidateRunID(childID); err != nil {
+		return nil, err
+	}
+	parent, err := s.LoadRun(ctx, parentID)
+	if err != nil || parent == nil || parent.Status != store.RunStatusRunning {
+		return nil, fmt.Errorf("%w: native child has no running admitted parent", store.ErrPortActivation)
+	}
+	if err := RequireExistingAdmission(ctx, s, parent); err != nil {
+		return nil, err
+	}
+	copy := *parent.PortLaunch
+	return store.WithPortLaunchAdmission(ctx, &copy), nil
+}
+
 // RequireExistingAdmission admits only a run that carries the immutable
 // proof observed when it was created. A rollback or proof refresh can then
 // stop new launches without stranding already accepted work.
-func RequireExistingAdmission(s store.RunStore, r *store.Run) error {
+func RequireExistingAdmission(ctx context.Context, s store.RunStore, r *store.Run) error {
+	return requireExistingAdmission(ctx, s, r, make(map[string]bool), 0)
+}
+
+func requireExistingAdmission(ctx context.Context, s store.RunStore, r *store.Run, seen map[string]bool, depth int) error {
 	if r == nil || r.PortLaunch == nil {
 		return fmt.Errorf("%w: native run has no launch admission", store.ErrPortActivation)
 	}
+	if depth >= 32 || seen[r.ID] || !store.IsNativeRunID(r.ID) || store.ValidateRunID(r.ID) != nil {
+		return fmt.Errorf("%w: native admission lineage is invalid", store.ErrPortActivation)
+	}
+	seen[r.ID] = true
 	a := r.PortLaunch
 	if err := a.Validate(); err != nil {
 		return err
@@ -101,9 +131,29 @@ func RequireExistingAdmission(s store.RunStore, r *store.Run) error {
 		compatible = true
 	}
 	if err != nil || a.Scope != scope || a.StoreIdentity != identity || !compatible ||
-		r.RuntimeSemantics != ir.RuntimeSemanticsPortsV1 || r.FormatVersion != store.NativeRunFormatVersion ||
-		r.CreatedAt.Before(a.AdmittedAt) || !r.CreatedAt.Before(a.ExpiresAt) {
+		r.FormatVersion != store.NativeRunFormatVersion || r.CreatedAt.Before(a.AdmittedAt) {
 		return fmt.Errorf("%w: native run admission does not match this store, runtime or creation time", store.ErrPortActivation)
 	}
-	return nil
+	if r.ParentRunID == "" || !store.IsNativeRunID(r.ParentRunID) {
+		if r.RuntimeSemantics != ir.RuntimeSemanticsPortsV1 || !r.CreatedAt.Before(a.ExpiresAt) {
+			return fmt.Errorf("%w: native root is not admitted under its proof", store.ErrPortActivation)
+		}
+		return nil
+	}
+	if r.RuntimeSemantics != store.RuntimeSemanticsPortsV1 && r.RuntimeSemantics != store.RuntimeSemanticsLegacyAdapterV1 {
+		return fmt.Errorf("%w: native child has an unsupported interpreter", store.ErrPortActivation)
+	}
+	parent, err := s.LoadRun(ctx, r.ParentRunID)
+	if err != nil || parent == nil || r.CreatedAt.Before(parent.CreatedAt) ||
+		parent.PortLaunch == nil || !sameLaunchAdmission(a, parent.PortLaunch) {
+		return fmt.Errorf("%w: native child cannot inherit its parent's admission", store.ErrPortActivation)
+	}
+	return requireExistingAdmission(ctx, s, parent, seen, depth+1)
+}
+
+func sameLaunchAdmission(a, b *store.PortLaunchAdmission) bool {
+	return a.Version == b.Version && a.Scope == b.Scope && a.StoreIdentity == b.StoreIdentity &&
+		a.ProofDigest == b.ProofDigest && a.CapabilityDigest == b.CapabilityDigest &&
+		a.ResumeDigest == b.ResumeDigest && a.ActivationRevision == b.ActivationRevision &&
+		a.AdmittedAt.Equal(b.AdmittedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
 }

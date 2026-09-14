@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/portsactivation"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -81,7 +82,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		if err := e.checkNativeSemanticIdentity(runID, r); err != nil {
 			return err
 		}
-		return e.resumePortRun(ctx, r, answers)
+		if r.RuntimeSemantics == ir.RuntimeSemanticsPortsV1 {
+			return e.resumePortRun(ctx, r, answers)
+		}
+		if err := portsactivation.RequireExistingAdmission(ctx, e.store, r); err != nil {
+			return err
+		}
 	}
 	// Re-run the same context admission before any resume claim, workspace
 	// restoration or answer side effect. A denial leaves the resumable status

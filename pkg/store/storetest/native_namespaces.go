@@ -174,6 +174,17 @@ func RunNativeNamespaces(t *testing.T, factory Factory) {
 		if _, err := creator.CreateChildRun(adapter, "pc1_child", "adapter", "pc1_parent", nil); err != nil {
 			t.Fatal(err)
 		}
+		child, err := s.LoadRun(ctx, "pc1_child")
+		if err != nil {
+			t.Fatal(err)
+		}
+		child.ParentRunID = "pc1_different_parent"
+		if err := s.SaveRun(ctx, child); !errors.Is(err, store.ErrRunSemantics) {
+			t.Fatalf("native adapter changed its parent: %v", err)
+		}
+		if _, err := s.CreateRun(adapter, "pc1_orphan_adapter", "adapter", nil); !errors.Is(err, store.ErrRunSemantics) {
+			t.Fatalf("native adapter without a parent: %v", err)
+		}
 		if _, err := creator.CreateChildRun(testCtx(), "escaped_child", "legacy", "pc1_parent", nil); !errors.Is(err, store.ErrRunSemantics) {
 			t.Fatalf("child escaped: %v", err)
 		}

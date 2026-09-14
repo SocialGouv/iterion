@@ -339,7 +339,16 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	if wf.RuntimeSemantics != "" {
 		createCtx = store.WithRuntimeSemantics(createCtx, wf.RuntimeSemantics)
 	}
-	created, err := s.store.CreateRun(createCtx, runID, wf.Name, inputs)
+	parentedCreator := store.AsParentedRunCreator(s.store)
+	if store.IsNativeRunID(runID) && spec.ParentRunID != "" && parentedCreator == nil {
+		return nil, fmt.Errorf("runview: native child requires atomic parented creation: %w", store.ErrRunSemantics)
+	}
+	var created *store.Run
+	if spec.ParentRunID != "" && parentedCreator != nil {
+		created, err = parentedCreator.CreateChildRun(createCtx, runID, wf.Name, spec.ParentRunID, inputs)
+	} else {
+		created, err = s.store.CreateRun(createCtx, runID, wf.Name, inputs)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("runview: create run: %w", err)
 	}
@@ -348,7 +357,9 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// leaves a scheduled run reading as "manual" and invisible to the
 	// overlap gate's source.schedule_id query.
 	if spec.ParentRunID != "" || spec.SourceRef != nil {
-		created.ParentRunID = spec.ParentRunID
+		if spec.ParentRunID != "" && created.ParentRunID == "" {
+			created.ParentRunID = spec.ParentRunID
+		}
 		if spec.SourceRef != nil {
 			src := *spec.SourceRef
 			created.Source = &src

@@ -52,7 +52,7 @@ func main() {
 		if _, err := portsactivation.Disable(ctx, s); err != nil {
 			panic(err)
 		}
-		if err := portsactivation.RequireExistingAdmission(s, run); err != nil {
+		if err := portsactivation.RequireExistingAdmission(ctx, s, run); err != nil {
 			panic(err)
 		}
 		fmt.Println("compatible build recovery admitted after rollback")

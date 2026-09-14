@@ -162,6 +162,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		}
 		runID = generated
 	}
+	// A parent ID supplied through Launch is not proof that this request is
+	// one of the parent's compiled descendants. Native composition needs its
+	// own verified call path before it may inherit admission.
+	if store.IsNativeRunID(spec.ParentRunID) {
+		return nil, fmt.Errorf("runview: native child requires verified composition: %w", store.ErrRunSemantics)
+	}
 	if err := portsactivation.RequireLaunch(parent, s.store, wf.RuntimeSemantics, runID); err != nil {
 		return nil, err
 	}
@@ -269,7 +275,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		if accepted.RuntimeSemantics != wf.RuntimeSemantics {
 			return nil, fmt.Errorf("%w: queued run and source use different interpreters", store.ErrRunSemantics)
 		}
-		if err := portsactivation.RequireExistingAdmission(s.store, accepted); err != nil {
+		if err := portsactivation.RequireExistingAdmission(parent, s.store, accepted); err != nil {
 			return nil, err
 		}
 	}
@@ -815,6 +821,8 @@ func (s *Service) spawnRun(
 		if parentRunID != "" {
 			if pc := store.AsParentedRunCreator(s.store); pc != nil {
 				_, createErr = pc.CreateChildRun(createCtx, runID, wf.Name, parentRunID, precreateInputs)
+			} else if store.IsNativeRunID(runID) {
+				createErr = fmt.Errorf("runview: native child requires atomic parented creation: %w", store.ErrRunSemantics)
 			} else {
 				var created *store.Run
 				created, createErr = s.store.CreateRun(createCtx, runID, wf.Name, precreateInputs)

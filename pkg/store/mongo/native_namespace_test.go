@@ -141,7 +141,7 @@ func TestNativeLegacyAdmissionMongoRemainsReadable(t *testing.T) {
 	if err != nil || loaded.PortLaunch == nil || loaded.PortLaunch.Version != 0 || loaded.PortLaunch.ResumeDigest != "" {
 		t.Fatalf("old native record unreadable: %+v %v", loaded, err)
 	}
-	if err := portsactivation.RequireExistingAdmission(s, loaded); err != nil {
+	if err := portsactivation.RequireExistingAdmission(ctx, s, loaded); err != nil {
 		t.Fatalf("compatible old admission refused recovery: %v", err)
 	}
 	if err := s.SaveRun(ctx, loaded); err != nil {

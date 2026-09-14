@@ -1,5 +1,5 @@
 {
-  "scope": "Actual Engine scheduling and recovery through filesystem and real Mongo RunStore: data DAG, mapped values, publication, optional inputs, bounded correction, interruption and manual/idempotent effect recovery. File provenance, verifier handlers, nested admission, deployment barrier and authoring surfaces remain separate outstanding acceptance requirements.",
+  "scope": "Actual Engine scheduling and recovery through filesystem and real Mongo RunStore: data DAG, mapped values, publication, optional inputs, bounded correction, interruption, manual/idempotent effect recovery, and a legacy-control adapter child inheriting native admission across rollback. Public composition, shared descendant budgets, full file provenance, production verifier handlers, deployment barrier and authoring surfaces remain separate outstanding acceptance requirements.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/runtime": [
       "TestPortsEngineFilesystem",
@@ -74,7 +74,9 @@
       "TestNativeProcessKillRecoveryMongo",
       "TestNativeFileCaptureKillRecoveryFilesystem",
       "TestNativeFileCaptureKillRecoveryMongo",
-      "TestNativeManualDistributedEvidenceCannotAuthorizeMongo"
+      "TestNativeManualDistributedEvidenceCannotAuthorizeMongo",
+      "TestNativeLegacyAdapterPauseResumeFilesystem",
+      "TestNativeLegacyAdapterPauseResumeMongo"
     ]
   }
 }

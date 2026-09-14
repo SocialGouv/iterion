@@ -105,7 +105,7 @@ func TestNativeLegacyAdmissionFilesystemRemainsReadable(t *testing.T) {
 	if ids, err := s.ListRuns(ctx); err != nil || !reflect.DeepEqual(ids, []string{id}) {
 		t.Fatalf("old native record hidden from list: %v %v", ids, err)
 	}
-	if err := portsactivation.RequireExistingAdmission(s, loaded); err != nil {
+	if err := portsactivation.RequireExistingAdmission(ctx, s, loaded); err != nil {
 		t.Fatalf("compatible old admission refused recovery: %v", err)
 	}
 	if err := s.SaveRun(ctx, loaded); err != nil {

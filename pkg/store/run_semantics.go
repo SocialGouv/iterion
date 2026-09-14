@@ -110,6 +110,9 @@ func ValidateRunSemantics(r *Run) error {
 		}
 	}
 	if IsNativeRunID(r.ID) {
+		if r.RuntimeSemantics == RuntimeSemanticsLegacyAdapterV1 && !IsNativeRunID(r.ParentRunID) {
+			return fmt.Errorf("store: native legacy adapter %s requires a native parent: %w", r.ID, ErrRunSemantics)
+		}
 		if r.PortLaunch != nil {
 			if err := r.PortLaunch.Validate(); err != nil {
 				return err
@@ -161,6 +164,9 @@ func CheckRunSemanticIdentity(current, next *Run) error {
 	}
 	if IsNativeRunID(current.ID) && !samePortLaunchAdmission(current.PortLaunch, next.PortLaunch) {
 		return fmt.Errorf("store: cannot change native admission of run %s: %w", current.ID, ErrRunSemantics)
+	}
+	if IsNativeRunID(current.ID) && current.ParentRunID != next.ParentRunID {
+		return fmt.Errorf("store: cannot change native parent of run %s: %w", current.ID, ErrRunSemantics)
 	}
 	if IsNativeRunID(current.ID) && current.CASVersion != next.CASVersion {
 		return fmt.Errorf("store: run %s changed during native update: %w", current.ID, ErrRunConflict)

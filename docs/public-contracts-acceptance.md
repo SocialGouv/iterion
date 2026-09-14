@@ -25,17 +25,37 @@ Syntax profiles and runtime semantics are independent.
 | Full native storage namespace and old-writer exclusion | Actual supported old mutators cannot change native closure or blobs | Store routing, no-shadow-fallback and actual old FS/Mongo/S3 executable checks pass; workspaces and deployment protection outstanding |
 | Versioned queue and semantic identity | Delayed work, mixed consumers and no forced semantic downgrade | Queue v15 rejects older executable consumers; Engine refuses interpreter changes, including forced resume. Runner now treats a queued native run with durable `PortExecution` as a resume on redelivery; complete consumer inventory and real mixed-fleet delivery proof remain outstanding |
 | Capability census and activation barrier | Positive local/distributed activation, unknown/stale refusals, epoch invalidation | Local scope proof and store-bound admission pass; production Mongo now refuses manually populated distributed evidence without a trusted verifier. NATS system/Kubernetes census, ACL reconciliation and positive distributed activation remain outstanding |
-| Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation and two-build admission continuation pass; distributed rollback outstanding |
-| Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | Unverified nested/control nodes now fail compilation; composition and adapters outstanding |
+| Rollback | New root launches stop; existing compatible executions remain resumable | Local deactivation, two-build continuation and inherited admission for native descendants after disablement or proof expiry pass; distributed rollback outstanding |
+| Native composition and verified legacy adapters | Captured child dependencies, inherited policies, unchanged legacy traces | An internal legacy-control adapter child now runs and resumes in the native namespace under its parent's immutable admission on FS/Mongo; public adapter verification, child-source capture and shared root admission remain outstanding |
 | Incomplete conversion assistance | Draft remains incomplete until required mappings/effects/guarantees verified | Legacy validation now returns sorted candidate inputs/nodes with explicit unresolved mapping, effect and file gaps; verified conversion and adapters remain outstanding |
 | Studio/API/CLI/Copi | Actual browser and API document round trips, four views, map/cost visibility | Studio public/technical graph editing, API/CLI public projection, MCP local read/write and validation, and real Chromium save pass. MCP offers registry-backed public syntax with technical kinds and complete source on demand; Studio distinguishes mapped, whole-array and broadcast bindings. CLI inspect and MCP run get summarize native invocation/map/product status and reported usage, with unknown cost called out. A real Copi authoring session, bundles, full runtime cost attribution and composition remain outstanding |
 | Registry and authoring documentation | Parser/registry/EBNF conformance, generated docs and skills | Passing for the contract/compiler layer; further surfaces outstanding |
 | Legacy non-regression | Corpus plus deterministic order/count/budget/checkpoint/empty-fanout traces | Full `task test` passes with its declared shell prerequisites installed. Actual pinned-main and current binaries produce equal deterministic status, count, budget, checkpoint, join and empty-fanout traces. All 117 `.bot` files in the three reference projects validate with unchanged diagnostics; project-specific execution traces remain outstanding |
 | Shorts/Town/Tabarria representative pilots | Committed thresholds before measurements, equivalent legacy baseline and conversion report | Version-3 structural slices pass 9/9 after threshold `3d933d067` and fixture `9e627ac0e`; 13/13 named cases pass with and without race instrumentation. Native is slower on short fake jobs; full source conversion, media outputs and measured AI cost remain outstanding |
-| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 72 store, 73 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
+| Required tests really execute | Real Mongo and Playwright; expected-case manifest rejects missing/skipped cases | Race-instrumented manifests pass 72 store, 75 Engine and 3 legacy-trace cases with real Mongo and pinned old binaries; all 33 Playwright Chromium cases pass, including the native Studio round trip; complete feature acceptance remains outstanding |
 | Reviewable PR targeting main | Layered commits, scoped diff, current PR checks/review and evidence links | Outstanding |
 
 ## Evidence recorded during implementation
+
+- Native child admission now follows a bounded, ID-linked run lineage to the
+  originally admitted root. A new root still needs a fresh activation, while
+  descendants inherit the root's immutable proof after Disable or expiry.
+  The internal `legacy-adapter-v1` interpreter executes legacy control flow
+  within the native run namespace; a paused human gate resumes under a fresh
+  Engine on filesystem and real Mongo without a native ports checkpoint.
+  A public `LaunchSpec.ParentRunID` cannot claim this inheritance without a
+  verified composition path. The CLI preflight accepts an already admitted
+  native row after rollback, but still refuses a new root. This does not yet
+  expose a verified public adapter node or share root budgets and permits with
+  executable descendants.
+  The race-instrumented Engine manifest verifies 75 cases and the activation
+  manifest verifies 30 cases without skips, with real Mongo, NATS and pinned
+  legacy executables where required.
+- The NATS capability heartbeat now lets an already-started broker PUT return
+  under its bounded operation timeout before cleanup, rather than discarding
+  its revision solely because shutdown began. Its real-broker cancellation test
+  passed 40 consecutive race-instrumented runs; the full NATS package and
+  `go vet` passed afterward.
 
 - Studio's native connection picker now excludes known contradictions in
   requiredness, nullability, array bounds and file media types, plus duplicate
@@ -164,7 +184,7 @@ Syntax profiles and runtime semantics are independent.
   evidence that the effect did not occur allows replay. Unknown or empty
   evidence leaves the invocation uncertain. A default executor without the
   capability refuses admission before dispatch. The final race JSON manifest
-  verifies 72 store and 73 Engine cases without skips.
+  verifies 72 store and 75 Engine cases without skips.
 - `TestNativeProcessKillRecoveryFilesystem` and its Mongo counterpart kill a
   separate test process after the effect-dispatched checkpoint. After an
   explicit supervisor-equivalent status transition, resume refuses to replay
@@ -238,7 +258,7 @@ Syntax profiles and runtime semantics are independent.
 - A raw production Mongo Store refuses a hand-written distributed activation
   record even if its queue version and `consumer_access_evidence` are filled.
   The isolated Engine fixture injects an explicit verifier; a future-dated
-  proof is rejected. The full race-instrumented Engine manifest passes 73
+  proof is rejected. The full race-instrumented Engine manifest passes 75
   cases on filesystem and real Mongo without skips. This is a fail-closed
   seam, not a positive deployment census.
 - `task test` passed after adding `jq` and `python3` to the disposable devbox

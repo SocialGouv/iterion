@@ -92,3 +92,43 @@ func TestLaunchNativeDefaultOffAndActivatedLocal(t *testing.T) {
 		t.Fatalf("native launch ended with %+v", run)
 	}
 }
+
+func TestLaunchNativeChildRequiresVerifiedComposition(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "echo.bot")
+	if err := os.WriteFile(path, []byte(launchPortsBot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(dir), WithSandboxDefault("none"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	proof, err := portsactivation.ProbeLocal(ctx, svc.store, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := portsactivation.ActivateLocal(ctx, svc.store, *proof); err != nil {
+		t.Fatal(err)
+	}
+	rootCtx, err := portsactivation.AdmittedContext(ctx, svc.store, store.RuntimeSemanticsPortsV1, "pc1_launch_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.store.CreateRun(store.WithRuntimeSemantics(rootCtx, store.RuntimeSemanticsPortsV1),
+		"pc1_launch_parent", "root", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := portsactivation.Disable(ctx, svc.store); err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Launch(ctx, LaunchSpec{FilePath: path, RunID: "pc1_launch_child", ParentRunID: root.ID,
+		Vars: map[string]string{"value": "hello"}})
+	if !errors.Is(err, store.ErrRunSemantics) {
+		t.Fatalf("unverified public child launch inherited admission: %v", err)
+	}
+	if _, err := svc.store.LoadRun(ctx, "pc1_launch_child"); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("refused native child still created a run: %v", err)
+	}
+}

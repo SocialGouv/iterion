@@ -74,21 +74,21 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 		t.Fatalf("rollback allowed native launch: %v", err)
 	}
 	run, err := s.LoadRun(ctx, native)
-	if err != nil || run.PortLaunch == nil || RequireExistingAdmission(s, run) != nil {
+	if err != nil || run.PortLaunch == nil || RequireExistingAdmission(ctx, s, run) != nil {
 		t.Fatalf("accepted run lost proof after rollback: %+v %v", run, err)
 	}
-	if err := RequireExistingAdmission(other, run); !errors.Is(err, store.ErrPortActivation) {
+	if err := RequireExistingAdmission(ctx, other, run); !errors.Is(err, store.ErrPortActivation) {
 		t.Fatalf("accepted run moved to another store: %v", err)
 	}
 	tampered := *run
 	tampered.PortLaunch = nil
-	if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
+	if err := RequireExistingAdmission(ctx, s, &tampered); !errors.Is(err, store.ErrPortActivation) {
 		t.Fatalf("bare native ID counted as prior admission: %v", err)
 	}
 	changed := *run.PortLaunch
 	changed.ResumeDigest = strings.Repeat("0", 64)
 	tampered.PortLaunch = &changed
-	if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
+	if err := RequireExistingAdmission(ctx, s, &tampered); !errors.Is(err, store.ErrPortActivation) {
 		t.Fatalf("changed resume compatibility retained admission: %v", err)
 	}
 	if err := s.SaveRun(ctx, &tampered); !errors.Is(err, store.ErrRunSemantics) {
@@ -102,7 +102,7 @@ func TestLaunchIdentityAndActivation(t *testing.T) {
 		candidate := *run.PortLaunch
 		candidate.Version, candidate.ResumeDigest = invalid.Version, invalid.ResumeDigest
 		tampered.PortLaunch = &candidate
-		if err := RequireExistingAdmission(s, &tampered); !errors.Is(err, store.ErrPortActivation) {
+		if err := RequireExistingAdmission(ctx, s, &tampered); !errors.Is(err, store.ErrPortActivation) {
 			t.Fatalf("malformed admission version %d accepted: %v", invalid.Version, err)
 		}
 	}

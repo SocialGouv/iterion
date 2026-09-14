@@ -36,17 +36,24 @@ func (e *Engine) checkNativeSemanticIdentity(runID string, run *store.Run) error
 		return fmt.Errorf("runtime: missing workflow")
 	}
 	semantics := e.workflow.RuntimeSemantics
-	if semantics != "" && semantics != ir.RuntimeSemanticsPortsV1 {
+	if semantics != "" && semantics != ir.RuntimeSemanticsPortsV1 && semantics != store.RuntimeSemanticsLegacyAdapterV1 {
 		return fmt.Errorf("runtime: unsupported workflow semantics %q: %w", semantics, store.ErrRunSemantics)
 	}
 	if err := store.ValidateRunID(runID); err != nil {
 		return err
 	}
-	if (semantics == ir.RuntimeSemanticsPortsV1) != store.IsNativeRunID(runID) {
+	if (semantics == ir.RuntimeSemanticsPortsV1 || semantics == store.RuntimeSemanticsLegacyAdapterV1) != store.IsNativeRunID(runID) {
 		return fmt.Errorf("runtime: workflow and run %s select different interpreters: %w", runID, store.ErrRunSemantics)
+	}
+	if semantics == store.RuntimeSemanticsLegacyAdapterV1 &&
+		(e.workflow.Ports != nil || run != nil && !store.IsNativeRunID(run.ParentRunID)) {
+		return fmt.Errorf("runtime: legacy adapter requires a native parent and legacy control graph: %w", store.ErrRunSemantics)
 	}
 	if run != nil && run.RuntimeSemantics != semantics {
 		return fmt.Errorf("runtime: run %s cannot change interpreter, including with --force: %w", runID, store.ErrRunSemantics)
+	}
+	if run != nil && e.parentRunID != "" && run.ParentRunID != e.parentRunID {
+		return fmt.Errorf("runtime: run %s cannot change native parent lineage: %w", runID, store.ErrRunSemantics)
 	}
 	return nil
 }

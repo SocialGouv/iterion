@@ -21,7 +21,7 @@ var ErrPortEffectUncertain = errors.New("runtime: native effect outcome requires
 // captured identity before admission, answers, workspace setup or any claim.
 // The same Engine infrastructure then restores the execution environment.
 func (e *Engine) resumePortRun(ctx context.Context, r *store.Run, answers map[string]any) (resultErr error) {
-	if err := portsactivation.RequireExistingAdmission(e.store, r); err != nil {
+	if err := portsactivation.RequireExistingAdmission(ctx, e.store, r); err != nil {
 		return err
 	}
 	if len(answers) != 0 {

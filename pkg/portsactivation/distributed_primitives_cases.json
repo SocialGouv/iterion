@@ -1,9 +1,11 @@
 {
-  "scope": "Policy/freshness CAS and authority fencing on real Mongo; capability heartbeat, retention and pinned-main schema preservation on real NATS. Does not establish effective ACLs, credential custody, production authority verification, or positive distributed activation.",
+  "scope": "Policy/freshness CAS and authority fencing on real Mongo; capability heartbeat, retention and pinned-main schema preservation on real NATS; local descendant admission and public-launch exclusion. Does not establish effective ACLs, credential custody, production authority verification, or positive distributed activation.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation": [
       "TestLocalProbeActivateAndRollback",
-      "TestNativeAdmissionSurvivesCompatibleBuildUpgrade"
+      "TestNativeAdmissionSurvivesCompatibleBuildUpgrade",
+      "TestNativeChildInheritsRootAdmissionAcrossRollbackAndExpiry",
+      "TestNativeChildAdmissionRefusesBrokenLineage"
     ],
     "github.com/SocialGouv/iterion/pkg/store": [
       "TestNativeActivationFilesystem",
@@ -34,6 +36,12 @@
       "TestPortCensusPrunesOnlyRetiredSubjects",
       "TestPortCensusHeartbeatCleansUpOnCancellation",
       "TestPortCensusLegacyEnsureSchemaPreservesKeys"
+    ],
+    "github.com/SocialGouv/iterion/pkg/runview": [
+      "TestLaunchNativeChildRequiresVerifiedComposition"
+    ],
+    "github.com/SocialGouv/iterion/pkg/cli": [
+      "TestNativeCLIStartKeepsAcceptedRunAfterRollback"
     ]
   }
 }

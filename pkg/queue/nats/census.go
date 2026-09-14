@@ -273,7 +273,10 @@ func (c *Conn) RunPortCapabilityHeartbeat(ctx context.Context, p PortInstanceCap
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// A shutdown may race a broker-committed PUT before its revision is
+		// returned. Finish this already-started write under a bounded context
+		// so cleanup knows the exact revision it may safely delete.
+		opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		written, err := c.PublishPortCapability(opCtx, p)
 		cancel()
 		if err == nil {
