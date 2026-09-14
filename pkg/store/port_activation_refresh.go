@@ -1,12 +1,54 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 )
+
+const PortDistributedProofVersion = 1
+
+// PortDistributedProof is the trusted server's safe projection of one
+// privileged deployment observation. Snapshot contains no credential-bearing
+// URLs or NATS/Kubernetes source bytes; its digest binds the exact JSON.
+type PortDistributedProof struct {
+	Version           int             `json:"version" bson:"version"`
+	PolicyRevision    uint64          `json:"policy_revision" bson:"policy_revision"`
+	ProofRevision     uint64          `json:"proof_revision" bson:"proof_revision"`
+	AuthorityEpoch    uint64          `json:"authority_epoch" bson:"authority_epoch"`
+	StoreIdentity     string          `json:"store_identity" bson:"store_identity"`
+	ProofDigest       string          `json:"proof_digest" bson:"proof_digest"`
+	ObservationDigest string          `json:"observation_digest" bson:"observation_digest"`
+	SnapshotDigest    string          `json:"snapshot_digest" bson:"snapshot_digest"`
+	Snapshot          json.RawMessage `json:"snapshot" bson:"snapshot"`
+	VerifiedAt        time.Time       `json:"verified_at" bson:"verified_at"`
+	ExpiresAt         time.Time       `json:"expires_at" bson:"expires_at"`
+}
+
+func (p *PortDistributedProof) Validate() error {
+	if p == nil || p.Version != PortDistributedProofVersion || p.PolicyRevision == 0 || p.ProofRevision == 0 ||
+		p.AuthorityEpoch == 0 || p.StoreIdentity == "" || !isPortDigest(p.ProofDigest) ||
+		!isPortDigest(p.ObservationDigest) || !isPortDigest(p.SnapshotDigest) || len(p.Snapshot) == 0 ||
+		len(p.Snapshot) > 1<<20 || !json.Valid(p.Snapshot) || p.VerifiedAt.IsZero() ||
+		!p.ExpiresAt.After(p.VerifiedAt) || p.ExpiresAt.After(p.VerifiedAt.Add(PortDistributedProofMaxAge)) {
+		return fmt.Errorf("%w: malformed distributed proof snapshot", ErrPortActivation)
+	}
+	sum := sha256.Sum256(bytes.TrimSpace(p.Snapshot))
+	if hex.EncodeToString(sum[:]) != p.SnapshotDigest {
+		return fmt.Errorf("%w: distributed proof snapshot digest mismatch", ErrPortActivation)
+	}
+	return nil
+}
+
+func isPortDigest(value string) bool {
+	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
+}
 
 // PortActivationRefreshLease carries the current NATS KV lease revision into
 // the activation document's CAS boundary. A refresher must renew its existing
@@ -66,4 +108,11 @@ type PortActivationRefreshStore interface {
 // freshness revisions. Implementations leave the latest observations intact.
 type PortActivationDisabler interface {
 	DisablePortActivation(context.Context, uint64) (*PortActivation, error)
+}
+
+// PortDistributedProofStore is the backend for an immutable authority
+// snapshot. Only the trusted server path may write it.
+type PortDistributedProofStore interface {
+	LoadPortDistributedProof(context.Context) (*PortDistributedProof, error)
+	SavePortDistributedProof(context.Context, uint64, *PortDistributedProof) error
 }

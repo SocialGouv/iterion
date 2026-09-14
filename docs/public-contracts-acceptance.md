@@ -548,6 +548,13 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   exhaustive custody and evidence that each approved immutable build was
   actually tested. Per-principal KV write ACLs, production census reading,
   complete authorization proof and admission remain outstanding.
+- Stores now expose a versioned distributed-proof snapshot seam with majority
+  Mongo reads/writes and atomic filesystem publication. The snapshot is
+  digest-bound to its policy/proof revision, authority epoch, backend and
+  observation; malformed, oversized or tampered JSON is refused. The seam is
+  deliberately write-restricted by contract, and no production server handler
+  or verifier yet mints such a snapshot, so distributed admission remains
+  disabled.
 - Cloud server and runner queue connections now use distinct bounded NATS
   diagnostic names (`iterion-server` and `iterion-runner`). A real broker
   connection test checks the names supplied to NATS. These names are not

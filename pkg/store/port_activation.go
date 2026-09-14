@@ -127,6 +127,16 @@ func verifyPortDistributedActivation(ctx context.Context, s RunStore, record *Po
 	if err := verifier.VerifyPortDistributedActivation(ctx, record, now); err != nil {
 		return fmt.Errorf("%w: distributed access verification failed: %v", ErrPortActivation, err)
 	}
+	proofStore, ok := s.(PortDistributedProofStore)
+	if !ok {
+		return fmt.Errorf("%w: no trusted distributed proof snapshot", ErrPortActivation)
+	}
+	proof, err := proofStore.LoadPortDistributedProof(ctx)
+	if err != nil || proof == nil || proof.PolicyRevision != record.Revision ||
+		proof.ProofRevision != record.ProofRevision || proof.StoreIdentity != record.StoreIdentity ||
+		proof.ProofDigest != record.ProofDigest || !now.Before(proof.ExpiresAt) || proof.Validate() != nil {
+		return fmt.Errorf("%w: distributed proof snapshot is absent or does not match activation", ErrPortActivation)
+	}
 	return nil
 }
 
@@ -202,6 +212,46 @@ func ActivePortActivationCapability(ctx context.Context, s RunStore, scope, capa
 
 func (s *FilesystemRunStore) portActivationPath() string {
 	return filepath.Join(s.root, "port_activation_v1.json")
+}
+
+func (s *FilesystemRunStore) portDistributedProofPath() string {
+	return filepath.Join(s.root, "port_distributed_proof_v1.json")
+}
+
+func (s *FilesystemRunStore) LoadPortDistributedProof(ctx context.Context) (*PortDistributedProof, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(s.portDistributedProofPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var proof PortDistributedProof
+	if err := json.Unmarshal(raw, &proof); err != nil {
+		return nil, fmt.Errorf("%w: unreadable distributed proof", ErrPortActivation)
+	}
+	if err := proof.Validate(); err != nil {
+		return nil, err
+	}
+	return &proof, nil
+}
+
+func (s *FilesystemRunStore) SavePortDistributedProof(ctx context.Context, expectedPolicy uint64, proof *PortDistributedProof) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if proof == nil || (expectedPolicy == 0 && proof.PolicyRevision != 1) ||
+		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy) || proof.Validate() != nil {
+		return fmt.Errorf("%w: invalid distributed proof write", ErrPortActivation)
+	}
+	raw, err := json.Marshal(proof)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(s.portDistributedProofPath(), raw, filePerm)
 }
 
 func (s *FilesystemRunStore) LoadPortActivation(ctx context.Context) (*PortActivation, error) {

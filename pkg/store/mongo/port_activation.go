@@ -20,11 +20,65 @@ type portActivationDocument struct {
 	store.PortActivation `bson:",inline"`
 }
 
+type portDistributedProofDocument struct {
+	ID                         string `bson:"_id"`
+	store.PortDistributedProof `bson:",inline"`
+}
+
 func (s *Store) portActivationCollection() *mongo.Collection {
 	journal := true
 	return s.db.Collection("activation_ports_v1", options.Collection().
 		SetWriteConcern(&writeconcern.WriteConcern{W: "majority", Journal: &journal}).
 		SetReadConcern(readconcern.Majority()))
+}
+
+func (s *Store) portDistributedProofCollection() *mongo.Collection {
+	journal := true
+	return s.db.Collection("activation_ports_proof_v1", options.Collection().
+		SetWriteConcern(&writeconcern.WriteConcern{W: "majority", Journal: &journal}).
+		SetReadConcern(readconcern.Majority()))
+}
+
+func (s *Store) LoadPortDistributedProof(ctx context.Context) (*store.PortDistributedProof, error) {
+	var doc portDistributedProofDocument
+	err := s.portDistributedProofCollection().FindOne(ctx, bson.M{"_id": "current"}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := doc.PortDistributedProof.Validate(); err != nil {
+		return nil, err
+	}
+	return &doc.PortDistributedProof, nil
+}
+
+// SavePortDistributedProof is intentionally a narrow authority write. The
+// caller must be the trusted server path; database credentials remain within
+// the deployment administrative trust boundary.
+func (s *Store) SavePortDistributedProof(ctx context.Context, expectedPolicy uint64, proof *store.PortDistributedProof) error {
+	if proof == nil || (expectedPolicy == 0 && proof.PolicyRevision != 1) ||
+		(expectedPolicy != 0 && proof.PolicyRevision != expectedPolicy) || proof.Validate() != nil {
+		return fmt.Errorf("%w: invalid distributed proof write", store.ErrPortActivation)
+	}
+	doc := portDistributedProofDocument{ID: "current", PortDistributedProof: *proof}
+	filter := bson.M{"_id": "current", "policy_revision": expectedPolicy}
+	if expectedPolicy == 0 {
+		_, err := s.portDistributedProofCollection().InsertOne(ctx, doc)
+		if mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("%w: distributed proof already exists", store.ErrRunConflict)
+		}
+		return err
+	}
+	result, err := s.portDistributedProofCollection().ReplaceOne(ctx, filter, doc)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return fmt.Errorf("%w: distributed proof policy changed", store.ErrRunConflict)
+	}
+	return nil
 }
 
 func (s *Store) LoadPortActivation(ctx context.Context) (*store.PortActivation, error) {
