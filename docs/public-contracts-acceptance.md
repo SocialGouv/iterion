@@ -514,6 +514,10 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   reader/schema/static cases pass with race detection. These fields are
   operator assertions only: Kubernetes RBAC, live broker digests, workload
   coverage and credential custody have not yet been reconciled.
+- Broker source parsing now runs independently for each declared broker, up to
+  the record's 16-broker bound, before a deterministic per-broker comparison.
+  A barrier test proves overlap and stable redacted error ordering. This removes
+  serial parser latency; the complete refresh duration remains to be measured.
 - The privileged record reader now rejects an operator Secret whose declared
   namespaces or durable NATS queue identity differ from the server's configured
   scope before live inspection. It keeps the source material private and does
@@ -576,7 +580,7 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   connected principal identities. A bounded Secret reader now compares every
   declared NATS source file with the Secret keys selected by a read-only Pod
   volume declaration, including nested includes, and records both Pod and Secret revisions.
-  Thirty-eight authority cases pass with race detection. These checks do not
+  Thirty-nine authority cases pass with race detection. These checks do not
   discover omitted brokers or disconnected credential holders, establish
   observation freshness, actual kubelet-mounted bytes or a complete Kubernetes
   authorization boundary.

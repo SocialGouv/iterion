@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
 	queue "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -150,14 +152,50 @@ func TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder(t *testing.T) {
 	second.sources = second.Sources()
 	second.sources.Files["main.conf"] = "same permissions, opposite rule order"
 	record.Brokers = append(record.Brokers, second)
+	reordered := reorderedStaticFixture(t)
 	analysis, err := analyzeStaticWithParser(t.Context(), record,
 		func(_ context.Context, sources natsconfig.Sources) (*natsconfig.Result, error) {
 			if sources.Files["main.conf"] == "same permissions, opposite rule order" {
-				return reorderedStaticFixture(t), nil
+				return reordered, nil
 			}
 			return parsedStaticFixture(false), nil
 		})
 	if err != nil || len(analysis.Brokers) != 2 {
 		t.Fatalf("equivalent reordered ACLs were rejected: %v", err)
+	}
+}
+
+func TestAuthorityStaticAnalysisParsesBrokersConcurrentlyInStableOrder(t *testing.T) {
+	record := staticFixture(t)
+	second := record.Brokers[0]
+	second.ServerID, second.ServerName, second.PodName = "NC456", "nats-1", "nats-1"
+	second.sources = second.Sources()
+	second.sources.Files["main.conf"] = "second broker"
+	record.Brokers = append(record.Brokers, second)
+	var started atomic.Int32
+	bothStarted := make(chan struct{})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	analysis, err := analyzeStaticWithParser(ctx, record,
+		func(ctx context.Context, _ natsconfig.Sources) (*natsconfig.Result, error) {
+			if started.Add(1) == 2 {
+				close(bothStarted)
+			}
+			select {
+			case <-bothStarted:
+				return parsedStaticFixture(false), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		})
+	if err != nil || len(analysis.Brokers) != 2 || started.Load() != 2 {
+		t.Fatalf("independent broker analyses did not overlap: %+v %v", analysis, err)
+	}
+	_, err = analyzeStaticWithParser(t.Context(), record,
+		func(_ context.Context, _ natsconfig.Sources) (*natsconfig.Result, error) {
+			return nil, errors.New("private parser failure")
+		})
+	if err == nil || !strings.Contains(err.Error(), "NC123") || strings.Contains(err.Error(), "private parser failure") {
+		t.Fatalf("parallel parser failures lost stable redacted broker order: %v", err)
 	}
 }

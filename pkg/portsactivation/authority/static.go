@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
 )
@@ -54,15 +55,36 @@ func analyzeStaticWithParser(ctx context.Context, record *Record,
 	}
 	analysis := &StaticAnalysis{}
 	var baseline []natsconfig.Principal
+	profiles := make([]*natsconfig.Profile, len(record.Brokers))
+	parseErrors := make([]error, len(record.Brokers))
+	var parsing sync.WaitGroup
 	for index, broker := range record.Brokers {
-		result, err := parse(ctx, broker.Sources())
-		if err != nil {
-			return nil, fmt.Errorf("NATS authority source for broker %s could not be parsed", broker.ServerID)
+		index, broker := index, broker
+		parsing.Add(1)
+		go func() {
+			defer parsing.Done()
+			result, err := parse(ctx, broker.Sources())
+			if err != nil {
+				parseErrors[index] = fmt.Errorf("NATS authority source for broker %s could not be parsed", broker.ServerID)
+				return
+			}
+			profile, err := natsconfig.LoadProfile(result)
+			if err != nil {
+				parseErrors[index] = fmt.Errorf("NATS authority source for broker %s has unsupported authorization: %w", broker.ServerID, err)
+				return
+			}
+			profiles[index] = profile
+		}()
+	}
+	parsing.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for index, broker := range record.Brokers {
+		if parseErrors[index] != nil {
+			return nil, parseErrors[index]
 		}
-		profile, err := natsconfig.LoadProfile(result)
-		if err != nil {
-			return nil, fmt.Errorf("NATS authority source for broker %s has unsupported authorization: %w", broker.ServerID, err)
-		}
+		profile := profiles[index]
 		if profile.SystemAccount != record.Queue.SystemAccount || !slices.Contains(profile.Accounts, record.Queue.Account) ||
 			len(profile.Principals) != len(credentials) {
 			return nil, fmt.Errorf("NATS authority source disagrees with declared account or credential custody")

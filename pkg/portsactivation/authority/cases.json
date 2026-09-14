@@ -15,6 +15,7 @@
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",
       "TestAuthorityStaticAnalysisIgnoresEquivalentACLRuleOrder",
+      "TestAuthorityStaticAnalysisParsesBrokersConcurrentlyInStableOrder",
       "TestKubernetesWorkloadSnapshotIncludesDormantControllersAndPodTemplates",
       "TestKubernetesWorkloadSnapshotRefusesMissingOrForeignObjects",
       "TestKubernetesWorkloadSnapshotBoundsActualKubectlPipe",
