@@ -6,6 +6,10 @@ export interface IterDocument {
   // The syntax profile of the file's `dsl: N` header (ADR-098); absent
   // or 0 = profile 1. The server writes the header back on save.
   profile?: number;
+  // The file's `import "lib/x.bot"` lines (ADR-098 §3), as written. A
+  // document opened from a bundle has them resolved: the server merges the
+  // fragments and clears the list before it reaches the canvas.
+  imports?: string[];
   vars?: VarsBlock;
   presets?: PresetsBlock;
   attachments?: AttachmentsBlock;

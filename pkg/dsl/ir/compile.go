@@ -35,6 +35,7 @@ const (
 	DiagNoWorkflow            DiagCode = "C006" // no workflow found in file
 	DiagMultipleWorkflow      DiagCode = "C007" // multiple workflows (unsupported in V1)
 	DiagMissingEntry          DiagCode = "C008" // entry node not found
+	DiagUnresolvedImports     DiagCode = "C030" // the file still carries `import` lines: it was compiled alone, not as a unit
 	DiagMissingModelOrBackend DiagCode = "C018" // agent/judge has neither model nor backend
 	DiagDuplicateMCPServer    DiagCode = "C024" // duplicate top-level mcp_server name
 	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
@@ -482,6 +483,18 @@ func Compile(file *ast.File) *CompileResult {
 		schemas: make(map[string]*Schema),
 		prompts: make(map[string]*Prompt),
 		mcp:     make(map[string]*MCPServer),
+	}
+	// A file that still carries `import` lines was handed over alone: its
+	// fragments were never merged in, and compiling it would be compiling a
+	// program with pieces missing — silently, since C001/C003 only fire for
+	// what the main happens to reference. Refused, closed.
+	if file != nil && len(file.Imports) > 0 {
+		paths := make([]string, 0, len(file.Imports))
+		for _, im := range file.Imports {
+			paths = append(paths, im.Path)
+		}
+		c.errorf(DiagUnresolvedImports, "the file imports %d fragment(s) not merged into it (%s): compile it as a unit — `iterion validate`, `run` and the studio resolve the imports; a document or an inline source alone cannot", len(paths), strings.Join(paths, ", "))
+		return &CompileResult{Diagnostics: c.diags}
 	}
 	w := c.compile()
 	c.attachPositions()

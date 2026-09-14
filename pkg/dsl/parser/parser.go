@@ -342,6 +342,10 @@ func (p *parser) parseFile() *ast.File {
 			p.parseDSLHeader(f, declared)
 			continue
 
+		case TokenImport:
+			p.parseImportDecl(f, declared)
+			continue
+
 		case TokenVars:
 			vb := p.parseVarsBlock()
 			if vb != nil {
