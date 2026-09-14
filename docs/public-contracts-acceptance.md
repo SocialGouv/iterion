@@ -469,6 +469,13 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   the actual multi-response path. Silence or a network partition can still
   hide a broker, so this remains corroboration of the operator's exhaustive
   inventory assertion, not an independent completeness proof.
+- A read-only authority observation now combines the declared `PING.IDZ`
+  broker set with concurrent VARZ/CONNZ reads for every broker and reconciles
+  loaded configuration digests and connected principals against the static
+  inventory. A pinned 2.14.5 broker and the production parser exercise this
+  combined path, including a stale-digest refusal; the NATS CI job requires
+  that case without skips.
+  The combined observation is still not a distributed activation proof.
 - Explicit `contracts.distributed` configuration loads through the existing
   YAML/environment precedence and validates a server-only authenticated
   system URL, operator Secret reference and bounded namespace scope. The Helm

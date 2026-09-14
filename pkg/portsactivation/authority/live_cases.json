@@ -1,0 +1,8 @@
+{
+  "scope": "Read-only production system-account observation of a pinned live NATS broker, combining declared IDZ census with VARZ/CONNZ, production-parsed static source digest and connected-principal reconciliation. This does not certify exhaustive custody or authorize distributed activation.",
+  "packages": {
+    "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
+      "TestAuthorityLiveSystemCorroboratesNamedBroker"
+    ]
+  }
+}

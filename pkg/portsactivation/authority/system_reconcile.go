@@ -1,11 +1,15 @@
 package authority
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig"
+	natsclient "github.com/nats-io/nats.go"
+	"golang.org/x/sync/errgroup"
 )
 
 // SystemCorroboration binds the declared brokers to per-server system-account
@@ -19,6 +23,55 @@ type ObservedBroker struct {
 	ServerID            string `json:"server_id"`
 	ConfigDigest        string `json:"config_digest"`
 	ObservedConnections int    `json:"observed_connections"`
+}
+
+// ObserveAndCorroborateSystem reads the declared broker set and every named
+// broker through one authenticated system-account connection. It binds the
+// PING.IDZ census to per-broker VARZ/CONNZ and the previously parsed static
+// sources. This is read-only corroboration, not an activation proof: a silent
+// omitted broker or a disconnected credential holder still requires the
+// trusted operator inventory and Kubernetes/credential checks.
+func ObserveAndCorroborateSystem(ctx context.Context, nc *natsclient.Conn,
+	record *Record, static *StaticAnalysis) (*SystemCorroboration, error) {
+	if record == nil || record.validate() != nil || static == nil || len(static.Brokers) != len(record.Brokers) {
+		return nil, fmt.Errorf("NATS live observation requires a complete declared inventory and static analysis")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	expected := make([]natsconfig.SystemBrokerIdentity, len(record.Brokers))
+	digests := make(map[string]string, len(static.Brokers))
+	for _, broker := range static.Brokers {
+		if broker.ServerID == "" || digests[broker.ServerID] != "" {
+			return nil, fmt.Errorf("NATS static broker inventory is ambiguous")
+		}
+		digests[broker.ServerID] = broker.ConfigDigest
+	}
+	for i, broker := range record.Brokers {
+		if digests[broker.ServerID] == "" {
+			return nil, fmt.Errorf("NATS static broker inventory is incomplete")
+		}
+		expected[i] = natsconfig.SystemBrokerIdentity{ServerID: broker.ServerID, ServerName: broker.ServerName}
+	}
+	if _, err := natsconfig.ObserveSystemBrokerSet(probeCtx, nc, expected); err != nil {
+		return nil, err
+	}
+	observations := make([]natsconfig.SystemObservation, len(record.Brokers))
+	group, observationCtx := errgroup.WithContext(probeCtx)
+	for i, broker := range record.Brokers {
+		i, broker := i, broker
+		group.Go(func() error {
+			observed, err := natsconfig.ObserveSystemServer(observationCtx, nc, broker.ServerID, digests[broker.ServerID])
+			if err != nil {
+				return fmt.Errorf("NATS broker %s could not be corroborated: %w", broker.ServerID, err)
+			}
+			observations[i] = *observed
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return CorroborateSystemObservations(record, static, observations)
 }
 
 // CorroborateSystemObservations rejects any missing, duplicate, unexpected or
