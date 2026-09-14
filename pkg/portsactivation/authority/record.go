@@ -310,14 +310,8 @@ func kubeSecretRefNamespace(value string) (string, bool) {
 		return "", false
 	}
 	secretAndKey := strings.Split(parts[1], ":")
-	if len(secretAndKey) != 2 || !dnsSubdomain(secretAndKey[0]) ||
-		len(secretAndKey[1]) == 0 || len(secretAndKey[1]) > 253 {
+	if len(secretAndKey) != 2 || !dnsSubdomain(secretAndKey[0]) || !validSecretDataKey(secretAndKey[1]) {
 		return "", false
-	}
-	for _, c := range secretAndKey[1] {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
-			return "", false
-		}
 	}
 	return parts[0], true
 }

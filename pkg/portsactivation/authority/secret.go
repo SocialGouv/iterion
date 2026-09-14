@@ -7,11 +7,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
 )
 
 const maxSecretResponse = 2 << 20
@@ -36,18 +33,6 @@ func (s SecretSource) String() string {
 }
 
 func (s SecretSource) GoString() string { return s.String() }
-
-type boundedSecretOutput struct {
-	buffer bytes.Buffer
-	limit  int
-}
-
-func (b *boundedSecretOutput) Write(p []byte) (int, error) {
-	if len(p) > b.limit-b.buffer.Len() {
-		return 0, errors.New("Kubernetes authority response exceeds supported size")
-	}
-	return b.buffer.Write(p)
-}
 
 func dnsLabel(name string) bool {
 	if len(name) == 0 || len(name) > 63 || !alphanumeric(name[0]) || !alphanumeric(name[len(name)-1]) {
@@ -95,15 +80,8 @@ func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namesp
 		args = append(args, "--context", kubeContext)
 	}
 	args = append(args, "--namespace", namespace, "get", "secret", name, "-o", "json")
-	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	command := exec.CommandContext(requestContext, kubectlBinary, args...)
-	command.WaitDelay = time.Second
-	output := &boundedSecretOutput{limit: maxSecretResponse}
-	command.Stdout = output
-	// Kubectl diagnostics can include credential-bearing source snippets.
-	// Refusal reasons must remain generic at this privileged boundary.
-	if err := command.Run(); err != nil {
+	output, err := runKubectl(ctx, kubectlBinary, args, maxSecretResponse)
+	if err != nil {
 		return nil, fmt.Errorf("Kubernetes authority Secret could not be read")
 	}
 	var document struct {
@@ -118,7 +96,7 @@ func ReadAuthoritySecret(ctx context.Context, kubectlBinary, kubeContext, namesp
 		} `json:"metadata"`
 		Data map[string]string `json:"data"`
 	}
-	if output.buffer.Len() == 0 || json.Unmarshal(output.buffer.Bytes(), &document) != nil ||
+	if len(output) == 0 || json.Unmarshal(output, &document) != nil ||
 		document.APIVersion != "v1" || document.Kind != "Secret" || document.Type != "Opaque" ||
 		document.Metadata.Namespace != namespace || document.Metadata.Name != name ||
 		document.Metadata.UID == "" || document.Metadata.ResourceVersion == "" || len(document.Data) != 1 {

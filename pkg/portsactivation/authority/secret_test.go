@@ -88,7 +88,7 @@ func TestReadAuthoritySecretRefusesUnboundNamesAndOversizedResponses(t *testing.
 			t.Fatalf("invalid Secret name %q reached kubectl", name)
 		}
 	}
-	b := &boundedSecretOutput{limit: 4}
+	b := &boundedKubectlOutput{limit: 4}
 	if _, err := b.Write([]byte("1234")); err != nil {
 		t.Fatal(err)
 	}

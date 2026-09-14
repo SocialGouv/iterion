@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os/exec"
 	"slices"
 	"strings"
-	"time"
 )
 
 const maxWorkloadResponse = 8 << 20
@@ -78,15 +76,7 @@ func ReadWorkloadSnapshot(ctx context.Context, kubectlBinary, kubeContext string
 			args = append(args, "--context", kubeContext)
 		}
 		args = append(args, "--namespace", namespace, "get", workloadResources, "-o", "json")
-		requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-		command := exec.CommandContext(requestContext, kubectlBinary, args...)
-		command.WaitDelay = time.Second
-		output := &boundedSecretOutput{limit: maxWorkloadResponse}
-		command.Stdout = output
-		// Kubectl errors can quote literal environment values or Secret data.
-		// Keep this source boundary's diagnostics generic.
-		err := command.Run()
-		cancel()
+		output, err := runKubectl(ctx, kubectlBinary, args, maxWorkloadResponse)
 		if err != nil {
 			return nil, fmt.Errorf("Kubernetes workload inventory could not be read")
 		}
@@ -98,7 +88,7 @@ func ReadWorkloadSnapshot(ctx context.Context, kubectlBinary, kubeContext string
 			} `json:"metadata"`
 			Items []json.RawMessage `json:"items"`
 		}
-		decoder := json.NewDecoder(bytes.NewReader(output.buffer.Bytes()))
+		decoder := json.NewDecoder(bytes.NewReader(output))
 		if decoder.Decode(&document) != nil || decoder.Decode(new(any)) != io.EOF ||
 			document.APIVersion != "v1" || document.Kind != "List" || document.Items == nil ||
 			document.Metadata.Continue != "" ||

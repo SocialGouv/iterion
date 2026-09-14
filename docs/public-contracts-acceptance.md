@@ -491,6 +491,12 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   17-case authority manifest passes with race detection. Secret contents,
   ConfigMap/envFrom supply, effective RBAC and external holders are still
   outside this partial reconciliation; it cannot authorize activation.
+- The shared bounded kubectl transport now also reads one exact NATS Secret
+  key with UID/resourceVersion identity. URL userinfo is validated without
+  exposing the password through formatting, JSON or errors. Nineteen required
+  authority cases pass with race detection. A named, well-formed Secret key
+  still does not prove that its principal matches the static NATS configuration
+  or that no other holder has copied the credential.
 - After the authority config changes, a complete `task test` run passed.
   An earlier run concurrent with the automatic reviewer exceeded the frozen
   Town zero-item latency ceiling; the isolated Town case and all nine pilot

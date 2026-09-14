@@ -1,5 +1,5 @@
 {
-  "scope": "Read-only bounded kubectl Secret and standard workload listing, strict versioned operator records and static NATS source/profile reconciliation. Every principal maps to named custody and protected ACL exposures are classified. Workload projection alone is not complete Kubernetes custody, RBAC or distributed activation verification.",
+  "scope": "Read-only bounded kubectl authority/credential Secret and standard workload listing, strict versioned operator records, static NATS source/profile and explicit workload credential-reference reconciliation. Actual credential key bytes remain private. These layers do not prove exhaustive custody, RBAC or distributed activation.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/authority": [
       "TestReadAuthoritySecretBindsNamedKubernetesSource",
@@ -18,7 +18,9 @@
       "TestKubernetesWorkloadSnapshotRefusesMissingOrForeignObjects",
       "TestKubernetesWorkloadSnapshotBoundsActualKubectlPipe",
       "TestKubernetesWorkloadReconciliationBindsDeclaredAndRunningDescendants",
-      "TestKubernetesWorkloadReconciliationRefusesDormantOrUnknownCredentialPaths"
+      "TestKubernetesWorkloadReconciliationRefusesDormantOrUnknownCredentialPaths",
+      "TestKubernetesCredentialSecretBindsNamedKeyAndRedactsURL",
+      "TestKubernetesCredentialSecretRefusesForeignOrUnsupportedMaterial"
     ]
   }
 }
