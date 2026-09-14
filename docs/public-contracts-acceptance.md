@@ -403,9 +403,9 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   for inherited defaults and a signed nkey, denies anonymous access, and
   reports the same parsed digest through HTTP and authenticated system VARZ
   before and after reload. The race-instrumented manifest now verifies all
-  **71** named parser/profile/permission cases without skips; `go vet` and a
+  **85** named parser/profile/permission cases without skips; `go vet` and a
   static production build pass. This is still an isolated source projection:
-  the protected JetStream/KV API catalog, credential-holder inventory,
+  live JetStream/KV topology reconciliation, credential-holder inventory,
   Kubernetes reconciliation and production verifier remain outstanding.
 - Source bytes and all upstream parsed keys/values are checked for UTF-8 before
   JSON serialization. The pinned broker accepts an escaped non-UTF-8 subject
@@ -413,6 +413,19 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   would otherwise replace the byte and collapse allow/deny rules. The helper
   now refuses this lossy configuration; a real-broker differential test and
   an invalid-source test cover both sides of that boundary.
+- A queue-account ACL classifier now reports concrete witnesses for Core run
+  and DLQ subjects, native cancel/heartbeat/steer subjects, reply inboxes,
+  JetStream requests, both ACK prefixes and both KV buckets. It includes the
+  KV backing streams in the known API forms and separately flags unreviewed
+  `$JS.API.>` variants; domain and cross-account import/export routes are
+  excluded by the supported profile. A pinned 2.14.5 broker confirms that
+  an exact `MSG.NEXT` grant fetches from the shared durable, an exact stream
+  purge grant clears the run stream, and a Core subscription receives its
+  run payload. The distinct system account is reported as privileged authority
+  exposure rather than being treated as a harmless other account. The full
+  race-instrumented NATS manifest has 85 cases without skips. The classifier
+  still needs authoritative live topology, credential
+  custody and workload reconciliation before its result can admit a root.
 - A complete `task test` pass initially found two fixture/CI omissions:
   `pkg/runview` was missing from the Mongo job, and the raw-distributed-proof
   test called a Mongo factory without checking the optional fixture gate.

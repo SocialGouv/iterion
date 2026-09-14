@@ -1,5 +1,5 @@
 {
-  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. A bounded static-profile loader projects credential-free effective permissions for named password/nkey users and rejects unreviewed auth paths; actual broker delivery tests cover inherited defaults, explicit empty overrides and nkeys. This does not establish complete protected-API coverage, credential custody, Kubernetes authority or distributed activation.",
+  "scope": "Actual isolated upstream config parser, production binary dotenv bypass, and pinned NATS 2.14.5 config_digest through HTTP and authenticated system VARZ before and after reload. A bounded static-profile loader projects credential-free effective permissions for named password/nkey users and rejects unreviewed auth paths. Conservative queue, JetStream API, ACK, KV and control-subject classification is compared with real durable fetch, purge and core run delivery. This does not establish credential custody, Kubernetes authority, stored-proof verification or distributed activation.",
   "packages": {
     "github.com/SocialGouv/iterion/pkg/portsactivation/natsconfig": [
       "TestNATSConfigSourcesConfineIncludes",
@@ -72,7 +72,21 @@
       "TestNATSProfileRejectsUnsupportedAuthorizationPaths/subject_mapping",
       "TestNATSProfileRejectsUnsupportedAuthorizationPaths/websocket",
       "TestNATSConfigRejectsInvalidUTF8Source",
-      "TestNATSConfigRejectsLossyParsedSubjects"
+      "TestNATSConfigRejectsLossyParsedSubjects",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/KV_backing-stream_mutation",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/KV_core_write",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/account_isolation",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/acknowledgment",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/direct_run_subscription",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/exact_fetch_and_reply",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/native_cancellation",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/native_steering",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/system_authority",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/unknown_API_variant",
+      "TestNATSProtectedAccessClassifiesWholePermissionLanguages/unrelated_grant",
+      "TestNATSProtectedAccessMatchesPinnedJetStream",
+      "TestNATSProtectedAccessRefusesUnboundTopology"
     ]
   }
 }
