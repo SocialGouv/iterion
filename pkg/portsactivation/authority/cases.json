@@ -13,6 +13,7 @@
       "TestDeploymentRecordBindsSecretToConfiguredQueueAndNamespaces",
       "TestDeploymentObservationRequiresEveryCorroboratingLayer",
       "TestDeploymentObservationDigestBindsStableAuthorityAndIgnoresVolatileCounts",
+      "TestAuthorityCensusCorroboratesNamedBuildAndRefusesStaleOrForeignClaims",
       "TestAuthorityStaticAnalysisReconcilesEveryConfiguredPrincipal",
       "TestAuthorityStaticAnalysisRefusesUninventoriedOrPrivilegedAccess",
       "TestAuthorityStaticAnalysisRejectsBrokerPermissionDrift",

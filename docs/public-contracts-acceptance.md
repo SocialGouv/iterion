@@ -534,6 +534,12 @@ mass migration, PR merge or legacy removal belongs to this implementation task.
   transport shim exercise the production observer and source-rotation refusal.
   The digest omits backend identity and compatible-build exclusion. This is
   not yet a kind API/RBAC denial test or a verified activation snapshot.
+- A read-only census reconciler now rejects stale, foreign, wrong-build or
+  wrong-epoch KV announcements against the named credential holder and the
+  server-supplied backend/queue/capability identity. It does not establish
+  absent disconnected holders, per-principal KV write ACLs, tested-build
+  compatibility or admission; production census reading and proof wiring
+  remain outstanding.
 - A bounded Kubernetes workload reader now lists Pods, Deployments,
   ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs and
   ReplicationControllers in each declared namespace. It retains private pod
