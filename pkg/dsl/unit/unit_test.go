@@ -260,3 +260,47 @@ func TestAMissingOrBrokenFileIsReportedInPlace(t *testing.T) {
 		t.Fatalf("a fragment's parse error is not in its file: %v", u.Diagnostics)
 	}
 }
+
+// TestLoadDirWithMainTakesTheDocumentAsMain: the studio launches a document
+// that may differ from the file on disk. The unit is then the document's
+// text as its main — parsed under the name the caller gives — with the
+// fragments read beside the main on disk, under their own paths.
+func TestLoadDirWithMainTakesTheDocumentAsMain(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for rel, src := range fixture {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// On disk the main imports nothing; the document does.
+	if err := os.WriteFile(filepath.Join(root, "main.bot"), []byte("workflow w:\n  entry: b\n  b -> done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc := "dsl: 2\nimport \"lib/nodes.bot\"\n\nworkflow w:\n  entry: b\n  b -> done\n"
+	name := filepath.Join(t.TempDir(), "a1b2c3-main.bot")
+	u := LoadDirWithMain(filepath.Join(root, "main.bot"), name, []byte(doc))
+	if u.HasErrors() {
+		t.Fatalf("diagnostics: %v", u.Diagnostics)
+	}
+	if string(u.Files[0].Source) != doc || u.Files[0].Name != name || u.Main != "main.bot" || u.Root != root {
+		t.Fatalf("main: source %q name %q main %q root %q", u.Files[0].Source, u.Files[0].Name, u.Main, u.Root)
+	}
+	var rels, names []string
+	for _, f := range u.Files[1:] {
+		rels = append(rels, f.Rel)
+		names = append(names, f.Name)
+	}
+	if !reflect.DeepEqual(rels, []string{"lib/nodes.bot", "lib/schemas.bot"}) || names[0] != filepath.Join(root, "lib", "nodes.bot") {
+		t.Fatalf("fragments %v named %v", rels, names)
+	}
+	if len(u.Merged.Agents) != 1 || u.Merged.Agents[0].Name != "b" || len(u.Merged.Workflows) != 1 {
+		t.Fatalf("merged: %d agents, %d workflows", len(u.Merged.Agents), len(u.Merged.Workflows))
+	}
+	// The identity is the document's, not the disk main's.
+	if LoadDir(filepath.Join(root, "main.bot")).Digest == u.Digest {
+		t.Fatal("the unit with the document as main has the digest of the unit on disk")
+	}
+}

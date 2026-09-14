@@ -91,16 +91,33 @@ func (u *Unit) HasErrors() bool {
 // Files are parsed under their absolute path, so an include inside a
 // fragment resolves beside the fragment.
 func LoadDir(mainPath string) *Unit {
+	return loadDir(mainPath, "", nil)
+}
+
+// LoadDirWithMain is LoadDir with the main's text supplied — an editor's
+// document, saved or not — while the fragments are read beside the main
+// on disk. The main is parsed under mainName when given (the name the
+// caller compiles the document as; an include in it resolves beside that
+// name), the fragments under their own absolute paths.
+func LoadDirWithMain(mainPath, mainName string, source []byte) *Unit {
+	return loadDir(mainPath, mainName, source)
+}
+
+func loadDir(mainPath, mainName string, source []byte) *Unit {
 	abs, err := filepath.Abs(mainPath)
 	if err != nil {
 		abs = mainPath
 	}
 	root := filepath.Dir(abs)
+	mainRel := filepath.Base(abs)
 	realRoot := root
 	if r, err := filepath.EvalSymlinks(root); err == nil {
 		realRoot = r
 	}
 	read := func(rel string) ([]byte, error) {
+		if source != nil && rel == mainRel {
+			return source, nil
+		}
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		info, err := os.Lstat(full)
 		if err != nil {
@@ -118,9 +135,13 @@ func LoadDir(mainPath string) *Unit {
 		}
 		return os.ReadFile(real)
 	}
-	u := Load(read, filepath.Base(abs), func(rel string) string {
+	name := func(rel string) string {
+		if mainName != "" && rel == mainRel {
+			return mainName
+		}
 		return filepath.Join(root, filepath.FromSlash(rel))
-	})
+	}
+	u := Load(read, mainRel, name)
 	u.Root = root
 	return u
 }

@@ -302,6 +302,16 @@ with updated workflow (force)** retry. Force is useful after repairing the
 workflow, but it is an operator assertion that stored outputs, node IDs,
 schemas, and the new graph are still compatible.
 
+The hash covers everything the run's program was made of: the main file's
+bytes, a bundle's `prompts/*.md` and `presets/*.md`, then — only when the
+unit has them — the fragments its `import` lines reach (see
+[dsl.md](dsl.md)) and the files its prompts' `{{include}}` markers read,
+nested ones too. A single-file bot without includes hashes exactly as it
+always has. A fragment or an included file edited while a run is parked is
+therefore a source change the gate refuses without `--force`; a run of a bot
+that uses `{{include}}`, launched before the include closure entered the hash,
+compares differently once and resumes with `--force` that one time.
+
 `--file` defaults to the persisted `FilePath`. Bundle runs also persist their
 bundle path; resume reopens a `.botz` or bundle directory so prompts, skills,
 attachments, recipes, and the selected preset are restored. If the original

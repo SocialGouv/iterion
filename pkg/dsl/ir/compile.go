@@ -105,6 +105,12 @@ func (d Diagnostic) Error() string {
 type CompileResult struct {
 	Workflow    *Workflow
 	Diagnostics []Diagnostic
+	// IncludedFiles lists the files the prompts' {{include}} markers
+	// read, by absolute path, once each, sorted: the closure a caller
+	// folds into the source's identity, since an included file edited
+	// changes what the agent reads as surely as the prompt that includes
+	// it does.
+	IncludedFiles []string
 }
 
 // HasErrors returns true if any diagnostic is an error.
@@ -123,12 +129,14 @@ func (r *CompileResult) HasErrors() bool {
 
 // compiler holds state during compilation.
 type compiler struct {
-	file    *ast.File
-	diags   []Diagnostic
-	nodes   map[string]Node
-	schemas map[string]*Schema
-	prompts map[string]*Prompt
-	mcp     map[string]*MCPServer
+	file  *ast.File
+	diags []Diagnostic
+	// includedFiles is the include closure compilePrompts read.
+	includedFiles []string
+	nodes         map[string]Node
+	schemas       map[string]*Schema
+	prompts       map[string]*Prompt
+	mcp           map[string]*MCPServer
 	// edgeSpans remembers where each compiled edge was declared, so a
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
@@ -499,8 +507,9 @@ func Compile(file *ast.File) *CompileResult {
 	w := c.compile()
 	c.attachPositions()
 	return &CompileResult{
-		Workflow:    w,
-		Diagnostics: c.diags,
+		Workflow:      w,
+		Diagnostics:   c.diags,
+		IncludedFiles: c.includedFiles,
 	}
 }
 
@@ -930,6 +939,7 @@ func (c *compiler) compilePrompts() {
 			TemplateRefs: refs,
 		}
 	}
+	c.includedFiles = budget.includedFiles()
 }
 
 // ---------------------------------------------------------------------------
