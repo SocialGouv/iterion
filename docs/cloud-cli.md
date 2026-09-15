@@ -69,8 +69,14 @@ without re-minting (org scope is path-based).
 
 ```sh
 # Launch a local .bot file (its source is uploaded inline) and tail it.
-# Only the .bot travels: a prompt `{{include "x.md"}}` has no file to resolve
-# from on the server and is refused at publish — launch such a bot as a bundle.
+# What travels is the bot written out as ONE file: a bot in several files
+# (`import "lib/x.bot"`) is flattened, and every prompt `{{include "x.md"}}`
+# is resolved beside the file that carries it, before the upload — a server
+# pod has none of the files beside the source. A bot in one file with no
+# include uploads byte-identical. The run's identity is that text: a resume
+# (`runs resume --file`) re-flattens the same unit into the same text, an
+# edited fragment or include into another, which the server refuses without
+# --force.
 iterion remote runs launch ./review.bot --var repo=org/app --follow
 
 # Or launch a catalog bot by id:

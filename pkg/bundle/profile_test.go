@@ -58,3 +58,25 @@ func TestMaxSyntaxProfileDirReadsTheBundle(t *testing.T) {
 		t.Fatalf("profile %d by %v", profile, by)
 	}
 }
+
+// A bundle's profile is the highest over every file of every unit it
+// executes: a fragment the main imports counts, under its own name, and a
+// child a fragment declares is followed like one the main declares.
+func TestMaxSyntaxProfileReadsTheUnit(t *testing.T) {
+	files := map[string]string{
+		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: child\n  child -> done\n",
+		"lib/nodes.bot": "dsl: 2\n\nsubbot child:\n  source: \"../kids/k.bot\"\n",
+		"kids/k.bot":    "dsl: 2\nagent a:\n  description: \"x\"\n",
+	}
+	profile, by, unread := MaxSyntaxProfile(files)
+	if profile != 2 || !reflect.DeepEqual(by, []string{"kids/k.bot", "lib/nodes.bot"}) || len(unread) != 0 {
+		t.Fatalf("profile %d by %v unread %v", profile, by, unread)
+	}
+	// A child's own fragments count too, named from the bundle root.
+	files["kids/k.bot"] = "import \"lib/deep.bot\"\n\nworkflow w:\n  entry: done\n"
+	files["kids/lib/deep.bot"] = "dsl: 2\nagent a:\n  description: \"x\"\n"
+	profile, by, _ = MaxSyntaxProfile(files)
+	if profile != 2 || !reflect.DeepEqual(by, []string{"kids/lib/deep.bot", "lib/nodes.bot"}) {
+		t.Fatalf("child unit: profile %d by %v", profile, by)
+	}
+}

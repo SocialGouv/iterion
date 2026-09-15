@@ -6,6 +6,10 @@ export interface IterDocument {
   // The syntax profile of the file's `dsl: N` header (ADR-098); absent
   // or 0 = profile 1. The server writes the header back on save.
   profile?: number;
+  // The file's `import "lib/x.bot"` lines (ADR-098 §3), as written. A
+  // document opened from a bundle has them resolved: the server merges the
+  // fragments and clears the list before it reaches the canvas.
+  imports?: string[];
   vars?: VarsBlock;
   presets?: PresetsBlock;
   attachments?: AttachmentsBlock;
@@ -26,10 +30,34 @@ export interface IterDocument {
   comments: Comment[];
 }
 
+/** The unit a document was opened from, when the bot is in several files
+ *  (`import "lib/x.bot"`): the server merged the fragments into this one
+ *  document, each declaration naming its file (`file`), and a save must
+ *  present the revision the document was opened at — the digest of every
+ *  file's path and content — or it is refused as a conflict. */
+export interface UnitInfo {
+  /** The unit's directory, as the file was named. Empty for a cloud bundle. */
+  root: string;
+  /** The main file's path from the root. */
+  main: string;
+  revision: string;
+  files: UnitFileInfo[];
+}
+
+export interface UnitFileInfo {
+  rel: string;
+  profile?: number;
+  imports?: string[];
+}
+
 /** A declared terminal failure: `fail <name>:` with a typed code the run's
  *  `failure_code` carries, a templated message, and whether the run stays
  *  resumable. The bare `fail` target has no declaration. */
 export interface FailDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   description?: string;
   code?: string;
@@ -38,6 +66,10 @@ export interface FailDecl {
 }
 
 export interface Comment {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   text: string;
 }
 
@@ -46,10 +78,18 @@ export interface Comment {
 // ---------------------------------------------------------------------------
 
 export interface VarsBlock {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   fields: VarField[];
 }
 
 export interface VarField {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   type: TypeExpr;
   default?: Literal;
@@ -77,10 +117,18 @@ export type LiteralKind = "string" | "int" | "float" | "bool";
 // ---------------------------------------------------------------------------
 
 export interface PresetsBlock {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   entries: Preset[];
 }
 
 export interface Preset {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   // Rich metadata, present only for file-based presets (a bundle's
   // presets/<name>.md). In-source `presets:` entries set only name + values.
@@ -103,10 +151,18 @@ export interface PresetValue {
 export type AttachmentType = "file" | "image";
 
 export interface AttachmentsBlock {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   fields: AttachmentField[];
 }
 
 export interface AttachmentField {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   type: AttachmentType;
   required?: boolean;
@@ -259,6 +315,10 @@ export interface StagedUpload {
 export type MCPTransport = "unknown" | "stdio" | "http" | "sse";
 
 export interface MCPServerDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   transport?: MCPTransport;
   command?: string;
@@ -299,6 +359,10 @@ export interface CompactionBlock {
 // ---------------------------------------------------------------------------
 
 export interface PromptDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   body: string;
   // Written inline on the property that references it (`system: "…"`);
@@ -307,6 +371,10 @@ export interface PromptDecl {
 }
 
 export interface SchemaDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   fields: SchemaField[];
 }
@@ -354,6 +422,10 @@ export interface FallbackDecl {
 }
 
 export interface AgentDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   model: string;
   // Execution backend name (e.g. "claude_code", "codex", "claw"). When
@@ -389,6 +461,10 @@ export interface AgentDecl {
 }
 
 export interface JudgeDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   model: string;
   backend?: string;
@@ -421,6 +497,10 @@ export interface JudgeDecl {
 // ---------------------------------------------------------------------------
 
 export interface CursorDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   description?: string;
   values?: CursorEnumValue[];
@@ -457,6 +537,10 @@ export type RouterMode =
   | "llm";
 
 export interface RouterDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   mode: RouterMode;
   model?: string;
@@ -477,6 +561,10 @@ export interface RouterDecl {
 }
 
 export interface HumanDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   input: string;
   output: string;
@@ -495,6 +583,10 @@ export interface HumanDecl {
 }
 
 export interface ToolNodeDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   command: string;
   // Optional input schema reference; lets the tool consume structured
@@ -515,6 +607,10 @@ export interface ToolNodeDecl {
 // boolean ANDs, counters, and other plain computation that shouldn't
 // burn tokens.
 export interface ComputeDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   input?: string;
   output: string;
@@ -536,6 +632,10 @@ export interface ComputeExpr {
 // pkg/dsl/ast/jsonenc.go jsonSubbotDecl: all fields omitempty except name;
 // `with` reuses the {key,value} shape of edge data mappings.
 export interface SubbotDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   source?: string;
   with?: WithEntry[];
@@ -549,6 +649,10 @@ export interface SubbotDecl {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files (`import "lib/x.bot"`). Read-only: the save writes
+   *  the declaration back to that file, and a new one to the main. */
+  file?: string;
   name: string;
   vars?: VarsBlock;
   attachments?: AttachmentsBlock;
@@ -658,6 +762,10 @@ export interface ListFilesResponse {
 }
 
 export interface SaveFileResponse {
+  /** For a bot in several files: the unit's revision after the save, and
+   *  the files the save rewrote (from the unit's root). */
+  revision?: string;
+  files?: string[];
   path: string;
   source: string;
   /** Present only after a real local on-disk write, never for cloud/bundle sources. */

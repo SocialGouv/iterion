@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"io/fs"
 	"path"
 	"regexp"
@@ -193,7 +194,7 @@ func varRefsIn(fsys fs.FS, dir string) []string {
 // otherwise demand a var the workflow does not read.
 func scansForVarRefs(rel string) bool {
 	name := strings.TrimSuffix(rel, ".tmpl")
-	return name == "main.bot" || strings.HasPrefix(name, "prompts/")
+	return name == "main.bot" || strings.HasPrefix(name, "prompts/") || strings.HasPrefix(name, unit.FragmentDir+"/")
 }
 
 // sortedAnnexes returns the annex paths in a stable order.
@@ -244,17 +245,28 @@ func (e *GeneratedError) Error() string {
 // a structurally sound bot — the missing credential is surfaced at
 // run/validate time, not here.
 func compileGuard(name, src string, annexes map[string][]byte) error {
-	pr := parser.Parse(name, src)
-	for _, d := range pr.Diagnostics {
+	// The workflow's unit: the file and the fragments the shape ships under
+	// lib/, keyed by their bundle-relative path — what the launch reads
+	// beside the main. A shape whose main imports compiles as one program
+	// here, or is refused here.
+	main := path.Base(name)
+	files := map[string]string{main: src}
+	for rel, body := range annexes {
+		if strings.HasPrefix(rel, unit.FragmentDir+"/") && strings.HasSuffix(rel, ".bot") {
+			files[rel] = string(body)
+		}
+	}
+	u := unit.LoadMap(files, main)
+	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return &GeneratedError{Name: name, Detail: "does not parse: " + d.Error()}
 		}
 	}
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
+	if u.Merged == nil || len(u.Merged.Workflows) == 0 {
 		return &GeneratedError{Name: name, Detail: "has no workflow"}
 	}
-	mergeAnnexPrompts(pr.File, annexes)
-	for _, d := range ir.Compile(pr.File).Diagnostics {
+	mergeAnnexPrompts(u.Merged, annexes)
+	for _, d := range ir.Compile(u.Merged).Diagnostics {
 		if d.Severity != ir.SeverityError || d.Code == ir.DiagMissingModelOrBackend {
 			continue
 		}

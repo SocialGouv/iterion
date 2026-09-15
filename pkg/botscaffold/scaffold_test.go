@@ -1,6 +1,7 @@
 package botscaffold
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,8 +100,9 @@ func TestScaffold_SpecMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pr := parser.Parse("main.bot", string(src))
-			for _, d := range pr.Diagnostics {
+			// The bundle's unit: main.bot and the fragments its imports reach.
+			u := unit.LoadDir(filepath.Join(dir, "main.bot"))
+			for _, d := range u.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Errorf("parse: %s", d.Error())
 				}
@@ -113,10 +115,10 @@ func TestScaffold_SpecMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OpenDir: %v", err)
 			}
-			if err := runview.MergeBundlePrompts(pr.File, b); err != nil {
+			if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
 				t.Fatalf("MergeBundlePrompts: %v", err)
 			}
-			cr := ir.Compile(pr.File)
+			cr := ir.Compile(u.Merged)
 			for _, d := range cr.Diagnostics {
 				// C018 is environment-dependent (fires only when no LLM
 				// credential is auto-detectable, e.g. CI): the zero-config

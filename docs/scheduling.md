@@ -123,7 +123,7 @@ crontab -l                                                # verify
 ```
 
 The audit bots label their findings `source:sec-audit-self` on the
-native board (see [Security in CLAUDE.md](../CLAUDE.md#security)). They
+native board (see [the security self-audit page](agents/security-selfaudit.md)). They
 pin the `iterion-sandbox-sec` image via `sandbox.image`, so the host
 needs that image present (CI publishes it; for a local loop, `docker
 tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).

@@ -186,3 +186,85 @@ Facts the implementation verified, recorded so they are not re-litigated:
 7. An inline prompt is named after its body (`_inline_<hash>`), not after
    the node and property: stable under a node's rename, collision-resolved (a second body under the same twelve-digit prefix takes a longer one)
    across groups, and shared by two references to the same text.
+
+## Amendments (lot 3, 2026-09-15)
+
+Facts the implementation of `import` verified, recorded so they are not
+re-litigated:
+
+8. **A new keyword is additive when it opens a construction that was invalid
+   before it and stays usable as a name.** `import "…"` at the head of a
+   file parsed as nothing in every profile, and the lexer keeps a keyword
+   usable as a node or field name (`tokenAsIdent`), so `import` entered
+   every profile at once. This replaces §1's "a new keyword enters only in
+   the next profile": what the profile governs is the MEANING of a valid
+   text, and a keyword that changes none needs no profile.
+9. **The floor a bundle declares is the highest release among what its
+   sources use**: a syntax profile above 1 (`ProfileSince`) or `import`
+   (`ImportSince`, the release that ships this lot). One predicate
+   (`bundle.CheckSyntaxFloor`) serves `validate` (C252) and the push
+   admission (409); the walk that finds the profile names the files that
+   import, whatever their profile.
+10. **The identity of a run is extended, never replaced.** The workflow
+    hash keeps its formula for every run recorded so far (the main's bytes,
+    a bundle's `prompts/` and `presets/`) and folds in, only when the unit
+    has them, the fragments by path and the files the prompts' `{{include}}`
+    read — a pre-existing hole, closed. A single-file bot without includes
+    hashes byte-identically. An inline launch's identity is the flattened
+    text it uploads: a resume re-flattens the same unit into the same text.
+11. **The unit's files travel with the run** (`workflow_sources`, main
+    first; a list, since a path holds dots a BSON key cannot), stamped at
+    launch and restamped with the hash by a forced resume; `rewind --auto`
+    diffs the recorded unit against the unit on disk and refuses a unit run
+    that recorded its main alone rather than diff it (an edit in a fragment
+    would be invisible). A bot in one file records nothing more than it did.
+12. **Duplicates are refused at the merge, by name, across and within
+    files** (E010 — a code declared and never emitted before this lot);
+    the compiler's own uniqueness checks then see no cross-file duplicate.
+    A subbot declared in a fragment is made root-relative on the merged
+    copy only, the base every host resolves a child against.
+13. **`lib/` is the rule, not a convention**: an import must resolve under
+    the bot's `lib/` (E045), which is what makes "never discovered as a
+    workflow" true at the loader instead of asked of every discovery
+    surface; the registry skips a `lib/` beside a workflow file all the
+    same, and a fragment validated alone says where it is validated.
+14. **Provenance rides the document, never the transport.**
+    `MarshalFileWithProvenance` puts each declaration's file — a slash path
+    from the unit's root — on every declaration, keyed block, block entry
+    and comment, by reflection over the AST and its mirror; `MarshalFile`
+    is byte-identical to what it was. The studio saves by provenance: each
+    declaration back to its file, a new one to the main, only the files
+    whose program changed rewritten, every other main of the directory
+    that imports a rewritten fragment checked to still compile, the
+    revision the document was opened at (the unit's digest) presented and
+    found unchanged twice — before the locks and under them — and the
+    writes published as one journaled transaction (the assistant's, now
+    shared). Journaled, not "atomic": a crash between two publishes leaves
+    the recovery records the transaction keeps, named in the error.
+15. **The cloud editor keeps the whole bundle.** A bundle's main that
+    imports is parsed from the bundle's files map (`/api/parse` with
+    `files` and `main`) and written back by provenance (`/api/unparse`
+    returns only the files whose program changed), patched into the map
+    the client fetched and written as ONE versioned PUT, so manifest,
+    prompts, skills and every other file survive and a concurrent editor
+    is a conflict.
+16. **A third axis exists beside the profile and the engine floor**: the
+    runtime semantics a workflow runs under (`runtime_semantics`, the
+    public-contract work of #1165), which the profile does not govern and
+    the floor only bounds. It enters as lot 4bis on its own registry;
+    the merge, the E010 check and the provenance are written by reflection
+    over `ast.File`'s fields so that two more declaration kinds trouble
+    none of them.
+17. **A refusal of a text that had no legitimate reading is not a change
+    of meaning**, and is not profile-gated: a key declared twice in one
+    keyed block, silently shadowed before this lot, is E010 in every
+    profile, in one file as across two. The same rule completed the
+    compiler's own C041 (`emit`, `wait` and `await_answers` were missing
+    from the node namespace; two groups could share a name). A
+    mechanical split must change nothing about what the language
+    accepts: the loader's namespaces are held to the compiler's by a
+    test over every pair of kinds, not by a second hand-kept list.
+18. **The header precedes the imports.** The lexer takes the profile off
+    the file's first significant line; a `dsl:` below an `import` was not
+    applied and is E041, as one below a declaration is — never a profile
+    the AST claims and the strings did not get.
