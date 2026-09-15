@@ -2,7 +2,6 @@ package bots
 
 import (
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -45,7 +44,7 @@ func TestCatalogExprConcatIsArrayOnly(t *testing.T) {
 	}
 
 	for _, path := range targets {
-		src, err := os.ReadFile(path)
+		src, err := botUnitSource(path)
 		if err != nil {
 			t.Errorf("%s: read: %v", path, err)
 			continue

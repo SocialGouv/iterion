@@ -94,8 +94,7 @@ func TestLoadSchema_CacheHitAndInvalidate(t *testing.T) {
 workflow w:
   vars:
     only_one: string = "hi"
-  agent a:
-    model: "test"
+  entry: a
   a -> done
 
 agent a:

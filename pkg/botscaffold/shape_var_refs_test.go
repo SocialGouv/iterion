@@ -7,8 +7,9 @@ import (
 	"testing"
 )
 
-// renderedVarRefs scans a RENDERED bundle — main.bot and the annexes that
-// read the Spec's vars, not a child .bot, which declares its own — for
+// renderedVarRefs scans a RENDERED bundle — main.bot, the annexes that
+// read the Spec's vars and the fragments under lib/ (rendered against the
+// same vars), not a child .bot, which declares its own — for
 // {{vars.<name>}} references, sorted.
 func renderedVarRefs(t *testing.T, spec Spec) []string {
 	t.Helper()
@@ -24,7 +25,7 @@ func renderedVarRefs(t *testing.T, spec Spec) []string {
 	}
 	scan(mainBot)
 	for _, rel := range sortedAnnexes(annexes) {
-		if strings.HasSuffix(rel, ".bot") {
+		if strings.HasSuffix(rel, ".bot") && !strings.HasPrefix(rel, "lib/") {
 			continue
 		}
 		scan(string(annexes[rel]))

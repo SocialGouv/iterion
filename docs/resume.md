@@ -302,6 +302,16 @@ with updated workflow (force)** retry. Force is useful after repairing the
 workflow, but it is an operator assertion that stored outputs, node IDs,
 schemas, and the new graph are still compatible.
 
+The hash covers everything the run's program was made of: the main file's
+bytes, a bundle's `prompts/*.md` and `presets/*.md`, then — only when the
+unit has them — the fragments its `import` lines reach (see
+[dsl.md](dsl.md)) and the files its prompts' `{{include}}` markers read,
+nested ones too. A single-file bot without includes hashes exactly as it
+always has. A fragment or an included file edited while a run is parked is
+therefore a source change the gate refuses without `--force`; a run of a bot
+that uses `{{include}}`, launched before the include closure entered the hash,
+compares differently once and resumes with `--force` that one time.
+
 `--file` defaults to the persisted `FilePath`. Bundle runs also persist their
 bundle path; resume reopens a `.botz` or bundle directory so prompts, skills,
 attachments, recipes, and the selected preset are restored. If the original
@@ -392,6 +402,13 @@ iterion rewind --run-id RUN_ID --node implement
 now, and rewinds to the earliest node the edit affects — so the loop is *edit,
 rewind, resume*, with nothing to translate by hand. It prints what it detected,
 so you can confirm it understood the change before resuming.
+
+A bot in several files (`import "lib/x.bot"`) records every file of its unit
+on the run (`workflow_sources`, beside `workflow_source` for the main), so an
+edit in a fragment is seen like one in the main. A run of such a bot that
+recorded its main alone — launched before the unit's files were recorded, or
+over the 1 MiB cap — is refused rather than diffed on the main, and asks for
+`--node`.
 
 Detection is declaration-granular and resolves indirection:
 

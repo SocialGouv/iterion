@@ -4,6 +4,7 @@ import { useUIStore } from "@/store/ui";
 import { fileWatcher } from "@/api/ws";
 import * as api from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
+import { touchesOpenUnit } from "@/hooks/unitFiles";
 import type { ServerWsEvent } from "@/api/types";
 
 const RELOAD_DEBOUNCE_MS = 500;
@@ -47,7 +48,10 @@ export function useFileWatcher() {
           break;
 
         case "file_modified": {
-          if (event.path !== filePath) break;
+          // The file itself, or — for a bot in several files — one of the
+          // fragments its imports reach: the merged document and the
+          // revision a save presents follow either.
+          if (!filePath || !touchesOpenUnit(event.path, filePath, store.unit)) break;
 
           // Shared reload: re-open the file and apply it to this tab's
           // store. On failure, surface an actionable toast that names the
@@ -63,6 +67,8 @@ export function useFileWatcher() {
                 if (s.currentFilePath !== path) return;
                 s.setDocument(result.document);
                 s.setDiagnostics(result.diagnostics);
+                // The files changed on disk: the revision a save presents must follow.
+                s.setUnit(result.unit ?? null);
                 s.setCurrentSource(result.source);
                 s.markSaved();
                 if (notifySuccess) {
@@ -91,7 +97,7 @@ export function useFileWatcher() {
             // re-read inside the timer so a user switching the open file
             // between the event arrival and the 500ms fire doesn't get
             // the OLD file's contents stomped onto the new one.
-            const targetPath = event.path;
+            const targetPath = filePath;
             clearTimeout(reloadTimerRef.current);
             reloadTimerRef.current = setTimeout(() => {
               const current = docStoreRef.current.getState();

@@ -1,0 +1,209 @@
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema review_output:
+  ## family is enum-constrained so a hallucinated third value fails
+  ## structured-output validation (triggering the retry path) instead
+  ## of silently breaking the cross-family agreement signal.
+  family: string [enum: "claude", "gpt"]
+  ## findings is a free-form JSON array of finding objects (the schema
+  ## DSL has no object-array type); the per-object shape is specified
+  ## in review_system. emit reads it as JSON.
+  findings: json
+  scanned_areas: string[]
+  ## Non-blocking reviewer questions / load-bearing assumptions to
+  ## confirm — the falsifiability channel, kept strictly out of findings
+  ## (never filed to the board, never gates a merge).
+  questions: string[]
+  ## Per-ticket conformance verdicts, ONE PER LINE in a single scalar
+  ## string (shell-safe downstream, same rationale as emit_output's
+  ## questions). "" when ticket context is inactive.
+  ticket_conformance: string
+  summary: string
+
+## Normalised per-family review blocks. In MONO only one reviewer runs, and
+## an {{outputs.<absent node>.<field>}} reference renders as a LITERAL
+## placeholder rather than as nothing — which reads to the merging agent as a
+## broken template, not as "that family did not run" (observed live: a mono
+## review was mistaken for a reviewer failure). Routing both families through
+## a compute makes every field exist with a real value on every path.
+schema family_reviews:
+  review_scope: string
+  claude_ran: bool
+  claude_summary: string
+  claude_findings: json
+  claude_areas: json
+  claude_questions: json
+  claude_ticket_conformance: string
+  gpt_ran: bool
+  gpt_summary: string
+  gpt_findings: json
+  gpt_areas: json
+  gpt_questions: json
+  gpt_ticket_conformance: string
+
+schema emit_output:
+  report_path: string
+  total_findings: int
+  issues_created: string[]
+  failed_issues: string[]
+  ## The final merged/capped finding set, carried forward so the forge
+  ## publish step can map each finding to an inline PR comment. Same
+  ## per-object shape the reviewers emit (file/line/line_end/severity/
+  ## category/title/detail/suggestion/replacement/confidence/reviewers).
+  findings: json
+  ## Merged non-blocking questions, ONE PER LINE in a single string (NOT a
+  ## JSON array): an all-string array decodes to []string, which the tool-node
+  ## command substitution space-joins instead of JSON-encoding, breaking the
+  ## downstream publish shell (a question landing in command position → exit
+  ## 127). A scalar string is shell-escaped as one safe token. The
+  ## falsifiability channel surfaced in the report + PR summary body, never on
+  ## the board and never gating.
+  questions: string
+  ## Merged per-ticket conformance verdicts, one per line in a single scalar
+  ## string (same shell-safety rationale as questions). "" = feature inactive.
+  ticket_conformance: string
+
+schema diff_precheck_output:
+  is_empty: bool
+  changed_files: int
+  ## reviewed_sha: the worktree HEAD the reviewers judge against. Carried to
+  ## publish_review so it can refuse to post a review whose line anchors were
+  ## computed against a tree that has since changed (a resume after the branch
+  ## advanced) — a stale-review guard, not a new gate.
+  reviewed_sha: string
+  ## base_sha: the resolved merge-base the scope is taken from. Published so
+  ## the reviewers diff against the SAME base this node counted — recomputing
+  ## `merge-base base_ref HEAD` in a prompt would put the two halves on
+  ## different bases the moment the local ref is stale, which is the one case
+  ## that matters.
+  base_sha: string
+  ## base_is_current: whether that base came from the remote. False means the
+  ## scope rests on whatever the local checkout last knew, so the review is
+  ## not authoritative about what the branch introduced.
+  base_is_current: bool
+
+## REVIEW TIERS (#685). The concrete, resolved values `tier_expand`
+## derives from `review_tier` + the sentinel-default knobs — see the vars'
+## own docs for the precedence rule (explicit value wins over the tier).
+schema tier_resolution:
+  severity_threshold: string
+  max_findings: int
+  post_to_board: bool
+  ## "mono" | "dual" — the topology this run ACTUALLY executes under, not
+  ## merely what `review_mode` resolved to: audit forces "dual" here even
+  ## when review_mode itself stayed "mono" (the credential-based default),
+  ## so the router, and publish_review's cross-confirmation wording, agree
+  ## with what really ran. See publish_review's REVIEW_MODE env var below.
+  effective_review_mode: string
+
+## ─── Forge PR review (v0.3.0) schemas ───────────────────────────
+
+## pr_gate: deterministic branch on whether a PR target was given, so
+## the (LLM) publish step is reached ONLY when pr_url is non-empty.
+## Carries emit's findings + counts through to publish_review.
+schema pr_gate_input:
+  pr_url: string
+  findings: json
+  ## questions is a scalar string (one question per line), NOT a json array —
+  ## see emit_output.questions for why (shell-safety of the publish command).
+  questions: string
+  ## Same scalar-string contract as questions.
+  ticket_conformance: string
+  total_findings: int
+  ## RECOVERY INPUTS: the two reviewers' own raw finding arrays, carried
+  ## untouched past converge. When converge's merged `findings` comes back
+  ## unreadable (the LLM has emitted prose such as "See structured findings
+  ## array." instead of the array — observed on PR #300, 8 findings lost),
+  ## publish falls back to the union of these two, de-duplicated
+  ## DETERMINISTICALLY by anchor. Losing the LLM's merge is far better than
+  ## losing every finding.
+  claude_findings: json
+  gpt_findings: json
+
+schema pr_gate_output:
+  has_pr: bool
+  pr_url: string
+  findings: json
+  questions: string
+  ticket_conformance: string
+  total_findings: int
+  claude_findings: json
+  gpt_findings: json
+
+schema publish_input:
+  review_scope: string
+  ## diff_precheck's file count, carried to the gate. `-1` is its ignorance
+  ## sentinel — the scope could not be computed, so no code was read — and the
+  ## gate fails closed on it. Distinct from `0`, which is a real answer.
+  scope_files: json
+  ## Engine telemetry is mapped at publication, never supplied by the LLM.
+  ai_run_tokens: json
+  ai_reviewer_claude_model: json
+  ai_reviewer_claude_backend: json
+  ai_reviewer_claude_tokens: json
+  ai_reviewer_gpt_model: json
+  ai_reviewer_gpt_backend: json
+  ai_reviewer_gpt_tokens: json
+  ai_reviewer_claude_glance_model: json
+  ai_reviewer_claude_glance_backend: json
+  ai_reviewer_claude_glance_tokens: json
+  ai_reviewer_gpt_glance_model: json
+  ai_reviewer_gpt_glance_backend: json
+  ai_reviewer_gpt_glance_tokens: json
+  ai_converge_model: json
+  ai_converge_backend: json
+  ai_converge_tokens: json
+  pr_url: string
+  ## reviewed_sha: the worktree HEAD the findings anchor to. Comes in on the
+  ## EDGE so the publish tool reads it as a typed `{{input.X}}` of its own
+  ## schema, with the same value on every path that reaches it.
+  reviewed_sha: string
+  ## Same EDGE-injection rule as reviewed_sha above, and for the same
+  ## reason: the topology REPORTING needs to say "dual" whenever audit
+  ## forced the fan-out, even on a run where `review_mode` itself never
+  ## changed from "mono" — a raw {{vars.review_mode}} would under-report
+  ## that case. Injected from tier_expand's output on the pr_gate ->
+  ## publish_review edge, exactly like reviewed_sha is from diff_precheck.
+  effective_review_mode: string
+  findings: json
+  questions: string
+  ticket_conformance: string
+  total_findings: int
+  claude_findings: json
+  gpt_findings: json
+
+schema publish_output:
+  ## published: a forge review was successfully created.
+  published: bool
+  ## forge: "github" | "gitlab" | "forgejo" | "unknown" — the team
+  ## connection's provider, echoed by the iterion forge-publish
+  ## endpoint. Free-form string, not a closed DSL enum.
+  forge: string
+  ## review_url: link to the posted review/comment thread (evidence).
+  review_url: string
+  ## comments_posted: inline comments the forge ACCEPTED (re-fetched as
+  ## evidence, not self-reported optimistically).
+  comments_posted: int
+  ## suggestions_posted: of those, how many carried a ```suggestion block.
+  suggestions_posted: int
+  ## skipped_reason: non-empty when nothing was published (e.g. unknown
+  ## forge, CLI not authenticated, zero anchorable findings).
+  skipped_reason: string
+  ## summary: what was posted + the re-fetch evidence behind the counts.
+  summary: string
+
+schema publish_health_input:
+  published: bool
+  comments_posted: int
+  total_findings: int
+  skipped_reason: string
+  review_url: string
+
+## Deterministic anti-façade gate: when a publish was requested AND
+## there were findings, at least one inline comment must have landed.
+## degraded=true surfaces a loud banner (the board + report already
+## succeeded, so this informs rather than hard-fails the run).
+schema publish_health_output:
+  degraded: bool
+  banner: string
+

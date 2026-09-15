@@ -108,9 +108,9 @@ type BaseURLOverride struct {
 
 // OperationOverlay corrects one operation.
 type OperationOverlay struct {
-	// ID pins the public id, so a vendor's next release cannot move it. This
-	// is the identity lock in its per-operation form: the overlay states the
-	// id, the derivation only proposes one.
+	// ID chooses the public name after generation. The generation identity
+	// lock preserves its method+path ownership; this derived-id lookup alone
+	// cannot establish identity across vendor changes.
 	ID string `yaml:"id,omitempty"`
 	// Summary / Description replace the vendor's wording — for a curated MCP
 	// tool this is what an agent reads to choose it, so it is worth writing.

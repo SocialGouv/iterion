@@ -48,6 +48,8 @@ type ConversationLoop struct {
 	LifecycleHooks  *lifehooks.Runner      // In-process programmatic hooks (may be nil; default no-op)
 	CommandRegistry interface{}            // Slash command registry (may be nil; *commands.Registry)
 
+	imageGenDisabled bool // subagent allow-lists can deny this dynamic tool
+
 	// Typed results: the last structured_output payload this loop recorded
 	// (read by a parent for its subagents), and the payloads its subagents
 	// returned, keyed by task id (read by the workflow tool's agent()).
@@ -373,17 +375,51 @@ func (loop *ConversationLoop) injectCacheControl(req *api.CreateMessageRequest) 
 
 // allTools returns built-in tools merged with any MCP tools.
 func (loop *ConversationLoop) allTools() []api.Tool {
+	builtins := loop.Tools
+	if loop.imageGenerator() != nil {
+		present := false
+		for _, tool := range builtins {
+			if tool.Name == "image_gen" {
+				present = true
+				break
+			}
+		}
+		if !present {
+			builtins = append(append([]api.Tool(nil), builtins...), tools.ImageGenTool())
+		}
+	}
 	if loop.MCPRegistry == nil {
-		return loop.Tools
+		return builtins
 	}
 	mcpAPITools := loop.MCPRegistry.AllAPITools()
 	if len(mcpAPITools) == 0 {
-		return loop.Tools
+		return builtins
 	}
-	combined := make([]api.Tool, 0, len(loop.Tools)+len(mcpAPITools))
-	combined = append(combined, loop.Tools...)
+	combined := make([]api.Tool, 0, len(builtins)+len(mcpAPITools))
+	combined = append(combined, builtins...)
 	combined = append(combined, mcpAPITools...)
 	return combined
+}
+
+func (loop *ConversationLoop) imageGenerator() api.ImageGenerator {
+	if loop.imageGenDisabled {
+		return nil
+	}
+	if loop.Config != nil && loop.Config.ProviderName != "" && loop.Config.ProviderName != "openai" {
+		return nil
+	}
+	if capability, ok := loop.Client.(interface{ SupportsImageGeneration() bool }); ok && !capability.SupportsImageGeneration() {
+		return nil
+	}
+	g, _ := loop.Client.(api.ImageGenerator)
+	return g
+}
+
+func (loop *ConversationLoop) generatedImageDir() string {
+	if loop.Config == nil {
+		return ""
+	}
+	return loop.Config.GeneratedImageDir
 }
 
 // baseLifeCtx returns a Context skeleton populated with the session-level
@@ -1013,6 +1049,8 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 		result, err = tools.ExecuteWebFetch(input)
 	case "web_search":
 		result, err = tools.ExecuteWebSearch(input)
+	case "image_gen":
+		result, err = tools.ExecuteImageGen(ctx, input, loop.imageGenerator(), loop.generatedImageDir())
 	case "ask_user":
 		q, ok := tools.AskUserInput(input)
 		if !ok {
@@ -1378,6 +1416,8 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 		result, err = tools.ExecuteWebFetch(input)
 	case "web_search":
 		result, err = tools.ExecuteWebSearch(input)
+	case "image_gen":
+		result, err = tools.ExecuteImageGen(ctx, input, loop.imageGenerator(), loop.generatedImageDir())
 	case "ask_user":
 		var askText string
 		var askErr error

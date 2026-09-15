@@ -163,3 +163,56 @@ before enabling the queue.
 
 The ruleset is instantly reversible by an admin:
 `gh api -X DELETE repos/SocialGouv/iterion/rulesets/18857412`.
+
+
+### A job reports inotify “too many open files” (#1198)
+
+`inotify_init` can report `EMFILE` for the process descriptor limit or the
+real user's inotify-instance limit. The latter can be shared by several
+runner containers with the same host UID. Read the job's **Watcher resource
+limits** step and the failing process's `watcher resources` error before
+choosing a remedy. The error retains its original errno and reports the
+real UID, descriptor ceilings, visible process descriptors, an ordinary
+file-open observation and the inotify sysctls. It neither changes a limit
+nor skips the watcher test. Counts are observations at failure time, not an
+atomic inventory of every container on the node.
+
+An ordinary file opening successfully while inotify initialization returns
+`EMFILE`, with descriptors well below `nofile_soft`, points toward the
+per-user instance ceiling. A failed ordinary open and a reached descriptor
+ceiling point toward process FD exhaustion. Confirm with the runner/node
+operator before changing shared limits or concurrency. The configuration
+in `SocialGouv/infra-apps/arc-runners/values.yaml` controls the shared scale
+set; the repository's `CI_SELF_HOSTED=off` switch remains the emergency
+fallback, not a silent automatic response to this error.
+
+#### Bounded reproduction on the ARC worker
+
+On 2026-09-13 an ARC CI job reported real UID 1001, an identity UID map,
+`RLIMIT_NOFILE=1048576`, `max_user_instances=128` and
+`max_user_watches=228254`. A separate diagnostic Job on
+`worker-nodepool-node-e6dab0` (Linux 5.15.0-134-generic) reproduced that
+128-instance boundary under the previously checked unused UID 2147480000:
+
+```json
+{"uid":2147480000,"max_user_instances":128,"nofile":[1048576,1048576],"child":{"held":128,"errno":24},"other_process_inotify_errno":24,"ordinary_fd":"open_ok"}
+```
+
+One process held all 128 instances; the next call in it and a second process
+failed with `EMFILE`, while `/dev/null` still opened. Closing the descriptors
+immediately restored capacity. The Job added no watches, changed no sysctl
+and was deleted after completion. No runner remained during inspection, so
+this is a reproduction of the shared resource boundary, not a measurement
+of the historical CI peak.
+
+The exact [Job manifest](../scripts/diagnostics/inotify-shared-uid.yaml) is
+retained for operators. Before an approved repeat, choose the node explicitly
+and verify the dedicated UID has no processes/inotify instances on that node;
+never substitute the runner UID. The script refuses ceilings above 512, has
+no retries, and is bounded by a 120-second deadline and 128 MiB memory limit.
+It requires Linux and the pinned image's Python 3. It is an operator diagnostic,
+not a CI step or an automatically deployed resource.
+
+A proposed configurable floor is tracked separately in the infrastructure PR
+linked from #1198. Keep the ticket open until approved activation and
+representative concurrent CI runs demonstrate the result.

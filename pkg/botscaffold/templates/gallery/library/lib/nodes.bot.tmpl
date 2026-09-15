@@ -1,0 +1,29 @@
+## Nodes of <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — a fragment main.bot imports.
+## A fragment may import a sibling by its bare name — a path is relative
+## to the file that imports it — and a file is read once however many
+## files import it. The schemas this fragment uses come from
+## lib/schemas.bot, imported here so the fragment reads on its own.
+
+dsl: 2
+import "schemas.bot"
+
+prompt mission:
+<%indent 2 .Instructions%>
+<%- if .Vars%>
+
+  Inputs for this run:
+<%- range .Vars%>
+  - <%.Name%>: {{vars.<%.Name%>}}
+<%- end%>
+<%- end%>
+
+prompt kickoff:
+  Carry out your mission now. Work end-to-end: investigate, act, and
+  verify before reporting. Set mission_complete=true only when the
+  mission is genuinely done.
+
+agent campaign:<%template "llm_fields" .%>
+  input: mission_report
+  output: mission_report
+  system: mission
+  user: kickoff

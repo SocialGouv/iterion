@@ -122,10 +122,18 @@ type RemoteRunsLaunchOptions struct {
 	// to /api/runs/uploads first and referenced by upload id.
 	Attach             map[string]string
 	ModelOverridesJSON []byte // raw model_overrides array (from @file)
-	CallbackURL        string
-	CallbackToken      string
-	Follow             bool
-	FollowInterval     time.Duration
+	// RepoURL / RepoRef aim the run at a git repository the cloud runner
+	// clones before sandboxing, and ConnectionID names the forge connection
+	// whose managed token authenticates that clone. Without them a
+	// repo-scoped bot opens on a workspace with no checkout and has to
+	// re-derive from the forge API what it was written to read from disk.
+	RepoURL        string
+	RepoRef        string
+	ConnectionID   string
+	CallbackURL    string
+	CallbackToken  string
+	Follow         bool
+	FollowInterval time.Duration
 }
 
 func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts RemoteRunsLaunchOptions) error {
@@ -134,11 +142,11 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	}
 	req := map[string]any{}
 	if opts.FilePath != "" {
-		src, err := os.ReadFile(opts.FilePath)
+		src, err := prepareUnit(opts.FilePath)
 		if err != nil {
 			return err
 		}
-		req["source"] = string(src)
+		req["source"] = src
 		req["file_path"] = opts.FilePath
 	}
 	if opts.BotID != "" {
@@ -161,6 +169,9 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		"merge_strategy":    opts.MergeStrategy,
 		"callback_url":      opts.CallbackURL,
 		"callback_token":    opts.CallbackToken,
+		"repo_url":          opts.RepoURL,
+		"repo_ref":          opts.RepoRef,
+		"connection_id":     opts.ConnectionID,
 	} {
 		if v != "" {
 			req[k] = v
@@ -717,11 +728,11 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 		req["answers"] = answers
 	}
 	if opts.FilePath != "" {
-		src, err := os.ReadFile(opts.FilePath)
+		src, err := prepareUnit(opts.FilePath)
 		if err != nil {
 			return err
 		}
-		req["source"] = string(src)
+		req["source"] = src
 		req["file_path"] = opts.FilePath
 	}
 	if opts.Force {
@@ -790,11 +801,11 @@ func RemoteRunsDelete(ctx context.Context, c *RemoteClient, p *Printer, id strin
 }
 
 func RemoteRunsPreviewCost(ctx context.Context, c *RemoteClient, p *Printer, filePath string, vars map[string]string) error {
-	src, err := os.ReadFile(filePath)
+	src, err := prepareUnit(filePath)
 	if err != nil {
 		return err
 	}
-	req := map[string]any{"source": string(src), "file_path": filePath}
+	req := map[string]any{"source": src, "file_path": filePath}
 	if len(vars) > 0 {
 		req["vars"] = vars
 	}

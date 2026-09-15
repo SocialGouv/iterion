@@ -170,7 +170,7 @@ const productDocsBotPath = "product-docs/main.bot"
 // line is not: the prompt has several).
 func publishSystemPrompt(t *testing.T) string {
 	t.Helper()
-	src, err := os.ReadFile(productDocsBotPath)
+	src, err := botUnitSource(productDocsBotPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", productDocsBotPath, err)
 	}

@@ -814,10 +814,11 @@ forge kind, decided before any store changes.
 - **F13 (part)** — response-schema validation. A 2xx whose body does not match
   the declared schema is accepted as data. The status and redirect halves are
   fixed; this one needs a schema validator the package does not have.
-- **The operation identity lock** — the overlay's `id:` pins match DERIVED ids,
-  not canonical method+path identities, so they cannot actually prevent a
-  vendor's next release from moving an id onto another operation. A committed
-  method+path → id mapping is what would.
+- **The operation identity lock — implemented in P1a (#1209).** The overlay's
+  `id:` pins alone match derived names, not canonical method+path identities.
+  `connectors gen` now reconciles both generated and effective public identities
+  through a committed, versioned `identity.lock.yaml`, retaining retired names
+  and auth scheme shapes. See [the generation contract and recovery procedure](../connector-identities.md).
 
 ### What is still only prose
 
@@ -1422,7 +1423,7 @@ shipping a `connectors` directory iterion may not read.
 |---|---|
 | Pinned origin (which host a credential may reach) | **Shipped** (round four) — recorded at `connections add`, no package fallback |
 | Pinned placement (where in the request it goes) | **Shipped** (round five) — `PlacementOf` is the one definition, written and compared |
-| Pinned operation identity (what the call DOES) | **Not pinned, and now unreachable by default** — the untrusted tier that could redefine it is a grant (`ITERION_CONNECTOR_PROJECT_CATALOG`). The identity lock this ADR has owed since round two is still owed, and is what a granted project tier or a future team/marketplace tier will need |
+| Pinned operation identity (what the call DOES) | **Generation history protected in P1a (#1209)** — `identity.lock.yaml` prevents `connectors gen` from reassigning operation/auth names across regeneration. This is not a runtime package signature or immutable grant: the project-catalog trust opt-in remains, and cloud package pinning is still owed. See [connector-identities.md](../connector-identities.md) |
 
 ### A call that never LEFT was parked as an undecided mutation
 

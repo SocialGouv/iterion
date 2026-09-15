@@ -294,6 +294,7 @@ export default function AssistantFileChangeOffer({
         return false;
       }
       store.setDocument(result.document);
+      store.setUnit(result.unit ?? null);
       store.setDiagnostics(result.diagnostics);
       store.setCurrentSource(result.source);
       store.markSaved();

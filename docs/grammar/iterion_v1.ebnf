@@ -10,7 +10,7 @@
    scalar a # is text.
 *)
 
-file = [ dsl_header ] { top_level_decl } ;
+file = [ dsl_header ] { import_decl } { top_level_decl } ;
 
 (* The syntax profile (ADR-098). The header, when present, is the file's
    first significant line — after blank lines and comments; absent means
@@ -21,6 +21,12 @@ file = [ dsl_header ] { top_level_decl } ;
    directive and `project_root:` are refused. Every other form below is read
    the same in both profiles. `iterion dsl migrate --to 2` rewrites a file. *)
 dsl_header = "dsl" ":" INT_LIT NEWLINE ;
+
+(* A fragment of the file's compilation unit (ADR-098 §3): a quoted,
+   relative, slash-separated path to a `.bot` under the bot's lib/,
+   resolved against the importing file; every import sits between the
+   header and the first declaration. Additive in every profile. *)
+import_decl = "import" STRING_LIT NEWLINE ;
 
 top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
                | mcp_server_decl | prompt_decl | schema_decl
