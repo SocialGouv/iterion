@@ -30,9 +30,8 @@ type Uncontracted struct {
 // Contract generation bounds. The reader enforces its own limits; these stop a
 // pathological description before it becomes a package nobody can load.
 const (
-	maxGeneratedContracts = 1024
-	maxExactNodes         = 2_000_000
-	maxContractDepth      = 64
+	maxExactNodes    = 2_000_000
+	maxContractDepth = 64
 )
 
 // contractKeys is the CLOSED vocabulary of schema keywords generation
@@ -242,9 +241,6 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 	}
 	if len(g.contracts) == 0 {
 		return nil, uncontracted, nil
-	}
-	if len(g.contracts) > maxGeneratedContracts {
-		return nil, nil, fmt.Errorf("gen: the description yields %d response contracts, over the limit of %d", len(g.contracts), maxGeneratedContracts)
 	}
 	sort.Slice(uncontracted, func(i, j int) bool {
 		if uncontracted[i].OperationID != uncontracted[j].OperationID {

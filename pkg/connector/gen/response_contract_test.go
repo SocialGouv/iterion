@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -849,6 +850,58 @@ func TestVendorDataTheReaderWouldRefuseIsReportedNotFatal(t *testing.T) {
 		t.Error("an unrelated operation lost its contract")
 	}
 	// And the package the generator wrote is one its own reader accepts.
+	if err := pkg.ValidateResponseContracts(); err != nil {
+		t.Errorf("the generator emitted a package its reader refuses: %v", err)
+	}
+}
+
+// TestADescriptionPastTheContractCeilingStillYieldsAPackage.
+//
+// The reader admits at most 1024 contracts, and generation used to abort the
+// WHOLE run when a description yielded more — no package written at all, for a
+// description larger than a threshold nobody chose. This repo's own walker
+// cites GitLab's 1844 operations, so that is an ordinary vendor rather than a
+// pathological one.
+//
+// Asking the reader per contract makes the ceiling report itself: the package
+// carries as many contracts as can be loaded, and every response past it is
+// named with the reader's own reason.
+func TestADescriptionPastTheContractCeilingStillYieldsAPackage(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"openapi":"3.0.0","info":{"title":"Probe","version":"1.0"},"paths":{`)
+	const operations = 1100
+	for i := range operations {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		n := strconv.Itoa(i)
+		b.WriteString(`"/p` + n + `":{"get":{"tags":["item"],"operationId":"itemGet` + n + `",` +
+			`"responses":{"200":{"description":"ok","content":{"application/json":{"schema":` +
+			`{"type":"object","properties":{"f` + n + `":{"type":"string"}}}}}}}}}`)
+	}
+	b.WriteString(`}}`)
+
+	pkg, report := generateWith(t, b.String(), true)
+	if len(pkg.ResponseSchemas) == 0 {
+		t.Fatal("a large description yielded no package at all")
+	}
+	referenced := 0
+	for _, op := range pkg.Operations() {
+		if op.Results[0].ResponseSchemaRef != "" {
+			referenced++
+		}
+	}
+	if referenced+len(report.Uncontracted) != operations {
+		t.Errorf("%d contracted + %d reported != %d responses: some left silently",
+			referenced, len(report.Uncontracted), operations)
+	}
+	if len(report.Uncontracted) == 0 {
+		t.Fatal("the ceiling was reached and nothing was reported")
+	}
+	if !strings.Contains(report.Uncontracted[len(report.Uncontracted)-1].Reason, "too many response contracts") {
+		t.Errorf("Reason = %q, want the reader's own ceiling named", report.Uncontracted[len(report.Uncontracted)-1].Reason)
+	}
+	// And the package is one the reader loads.
 	if err := pkg.ValidateResponseContracts(); err != nil {
 		t.Errorf("the generator emitted a package its reader refuses: %v", err)
 	}
