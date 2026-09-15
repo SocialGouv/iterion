@@ -26,9 +26,9 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
 - **Model + fallback labels on the card** — An agent/judge node names the model spec it will actually use, and the `fallbacks:` routes behind it. A `${VAR:-default}` spec renders its authored default rather than the word "env", so the card distinguishes one deployment's model from another's; a bare `${FOO}` compacts to `$FOO` to fit the node ([studio/src/lib/modelLabel.ts](../studio/src/lib/modelLabel.ts))
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
-- **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph
+- **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph; **Edit → Apply** re-parses the pane back into the graph. A bot in several files is the exception: the pane opens as the merged program of its fragments and stays read-only there — edit each fragment from the bundle file drawer, or on the canvas
 - **Bundle file drawer (cloud team bots)** — Add, edit, save, or delete `manifest.yaml`, skills, prompts, and other bundle files without leaving the editor (`main.bot` is the required entry and cannot be deleted)
-- **Live diagnostics** — Real-time validation errors and warnings as you edit (sparse DSL ranges C001–C199 and async C240–C242; bundle checks C200–C234)
+- **Live diagnostics** — Real-time validation errors and warnings as you edit. The codes occupy sparse bands: DSL/compiler checks use C001–C199 plus C240–C249 (async interaction, `session: persist`, parallel branches, fail codes) and C260–C268 (action nodes, async-capable backends, `session_slot`); bundle checks use C200–C234 and C250–C253. The authoritative list is [references/diagnostics.md](references/diagnostics.md)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
 - **Launch modal** — Fills `vars` and attachments at launch time, with bot/argument discovery driven by `--bots-path` (the modal's bot picker and argument form consume the same catalogue `iterion bots list` emits)
@@ -47,9 +47,15 @@ The **New bot** button on the Bots view opens the guided builder — the
 recommended way to start a bot from nothing. It runs in two phases on a
 single page:
 
-1. **Template gallery** — pick a starting point (`blank`, `daily-digest`,
-   `code-reviewer`, `docs-writer`, `issue-triager`). Each pre-fills the
-   form; every field stays editable afterwards.
+1. **Template gallery** — pick a starting point. The gallery renders whatever
+   `GET /api/v1/bots/templates` serves, which is `botscaffold.Templates()` —
+   fourteen entries today. Five render the single-agent workflow with a
+   different mission (`blank`, `daily-digest`, `code-reviewer`, `docs-writer`,
+   `issue-triager`); the other nine render a complete, commented **shape** —
+   `campaign-loop`, `review-fanout`, `plan-gate-implement`,
+   `scheduled-digest`, `per-ticket-subbots`, `verified-action`,
+   `async-questions`, `multi-file`, `library` (a bot in several files). Each
+   pre-fills the form; every field stays editable afterwards.
 2. **Form → create → test** — name the bot, write its mission, set the
    optional dials (model/backend, worktree, sandbox, permission, budgets,
    a suggested cron), then create it. An embedded test-run pane lets you
@@ -84,7 +90,7 @@ team store.
 
 ### Authoring
 
-**Source view** — the raw `.bot` source mirrored beside the graph, edits in either stay in sync.
+**Source view** — the raw `.bot` source mirrored beside the graph; **Edit → Apply** parses the pane back into the document, so edits in either stay in sync. A bot in several files is the exception: the header reads *Merged program of N files*, the Edit button is replaced by a read-only note, and the save splits the document back to each fragment by provenance — edit them one at a time from the bundle file drawer, or on the canvas.
 
 ![Studio source view — graph and .bot source side by side](images/studio/editor-source.png)
 

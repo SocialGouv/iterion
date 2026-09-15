@@ -88,6 +88,33 @@ already holds. Network, permission and server failures keep the conversation
 visible and surface a persistent Retry action. The transient `closing` guard
 is memory-only, so a refresh permits the same idempotent request again.
 
+### The cancellation nobody gestures for: startup reconciliation
+
+The dock also cancels runs on its own, before you touch anything. On mount,
+`AssistantProvider` lists runs, keeps only those the server stamped
+`source.kind = "studio_chat"` with **this browser profile's** client id
+(`iterion.chatDock.clientId`, minted once per profile) and a
+`conversation_id`, and reconciles each of those groups against the tab strip:
+
+| Case | What happens |
+| --- | --- |
+| The tab still has its durable `runId` | That run wins; it is kept. |
+| The tab lost its `runId` — the browser died between `createRun` and the write | It adopts the group's newest stamped run. A *repair*, not a cancellation. |
+| Any other stamped run in a reapable status | **Cancelled.** The statuses are `queued`, `running`, `paused_waiting_human`, `paused_operator`, `failed_resumable`. |
+| A terminal run | Left alone. History is never reaped, and it still participates so a tab that lost its `runId` can recover from it. |
+
+A reapable candidate younger than 60 s (`STUDIO_CHAT_GC_GRACE_MS`) is spared and
+gets exactly one recheck when it matures: the grace window covers the race with a
+sibling window that has just launched, and skipping it forever would turn the
+guard into a permanent leak. A cancellation that fails raises a persistent toast
+with a Retry.
+
+The ownership filter is the safety property, and it is deliberately not the
+workflow name: a Copi or Nexie run you launched by hand from `/runs` carries no
+`studio_chat` stamp, so it is never a candidate. Only a run the dock itself
+stamped with this profile's client id can be reaped
+([`studioChatOwnership.ts`](../studio/src/lib/chatDock/studioChatOwnership.ts)).
+
 ## Which bot answers
 
 The dock's correspondent is **discovered**, not hard-coded — with one
@@ -419,7 +446,18 @@ The live `.bot` is bound to the editor session and revision. A creation or
 broad rewrite of the active editor buffer still returns a complete replacement
 that the Studio can apply without saving. A localized edit to a clean existing `.bot`, including a
 schema/node/edge change, uses the same bounded exact-replacement protocol as
-companion files so Copi does not have to reproduce a large document. Companion
+companion files so Copi does not have to reproduce a large document.
+
+**A bot in several files is the exception.** When the editor holds the merged
+program of a unit (`import "lib/x.bot"`), the whole offer is withdrawn:
+`unitBound` joins stale target, read-only path and absent editor in the same
+`unavailable` set, so Apply and Save are both disabled and the card reads *"This
+bot is in several files: a proposed source cannot be split back into them. Edit
+each file from the files drawer."*
+([`EditorChangeOffer.tsx`](../studio/src/components/ChatDock/EditorChangeOffer.tsx)).
+A proposal is one text and could only be folded into the main, which the save
+refuses — so the catalog's own multi-file bots, `feature-dev` and `review-pr`,
+are edited fragment by fragment from the drawer or on the canvas. Companion
 files enter that protocol only when the target bot declares them:
 
 ```yaml
@@ -639,6 +677,8 @@ What you can drag onto the composer today:
 | A card on `/board`       | `card/<id>`          |
 | A pipeline card being launched | `run/<id>`, or `card/<id>` before it has a run |
 | A bot card in `/bots`    | `bot/<path>`         |
+| The selected execution's header in the run console | `node/<run-id>/<ir-node-id>` |
+| A row in the editor's bundle file drawer | `bot-file/<team>/<slug>/<path>` |
 
 Each attaches as a chip you can remove before sending, capped at 8 —
 past a handful you can no longer see what you attached. The chips clear
@@ -666,9 +706,21 @@ a dropped payload inherits the same guarantee: an id whose shape the
 vocabulary does not accept is **refused**, not repaired — a repaired
 pointer would resolve to something you did not point at.
 
-`node/<run>/<node>` is in the vocabulary but has no drag source yet: node
-selection is component state, not a route param, so nothing can currently
-publish one.
+`node/<run>/<node>` has exactly one source, and it is a drag: the selected
+execution's header in the run console carries a `⠿` handle (*Drag node to
+assistant*) that drops `node/<run-id>/<ir-node-id>`
+([`DetailHeader.tsx`](../studio/src/components/Runs/detail/DetailHeader.tsx)).
+It stays un-derivable from the URL — node selection is component state, not a
+route param — so that explicit drop is the only way the pointer reaches a
+conversation.
+
+`bot-file/<team>/<slug>/<path>` is the other drag-only kind: each row of the
+editor's bundle file drawer carries it, which is how a skill, prompt or
+`manifest.yaml` becomes the subject of a message without being the file the
+canvas has open
+([`BundleFilesDrawer.tsx`](../studio/src/components/Editor/BundleFilesDrawer.tsx)).
+The pointer is all that travels: what the dock then inlines is governed by the
+declared-file rule and its cumulative 64-KiB cap described above.
 
 ## Assistant vs steering on `/runs/:id`
 
