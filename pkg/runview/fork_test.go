@@ -53,6 +53,8 @@ func TestFork_HappyPath(t *testing.T) {
 		Vars: map[string]any{"workflow_var": "v"},
 	}
 	parent.WorkflowHash = "hash-abc"
+	parent.WorkflowSource = "import \"lib/x.bot\"\n"
+	parent.WorkflowSources = []store.WorkflowSourceFile{{Path: "main.bot", Text: "import \"lib/x.bot\"\n"}, {Path: "lib/x.bot", Text: "agent a:\n"}}
 	parent.Status = store.RunStatusCancelled
 	// The parent was dispatched from a board issue: the fork must carry
 	// the same source edge, or the pipeline card keeps pointing at the
@@ -171,6 +173,11 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	if child.SourceHash != "hash-abc" {
 		t.Errorf("child.SourceHash = %q, want hash-abc", child.SourceHash)
+	}
+	// The source the parent executed travels file by file, so `rewind
+	// --auto` on the child has a baseline.
+	if child.WorkflowSource != parent.WorkflowSource || len(child.WorkflowSources) != 2 || child.WorkflowSources[1].Path != "lib/x.bot" {
+		t.Errorf("child recorded source %q files %v, want the parent's", child.WorkflowSource, child.WorkflowSources)
 	}
 	if child.Status != store.RunStatusCancelled {
 		t.Errorf("child.Status = %q, want cancelled (ready for Resume)", child.Status)

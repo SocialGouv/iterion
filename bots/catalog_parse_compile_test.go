@@ -1,7 +1,7 @@
 package bots
 
 import (
-	"os"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"path/filepath"
 	"testing"
 
@@ -46,21 +46,16 @@ func TestCatalogBotsParseAndCompileClean(t *testing.T) {
 
 	checked := 0
 	for _, path := range targets {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("%s: read: %v", path, err)
-			continue
-		}
-
-		pr := parser.Parse(path, string(src))
+		// The bot's unit: its main and the fragments the imports reach.
+		u := unit.LoadDir(path)
 		parseFailed := false
-		for _, d := range pr.Diagnostics {
+		for _, d := range u.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				parseFailed = true
 				t.Errorf("%s: parse error: %s", path, d.Error())
 			}
 		}
-		if pr.File == nil {
+		if u.Merged == nil {
 			t.Errorf("%s: parser produced no File (unrecoverable parse failure)", path)
 			continue
 		}
@@ -68,7 +63,7 @@ func TestCatalogBotsParseAndCompileClean(t *testing.T) {
 			continue // don't cascade compile errors off a broken parse
 		}
 
-		cr := ir.Compile(pr.File)
+		cr := ir.Compile(u.Merged)
 		if cr.Workflow == nil {
 			t.Errorf("%s: compile produced no Workflow", path)
 		}

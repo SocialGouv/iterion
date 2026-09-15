@@ -23,17 +23,33 @@ import (
 // to close. Refusing before the launch leaves no claim to release.
 var errForgePublishGrantUnavailable = errors.New("forge publish grant unavailable")
 
-// forgePublishPostRunGrace is how long a grant outlives the run it was minted
-// for.
+// forgePublishPostRunGrace is how long an ORDINARY grant outlives the run it
+// was minted for.
 //
-// It is not zero because the run's death is exactly when the grant is needed
-// most: the merge-gate reconciler reads it to post the synthetic verdict a
-// dead review owes, and its net — the sweep — re-offers the same run for
-// gateSweepLookback afterwards. Revoking on the outcome event would race the
-// repair and silence it ("its publish grant is expired or revoked").
-//
-// Past that window nothing revisits the run, so the grant has no reader left.
+// It is not zero because the event path and the fast sweep both still reach
+// the run for an hour after it dies, and revoking on the outcome event would
+// race them and silence the repair ("its publish grant is expired or
+// revoked"). Past that, nothing revisits a run that owes no verdict, so the
+// grant has no reader left.
 const forgePublishPostRunGrace = gateSweepLookback + 30*time.Minute
+
+// forgePublishGateGrace is the same figure for the small minority of runs the
+// merge-gate reconciler may still have to answer FOR — the ones holding a gate
+// context. Their grant has to reach gateSweepHorizon, because that is how long
+// the deep sweep keeps offering them and the reconciler needs the grant to
+// know which repo and connection to speak through: one that died first would
+// turn every later pass into a guaranteed abstain, which reads from outside
+// exactly like a net still trying.
+//
+// Kept SEPARATE from the ordinary grace rather than raising it for everyone,
+// because forgePublishMaxTokens is sized as 1024×days(TTL) on the explicit
+// argument that terminal eviction holds the steady state near "gating launches
+// in flight" rather than "per TTL". Handing every run — the brancher, the
+// amender, the implementer — a horizon-long grant would falsify that, and on
+// the in-memory backend saturation REFUSES a launch. It also keeps a crashed
+// run's forge-write token live no longer than before unless that run is one a
+// repair may still need.
+const forgePublishGateGrace = gateSweepHorizon + 30*time.Minute
 
 // forgePublishExpiryName is the eventbus subscriber name (the NATS queue
 // group), so one replica shortens each grant.
@@ -119,6 +135,32 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 		// the reconciler already treats it as dead.
 		return nil
 	}
-	s.forgePublishTokens.expireIn(token, forgePublishPostRunGrace)
+	grace := forgePublishPostRunGrace
+	if runOwesGateVerdict(run) {
+		grace = forgePublishGateGrace
+	}
+	s.forgePublishTokens.expireIn(token, grace)
 	return nil
+}
+
+// runOwesGateVerdict reports whether a dead run is one the merge-gate
+// reconciler may still have to answer for. Holding a publish grant is NOT
+// owing a verdict: the server mints one for any bot launched with a pr_url,
+// and a repo's gate context is deliberately shared between the bots that gate
+// it. What decides is the context the OPERATOR pinned for this repo, and
+// whether the launch pinned the gate off.
+//
+// One predicate, two readers — the reconciler decides whether to post by it,
+// and the grant reaper decides how long to keep the credential that posting
+// needs. Written twice, the second copy would eventually keep a grant for a
+// run the first has already decided owes nothing, or retire one the first
+// still means to use.
+func runOwesGateVerdict(run *store.Run) bool {
+	if run == nil {
+		return false
+	}
+	if strings.TrimSpace(runInputString(run, "gate_context")) == "" {
+		return false
+	}
+	return !runGateDisabled(run)
 }

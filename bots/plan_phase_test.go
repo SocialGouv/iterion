@@ -1,14 +1,12 @@
 package bots
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // planPhaseBots are the campaign bots carrying the cross-model plan
@@ -37,11 +35,7 @@ func TestPlanPhaseWiring(t *testing.T) {
 	for _, bot := range planPhaseBots {
 		t.Run(bot, func(t *testing.T) {
 			path := filepath.Join(bot, "main.bot")
-			src, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			pr := parser.Parse(path, string(src))
+			pr := parseBotUnit(path)
 			cr := ir.Compile(pr.File)
 			if cr.HasErrors() {
 				t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
@@ -126,11 +120,7 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 	for _, bot := range planPhaseBots {
 		t.Run(bot, func(t *testing.T) {
 			path := filepath.Join(bot, "main.bot")
-			src, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			cr := ir.Compile(parser.Parse(path, string(src)).File)
+			cr := ir.Compile(parseBotUnit(path).File)
 			if cr.HasErrors() {
 				t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
 			}
@@ -238,11 +228,7 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 // other campaign bots retain their own provider topology.
 func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 	path := filepath.Join("feature-dev", "main.bot")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	cr := ir.Compile(parser.Parse(path, string(src)).File)
+	cr := ir.Compile(parseBotUnit(path).File)
 	if cr.HasErrors() {
 		t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
 	}

@@ -3154,17 +3154,20 @@ func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounte
 // forced resume also persists its artifact-compatibility acknowledgement for
 // the target revision; an ordinary unchanged resume still touches nothing.
 func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
-	src := e.resolveWorkflowSource()
+	src, files := e.recordedSources()
 	if r == nil {
 		return
 	}
-	sourceChanged := src != "" && src != r.WorkflowSource
+	sourceChanged := src != "" && (src != r.WorkflowSource || !sameSourceFiles(files, r.WorkflowSources))
 	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""
 	if !sourceChanged && !recordArtifactCompatibility {
 		return
 	}
 	if sourceChanged {
 		r.WorkflowSource = src
+		// The unit's files follow the main, or go with it: a bot that is
+		// one file again records none.
+		r.WorkflowSources = files
 		if e.workflowHash != "" {
 			r.WorkflowHash = e.workflowHash
 		}
@@ -3178,6 +3181,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		// fail safely while still allowing later resumes at the accepted hash.
 		if src == "" && r.WorkflowHash != e.workflowHash {
 			r.WorkflowSource = ""
+			r.WorkflowSources = nil
 		}
 		r.WorkflowHash = e.workflowHash
 		r.ArtifactCompatibilityRevision = e.workflowHash
@@ -3202,6 +3206,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		return
 	}
 	fresh.WorkflowSource = r.WorkflowSource
+	fresh.WorkflowSources = r.WorkflowSources
 	fresh.WorkflowHash = r.WorkflowHash
 	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
 	// Preserve every execution-context field from the freshly loaded record.

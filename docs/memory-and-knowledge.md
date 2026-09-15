@@ -270,7 +270,8 @@ Three properties worth knowing:
   Docker (bind mount) and unsandboxed runs are unaffected.
 
   A cloud run is NOT automatically exempt, whatever the sandbox section of
-  CLAUDE.md still says about the runner pinning `ITERION_SANDBOX_OVERRIDE=none`.
+  [agents/backends-and-execution.md](agents/backends-and-execution.md) still
+  says about the runner pinning `ITERION_SANDBOX_OVERRIDE=none`.
   Measured on the production instance (2026-08-05): the runner's config carries
   `ITERION_SANDBOX_DEFAULT=auto`, `ITERION_SANDBOX_HOST_STATE=none` and an EMPTY
   `ITERION_SANDBOX_OVERRIDE` — so a bot that does not opt out gets the

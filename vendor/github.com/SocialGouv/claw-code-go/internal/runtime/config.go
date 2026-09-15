@@ -51,6 +51,12 @@ type Config struct {
 	AuthMethod string
 	// OAuthToken is the resolved OAuth access token (set at startup when using OAuth).
 	OAuthToken string
+	// OpenAIChatGPTAccountID pairs with OAuthToken for direct ChatGPT-Codex clients.
+	OpenAIChatGPTAccountID string
+	// CodexAuthFile enables fresh, read-only Codex OAuth credentials per request.
+	CodexAuthFile string
+	// GeneratedImageDir overrides the default private image-artifact directory.
+	GeneratedImageDir string
 
 	// MCPServers lists MCP server connections (Phase 4).
 	MCPServers []MCPServerConfig

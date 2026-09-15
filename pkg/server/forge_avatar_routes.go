@@ -87,6 +87,10 @@ const avatarRecordTimeout = 10 * time.Second
 // nothing else. A forge-side failure is persisted on AvatarError — so the card
 // can name it and offer a retry — and returned as-is.
 func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, variant brand.Variant, force bool) (forge.Connection, string, error) {
+	return s.applyBotAvatarMode(parent, conn, variant, force, false)
+}
+
+func (s *Server) applyBotAvatarMode(parent context.Context, conn forge.Connection, variant brand.Variant, force, automatic bool) (forge.Connection, string, error) {
 	switch {
 	case conn.Kind == forge.KindOAuthApp:
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
@@ -114,6 +118,9 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		// below): a reconnect problem, never an avatar one.
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s rejected this connection's token (status %s) — reconnect it first", conn.Host(), conn.Status)}
+	}
+	if automatic && conn.AvatarAppliedAt != nil {
+		return conn, "", nil
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), s.avatarApplyDeadline())
 	defer cancel()
@@ -233,6 +240,26 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		return conn, "", &avatarRefusal{status: http.StatusConflict,
 			msg:    fmt.Sprintf("%s does not flag @%s as a bot account%s", conn.Host(), conn.AccountLogin, avatarForceHint),
 			fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
+	}
+	if automatic {
+		reader, ok := admin.(forge.AvatarReader)
+		var avatarURL string
+		var present bool
+		if !ok {
+			err = fmt.Errorf("%s cannot inspect the existing avatar; automatic branding skipped", conn.Provider)
+		} else {
+			avatarURL, present, err = reader.CurrentAvatar(ctx)
+		}
+		if err != nil {
+			recorded, perr := persist(conn.AvatarAppliedAt, err.Error())
+			if perr != nil && s.logger != nil {
+				s.logger.Error("forge avatar: record inspection failure on connection %s: %v", conn.ID, perr)
+			}
+			return recorded, "", err
+		}
+		if present {
+			return conn, avatarURL, nil
+		}
 	}
 	avatarURL, err := setter.SetAvatar(ctx, brand.BotAvatar(variant))
 	if err != nil {

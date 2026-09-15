@@ -319,5 +319,20 @@ func Templates() []Template {
 				Instructions: "Describe the mission; it is written to prompts/mission.md, next to the\nhouse style in prompts/kickoff.md and skills/house-style.md.",
 			},
 		},
+		{
+			ID:          "library",
+			Icon:        "📚",
+			Name:        "Bot in several files",
+			Description: "main.bot imports lib/schemas.bot and lib/nodes.bot: one program, three files.",
+			Spec: Spec{
+				Shape:        "library",
+				Description:  "A bot whose schemas and nodes live in fragments under lib/, imported by the main.",
+				WhenToUse:    "Use when one file grows past what an author holds in mind: each fragment is edited alone, and the unit compiles as one program.",
+				Instructions: "Describe the mission; it is written to the `mission` prompt in lib/nodes.bot,\nnext to the kickoff and the agent that carries it.",
+				// One adaptive agent with the full toolset, like the blank
+				// bot: isolated by default, the opt-out written by the author.
+				Worktree: true,
+			},
+		},
 	}
 }

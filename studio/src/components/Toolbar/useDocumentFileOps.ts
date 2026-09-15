@@ -77,6 +77,8 @@ export function useDocumentFileOps({
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  const unit = useDocumentStore((s) => s.unit);
+  const setUnit = useDocumentStore((s) => s.setUnit);
   const markSaved = useDocumentStore((s) => s.markSaved);
   const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   // In cloud there is no writable filesystem: only a team-authored bot (opened
@@ -137,19 +139,21 @@ export function useDocumentFileOps({
           setDiagnostics(result.diagnostics);
           setCurrentFilePath(result.path);
           setCurrentSource(result.source);
+          setUnit(result.unit ?? null);
           pushRecent(result.path);
           markSaved();
         } else {
-          // Productised bots live at <WorkDir>/bots/<name>; the shared
-          // helper binds that path (so Save works and the Run button
-          // enables instead of "Save the workflow first") and keeps the
-          // example's source + diagnostics. Same path as RecentFilesPanel
-          // and CanvasEmpty.
+          // The shared helper binds the path the server names for a file
+          // inside the workspace, else bots/<name> (so Save works and the
+          // Run button enables instead of "Save the workflow first"), and
+          // keeps the example's source + diagnostics. Same path as
+          // RecentFilesPanel and CanvasEmpty.
           await openExampleIntoStore(path, {
             setDocument,
             setDiagnostics,
             setCurrentSource,
             setCurrentFilePath,
+            setUnit,
             markSaved,
           });
         }
@@ -178,6 +182,7 @@ export function useDocumentFileOps({
       setDiagnostics,
       setCurrentFilePath,
       setCurrentSource,
+      setUnit,
       markSaved,
       confirmDiscard,
       pushRecent,
@@ -254,8 +259,11 @@ export function useDocumentFileOps({
     }
     if (currentFilePath) {
       try {
-        const result = await api.saveFile(currentFilePath, document);
+        // A bot in several files presents the revision it was opened at,
+        // and keeps the one the save returns.
+        const result = await api.saveFile(currentFilePath, document, unit ? { revision: unit.revision } : undefined);
         setCurrentSource(result.source);
+        if (unit) setUnit({ ...unit, revision: result.revision ?? unit.revision });
         markSaved();
         addToast("Saved successfully", "success");
         pushRecent(currentFilePath);
@@ -270,6 +278,8 @@ export function useDocumentFileOps({
     document,
     currentFilePath,
     setCurrentSource,
+    unit,
+    setUnit,
     markSaved,
     addToast,
     pushRecent,

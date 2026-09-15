@@ -1,0 +1,12 @@
+## Schemas of <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — a fragment main.bot imports.
+## A fragment holds no workflow: it is validated through the main that
+## imports it (`iterion validate main.bot`), never alone.
+
+dsl: 2
+
+schema mission_report:
+  ## The agent's structured wrap-up — what it did and whether the
+  ## mission is complete. Honest reporting: under-reporting only costs
+  ## a re-run, over-reporting lands the gap right back here.
+  summary: string
+  mission_complete: bool

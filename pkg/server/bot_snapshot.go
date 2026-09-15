@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -52,20 +54,30 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 			continue
 		}
 		seen[current.file] = true
-		file, ok := snap.Files[current.file]
-		if !ok {
+		if _, ok := snap.Files[current.file]; !ok {
 			return nil, fmt.Errorf("bundle snapshot: child workflow %q is missing", current.file)
 		}
-		parsed := parser.Parse(current.file, string(file.Content))
-		for _, diagnostic := range parsed.Diagnostics {
+		// The workflow's unit, read from the frozen collection: its
+		// fragments sit beside it under the same root, and a child a
+		// fragment declares is a child of this workflow — made relative to
+		// the root on the merged copy, the base every host resolves it from.
+		dir := path.Dir(current.file)
+		u := unit.Load(func(rel string) ([]byte, error) {
+			f, ok := snap.Files[path.Join(dir, rel)]
+			if !ok {
+				return nil, fmt.Errorf("%w: %s", os.ErrNotExist, rel)
+			}
+			return f.Content, nil
+		}, path.Base(current.file), func(rel string) string { return path.Join(dir, rel) })
+		for _, diagnostic := range u.Diagnostics {
 			if diagnostic.Severity == parser.SeverityError {
 				return nil, fmt.Errorf("bundle snapshot: parse %s: %s", current.file, diagnostic.Error())
 			}
 		}
-		if parsed.File == nil {
+		if u.Merged == nil {
 			return nil, fmt.Errorf("bundle snapshot: no AST for %s", current.file)
 		}
-		for _, child := range parsed.File.Subbots {
+		for _, child := range u.Merged.Subbots {
 			if current.depth >= 8 {
 				return nil, fmt.Errorf("bundle snapshot: child depth exceeds 8 at %s", current.file)
 			}

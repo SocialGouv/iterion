@@ -132,6 +132,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
           s.setDocument(result.document);
           s.setCurrentFilePath(result.path);
           s.setCurrentSource(result.source);
+          s.setUnit(result.unit ?? null);
           s.setDiagnostics(result.diagnostics);
           s.markSaved();
         }
