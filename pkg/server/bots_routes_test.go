@@ -39,8 +39,7 @@ workflow w:
     workspace_dir: string = "/tmp"
     loop_cap: int = 5
     mode: string [enum: "autonomous", "interview"] = "autonomous"
-  agent a:
-    model: "test"
+  entry: a
   a -> done
 
 agent a:

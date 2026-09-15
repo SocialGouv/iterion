@@ -1,0 +1,6 @@
+## A bot in two files: the node lives in lib/nodes.bot.
+import "lib/nodes.bot"
+
+workflow unit_demo:
+  entry: worker
+  worker -> done

@@ -22,7 +22,7 @@ func TestAdminBotsPush_RefusesAProfileTwoBundleWithAFloorBelowTheRelease(t *test
 		t.Fatalf("refusal does not name the floor and the release: %s", w.Body.String())
 	}
 	w = adminBotsPutQuery(s, admin, "lowfloor2", "force=1", pushProfileBundle(">= 0.0.1"))
-	if w.Code/100 != 2 || !strings.Contains(w.Body.String(), "FORCED past the profile-floor guard") || !strings.Contains(w.Body.String(), "3.141.0") {
+	if w.Code/100 != 2 || !strings.Contains(w.Body.String(), "FORCED past the syntax-floor guard") || !strings.Contains(w.Body.String(), "3.141.0") {
 		t.Fatalf("forced push = %d %s", w.Code, w.Body.String())
 	}
 }

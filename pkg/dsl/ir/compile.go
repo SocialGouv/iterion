@@ -35,6 +35,7 @@ const (
 	DiagNoWorkflow            DiagCode = "C006" // no workflow found in file
 	DiagMultipleWorkflow      DiagCode = "C007" // multiple workflows (unsupported in V1)
 	DiagMissingEntry          DiagCode = "C008" // entry node not found
+	DiagUnresolvedImports     DiagCode = "C030" // the file still carries `import` lines: it was compiled alone, not as a unit
 	DiagMissingModelOrBackend DiagCode = "C018" // agent/judge has neither model nor backend
 	DiagDuplicateMCPServer    DiagCode = "C024" // duplicate top-level mcp_server name
 	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
@@ -104,6 +105,12 @@ func (d Diagnostic) Error() string {
 type CompileResult struct {
 	Workflow    *Workflow
 	Diagnostics []Diagnostic
+	// IncludedFiles lists the files the prompts' {{include}} markers
+	// read, by absolute path, once each, sorted: the closure a caller
+	// folds into the source's identity, since an included file edited
+	// changes what the agent reads as surely as the prompt that includes
+	// it does.
+	IncludedFiles []string
 }
 
 // HasErrors returns true if any diagnostic is an error.
@@ -122,12 +129,14 @@ func (r *CompileResult) HasErrors() bool {
 
 // compiler holds state during compilation.
 type compiler struct {
-	file    *ast.File
-	diags   []Diagnostic
-	nodes   map[string]Node
-	schemas map[string]*Schema
-	prompts map[string]*Prompt
-	mcp     map[string]*MCPServer
+	file  *ast.File
+	diags []Diagnostic
+	// includedFiles is the include closure compilePrompts read.
+	includedFiles []string
+	nodes         map[string]Node
+	schemas       map[string]*Schema
+	prompts       map[string]*Prompt
+	mcp           map[string]*MCPServer
 	// edgeSpans remembers where each compiled edge was declared, so a
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
@@ -448,6 +457,30 @@ func (c *compiler) validateNodeNames() {
 	for _, d := range c.file.Fails {
 		all = append(all, decl{"fail", d.Name, d.Span})
 	}
+	for _, d := range c.file.Emits {
+		all = append(all, decl{"emit", d.Name, d.Span})
+	}
+	for _, d := range c.file.Waits {
+		all = append(all, decl{"wait", d.Name, d.Span})
+	}
+	for _, d := range c.file.AwaitAnswers {
+		all = append(all, decl{"await_answers", d.Name, d.Span})
+	}
+
+	// A group is a macro, not a node: its name is unique among groups, as a
+	// prompt's is among prompts, and never collides with a node's.
+	groups := make(map[string]bool, len(c.file.Groups))
+	for _, g := range c.file.Groups {
+		if g.Name == "" {
+			continue
+		}
+		if groups[g.Name] {
+			c.errorfAtSpan(DiagDuplicateNodeID, g.Span,
+				"duplicate group name %q: groups must be unique within a file", g.Name)
+			continue
+		}
+		groups[g.Name] = true
+	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
 	for _, d := range all {
@@ -483,11 +516,24 @@ func Compile(file *ast.File) *CompileResult {
 		prompts: make(map[string]*Prompt),
 		mcp:     make(map[string]*MCPServer),
 	}
+	// A file that still carries `import` lines was handed over alone: its
+	// fragments were never merged in, and compiling it would be compiling a
+	// program with pieces missing — silently, since C001/C003 only fire for
+	// what the main happens to reference. Refused, closed.
+	if file != nil && len(file.Imports) > 0 {
+		paths := make([]string, 0, len(file.Imports))
+		for _, im := range file.Imports {
+			paths = append(paths, im.Path)
+		}
+		c.errorf(DiagUnresolvedImports, "the file imports %d fragment(s) not merged into it (%s): compile it as a unit — `iterion validate`, `run` and the studio resolve the imports; a document or an inline source alone cannot", len(paths), strings.Join(paths, ", "))
+		return &CompileResult{Diagnostics: c.diags}
+	}
 	w := c.compile()
 	c.attachPositions()
 	return &CompileResult{
-		Workflow:    w,
-		Diagnostics: c.diags,
+		Workflow:      w,
+		Diagnostics:   c.diags,
+		IncludedFiles: c.includedFiles,
 	}
 }
 
@@ -868,10 +914,17 @@ func (c *compiler) canAutoResolveBackend() bool {
 // ---------------------------------------------------------------------------
 
 func (c *compiler) compilePrompts() {
-	seen := make(map[string]bool, len(c.file.Prompts))
+	seen := make(map[string]*ast.PromptDecl, len(c.file.Prompts))
 	budget := &includeBudget{} // one per file: a budget per prompt multiplies by the prompt count
 	for _, p := range c.file.Prompts {
-		if seen[p.Name] {
+		if first := seen[p.Name]; first != nil {
+			if p.Inline && first.Inline && p.Body == first.Body {
+				// The same text written inline in two files of a unit is
+				// one prompt, declared once per file under the name its
+				// body gives it (parser.InlinePromptName): the first serves
+				// every reference.
+				continue
+			}
 			// Mirror compileSchemas: a second `prompt foo:` used to
 			// silently overwrite the first in c.prompts, leaving the
 			// audit-relevant earlier body invisible.
@@ -879,7 +932,7 @@ func (c *compiler) compilePrompts() {
 				"duplicate prompt name %q: prompts must be unique within a file", p.Name)
 			continue
 		}
-		seen[p.Name] = true
+		seen[p.Name] = p
 		// Expand {{include "..."}} markers once, at compile time, before
 		// ParseRefs sees the body — the injected file content becomes part
 		// of the resolved prompt (auditable, no runtime file reads).
@@ -917,6 +970,7 @@ func (c *compiler) compilePrompts() {
 			TemplateRefs: refs,
 		}
 	}
+	c.includedFiles = budget.includedFiles()
 }
 
 // ---------------------------------------------------------------------------

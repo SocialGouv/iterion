@@ -154,6 +154,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 
 | Page | Topic |
 |---|---|
+| [agents/](agents/) | **Working on iterion itself**: the doctrine tree every agent session and contributor follows — the required before-merge review loop, bot-authoring rules, testing and dogfood discipline, the operational runbook index. [CLAUDE.md](../CLAUDE.md) routes to it. |
 | [architecture.md](architecture.md) | End-to-end compiler, runtime, backend, persistence, control-plane, automation, and extension architecture. |
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |

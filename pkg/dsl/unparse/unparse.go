@@ -72,7 +72,7 @@ func render(f *ast.File, strict bool, profile int) (string, bool) {
 }
 
 func (w *fileWriter) writeFile(f *ast.File) {
-	w.writeHead(f.Comments)
+	w.writeHead(f.Comments, f.Imports)
 	w.writeVars(f.Vars)
 	w.writePresets(f.Presets)
 	w.writeAttachments(f.Attachments)
@@ -324,7 +324,7 @@ func (w *fileWriter) blankLine() {
 // escape directive, which the lexer reads among the first 32 lines before
 // the first line of code, then the other comments, then, from profile 2,
 // the `dsl: N` header on the first significant line (parser.ReadPreamble).
-func (w *fileWriter) writeHead(comments []*ast.Comment) {
+func (w *fileWriter) writeHead(comments []*ast.Comment, imports []*ast.ImportDecl) {
 	fm := frontmatterLen(comments)
 	w.writeComments(comments[:fm])
 	if w.writeDirective {
@@ -336,6 +336,17 @@ func (w *fileWriter) writeHead(comments []*ast.Comment) {
 			w.b.WriteByte('\n')
 		}
 		fmt.Fprintf(&w.b, "dsl: %d\n", w.profile)
+		w.needBlank = true
+	}
+	// The imports follow the header (or the comments, in profile 1), one
+	// per line, before any declaration — where the parser reads them.
+	if len(imports) > 0 {
+		if w.profile <= ast.DefaultProfile && w.b.Len() > 0 {
+			w.b.WriteByte('\n')
+		}
+		for _, im := range imports {
+			fmt.Fprintf(&w.b, "import %s\n", QuoteStrict(im.Path))
+		}
 		w.needBlank = true
 	}
 }
