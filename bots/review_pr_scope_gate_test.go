@@ -98,17 +98,32 @@ func TestTheGateRefusesAReviewThatReadNothing(t *testing.T) {
 		return got
 	}
 
-	t.Run("an unresolved scope blocks", func(t *testing.T) {
-		got := run(t, "-1", "[]")
-		blocking, _ := got.Gate["blocking_count"].(float64)
-		if blocking < 1 {
-			t.Errorf("blocking_count = %v on a review that read NO code — the gate posts success and the pull request merges unreviewed", got.Gate["blocking_count"])
-		}
-		note, _ := got.Gate["note"].(string)
-		if !strings.Contains(note, "no code was reviewed") {
-			t.Errorf("the status must say why it is red, got %q — an operator hunting for a finding that does not exist is the failure this note exists to avoid", note)
-		}
-	})
+	// Every shape that is not a non-negative count is the ABSENCE of an answer.
+	// A guard written as a blacklist fails OPEN on the shapes it forgot — and
+	// the unsubstituted render below is not hypothetical: it is exactly what
+	// the first wiring of this mapping produced, and `ai_value` exists in the
+	// same command to filter those renders out of the sibling AI_* mappings.
+	for _, tc := range []struct{ name, scope string }{
+		{"the -1 sentinel", "-1"},
+		{"an unsubstituted template", "{{outputs.diff_precheck.changed_files}}"},
+		{"a null render", "null"},
+		{"a Go nil render", "<nil>"},
+		{"a python None render", "None"},
+		{"nothing at all", ""},
+		{"prose instead of a count", "unknown"},
+	} {
+		t.Run("an unresolved scope blocks: "+tc.name, func(t *testing.T) {
+			got := run(t, tc.scope, "[]")
+			blocking, _ := got.Gate["blocking_count"].(float64)
+			if blocking < 1 {
+				t.Errorf("blocking_count = %v on a review that read NO code — the gate posts success and the pull request merges unreviewed", got.Gate["blocking_count"])
+			}
+			note, _ := got.Gate["note"].(string)
+			if !strings.Contains(note, "no code was reviewed") {
+				t.Errorf("the status must say why it is red, got %q — an operator hunting for a finding that does not exist is the failure this note exists to avoid", note)
+			}
+		})
+	}
 
 	// The other half, and the one that keeps the guard from being a blanket
 	// refusal: a real scope with no findings is a real approval.

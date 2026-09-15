@@ -57,7 +57,11 @@ func TestReviewPRConcisePublication(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"published": true, "comments_posted": len(got.Comments)})
 			}))
 			defer srv.Close()
-			refs := map[string]string{"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test", "input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono", "vars.gate_enabled": "true", "vars.gate_severity": "high"}
+			// scope_files is what says the review had a diff to read at all: an
+			// absent or unparseable count fails the gate closed, so every case
+			// here — each of which describes a review that DID read code — has
+			// to carry a real one or it would block for the wrong reason.
+			refs := map[string]string{"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test", "input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono", "vars.gate_enabled": "true", "vars.gate_severity": "high", "input.scope_files": "3"}
 			for k, v := range tc.refs {
 				refs[k] = v
 			}
