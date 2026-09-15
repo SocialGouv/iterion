@@ -33,6 +33,11 @@ iterion remote login https://… --token iap_…          # existing PAT
 iterion remote login https://… --email e@x --password …  # mints a CLI PAT
 ```
 
+`--password` is optional: with `--email` alone the password is read from
+`ITERION_PASSWORD`, which is what a script should use — a password passed as a
+flag lands in argv and in shell history. With neither, the command refuses
+(`--email requires --password or ITERION_PASSWORD`).
+
 `iterion remote status` shows the logged-in instance + account;
 `iterion remote logout` forgets the credential.
 
@@ -41,6 +46,7 @@ iterion remote login https://… --email e@x --password …  # mints a CLI PAT
 ```sh
 export ITERION_REMOTE_URL=https://iterion.example.com
 export ITERION_REMOTE_TOKEN=iap_…       # fallback: ITERION_TOKEN
+export ITERION_PASSWORD=…               # only for `login --email`, not for the API
 iterion remote runs list --json | jq '.runs[].id'
 ```
 
@@ -111,8 +117,9 @@ the staging step alone and prints the upload id.
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
 | `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
-| `teams` | `list · create · switch · members · invitations` |
-| `orgs` | `list · switch · members · invitations · usage · teams` |
+| `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` (`status <active\|suspended\|read_only>` is the team lifecycle — a suspended team launches nothing, a `read_only` one keeps its history readable) |
+| `orgs` | `list · switch · members · invitations · usage · teams · add-member · settings · oauth · credential-audience · approvals` (`oauth [set\|refresh\|delete <kind>]` + `credential-audience` are the org tier — the org's own LLM keys and forfaits, lent to the teams the audience admits; `approvals [approve\|reject <approval-id>]` clears the org's pending approvals — see [cloud-llm-credentials.md](cloud-llm-credentials.md)) |
+| `credentials` | `preview` — read-only observation of the ordered credential chain that would fund a launch, plus the fallback conditions the server sees (`--bot <id>` for a personal launch, `--webhook <id>` for an existing webhook's real launch context, `--team <id>` to target a team). It reserves nothing and verifies nothing with the providers |
 | `me` | `password · sessions-revoke-all · sso-links` |
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |

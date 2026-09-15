@@ -55,16 +55,41 @@ decide whether to hedge a figure or state it.
 
 ## Resolution order (where the pool sits)
 
-`resolveAndSealCredentials`
-([pkg/server/cloudpublisher/publisher.go](../pkg/server/cloudpublisher/publisher.go)):
+`resolveAndSealCredentials` walks a fixed plan, shared with its metadata-only
+preview (`walkCredentialPlan`,
+[credential_plan.go](../pkg/server/cloudpublisher/credential_plan.go); the cases
+live in [publisher.go](../pkg/server/cloudpublisher/publisher.go)):
 
-1. **BYOK API keys** — team-scoped, personal-first.
-2. **Personal OAuth forfait** — the run owner's own.
-3. **Org OAuth forfait** — `secrets.OrgOwnerKey(tenant)`, the fallback for
-   automated runs whose owner is a synthetic identity.
-4. **Pool** — only when steps 1–3 produced **nothing at all**. Spending a
-   contributor's lent credential while the tenant holds a usable key of its
-   own would take a donation nobody needed.
+1. **BYOK API keys** — team-scoped, personal-first. A key the provider freshly
+   refused is passed over, so the priority walk yields the next key of that
+   provider.
+2. **Workflow/user generic secrets** — not an LLM credential tier, but a step
+   of the same walk; numbered so these match the code's tiers one for one.
+3. **OAuth forfaits** — the run owner's personal forfait per kind, then the
+   **team's shared** one under `secrets.OrgOwnerKey(tenantID)` (whose argument
+   is a tenant/team id despite the name — it is labelled `"team"` in the
+   bundle). The team fallback is what covers automated runs whose owner is a
+   synthetic identity. A forfait whose provider window is closed is skipped
+   here and remembered for step 7.
+4. **Org tier** — the parent *org*'s own API keys **and** forfaits
+   (`secrets.OrgTierTenantID` / `secrets.OrgTierOwnerKey`, reserved scope
+   prefix `orgtier:`), lent to the teams its `CredentialAudience` admits. It
+   fills per wire family, so an org credential never shadows one the team
+   already holds in another shape. See
+   [cloud-llm-credentials.md](cloud-llm-credentials.md).
+5. **Pool** — only when steps 1–4 produced **nothing at all**. Spending a
+   contributor's lent credential while the tenant — or its org — holds a
+   usable key of its own would take a donation nobody needed, so an
+   org-funded run never reaches the pool.
+6. **Platform tier** — the deployment's own DB-backed credentials, filling
+   only the slots above left empty, again per wire family. **Skipped entirely
+   when the pool granted:** a run funded by a donation must not also pick up
+   the deployment's key, which would outrank the lent credential while still
+   consuming the donor's quota.
+7. **Restore** — if a wire is still empty at the end, the forfait or key
+   skipped at step 1/3 for a closed window is put back. A run that makes one
+   refused call parks on a durable usage-window retry; a run published with an
+   empty wire fails on a no-credential auth error nothing retries.
 
 Order within the pool (`poolWantOrder`): subscriptions first — `claude_code`
 (a lent Claude forfait runs natively there), then `codex` — and only then
