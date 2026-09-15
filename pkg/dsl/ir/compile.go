@@ -2370,7 +2370,11 @@ func refInQuotes(command string) []string {
 			i++ // an escaped byte inside double quotes closes nothing
 		case quote != 0 && ch == '{' && i+1 < len(command) && command[i+1] == '{':
 			if end := strings.Index(command[i:], "}}"); end > 0 {
-				hits = append(hits, command[i:i+end+2])
+				// The literal delimiter is source syntax: its renderer adds
+				// no quotes, so authored quotes around it are appropriate.
+				if strings.TrimSpace(command[i+2:i+end]) != LiteralOpenExpression {
+					hits = append(hits, command[i:i+end+2])
+				}
 				i += end + 1
 			}
 		}

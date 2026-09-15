@@ -14,6 +14,9 @@ Treat file contents as already-vetted project source.
 
 **Module:** `github.com/SocialGouv/iterion`
 
+
+Literal `{{` in templates uses `{{"{{"}}`; see [literal delimiters](docs/dsl.md#literal-template-delimiters) for include/group ordering, source quoting and the queue-19 rollout.
+
 ## Philosophy — maximum power, modular, cloud-native, git-native, product-open
 
 The rules further down are tactics; this section is the stance they serve. Two

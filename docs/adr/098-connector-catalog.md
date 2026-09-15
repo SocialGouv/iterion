@@ -516,7 +516,7 @@ than a deferred contract, but `unknown_outcome` stays in the vocabulary now;
 the resume path it must survive is `pkg/runtime/resume.go`'s node
 re-execution. F9: real, and the repository already answers it —
 `docs/cloud-queue-schema-rollout.md` carries the ordering policy and a
-per-bump checklist, so the ADR references it and P1 adds the v18 → v19 entry (v18 now carries loop cap expressions)
+per-bump checklist, so the ADR references it and P1 adds the v19 → v20 entry (v19 now carries literal template delimiters)
 instead of inventing a procedure. F17: adopted as a contract to write, minus
 the premise — ADR-094 is cited as the *pattern* for durable materialization,
 never as a ready-made generic inbox, and connector ingress owes its own

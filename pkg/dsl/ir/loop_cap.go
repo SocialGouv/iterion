@@ -30,6 +30,10 @@ func (c *compiler) compileLoopCap(loop *Loop, edge *ast.Edge) {
 			bad(fmt.Errorf("a template cap must be one integer reference"))
 			return
 		}
+		if refs[0].Kind == RefLiteralOpen {
+			bad(fmt.Errorf("cap has type string; expected an integer"))
+			return
+		}
 		loop.MaxIterationsExprRefs = refs
 		return
 	}
