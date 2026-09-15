@@ -380,6 +380,7 @@ func (s *Server) routes() {
 		// The read half of the same grant: a delivery tail asks whether the
 		// pull request is still open before it pushes or posts.
 		s.mux.ServeMux.HandleFunc("GET /api/v1/forge/pull-request", s.handleForgePullRequest)
+		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/delivery-preflight", s.handleForgeDeliveryPreflight)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.
