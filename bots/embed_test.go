@@ -3,6 +3,7 @@ package bots
 import (
 	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -95,6 +96,59 @@ func TestListNamesRecipesNotFragments(t *testing.T) {
 	}
 }
 
+// A file Materialize rewrites is published atomically: a reader that holds
+// the file open through the rewrite keeps reading the bytes it opened,
+// whole — never a truncated file. A write in place would show it the new
+// bytes through the same descriptor.
+func TestMaterializePublishesEachFileAtomically(t *testing.T) {
+	root := t.TempDir()
+	dst, err := Materialize(root, "feature-dev/main.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := unit.LoadDir(dst)
+	if len(u.Files) < 2 {
+		t.Fatalf("%d file(s) in the unit, want a fragment to drift", len(u.Files))
+	}
+	drifted := filepath.Join(root, "feature-dev", filepath.FromSlash(u.Files[1].Rel))
+	stale := bytes.Repeat([]byte("x"), len(u.Files[1].Source))
+	if err := os.WriteFile(drifted, stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := os.Open(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	if _, err := Materialize(root, "feature-dev/main.bot"); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(seen, stale) {
+		t.Fatalf("a reader holding the file open saw it change under it (%d bytes, %q…): the rewrite was not a rename", len(seen), string(seen[:min(20, len(seen))]))
+	}
+	now, err := os.ReadFile(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(now, u.Files[1].Source) {
+		t.Fatal("the file was not restored")
+	}
+	entries, err := os.ReadDir(filepath.Dir(drifted))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			t.Errorf("a temp file was left behind: %s", e.Name())
+		}
+	}
+}
+
 // Materialize writes the whole bot, so the main on disk is the program it
 // is in the tree; it restores a fragment that drifted; a miss and a
 // directory write nothing.
@@ -129,6 +183,29 @@ func TestMaterializeWritesTheWholeBot(t *testing.T) {
 	}
 	if again := unit.LoadDir(dst); again.HasErrors() || again.Digest != u.Digest {
 		t.Fatalf("a drifted fragment was not rewritten (errors %v, digest %s vs %s)", again.HasErrors(), again.Digest, u.Digest)
+	}
+
+	// A fragment names its bot: the whole bot is written, the fragment's
+	// path handed back, and Sources keys the files from the bot's directory.
+	var fragment string
+	for _, f := range u.Files[1:] {
+		fragment = f.Rel
+		break
+	}
+	fragRoot := t.TempDir()
+	got, err := Materialize(fragRoot, path.Join("feature-dev", fragment))
+	if err != nil {
+		t.Fatalf("materialize a fragment: %v", err)
+	}
+	if want := filepath.Join(fragRoot, "feature-dev", filepath.FromSlash(fragment)); got != want {
+		t.Errorf("fragment materialised at %s, want %s", got, want)
+	}
+	if byFragment := unit.LoadDir(filepath.Join(fragRoot, "feature-dev", "main.bot")); byFragment.HasErrors() || byFragment.Digest != u.Digest {
+		t.Errorf("naming a fragment did not write its whole bot beside it")
+	}
+	files, main, ok := Sources(path.Join("feature-dev", fragment))
+	if !ok || main != fragment || files["main.bot"] == "" {
+		t.Errorf("Sources by fragment: ok %v, main %q, has main.bot %v", ok, main, files["main.bot"] != "")
 	}
 
 	for _, name := range []string{"nope/main.bot", "feature-dev", "feature-dev/lib", "../feature-dev/main.bot"} {

@@ -13,7 +13,8 @@ export interface ExampleTargetStore {
   setCurrentSource: (source: string | null) => void;
   setCurrentFilePath: (path: string | null) => void;
   /** A bot in several files binds its unit: the document is the merged
-   *  program, its source view is read-only, a save presents the revision. */
+   *  program, its source view is read-only, a save presents the revision.
+   *  Bound AFTER the path, which clears it. */
   setUnit: (unit: UnitInfo | null) => void;
   markSaved: () => void;
 }
@@ -37,8 +38,12 @@ export async function openExampleIntoStore(name: string, store: ExampleTargetSto
   store.setDocument(result.document);
   store.setDiagnostics(result.diagnostics);
   store.setCurrentSource(result.source);
+  // The path first: setting it clears the unit, so the unit is bound after
+  // it. A bot in several files inside the workspace names the path the
+  // studio opens and saves it by; anything else binds bots/<name>, where a
+  // save of the one program lands.
+  store.setCurrentFilePath(result.path ?? `bots/${name}`);
   store.setUnit(result.unit ?? null);
-  store.setCurrentFilePath(`bots/${name}`);
   store.markSaved();
   return result;
 }

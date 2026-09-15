@@ -1,57 +1,51 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { IterDocument, UnitInfo } from "@/api/types";
+import { createDocumentStore } from "@/store/document";
 
-import { openExampleIntoStore, type ExampleTargetStore } from "./openExample";
+import { openExampleIntoStore } from "./openExample";
 
 const loadExample = vi.fn();
 vi.mock("@/api/client", () => ({
   loadExample: (...args: unknown[]) => loadExample(...args),
 }));
 
-function targetStore(): ExampleTargetStore & { unit: UnitInfo | null | undefined } {
-  const store = {
-    unit: undefined as UnitInfo | null | undefined,
-    setDocument: vi.fn(),
-    setDiagnostics: vi.fn(),
-    setCurrentSource: vi.fn(),
-    setCurrentFilePath: vi.fn(),
-    setUnit: vi.fn((unit: UnitInfo | null) => {
-      store.unit = unit;
-    }),
-    markSaved: vi.fn(),
-  };
-  return store;
-}
-
 const document = { workflows: [] } as unknown as IterDocument;
 
+// The real store, not a double: its setCurrentFilePath clears the unit, the
+// coupling that decides whether the unit an example binds survives.
 describe("openExampleIntoStore", () => {
   beforeEach(() => {
     loadExample.mockReset();
   });
 
-  it("binds the unit of an example that is a bot in several files on disk", async () => {
+  it("binds the unit and the path the server named, for a bot in several files inside the workspace", async () => {
     const unit: UnitInfo = {
-      root: "bots/x",
+      root: "examples/x",
       main: "main.bot",
       revision: "r1",
-      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+      files: [{ rel: "main.bot", imports: ["lib/nodes.bot"] }, { rel: "lib/nodes.bot" }],
     };
-    loadExample.mockResolvedValue({ source: "import \"lib/nodes.bot\"\n", document, diagnostics: [], unit });
-    const store = targetStore();
-    await openExampleIntoStore("x/main.bot", store);
-    expect(store.setUnit).toHaveBeenCalledWith(unit);
-    expect(store.unit).toBe(unit);
-    expect(store.setCurrentFilePath).toHaveBeenCalledWith("bots/x/main.bot");
+    loadExample.mockResolvedValue({
+      source: 'import "lib/nodes.bot"\n',
+      document,
+      diagnostics: [],
+      path: "examples/x/main.bot",
+      unit,
+    });
+    const store = createDocumentStore();
+    await openExampleIntoStore("x/main.bot", store.getState());
+    expect(store.getState().currentFilePath).toBe("examples/x/main.bot");
+    expect(store.getState().unit).toEqual(unit);
   });
 
-  it("clears the unit for an example served as one program", async () => {
+  it("binds bots/<name> and no unit for an example served as one program", async () => {
     loadExample.mockResolvedValue({ source: "workflow x:\n  entry: done\n", document, diagnostics: [] });
-    const store = targetStore();
-    store.unit = { root: "bots/old", main: "main.bot", revision: "r0", files: [] };
-    await openExampleIntoStore("feature-dev/main.bot", store);
-    expect(store.setUnit).toHaveBeenCalledWith(null);
-    expect(store.unit).toBeNull();
+    const store = createDocumentStore();
+    store.getState().setCurrentFilePath("bots/old/main.bot");
+    store.getState().setUnit({ root: "bots/old", main: "main.bot", revision: "r0", files: [] });
+    await openExampleIntoStore("feature-dev/main.bot", store.getState());
+    expect(store.getState().currentFilePath).toBe("bots/feature-dev/main.bot");
+    expect(store.getState().unit).toBeNull();
   });
 });
