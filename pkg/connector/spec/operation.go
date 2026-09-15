@@ -23,8 +23,8 @@ type Operation struct {
 	// stable across regenerations and quoted verbatim in a `.bot`. It is
 	// derived from the vendor's operationId when there is one, but it is NOT
 	// that id: a vendor rename must not break every workflow that calls it,
-	// so the mapping is recorded (SourceOperationID) and an overlay pins the
-	// id whenever the derivation would move.
+	// so connectors gen reconciles method+path identities with identity.lock.yaml
+	// before applying authored overlay names.
 	ID string `yaml:"id" json:"id"`
 	// SourceOperationID is the vendor's own operationId, kept so a
 	// regeneration can tell "this operation moved" from "this is a new one".

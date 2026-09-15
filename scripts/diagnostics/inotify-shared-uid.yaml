@@ -1,0 +1,92 @@
+# One-shot probe: dedicated unused UID, no watches, no sysctl writes.
+# Verify the UID is unused on the chosen node before running.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iterion-inotify-1198-probe
+  namespace: arc-runners
+  labels:
+    app.kubernetes.io/name: iterion-inotify-diagnostic
+spec:
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: iterion-inotify-diagnostic
+    spec:
+      nodeName: worker-nodepool-node-e6dab0
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2147480000
+        runAsGroup: 2147480000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: probe
+        image: ghcr.io/actions/actions-runner:2.337.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - python3
+        - -c
+        - |
+          import ctypes, errno, json, os, resource
+          limit = int(open('/proc/sys/fs/inotify/max_user_instances').read())
+          if not 1 <= limit <= 512:
+              raise SystemExit('Probe expects a small limit <=512; refuses a larger allocation')
+          libc = ctypes.CDLL(None, use_errno=True)
+          def watch():
+              fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+              return fd, ctypes.get_errno() if fd < 0 else 0
+          ready_r, ready_w = os.pipe()
+          release_r, release_w = os.pipe()
+          pid = os.fork()
+          if pid == 0:
+              os.close(ready_r); os.close(release_w)
+              held = []
+              error = 0
+              try:
+                  for _ in range(limit + 1):
+                      fd, error = watch()
+                      if fd < 0: break
+                      held.append(fd)
+                  os.write(ready_w, (json.dumps({'held': len(held), 'errno': error}) + '\n').encode())
+                  os.close(ready_w)
+                  os.read(release_r, 1)
+              finally:
+                  for fd in held: os.close(fd)
+              os._exit(0)
+          os.close(ready_w); os.close(release_r)
+          try:
+              with os.fdopen(ready_r) as ready:
+                  child = json.load(ready)
+              fd, error = watch()
+              if fd >= 0: os.close(fd)
+              ordinary = os.open('/dev/null', os.O_RDONLY); os.close(ordinary)
+              evidence = {'uid': os.getuid(), 'max_user_instances': limit, 'nofile': resource.getrlimit(resource.RLIMIT_NOFILE), 'child': child, 'other_process_inotify_errno': error, 'ordinary_fd': 'open_ok'}
+              print(json.dumps(evidence), flush=True)
+              assert child == {'held': limit, 'errno': errno.EMFILE}, 'unexpected existing use or per-process limit'
+              assert error == errno.EMFILE, 'the UID budget was not shared between processes'
+          finally:
+              os.close(release_w)
+              os.waitpid(pid, 0)
+          fd, error = watch()
+          assert fd >= 0, 'capacity did not recover after closing the child descriptors'
+          os.close(fd)
+          print('PASS: per-UID inotify ceiling shared across processes; ordinary FDs remained available; closing descriptors restored capacity', flush=True)
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL

@@ -219,7 +219,9 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 	if err != nil {
 		return nil, fmt.Errorf("openai: create responses request: %w", err)
 	}
-	c.setAuthHeaders(httpReq)
+	if err := c.setAuthHeaders(httpReq); err != nil {
+		return nil, err
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	c.Identity.Apply(httpReq.Header)

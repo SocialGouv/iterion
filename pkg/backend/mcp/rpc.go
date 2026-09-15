@@ -237,6 +237,15 @@ func (c *sdkClient) start(ctx context.Context) error {
 	}
 
 	session, err := client.Connect(ctx, transport, nil)
+	if stdio, ok := transport.(*diagnosticCommandTransport); ok {
+		if err != nil {
+			err = stdio.startupError(err)
+		} else {
+			// Continue draining stderr through exec.Cmd, but retain no bytes
+			// after initialization: this diagnostic is only for startup.
+			stdio.stderr.finish()
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("mcp: connect to %q: %w", c.cfg.Name, err)
 	}
@@ -272,10 +281,7 @@ func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 				cmd.Env = append(cmd.Env, k+"="+v)
 			}
 		}
-		return &mcp.CommandTransport{
-			Command:           cmd,
-			TerminateDuration: 2 * time.Second,
-		}, nil
+		return newDiagnosticCommandTransport(cmd), nil
 
 	case TransportHTTP, TransportSSE:
 		t := &mcp.StreamableClientTransport{

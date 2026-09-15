@@ -33,11 +33,13 @@ func SelectProvider(name string) api.Provider {
 func NewProviderClient(cfg *Config) (api.APIClient, error) {
 	provider := SelectProvider(cfg.ProviderName)
 	return provider.NewClient(api.ProviderConfig{
-		APIKey:     cfg.APIKey,
-		OAuthToken: cfg.OAuthToken,
-		BaseURL:    cfg.BaseURL,
-		Model:      cfg.Model,
-		MaxTokens:  cfg.MaxTokens,
+		APIKey:                 cfg.APIKey,
+		OAuthToken:             cfg.OAuthToken,
+		BaseURL:                cfg.BaseURL,
+		Model:                  cfg.Model,
+		MaxTokens:              cfg.MaxTokens,
+		OpenAIChatGPTAccountID: cfg.OpenAIChatGPTAccountID,
+		CodexAuthFile:          cfg.CodexAuthFile,
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/fswatch"
 	"github.com/fsnotify/fsnotify"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -38,7 +39,7 @@ type Watcher struct {
 
 // NewWatcher creates a new file watcher for the given directory.
 func NewWatcher(workDir string, hub *Hub, logger *iterlog.Logger) (*Watcher, error) {
-	fw, err := fsnotify.NewWatcher()
+	fw, err := fswatch.NewWatcher()
 	if err != nil {
 		return nil, err
 	}

@@ -568,6 +568,10 @@ workflow review_pr:
   pr_gate -> done when not has_pr
   pr_gate -> publish_review when has_pr with {
     review_scope: "{{outputs.merge_reviews.review_scope}}",
+    ## diff_precheck's ignorance sentinel (-1), mapped on the EDGE because a
+    ## tool node's command body substitutes only input/vars/secrets/run.id —
+    ## an {{outputs.…}} ref there reaches the shell as literal text.
+    scope_files: "{{outputs.diff_precheck.changed_files}}",
     ai_run_tokens: "{{run.tokens}}",
     ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
     ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",
