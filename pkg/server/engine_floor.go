@@ -118,15 +118,15 @@ func orderableBuild(v string) bool {
 // write already produces.
 func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Request, bs botsource.BotSource) (warning string, ok bool) {
 	m := bs.Manifest()
-	// A bundle written in a syntax profile above 1 — or in several files,
-	// whose fragments a runner parses as text — needs a floor at or above
-	// the release that reads the profile (bundle.CheckProfileFloor, shared
-	// with `validate`'s C252): the main workflow reaches a runner as an AST,
-	// but a subbot child is re-parsed as text by the runner's own binary, and
-	// a build older than the profile fails at that parse — after admission,
-	// on a pod. A floor declared but lower admits exactly those builds.
-	// Refused here instead, unless forced.
-	if syntax := bundle.MaxSyntaxRequirements(bs.Files); syntax.Profile >= 2 || syntax.UsesImport() {
+	// A bundle written in a syntax profile above 1, in several files whose
+	// fragments a runner parses as text, or declaring a contract, needs a
+	// floor at or above the release that reads it (bundle.CheckSyntaxFloor,
+	// shared with `validate`'s C252; bundle.RequiredRelease is the one list
+	// of what asks): a build older than the syntax fails at its first parse
+	// of a child, a fragment or the contract — after admission, on a pod. A
+	// floor declared but lower admits exactly those builds. Refused here
+	// instead, unless forced.
+	if syntax := bundle.MaxSyntaxRequirements(bs.Files); syntax.Asks() {
 		if pf := bundle.CheckSyntaxFloor(m, syntax); !pf.OK {
 			need := pf.Need
 			if need == "" {
@@ -138,7 +138,7 @@ func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Req
 			}
 			uses := syntax.Describe()
 			if forceRequested(r) {
-				return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child or a fragment",
+				return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child, a fragment or the contract",
 					bs.Slug, uses, gap), true
 			}
 			s.httpErrorFor(w, r, http.StatusConflict,

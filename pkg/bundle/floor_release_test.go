@@ -1,7 +1,6 @@
 package bundle
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,11 +31,7 @@ func TestSyntaxFloorsNameReleasesThatExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	floors := map[string]string{"parser.ImportSince": parser.ImportSince}
-	for profile, since := range parser.ProfileSince {
-		floors[fmt.Sprintf("parser.ProfileSince[%d]", profile)] = since
-	}
-	for name, floor := range floors {
+	for name, floor := range parser.SyntaxFloors() {
 		c, ok := CompareVersions(version, floor)
 		if !ok {
 			t.Fatalf("%s = %q or package.json = %q is not an orderable version", name, floor, version)

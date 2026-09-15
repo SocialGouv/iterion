@@ -218,19 +218,14 @@ type Input struct {
 	// never reads its own binary's identity, so a caller that has no build to
 	// hold the bundle against simply does not ask the question.
 	EngineBuild string
-	// SyntaxProfile is the highest `dsl: N` profile the bundle's executable
-	// sources declare (bundle.MaxSyntaxProfile), with the files declaring
-	// it; 0 skips the profile-floor check (C252). Supplied by the caller,
-	// like Frontmatter: bundlelint stays I/O-free.
-	SyntaxProfile     int
-	ProfileDeclaredBy []string
-	// ProfileUnread names the subbot children the walk could not read
-	// (bundle.MaxSyntaxProfile's third result).
-	ProfileUnread []string
-	// ImportedBy names the sources that carry `import` lines
-	// (bundle.MaxSyntaxRequirements): a bot in several files asks for the
-	// release that reads them, whatever its profile (C252).
-	ImportedBy []string
+	// Syntax is what the bundle's executable sources use — the highest
+	// `dsl: N` profile, `import`, `contract`, each with the files that do,
+	// and the subbot children the walk could not read
+	// (bundle.MaxSyntaxRequirements) — for the floor checks (C252, C253);
+	// the zero value asks for nothing. Supplied by the caller, like
+	// Frontmatter: bundlelint stays I/O-free. It travels whole so a syntax
+	// added to the requirements is checked here without a field to thread.
+	Syntax bundle.SyntaxRequirements
 }
 
 // SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
@@ -253,8 +248,8 @@ func CheckConsistency(in Input) []Diag {
 	// The profile checks read the manifest but do not need one: a bundle
 	// known by its skills/ alone, written in profile 2, is asked for the
 	// manifest that would carry its floor.
-	checkSyntaxFloor(&diags, m, bundle.SyntaxRequirements{Profile: in.SyntaxProfile, DeclaredBy: in.ProfileDeclaredBy, ImportedBy: in.ImportedBy}, in.EngineBuild)
-	checkProfileUnread(&diags, in.ProfileUnread)
+	checkSyntaxFloor(&diags, m, in.Syntax, in.EngineBuild)
+	checkProfileUnread(&diags, in.Syntax.Unread)
 	if m != nil {
 		checkVarMaps(&diags, m, in.Workflow)
 		checkChatSurface(&diags, m, in.Workflow)
@@ -666,8 +661,8 @@ func sameStringSet(a, b []string) bool {
 // in pkg/bundle, so an author, an operator and a pod cannot read the same
 // manifest three different ways.
 // checkSyntaxFloor holds the manifest's engine floor against what the
-// bundle's sources use (C252): a profile above 1, or `import`, needs a
-// declared `requires.iterion` at or above the release that reads it
+// bundle's sources use (C252): a profile above 1, `import` or a `contract`
+// needs a declared `requires.iterion` at or above the release that reads it
 // (bundle.CheckSyntaxFloor, the predicate the push admission shares) — a
 // floor declared but lower leaves every runner between the two admitting a
 // bundle it cannot parse. The remedy names that release, or this build when
@@ -687,10 +682,10 @@ func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequir
 		}
 	}
 	uses := req.Describe()
-	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: a runner older than the release that reads it re-parses a subbot child, or a fragment, as text and fails at that parse", uses)
+	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: a runner older than the release that reads it re-parses a subbot child, a fragment or the contract as text and fails at that parse", uses)
 	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest, so such a runner refuses the bundle at admission instead", floor)
 	if pf.Declared != "" {
-		msg = fmt.Sprintf("the bundle uses %s but requires.iterion %q does not reach %s, the release that reads it: a runner between the two re-parses a subbot child, or a fragment, as text and fails at that parse", uses, pf.Declared, floor)
+		msg = fmt.Sprintf("the bundle uses %s but requires.iterion %q does not reach %s, the release that reads it: a runner between the two re-parses a subbot child, a fragment or the contract as text and fails at that parse", uses, pf.Declared, floor)
 		hint = fmt.Sprintf("raise it to `requires: { iterion: \">= %s\" }`", floor)
 	}
 	*diags = append(*diags, Diag{Code: DiagProfileNeedsFloor, Severity: SeverityWarning, Field: "requires.iterion", Message: msg, Hint: hint})

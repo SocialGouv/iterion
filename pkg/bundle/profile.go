@@ -96,7 +96,7 @@ func within(path, root string) bool {
 
 func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread, importedBy []string
+	var declaredBy, unread, importedBy, contractedBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -143,6 +143,9 @@ func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements 
 			if f.AST != nil && len(f.AST.Imports) > 0 {
 				importedBy = append(importedBy, f.Name)
 			}
+			if f.AST != nil && len(f.AST.Contracts) > 0 {
+				contractedBy = append(contractedBy, f.Name)
+			}
 			p := f.Profile
 			switch {
 			case p > profile:
@@ -173,7 +176,8 @@ func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements 
 	declaredBy = slices.Compact(slices.Sorted(slices.Values(declaredBy)))
 	unread = slices.Compact(slices.Sorted(slices.Values(unread)))
 	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))
-	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, Unread: unread}
+	contractedBy = slices.Compact(slices.Sorted(slices.Values(contractedBy)))
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, Unread: unread}
 }
 
 // MaxSyntaxProfile is MaxSyntaxRequirements projected on the profile.
@@ -199,11 +203,26 @@ type SyntaxRequirements struct {
 	// several files needs the release that reads them (parser.ImportSince),
 	// whatever its profile.
 	ImportedBy []string
-	Unread     []string
+	// ContractedBy names the files that declare a `contract`: a bot with a
+	// public contract needs the release that reads one
+	// (parser.ContractSince), whatever its profile.
+	ContractedBy []string
+	Unread       []string
 }
 
 // UsesImport reports whether any source of the bundle imports.
 func (r SyntaxRequirements) UsesImport() bool { return len(r.ImportedBy) > 0 }
+
+// UsesContract reports whether any source of the bundle declares a contract.
+func (r SyntaxRequirements) UsesContract() bool { return len(r.ContractedBy) > 0 }
+
+// Asks reports whether the sources use anything a floor is asked for — the
+// one predicate the push admission, `validate` and the scaffold read, so a
+// syntax added to RequiredRelease is asked for everywhere at once.
+func (r SyntaxRequirements) Asks() bool {
+	_, reason := RequiredRelease(r)
+	return reason != ""
+}
 
 // Describe names what the sources use, for a diagnostic: "dsl profile 2
 // (main.bot)", "`import` (main.bot)", or both.
@@ -214,6 +233,9 @@ func (r SyntaxRequirements) Describe() string {
 	}
 	if r.UsesImport() {
 		parts = append(parts, fmt.Sprintf("`import` (%s)", strings.Join(r.ImportedBy, ", ")))
+	}
+	if r.UsesContract() {
+		parts = append(parts, fmt.Sprintf("`contract` (%s)", strings.Join(r.ContractedBy, ", ")))
 	}
 	return strings.Join(parts, " and ")
 }
@@ -268,10 +290,11 @@ func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
 }
 
 // RequiredRelease is the release a set of sources needs — the HIGHEST among
-// what they use: the profile's (parser.ProfileSince) and `import`'s
-// (parser.ImportSince) — with the reason, or "" and "" when they use
-// nothing a floor is asked for. The one arithmetic behind `validate`'s
-// C252, the push admission and the scaffold's manifest.
+// what they use: the profile's (parser.ProfileSince), `import`'s
+// (parser.ImportSince) and `contract`'s (parser.ContractSince) — with the
+// reason, or "" and "" when they use nothing a floor is asked for. The one
+// arithmetic behind `validate`'s C252, the push admission and the
+// scaffold's manifest; a syntax added here is asked for by all three.
 func RequiredRelease(req SyntaxRequirements) (release, reason string) {
 	type need struct{ release, reason string }
 	var needs []need
@@ -280,6 +303,9 @@ func RequiredRelease(req SyntaxRequirements) (release, reason string) {
 	}
 	if req.UsesImport() {
 		needs = append(needs, need{parser.ImportSince, "import"})
+	}
+	if req.UsesContract() {
+		needs = append(needs, need{parser.ContractSince, "contract"})
 	}
 	for _, n := range needs {
 		if reason == "" || laterRelease(n.release, release) {

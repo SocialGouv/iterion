@@ -76,6 +76,10 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 			Workflow:    cr.Workflow,
 			Frontmatter: bundle.ReadFrontmatter(mainBot),
 			DirName:     filepath.Base(dir),
+			// A shipped bundle using a syntax with a floor declares it
+			// (C252 in CI): a catalogue bot a runner cannot parse is a
+			// broken bot, not a demo.
+			Syntax: bundle.MaxSyntaxRequirementsDir(dir),
 		})
 		checked++
 		for _, d := range diags {

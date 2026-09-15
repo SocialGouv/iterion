@@ -331,12 +331,9 @@ func RunValidate(path string, p *Printer) error {
 			// author's local half of the guard the push admission and the
 			// runner apply on a deployment.
 			EngineBuild: appinfo.FullVersion(),
-			// What the executable sources use (C252): a profile above 1, or
-			// `import`, asks for a declared floor.
-			SyntaxProfile:     syntax.Profile,
-			ProfileDeclaredBy: syntax.DeclaredBy,
-			ProfileUnread:     syntax.Unread,
-			ImportedBy:        syntax.ImportedBy,
+			// What the executable sources use (C252): a profile above 1,
+			// `import` or a `contract` asks for a declared floor.
+			Syntax: syntax,
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
