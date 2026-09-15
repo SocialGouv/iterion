@@ -7,15 +7,52 @@ import (
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/permissions"
 	"io"
+	"math"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const (
-	bashTimeout   = 30 * time.Second
-	maxOutputSize = 10000
+	// DefaultBashTimeout bounds ONE bash call. Short on purpose: most of an
+	// agent's shell calls are probes, and a wedged probe costs the whole turn.
+	DefaultBashTimeout = 30 * time.Second
+	maxOutputSize      = 10000
 )
+
+// bashTimeout resolves the bound on one bash call. It reads CLAW_BASH_TIMEOUT
+// (a Go duration like "15m", or a bare number of seconds); 0 or negative leaves
+// the caller's context as the only bound; an unset or unparsable value falls
+// back to DefaultBashTimeout. Same shape as sseutil.StreamIdleTimeout, so the
+// two duration knobs read alike.
+//
+// The default is a PROBE's budget, and that is the right default. It is the
+// wrong budget for the call that matters most in a self-verifying loop: an
+// agent asked to check its own work runs the repo's build and test suite,
+// which is minutes on a large repo. With no way out, such an agent cannot
+// verify what it changed — it can only claim to have, which is the failure the
+// deterministic gate exists to prevent.
+func bashTimeout() time.Duration {
+	v := strings.TrimSpace(os.Getenv("CLAW_BASH_TIMEOUT"))
+	if v == "" {
+		return DefaultBashTimeout
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		// Both sides: a large NEGATIVE n wraps back to a positive duration —
+		// measured at 512ns, which refuses `echo hello` instantly while
+		// pointing the reader at the knob.
+		if int64(n) > int64(math.MaxInt64/time.Second) || int64(n) < int64(math.MinInt64/time.Second) {
+			return DefaultBashTimeout
+		}
+		return time.Duration(n) * time.Second
+	}
+	return DefaultBashTimeout
+}
 
 // bashWarnWriter is the writer for bash validation warnings.
 // Defaults to os.Stderr; tests can replace it to capture output.
@@ -107,8 +144,31 @@ func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode pe
 	if callerCtx == nil {
 		callerCtx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(callerCtx, bashTimeout)
+	start := time.Now()
+	limit := bashTimeout()
+	// A non-positive budget means EXACTLY what it says: this function installs
+	// no bound, and the caller's context becomes the only one. Read the
+	// consequence before setting it — with a caller context that never cancels
+	// (the Background this function documents as its no-cancellation case) a
+	// wedged command never returns at all, and its process group is never
+	// reaped. os/exec runs the kill(-pgid) only from the goroutine it starts
+	// while ctx.Done() is non-nil, and only if that Done fires BEFORE Wait
+	// collects the result — so there is no arrangement here that reaps a tree
+	// nothing ever cancelled. 0 is an escape hatch for a caller that owns its
+	// own deadline, not a longer timeout.
+	ctx, cancel := callerCtx, context.CancelFunc(func() {})
+	if limit > 0 {
+		ctx, cancel = context.WithTimeout(callerCtx, limit)
+	}
 	defer cancel()
+	// Frozen at the gesture, not read at the conclusion: cmd.Run can spend up
+	// to WaitDelay after the kill, so a caller deadline landing inside that
+	// window would otherwise be blamed for a timeout the budget decided.
+	knobDecided := false
+	if limit > 0 {
+		callerDL, ok := callerCtx.Deadline()
+		knobDecided = !ok || !callerDL.Before(start.Add(limit))
+	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if len(extraEnv) > 0 {
@@ -143,7 +203,10 @@ func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode pe
 	if err != nil {
 		// Return output + error description; the caller decides if it's a hard error
 		if ctx.Err() == context.DeadlineExceeded {
-			return output, fmt.Errorf("command timed out after %s", bashTimeout)
+			if knobDecided {
+				return output, fmt.Errorf("command timed out after %s (raise it with CLAW_BASH_TIMEOUT)", limit)
+			}
+			return output, fmt.Errorf("command timed out on the caller's deadline")
 		}
 		if ctx.Err() == context.Canceled {
 			return output, fmt.Errorf("command cancelled: %w", ctx.Err())
