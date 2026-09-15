@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.149.0](https://github.com/SocialGouv/iterion/compare/v3.148.2...v3.149.0) (2026-09-15)
+
+### Features
+
+* **connectors:** opt-in v2 response contracts, without replaying a confirmed mutation ([#1266](https://github.com/SocialGouv/iterion/issues/1266)) ([e1c0f05](https://github.com/SocialGouv/iterion/commit/e1c0f05f344b1ad67adf447ce82c7bb10f026b34))
+
+    <details><summary>why</summary>
+
+    Response validation is a NEW authority, not strictness switched on over the existing descriptive schemas: those are a lossy projection (nullable, oneOf, writeOnly dropped, object inferred from properties, enums stringified), so enforcing them would refuse bodies the vendor legitimately sends. Contracts live in their own responses.json, are referenced explicitly per result case, and package format v2 is selected only when they are asked for.
+
+    </details>
+
 ## [3.148.2](https://github.com/SocialGouv/iterion/compare/v3.148.1...v3.148.2) (2026-09-15)
 
 ### Bug Fixes
