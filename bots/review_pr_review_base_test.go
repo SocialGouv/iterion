@@ -33,6 +33,11 @@ func TestReviewPRResolvesTheBaseItActuallyReviews(t *testing.T) {
 		}
 	}
 
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+
 	root := t.TempDir()
 	upstream, ws := root+"/upstream", root+"/ws"
 
@@ -84,7 +89,7 @@ func TestReviewPRResolvesTheBaseItActuallyReviews(t *testing.T) {
 		BaseIsCurrent bool   `json:"base_is_current"`
 	}
 
-	run := func(t *testing.T, workspace, base string) precheck {
+	runWithPath := func(t *testing.T, workspace, base, pathPrefix string) precheck {
 		t.Helper()
 		body := toolCommand(t, "review-pr/main.bot", "diff_precheck")
 		for ref, val := range map[string]string{
@@ -96,11 +101,15 @@ func TestReviewPRResolvesTheBaseItActuallyReviews(t *testing.T) {
 			}
 			body = strings.ReplaceAll(body, ref, "'"+strings.ReplaceAll(val, "'", `'\''`)+"'")
 		}
+		cmd := exec.Command("sh", "-c", body)
+		if pathPrefix != "" {
+			cmd.Env = append(os.Environ(), "PATH="+pathPrefix+":"+os.Getenv("PATH"))
+		}
 		done := make(chan struct{})
 		var out []byte
 		var err error
 		go func() {
-			out, err = exec.Command("sh", "-c", body).Output()
+			out, err = cmd.Output()
 			close(done)
 		}()
 		select {
@@ -116,6 +125,10 @@ func TestReviewPRResolvesTheBaseItActuallyReviews(t *testing.T) {
 			t.Fatalf("output is not diff_precheck_output JSON: %v (%q)", e, out)
 		}
 		return got
+	}
+	run := func(t *testing.T, workspace, base string) precheck {
+		t.Helper()
+		return runWithPath(t, workspace, base, "")
 	}
 
 	t.Run("a stale local base does not widen the scope", func(t *testing.T) {
@@ -159,6 +172,33 @@ func TestReviewPRResolvesTheBaseItActuallyReviews(t *testing.T) {
 		}
 		if got.IsEmpty {
 			t.Error("is_empty must stay false on an unresolved base — it is what routes the run to the reviewers instead of skipping the review")
+		}
+	})
+
+	// The same shape one level down, and the one the bounded-timeout wrapper
+	// created: a git call that fails or times out returns EMPTY stdout, so a
+	// diff parsed without checking its return code is indistinguishable from a
+	// branch that changed nothing — which short-circuits past the reviewers to
+	// `done`. "No files" has two readings a whole review apart, and only one of
+	// them may skip the review.
+	t.Run("a diff that fails is not a branch that changed nothing", func(t *testing.T) {
+		shim := t.TempDir()
+		// Forwards everything to the real git except `diff`, which fails the way
+		// a timeout does: nonzero, no stdout.
+		script := "#!/bin/sh\nif [ \"$1\" = diff ]; then exit 1; fi\nexec " + realGit + " \"$@\"\n"
+		if err := os.WriteFile(shim+"/git", []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		got := runWithPath(t, ws, "main", shim)
+		if got.IsEmpty {
+			t.Error("is_empty is true because the diff FAILED — the run skips both reviewers and the gate goes green on a pull request nobody read")
+		}
+		if got.ChangedFiles != -1 {
+			t.Errorf("changed_files = %d, want the -1 unresolved sentinel", got.ChangedFiles)
+		}
+		if got.BaseIsCurrent {
+			t.Error("base_is_current must be false when the scope could not be computed")
 		}
 	})
 

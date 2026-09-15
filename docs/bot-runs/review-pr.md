@@ -116,8 +116,24 @@ first lesson below applied. All four were right.
   (`toolCommand` + `gittest`) to use. Fixed: `bots/review_pr_review_base_test.go`
   drives the real node over the fixture; both bug shapes falsified by mutation.
 
-The `[high]` is the one worth remembering: a review of a review-scope fix caught
-the fix turning a *wrong* review into a *silently empty* one.
+Then it reviewed *those* fixes and found a fifth, also `[high]`, also right: the
+bounded-timeout wrapper turns a failed diff into empty stdout, and the diff's
+return code was not checked — so a diff that fails reads as "the branch changed
+nothing", short-circuits past both reviewers, and green-gates an unreviewed PR.
+The same shape as the finding before it, one level down: **the site was fixed,
+the class was not.** Every way of not knowing the scope now emits one sentinel
+(`is_empty: false`, `changed_files: -1`), and the test drives it with a `git`
+shim on PATH that fails only on `diff`.
+
+That fifth review also **posted a gate status with no review body** — the
+verdict says "1 blocking finding" while no comment exists anywhere and the
+status carries a null target URL. The finding was only readable by fetching the
+`converge` artifact off the run. Same pathology as the 07:50Z run on #1224, and
+still unexplained: a red gate an author cannot act on is worth its own
+investigation.
+
+The `[high]`s are the ones worth remembering: a review of a review-scope fix
+caught the fix turning a *wrong* review into a *silently empty* one — twice.
 
 ### Lessons for next run
 

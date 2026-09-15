@@ -1142,14 +1142,22 @@ tool diff_precheck:
   ## review-uncommitted-only mode) is never fetched; there is nothing to
   ## refresh.
   ##
-  ## When the merge-base does not resolve at all (unrelated histories, a
-  ## shallow clone, an unresolvable base_ref) base_sha is the base that was
-  ## TRIED, never HEAD. base_sha is what the reviewers diff against, and a
-  ## diff against HEAD is empty on a clean checkout — they would find no
-  ## changed files, report nothing, and the gate would post success on a
-  ## pull request nobody reviewed. An unresolvable base makes their first
-  ## command fail loudly instead, and base_is_current is forced false so the
-  ## prompt's unresolved-scope rule fires.
+  ## EVERY way of not knowing the scope emits the same sentinel —
+  ## `is_empty: false` with `changed_files: -1` — because the two ways of
+  ## reading "no files" are a whole review apart: "the branch changed
+  ## nothing", which legitimately skips the reviewers, and "the question
+  ## could not be answered", which must never skip them. A git call that
+  ## fails or times out returns empty stdout, so a result parsed without
+  ## checking its return code is indistinguishable from an empty diff, and
+  ## short-circuits to a green gate on a pull request nobody read.
+  ##
+  ## The unresolved paths: the merge-base does not resolve (unrelated
+  ## histories, a shallow clone, an unresolvable base_ref), or the diff
+  ## itself fails. In both, base_sha is the base that was TRIED, never HEAD
+  ## — the reviewers diff against base_sha, and a diff against HEAD is empty
+  ## on a clean checkout, so HEAD would hand them silence instead of an
+  ## error. base_is_current is forced false so the prompt's
+  ## unresolved-scope rule fires.
   publish: reviewed_revision
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
 import os, subprocess, json
@@ -1167,10 +1175,15 @@ if base != 'HEAD' and git('fetch', '--quiet', 'origin', base).returncode == 0:
     if fetched.returncode == 0 and fetched.stdout.strip():
         base = fetched.stdout.strip()
         base_is_current = True
+def unresolved(b):
+    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': b, 'base_is_current': False})); raise SystemExit(0)
 mb = git('merge-base', base, 'HEAD').stdout.strip()
 if not mb:
-    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': base, 'base_is_current': False})); raise SystemExit(0)
-files = [f for f in git('diff', '--name-only', mb).stdout.strip().splitlines() if f.strip()]
+    unresolved(base)
+diff = git('diff', '--name-only', mb)
+if diff.returncode != 0:
+    unresolved(mb)
+files = [f for f in diff.stdout.strip().splitlines() if f.strip()]
 print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head, 'base_sha': mb, 'base_is_current': base_is_current}))
 "`
   output: diff_precheck_output
