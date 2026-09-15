@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,16 @@ func resolveWorkflowPath(r *store.Run) string {
 	if r == nil || r.FilePath == "" {
 		return ""
 	}
+	// A studio run records as FilePath the store's materialised copy of
+	// its main — the bytes it launched, which a resume replays — and its
+	// bundle as BundlePath. What is read here is the source as it is NOW,
+	// and a bot in several files is read beside its fragments: a copy
+	// outside its bundle resolves to the bundle's main.
+	if r.BundlePath != "" && !insideDir(r.FilePath, r.BundlePath) {
+		if main := filepath.Join(r.BundlePath, bundle.MainBotFile); fileIsRegular(main) {
+			return main
+		}
+	}
 	if _, err := os.Stat(r.FilePath); err == nil {
 		return r.FilePath
 	}
@@ -50,6 +61,12 @@ func resolveWorkflowPath(r *store.Run) string {
 		}
 	}
 	return r.FilePath
+}
+
+// fileIsRegular reports whether path is an existing regular file.
+func fileIsRegular(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // botNameFromPath extracts the bot name from a catalog-relative workflow path

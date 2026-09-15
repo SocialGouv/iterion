@@ -220,20 +220,49 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // the path the operator named. The bundle the compile used is returned
 // (nil for inline source without one, or a loose file) so the launch
 // hands the engine the same handle it compiled against.
-func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, string, *bundle.Bundle, error) {
+func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
 	if bundleDir != "" {
 		b, err := bundle.OpenDir(bundleDir)
 		if err != nil {
-			return nil, "", nil, fmt.Errorf("open stored bot bundle: %w", err)
+			return nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		wf, hash, err := compileWith(path, source, true, b)
-		return wf, hash, b, err
+		wf, cs, err := compileUnit(path, source, true, b)
+		return wf, cs, b, err
 	}
 	if source != "" {
-		wf, hash, err := CompileWorkflowFromSource(path, source)
-		return wf, hash, nil, err
+		wf, cs, err := compileUnit(path, source, true, nil)
+		return wf, cs, nil, err
 	}
-	return CompileWorkflowPath(path)
+	b, err := bundleForPath(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	wf, cs, err := compileUnit(path, "", true, b)
+	return wf, cs, b, err
+}
+
+// insideDir reports whether path lies under dir (both absolute).
+func insideDir(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// bundleForPath is the bundle a path-driven compile reads a workflow
+// against: its bundle when it is a bundle's main.bot, else the nearest
+// enclosing directory bundle of a workflow that lives inside one
+// (workflows/ exports), else nil for a loose file.
+func bundleForPath(path string) (*bundle.Bundle, error) {
+	b, err := ResolveBundleFromFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	if b == nil && filepath.Base(path) != bundle.MainBotFile {
+		b, err = bundle.OpenForWorkflow(path)
+		if err != nil {
+			return nil, fmt.Errorf("open workflow bundle: %w", err)
+		}
+	}
+	return b, nil
 }
 
 // ResolveBundleFromFilePath inspects filePath and, when it is the
@@ -298,6 +327,15 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	switch {
 	case inline != "" && b != nil:
 		u = unit.LoadDirWithMain(b.IterPath, parserPath, []byte(inline))
+	case b != nil && !insideDir(parserPath, b.Dir):
+		// A copy of the bundle's main outside the bundle — the store's
+		// materialised copy a studio run records and resumes from — is
+		// that bundle's main: its fragments live beside the ORIGINAL.
+		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot read file: %w", err)
+		}
+		u = unit.LoadDirWithMain(b.IterPath, parserPath, src)
 	case inline != "":
 		u = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
 		if len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
@@ -391,15 +429,9 @@ func BundleNameForPath(filePath string) string {
 // rewind, the export, a recipe's file — goes through it, so a run
 // launched on one surface resumes on another without `--force`.
 func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
-	b, err := ResolveBundleFromFilePath(path)
+	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, "", nil, err
-	}
-	if b == nil && filepath.Base(path) != bundle.MainBotFile {
-		b, err = bundle.OpenForWorkflow(path)
-		if err != nil {
-			return nil, "", nil, fmt.Errorf("open workflow bundle: %w", err)
-		}
 	}
 	if b != nil {
 		wf, hash, err := CompileBundleWorkflow(path, b)

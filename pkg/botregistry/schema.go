@@ -3,6 +3,7 @@ package botregistry
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
@@ -288,6 +289,13 @@ func presetLiteralFromYAML(v any) *Literal {
 }
 
 func loadSchemaFromUnit(u *unit.Unit) (*VarsBlock, *PresetsBlock, error) {
+	// A unit that does not load — a fragment renamed, an import broken —
+	// is an error the launch form shows, never a bot that declares no vars.
+	for _, d := range u.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			return nil, nil, fmt.Errorf("parse failed: %s", d.Error())
+		}
+	}
 	if u.Merged == nil {
 		return nil, nil, fmt.Errorf("parse failed: file empty")
 	}

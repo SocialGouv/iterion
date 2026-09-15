@@ -208,7 +208,7 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 	mainBot := filepath.Join(root, "main.bot")
 	copyPath := filepath.Join(t.TempDir(), "a1b2c3-main.bot")
 
-	wf, hash, b, err := compileForLaunch(copyPath, unitMain, root)
+	wf, cs, b, err := compileForLaunch(copyPath, unitMain, root)
 	if err != nil {
 		t.Fatalf("compileForLaunch(document, bundle): %v", err)
 	}
@@ -222,15 +222,15 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 	if err != nil {
 		t.Fatalf("CompileWorkflowPath: %v", err)
 	}
-	if hash != fromPath {
-		t.Fatalf("the document's identity %s differs from the file's %s: a run launched from the studio would refuse a CLI resume", hash, fromPath)
+	if cs.Hash != fromPath {
+		t.Fatalf("the document's identity %s differs from the file's %s: a run launched from the studio would refuse a CLI resume", cs.Hash, fromPath)
 	}
 	// A document that differs from the file on disk is its own source.
-	_, docHash, _, err := compileForLaunch(copyPath, unitMain+"\n## edited in the editor\n", root)
+	_, doc, _, err := compileForLaunch(copyPath, unitMain+"\n## edited in the editor\n", root)
 	if err != nil {
 		t.Fatalf("compileForLaunch(edited document, bundle): %v", err)
 	}
-	if docHash == fromPath {
+	if doc.Hash == fromPath {
 		t.Fatal("an edited document has the identity of the file on disk")
 	}
 }

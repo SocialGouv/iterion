@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -20,59 +21,80 @@ import (
 // disables `rewind --auto` for that run, nothing else.
 const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
 
-// resolveWorkflowSource returns the .bot text to persist on the run:
-// the explicitly supplied source when the caller had it in hand (cloud
-// launches receive it uploaded), else a best-effort read of filePath.
+// recordedSources returns the .bot text to persist on the run and, for a
+// bot in several files, every file of its unit, main first — decided
+// TOGETHER, never the main without its fragments: a unit run recorded
+// main-only is one `rewind --auto` can only refuse. In order: the files
+// the launch compiled, when the launcher handed them over (a studio run's
+// FilePath is the store's copy of its main, beside which no fragment
+// lives); the text the caller supplied (an upload has no unit beside it);
+// else the unit beside filePath, or the file alone when it is not a unit
+// that loads. A single file records its main alone. One cap holds the
+// whole: past it, nothing is recorded.
 //
 // Best-effort by design — this only powers `rewind --auto`'s ability to
 // name the changed node. A source we cannot read or that busts the cap
 // leaves the run auto-targetable=false and `--node` unaffected.
-func (e *Engine) resolveWorkflowSource() string {
+func (e *Engine) recordedSources() (string, []store.WorkflowSourceFile) {
+	if e.compiledFiles != nil {
+		return sourcesOf(e.compiledMain, e.compiledFiles)
+	}
 	if e.workflowSource != "" {
 		if len(e.workflowSource) > maxPersistedWorkflowSource {
-			return ""
+			return "", nil
 		}
-		return e.workflowSource
+		return e.workflowSource, nil
 	}
 	if e.filePath == "" {
-		return ""
-	}
-	info, err := os.Stat(e.filePath)
-	if err != nil || info.Size() > maxPersistedWorkflowSource {
-		return ""
-	}
-	b, err := os.ReadFile(e.filePath)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// resolveWorkflowSources returns every file of the unit the run executes,
-// main first, to persist beside the main's text — read from the path
-// given to WithFilePath, since a unit lives beside its main. Nil when the
-// caller supplied the text itself (an upload has no unit beside it), when
-// the bot is one file (WorkflowSource carries it), when the unit does not
-// load, or when its files together bust the cap: each leaves
-// `rewind --auto` to refuse a unit run, never to diff its main alone.
-func (e *Engine) resolveWorkflowSources() []store.WorkflowSourceFile {
-	if e.workflowSource != "" || e.filePath == "" {
-		return nil
+		return "", nil
 	}
 	u := unit.LoadDir(e.filePath)
-	if u.HasErrors() || len(u.Files) < 2 {
-		return nil
-	}
-	total := 0
-	out := make([]store.WorkflowSourceFile, 0, len(u.Files))
-	for _, f := range u.Files {
-		total += len(f.Source)
-		if total > maxPersistedWorkflowSource {
-			return nil
+	if len(u.Files) == 0 || u.HasErrors() {
+		info, err := os.Stat(e.filePath)
+		if err != nil || info.Size() > maxPersistedWorkflowSource {
+			return "", nil
 		}
-		out = append(out, store.WorkflowSourceFile{Path: f.Rel, Text: string(f.Source)})
+		b, err := os.ReadFile(e.filePath)
+		if err != nil {
+			return "", nil
+		}
+		return string(b), nil
 	}
-	return out
+	files := make(map[string]string, len(u.Files))
+	for _, f := range u.Files {
+		files[f.Rel] = string(f.Source)
+	}
+	return sourcesOf(u.Main, files)
+}
+
+// sourcesOf orders a unit's files main first, the rest by path, under one
+// cap for the whole; a unit of one file records its main alone.
+func sourcesOf(main string, files map[string]string) (string, []store.WorkflowSourceFile) {
+	src, ok := files[main]
+	if !ok {
+		return "", nil
+	}
+	total := len(src)
+	rels := make([]string, 0, len(files))
+	for rel, text := range files {
+		if rel != main {
+			rels = append(rels, rel)
+			total += len(text)
+		}
+	}
+	if total > maxPersistedWorkflowSource {
+		return "", nil
+	}
+	if len(rels) == 0 {
+		return src, nil
+	}
+	sort.Strings(rels)
+	out := make([]store.WorkflowSourceFile, 0, len(files))
+	out = append(out, store.WorkflowSourceFile{Path: main, Text: src})
+	for _, rel := range rels {
+		out = append(out, store.WorkflowSourceFile{Path: rel, Text: files[rel]})
+	}
+	return src, out
 }
 
 func (e *Engine) inferredBotOrigin() *store.BotOrigin {
@@ -364,9 +386,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.filePath != "" {
 			run.FilePath = e.filePath
 		}
-		if src := e.resolveWorkflowSource(); src != "" {
+		if src, files := e.recordedSources(); src != "" {
 			run.WorkflowSource = src
-			run.WorkflowSources = e.resolveWorkflowSources()
+			run.WorkflowSources = files
 		}
 		if e.parentRunID != "" {
 			run.ParentRunID = e.parentRunID

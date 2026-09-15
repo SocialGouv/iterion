@@ -46,7 +46,7 @@ func TestCompileForLaunchPromotesABareMainBot(t *testing.T) {
 	if _, _, err := CompileWorkflowWithHash(mainBot); err == nil || !strings.Contains(err.Error(), "C003") {
 		t.Fatalf("the bare compile did not fail on the prompt reference (err=%v); the fixture no longer arms the case", err)
 	}
-	wf, hash, b, err := compileForLaunch(mainBot, "", "")
+	wf, cs, b, err := compileForLaunch(mainBot, "", "")
 	if err != nil {
 		t.Fatalf("compileForLaunch on the bare main.bot: %v", err)
 	}
@@ -61,8 +61,8 @@ func TestCompileForLaunchPromotesABareMainBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hash != want {
-		t.Fatalf("hash = %s, want the bundle's %s: a run launched here would not resume from the CLI without --force", hash, want)
+	if cs.Hash != want {
+		t.Fatalf("hash = %s, want the bundle's %s: a run launched here would not resume from the CLI without --force", cs.Hash, want)
 	}
 	if b.Manifest != nil || b.Name() != "" {
 		t.Fatalf("a bundle marked by skills/ alone has no manifest and no name; got manifest=%+v name=%q", b.Manifest, b.Name())
@@ -87,8 +87,8 @@ func TestCompileForLaunchPromotesABareMainBot(t *testing.T) {
 	if _, _, _, err := compileForLaunch(materialised, string(src), ""); err == nil {
 		t.Fatal("inline source with no bundle dir compiled the prompt reference; the fixture no longer arms the case")
 	}
-	if _, h, ib, err := compileForLaunch(materialised, string(src), dir); err != nil || ib == nil || h != want {
-		t.Fatalf("inline source + bundle dir: hash=%s bundle=%+v err=%v, want the bundle's hash %s", h, ib, err, want)
+	if _, h, ib, err := compileForLaunch(materialised, string(src), dir); err != nil || ib == nil || h.Hash != want {
+		t.Fatalf("inline source + bundle dir: hash=%v bundle=%+v err=%v, want the bundle's hash %s", h, ib, err, want)
 	}
 }
 

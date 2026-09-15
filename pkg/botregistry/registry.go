@@ -519,6 +519,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			addEntry(e)
 			continue
 		}
+		var fragmentDirs []string
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				// An unreadable subdirectory (permission denied) is the
@@ -532,8 +533,10 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				if path != root && isFragmentDir(path) {
 					// A bot's fragments live under lib/ beside its main
 					// (`import "lib/x.bot"`): parts of that bot, never bots
-					// of their own.
-					return filepath.SkipDir
+					// of their own — the loose .bot files below are passed
+					// over, while a bundle nested there is still a bot.
+					fragmentDirs = append(fragmentDirs, path)
+					return nil
 				}
 				manifest := filepath.Join(path, bundle.ManifestFile)
 				mainBot := filepath.Join(path, bundle.MainBotFile)
@@ -551,7 +554,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				return nil
 			}
 			name := d.Name()
-			if !workflowfile.IsWorkflowFile(name) {
+			if !workflowfile.IsWorkflowFile(name) || underAny(path, fragmentDirs) {
 				return nil
 			}
 			e, err := parseBotFile(path)
@@ -711,6 +714,16 @@ func isDecorationLine(body string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// underAny reports whether path lies below one of dirs.
+func underAny(path string, dirs []string) bool {
+	for _, dir := range dirs {
+		if strings.HasPrefix(path, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFragmentDir reports a `lib/` directory beside a workflow file: where a

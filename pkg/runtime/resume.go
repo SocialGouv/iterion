@@ -3155,13 +3155,9 @@ func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounte
 // forced resume also persists its artifact-compatibility acknowledgement for
 // the target revision; an ordinary unchanged resume still touches nothing.
 func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
-	src := e.resolveWorkflowSource()
+	src, files := e.recordedSources()
 	if r == nil {
 		return
-	}
-	var files []store.WorkflowSourceFile
-	if src != "" {
-		files = e.resolveWorkflowSources()
 	}
 	sourceChanged := src != "" && (src != r.WorkflowSource || !slices.Equal(files, r.WorkflowSources))
 	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""

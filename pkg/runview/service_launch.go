@@ -161,10 +161,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
 		// the runner applies them after loading the workflow, under its
 		// multitenant cloud ceiling.
-		wf, hash, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 		if err != nil {
 			return nil, err
 		}
+		hash := cs.Hash
 		// Fail before persisting/publishing a queued run. The runner repeats
 		// this check in BuildExecutor, but discovering an unsafe backend only
 		// after queue admission would leave a paid launch to fail remotely.
@@ -247,10 +248,11 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // existing queued doc (the engine's runResolveDoc transitions it
 // queued→running), used when the concurrency gate deferred the launch.
 func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
-	wf, hash, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, cs, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}
+	hash := cs.Hash
 	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 		return nil, err
 	}
@@ -392,7 +394,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -433,10 +435,11 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 		return err
 	}
 	spec.BundleDir = resumeBundleDir(r, spec)
-	wf, hash, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, pfSources, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
+	hash := pfSources.Hash
 	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		// The bare digest of a run launched before the promotion is accepted
@@ -552,10 +555,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// Engine.Resume repeats the same check after acquiring the run lock, so a
 	// source/status change between this point and execution still fails closed.
 	spec.BundleDir = resumeBundleDir(r, spec)
-	wf, hash, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}
+	hash := cs.Hash
 	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		// A run launched before its bundle's prompts entered the digest
@@ -706,6 +710,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
 			artifactResumePreflight: artifactPreflight,
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
+			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
 		},
 		nil,
@@ -1116,6 +1121,11 @@ type finalizationOpts struct {
 // (s.workDir / s.dailyCap) when set; the zero value inherits it. Resume
 // and subbot launches pass the zero value.
 type launchExtras struct {
+	// compiled is what the launch's compile read — the unit's files — so
+	// the run records them from the same read as its identity: a studio
+	// run's FilePath is the store's copy of its main, beside which no
+	// fragment lives.
+	compiled *CompiledSource
 	workDir  string
 	dailyCap *runtime.DailyCapGuard
 	source   *store.RunSource
@@ -1204,6 +1214,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.loopBudgetGuard != "" {
 		opts = append(opts, runtime.WithLoopBudgetGuard(ex.loopBudgetGuard))
+	}
+	if ex.compiled != nil {
+		opts = append(opts, runtime.WithCompiledSources(ex.compiled.Main, ex.compiled.Files))
 	}
 	if ex.permission != "" {
 		opts = append(opts, runtime.WithPermissionOverride(ex.permission))
