@@ -10,11 +10,11 @@
 //
 // An embedded bot is its main.bot and, for a bot in several files, the
 // lib/ fragments its main imports: Materialize writes them together, so
-// a materialised main is the program it is in the tree. A manifest is
-// not embedded — the engine floor it would declare is met by
-// construction, the binary that carries the bot being the one that reads
-// it. Companion .md design journals and large non-recipe assets are
-// excluded to keep the binary slim. Bundle directories (`<name>/main.bot`
+// a materialised main compiles to the program the .bot unit is in the
+// tree. Nothing else of the bundle travels — not the manifest (the engine
+// floor it would declare is met by construction, the binary that carries
+// the bot being the one that reads it), not the skills its prompts name,
+// not the .md design journals — to keep the binary slim. Bundle directories (`<name>/main.bot`
 // + manifest + skills + prompts + attachments) are NOT embedded either —
 // they have to be loaded by explicit path (`iterion run bots/<name>/`
 // or against the packed `<name>.botz`); embedding them would lose
@@ -47,17 +47,6 @@ import (
 //
 //go:embed feature-dev/main.bot feature-dev/lib whole-improve-loop/main.bot branch-improve-loop/main.bot
 var Files embed.FS
-
-// Get returns the contents of the embedded example with the given
-// basename (e.g. "feature-dev/main.bot" or "skill/human_gate.bot").
-// Returns ok=false if no such embedded recipe exists.
-func Get(name string) ([]byte, bool) {
-	data, err := Files.ReadFile(name)
-	if err != nil {
-		return nil, false
-	}
-	return data, true
-}
 
 // List returns the relative paths (within the embed FS) of all embedded
 // workflow recipes, sorted alphabetically. A fragment — a file under a
@@ -96,6 +85,11 @@ func botFiles(name string) (dir string, paths []string, err error) {
 		return "", nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
 	dir = path.Dir(name)
+	// A fragment names its bot through its lib/ directory: the whole bot
+	// is the unit of work, the fragment's own path what is handed back.
+	if path.Base(dir) == unit.FragmentDir && strings.Contains(dir, "/") {
+		dir = path.Dir(dir)
+	}
 	err = fs.WalkDir(Files, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -156,9 +150,12 @@ func Materialize(root, name string) (string, error) {
 	return filepath.Join(root, filepath.FromSlash(paths[len(paths)-1])), nil
 }
 
-// writeIfChanged writes data at dst unless the file already holds it.
-// Bytes are compared, not lengths: a same-length edit would otherwise be
-// served from the stale copy forever.
+// writeIfChanged writes data at dst unless the file already holds it, and
+// publishes it atomically — a temp file beside dst, renamed into place —
+// so a reader opening dst while another materialisation of the same bot
+// rewrites it sees the previous bytes or the new ones, never a truncated
+// file. Bytes are compared, not lengths: a same-length edit would
+// otherwise be served from the stale copy forever.
 func writeIfChanged(dst string, data []byte) error {
 	if existing, err := os.ReadFile(dst); err == nil && bytes.Equal(existing, data) {
 		return nil
@@ -166,5 +163,20 @@ func writeIfChanged(dst string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
 }

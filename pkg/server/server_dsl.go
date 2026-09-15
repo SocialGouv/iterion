@@ -509,26 +509,7 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 	if dir := s.cfg.ExamplesDir; dir != "" {
 		abs := filepath.Join(dir, filepath.FromSlash(name))
 		if data, err := os.ReadFile(abs); err == nil {
-			// A bot in several files on disk opens as its unit, the way
-			// /api/files/open opens it: the fragments read beside the
-			// main, merged into one document whose every declaration
-			// names its file, with the unit's revision for the save to
-			// present, under the path the studio binds, bots/<name>.
-			if u := unit.LoadDirWithMain(abs, abs, data); len(u.Files) > 1 && u.Merged != nil {
-				var diags []string
-				for _, d := range u.Diagnostics {
-					diags = append(diags, d.Error())
-				}
-				docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
-				if err != nil {
-					httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
-					return
-				}
-				reqPath := "bots/" + name
-				writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: reqPath, ConfirmedDiskPath: abs, Unit: unitInfoOf(u, reqPath)})
-				return
-			}
-			writeExample(w, name, string(data))
+			s.serveDiskExample(w, name, abs, data)
 			return
 		}
 	}
@@ -573,4 +554,84 @@ func writeExample(w http.ResponseWriter, name, source string) {
 		Document:    json.RawMessage(docJSON),
 		Diagnostics: diags,
 	})
+}
+
+// serveDiskExample answers for a bot found under ExamplesDir. A bot in one
+// file is its text. A bot in several files INSIDE the working directory
+// opens as its unit, the way /api/files/open opens it — the merged document
+// with each declaration's file, the unit's files and revision, the path the
+// studio opens and saves it by — since the studio binds the path it is
+// handed and edits the files behind it. One that lives elsewhere (a catalog
+// root outside the working directory, as in cloud mode) is served as one
+// flat program, like an embedded bot: the text the studio launches inline
+// and may save as a new file. A unit that does not load is told through its
+// diagnostics, never served as its main alone.
+func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data []byte) {
+	u := unit.LoadDirWithMain(abs, abs, data)
+	if len(u.Files) == 0 || u.Files[0].AST == nil || len(u.Files[0].AST.Imports) == 0 {
+		writeExample(w, name, string(data))
+		return
+	}
+	var diags []string
+	for _, d := range u.Diagnostics {
+		diags = append(diags, d.Error())
+	}
+	if u.Merged == nil {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	if rel, confirmed, ok := s.workDirRelative(abs); ok {
+		docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+			return
+		}
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel)})
+		return
+	}
+	if u.HasErrors() {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	flat, err := flatProgram(name, u.Merged)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeExample(w, name, flat)
+}
+
+// workDirRelative is abs as the path the studio opens and saves it by —
+// slash-separated, relative to the working directory — with the path
+// /api/files/open confirms for it, when abs lies inside the working
+// directory. ok is false when there is no working directory or abs is
+// outside it.
+func (s *Server) workDirRelative(abs string) (rel, confirmed string, ok bool) {
+	s.stateMu.RLock()
+	workDir := s.cfg.WorkDir
+	s.stateMu.RUnlock()
+	if workDir == "" {
+		return "", "", false
+	}
+	base, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", "", false
+	}
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", "", false
+	}
+	absReal, err := filepath.EvalSymlinks(abs)
+	if err != nil || !pathContains(baseReal, absReal) {
+		return "", "", false
+	}
+	r, err := filepath.Rel(baseReal, absReal)
+	if err != nil {
+		return "", "", false
+	}
+	confirmed, err = s.safePath(r)
+	if err != nil {
+		return "", "", false
+	}
+	return filepath.ToSlash(r), confirmed, true
 }

@@ -353,8 +353,12 @@ export async function loadExample(
   source: string;
   document: IterDocument;
   diagnostics: string[];
-  /** Set when the example is a bot in several files on disk: the document
-   *  is the merged unit. An embedded one is served as one flat program. */
+  /** Set with `unit` when the example is a bot in several files inside the
+   *  workspace: the path the studio opens and saves it by. */
+  path?: string;
+  /** Set when the example is a bot in several files inside the workspace:
+   *  the document is the merged unit. An embedded bot, or one outside the
+   *  workspace, is served as one flat program. */
   unit?: UnitInfo;
 }> {
   // Encode each path segment but keep the slashes so subdirectory
