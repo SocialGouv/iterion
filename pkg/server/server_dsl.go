@@ -522,16 +522,25 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "example not found: %s", name)
 		return
 	}
-	writeExample(w, name, src)
+	writeExample(w, name, src, "", "")
 }
 
-// writeExample answers with one program's document and text: a bot in one
-// file, or the flat program an embedded bot in several files is served as.
-func writeExample(w http.ResponseWriter, name, source string) {
+// writeExample answers with one program's document and text — a bot in
+// one file, or the flat program an embedded bot or one outside the working
+// directory is served as — and, for a file inside the working directory,
+// the path the studio opens and saves it by with the disk path
+// /api/files/open confirms for it (both empty otherwise, and omitted).
+func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 	pr := parser.Parse(name, source)
 	var diags []string
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
+		// A file that does not parse is never bound to its path: the
+		// document the parser salvaged is not the file, and a save of it
+		// would replace what the author wrote with what the parser kept.
+		if d.Severity == parser.SeverityError {
+			rel, confirmed = "", ""
+		}
 	}
 
 	if pr.File == nil {
@@ -546,18 +555,23 @@ func writeExample(w http.ResponseWriter, name, source string) {
 	}
 
 	writeJSON(w, struct {
-		Source      string          `json:"source"`
-		Document    json.RawMessage `json:"document"`
-		Diagnostics []string        `json:"diagnostics,omitempty"`
+		Source            string          `json:"source"`
+		Document          json.RawMessage `json:"document"`
+		Diagnostics       []string        `json:"diagnostics,omitempty"`
+		Path              string          `json:"path,omitempty"`
+		ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	}{
-		Source:      source,
-		Document:    json.RawMessage(docJSON),
-		Diagnostics: diags,
+		Source:            source,
+		Document:          json.RawMessage(docJSON),
+		Diagnostics:       diags,
+		Path:              rel,
+		ConfirmedDiskPath: confirmed,
 	})
 }
 
 // serveDiskExample answers for a bot found under ExamplesDir. A bot in one
-// file is its text. A bot in several files INSIDE the working directory
+// file is its text, with its path when it lies inside the working
+// directory. A bot in several files INSIDE the working directory
 // opens as its unit, the way /api/files/open opens it — the merged document
 // with each declaration's file, the unit's files and revision, the path the
 // studio opens and saves it by — since the studio binds the path it is
@@ -569,7 +583,11 @@ func writeExample(w http.ResponseWriter, name, source string) {
 func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data []byte) {
 	u := unit.LoadDirWithMain(abs, abs, data)
 	if len(u.Files) == 0 || u.Files[0].AST == nil || len(u.Files[0].AST.Imports) == 0 {
-		writeExample(w, name, string(data))
+		// A bot in one file inside the working directory names its real
+		// path too, so the studio opens and saves the file it was handed
+		// rather than a copy under bots/.
+		rel, confirmed, _ := s.workDirRelative(abs, name)
+		writeExample(w, name, string(data), rel, confirmed)
 		return
 	}
 	var diags []string
@@ -580,7 +598,20 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		writeJSON(w, parseResponse{Diagnostics: diags})
 		return
 	}
-	if rel, confirmed, ok := s.workDirRelative(abs); ok {
+	if u.HasErrors() {
+		// A unit that does not load is never bound to its files: the studio
+		// gets the program the loader salvaged, with its diagnostics, and no
+		// path or unit — a save of it goes to a new file, never over the
+		// files as the author wrote them.
+		docJSON, err := ast.MarshalFile(u.Merged)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+			return
+		}
+		writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags})
+		return
+	}
+	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {
 		docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
@@ -589,28 +620,28 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel)})
 		return
 	}
-	if u.HasErrors() {
-		writeJSON(w, parseResponse{Diagnostics: diags})
-		return
-	}
 	flat, err := flatProgram(name, u.Merged)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	writeExample(w, name, flat)
+	writeExample(w, name, flat, "", "")
 }
 
-// workDirRelative is abs as the path the studio opens and saves it by —
-// slash-separated, relative to the working directory — with the path
+// workDirRelative is abs — the file the example name designates under
+// ExamplesDir — as the path the studio opens and saves it by, slash-
+// separated and relative to the working directory, with the path
 // /api/files/open confirms for it, when abs lies inside the working
-// directory. ok is false when there is no working directory or abs is
-// outside it.
-func (s *Server) workDirRelative(abs string) (rel, confirmed string, ok bool) {
+// directory. ok is false when there is no working directory, when abs is
+// outside it, or when abs resolves to another file than the one the name
+// designates: a catalog file that is a symlink into the working directory
+// would otherwise have the studio open and save that other file under the
+// example's name.
+func (s *Server) workDirRelative(abs, name string) (rel, confirmed string, ok bool) {
 	s.stateMu.RLock()
-	workDir := s.cfg.WorkDir
+	workDir, examplesDir := s.cfg.WorkDir, s.cfg.ExamplesDir
 	s.stateMu.RUnlock()
-	if workDir == "" {
+	if workDir == "" || examplesDir == "" {
 		return "", "", false
 	}
 	base, err := filepath.Abs(workDir)
@@ -623,6 +654,10 @@ func (s *Server) workDirRelative(abs string) (rel, confirmed string, ok bool) {
 	}
 	absReal, err := filepath.EvalSymlinks(abs)
 	if err != nil || !pathContains(baseReal, absReal) {
+		return "", "", false
+	}
+	examplesReal, err := filepath.EvalSymlinks(examplesDir)
+	if err != nil || absReal != filepath.Join(examplesReal, filepath.FromSlash(name)) {
 		return "", "", false
 	}
 	r, err := filepath.Rel(baseReal, absReal)

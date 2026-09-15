@@ -353,12 +353,19 @@ export async function loadExample(
   source: string;
   document: IterDocument;
   diagnostics: string[];
-  /** Set with `unit` when the example is a bot in several files inside the
-   *  workspace: the path the studio opens and saves it by. */
+  /** The path the studio opens and saves the example by: set for a file
+   *  inside the workspace that parses clean, in one file or several;
+   *  absent for an embedded bot, one outside the workspace, or one that
+   *  does not parse — the studio then binds bots/<name>, where a save of
+   *  the one program lands. */
   path?: string;
-  /** Set when the example is a bot in several files inside the workspace:
-   *  the document is the merged unit. An embedded bot, or one outside the
-   *  workspace, is served as one flat program. */
+  /** The on-disk path the server read, when `path` is set — what
+   *  /api/files/open confirms for the same path. */
+  confirmed_disk_path?: string;
+  /** Set when the example is a bot in several files inside the workspace
+   *  that loads clean: the document is the merged unit. An embedded bot, or
+   *  one outside the workspace, is served as one flat program; one that
+   *  does not load is served as what the loader salvaged, unbound. */
   unit?: UnitInfo;
 }> {
   // Encode each path segment but keep the slashes so subdirectory

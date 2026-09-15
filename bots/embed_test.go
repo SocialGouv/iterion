@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +94,69 @@ func TestListNamesRecipesNotFragments(t *testing.T) {
 	}
 	if _, _, ok := Sources("feature-dev/lib"); ok {
 		t.Error("a directory was handed over as a bot")
+	}
+}
+
+// The bot's directory is the parent of the nearest lib/ ancestor, at any
+// depth, and the write order puts every fragment before every main
+// whatever the names sort like — pinned on shapes the embed does not
+// carry, since in the embed lib/ happens to sort before main.bot.
+func TestBotDirAndWriteOrder(t *testing.T) {
+	for name, want := range map[string]string{
+		"b/main.bot":          "b",
+		"b/agents.bot":        "b",
+		"b/lib/x.bot":         "b",
+		"b/lib/sub/x.bot":     "b",
+		"b/lib/sub/lib/y.bot": "b/lib/sub",
+		"lib/main.bot":        "lib",
+	} {
+		if got := botDirOf(name); got != want {
+			t.Errorf("botDirOf(%q) = %q, want %q", name, got, want)
+		}
+	}
+	got := orderForWrite("b", []string{"b/main.bot", "b/lib/z.bot", "b/agents.bot", "b/lib/sub/a.bot", "b/lib/a.bot"})
+	want := []string{"b/lib/a.bot", "b/lib/sub/a.bot", "b/lib/z.bot", "b/agents.bot", "b/main.bot"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("orderForWrite = %v, want %v", got, want)
+	}
+}
+
+// A bot's files come fragments first and mains last, whichever of them
+// names the bot, so a main on disk never wants for a fragment.
+func TestBotFilesOrderFragmentsBeforeMains(t *testing.T) {
+	files, _, ok := Sources("feature-dev/main.bot")
+	if !ok {
+		t.Fatal("feature-dev/main.bot is not embedded")
+	}
+	var fragment string
+	for rel := range files {
+		if strings.HasPrefix(rel, unit.FragmentDir+"/") {
+			fragment = rel
+			break
+		}
+	}
+	if fragment == "" {
+		t.Fatal("feature-dev embeds no fragment: the test lost its witness")
+	}
+	for _, name := range []string{"feature-dev/main.bot", path.Join("feature-dev", fragment)} {
+		_, cleaned, paths, err := botFiles(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if cleaned != name {
+			t.Errorf("%s: cleaned to %q", name, cleaned)
+		}
+		if last := paths[len(paths)-1]; strings.Contains(last, "/"+unit.FragmentDir+"/") {
+			t.Errorf("%s: the fragment %s is written last, want a main", name, last)
+		}
+		seenMain := false
+		for _, p := range paths {
+			if !strings.Contains(p, "/"+unit.FragmentDir+"/") {
+				seenMain = true
+			} else if seenMain {
+				t.Errorf("%s: fragment %s is written after a main", name, p)
+			}
+		}
 	}
 }
 

@@ -23,12 +23,13 @@ export interface ExampleTargetStore {
  * Load a first-class bot / bundled example by its relative name (e.g.
  * `"feature-dev/main.bot"`) and apply it to `store`.
  *
- * Binds `currentFilePath = bots/<name>` — the on-disk / launch-resolvable
- * path — BEFORE `markSaved()` so the freshly-loaded state is the clean saved
- * baseline AND the Run button enables immediately (otherwise it stays
- * disabled with "Save the workflow first to launch a run"). Keeps the
+ * Binds `currentFilePath` to the path the server names — a file inside the
+ * workspace that parses clean — else to `bots/<name>`, where a save of the
+ * one program lands; BEFORE `markSaved()` so the freshly-loaded state is the
+ * clean saved baseline AND the Run button enables immediately (otherwise it
+ * stays disabled with "Save the workflow first to launch a run"). Keeps the
  * example's `source` + `diagnostics` so Save and cloud-mode resume work
- * without a re-open.
+ * without a re-open, and binds the unit of a bot in several files.
  *
  * Throws if the load fails; callers decide how to surface that. Returns the
  * loaded result.
@@ -39,7 +40,7 @@ export async function openExampleIntoStore(name: string, store: ExampleTargetSto
   store.setDiagnostics(result.diagnostics);
   store.setCurrentSource(result.source);
   // The path first: setting it clears the unit, so the unit is bound after
-  // it. A bot in several files inside the workspace names the path the
+  // it. A file inside the workspace that parses clean names the path the
   // studio opens and saves it by; anything else binds bots/<name>, where a
   // save of the one program lands.
   store.setCurrentFilePath(result.path ?? `bots/${name}`);
