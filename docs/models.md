@@ -35,6 +35,16 @@ Widening `KnownModelSpecs` (or enumerating the aggregator) is the fix; until
 then this is the registry's known blind spot, not a claim that the model is
 unreachable.
 
+The same blind spot exists *inside* a covered provider: `KnownModelSpecs`
+enumerates a subset of what the vendored claw registry resolves. `claude-fable-5-1`
+(aliases `fable`, `fable-5`), `claude-opus-4-7`, `claude-opus-4-6`,
+`claude-sonnet-4-7`, `gpt-5.5-pro` and the rest of the `gpt-5.4` line all
+resolve and run, yet a bare `iterion models` lists none of them — and Fable 5.1
+is one of the two families [ultracode](ultracode.md) is reliable on. Name the
+spec explicitly (`iterion models anthropic/claude-fable-5-1`,
+`?spec=anthropic/claude-fable-5-1`, or the picker's **Custom…** entry) and it
+resolves like any enumerated row.
+
 [`pkg/modelcatalog`](../pkg/modelcatalog/catalog.go) is the crossing, and is
 the single code path behind both the CLI and the HTTP endpoint — the two
 cannot disagree about whether a model is reachable. In cloud the HTTP
@@ -142,7 +152,7 @@ letting it be discovered mid-run:
 | no credential can reach the model (`reachability` local or cloud) | blocking | the run fails at its first node |
 | cloud reachability is `unknown` | warning | launch-tier proof is missing; a pool grant or runner fallback may still serve |
 | the model has no tool-calling | blocking | the agent loses the board, skills and run introspection — broken, not degraded |
-| `ultracode` on anything but `claude-opus-4-8` | warning | it degrades silently to plain `xhigh` (diagnostic C089, [docs/ultracode.md](ultracode.md)) |
+| `ultracode` outside the Opus 4.8 / Claude 5 family (`claude-opus-4-8`, `claude-opus-5`, `claude-fable-5-1`) | warning | it degrades silently to plain `xhigh` (diagnostic C089, [docs/ultracode.md](ultracode.md)) |
 
 Nothing is disabled: the guard informs, the operator decides. The host's
 recommended model stays one click away so a cheap pick is undoable.
@@ -263,8 +273,9 @@ models with no API key.
 needs a z.ai credential; see the dialect-vs-vendor note above.
 
 **"The assistant feels dumber"** — check the model in the session header. A
-small model, or `ultracode` on a model that is not `claude-opus-4-8`, both
-degrade reasoning quality with no other signal. "Back to bot default" in the
+small model, or `ultracode` outside the Opus 4.8 / Claude 5 family
+(`claude-opus-4-8`, `claude-opus-5`, `claude-fable-5-1`), both degrade
+reasoning quality with no other signal. "Back to bot default" in the
 picker restores the bot's own pins.
 
 **"My preference is not sticking"** — the picker says so when the server

@@ -356,6 +356,40 @@ Blocked requests surface to the run as a `network_blocked` event in
 {"type": "network_blocked", "data": {"host": "evil.site", "reason": "policy denial", "run_id": "..."}}
 ```
 
+#### Composing a node's rules with the workflow's (`inherit:`)
+
+A `network:` block on an `agent`, `judge` or `tool` may carry `inherit:`, which
+declares how that node's rules compose with the workflow's. It is
+**node-scope-only** — a workflow-level block has nothing to compose with:
+
+| `inherit:`            | Declares                                             |
+| --------------------- | ---------------------------------------------------- |
+| omitted (the default) | **merge** — the node's `rules:` follow the workflow's |
+| `append`              | identical to merge today; reserved for a future nuance |
+| `replace`             | discard the workflow's rules, use the node's only     |
+
+`merge` is not a spellable value — omit the key instead. Any other word is a
+compile error (**C044**, the same code as an invalid `mode:`), and
+`sandbox.Spec.Validate` refuses it again at launch with `sandbox.network:
+invalid inherit "…" (want replace or append; omit it to merge, the default)`.
+
+```iter fragment
+agent locked_down:
+  sandbox:
+    image: "ghcr.io/acme/tools:1"
+    network:
+      mode: allowlist
+      inherit: replace             # ignore the workflow allowlist entirely
+      rules: ["api.github.com"]
+```
+
+**What ships today is the declaration, not yet the composition.** The value is
+parsed, compiled into the IR and carried into the runtime spec by
+[`fromIRSpec`](../pkg/runtime/sandbox.go), but the proxy's policy is still
+derived from the workflow-level block alone: `ResolveNetworkPolicy` reads
+`mode`, `preset` and `rules` and never consults `inherit`. Write it for intent;
+do not rely on it to narrow one node's egress below the workflow's.
+
 ## Configuration surface
 
 ### `.bot` workflow
@@ -411,7 +445,8 @@ against the workflow workspace before starting the container. `env:`,
 and auto-mode fallback cases.
 
 Per-node overrides accept the same short or block form on `agent`,
-`judge`, and `tool`:
+`judge`, and `tool` — a node-level `network:` block also accepts `inherit:`,
+see [Composing a node's rules with the workflow's](#composing-a-nodes-rules-with-the-workflows-inherit):
 
 ```iter fragment
 agent shell_helper:

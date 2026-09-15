@@ -680,6 +680,20 @@ only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 
+**Defaults iterion forces.** A `claude_code` node that leaves `model:` empty
+runs on **`claude-opus-5`**, mirroring the official Claude Code CLI default
+(1M context window); one that leaves `reasoning_effort:` empty runs at
+**`xhigh`**, deliberately above the API's own `high` default on the Opus tier,
+because this backend carries implementer and fixer work for which Anthropic
+recommends starting there. Both sit at the expensive end of their dial, so pin
+them on cheap nodes (`model: "anthropic/claude-sonnet-4-6"`,
+`reasoning_effort: medium`) rather than inheriting the default. To repoint
+every `claude_code` node at one gateway-side alias without editing each bot,
+use the env-driven form `model: "${ITERION_CLAUDE_CODE_MODEL:-claude-opus-5}"`
+— the IR expander resolves it before the backend sees the task. Source:
+`defaultClaudeCodeModel` / `defaultClaudeCodeEffort` in
+[`pkg/backend/delegate/claude_code.go`](../pkg/backend/delegate/claude_code.go).
+
 **MCP isolation.** iterion spawns the CLI with `--strict-mcp-config`, so the
 only MCP servers a node gets are the ones iterion resolves and passes via
 `--mcp-config`: the `.bot`'s `mcp_server:`/`mcp:` blocks, the target repo's
@@ -890,6 +904,26 @@ parent node/run cancellation is not retried.
 Tune the tiers with `ITERION_CLAW_STREAM_COLD_TIMEOUT` and
 `ITERION_CLAW_STREAM_IDLE_TIMEOUT` (Go durations such as `2m` or `20m`). Set
 either to `0` only when that tier must be deliberately disabled.
+
+#### The `bash` tool's per-call budget
+
+The watchdog above bounds the *provider request*. claw's in-process `bash` tool
+— the one iterion registers for every claw node — bounds **one command**,
+separately: a call is killed after **30 s** by default. That is a probe's
+budget, and it is the wrong budget for the call that matters most in a
+self-verifying loop, where an agent asked to check its own work runs the repo's
+build and test suite. Two dials raise it, and the explicit one wins:
+
+| Dial | Who sets it | Range |
+|---|---|---|
+| `timeout_seconds` on the `bash` tool input | the model, per call | whole seconds, **1 to 600**; anything else is refused before the process spawns (`bash: 'timeout_seconds' must be an integer from 1 to 600`) |
+| `CLAW_BASH_TIMEOUT` in the runner's environment | the operator, for every call | a Go duration (`15m`) or a bare number of seconds; `0` or negative removes the bound and leaves the node's own `timeout:` as the only limit; an unparsable value falls back to 30 s. **Not** capped by the 600 s ceiling above — an operator setting a machine-wide default is trusted, the model asking mid-turn is not |
+
+The timeout error names which of the three possible bounds decided — the
+per-call ask, the environment default, or the caller's own deadline — so a 30 s
+kill on a test suite reads as a knob to turn rather than a mystery. Both dials
+live in the vendored claw-code-go (`internal/tools/bash.go`), not in iterion, so
+they apply wherever that bash tool runs.
 
 #### The `tools:` list is load-bearing here (`C135`)
 
