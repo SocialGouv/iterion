@@ -215,6 +215,60 @@ func TestAResponseContractIsOptInAndLeavesEveryOtherAnswerAlone(t *testing.T) {
 	})
 }
 
+// TestAPageBreakingItsContractStopsTheWalkInsteadOfContributing.
+//
+// A paginated walk is where a lenient reading costs the most: the refused page
+// would otherwise add its rows to a collection the caller then reads as whole.
+// So the walk ends, reports `complete=false`, and the refused page contributes
+// NOTHING.
+//
+// The pages already gathered still come back — that is CallPaged's documented
+// posture for every mid-walk failure, so a caller that logs both can see how
+// far it got, and `complete=false` is the signal that says the collection is
+// partial. What must not happen is the refused page's own rows appearing in it.
+func TestAPageBreakingItsContractStopsTheWalkInsteadOfContributing(t *testing.T) {
+	pages := 0
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		pages++
+		w.Header().Set("Content-Type", "application/json")
+		if pages == 1 {
+			// A FULL page, so the walk has a reason to ask for a second.
+			_, _ = w.Write([]byte(`[{"id":1},{"id":2}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":"not-an-integer"}]`))
+	})
+	defer done()
+
+	op := withContract(t, pkg, "probe.issue.list", 200, spec.ResponseSchema{
+		Type: "array",
+		Items: &spec.ResponseSchema{
+			Type: "object", Required: []string{"id"},
+			Properties: map[string]spec.ResponseSchema{"id": {Type: "integer"}},
+		},
+	})
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op,
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err == nil && last.Err == nil {
+		t.Fatal("a page that breaks its contract must fail the walk")
+	}
+	if complete {
+		t.Error("a walk that stopped on a refused page is not a complete collection")
+	}
+	if len(items) != 2 {
+		t.Errorf("items = %v, want the two rows page one legitimately delivered", items)
+	}
+	for _, item := range items {
+		row, _ := item.(map[string]any)
+		if id, _ := row["id"].(string); id == "not-an-integer" {
+			t.Errorf("the refused page contributed a row anyway: %v", items)
+		}
+	}
+	if pages != 2 {
+		t.Errorf("pages fetched = %d, want 2: page one valid, page two refused and the walk over", pages)
+	}
+}
+
 // TestAResponseContractSeesExactIntegersTheFloatPathLoses runs the collision
 // through the REAL server, client and reader.
 //
