@@ -350,7 +350,7 @@ func varDefaultJSON(v *Var) json.RawMessage {
 // defaultAgrees reports whether a port's written default is the var's: the
 // same string, integer, number or bool — a number the text writes two ways
 // (`1.50`, `1.5`) is one value — or, for a list or an object, the same
-// canonical JSON.
+// value under one reading of both sides.
 func defaultAgrees(raw json.RawMessage, v *Var) bool {
 	value, err := spec.DecodePublicJSON(raw)
 	if err != nil {
@@ -378,7 +378,14 @@ func defaultAgrees(raw json.RawMessage, v *Var) bool {
 		got, err := n.Float64()
 		return err == nil && got == want
 	}
-	got, err := json.Marshal(value)
+	// A container: the port's value read as the var's is (seededDefault →
+	// encoding/json, numbers as float64), so `{ratio: 1.0}` and the var's
+	// `{"ratio": 1.0}` are one value whatever spelling each side used.
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return false
+	}
+	got, err := json.Marshal(normalized)
 	return err == nil && string(got) == string(varDefaultJSON(v))
 }
 

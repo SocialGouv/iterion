@@ -19,6 +19,7 @@ const contractProgramFmt = `vars:
   mode: string = "fast"
   tags: string[] = "a,b"
   cfg: json = "[1, 2]"
+  shape: json = "[1.0, 2.5]"
   tiny: float = 0.0000001
   note: string
 
@@ -173,6 +174,7 @@ func TestAContractTheProgramDoesNotKeepIsRefused(t *testing.T) {
 		"default of another value":                {"contract c:\n  inputs:\n    depth: int\n      default: 3\n", DiagContractInput, "mirrors the var's default"},
 		"string default of another value":         {"contract c:\n  inputs:\n    mode: string\n      default: \"slow\"\n", DiagContractInput, "mirrors the var's default"},
 		"list default of another value":           {"contract c:\n  inputs:\n    tags: string[]\n      default: [\"a\"]\n", DiagContractInput, "mirrors the var's default"},
+		"json default of another value":           {"contract c:\n  inputs:\n    shape: json\n      default: [2, 2.5]\n", DiagContractInput, "mirrors the var's default"},
 		"required with a null default":            {"contract c:\n  inputs:\n    note: string\n      nullable: true\n      required: true\n      default: null\n", DiagContractInput, "is required and defaults to null"},
 		"version 0":                               {"contract c:\n  version: 0\n", DiagContractInput, "starts at 1"},
 		"duplicate input":                         {"contract c:\n  inputs:\n    goal: string\n    goal: string\n", DiagContractInput, "declared twice"},
@@ -285,7 +287,7 @@ func TestSameProgramSeesTheContract(t *testing.T) {
 // contradict it (the refusals sit in the table). On a var without a
 // default, a nullable port may be optional, with no default or a null one.
 func TestAnInputMirrorsItsVar(t *testing.T) {
-	cr := compileContractProgram(t, "contract c:\n  inputs:\n    goal: string\n    depth: int\n    ratio: float\n      default: 1.50\n    mode: string\n      required: false\n      default: \"fast\"\n    tags: string[]\n    cfg: json\n      default: [1, 2]\n    tiny: float\n    note: string\n      nullable: true\n      required: false\n", "c")
+	cr := compileContractProgram(t, "contract c:\n  inputs:\n    goal: string\n    depth: int\n    ratio: float\n      default: 1.50\n    mode: string\n      required: false\n      default: \"fast\"\n    tags: string[]\n    cfg: json\n      default: [1, 2]\n    shape: json\n      default: [1.0, 2.5]\n    tiny: float\n    note: string\n      nullable: true\n      required: false\n", "c")
 	if codes := errorCodes(cr); len(codes) != 0 {
 		t.Fatalf("errors: %v — %v", codes, cr.Diagnostics)
 	}
@@ -308,11 +310,14 @@ func TestAnInputMirrorsItsVar(t *testing.T) {
 	if in[5].Required || string(in[5].Default) != `[1,2]` {
 		t.Errorf("cfg, a json var whose port repeats its list, came out as %+v", in[5])
 	}
-	if in[6].Required || string(in[6].Default) != "0.0000001" {
-		t.Errorf("tiny, a float the view must write without an exponent, came out as %+v", in[6])
+	if in[6].Required || string(in[6].Default) != `[1.0,2.5]` {
+		t.Errorf("shape, a json var whose port repeats its list with a number spelt 1.0, came out as %+v", in[6])
 	}
-	if in[7].Required || in[7].Default != nil {
-		t.Errorf("note, nullable and optional on a var without a default, came out as %+v", in[7])
+	if in[7].Required || string(in[7].Default) != "0.0000001" {
+		t.Errorf("tiny, a float the view must write without an exponent, came out as %+v", in[7])
+	}
+	if in[8].Required || in[8].Default != nil {
+		t.Errorf("note, nullable and optional on a var without a default, came out as %+v", in[8])
 	}
 	cr = compileContractProgram(t, "contract c:\n  inputs:\n    note: string\n      nullable: true\n      default: null\n", "c")
 	if codes := errorCodes(cr); len(codes) != 0 {
