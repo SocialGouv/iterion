@@ -309,18 +309,23 @@ func (s *Server) gateSweepIsLastPass(run *store.Run) bool {
 // several deep passes long. A fixed band would then be stepped clean over —
 // the run is visited before it, and never again after it.
 //
-// So it is derived from what the sweeper measured (gateDeepCycleLen), floored
-// at the historical two deep intervals so a late or skipped pass still cannot
-// swallow the line, and capped at half the horizon: a traversal longer than
-// THAT means the net is not keeping up at all, which is a per-deployment fact
-// the page-cap warning already states once per pass — turning it into a
-// per-run Warn storm would bury the branches that carry new information, the
-// very thing the Debug/Warn split exists to prevent.
+// So it is derived from what the sweeper measured (gateDeepCycleLen): a
+// traversal of N deep passes revisits a run every N of them, and the band
+// spans N+1 so a late or skipped pass still cannot swallow the line. That is
+// the same rule the historical constant encoded — it read two intervals
+// because a traversal was assumed to be one pass — now stated for any N
+// instead of for N=1, and floored there so the guarantee never weakens.
+//
+// Capped at half the horizon: a traversal longer than THAT means the net is
+// not keeping up at all, which is a per-deployment fact the page-cap warning
+// already states once per pass — turning it into a per-run Warn storm would
+// bury the branches that carry new information, the very thing the Debug/Warn
+// split exists to prevent.
 func (s *Server) gateSweepLastPassMargin() time.Duration {
 	passes := int64(2)
 	if s != nil {
-		if measured := s.gateDeepCycleLen.Load(); measured > passes {
-			passes = measured
+		if measured := s.gateDeepCycleLen.Load(); measured+1 > passes {
+			passes = measured + 1
 		}
 	}
 	margin := time.Duration(passes) * gateDeepSweepEvery * gateSweepInterval

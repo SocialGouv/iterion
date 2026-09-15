@@ -95,6 +95,22 @@ func TestGateSweepAbstain_TheGiveUpBandFollowsTheMeasuredTraversal(t *testing.T)
 	})
 }
 
+// The band spans one traversal PLUS a pass, so the guarantee the historical
+// two-interval constant gave at N=1 — a late or skipped pass cannot swallow
+// the line — still holds at every backlog size. Exactly one traversal would
+// leave a single visit in the band and nothing to lose.
+func TestGateSweepAbstain_TheBandSurvivesOneSkippedPass(t *testing.T) {
+	s, _, _ := abstainingSweepFixture(t)
+	for _, traversal := range []int{1, 3, 6} {
+		s.noteGateDeepCycle(traversal, true)
+		revisit := time.Duration(traversal) * gateDeepSweepEvery * gateSweepInterval
+		if got := s.gateSweepLastPassMargin(); got <= revisit {
+			t.Errorf("traversal of %d deep passes revisits every %s but the band is %s — one skipped pass and the give-up line is never written",
+				traversal, revisit, got)
+		}
+	}
+}
+
 // The measure must SHRINK again when the backlog does, or one busy day widens
 // the band for good and the warning starts firing while the net is still
 // trying — the noise the Debug/Warn split exists to prevent.
