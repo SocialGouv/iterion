@@ -133,7 +133,13 @@ func refusalStreakExpr(r Reading) any {
 
 // Latest returns the newest reading per window for a credential key.
 func (s *MongoStore) Latest(ctx context.Context, key string) ([]Reading, error) {
-	cur, err := s.col.Find(ctx, bson.M{"key": key})
+	filter := bson.M{"key": key}
+	if backend, fp, ok := accountKeyParts(key); ok {
+		// Include scoped writes from old pods during a rolling upgrade.
+		// The ledger is TTL-bounded; both anchors and all input are escaped.
+		filter = bson.M{"key": bson.M{"$regex": "^" + regexp.QuoteMeta(backend+"|") + ".*" + regexp.QuoteMeta(keyFingerprintSuffix(fp)) + "$"}}
+	}
+	cur, err := s.col.Find(ctx, filter)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, nil
@@ -145,9 +151,9 @@ func (s *MongoStore) Latest(ctx context.Context, key string) ([]Reading, error) 
 	if err := cur.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("usagecap: latest %s: decode: %w", key, err)
 	}
-	out := make([]Reading, 0, len(docs))
+	merged := make(map[Window]Reading, len(docs))
 	for _, d := range docs {
-		out = append(out, Reading{
+		mergeAccountReading(merged, Reading{
 			Window:      Window(d.Window),
 			Utilization: d.Utilization,
 			Status:      d.Status,
@@ -155,6 +161,10 @@ func (s *MongoStore) Latest(ctx context.Context, key string) ([]Reading, error) 
 			ObservedAt:  d.ObservedAt,
 			Refusals:    d.Refusals,
 		})
+	}
+	out := make([]Reading, 0, len(merged))
+	for _, r := range merged {
+		out = append(out, r)
 	}
 	return out, nil
 }

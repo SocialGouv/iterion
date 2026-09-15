@@ -333,3 +333,68 @@ func TestOAuthRefreshWorker_RefreshesCodexWithNoConfiguredClientID(t *testing.T)
 		t.Errorf("stored expiry = %s, want the refreshed token's own exp %s", got, newExp)
 	}
 }
+
+// failingSelfHealStore fails the not-refreshable self-heal write once, with an
+// ordinary store error — the case the branch did not handle.
+type failingSelfHealStore struct {
+	OAuthStore
+	failNext bool
+}
+
+func (s *failingSelfHealStore) UpdateTokens(ctx context.Context, id string, upd OAuthTokenUpdate) error {
+	if s.failNext {
+		s.failNext = false
+		return errors.New("store timeout")
+	}
+	return s.OAuthStore.UpdateTokens(ctx, id, upd)
+}
+
+// TestOAuthRefreshWorker_SelfHealWriteFailureHandsTheClaimBack.
+//
+// The self-heal branch relied on the FENCED write to release the claim, so a
+// write that failed for any reason other than ErrRefreshClaimLost left the
+// record stamped for the full lease — the opposite of the "hand the claim back
+// so the next sweep may retry at once" the sibling path promises three lines
+// above. On a store blip that delayed every later legacy sweep by the TTL.
+//
+// Asserted on the OUTCOME, not on a spy: the next sweep must be able to take
+// the record immediately. A test counting ReleaseRefreshClaim calls would pass
+// on a release that released nothing. (Revi R7ac4b9.)
+func TestOAuthRefreshWorker_SelfHealWriteFailureHandsTheClaimBack(t *testing.T) {
+	freshRetrySchedule(t)
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	base := NewMemoryOAuthStore()
+	seedRecordNoRefreshToken(t, base, sealer, "carol", time.Now().Add(time.Minute))
+	st := &failingSelfHealStore{OAuthStore: base, failNext: true}
+
+	w := &OAuthRefreshWorker{
+		Store:             st,
+		Sealer:            sealer,
+		HTTP:              http.DefaultClient,
+		AnthropicClientID: "client-xyz",
+		Lead:              30 * time.Minute,
+	}
+	if _, err := w.RunOnce(context.Background()); err == nil {
+		t.Fatal("fixture never armed: the failing self-heal write produced no sweep error")
+	}
+	rec, err := base.Get(context.Background(), "carol", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.NotRefreshable {
+		t.Fatal("fixture never armed: the write that was supposed to fail landed")
+	}
+
+	// Immediately, not after RefreshClaimTTL: the second sweep must reach the
+	// record and self-heal it.
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	healed, err := base.Get(context.Background(), "carol", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !healed.NotRefreshable {
+		t.Error("the record stayed fenced after a failed self-heal write — every legacy sweep is delayed by the lease TTL on a store blip")
+	}
+}

@@ -332,9 +332,9 @@ What the wrap assumes, and why it is not silent:
 - **No `refreshToken`**, which is correct: the record comes back
   `refreshable: false` and the refresh worker leaves it alone.
 - The **fingerprint is taken over the token**, not over the wrapper — so
-  re-uploading the same token keeps one usage meter and keeps its
-  `account_label`. This makes a setup token a *better* identity than a
-  `credentials.json`, two exports of which differ byte for byte (see below).
+  re-uploading the same token keeps its legacy meter and `account_label`.
+  It does not verify the account: setup tokens lack `user:profile`. Use the
+  browser connection when a stable provider account identity is needed.
 
 A blob that is neither JSON nor a well-formed `sk-ant-oat…` token still earns
 the same typed refusal as before, and a token that picked up a newline or a
@@ -384,22 +384,55 @@ names — for the (slot, tier, fingerprint) triple, the GRANTED line above
 remains the place to look, and the two cannot drift because they are computed
 by the same function.
 
-### Two connections of the same account are two meters
+### Verified accounts share one provider meter
 
-A Claude `credentials.json` carries no account or subscription id, so
-`SubscriptionFingerprint` falls back to hashing the whole blob
-([pkg/secrets/oauth.go](../pkg/secrets/oauth.go)). The same subscription
-connected twice — on two teams, or personally and org-wide — therefore gets
-**two different fingerprints and two independent usage meters**, each starting
-empty.
+A Claude `credentials.json` carries no account identity. At connection time,
+the server now reads Anthropic's OAuth profile when the credential has
+`user:profile`. The account and organization UUIDs form a stable SHA-256
+fingerprint (`account:anthropic:…`) that survives token rotation, reconnects,
+and changes of Iterion owner or rank. Usage readings follow that account
+across personal, team, org, pool and platform scopes. A newly verified account
+with no readings is probed before its first admission; a failed provider probe
+retains the existing fail-open behavior and the mid-run guard.
 
-The practical consequence is a fleet that looks redundant and is not. Measured
-2026-09-08: three teams held what read as three credentials
-(`2b36a854`, `0b5c7442` twice) and were one Anthropic account; when its
-five-hour window closed, all three stopped together, and the single tier behind
-them was already exhausted on its weekly window. Before trusting a fallback,
-check the **account labels**, not the fingerprints — and give each tier a
-genuinely different account.
+The listing returns `account_verified`, `account_email`, `account_checked_at`
+and, when identification failed, `account_error`. UUIDs and bearer tokens are
+never returned. `same_account_ranks` names other connections of the same kind
+visible to that owner; it does not enumerate other tenants or donors. Studio
+shows the verified email and warns when several entries share one quota.
+Editable labels and coincident reset times are not proof of a shared account.
+
+Setup tokens without profile scope and failed profile lookups retain the
+legacy payload identity and report the missing verification. A failed lookup
+may preserve a previously verified identity only when the stored bearer token
+is exactly the same. Replacing it with an unidentified token clears that old
+identity. Existing blob hashes cannot be backfilled from labels: reconnect
+through the browser to identify those accounts.
+
+A refresh identifies the returned Claude bearer again: a pasted access token
+and refresh token are not proof that both belong to the same account. Tokens
+and the verified identity are committed together. If that profile lookup fails,
+the already rotated tokens are kept, but the old account association is cleared,
+the meter becomes unverified and `account_error` explains the missing identity.
+A later successful lookup restores the account meter. Refresh also checks that
+the stored credential still matches its claimed snapshot before contacting the
+provider; a concurrent reconnect cannot be overwritten by that stale snapshot.
+
+This closes the verified-account form of the incident measured on 2026-09-08:
+three teams held different credential hashes but drew on one subscription.
+Several verified connections of that account now share its provider window;
+they are still one source of capacity.
+
+**Rollout:** deploy readers/runners before the server starts issuing these
+fingerprints. New readers also merge older, scoped writes carrying the same
+verified fingerprint, selecting the newest observation per window. Older
+readers cannot read the new shared key. Historical blob-hash readings expire
+normally and are not relabeled. The OAuth metadata is additive and no queue
+envelope or AST schema changes in this feature.
+Equal-time observations use a deterministic tie-break: refusal, higher usage
+and refusal streak, then the later reset when those values agree. An unchanged
+ledger cannot alternate between a blocked and open window due to cursor order.
+The API hides stale profile fields left by a writer that does not know them.
 
 ## The fallback chain — several forfaits behind one tier
 
@@ -451,9 +484,9 @@ Four things worth knowing before building one:
   primary, and the migration runs itself at startup. An invocation that names
   no rank sends the byte-identical request it sent before.
 - **A chain of the same account is not a fallback.** The trap of the previous
-  section applies with full force here: two connections of one Anthropic
-  subscription are two fingerprints and two meters, and they shut *together*.
-  Check the account labels.
+  section still applies: two connections of one verified Anthropic account
+  share one fingerprint and meter and shut together. Studio flags duplicate
+  accounts within the visible owner. Unverified credentials remain unknown.
 - **`refresh --rank N` renews that link and no other.** This matters more than
   it looks: the provider RETIRES the refresh token it is handed, so a refresh
   aimed at the wrong record spends a live credential's token and leaves the
@@ -462,6 +495,50 @@ Four things worth knowing before building one:
   on (owner, source, kind) with no rank, so `pool lend` offers rank 0. Lending
   a specific fallback is not wired — see
   [docs/credential-pool.md](credential-pool.md).
+
+## Preview the effective fallback order
+
+The team's **Model subscriptions** page includes a fallback preview. Choose
+a bot and either your personal launch or an existing webhook. The server
+derives the real owner and the webhook's key pins, rather than treating the
+person reading the page as the owner of an automated run. The CLI uses the
+same endpoint:
+
+```sh
+iterion remote credentials preview --team <team-id> --bot review-pr --json
+iterion remote credentials preview --team <team-id> --webhook <webhook-id> --json
+```
+
+A webhook with several allowed bots and no default also needs `--bot`.
+`POST /api/teams/{id}/credentials/preview` takes
+`{"source":{"kind":"personal"},"bot_id":"review-pr"}` or
+`{"source":{"kind":"webhook","id":"…"},"bot_id":"…"}`. It rejects
+arbitrary owner fields and sources belonging to another team. Personal
+previews use the bot defaults; they do not include model overrides that an
+operator has entered in a different launch form.
+
+The observation shows candidates in the resolver's order, grouped by provider
+wire. `selection` distinguishes selected slots, later candidates and tiers not
+consulted by the current launch. `state` separately reports observed quota,
+capacity, a required probe or restoration of a closed credential to wait for
+quota. A restored candidate is not available capacity. Pool donation is
+considered only when the whole credential bundle is empty; a pool grant then
+excludes the platform tier. The preview still shows those alternatives and
+why they are not consulted, without reserving them.
+
+`account_group` correlates verified accounts only within one response. It
+does not reveal provider UUIDs, private donor labels or platform account
+emails. Refusals without a utilization number omit `percent`, and unknown
+capacity omits the corresponding numeric fields. A donor allowance, when
+present, is the prospective allocation for this run, after concurrent
+commitments; it is not the donor's total balance.
+
+Every result is dated. It opens no secret, probes no provider, creates no run
+and acquires no capacity. Actual materialization, a fresh provider observation
+or a concurrent admission can change the chosen credential. Runner environment
+credentials and workflow secrets remain outside this database observation.
+The selection rules are shared with the real publisher and checked against
+its sealed bundle in tests.
 
 ## Activating the cross-model plan review (one credential, nothing else)
 
@@ -515,8 +592,9 @@ the ChatGPT-forfait wire gates models by the codex-cli `version:` header
 
 ## Name the account behind every credential
 
-Nothing else identifies it. The payload is sealed, and when the publisher
-picks a credential it logs a FINGERPRINT:
+A verified profile supplies the account email and a default display name.
+Custom labels remain useful for the role of a credential; they never replace
+provider identity. When the publisher picks a credential it logs a fingerprint:
 
 ```
 cloudpublisher: oauth-forfait(org) used run=… kind=claude_code fp=700acc7b00f
@@ -551,10 +629,11 @@ change it.
 
 **The name follows the fingerprint.** A re-connect that names no account
 keeps the previous label only when it provably re-connects the same
-subscription — codex fingerprints derive from the account id, so a fresh
-`auth.json` of the same ChatGPT account keeps its name; a claude_code
-credentials blob carries no account id, so only re-pasting the SAME blob
-does. Any other unnamed re-connect drops the label rather than inherit
+subscription — Codex fingerprints derive from the account id, and a verified
+Claude profile supplies a stable identity outside the blob. A custom name
+survives reconnects of that account; a derived email follows a changed profile
+email. Unidentified Claude credentials preserve a name only for the same
+payload identity. Any other unnamed re-connect drops the label rather than inherit
 it: the same owner key re-pointed at a different forfait — the swap
 measured on 2026-09-03, SocialGouv's key replaced by a personal one on
 the same team — would otherwise answer "whose subscription paid?" with
@@ -566,9 +645,11 @@ Renaming is a metadata write at the store (`SetAccountLabel`), never a
 read-modify-write of the record: the sealed payload a concurrent refresh
 just rotated is not carried back over. The refresh paths are symmetric —
 the background worker, the manual `POST …/refresh`, and the
-`not_refreshable` self-heal all persist through `UpdateTokens`, a `$set`
-of the token keys only — so a rename committed *during* a provider round
-trip is not reverted either. `Upsert` remains the connect path's, which
+`not_refreshable` self-heal all persist through `UpdateTokens`. That patch
+owns the tokens and their verified identity, not unrelated metadata. A derived
+email label changes only if its stored value still matches the previous email,
+so a rename committed *during* a provider round trip is not reverted.
+`Upsert` remains the connect path's, which
 legitimately replaces the whole record.
 
 **And what each named credential COST** is a separate ledger:
@@ -736,6 +817,7 @@ restart):
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | `https://platform.claude.com/oauth/code/callback` |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | `user:profile user:inference user:sessions:claude_code user:mcp_servers` |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL` | `https://console.anthropic.com/v1/oauth/token` — the auth-code exchange **and** the refresh worker |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL` | `https://api.anthropic.com/api/oauth/profile` — the account lookup. Move it with the token endpoint: this is the leg that sends a **bearer** outbound, on every connect and every refresh |
 | `ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL` | `https://auth.openai.com/oauth/token` |
 
 The two client ids (`ITERION_OAUTH_FORFAIT_{ANTHROPIC,CODEX}_CLIENT_ID`) ride

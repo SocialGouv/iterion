@@ -14,6 +14,14 @@ export function formatMs(ms: number): string {
   return `${s}s`;
 }
 
+// Account keys carry a shared namespace before the digest. Short displays
+// must keep digest characters, otherwise every verified account reads alike.
+export function formatCredentialFingerprint(fingerprint: string, length = 8): string {
+  const prefix = "account:anthropic:";
+  const digest = fingerprint.startsWith(prefix) ? fingerprint.slice(prefix.length) : fingerprint;
+  return digest.slice(0, length);
+}
+
 // formatDurationBetween computes an ISO-string duration. Returns null
 // when the input is malformed; falls back to "now" when end is omitted
 // (live ticker case).

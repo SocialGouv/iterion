@@ -18,7 +18,7 @@ import {
 import WSStatusDot from "@/components/shared/WSStatusDot";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
-import { formatDateTime, formatRelative } from "@/lib/format";
+import { formatCredentialFingerprint, formatDateTime, formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
 import { useServerInfoStore } from "@/store/serverInfo";
 
@@ -295,7 +295,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
                 className="inline-flex items-center gap-1 rounded border border-border-default px-1.5 py-0.5 text-micro font-mono text-fg-subtle"
                 data-testid="run-cred-fingerprints"
               >
-                fp {run.cred_fingerprints.map((f) => f.slice(0, 8)).join(" · ")}
+                fp {run.cred_fingerprints.map((f) => formatCredentialFingerprint(f)).join(" · ")}
               </span>
             </Tooltip>
           )}

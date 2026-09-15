@@ -325,25 +325,7 @@ func wantMatchesPledge(wants []Credential, p Pledge) bool {
 // every candidate the walk did NOT admit and the per-pledge status the
 // caller can carry on NoDonorError.
 func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge, req Request, want Credential, now time.Time) (*Grant, []PledgeSkip, error) {
-	eligible := make([]Pledge, 0, len(candidates))
-	var skips []PledgeSkip
-	for _, p := range candidates {
-		if p.Source != want.Source || p.Ref != want.Ref {
-			continue
-		}
-		// A donor never serves their own run: they would be lending to
-		// themselves, consuming pool bookkeeping for nothing and skewing
-		// the fairness ranking against the other donors. Not a "skip"
-		// worth reporting: no operator investigation ever asks that.
-		if p.UserID == req.UserID {
-			continue
-		}
-		if ok, status := p.AvailableForLaunch(now, req.BotID); ok {
-			eligible = append(eligible, p)
-		} else {
-			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
-		}
-	}
+	eligible, skips := eligiblePledges(candidates, req, want, now)
 	if len(eligible) == 0 {
 		return nil, skips, nil
 	}
@@ -371,6 +353,30 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 		skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
 	}
 	return nil, skips, nil
+}
+
+// eligiblePledges is shared by admission and preview; it performs no writes.
+func eligiblePledges(candidates []Pledge, req Request, want Credential, now time.Time) ([]Pledge, []PledgeSkip) {
+	eligible := make([]Pledge, 0, len(candidates))
+	var skips []PledgeSkip
+	for _, p := range candidates {
+		if p.Source != want.Source || p.Ref != want.Ref {
+			continue
+		}
+		// A donor never serves their own run: they would be lending to
+		// themselves, consuming pool bookkeeping for nothing and skewing
+		// the fairness ranking against the other donors. Not a "skip"
+		// worth reporting: no operator investigation ever asks that.
+		if p.UserID == req.UserID {
+			continue
+		}
+		if ok, status := p.AvailableForLaunch(now, req.BotID); ok {
+			eligible = append(eligible, p)
+		} else {
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
+		}
+	}
+	return eligible, skips
 }
 
 // skipStatus names why a ledger decline held a pledge out, for the skips
@@ -652,8 +658,8 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		}
 		// An expired token with no way to renew is dead: the refresh worker
 		// skips it, so it will never come back on its own.
-		if rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !now.Before(*rec.AccessTokenExpiresAt) {
-			return nil, "", "the connected subscription expired and carries no refresh token — reconnect it to resume sharing", nil
+		if gone := oauthCredentialGone(rec, now); gone != "" {
+			return nil, "", gone, nil
 		}
 		pt, oerr := secrets.OpenOAuthPayload(b.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 		if oerr != nil {
@@ -680,14 +686,8 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		// A donor lends THEIR OWN key. A team-wide key is the team's to
 		// spend, not one member's to hand to the pool, and a pledge must
 		// never become a way to re-scope somebody else's credential.
-		if k.ScopeUserID == "" || k.ScopeUserID != p.UserID {
-			return nil, "", "that API key is not yours to lend — pledge a personal key instead", nil
-		}
-		if k.Provider != secrets.Provider(p.Ref) {
-			return nil, "", "the lent API key no longer matches the pledged provider — pledge it again", nil
-		}
-		if k.ExpiresAt != nil && !now.Before(*k.ExpiresAt) {
-			return nil, "", "the lent API key has expired — pledge a current one to resume sharing", nil
+		if gone := apiKeyCredentialGone(k, p, now); gone != "" {
+			return nil, "", gone, nil
 		}
 		pt, oerr := secrets.OpenApiKey(b.sealer, k)
 		if oerr != nil {
