@@ -119,47 +119,84 @@ func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
 	// gateDeepSweepEvery ticks to find out would make a rolling deploy the
 	// longest blind window the net has.
 	pass := 0
+	// Where the last deep pass ran out of page budget. Only the DEEP pass
+	// carries one: the fast pass's contract is "answer a dropped event within
+	// the minute", which means always starting at the head.
+	var deepResume time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sweepGates(ctx, lister, time.Now().UTC(), gateSweepWindowFor(pass))
+			now := time.Now().UTC()
+			if gateSweepIsDeep(pass) {
+				deepResume = s.sweepGates(ctx, lister, now, gateSweepHorizon, deepResume)
+			} else {
+				s.sweepGates(ctx, lister, now, gateSweepLookback, time.Time{})
+			}
 			pass++
 		}
 	}
 }
 
-// gateSweepWindowFor picks how far back pass number `pass` reaches. Pass 0 —
-// the first after a start or a rollout — is deep on purpose: a replica that
-// has just come up is precisely the one with no idea what died while nothing
-// was watching.
+// gateSweepIsDeep reports whether pass number `pass` reaches the full horizon.
+// Pass 0 — the first after a start or a rollout — is deep on purpose: a
+// replica that has just come up is precisely the one with no idea what died
+// while nothing was watching.
+func gateSweepIsDeep(pass int) bool { return pass%gateDeepSweepEvery == 0 }
+
+// gateSweepWindowFor picks how far back pass number `pass` reaches.
 func gateSweepWindowFor(pass int) time.Duration {
-	if pass%gateDeepSweepEvery == 0 {
+	if gateSweepIsDeep(pass) {
 		return gateSweepHorizon
 	}
 	return gateSweepLookback
 }
 
-// sweepGates performs one pass over the window `lookback` reaches back to.
-// Extracted (with an injectable clock and window) for tests.
-func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now time.Time, lookback time.Duration) {
+// sweepGates performs one pass over the window `lookback` reaches back to,
+// starting at `resume` when a previous pass of the same depth ran out of page
+// budget there (the zero time starts at the head). It returns where the next
+// pass of that depth should pick up, or the zero time when the window was
+// walked to its end.
+//
+// That return value is what makes the horizon REACHABLE rather than merely
+// declared. One pass is capped at gateSweepMaxPages × gateSweepBatch rows, and
+// rows arrive updated_at-descending, so a backlog bigger than that cap is
+// truncated at its OLDEST end — precisely the batch-death runs the horizon
+// exists to reach. Restarting at the head every pass would drop the same rows
+// every time, forever, while the warning below said "not examined this pass"
+// as though a later one would get to them. Resuming means each deep pass
+// carries the traversal further: a backlog of P candidates is walked in
+// ceil(P / (gateSweepMaxPages × gateSweepBatch)) deep passes, i.e. that many
+// × gateDeepSweepEvery × gateSweepInterval of wall clock.
+//
+// Extracted (with an injectable clock, window and cursor) for tests.
+func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now time.Time, lookback time.Duration, resume time.Time) time.Time {
 	if lister == nil || s.cfg.Store == nil {
-		return
+		return time.Time{}
 	}
 	since := now.Add(-lookback)
-	before := now.Add(-gateSweepGrace)
+	head := now.Add(-gateSweepGrace)
+	before := head
+	// A resume point that has aged out below the window is not a cursor any
+	// more — the backlog it pointed into has left the horizon. Start over at
+	// the head rather than scan an empty range for the rest of the traversal.
+	if !resume.IsZero() && resume.After(since) && resume.Before(head) {
+		before = resume
+	}
 	for page := 0; page < gateSweepMaxPages; page++ {
 		refs, err := lister.ListNotifiableRuns(store.WithoutTenantFilter(ctx), since, before, gateSweepBatch)
 		if err != nil {
 			s.warnf("merge-gate sweeper: scan: %v", err)
-			return
+			// Keep the ground already covered: a transient store error must
+			// not send the next deep pass back to the head to re-walk it.
+			return before
 		}
 		oldest := before
 		for _, ref := range refs {
 			select {
 			case <-ctx.Done():
-				return
+				return before
 			default:
 			}
 			// Every guard that decides whether this run owes anything lives in
@@ -180,7 +217,7 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 			}
 		}
 		if len(refs) < gateSweepBatch {
-			return // window exhausted
+			return time.Time{} // window exhausted — the next pass starts fresh at the head
 		}
 		// Rows come back newest-first, so the next page starts at the oldest
 		// row of this one. A page that fails to advance the cursor (every row
@@ -189,12 +226,23 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 		if !oldest.Before(before) {
 			s.warnf("merge-gate sweeper: cursor stalled at %s with a full page — the remaining candidates in the %s window were not examined this pass",
 				before.Format(time.RFC3339), lookback)
-			return
+			// Deliberately NOT a resume point. The cursor is a timestamp, so
+			// handing this one back would page past the tied rows and lose
+			// them for the rest of the traversal; restarting at the head keeps
+			// the pre-existing behaviour, which re-examines them.
+			return time.Time{}
 		}
 		before = oldest
 	}
-	s.warnf("merge-gate sweeper: stopped after %d pages of %d — the oldest candidates in the %s window were not examined this pass",
-		gateSweepMaxPages, gateSweepBatch, lookback)
+	if lookback == gateSweepHorizon {
+		s.warnf("merge-gate sweeper: stopped after %d pages of %d in the %s window — the next deep pass (one every %d, so ~%s) resumes at %s instead of restarting at the head",
+			gateSweepMaxPages, gateSweepBatch, lookback, gateDeepSweepEvery,
+			gateDeepSweepEvery*gateSweepInterval, before.Format(time.RFC3339))
+	} else {
+		s.warnf("merge-gate sweeper: stopped after %d pages of %d — the oldest candidates in the %s window were not examined this pass",
+			gateSweepMaxPages, gateSweepBatch, lookback)
+	}
+	return before
 }
 
 // gateSweepIsLastPass reports whether this pass is among the final ones that

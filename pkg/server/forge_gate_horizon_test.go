@@ -101,13 +101,13 @@ func TestTheDeepPassScansBackPastAMultiDayOutage(t *testing.T) {
 	diedAt := now.Add(-72 * time.Hour)
 
 	fast := &fakeGateSweepLister{}
-	s.sweepGates(context.Background(), fast, now, gateSweepWindowFor(1))
+	s.sweepGates(context.Background(), fast, now, gateSweepWindowFor(1), time.Time{})
 	if !fast.since.After(diedAt) {
 		t.Errorf("the fast pass reached back to %s, past a run that died at %s — then it is not the narrow pass the cadence assumes", fast.since, diedAt)
 	}
 
 	deep := &fakeGateSweepLister{}
-	s.sweepGates(context.Background(), deep, now, gateSweepWindowFor(0))
+	s.sweepGates(context.Background(), deep, now, gateSweepWindowFor(0), time.Time{})
 	if deep.since.After(diedAt) {
 		t.Errorf("the deep pass reached back only to %s, so a run that died at %s is never offered again — the 81-hour pending check reproduces", deep.since, diedAt)
 	}
