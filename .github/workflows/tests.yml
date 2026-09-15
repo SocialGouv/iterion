@@ -784,6 +784,38 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run --timeout 5m
 
+  desktop-vet:
+    # cmd/iterion-desktop sits behind `//go:build desktop`, so `go build ./...`,
+    # `task test`, `race` and `golangci` (which excludes the directory outright)
+    # ALL skip it. Nothing compiled that package on a pull request: a type error
+    # reached main and surfaced only when desktop-release.yml ran, on a `v*` tag
+    # — i.e. during a release, which is the worst moment to discover it.
+    #
+    # Build-only, on purpose: packaging, signing and the five-platform matrix
+    # stay in desktop-release.yml. This answers one question — does it still
+    # compile — and answers it in ~3 min.
+    #
+    # ubuntu-latest rather than the arc-runners expression used above: this is
+    # the one job that needs `sudo apt-get`, and the self-hosted runners are
+    # containers without it. The dev packages mirror desktop-release.yml's own
+    # Linux step; keep the two in step when either moves.
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+      - name: Vet the desktop package
+        # Same tags the Taskfile pins for a Linux desktop build. vet type-checks
+        # the whole package and runs the analyzers, without linking a binary
+        # nobody here consumes.
+        run: go vet -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+
   govulncheck:
     # Advisory: not a required check, so it cannot block a merge — see the
     # merge-queue note at the top of this file.
