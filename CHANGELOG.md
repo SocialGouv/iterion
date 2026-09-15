@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.145.0](https://github.com/SocialGouv/iterion/compare/v3.144.1...v3.145.0) (2026-09-15)
+
+### Features
+
+* **dsl:** a bot in several files — import "lib/x.bot" read as one unit, one identity, saved by provenance ([#1225](https://github.com/SocialGouv/iterion/issues/1225)) ([309d6c1](https://github.com/SocialGouv/iterion/commit/309d6c1321341fbac1748644d5bac85f69a0c454)), references [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1164](https://github.com/SocialGouv/iterion/issues/1164) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    The first piece of the multi-file unit (ADR-098 §3, lot 3 of #1010): `import` is a keyword like `dsl`, read at the head of a file — after the header and the leading comments, before any declaration (E044 otherwise) — with a quoted, relative, slash-separated `.bot` path (E045 for the rest: absolute, a drive, `..`, `\`, NUL, junk after it); the same path twice is one import. The AST carries the imports as written, the JSON document as their paths, the writer puts them back where the parser reads…
+
+    </details>
+
 ## [3.144.1](https://github.com/SocialGouv/iterion/compare/v3.144.0...v3.144.1) (2026-09-15)
 
 ### Bug Fixes
