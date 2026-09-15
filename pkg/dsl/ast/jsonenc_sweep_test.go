@@ -82,6 +82,7 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		listed[reflect.TypeOf(p.ast).Name()] = true
 	}
 	excluded := map[string]string{
+		"ImportDecl":     "mirrored as its Path alone in jsonFile.Imports (TestImportsRoundTripThroughJSON); its other field is a Span",
 		"LLMDecl":        "embedded in AgentDecl and JudgeDecl, whose mirrors are flat",
 		"ResourcesBlock": "mirrored across two workflow fields (TestResourcesBlockIsFullyMirrored)",
 		"Span":           "source positions never travel",

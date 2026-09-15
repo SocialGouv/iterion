@@ -13,6 +13,7 @@ package botregistry
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -518,6 +519,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			addEntry(e)
 			continue
 		}
+		var fragmentDirs []string
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				// An unreadable subdirectory (permission denied) is the
@@ -528,6 +530,14 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				return nil
 			}
 			if d.IsDir() {
+				if path != root && isFragmentDir(path) {
+					// A bot's fragments live under lib/ beside its main
+					// (`import "lib/x.bot"`): parts of that bot, never bots
+					// of their own — the loose .bot files below are passed
+					// over, while a bundle nested there is still a bot.
+					fragmentDirs = append(fragmentDirs, path)
+					return nil
+				}
 				manifest := filepath.Join(path, bundle.ManifestFile)
 				mainBot := filepath.Join(path, bundle.MainBotFile)
 				if fileExists(manifest) && fileExists(mainBot) {
@@ -544,7 +554,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				return nil
 			}
 			name := d.Name()
-			if !workflowfile.IsWorkflowFile(name) {
+			if !workflowfile.IsWorkflowFile(name) || underAny(path, fragmentDirs) {
 				return nil
 			}
 			e, err := parseBotFile(path)
@@ -704,4 +714,32 @@ func isDecorationLine(body string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// underAny reports whether path lies below one of dirs.
+func underAny(path string, dirs []string) bool {
+	for _, dir := range dirs {
+		if strings.HasPrefix(path, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isFragmentDir reports a `lib/` directory beside a workflow file: where a
+// bot in several files keeps the fragments its main imports.
+func isFragmentDir(dir string) bool {
+	if filepath.Base(dir) != unit.FragmentDir {
+		return false
+	}
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && workflowfile.IsWorkflowFile(e.Name()) {
+			return true
+		}
+	}
+	return false
 }

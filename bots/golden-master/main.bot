@@ -2615,6 +2615,26 @@ tool oracle_run:
         return code == 0 and bool(out.strip())
 
 
+    def holdout_committed_entries(gm_dir):
+        """The NAMES under mutants/holdout/ that git tracks.
+
+        The directory holds two kinds at once: the set this run drew, which is
+        fresh and untracked, and a set an earlier run committed for a LATER gate.
+        They are told apart by tracking, because that is exactly what makes the
+        difference the seal cares about — moving a tracked file leaves an
+        uncommitted deletion, moving an untracked one leaves nothing.
+        """
+        code, out = run("git ls-files -- mutants/holdout", gm_dir, timeout=60)
+        if code != 0:
+            return set()
+        names = set()
+        for line in out.splitlines():
+            parts = line.strip().split("/")
+            if len(parts) >= 3 and parts[0] == "mutants" and parts[1] == "holdout":
+                names.add(parts[2])
+        return names
+
+
     def seal_holdout(gm_dir, sealed_dir):
         """Move the held-out set OUT of the worktree, once, at the first gate.
 
@@ -2642,12 +2662,25 @@ tool oracle_run:
         rather than letting the next gate report 0/0 for a set that was drawn.
         """
         src = os.path.join(gm_dir, "mutants", "holdout")
-        if os.path.isdir(src) and holdout_committed_in_tree(gm_dir) \
-                and not seal_committed_opted_in(gm_dir):
-            return bool(os.path.isdir(sealed_dir) and os.listdir(sealed_dir))
-        os.makedirs(sealed_dir, exist_ok=True)
+        # Declined PER SET, never per directory. Both reasons above are properties
+        # of ONE entry — a tracked file moved leaves an uncommitted deletion, a
+        # committed set scored here burns its single scoring — so a committed
+        # successor waiting for its gate must not stop THIS run's own fresh set
+        # from sealing. A directory-wide decline made the two indistinguishable:
+        # the next run's set stayed readable in the tree, the sealed pile read
+        # empty, and the gate's held-out term passed 0 == 0 on a set that was
+        # drawn and never hidden — the overfitting this function exists to make
+        # mechanical, reintroduced by the guard meant to protect it.
+        keep = set() if seal_committed_opted_in(gm_dir) else holdout_committed_entries(gm_dir)
+        movable = [n for n in sorted(os.listdir(src))
+                   if n not in keep] if os.path.isdir(src) else []
+        # Only when something actually moves: an empty sealed directory reads as a
+        # pile that exists, and "nothing was sealed" must stay distinguishable from
+        # "a pile is here but empty".
+        if movable:
+            os.makedirs(sealed_dir, exist_ok=True)
         if os.path.isdir(src):
-            for name in sorted(os.listdir(src)):
+            for name in movable:
                 target = os.path.join(sealed_dir, name)
                 if not os.path.exists(target):
                     shutil.move(os.path.join(src, name), target)
@@ -2655,7 +2688,7 @@ tool oracle_run:
                 os.rmdir(src)
             except OSError:
                 pass
-        return bool(os.listdir(sealed_dir))
+        return bool(os.path.isdir(sealed_dir) and os.listdir(sealed_dir))
 
 
 
@@ -4895,6 +4928,28 @@ tool oracle_run:
                    os.path.isdir(os.path.join(gmd2, "mutants", "holdout", "t01")),
                    os.path.isdir(sealed2)],
                   [False, True, False])
+            # LE MELANGE, qui est l'etat normal des que le rite laisse un
+            # successeur : un jeu COMMITE qui attend sa porte, et le jeu FRAIS de
+            # ce run. Le renoncement se fait PAR JEU, jamais par repertoire --
+            # sinon le successeur empeche le jeu du run de se cacher, la pile
+            # scellee lit vide, et le terme held-out de la porte passe sur 0 == 0
+            # avec un jeu reste lisible par la boucle de durcissement.
+            repo3 = os.path.join(sroot, "mixed")
+            gmd3m = mk_holdout(repo3)            # t01, qui sera COMMITE
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "successor")):
+                fixture_git(repo3, *args)
+            fresh = os.path.join(gmd3m, "mutants", "holdout", "t02")
+            os.makedirs(fresh)                   # t02, FRAIS et non suivi
+            with open(os.path.join(fresh, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+            sealed_mix = os.path.join(sroot, "sealed-mixed")
+            check("melange : le frais se scelle, le committe reste en place",
+                  [seal_holdout(gmd3m, sealed_mix),
+                   os.path.isdir(os.path.join(gmd3m, "mutants", "holdout", "t01")),
+                   os.path.isdir(os.path.join(gmd3m, "mutants", "holdout", "t02")),
+                   sorted(os.listdir(sealed_mix)) if os.path.isdir(sealed_mix) else []],
+                  [True, True, False, ["t02"]])
+
             # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
             # sont pas la meme, et aucune n'est un echec : ce sont des etats que
             # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice

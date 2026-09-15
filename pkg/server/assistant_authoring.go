@@ -1085,55 +1085,8 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 	// Prepare every candidate before exposing any bytes. Publication moves the
 	// current inode into recovery and checks that actual displaced object;
 	// no read-then-unconditional-overwrite remains at the live destination.
-	var ignore func(string)
-	s.stateMu.RLock()
-	if s.watcher != nil {
-		ignore = s.watcher.IgnorePath
-	}
-	s.stateMu.RUnlock()
-	transactions := make([]*authoringLocalTransaction, 0, len(previews))
-	defer func() {
-		for _, tx := range transactions {
-			tx.close()
-		}
-	}()
-	recovery := func() []authoringRecovery {
-		out := make([]authoringRecovery, 0, len(transactions))
-		for _, tx := range transactions {
-			out = append(out, tx.recovery())
-		}
-		return out
-	}
-	failure := func(err error) (int, []authoringRecovery, error) {
-		locations := make([]string, 0, len(transactions))
-		for _, tx := range transactions {
-			locations = append(locations, tx.recovery().Record)
-		}
-		return 0, recovery(), fmt.Errorf("%w; recovery records (retained without automatic replay): %s", err, strings.Join(locations, "; "))
-	}
-	for i, preview := range previews {
-		tx, err := prepareAuthoringLocal(locks[i], preview, ignore, nil)
-		if tx != nil {
-			transactions = append(transactions, tx)
-		}
-		if err != nil {
-			return failure(err)
-		}
-	}
-	for _, tx := range transactions {
-		err := r.Context().Err()
-		if err == nil {
-			err = tx.publish()
-		}
-		if err != nil {
-			rollbackErrs := s.rollbackAuthoring(transactions)
-			if len(rollbackErrs) > 0 {
-				return failure(fmt.Errorf("write %s:%s failed: %w; rollback incomplete: %s", tx.preview.Scope, tx.preview.Path, err, strings.Join(rollbackErrs, "; ")))
-			}
-			return failure(fmt.Errorf("write %s:%s failed: %w; earlier files were rolled back", tx.preview.Scope, tx.preview.Path, err))
-		}
-	}
-	return 0, recovery(), nil
+	rec, err := s.publishAuthoringLocal(r.Context(), locks, previews, true)
+	return 0, rec, err
 }
 
 func (s *Server) rollbackAuthoring(transactions []*authoringLocalTransaction) []string {
