@@ -1,8 +1,8 @@
 # Automation surfaces — what launches a run without a human typing
 
-The four trigger families and the spine they converge on: the dispatcher's
-tracker poll, inbound forge webhooks, the event-driven `trigger` spine, and
-the board capabilities a bot declares to write back.
+The five trigger families and the spine they converge on: the dispatcher's
+tracker poll, a bound roadmap board, inbound forge webhooks, the event-driven
+`trigger` spine, and the board capabilities a bot declares to write back.
 
 Full references: [../dispatcher.md](../dispatcher.md),
 [../webhooks.md](../webhooks.md),
@@ -37,6 +37,31 @@ flags are set: `/board` (kanban CRUD with drag-and-drop, gated on
 `server_info.native_tracker_enabled`) and `/dispatcher` (live dashboard
 with running + retry tables, gated on `server_info.dispatcher_enabled`).
 
+### Bound roadmap board (GitHub Projects v2 → cloud board dispatcher)
+
+A team can bind a GitHub **Projects v2** board to its native board
+(ADR-097). The default column map lands every *Planned* project item in
+the native `ready` column — and `ready` is the column the **cloud board
+dispatcher** (one per server replica, over the Mongo board) dispatches
+from, so a human's drag on the roadmap is itself a launch path.
+
+What keeps a bound roadmap from launching wholesale is the **bot**: cloud
+has no default bot, so the dispatcher only claims a `ready` card that
+names one (stamped by a triage bot's `set_bot`, by an operator, or by a
+board trigger); a bot-less `ready` card stays roadmap content and is
+neither claimed nor moved. A card claimed but unlaunchable after all
+(`errCardUnlaunchable` — its bot was cleared or cannot be resolved in
+between) is given back to its column under machine provenance, never
+parked `blocked`. A launch the run service *refuses* is retried on the
+launch-refusal backoff — 1m, 2m, 4m… doubling, capped at 30m — and filed
+`blocked` after `ITERION_BOARD_LAUNCH_ATTEMPTS` consecutive refusals
+(default 8). Key file:
+[pkg/server/boarddispatch.go](../../pkg/server/boarddispatch.go).
+
+References: [docs/github-board-sync.md](../github-board-sync.md#dispatching-from-the-board),
+[docs/dispatcher.md](../dispatcher.md#claim-selection-on-the-cloud-board--what-is-never-claimed),
+[docs/adr/097-github-projects-v2-board-sync.md](../adr/097-github-projects-v2-board-sync.md).
+
 ### Inbound webhooks (cloud agent-workflow triggers)
 
 Distinct from the dispatcher (which polls): cloud mode exposes
@@ -54,7 +79,7 @@ platform overview: [Iterion Cloud overview](../cloud-overview.md).
 
 ### Event-driven trigger spine (`pkg/trigger` + `pkg/eventbus`)
 
-The unifying layer the four trigger families above (schedule, dispatcher
+The unifying layer the trigger families above (schedule, dispatcher
 poll, forge webhooks, `invocations:` DSL) are converging onto: one
 canonical `trigger.Event` envelope, an internal `eventbus.Bus`
 (`InProcBus` local, `NATSBus` on the **separate** `ITERION_EVENTS`
@@ -90,11 +115,23 @@ ship on the spine** (each = a source adapter publishing a
   `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
   board has its own spine half
   ([pkg/server/trigger_cloud.go](../../pkg/server/trigger_cloud.go)) — a
-  `board_events` poll-tail whose per-tenant CAS cursor elects one
-  publishing replica, feeding the same evaluator over the NATS bus with
-  an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
-  consume_labels triggers cannot double-launch across replicas; the
-  `/api/v1/triggers` CRUD is team-scoped in cloud (active-team JWT).
+  `board_events` poll-tail that normalizes and matches a whole batch,
+  writes one row per matched `(event, subscription)` pair into the
+  **durable effect outbox** (the `trigger_effects` collection), and only
+  THEN CAS-advances the per-tenant cursor. Cloud board events do **not**
+  ride the lossy NATS bus (ADR-094): the outbox IS the delivery. A
+  `trigger.EffectWorker` on every replica claims due rows under a
+  two-minute lease (`EffectLease`), runs them through the same evaluator,
+  retries with exponential backoff up to `MaxEffectAttempts` (5), then
+  parks the row as a queryable `failed` dead-letter. The label consume
+  stays atomic (`boardmongo.ConsumeLabels`) and the row persists
+  `ConsumeMarked` between the consume and the launch, so a
+  `consume_labels` trigger is spent exactly once and a failed launch
+  still retries. The cursor CAS dedups *materialization*; the leased
+  claim dedups *execution* — debug a missed cloud board trigger from the
+  outbox rows, not from the bus. The `/api/v1/triggers` CRUD is
+  team-scoped in cloud (active-team JWT); the outbox contract is
+  [ADR-094](../adr/094-trigger-effect-outbox.md).
 - **run-completion** ("runned by iterion") — `runview.Service` emits
   `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
   **runner pods publish the same events** onto the NATSBus
@@ -115,10 +152,20 @@ ship on the spine** (each = a source adapter publishing a
 Direct launches go through `serviceLauncher` over `runview.Service.Launch`.
 Wired in [pkg/server/trigger_coordinator.go](../../pkg/server/trigger_coordinator.go)
 (both `iterion studio` and `iterion dispatch`); REST CRUD at
-`/api/v1/triggers` (gated by `server_info.triggers_enabled`). The forge
-*cutover* (spine becomes the forge launcher, inline retired), custom
-ingress, the studio Automations view, forge-derived provisioning, and
-dispatcher `EngineRunner` convergence are staged follow-ons. Reference:
+`/api/v1/triggers` (gated by `server_info.triggers_enabled`). **Custom
+ingress** ships: `POST /api/v1/triggers/emit` injects a `SourceCustom`
+event onto the spine and answers `202` — the launch, if any, happens in
+the evaluator, so no `run_id` comes back synchronously (use a direct
+webhook when you need one). That endpoint is the extensibility point for
+arbitrary external systems. The **studio Automations view** ships too, at
+`/triggers` ([studio/src/views/Triggers/](../../studio/src/views/Triggers/)):
+a Triggers tab listing and creating subscriptions by repo and by bot, plus
+a Schedules tab. That route is deliberately **not** gated on
+`triggers_enabled` — it degrades per tab, because a cloud server carries
+Schedules even when the event-trigger spine is off. Still staged: the
+forge *cutover* (spine becomes the forge launcher, inline retired),
+forge-derived subscription provisioning, and dispatcher `EngineRunner`
+convergence. Reference:
 [docs/adr/046-event-driven-runs-trigger-spine.md](../adr/046-event-driven-runs-trigger-spine.md).
 
 ### Bot board access (capabilities)

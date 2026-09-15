@@ -236,9 +236,31 @@ logs + continues without aborting the dispatch.
 Each tick (`polling.interval_ms`, default 30s):
 
 1. **Reconcile stalled.** For every in-flight run, if
-   `time.Since(LastEventAt) > stall.timeout_ms`, cancel its context.
-   The worker goroutine then returns and the actor schedules a retry.
-   Set `stall.timeout_ms: 0` to disable.
+   `time.Since(LastEventAt) > stall.timeout_ms`, **interrupt** it
+   (`runtime.ErrRunInterrupted` → `failed_resumable`, auto-resumed)
+   rather than cancel it — the run did nothing an operator decided
+   against. The worker goroutine then returns and the actor schedules a
+   retry; a worker that has still not returned one
+   `ITERION_DISPATCHER_STALL_REAP_GRACE` later (default 60s) has its
+   slot force-reaped, so dispatcher concurrency stays healthy. Set
+   `stall.timeout_ms: 0` to disable the watchdog entirely.
+
+   Two silences are **not** stalls and are skipped automatically,
+   whatever `stall.timeout_ms` says. A run still in its
+   `claimed → running` setup has not started, so it is never reaped on
+   its claim-time watermark (ADR-028 Step 4). And a run whose store
+   records a **blocking human wait** is exempt: `store.HasBlockingHumanWait`
+   follows `SubbotChildren` down to a paused descendant or an active
+   descendant sync point, so a parent sitting in
+   `runview.AwaitSubbotTerminal` — polling its child and emitting
+   nothing — is spared. That exemption is checked only before the
+   **first** interrupt: once the ladder has started the run is being torn
+   down, and a late park must not pin the slot for good. Each park
+   episode is bracketed by two info lines ("… awaits human input — exempt
+   from the stall watchdog until it is answered", then "… no longer has a
+   recorded human wait"), so an exemption never reads as a hung watchdog;
+   a store that cannot be opened fails closed and grants no exemption.
+   Full model: [docs/stall-human-waits.md](stall-human-waits.md).
 2. **Refresh tracker states.** Ask the tracker for the current state
    of every running issue. If the state moved out of the eligible
    set (operator closed the GitHub issue, dragged the native card to
@@ -1086,4 +1108,10 @@ reopen, so the column editor cannot become the way around a refusal.
 - Persistent retry queue (restart survives in-flight backoff timers).
 - Multi-turn continuation (Symphony's single-thread agent loop).
 - Cross-tracker fan-in (one dispatcher watching GitHub + Linear at once).
-- Bi-directional sync (mirror GitHub → native, work locally, push back).
+- Bi-directional sync beyond a bound board's `Status` field — mirroring
+  card edits back onto the GitHub *issue* (body, labels, assignees), and
+  creating a card for a project item the issue sync never fetched (the
+  project pass only hydrates cards that already exist). Column ↔ state
+  sync itself ships: see [Board mode — states from a Projects v2
+  board](#board-mode--states-from-a-projects-v2-board-adr-097) and
+  [github-board-sync.md](github-board-sync.md).

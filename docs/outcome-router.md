@@ -75,12 +75,18 @@ checkpoint is not a verdict — downgraded to escalate).
 
 ## Alerting
 
-Router alerts ride the operator-alert dispatcher
-([docs/observability.md](observability.md), `ITERION_ALERTS_WEBHOOK_URL` +
-episode-claim store): kinds `route_escalated` and `route_action_failed`,
-deduplicated per episode, released-for-retry when every channel fails. A
-server without ops alerts configured (local studio) keeps the registry row
-and the Warn log as its whole surface.
+Router alerts ride the operator-alert dispatcher — `alert.OpsDispatcher`,
+queue group `operator-alerts`, posting to the deployment webhook
+`ITERION_ALERTS_WEBHOOK_URL` (architecture:
+[docs/notifications.md](notifications.md#architecture); the env var:
+[docs/environment-variables.md](environment-variables.md)) — and, when
+`SENTRY_DSN` is set, the errtrack sink
+([docs/observability.md](observability.md)). Kinds `route_escalated`
+(errtrack level warning) and `route_action_failed` (errtrack level
+error), deduplicated per episode against the shared `sent_notifications`
+claim store, released-for-retry when every channel fails. A server
+without ops alerts configured (local studio) keeps the registry row and
+the Warn log as its whole surface.
 
 ## Rollout procedure
 
