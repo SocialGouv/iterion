@@ -28,6 +28,7 @@ type oneProgram struct {
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
+	Bindable          bool            `json:"bindable"`
 	Unit              *unitInfo       `json:"unit"`
 }
 
@@ -60,8 +61,10 @@ func parseFlat(t *testing.T, name, source string) *ir.CompileResult {
 }
 
 // assertOneProgram checks a response is one program and nothing more: no
-// unit, no disk path, a document that names no file.
-func assertOneProgram(t *testing.T, got oneProgram) *ast.File {
+// unit, no disk path, a document that names no file, and no path but the
+// one the endpoint echoes (/api/files/open names the path it was asked;
+// /api/examples names none for a flat program).
+func assertOneProgram(t *testing.T, got oneProgram, wantPath string) *ast.File {
 	t.Helper()
 	f, err := ast.UnmarshalFile(got.Document)
 	if err != nil {
@@ -73,15 +76,18 @@ func assertOneProgram(t *testing.T, got oneProgram) *ast.File {
 	if got.Unit != nil {
 		t.Error("a flat program was served with unit info")
 	}
-	if got.ConfirmedDiskPath != "" {
-		t.Errorf("a flat program was presented as disk-confirmed: %q", got.ConfirmedDiskPath)
+	if got.Path != wantPath || got.ConfirmedDiskPath != "" {
+		t.Errorf("a flat program was bound: path %q (want %q), confirmed %q", got.Path, wantPath, got.ConfirmedDiskPath)
+	}
+	if wantPath == "" && !got.Bindable {
+		t.Error("a flat program that parses was declared not bindable")
 	}
 	return f
 }
 
 // assertWholeFlatProgram checks a served text is the program the embedded
 // unit is — the same program, not a text with the same counts.
-func assertWholeFlatProgram(t *testing.T, name string, got oneProgram) {
+func assertWholeFlatProgram(t *testing.T, name string, got oneProgram, wantPath string) {
 	t.Helper()
 	cr := parseFlat(t, name, got.Source)
 	files, main, ok := bots.Sources(name)
@@ -95,7 +101,7 @@ func assertWholeFlatProgram(t *testing.T, name string, got oneProgram) {
 	if why := ir.SameProgram(ir.Compile(u.Merged), cr); why != "" {
 		t.Fatalf("the served program differs from the unit: %s", why)
 	}
-	assertOneProgram(t, got)
+	assertOneProgram(t, got, wantPath)
 }
 
 func getExampleJSON(t *testing.T, url string, into any) (int, []byte) {
@@ -143,7 +149,7 @@ func TestLoadExampleServesAnEmbeddedBotInSeveralFilesAsOneProgram(t *testing.T) 
 	if code, body := getExampleJSON(t, hs.URL+"/api/examples/feature-dev/main.bot", &got); code != http.StatusOK {
 		t.Fatalf("status %d: %s", code, body)
 	}
-	assertWholeFlatProgram(t, "feature-dev/main.bot", got)
+	assertWholeFlatProgram(t, "feature-dev/main.bot", got, "")
 }
 
 // The file-open fallback to the embed serves the same flat program.
@@ -160,7 +166,7 @@ func TestOpenFileFallsBackToTheEmbeddedBotAsOneProgram(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	assertWholeFlatProgram(t, "feature-dev/main.bot", got)
+	assertWholeFlatProgram(t, "feature-dev/main.bot", got, "bots/feature-dev/main.bot")
 }
 
 // writeExampleUnitFixture writes a bot in two files, x/main.bot importing
@@ -274,12 +280,147 @@ func TestLoadExampleServesADiskBotOutsideTheWorkDirAsOneProgram(t *testing.T) {
 		t.Fatalf("status %d: %s", code, body)
 	}
 	parseFlat(t, "x/main.bot", got.Source)
-	f := assertOneProgram(t, got)
+	f := assertOneProgram(t, got, "")
 	if len(f.Prompts) != 1 {
 		t.Errorf("the flat program holds %d prompt(s), want the fragment's one", len(f.Prompts))
 	}
 	if got.Path != "" {
 		t.Errorf("a path %q was named for a bot the studio cannot open", got.Path)
+	}
+}
+
+// A bot in ONE file inside the working directory — under bots/ or the
+// legacy examples/ — names its real path too, so the studio opens and
+// saves the file it was handed rather than a copy under bots/, and
+// /api/files/open answers for that path; one outside the working
+// directory names none.
+func TestLoadExampleNamesADiskBotInOneFileInsideTheWorkDir(t *testing.T) {
+	one := "workflow y:\n  entry: done\n"
+	writeOne := func(dir string) {
+		if err := os.MkdirAll(filepath.Join(dir, "y"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "y", "main.bot"), []byte(one), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, sub := range []string{"bots", "examples"} {
+		t.Run(sub, func(t *testing.T) {
+			workDir := t.TempDir()
+			examples := filepath.Join(workDir, sub)
+			writeOne(examples)
+			hs := exampleServer(t, workDir, examples)
+			var got oneProgram
+			if code, body := getExampleJSON(t, hs.URL+"/api/examples/y/main.bot", &got); code != http.StatusOK {
+				t.Fatalf("status %d: %s", code, body)
+			}
+			if got.Source != one || got.Unit != nil {
+				t.Errorf("served %+v, want the one file's text and no unit", got)
+			}
+			if want := sub + "/y/main.bot"; got.Path != want {
+				t.Errorf("path %q, want %s", got.Path, want)
+			}
+			want, err := filepath.EvalSymlinks(filepath.Join(examples, "y", "main.bot"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ConfirmedDiskPath != want {
+				t.Errorf("confirmed_disk_path %q, want %q", got.ConfirmedDiskPath, want)
+			}
+			body, _ := json.Marshal(openFileRequest{Path: got.Path})
+			resp, err := http.Post(hs.URL+"/api/files/open", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			raw, _ := io.ReadAll(resp.Body)
+			var opened oneProgram
+			if resp.StatusCode != http.StatusOK || json.Unmarshal(raw, &opened) != nil || opened.ConfirmedDiskPath != got.ConfirmedDiskPath {
+				t.Errorf("/api/files/open %q: status %d, confirmed %q: %s", got.Path, resp.StatusCode, opened.ConfirmedDiskPath, raw)
+			}
+		})
+	}
+
+	outside := t.TempDir()
+	writeOne(outside)
+	far := exampleServer(t, t.TempDir(), outside)
+	var served oneProgram
+	if code, body := getExampleJSON(t, far.URL+"/api/examples/y/main.bot", &served); code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	if served.Source != one {
+		t.Errorf("served %q, want the one file's text", served.Source)
+	}
+	assertOneProgram(t, served, "")
+}
+
+// A file that does not parse is never bound to its path, in one file or
+// several: the studio gets what the parser salvaged, with the diagnostics,
+// and no path or unit — a save of it goes to a new file, never over what
+// the author wrote.
+func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
+	workDir := t.TempDir()
+	examples := filepath.Join(workDir, "bots")
+	if err := os.MkdirAll(filepath.Join(examples, "one"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(examples, "one", "main.bot"), []byte("workflow y:\n  entry: done\n!!! a line the author is about to fix @@@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeExampleUnitFixture(t, examples)
+	if err := os.WriteFile(filepath.Join(examples, "x", "main.bot"), []byte("import \""+unit.FragmentDir+"/nodes.bot\"\n\nworkflow x:\n  entry: done\n!!! broken @@@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hs := exampleServer(t, workDir, examples)
+	for _, name := range []string{"one/main.bot", "x/main.bot"} {
+		var got oneProgram
+		if code, body := getExampleJSON(t, hs.URL+"/api/examples/"+name, &got); code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", name, code, body)
+		}
+		if len(got.Diagnostics) == 0 {
+			t.Errorf("%s: a file that does not parse was served without a diagnostic", name)
+		}
+		if got.Path != "" || got.ConfirmedDiskPath != "" || got.Unit != nil {
+			t.Errorf("%s: a file that does not parse was bound to its path: path %q confirmed %q unit %v", name, got.Path, got.ConfirmedDiskPath, got.Unit != nil)
+		}
+		// The studio's bots/<name> fallback would name the very file in
+		// the default layout: the server has to say the file is not
+		// bindable, and keep the text the source pane shows.
+		if got.Bindable {
+			t.Errorf("%s: a file that does not parse was declared bindable", name)
+		}
+		if got.Source == "" || !strings.Contains(got.Source, "!!!") {
+			t.Errorf("%s: the served text is not the file's: %q", name, got.Source)
+		}
+	}
+}
+
+// A catalog file that is a symlink to another file of the working
+// directory is never bound to that other file's path: the studio would
+// open and save it under the example's name.
+func TestLoadExampleRefusesAnExampleThatIsASymlinkIntoTheWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(workDir, "private", "secret.bot")
+	if err := os.WriteFile(secret, []byte("workflow s:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	examples := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(examples, "y"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(examples, "y", "main.bot")); err != nil {
+		t.Fatal(err)
+	}
+	hs := exampleServer(t, workDir, examples)
+	var got oneProgram
+	if code, body := getExampleJSON(t, hs.URL+"/api/examples/y/main.bot", &got); code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	if got.Path != "" || got.ConfirmedDiskPath != "" {
+		t.Fatalf("a symlink into the working directory was bound: path %q confirmed %q", got.Path, got.ConfirmedDiskPath)
 	}
 }
 

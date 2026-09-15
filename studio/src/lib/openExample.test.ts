@@ -39,6 +39,21 @@ describe("openExampleIntoStore", () => {
     expect(store.getState().unit).toEqual(unit);
   });
 
+  it("binds nothing for an example the server says is not bindable — a save must ask where", async () => {
+    loadExample.mockResolvedValue({
+      source: "workflow y:\n  entry: done\n!!! broken @@@\n",
+      document,
+      diagnostics: ["y/main.bot:3:1: error [E001]: unexpected character"],
+      bindable: false,
+    });
+    const store = createDocumentStore();
+    store.getState().setCurrentFilePath("bots/y/main.bot");
+    await openExampleIntoStore("y/main.bot", store.getState());
+    expect(store.getState().currentFilePath).toBeNull();
+    expect(store.getState().unit).toBeNull();
+    expect(store.getState().currentSource).toBe("workflow y:\n  entry: done\n!!! broken @@@\n");
+  });
+
   it("binds bots/<name> and no unit for an example served as one program", async () => {
     loadExample.mockResolvedValue({ source: "workflow x:\n  entry: done\n", document, diagnostics: [] });
     const store = createDocumentStore();
