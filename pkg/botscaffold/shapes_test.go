@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -28,23 +30,21 @@ func scaffoldAndCompile(t *testing.T, spec Spec) (string, *ir.Workflow, int) {
 	if _, err := Scaffold(dir, spec); err != nil {
 		t.Fatalf("Scaffold(%s): %v", spec.Shape, err)
 	}
-	src, err := os.ReadFile(filepath.Join(dir, "main.bot"))
-	if err != nil {
-		t.Fatal(err)
+	// The bundle's unit: main.bot and the fragments its imports reach —
+	// what every launch surface compiles.
+	u := unit.LoadDir(filepath.Join(dir, "main.bot"))
+	if len(u.Diagnostics) != 0 {
+		t.Fatalf("%s: parse: %v", spec.Shape, u.Diagnostics)
 	}
-	pr := parser.Parse("main.bot", string(src))
-	if len(pr.Diagnostics) != 0 {
-		t.Fatalf("%s: parse: %v", spec.Shape, pr.Diagnostics)
-	}
-	declared := len(pr.File.Prompts)
+	declared := len(u.Files[0].AST.Prompts)
 	b, err := bundle.OpenDir(dir)
 	if err != nil {
 		t.Fatalf("OpenDir: %v", err)
 	}
-	if err := runview.MergeBundlePrompts(pr.File, b); err != nil {
+	if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
 		t.Fatal(err)
 	}
-	cr := ir.Compile(pr.File)
+	cr := ir.Compile(u.Merged)
 	for _, d := range cr.Diagnostics {
 		if d.Severity == ir.SeverityError && d.Code != ir.DiagMissingModelOrBackend {
 			t.Errorf("%s: compile: %s", spec.Shape, d.Error())
@@ -460,6 +460,38 @@ func TestGalleryShapes(t *testing.T) {
 				t.Errorf("without prompts/*.md want the two prompt refs refused (C003), got %d", unknown)
 			}
 		},
+		"library": func(t *testing.T, dir string, w *ir.Workflow, declared int) {
+			if declared != 0 {
+				t.Errorf("main.bot declares %d prompt(s); the shape keeps the nodes and their prompts in lib/", declared)
+			}
+			for _, rel := range []string{"lib/schemas.bot", "lib/nodes.bot"} {
+				if !exists(t, dir, rel) {
+					t.Errorf("%s missing from the bundle", rel)
+				}
+			}
+			if _, ok := w.Nodes["campaign"]; !ok {
+				t.Errorf("the fragment's agent is not in the workflow: %v", nodeIDs(w))
+			}
+			// The mechanism is load-bearing: the main alone is a program with
+			// pieces missing, and the compiler refuses it by name (C030).
+			src, err := os.ReadFile(filepath.Join(dir, "main.bot"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(src), "import \"lib/schemas.bot\"") || !strings.Contains(string(src), "import \"lib/nodes.bot\"") {
+				t.Errorf("main.bot does not import both fragments:\n%s", src)
+			}
+			pr := parser.Parse("main.bot", string(src))
+			var unresolved int
+			for _, d := range ir.Compile(pr.File).Diagnostics {
+				if d.Code == ir.DiagUnresolvedImports {
+					unresolved++
+				}
+			}
+			if unresolved != 1 {
+				t.Errorf("the main alone should be refused with C030, got %d", unresolved)
+			}
+		},
 	}
 	for _, tpl := range Templates() {
 		if tpl.Spec.Shape == "" {
@@ -646,6 +678,7 @@ func TestGalleryShapesResolveTheWorktreeDialOff(t *testing.T) {
 		"per-ticket-subbots":  "none",
 		"async-questions":     "none",
 		"multi-file":          "none",
+		"library":             "none",
 	}
 	seen := map[string]bool{}
 	for _, tpl := range Templates() {
@@ -758,4 +791,13 @@ func TestScaffold_GeneratedErrorIsTyped(t *testing.T) {
 	if !strings.Contains(generated.Detail, "nope") {
 		t.Errorf("the error does not carry the diagnostic: %v", err)
 	}
+}
+
+func nodeIDs(w *ir.Workflow) []string {
+	out := make([]string, 0, len(w.Nodes))
+	for id := range w.Nodes {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }

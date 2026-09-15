@@ -30,7 +30,9 @@ Wails CLI insists on running `go build` from the directory holding `wails.json`,
 and it generates JS bindings against the `main` package in that directory. Since
 our Go main lives in `cmd/iterion-desktop/`, the file is co-located there. The
 Taskfile uses a per-task `dir: cmd/iterion-desktop` so the working directory is
-always correct.
+always correct. `cmd/iterion-desktop/build/` is a symlink to `../../build/`, so
+the packaging configs stay in one place at the repo root even though Wails
+expects them beside `wails.json`.
 
 We pass two Wails flags that aren't part of the default scaffold:
 
