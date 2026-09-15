@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.4](https://github.com/SocialGouv/iterion/compare/v3.146.3...v3.146.4) (2026-09-15)
+
+### Bug Fixes
+
+* **golden-master:** the ephemeral-set notice declines per set too ([#1244](https://github.com/SocialGouv/iterion/issues/1244)) ([dece1c0](https://github.com/SocialGouv/iterion/commit/dece1c076b8478ee44a2d2439936dda637673c84)), references [#1149](https://github.com/SocialGouv/iterion/issues/1149) [#1137](https://github.com/SocialGouv/iterion/issues/1137) [#1149](https://github.com/SocialGouv/iterion/issues/1149)
+
+    <details><summary>why</summary>
+
+    #1149 made `seal_holdout` decline PER SET: it keeps what `git ls-files` reports and relocates the rest. The predicate beside it did not follow.
+
+    </details>
+
 ## [3.146.3](https://github.com/SocialGouv/iterion/compare/v3.146.2...v3.146.3) (2026-09-15)
 
 ### Bug Fixes
