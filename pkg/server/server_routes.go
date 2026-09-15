@@ -3,6 +3,8 @@ package server
 import (
 	"io/fs"
 	"net/http"
+
+	"github.com/SocialGouv/iterion/internal/httpx"
 )
 
 func (s *Server) routes() {
@@ -22,7 +24,7 @@ func (s *Server) routes() {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
+		httpx.AddVary(w, "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.WriteHeader(http.StatusNoContent)

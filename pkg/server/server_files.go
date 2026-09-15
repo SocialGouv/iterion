@@ -260,7 +260,7 @@ func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.isAllowedOriginReq(r) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
+		httpx.AddVary(w, "Origin")
 	}
 }
 
