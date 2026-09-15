@@ -1,6 +1,7 @@
 package overlay_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -309,6 +310,28 @@ func TestVersionIsReadBeforeTheStrictParse(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "upgrade iterion") {
 		t.Errorf("a typo must not be reported as a version problem: %v", err)
+	}
+}
+
+// TestTheOverlayCeilingIsItsOwn pins the version the overlay format does NOT
+// have.
+//
+// The ceiling used to be the connector PACKAGE's constant, so bumping the
+// package format silently widened what an overlay may declare — and an
+// overlay v2 stopped reaching "upgrade iterion", falling through to the strict
+// decoder instead. The existing case above uses 99, which is above either
+// ceiling and so cannot see the difference; this one sits exactly on it.
+func TestTheOverlayCeilingIsItsOwn(t *testing.T) {
+	if overlay.SchemaVersion != 1 {
+		t.Fatalf("overlay.SchemaVersion = %d — bump this deliberately, with a format change to justify it", overlay.SchemaVersion)
+	}
+	next := fmt.Sprintf("schema_version: %d\nconnector: probe\nsomething_new: true\n", overlay.SchemaVersion+1)
+	_, err := overlay.Parse([]byte(next))
+	if err == nil {
+		t.Fatal("an overlay one version above the ceiling must be refused")
+	}
+	if !strings.Contains(err.Error(), "upgrade iterion") {
+		t.Errorf("refusal = %v, want the version diagnosis rather than an unknown-field error", err)
 	}
 }
 

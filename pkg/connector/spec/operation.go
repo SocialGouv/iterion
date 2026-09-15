@@ -278,8 +278,12 @@ func (p Param) ExplodeOrDefault() bool {
 type ResultCase struct {
 	// Status is the documented success status (200, 201, 204…).
 	Status int `yaml:"status" json:"status"`
-	// SchemaRef names the response schema; empty for an empty body.
+	// SchemaRef names the legacy descriptive schema. Its absence does not
+	// imply an empty body: that projection omits several vendor shapes.
 	SchemaRef string `yaml:"schema_ref,omitempty" json:"schema_ref,omitempty"`
+	// ResponseSchemaRef opts this status into a v2 response contract. Only
+	// Package.ResponseSchemas is authoritative for response validation.
+	ResponseSchemaRef string `yaml:"response_schema_ref,omitempty" json:"response_schema_ref,omitempty"`
 	// Array marks a response that is a bare array of SchemaRef.
 	Array bool `yaml:"array,omitempty" json:"array,omitempty"`
 	// Description is the vendor's own wording for this case.

@@ -42,6 +42,7 @@ var connectorsGenCmd = &cobra.Command{
 		o.Redistributable, _ = cmd.Flags().GetBool("redistributable")
 		o.OperatorSuppliedBaseURL, _ = cmd.Flags().GetBool("self-hosted")
 		o.KeepOverlay, _ = cmd.Flags().GetBool("keep-overlay")
+		o.ValidateResponses, _ = cmd.Flags().GetBool("validate-responses")
 		return cli.ConnectorsGen(o, os.Stdout)
 	},
 }
@@ -67,6 +68,10 @@ func init() {
 	connectorsGenCmd.Flags().Bool("redistributable", false, "assert that the generated operations may ship in iterion's own catalog")
 	connectorsGenCmd.Flags().Bool("self-hosted", false, "the product is commonly self-hosted, so a connection supplies its own instance URL")
 	connectorsGenCmd.Flags().Bool("keep-overlay", true, "re-apply the package's existing overlay.yaml, failing if it no longer matches")
+	// Off by default: it stamps package format v2, which an older iterion
+	// refuses to load. The responses a contract cannot represent are listed at
+	// the end of the run rather than failing it.
+	connectorsGenCmd.Flags().Bool("validate-responses", false, "derive explicit response contracts and validate vendor answers against them (package format v2)")
 
 	connectorsCmd.AddCommand(connectorsGenCmd, connectorsValidateCmd)
 	rootCmd.AddCommand(connectorsCmd)
