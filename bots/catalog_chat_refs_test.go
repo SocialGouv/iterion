@@ -8,7 +8,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A bundle's `chat:` block names workflow nodes, vars and schema fields BY
@@ -72,12 +71,7 @@ func TestCatalogChatManifestsMatchWorkflow(t *testing.T) {
 			continue // not a conversational bundle — nothing to cross-check
 		}
 
-		src, err := os.ReadFile(mainBot)
-		if err != nil {
-			t.Errorf("%s: read: %v", mainBot, err)
-			continue
-		}
-		pr := parser.Parse(mainBot, string(src))
+		pr := parseBotUnit(mainBot)
 		if pr.File == nil {
 			continue // parse failure is another test's job
 		}

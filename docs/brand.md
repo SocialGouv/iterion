@@ -46,11 +46,29 @@ avatar on it depends on the forge:
 
 | Connection | Avatar | How |
 |---|---|---|
-| GitLab **PAT** whose account GitLab flags `bot: true` — a group/project access token's bot user, a service account | **automatic at connect time** (`PUT /user/avatar`, GitLab ≥ 17.0) | the connect records `account_kind: bot` and `avatar_applied_at`; a refusal lands on `avatar_error`, never fails the connect |
+| GitLab **PAT** whose account GitLab flags `bot: true` — a group/project access token's bot user, a service account | **automatic for an unset avatar at connect time** (`PUT /user/avatar`, GitLab ≥ 17.0) | the connect records `account_kind: bot` and `avatar_applied_at`; a refusal lands on `avatar_error`, never fails the connect |
 | GitLab / Forgejo **PAT** of a dedicated account the forge does not flag (a hand-made `iterion-bot` user; every Forgejo account — no bot flag there) | **on demand**, with the operator's word | studio → Integrations → the connection card → *Apply iterion-bot avatar* (confirms, then `force`), or `iterion remote forge connections avatar <conn-id> --force` |
 | **OAuth** connection (any forge) | **never** | it authenticates as the person who authorized it; iterion does not rebrand personal accounts, no override |
 | **GitHub App** (`iterion-forge-*`, `iterion-watch-*`) | **manual** | GitHub has no logo API and the manifest cannot carry one: the studio shows the hand-off after creation (download link + the App's *Display information* page) and keeps a *Logo ↗* link on the App row |
 | GitHub **PAT / user account** | manual | no avatar API either; `iterion-bot` already wears it |
+
+Automatic branding preserves any existing uploaded, external or previously
+installed iterion avatar, including across reconnects. An already-recorded
+successful automatic apply is a no-op. It uses the optional `AvatarReader`
+capability before uploading; an absent capability, missing `avatar_url` or
+inspection failure preserves the image, records `avatar_error` and warns
+without failing the connection. Only an actual upload earns
+`avatar_applied_at` and the automatic `avatar_applied` audit event.
+
+GitLab may return a [Gravatar fallback URL](https://docs.gitlab.com/api/avatar/).
+`d=identicon` alone does not identify a placeholder: Gravatar serves a registered
+image first. For standard Gravatar URLs, iterion checks the validated image hash
+at the fixed HTTPS endpoint with [`d=404`](https://docs.gravatar.com/sdk/images/)
+and `r=x`. Only HTTP 404 authorizes initialization; HTTP 200 preserves the image,
+and errors preserve it with a diagnostic. The check has a five-second deadline,
+sends no forge token or cookies, and follows no redirect. Unknown avatar URLs
+are preserved without fetching them. The explicit avatar action below remains
+an operator-requested replacement.
 
 Apply state on a connection: `account_kind`, `avatar_applied_at`, `avatar_error`
 (`GET /api/teams/{id}/forge/connections`). The action:

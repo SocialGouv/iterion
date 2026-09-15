@@ -99,6 +99,27 @@ func (loop *ConversationLoop) SubagentTypes() []string {
 // built-in type uses tools.AllowedToolsForSubagent. Orchestration tools are
 // always excluded.
 func (loop *ConversationLoop) resolveSubagentTools(subagentType string) []api.Tool {
+	allowed := loop.subagentToolAllowlist(subagentType)
+
+	out := make([]api.Tool, 0, len(loop.Tools))
+	hasImageGen := false
+	for _, t := range loop.Tools {
+		if _, excluded := orchestrationTools[t.Name]; excluded {
+			continue
+		}
+		if allowed != nil && !allowed[t.Name] {
+			continue
+		}
+		hasImageGen = hasImageGen || t.Name == "image_gen"
+		out = append(out, t)
+	}
+	if !hasImageGen && loop.imageGenerator() != nil && (allowed == nil || allowed["image_gen"]) {
+		out = append(out, tools.ImageGenTool())
+	}
+	return out
+}
+
+func (loop *ConversationLoop) subagentToolAllowlist(subagentType string) map[string]bool {
 	var allowed map[string]bool
 	if def, ok := loop.lookupSubagent(subagentType); ok {
 		if len(def.AllowedTools) > 0 {
@@ -111,17 +132,7 @@ func (loop *ConversationLoop) resolveSubagentTools(subagentType string) []api.To
 		allowed = tools.AllowedToolsForSubagent(subagentType)
 	}
 
-	out := make([]api.Tool, 0, len(loop.Tools))
-	for _, t := range loop.Tools {
-		if _, excluded := orchestrationTools[t.Name]; excluded {
-			continue
-		}
-		if allowed != nil && !allowed[t.Name] {
-			continue
-		}
-		out = append(out, t)
-	}
-	return out
+	return allowed
 }
 
 // executeAgentSpawn is the agent tool's dispatch entry: validate, spawn in
@@ -240,16 +251,18 @@ func (loop *ConversationLoop) runSubagent(taskID string, spec *tools.AgentSpec, 
 		childCfg.Model = def.Model
 	}
 
+	allowed := loop.subagentToolAllowlist(spec.SubagentType)
 	child := &ConversationLoop{
-		Client:         loop.Client,
-		Session:        NewSession(),
-		Tools:          loop.resolveSubagentTools(spec.SubagentType),
-		Permissions:    loop.Permissions,
-		PermManager:    loop.PermManager,
-		Config:         &childCfg,
-		CtxAssembler:   loop.CtxAssembler,
-		HookRunner:     loop.HookRunner,
-		LifecycleHooks: loop.LifecycleHooks,
+		Client:           loop.Client,
+		Session:          NewSession(),
+		Tools:            loop.resolveSubagentTools(spec.SubagentType),
+		imageGenDisabled: allowed != nil && !allowed["image_gen"],
+		Permissions:      loop.Permissions,
+		PermManager:      loop.PermManager,
+		Config:           &childCfg,
+		CtxAssembler:     loop.CtxAssembler,
+		HookRunner:       loop.HookRunner,
+		LifecycleHooks:   loop.LifecycleHooks,
 	}
 
 	events := make(chan TurnEvent, 64)

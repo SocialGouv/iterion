@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestDepUpdateGuardGateVerdict pins the merge gate Vetty posts. The gate is
@@ -375,11 +374,7 @@ func firstRef(s string) string {
 // compiled bundle, the counterpart of toolCommand for script-form nodes.
 func toolScript(t *testing.T, rel, node string) string {
 	t.Helper()
-	src, err := os.ReadFile(rel)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	pr := parser.Parse(rel, string(src))
+	pr := parseBotUnit(rel)
 	if pr.File == nil {
 		t.Fatalf("parse produced no File")
 	}

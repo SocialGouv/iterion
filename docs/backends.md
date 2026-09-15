@@ -705,6 +705,20 @@ runner pod). A tool the node names EXPLICITLY on a dead server still
 fails loud at resolution — a declared dependency is never silently
 dropped.
 
+**Stdio MCP startup diagnostics.** The in-process MCP client drains stderr
+through the official SDK's command hook and retains only an 8 KiB tail during
+initialization. On failure, the existing error/event reports a fixed reason,
+exit code when available, stderr byte count/truncation and a fixed hint
+(`authentication`, `dependency`, `network`, `configuration`, `unclassified`
+or `none`). Hints describe recognized text, not a confirmed cause: an EOF
+alone does not establish that a token is missing. Raw stderr, command
+arguments, environment values and arbitrary protocol error text are withheld,
+since a subprocess can print secrets unknown to the run's redaction guard.
+Retained bytes are cleared after initialization, including success; stderr
+continues draining without retention. A 500 ms `exec.Cmd.WaitDelay` prevents
+an inherited stderr pipe from holding up shutdown after the server exits.
+MCP selection and the ambient-versus-required failure policy are unchanged.
+
 **Orchestration-stall guard.** A session blocked on `TaskOutput` / `Monitor`
 with no background work to wait on — no `Agent`/`Task` spawned, no
 `run_in_background` command — can never return; observed on a facade-served

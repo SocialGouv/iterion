@@ -2,6 +2,11 @@ name: feature-dev
 display_name: Featurly
 icon: 🛠️
 version: 2.5.0
+## A bot in several files (`import "lib/…"` at the head of main.bot): a runner
+## older than the release that reads `import` would fail at its first parse of
+## a fragment — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.145.0"
 ## 2.5.0 — the entry precondition's refusal is a NAMED fail node
 ## (`workspace_not_a_repo`, code WORKSPACE_NOT_A_REPO, terminal), so the
 ## code reaches the RUN's own `failure_code` / `error` — read by `iterion

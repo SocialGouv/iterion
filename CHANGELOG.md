@@ -3,6 +3,136 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.10](https://github.com/SocialGouv/iterion/compare/v3.146.9...v3.146.10) (2026-09-15)
+
+### Bug Fixes
+
+* **mcp:** preserve safe stdio startup diagnostics ([#1210](https://github.com/SocialGouv/iterion/issues/1210)) ([17cdcc6](https://github.com/SocialGouv/iterion/commit/17cdcc6102438837cdb0d93ec09396fc38963570))
+
+## [3.146.9](https://github.com/SocialGouv/iterion/compare/v3.146.8...v3.146.9) (2026-09-15)
+
+### Bug Fixes
+
+* **forge:** preserve existing bot avatars on reconnect ([#1196](https://github.com/SocialGouv/iterion/issues/1196)) ([9cdcef8](https://github.com/SocialGouv/iterion/commit/9cdcef87c932d84f889731c854aef3fe3ee82ccd))
+
+## [3.146.8](https://github.com/SocialGouv/iterion/compare/v3.146.7...v3.146.8) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** the scope guard must be a whitelist, not a list of failures ([#1253](https://github.com/SocialGouv/iterion/issues/1253)) ([84b9cd8](https://github.com/SocialGouv/iterion/commit/84b9cd8577801d8862ccc2979db685df88fb375c)), references [#1246](https://github.com/SocialGouv/iterion/issues/1246)
+
+    <details><summary>why</summary>
+
+    Review finding Ra43054 on #1246, and it is right.
+
+    </details>
+
+## [3.146.7](https://github.com/SocialGouv/iterion/compare/v3.146.6...v3.146.7) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is bound to its path only when it is the file it names and parses clean; fragments are written before the mains ([#1250](https://github.com/SocialGouv/iterion/issues/1250)) ([243efe9](https://github.com/SocialGouv/iterion/commit/243efe9c38a6bab51042f4512a832dbb6a360acb)), references [#1248](https://github.com/SocialGouv/iterion/issues/1248)
+
+    <details><summary>why</summary>
+
+    Third slice behind #1241: Revi's medium and question on #1248, and a local adversarial round on this diff before it reaches the gate.
+
+    </details>
+
+## [3.146.6](https://github.com/SocialGouv/iterion/compare/v3.146.5...v3.146.6) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** zero findings out of zero files read is not an approval ([#1246](https://github.com/SocialGouv/iterion/issues/1246)) ([9406931](https://github.com/SocialGouv/iterion/commit/9406931dad7d347844c799d94a8030b8e6c4dd5d))
+
+    <details><summary>why</summary>
+
+    Found by running the merged bot against a real PR before pushing it to production — the validation the platform override was being held for.
+
+    </details>
+
+## [3.146.5](https://github.com/SocialGouv/iterion/compare/v3.146.4...v3.146.5) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is served whole, published atomically, and the studio keeps the unit it binds ([#1248](https://github.com/SocialGouv/iterion/issues/1248)) ([2ddbfe5](https://github.com/SocialGouv/iterion/commit/2ddbfe59478818e78835e1e65302058f5b2d9962)), references [#1241](https://github.com/SocialGouv/iterion/issues/1241)
+
+    <details><summary>why</summary>
+
+    Follow-up of the embed fix: Revi's second verdict on #1241 and a local adversarial re-attack of the same commit.
+
+    </details>
+
+## [3.146.4](https://github.com/SocialGouv/iterion/compare/v3.146.3...v3.146.4) (2026-09-15)
+
+### Bug Fixes
+
+* **golden-master:** the ephemeral-set notice declines per set too ([#1244](https://github.com/SocialGouv/iterion/issues/1244)) ([dece1c0](https://github.com/SocialGouv/iterion/commit/dece1c076b8478ee44a2d2439936dda637673c84)), references [#1149](https://github.com/SocialGouv/iterion/issues/1149) [#1137](https://github.com/SocialGouv/iterion/issues/1137) [#1149](https://github.com/SocialGouv/iterion/issues/1149)
+
+    <details><summary>why</summary>
+
+    #1149 made `seal_holdout` decline PER SET: it keeps what `git ls-files` reports and relocates the rest. The predicate beside it did not follow.
+
+    </details>
+
+## [3.146.3](https://github.com/SocialGouv/iterion/compare/v3.146.2...v3.146.3) (2026-09-15)
+
+### Bug Fixes
+
+* **golden-master:** the tree the gate judged must be the tree that existed ([#1240](https://github.com/SocialGouv/iterion/issues/1240)) ([f7178b5](https://github.com/SocialGouv/iterion/commit/f7178b50e9e926013fe6065a6786c355d1b6a713))
+
+    <details><summary>why</summary>
+
+    A mutant's revert restores HEAD. So anything uncommitted when the gate runs is DESTROYED during the run, and every figure the gate then reports describes a tree that stopped existing partway through the measurement.
+
+    </details>
+
+## [3.146.2](https://github.com/SocialGouv/iterion/compare/v3.146.1...v3.146.2) (2026-09-15)
+
+### Bug Fixes
+
+* **studio,server:** a companion workflow that imports opens as its unit, a fragment edit reloads the open document, a lost provenance is refused ([#1235](https://github.com/SocialGouv/iterion/issues/1235)) ([b790871](https://github.com/SocialGouv/iterion/commit/b790871e32d35c45fc2d4d16d3df7de3a0368cc5)), references [#1225](https://github.com/SocialGouv/iterion/issues/1225) [#1164](https://github.com/SocialGouv/iterion/issues/1164) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    Revi's second verdict on PR #1225, after the queue had admitted it.
+
+    </details>
+
+## [3.146.1](https://github.com/SocialGouv/iterion/compare/v3.146.0...v3.146.1) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** resolve the review base once, and refresh it first ([#1230](https://github.com/SocialGouv/iterion/issues/1230)) ([25794cd](https://github.com/SocialGouv/iterion/commit/25794cddd1f68cc2c974633fe8e61c7d137871d0)), references [#1224](https://github.com/SocialGouv/iterion/issues/1224) [#1224](https://github.com/SocialGouv/iterion/issues/1224)
+
+    <details><summary>why</summary>
+
+    A review took its scope from `git merge-base <base_ref> HEAD` on the local checkout. A workspace reused across runs carries whatever `base_ref` meant when it was made, and a merge-base against a stale base lands BELOW the branch point — so every file merged into the base since falls into the diff, and the review reports on code the branch never touched as if it had.
+
+    </details>
+
+## [3.146.0](https://github.com/SocialGouv/iterion/compare/v3.145.1...v3.146.0) (2026-09-15)
+
+### Features
+
+* **golden-master:** the net HONOURS a declared lane exclusion instead of calling it noise ([#1228](https://github.com/SocialGouv/iterion/issues/1228)) ([a4e2e01](https://github.com/SocialGouv/iterion/commit/a4e2e012789350fa81be2d8157698464bf695003))
+
+    <details><summary>why</summary>
+
+    A multi-environment net can renounce ONE observation on ONE lane — a decision, written down and arbitrated, never a deletion. `corpus.json` already carried the declaration:
+
+    </details>
+
+### Bug Fixes
+
+* **golden-master:** a held-out set of zero is not a proof, and the gate now says so ([#1152](https://github.com/SocialGouv/iterion/issues/1152)) ([3fe5ab2](https://github.com/SocialGouv/iterion/commit/3fe5ab24d291d811ce1c5a518735049f36daea69))
+
+    <details><summary>why</summary>
+
+    `oracle_gate.converged` ends on `holdout_detected == holdout_total`, its strongest clause — and `0 == 0` satisfies it. A rite whose held-out set is empty converges on a term that measured nothing, which is the no-op confirmed as a success this bot exists to refuse in other people's deliveries.
+
+    </details>
+
 ## [3.145.1](https://github.com/SocialGouv/iterion/compare/v3.145.0...v3.145.1) (2026-09-15)
 
 ### Bug Fixes
