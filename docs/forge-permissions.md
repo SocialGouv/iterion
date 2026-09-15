@@ -82,15 +82,44 @@ is typically who authorized the connection.
 Prefer narrowing the *connection*, not the user:
 
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
-  permissions in its manifest (`contents:write`, `pull_requests:write`,
-  `issues:write` for posting the PR/MR back-link on the source issue,
-  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook,
-  `statuses:write` for the merge-gate verdict, `checks:read` for the board
-  card's CI panel — it lists a ref's check-runs), scoped to the repos the App
-  is installed on. It deliberately does **not**
+  permissions in its manifest, scoped to the repos the App is installed on.
+  The **baseline** every manifest-created App requests
+  ([`BuildAppManifest`](../pkg/forge/github/app_manifest.go)) is
+  `contents:write`, `pull_requests:write`, `issues:write` for posting the
+  PR/MR back-link on the source issue, `metadata:read`,
+  `repository_hooks:write` for the per-repo inbound webhook, `statuses:write`
+  for the merge-gate verdict and `checks:read` for the board card's CI panel —
+  it lists a ref's check-runs. That baseline deliberately does **not**
   request `administration` (repo deletion/settings/teams/branch-protection) —
   that is over-privileged, and per GitHub docs webhooks require
-  `repository_hooks`, not `administration`. The right answer for production: bots get only
+  `repository_hooks`, not `administration`.
+
+  **Four opt-ins widen the baseline at App-creation time**, each a field on
+  `POST /api/teams/{id}/forge/oauth-apps` (`AppManifestOptions`). Permissions
+  belong to the *App*, not to one installation, so a flag set here is a grant
+  every adopter of that App makes:
+
+  - `allow_repo_creation` adds `administration:write` — the create-repo
+    capability ([repo-scope.md](repo-scope.md)). At run time it is minted per
+    `CreateRepo` call only (`RepoAdminInstallationPermissions`); the cached
+    runtime token stays on the baseline.
+  - `allow_app_delivery` adds `workflows:write` + `packages:write` — a bot
+    that ships an application pushes `.github/workflows/**` and publishes the
+    image it builds ([bot-runs/app-dev.md](bot-runs/app-dev.md)). Opt-in
+    because `workflows:write` lets its holder rewrite CI, i.e. run arbitrary
+    code in it.
+  - `allow_security_read` adds `vulnerability_alerts:read` — the
+    installation's Dependabot alerts, org-wide
+    ([forge-security-read.md](forge-security-read.md)). Minted only into the
+    dedicated security-read token, never into the runtime one.
+  - `allow_project_board` adds `organization_projects:write` — GitHub
+    Projects v2 board sync ([github-board-sync.md](github-board-sync.md)).
+
+  `security_read_only` is different in kind: it **replaces** the whole set
+  with `metadata:read` + `vulnerability_alerts:read`, producing a watch-only
+  App that carries no runtime baseline at all.
+
+  The right answer for production: bots get only
   what they need, and PRs are authored by a clearly-non-human bot identity.
   Tokens are minted **per call family**, each narrowed to the grants its
   endpoint is gated on ([`pkg/forge/github/app_client.go`](../pkg/forge/github/app_client.go),
@@ -109,7 +138,7 @@ Prefer narrowing the *connection*, not the user:
   then the surface that needs it says so instead of failing silently: the
   card's CI panel answers `422` naming `checks:read` and the page to approve
   it on, the health view lists it under `missing_ci_permissions`
-  (`iterion remote forge connections refresh <id>` prints the same line), and
+  (`iterion remote forge refresh <conn-id>` prints the same line), and
   nothing else on the connection is affected — the runtime token is never
   minted with it.
 

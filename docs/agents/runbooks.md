@@ -32,6 +32,14 @@ worked. A five-minute write-up now saves the next session (or the next dev)
 the hours this one spent.
 
 **Operational runbook index** (the discovery entry point — extend it):
+- [docs/connectors.md](../connectors.md) — the connector **package format**:
+  which files `iterion connectors gen` writes (`connector.yaml`,
+  `ops/<domain>.yaml`, `schemas.yaml`, the format-v2 `responses.json`) versus
+  the authored `overlay.yaml`, and what an overlay may state — `auth`
+  REPLACING rather than merging the derived schemes, `drop`, per-operation
+  `mcp` / `effect` / `pagination` / `idempotency_key_param`, per-parameter
+  `key` / `secret`. Read it before hand-editing a package, or when a generated
+  operation is wrong and you need to know whether the overlay can say so.
 - [docs/connector-identities.md](../connector-identities.md) — connector
   regeneration identity locks, authored renames, retired names and recovery
   after an interrupted package replacement.
@@ -203,6 +211,16 @@ the hours this one spent.
   `BOT_REQUIRES_NEWER_ENGINE`, and `iterion validate` says the same
   locally (C250/C251). Read it when a push is refused, or when a bot that
   compiles dies at its first expression.
+- [docs/stall-human-waits.md](../stall-human-waits.md) — why a **silent run
+  is not always a stalled run**: the per-invocation `await_answers` token the
+  runtime persists (node ID + expiry from the node's mandatory timeout), how
+  `store.HasBlockingHumanWait` follows `SubbotChildren` to a paused descendant
+  or an active descendant sync point, which waits are deliberately NOT exempt
+  (an `interaction: async` agent with outstanding questions writes no marker),
+  and why a cleanup-write failure fails the node rather than leave an
+  exemption outliving its timeout. Read it when the dispatcher or the runview
+  alert manager reaped a run that was legitimately waiting on a human, or when
+  an exemption you expected did not apply.
 - [docs/dispatcher.md](../dispatcher.md#claim-lease--watchdog-native-board-adr-096) —
   the board **claim lease + watchdog** (ADR-096,
   `ITERION_BOARD_CLAIM_REAPER`, default off): the fenced leased claim
