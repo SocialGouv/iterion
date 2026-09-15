@@ -3,6 +3,19 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.147.1](https://github.com/SocialGouv/iterion/compare/v3.147.0...v3.147.1) (2026-09-15)
+
+### Bug Fixes
+
+* **billy:** verify workflow delivery permission before analysis ([#1199](https://github.com/SocialGouv/iterion/issues/1199)) ([f7db671](https://github.com/SocialGouv/iterion/commit/f7db671d719759c6dd5a8871dc3a8469e6886aa2))
+* **server:** an assistant-mission sweep is joined after the drain and on a project switch, never inside its cancel ([#1259](https://github.com/SocialGouv/iterion/issues/1259)) ([60aabc8](https://github.com/SocialGouv/iterion/commit/60aabc8569f53c186057b13f20ab76414d1ef105)), closes [#1254](https://github.com/SocialGouv/iterion/issues/1254) [#821](https://github.com/SocialGouv/iterion/issues/821) [#848](https://github.com/SocialGouv/iterion/issues/848) [#1250](https://github.com/SocialGouv/iterion/issues/1250) [#1257](https://github.com/SocialGouv/iterion/issues/1257), references [#1254](https://github.com/SocialGouv/iterion/issues/1254) [#821](https://github.com/SocialGouv/iterion/issues/821) [#848](https://github.com/SocialGouv/iterion/issues/848)
+
+    <details><summary>why</summary>
+
+    restartAssistantMissions started a sweep loop for the new coordinator and cancelled the previous one without anything ever waiting for it, and the shutdown did the same: a sweep mid-store-call returned after the cancel did, still writing into the store of a project that had been switched away from — and, in TestRestartAssistantMissionsIsRaceFree, into a temp dir the test was removing (#1254, the class of #821 and #848).
+
+    </details>
+
 ## [3.147.0](https://github.com/SocialGouv/iterion/compare/v3.146.10...v3.147.0) (2026-09-15)
 
 ### Features
