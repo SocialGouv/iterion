@@ -146,9 +146,15 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
 			return true, true, "", emErr
 		}
-		// A child is not successful until its borrowed resources are restored.
-		// Reattach/polling callers must never observe a prematurely finished child.
-		if e.resourceScope != nil {
+		// A child is not successful until its BORROWED resources are restored, so
+		// reattach/polling callers never observe a prematurely finished child.
+		// Testing the scope's existence alone deferred this for every run
+		// carrying a bundle, contributions or a subbot node: for those the
+		// `finished` write and `run_finished` moved into the cleanup that runs
+		// after sandbox teardown, so a completed run reported `running` through
+		// container stop and workspace export — and an eviction in that window
+		// left a run that reached DoneNode permanently unfinished in the store.
+		if e.resourceScope != nil && e.resourceScope.borrowed {
 			e.resourceScope.reachedDone = true
 			return true, true, "", nil
 		}

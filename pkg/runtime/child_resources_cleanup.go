@@ -16,6 +16,21 @@ func (e *Engine) finishRunResources(ctx context.Context, runID string, scope *ru
 	delete(workspaceResourceGates.active, resourceOwnerKey{scope.path, runID})
 	workspaceResourceGates.Unlock()
 	scope.setupRelease()
+	// A scope is opened for any run carrying a bundle, contributions or a subbot
+	// node — not only for a child that borrowed the workspace's resources. When
+	// nothing was borrowed `restore` is a no-op and the gate is the SHARED
+	// per-workspace one, so draining it here waits on readers this run does not
+	// own: a sibling still in setup, or an abandoned branch executor after a
+	// cancellation. The timeout would then write FAILED_RESUMABLE over a run
+	// that reached its end, skip `run_finished`, and orphan its commits — all to
+	// hand back nothing.
+	if !scope.borrowed {
+		release()
+		if scope.reachedDone {
+			return e.publishRunFinished(context.WithoutCancel(ctx), runID)
+		}
+		return nil
+	}
 	drainCtx, cancel := context.WithTimeout(context.Background(), resourceDrainTimeout)
 	err := scope.gate.sem.Acquire(drainCtx, resourceWriterWeight)
 	cancel()

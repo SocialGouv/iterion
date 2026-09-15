@@ -136,3 +136,65 @@ func TestChildResourcesRestoreFailureCannotBeReattachedAsSuccess(t *testing.T) {
 		})
 	}
 }
+
+// TestARunThatBorrowedNothingIsNotFailedByAGateItDoesNotOwn.
+//
+// A resource scope is opened for ANY run carrying a bundle, contributions or a
+// subbot node — not only for a child that borrows the workspace's resources.
+// For those, `restore` is a no-op and the gate is the shared per-workspace one,
+// so draining it waits on readers the run does not own: a sibling still in
+// setup, or an abandoned branch executor after a cancellation. The timeout then
+// wrote FAILED_RESUMABLE over a run that had reached its end, never published
+// `run_finished`, and the joined error made finalization skip the fast-forward
+// and orphan the run's commits — all to hand back nothing.
+//
+// The reader is taken while the run EXECUTES, which is when a sibling would
+// take it: taking it earlier would block this run's own setup instead, which is
+// a different situation and not the one that failed.
+func TestARunThatBorrowedNothingIsNotFailedByAGateItDoesNotOwn(t *testing.T) {
+	work, st := t.TempDir(), tmpStore(t)
+	dir, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held := make(chan struct{})
+	ex := newStubExecutor()
+	ex.on("after", func(map[string]any) (map[string]any, error) {
+		gate, releaseGate := retainResourceGate(dir)
+		if err := gate.sem.Acquire(context.Background(), 1); err != nil {
+			return nil, err
+		}
+		go func() {
+			<-held
+			gate.sem.Release(1)
+			releaseGate()
+		}()
+		return map[string]any{}, nil
+	})
+	defer close(held)
+
+	began := time.Now()
+	e := New(resourceWorkflow(""), st, ex, WithWorkDir(work),
+		WithBundle(resourceBundle(t, "solo")), WithSandboxOverride("none"))
+	if err := e.Run(context.Background(), "solo", nil); err != nil {
+		t.Fatalf("a run that borrowed nothing was failed by a gate it does not own: %v", err)
+	}
+	if elapsed := time.Since(began); elapsed >= resourceDrainTimeout {
+		t.Errorf("run took %s: it waited on a drain it has no reason to perform", elapsed)
+	}
+	run, err := st.LoadRun(context.Background(), "solo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Errorf("status = %q (%q), want finished", run.Status, run.FailureCode)
+	}
+	// And completion was published by the exec loop, not deferred into the
+	// cleanup that runs after sandbox teardown. Deferring it for every bundle
+	// run left a completed run reporting `running` through container stop and
+	// workspace export, a window where an eviction leaves it unfinished forever.
+	if e.resourceScope != nil && e.resourceScope.reachedDone {
+		t.Error("a run that borrowed nothing deferred its own completion")
+	}
+}
