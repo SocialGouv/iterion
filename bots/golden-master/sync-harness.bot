@@ -2701,7 +2701,21 @@ tool sync_harness:
                     if os.path.isdir(os.path.join(root, c))])
 
 
-    def sealed_but_ephemeral(committed_before, sealed_now):
+    def uncommitted_holdout_entries(gm_dir):
+        """The names under mutants/holdout/ that git does NOT track.
+
+        The counterpart of `holdout_committed_entries`, and the one the ephemeral
+        notice needs: the seal declines PER SET, so "is anything here committed?"
+        stopped being the same question as "is MY set committed?" the day a run
+        could stand beside a successor an earlier cycle left.
+        """
+        src = os.path.join(gm_dir, "mutants", "holdout")
+        if not os.path.isdir(src):
+            return set()
+        return set(os.listdir(src)) - holdout_committed_entries(gm_dir)
+
+
+    def sealed_but_ephemeral(had_uncommitted, sealed_now):
         """True when a held-out set left the tree WITHOUT a committed copy.
 
         Sealing out of the tree is what makes the seal mechanical; it is also what
@@ -2710,8 +2724,17 @@ tool sync_harness:
         pod — takes the set with it, and the next gate reports 0/0 for a set that
         was drawn. A committed set is the exception: it is left in place, which is
         the only home that crosses a run boundary.
+
+        The first argument asks whether an UNCOMMITTED set was there to be sealed,
+        not whether the directory held anything committed. Those were the same
+        question while the seal declined directory-wide; once it declines per set,
+        a run can hold both at once — a successor an earlier cycle committed, and
+        its own fresh draw — and the directory-wide reading answers for the wrong
+        one. It reported "a committed copy exists" on the strength of the
+        SUCCESSOR, and this notice, the only warning a run gets that its own set
+        will die with its workspace, went silent for every net carrying one.
         """
-        return bool(sealed_now) and not committed_before
+        return bool(sealed_now) and bool(had_uncommitted)
 
 
     def load_mutants(gm_dir, holdout, sealed_dir=None):
@@ -5121,9 +5144,38 @@ tool sync_harness:
             # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
             # est l'endroit ou les dettes se cachent.
             check("jeu frais scelle hors de l'arbre -> ephemere ; jeu committe -> non",
-                  [sealed_but_ephemeral(False, True), sealed_but_ephemeral(True, True),
-                   sealed_but_ephemeral(False, False)],
+                  [sealed_but_ephemeral(True, True), sealed_but_ephemeral(False, True),
+                   sealed_but_ephemeral(True, False)],
                   [True, False, False])
+            # LE MELANGE, la regression que ce predicat portait depuis que le
+            # sceau renonce PAR JEU : un successeur COMMITE a cote du jeu FRAIS de
+            # ce run. La lecture par repertoire repondait « une copie commitee
+            # existe » sur la foi du SUCCESSEUR, et l'avertissement -- le seul que
+            # le run recoit pour dire que son propre jeu mourra avec son espace de
+            # travail -- se taisait pour tout net portant un successeur.
+            wm = os.path.join(sroot, "ephemere-melange")
+            gmd_wm = mk_holdout(wm)                   # t01, qui sera COMMITE
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "successor")):
+                fixture_git(wm, *args)
+            frais = os.path.join(gmd_wm, "mutants", "holdout", "t02")
+            os.makedirs(frais)                        # t02, FRAIS et non suivi
+            with open(os.path.join(frais, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+            check("melange : le successeur commite ne masque plus le jeu frais ephemere",
+                  [sorted(holdout_committed_entries(gmd_wm)),
+                   sorted(uncommitted_holdout_entries(gmd_wm)),
+                   sealed_but_ephemeral(uncommitted_holdout_entries(gmd_wm), True)],
+                  [["t01"], ["t02"], True])
+            # Et l'inverse, qui doit rester muet : SEUL un successeur commite est
+            # la, ce run n'a rien tire, donc rien n'est devenu ephemere.
+            ws = os.path.join(sroot, "ephemere-successeur-seul")
+            gmd_ws = mk_holdout(ws)
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "successor")):
+                fixture_git(ws, *args)
+            check("successeur seul : aucun jeu frais, donc aucun avertissement",
+                  [sorted(uncommitted_holdout_entries(gmd_ws)),
+                   sealed_but_ephemeral(uncommitted_holdout_entries(gmd_ws), True)],
+                  [[], False])
             adir = os.path.join(sroot, "audited", ".golden-master")
             for cyc, name in (("01a0-un", "m1"), ("01a0-un", "m2"), ("01a0-deux", "m3")):
                 d = os.path.join(adir, "mutants", "audit", cyc, name)
@@ -7487,7 +7539,10 @@ tool sync_harness:
 
         if mode != "record":
             try:
-                committed_before = holdout_committed_in_tree(gm_dir)
+                # Read BEFORE the seal, and per SET: what matters is whether an
+                # UNCOMMITTED set was there to be relocated, not whether the
+                # directory happened to hold something committed as well.
+                uncommitted_before = uncommitted_holdout_entries(gm_dir)
                 sealed_now = seal_holdout(gm_dir, sealed_dir)
                 awaiting = holdout_committed_in_tree(gm_dir) and \
                     not seal_committed_opted_in(gm_dir)
@@ -7499,7 +7554,7 @@ tool sync_harness:
             # set along, and the next gate reports 0/0 for a set that was drawn.
             # Said here, once, at the moment the set leaves the tree — the only
             # moment anyone can still commit it.
-            if sealed_but_ephemeral(committed_before, sealed_now):
+            if sealed_but_ephemeral(uncommitted_before, sealed_now):
                 report["holdout_sealed_uncommitted"] = True
                 note(report, "the held-out set was sealed OUT of the tree into %s and is "
                              "NOT committed: it survives exactly as long as that directory "
