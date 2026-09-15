@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,25 +18,6 @@ import (
 
 const anthropicProfileURL = "https://api.anthropic.com/api/oauth/profile"
 const accountFingerprintPrefix = "account:anthropic:"
-
-// ErrAccountLookupUnavailable marks a profile lookup that could not be
-// performed — a transport failure, a 429, a 5xx, a response no parser
-// recognises. It says nothing about the credential, which is the whole
-// point of naming it: only a DEFINITIVE answer (a 200 identifying a
-// different account, or a bearer the provider refuses outright) is
-// evidence that a previously verified identity no longer holds.
-//
-// Without the distinction, a five-second blip at api.anthropic.com during
-// a routine refresh erases a verified account and re-keys the credential
-// to SubscriptionFingerprint — the whole-blob hash of the just-rotated
-// payload. That hash is per-credential and per-rotation, where the account
-// fingerprint is shared and stable, so usagecap.Key stops resolving to the
-// account scope, Latest returns no readings, and the closed-window skip
-// silently stops protecting that forfait until some later lookup happens
-// to succeed.
-// The text is terse because it composes into AccountError, which an
-// operator reads: "anthropic profile: HTTP 503: lookup unavailable".
-var ErrAccountLookupUnavailable = errors.New("lookup unavailable")
 
 // OAuthAccount is identity returned by the provider, never inferred from an
 // operator label or a reset time. An account can have seats in several provider
@@ -91,30 +71,23 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicProfileURL, nil)
 	if err != nil {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: request construction failed: %w", ErrAccountLookupUnavailable)
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: request construction failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: request failed: %w", ErrAccountLookupUnavailable)
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// 401/403 is the provider refusing THIS bearer — the one answer that
-		// disproves a previous identity claim. Every other status (429, any
-		// 5xx, and an endpoint that moved) is the lookup being unavailable,
-		// not the credential being wrong.
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return OAuthAccount{}, fmt.Errorf("anthropic profile: HTTP %d", resp.StatusCode)
-		}
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: HTTP %d: %w", resp.StatusCode, ErrAccountLookupUnavailable)
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: HTTP %d", resp.StatusCode)
 	}
 	const maxProfileBytes = 64 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileBytes+1))
 	if err != nil || len(body) > maxProfileBytes {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: unreadable or oversized response: %w", ErrAccountLookupUnavailable)
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: unreadable or oversized response")
 	}
 	var profile struct {
 		Account struct {
@@ -126,16 +99,12 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 		} `json:"organization"`
 	}
 	if err := json.Unmarshal(body, &profile); err != nil {
-		// A captive portal or an error envelope served with 200 lands here.
-		// Neither is the provider saying anything about this credential.
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: malformed response: %w", ErrAccountLookupUnavailable)
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: malformed response")
 	}
 	a := OAuthAccount{ID: profile.Account.UUID, OrganizationID: profile.Organization.UUID, Email: strings.TrimSpace(profile.Account.Email)}
 	addr, err := mail.ParseAddress(a.Email)
 	if a.Fingerprint() == "" || err != nil || addr.Address != a.Email || len(a.Email) > 320 || strings.ContainsAny(a.Email, "\r\n\t") {
-		// Parsed, but it names no usable identity — a shape this code does
-		// not recognise, not a statement that the old identity is wrong.
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: missing or invalid account identity: %w", ErrAccountLookupUnavailable)
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: missing or invalid account identity")
 	}
 	return a, nil
 }
@@ -145,50 +114,26 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 // endpoint override is not proof of that relationship either. A failed lookup
 // must preserve rotated tokens but cannot assert the previous bearer identity.
 func identifyRefreshedAnthropicAccount(ctx context.Context, hc *http.Client, rec *OAuthRecord, payload []byte, token string) {
-	rec.accountUpdate = &OAuthAccountUpdate{PreviousEmail: rec.AccountEmail}
-	defer func() {
-		rec.accountUpdate.ID, rec.accountUpdate.OrganizationID, rec.accountUpdate.Email = rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail
-		rec.accountUpdate.CheckedAt, rec.accountUpdate.Error = rec.AccountCheckedAt, rec.AccountError
-	}()
-
-	if !slices.Contains(rec.Scopes, "user:profile") {
-		// Definitive, and no number of retries changes it: this bearer
-		// cannot be identified at all, so an identity it can no longer
-		// prove has to go.
-		disownAnthropicAccount(rec, payload, "Profile unavailable: this credential has no user:profile scope; reconnect through the browser to identify the account.")
-		return
-	}
-
-	account, err := DiscoverAnthropicAccount(ctx, hc, token)
-	switch {
-	case err == nil:
-		now := time.Now().UTC()
-		rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail = account.ID, account.OrganizationID, account.Email
-		rec.AccountCheckedAt, rec.AccountError = &now, ""
-		rec.Fingerprint = account.Fingerprint()
-	case errors.Is(err, ErrAccountLookupUnavailable):
-		// Nothing was learned, so nothing is unlearned: the identity and its
-		// fingerprint stay. AccountCheckedAt deliberately stays at the last
-		// CONFIRMED check — advancing it here would date a verification that
-		// did not happen. The error is still recorded, so a run of failures
-		// is visible instead of silent.
-		rec.AccountError = err.Error()
-	default:
-		disownAnthropicAccount(rec, payload, err.Error())
-	}
-}
-
-// disownAnthropicAccount drops an identity this credential can no longer
-// prove and returns it to a local, unverified meter. Reserved for a
-// DEFINITIVE answer: it costs the account fingerprint, which is the shared,
-// rotation-stable key every tier's usage readings are filed under, and
-// SubscriptionFingerprint replaces it with the hash of one payload that the
-// next refresh rotates away.
-func disownAnthropicAccount(rec *OAuthRecord, payload []byte, reason string) {
+	previousEmail := rec.AccountEmail
+	rec.accountUpdate = &OAuthAccountUpdate{PreviousEmail: previousEmail}
 	rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail = "", "", ""
 	rec.AccountCheckedAt = nil
-	rec.AccountError = reason
-	if IsAccountFingerprint(rec.Fingerprint) {
+	rec.AccountError = "Profile unavailable: this credential has no user:profile scope; reconnect through the browser to identify the account."
+	if slices.Contains(rec.Scopes, "user:profile") {
+		account, err := DiscoverAnthropicAccount(ctx, hc, token)
+		if err == nil {
+			now := time.Now().UTC()
+			rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail = account.ID, account.OrganizationID, account.Email
+			rec.AccountCheckedAt, rec.AccountError = &now, ""
+			rec.Fingerprint = account.Fingerprint()
+		} else {
+			rec.AccountError = err.Error()
+		}
+	}
+	if rec.AccountID == "" && IsAccountFingerprint(rec.Fingerprint) {
+		// Without proof, this bearer returns to a local, unverified meter.
 		rec.Fingerprint = SubscriptionFingerprint(rec.Kind, payload)
 	}
+	rec.accountUpdate.ID, rec.accountUpdate.OrganizationID, rec.accountUpdate.Email = rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail
+	rec.accountUpdate.CheckedAt, rec.accountUpdate.Error = rec.AccountCheckedAt, rec.AccountError
 }
