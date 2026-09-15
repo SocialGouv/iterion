@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.7](https://github.com/SocialGouv/iterion/compare/v3.146.6...v3.146.7) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is bound to its path only when it is the file it names and parses clean; fragments are written before the mains ([#1250](https://github.com/SocialGouv/iterion/issues/1250)) ([243efe9](https://github.com/SocialGouv/iterion/commit/243efe9c38a6bab51042f4512a832dbb6a360acb)), references [#1248](https://github.com/SocialGouv/iterion/issues/1248)
+
+    <details><summary>why</summary>
+
+    Third slice behind #1241: Revi's medium and question on #1248, and a local adversarial round on this diff before it reaches the gate.
+
+    </details>
+
 ## [3.146.6](https://github.com/SocialGouv/iterion/compare/v3.146.5...v3.146.6) (2026-09-15)
 
 ### Bug Fixes
