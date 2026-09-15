@@ -28,6 +28,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagNoWorkflow:            {"No workflow found", "Add a `workflow <name>:` block with an `entry:` and the edges."},
 	DiagMultipleWorkflow:      {"Multiple workflows", "Keep one `workflow` block per file; split the others into their own `.bot` (a `subbot` can run them)."},
 	DiagMissingEntry:          {"Missing entry node", "Point `entry:` at a declared node."},
+	DiagUnresolvedImports:     {"Imports not resolved", "Compile the file through a path that loads its unit — `iterion validate <bundle>` or `<main.bot>`, `iterion run`, the studio — which merges its `lib/` fragments; an inline source cannot import: launch the bot as a bundle."},
 	DiagMissingModelOrBackend: {"Missing model or backend", "Add `model: \"...\"` or `backend: \"...\"` to the node (an LLM-backed human node needs `interaction_model:` and `output:`)."},
 	DiagDuplicateMCPServer:    {"Duplicate MCP server", "Give each `mcp_server` declaration a unique name."},
 	DiagInvalidMCPServer:      {"Invalid MCP server config", "stdio servers need `command:`; http/sse servers need `url:` and must not set `command:`/`args:`."},

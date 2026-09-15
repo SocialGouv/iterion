@@ -16,7 +16,13 @@ type File struct {
 	// first declaration; 0 when it has none. Read it through
 	// EffectiveProfile: a document built in memory — the studio's, a
 	// test's — has no header and is profile 1, as a file without one is.
-	Profile      int
+	Profile int
+	// Imports are the file's `import "lib/x.bot"` lines, at its head: the
+	// fragments of its compilation unit (ADR-098 §3), as written. A file
+	// carrying them is not a program yet — the unit loader merges the
+	// fragments in and clears them; the compiler refuses a file that still
+	// has some (C030).
+	Imports      []*ImportDecl
 	Vars         *VarsBlock          // top-level vars (optional, at most one)
 	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
 	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
@@ -163,6 +169,13 @@ type AwaitAnswersDecl struct {
 
 type Comment struct {
 	Text string
+	Span Span
+}
+
+// ImportDecl is one `import "lib/x.bot"` at the head of a file: the path as
+// written, relative to the importing file, that the unit loader resolves.
+type ImportDecl struct {
+	Path string
 	Span Span
 }
 

@@ -142,11 +142,11 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	}
 	req := map[string]any{}
 	if opts.FilePath != "" {
-		src, err := os.ReadFile(opts.FilePath)
+		src, err := prepareUnit(opts.FilePath)
 		if err != nil {
 			return err
 		}
-		req["source"] = string(src)
+		req["source"] = src
 		req["file_path"] = opts.FilePath
 	}
 	if opts.BotID != "" {
@@ -728,11 +728,11 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 		req["answers"] = answers
 	}
 	if opts.FilePath != "" {
-		src, err := os.ReadFile(opts.FilePath)
+		src, err := prepareUnit(opts.FilePath)
 		if err != nil {
 			return err
 		}
-		req["source"] = string(src)
+		req["source"] = src
 		req["file_path"] = opts.FilePath
 	}
 	if opts.Force {
@@ -801,11 +801,11 @@ func RemoteRunsDelete(ctx context.Context, c *RemoteClient, p *Printer, id strin
 }
 
 func RemoteRunsPreviewCost(ctx context.Context, c *RemoteClient, p *Printer, filePath string, vars map[string]string) error {
-	src, err := os.ReadFile(filePath)
+	src, err := prepareUnit(filePath)
 	if err != nil {
 		return err
 	}
-	req := map[string]any{"source": string(src), "file_path": filePath}
+	req := map[string]any{"source": src, "file_path": filePath}
 	if len(vars) > 0 {
 		req["vars"] = vars
 	}

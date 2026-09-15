@@ -672,6 +672,15 @@ type Run struct {
 	// an unreadable or oversized source simply disables auto-targeting,
 	// leaving `--node` to work as before.
 	WorkflowSource string `json:"workflow_source,omitempty" bson:"workflow_source,omitempty"`
+	// WorkflowSources is every file of the unit the run executed — the
+	// main and the fragments its imports reach — by slash path from the
+	// unit's root, as at launch, main first. A bot in one file records
+	// nothing here: WorkflowSource carries it, as it always has. Same
+	// best-effort and cap as WorkflowSource, on the total; without it,
+	// `rewind --auto` on a bot in several files refuses rather than diff
+	// the main alone. A list, not a map: a path holds dots, which a BSON
+	// key cannot.
+	WorkflowSources []WorkflowSourceFile `json:"workflow_sources,omitempty" bson:"workflow_sources,omitempty"`
 	// Preset is the in-source preset name selected at launch via
 	// `--preset <name>` (or the studio Launch modal). Persisted so
 	// `iterion resume` re-applies the same parameter set without the
@@ -1884,4 +1893,11 @@ type InteractionTurn struct {
 	Content string         `json:"content,omitempty" bson:"content,omitempty"` // rendered companion message, or the human's reply text
 	Verdict map[string]any `json:"verdict,omitempty" bson:"verdict,omitempty"` // companion's structured verdict (decision/confidence/blockers)
 	At      time.Time      `json:"at" bson:"at"`
+}
+
+// WorkflowSourceFile is one file of the unit a run executed, as at launch.
+type WorkflowSourceFile struct {
+	// Path is the slash path from the unit's root: "main.bot", "lib/x.bot".
+	Path string `json:"path" bson:"path"`
+	Text string `json:"text" bson:"text"`
 }
