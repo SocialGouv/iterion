@@ -44,12 +44,24 @@ import (
 // actually been computed. The grant therefore has to outlive the longest wait
 // the retry machinery can schedule, plus a margin for the resumed run itself.
 //
-// This is the CEILING, not the ordinary life of a grant: a run's terminal
-// outcome brings the expiry forward to forgePublishPostRunGrace
-// (expireForgePublishGrantForRun), so only a run that is genuinely waiting out
-// a quota window keeps the full window. What limits the damage meanwhile is
-// what the grant can do — post a review and a commit status on ONE repo,
-// re-enforced against the grant's (team, connection, repo) at every use.
+// It is the ceiling for a grant NOBODY re-anchors, not the ordinary life of
+// one: a run's terminal outcome re-anchors the expiry on the run's death
+// (expireForgePublishGrantForRun), so only a run genuinely waiting out a quota
+// window keeps the full window untouched.
+//
+// Re-anchoring can move that instant LATER, which is the one thing to hold in
+// mind when reading this constant as a bound. The TTL is measured from launch
+// and the repair window from terminal, so a gate-claiming run that dies a week
+// into a usage window is re-anchored to death + forgePublishPostRunGrace —
+// past launch + this TTL. That is deliberate and it is what makes the
+// merge-gate net able to answer for it at all; the ceiling on the extension is
+// forgePublishPostRunGrace, clamped inside reanchorIn so no caller can widen
+// it. The absolute worst case is therefore launch + DefaultMaxWait + that
+// grace, and only for a run that claimed a required check.
+//
+// What limits the damage meanwhile is what the grant can do — post a review
+// and a commit status on ONE repo, re-enforced against the grant's (team,
+// connection, repo) at every use.
 const forgePublishDefaultTTL = retrypolicy.DefaultMaxWait + 24*time.Hour
 
 // forgePublishMaxTokens bounds the in-memory registry (the backend used when
