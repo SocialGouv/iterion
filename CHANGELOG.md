@@ -3,6 +3,23 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.148.0](https://github.com/SocialGouv/iterion/compare/v3.147.1...v3.148.0) (2026-09-15)
+
+### Features
+
+* **cloud:** verify subscription accounts and preview credential fallbacks ([#1212](https://github.com/SocialGouv/iterion/issues/1212)) ([694d5d6](https://github.com/SocialGouv/iterion/commit/694d5d68f2a1f27d1e02a1d15fe09c88622498de)), references [#945](https://github.com/SocialGouv/iterion/issues/945) [#945](https://github.com/SocialGouv/iterion/issues/945)
+
+    <details><summary>why</summary>
+
+    The oauth connections row is one space short of the column gofmt computes for the map literal, which is the whole of the test job's failure. No behaviour changes.
+
+    </details>
+* **dsl:** evaluate loop cap expressions at each crossing ([#1192](https://github.com/SocialGouv/iterion/issues/1192)) ([42b5048](https://github.com/SocialGouv/iterion/commit/42b50480865f7441eea81b73cd64390ce09a476f)), references [#1201](https://github.com/SocialGouv/iterion/issues/1201)
+
+### Bug Fixes
+
+* **runtime:** settle fan-out template evidence per item ([#1193](https://github.com/SocialGouv/iterion/issues/1193)) ([7ff4a66](https://github.com/SocialGouv/iterion/commit/7ff4a66b1a9e154957bfe39374f64ba1ae18e353))
+
 ## [3.147.1](https://github.com/SocialGouv/iterion/compare/v3.147.0...v3.147.1) (2026-09-15)
 
 ### Bug Fixes
