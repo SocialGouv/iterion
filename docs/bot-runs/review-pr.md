@@ -214,6 +214,38 @@ weakened.
 - The local `iterion` binary was at **v3.69.0** against a v3.144.0 tree, which
   is why the repo-targeting flags appeared not to exist at all. Check
   `iterion version` before concluding a flag is missing.
+## 2026-09-14 — #1211: connector identity history, clean review and one independent counterexample
+
+- Status: **first review published, initial CI green** — [review 5194884352](https://github.com/SocialGouv/iterion/pull/1211#pullrequestreview-5194884352),
+  run [01a09eb5-b298-7543-b45a-9de9e37044a7](https://iterion.cloud/runs/01a09eb5-b298-7543-b45a-9de9e37044a7),
+  head `7553c416eb9524e5ab330503e6be11ca9c95d6d1`. All CI checks passed,
+  including test, race, cloud-e2e and both conformance suites.
+- Method: automatic PR-open review, effective `openai/gpt-5.6-sol` through
+  `claw`. High-effort reviewer 873,176 tokens + medium-effort synthesis
+  25,682 = **898,858 accumulated tokens**, about 13m21s active duration.
+  A tool invocation reached its 30-second deadline; subsequent tool and model
+  events confirm that the reviewer continued. A completed review does not
+  assert that every test ran inside its tool deadlines.
+- Result: **0 findings**. The review covered lock ownership, CLI generation,
+  concurrent/error paths, tests, the Forgejo seed and documentation. No Billy
+  run was needed for this verdict; the session checked that no fixer was active
+  before its next push.
+- Independent counterexample: while this head was under review,
+  `TestNewOperationAvoidsAnExistingOverlayPublicName` reproduced a refusal when
+  a new operation proposed a name already owned by an authored overlay. The
+  old name stayed protected, but the newcomer should have received an unused
+  suffix. Revi did **not** report this availability defect. The correction
+  reserves public names during allocation too, without changing existing
+  generated identities; the regression failed before and passes after it.
+- Validation: complete connector/CLI suites passed with `-race` before the
+  first review. After the additional correction, complete identity/CLI race
+  suites passed again, with zero lint issues. The seed preserves the **503
+  actually shipped** Forgejo operations and changes no existing `ops/` bytes;
+  the old 506 count was the initial PoC measurement, corrected on #1209.
+- Lesson: retain adversarial tests and their red-to-green evidence even when
+  an independently published review is green. The final correction is followed
+  by a separate review on its published head; this entry describes the first
+  run only, not that later verdict.
 
 ## 2026-09-13 — concise review and linked run ID (#1172)
 
