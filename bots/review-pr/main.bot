@@ -478,10 +478,17 @@ prompt review_system:
      On a large diff, read `--stat` first and prioritise the
      highest-impact hunks; never let context overflow silently.
   2b. `{{outputs.diff_precheck.base_is_current}}` says whether that base
-     came from the remote. When it is false the base could not be refreshed
-     (no remote, no network), so your scope may still be wider than what the
-     branch introduced: say so in `summary`, and do not report a finding on
-     a file you cannot tie to this branch's work.
+     came from the remote. When it is false, EITHER the base could not be
+     refreshed (no remote, no network) — your scope may then be wider than
+     what the branch introduced, so say so in `summary` and do not report a
+     finding on a file you cannot tie to this branch's work — OR the base
+     did not resolve at all, which `{{outputs.diff_precheck.changed_files}}`
+     reports as `-1`.
+  2c. An UNRESOLVED scope is never "nothing changed". If the diff command
+     fails, or returns no files while `changed_files` is `-1`, you have no
+     scope: say exactly that in `summary` and emit no findings — do not let
+     an empty diff read as a clean review, because that is what turns a
+     broken base into a green gate on a pull request nobody read.
   3. You MAY read surrounding code (callers, conventions, the host
      package) to judge how the change integrates, but you MUST only
      report issues in the CHANGED lines/files. Pre-existing issues the
@@ -1127,14 +1134,31 @@ tool diff_precheck:
   ## Refreshing is best-effort by design — no remote, no network and an
   ## opaque `base_ref` are all legitimate — so a failure degrades to the
   ## local ref and says so through base_is_current rather than failing the
-  ## run. `base_ref: HEAD` (the review-uncommitted-only mode) is never
-  ## fetched; there is nothing to refresh.
+  ## run. That degradation only holds if the call RETURNS, hence the bounded
+  ## timeout and GIT_TERMINAL_PROMPT=0: a remote that blackholes packets or
+  ## asks for credentials would otherwise park the workflow's entry node
+  ## until max_duration, and a review that never reaches its publish step
+  ## leaves the required check `pending` for good. `base_ref: HEAD` (the
+  ## review-uncommitted-only mode) is never fetched; there is nothing to
+  ## refresh.
+  ##
+  ## When the merge-base does not resolve at all (unrelated histories, a
+  ## shallow clone, an unresolvable base_ref) base_sha is the base that was
+  ## TRIED, never HEAD. base_sha is what the reviewers diff against, and a
+  ## diff against HEAD is empty on a clean checkout — they would find no
+  ## changed files, report nothing, and the gate would post success on a
+  ## pull request nobody reviewed. An unresolvable base makes their first
+  ## command fail loudly instead, and base_is_current is forced false so the
+  ## prompt's unresolved-scope rule fires.
   publish: reviewed_revision
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
 import os, subprocess, json
 os.chdir(os.environ['WS'])
 def git(*a):
-    return subprocess.run(['git', *a], capture_output=True, text=True)
+    try:
+        return subprocess.run(['git', *a], capture_output=True, text=True, timeout=120, env=dict(os.environ, GIT_TERMINAL_PROMPT='0'))
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(['git', *a], 1, '', 'timed out')
 base = os.environ.get('BASE', 'main')
 head = git('rev-parse', 'HEAD').stdout.strip()
 base_is_current = False
@@ -1145,7 +1169,7 @@ if base != 'HEAD' and git('fetch', '--quiet', 'origin', base).returncode == 0:
         base_is_current = True
 mb = git('merge-base', base, 'HEAD').stdout.strip()
 if not mb:
-    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': head, 'base_is_current': base_is_current})); raise SystemExit(0)
+    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': base, 'base_is_current': False})); raise SystemExit(0)
 files = [f for f in git('diff', '--name-only', mb).stdout.strip().splitlines() if f.strip()]
 print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head, 'base_sha': mb, 'base_is_current': base_is_current}))
 "`

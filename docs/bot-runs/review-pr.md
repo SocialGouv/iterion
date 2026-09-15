@@ -86,6 +86,39 @@ ref and set `base_is_current: false`, which the reviewers are told to surface in
    without a word. A server that cannot honour a repo-targeted launch should
    refuse it rather than run one without the checkout it was asked for.
 
+### Then it reviewed the fix, and found four things (run on PR #1230)
+
+Launched by the webhook lane alone — no hand-launch this time, which is the
+first lesson below applied. All four were right.
+
+- `[high]` the fix's own degenerate branch published `base_sha: HEAD` when the
+  merge-base does not resolve. The reviewers diff against `base_sha`, and a
+  diff against HEAD is **empty** on a clean checkout: no changed files, no
+  findings, and the gate posts *success on a pull request nobody reviewed*.
+  Strictly worse than the bug being fixed, and it also defeated the node's
+  standing promise that ambiguity routes to the reviewers rather than skipping
+  them. Fixed: `base_sha` is the base that was *tried*, never HEAD, and
+  `base_is_current` is forced false so the prompt's unresolved-scope rule fires.
+- `[medium]` the new `git fetch` had no timeout and an inherited environment, on
+  the workflow's **entry** node. A remote that blackholes packets parks the run
+  until `max_duration` and leaves the required check pending for good — the very
+  shape `docs/merge-gate.md` exists to close. "Degrades to the local ref" only
+  holds if the call returns. Fixed with a bounded timeout and
+  `GIT_TERMINAL_PROMPT=0`.
+- `[medium]` `runOwesGateVerdict` is a pure "has a gate context" test, so the
+  8-day grace reached *every* gating run, not the "small minority" its comment
+  claimed — a forge-write bearer held by an agent that reads untrusted PR
+  content, live 128× longer than before. Fixed by giving the grant back at the
+  one point it is provable it has no reader: the reconciler observing **this
+  run's own** verdict on the head. Deliberately not another run's — a repo's
+  gate context is shared between bots.
+- `[medium]` no committed regression test, and it named the existing harness
+  (`toolCommand` + `gittest`) to use. Fixed: `bots/review_pr_review_base_test.go`
+  drives the real node over the fixture; both bug shapes falsified by mutation.
+
+The `[high]` is the one worth remembering: a review of a review-scope fix caught
+the fix turning a *wrong* review into a *silently empty* one.
+
 ### Lessons for next run
 
 - **Do not hand-launch a review on a PR that has just opened** — the webhook
