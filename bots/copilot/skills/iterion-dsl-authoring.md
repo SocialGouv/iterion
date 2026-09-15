@@ -10,9 +10,11 @@ validates without any API call — exit 0 or it isn't done.
 
 ## Shape of a file
 
-Top-level blocks, in any order:
+The head first — `dsl: 2`, then the `import` lines — and below it the top-level blocks, in any order:
 
 ```
+dsl: 2             # the syntax profile: the FIRST significant line
+import "lib/x.bot" # a bot in several files (fragments under lib/, ONE program); at the HEAD only, after dsl:, before every block (E044)
 vars:              # typed inputs with defaults
 prompt <name>:     # indented text body
 schema <name>:     # typed fields

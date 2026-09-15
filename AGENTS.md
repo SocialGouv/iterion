@@ -6,9 +6,13 @@ other harness driven by an operator) follows it. **Automated bot runs**
 (iterion-launched campaign/review/fixer bots executing on this repo) are out
 of scope: they follow their own mission contract and MUST NOT attempt the
 board rituals below — no claiming, no ticket creation; their `.bot` mission
-is their ticket. The full engineering reference (architecture, build, DSL,
-conventions) lives in [CLAUDE.md](CLAUDE.md) — read it before touching code;
-this file only carries the work-tracking contract, so it stays cheap to inject.
+is their ticket. [CLAUDE.md](CLAUDE.md) is the router — project stance, the
+before-merge contract, build commands — and it routes to the engineering
+reference, which lives one level down in the doctrine tree at
+[docs/agents/](docs/agents/README.md) (architecture, DSL, backends, bot
+authoring, testing, runbooks), read on demand. Read CLAUDE.md before touching
+code, and open the tree page your task names; this file only carries the
+work-tracking contract, so it stays cheap to inject.
 
 ## Work tracking & session methodology — the GitHub board
 
@@ -42,9 +46,22 @@ propose launching it (visible in the operator's studio, actively monitored,
 bilan in `docs/bot-runs/`), and improve the bot on every friction the run
 surfaces. Propose this mode regularly; don't impose it. Otherwise *direct
 dev*: a normal coding session. Either way the existing contracts apply
-(Revi→Billy habit on PRs, commit scope discipline, bilans).
+(the before-merge review loop, commit scope discipline, bilans).
 
 **Phase C — close with evidence.** The issue closes with a link to the
 PR/commit/bilan that proves the work; board status updated before the
 session ends. A ticket that says In progress with nobody on it is a bug
 in the board — fix it when you see it.
+
+**Before merge, the review loop is required.** A change reaches `main`
+through a PR whose `revi/review` gate is green (admins, and the release
+bot, may bypass), and the gate is not the first reviewer: run a **local
+adversarial round on the diff before pushing** — a subagent whose posture is to break the change, with every
+finding *and every fix it proposes* verified before a line is written.
+The gate closes the loop; a sterile local round only means "time to
+push". Findings are the developer's to fix, by hand or through another
+local round — **`/billy` is paused on this repo** (cost, until the team
+spends its own BYOK key). Protocol:
+[docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);
+gate and merge mechanics:
+[docs/agents/review-and-merge.md](docs/agents/review-and-merge.md).

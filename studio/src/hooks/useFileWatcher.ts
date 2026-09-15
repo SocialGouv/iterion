@@ -63,6 +63,8 @@ export function useFileWatcher() {
                 if (s.currentFilePath !== path) return;
                 s.setDocument(result.document);
                 s.setDiagnostics(result.diagnostics);
+                // The files changed on disk: the revision a save presents must follow.
+                s.setUnit(result.unit ?? null);
                 s.setCurrentSource(result.source);
                 s.markSaved();
                 if (notifySuccess) {

@@ -244,6 +244,23 @@ func WithWorkflowSource(src string) EngineOption {
 	return func(e *Engine) { e.workflowSource = src }
 }
 
+// WithCompiledSources records every file of the unit the launch COMPILED,
+// by slash path from the unit's root, with the main's key — the same
+// read the run's identity came from. A launcher whose FilePath is a copy
+// of the main (the studio materialises the source it launches under the
+// store) must pass them: no fragment lives beside that copy, and a unit
+// recorded main-only is one `rewind --auto` can only refuse. Without
+// them the engine reads the unit beside filePath.
+func WithCompiledSources(main string, files map[string]string) EngineOption {
+	return func(e *Engine) {
+		if len(files) == 0 {
+			return
+		}
+		e.compiledMain = main
+		e.compiledFiles = files
+	}
+}
+
 // WithExecutionContext supplies the resolved, versioned context contract
 // stamped on the run at launch. The engine clones it so a caller cannot
 // mutate the persisted contract while execution is in flight.

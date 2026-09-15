@@ -12,6 +12,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -35,22 +35,17 @@ import (
 func compileFixture(t *testing.T, name string) *ir.Workflow {
 	t.Helper()
 	path := resolveFixturePath(t, name)
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
+	// The fixture's unit: the file and the fragments its imports reach,
+	// beside it — a bot in several files compiles as the program it is.
+	u := unit.LoadDir(path)
+	for _, d := range u.Diagnostics {
+		t.Logf("parse diagnostic: %s", d.Error())
 	}
-
-	pr := parser.Parse(name, string(src))
-	if len(pr.Diagnostics) > 0 {
-		for _, d := range pr.Diagnostics {
-			t.Logf("parse diagnostic: %s", d.Error())
-		}
-	}
-	if pr.File == nil {
+	if u.Merged == nil {
 		t.Fatalf("parse returned nil AST for %s", name)
 	}
 
-	cr := ir.Compile(pr.File)
+	cr := ir.Compile(u.Merged)
 	if cr.HasErrors() {
 		for _, d := range cr.Diagnostics {
 			t.Logf("compile diagnostic: %s", d.Error())

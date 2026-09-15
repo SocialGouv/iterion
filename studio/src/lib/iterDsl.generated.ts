@@ -53,6 +53,7 @@ export const iterDslKeywords = [
   "human",
   "image",
   "images",
+  "import",
   "inherit",
   "inherit_if_available",
   "input",

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -73,6 +74,19 @@ type includeBudget struct {
 	bytes      int64
 	expansions int
 	blown      bool
+	// files is every file read into a body, in expansion order: the
+	// closure a caller folds into the source's identity.
+	files []string
+}
+
+// includedFiles is every file the expansion read, once each, sorted.
+func (b *includeBudget) includedFiles() []string {
+	if len(b.files) == 0 {
+		return nil
+	}
+	out := slices.Clone(b.files)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // expandPromptIncludesNested expands to a fixed point, so no marker
@@ -100,6 +114,7 @@ func expandPromptIncludesNested(body, baseDir string, stack []string, budget *in
 			errs = append(errs, err)
 			return ""
 		}
+		budget.files = append(budget.files, full)
 		budget.bytes += int64(len(content))
 		if budget.bytes > maxPromptIncludeTotalBytes {
 			budget.blown = true

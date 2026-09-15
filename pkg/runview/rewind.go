@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -227,11 +226,7 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		current, readErr := os.ReadFile(sourcePath)
-		if readErr != nil {
-			return nil, fmt.Errorf("read current workflow source %s: %w", sourcePath, readErr)
-		}
-		pivot, changes, err = resolveAutoPivot(run.WorkflowSource, string(current), wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, wf, executed)
 		if err != nil {
 			return nil, err
 		}
@@ -433,11 +428,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		current, rerr := os.ReadFile(sourcePath)
-		if rerr != nil {
-			return nil, fmt.Errorf("read current workflow source %s: %w", sourcePath, rerr)
-		}
-		pivot, changes, err = resolveAutoPivot(run.WorkflowSource, string(current), wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, wf, executed)
 		if err != nil {
 			return nil, err
 		}
