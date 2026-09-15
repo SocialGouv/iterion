@@ -853,7 +853,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `verified-action` | entry gates (unset or TAKEN `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
-| `library` | the vars and the graph in `main.bot`, the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
+| `library` | the graph in `main.bot` (and its vars, when the spec has any), the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
 
 `blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
 render the single-agent workflow (one adaptive agent carrying the mission).

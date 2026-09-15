@@ -252,3 +252,16 @@ re-litigated:
     the merge, the E010 check and the provenance are written by reflection
     over `ast.File`'s fields so that two more declaration kinds trouble
     none of them.
+17. **A refusal of a text that had no legitimate reading is not a change
+    of meaning**, and is not profile-gated: a key declared twice in one
+    keyed block, silently shadowed before this lot, is E010 in every
+    profile, in one file as across two. The same rule completed the
+    compiler's own C041 (`emit`, `wait` and `await_answers` were missing
+    from the node namespace; two groups could share a name). A
+    mechanical split must change nothing about what the language
+    accepts: the loader's namespaces are held to the compiler's by a
+    test over every pair of kinds, not by a second hand-kept list.
+18. **The header precedes the imports.** The lexer takes the profile off
+    the file's first significant line; a `dsl:` below an `import` was not
+    applied and is E041, as one below a declaration is — never a profile
+    the AST claims and the strings did not get.

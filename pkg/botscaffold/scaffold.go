@@ -126,17 +126,23 @@ type Spec struct {
 	EngineFloor string `json:"engine_floor,omitempty"`
 }
 
-// defaultEngineFloor is this build's version when it can be ordered
-// (`v3.141.0+abc` → `3.141.0`), "" for a dev build: the manifest then
-// declares no floor, and `iterion validate` asks for one (C252).
-func defaultEngineFloor() string {
-	v := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
-	if _, ok := bundle.CompareVersions(v, "0"); ok {
-		return v
+// defaultEngineFloor is the floor a generated manifest declares: this
+// build's version when it can be ordered (`v3.141.0+abc` → `3.141.0`) —
+// or, for a dev build, the release that reads the newest profile — raised
+// to the release the RENDERED sources need when that is later (a shape
+// that imports needs the release that reads `import`, whatever build
+// scaffolds it), so a fresh scaffold never draws C252 on its own floor.
+func defaultEngineFloor(sources map[string]string) string {
+	floor := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
+	if _, ok := bundle.CompareVersions(floor, "0"); !ok {
+		floor = parser.ProfileSince[parser.MaxProfile]
 	}
-	// A dev build has no version to write: the templates are written in
-	// the newest profile, and the release that reads it is their floor.
-	return parser.ProfileSince[parser.MaxProfile]
+	if need, _ := bundle.RequiredRelease(bundle.MaxSyntaxRequirements(sources)); need != "" {
+		if c, ok := bundle.CompareVersions(need, floor); !ok || c > 0 {
+			floor = need
+		}
+	}
+	return floor
 }
 
 // WorkflowName is the Slug as a DSL identifier — the DSL grammar has no
@@ -267,13 +273,20 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	if err := s.Validate(); err != nil {
 		return Result{}, err
 	}
-	if s.EngineFloor == "" {
-		s.EngineFloor = defaultEngineFloor()
-	}
-
 	mainBot, annexes, err := renderShape(s)
 	if err != nil {
 		return Result{}, err
+	}
+	if s.EngineFloor == "" {
+		// The floor of what was rendered: main.bot and every .bot annex —
+		// the fragments a main imports, a child a shape ships.
+		sources := map[string]string{"main.bot": mainBot}
+		for rel, body := range annexes {
+			if strings.HasSuffix(rel, ".bot") {
+				sources[rel] = string(body)
+			}
+		}
+		s.EngineFloor = defaultEngineFloor(sources)
 	}
 	if err := checkAnnexPaths(annexes); err != nil {
 		return Result{}, err
