@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.149.2](https://github.com/SocialGouv/iterion/compare/v3.149.1...v3.149.2) (2026-09-15)
+
+### Bug Fixes
+
+* two gaps the [#1258](https://github.com/SocialGouv/iterion/issues/1258) review surfaced — Vary replaced instead of appended, and a package no CI compiles ([#1274](https://github.com/SocialGouv/iterion/issues/1274)) ([53dd19a](https://github.com/SocialGouv/iterion/commit/53dd19ac626576552cc66bd03442d75f38f7ba9b))
+
+    <details><summary>why</summary>
+
+    Both CORS sites wrote their own token with Header().Set("Vary", "Origin"), which discards whatever a middleware upstream recorded. The loss is invisible: the response still looks correct, it is merely cacheable across a dimension it genuinely varies on, so a shared cache can hand one client's representation to another. Found while reviewing #1258, where a middleware adds a Vary token and those two handlers silently dropped it.
+
+    </details>
+
 ## [3.149.1](https://github.com/SocialGouv/iterion/compare/v3.149.0...v3.149.1) (2026-09-15)
 
 ### Bug Fixes
