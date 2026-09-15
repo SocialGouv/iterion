@@ -508,10 +508,21 @@ payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': 
 # reports a posted gate, and a NameError in this deterministic final step
 # would cost the whole review.
 gate_ctx = str(os.environ.get('GATE_CONTEXT', '')).strip() or 'revi/review'
-# diff_precheck's ignorance sentinel, carried all the way to the gate: -1 means
-# the scope could not be computed, which is a different thing from a branch that
-# changed nothing, and the two must not land on the same status.
-scope_unresolved = str(os.environ.get('SCOPE_FILES', '')).strip() == '-1'
+# diff_precheck's file count, carried all the way to the gate. A NON-NEGATIVE
+# count is the only shape that means the scope was answered; everything else --
+# the -1 sentinel, an empty value, null / <nil> / None, or a template that was
+# never substituted -- is the ABSENCE of an answer and fails closed.
+#
+# A whitelist, deliberately, because the blacklist form fails OPEN on every
+# shape it forgot: testing for the literal -1 alone would post success on a
+# review that read nothing the moment the value arrived unsubstituted -- which
+# is precisely what the first wiring of this mapping produced. ai_value just
+# below exists to filter those same renders out of the sibling AI_* mappings,
+# so they are not hypothetical in this command.
+try:
+    scope_unresolved = int(str(os.environ.get('SCOPE_FILES', '')).strip()) < 0
+except (ValueError, TypeError):
+    scope_unresolved = True
 gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'

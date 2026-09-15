@@ -169,8 +169,34 @@ exactly that sentence. Worth noting that the behavioural test did **not** catch
 it, because it substitutes the ref itself: the two guards cover different
 halves, and only together do they cover the feature.
 
+### And the round after that: the guard failed OPEN (`Ra43054`)
+
+The scope guard shipped as `SCOPE_FILES == '-1'` — a **blacklist**. Revi caught
+that it leaves `blocking = 0` on every other way the value fails to arrive: an
+unsubstituted template render (*precisely* what the first wiring of that
+mapping produced), `null`, `<nil>`, `None`, empty, prose. Each of those silently
+reinstates the exact defect the change closes, and they are not hypothetical —
+`ai_value`, twenty lines below in the same command, exists to filter those same
+renders out of the sibling `AI_*` mappings.
+
+Inverted to a whitelist, on the house idiom already next door (`ai_tokens`'
+`try: int(...)` + sign check): a **non-negative count** is the only shape that
+means the scope was answered; everything else fails closed. Measured under
+mutation — restoring the blacklist lets **six of the seven shapes through**,
+and only the literal `-1` is still caught.
+
+It also turned a pre-existing fixture red, correctly:
+`TestReviewPRConcisePublication` substitutes *every* `{{…}}` ref, so the new
+mapping arrived empty and blocked. Its cases all describe reviews that DID read
+code, so the fixture was completed with a real count rather than the guard
+weakened.
+
 ### Lessons for next run
 
+- **Write an ignorance guard as a whitelist.** A blacklist of failure shapes is
+  a list of the ones you thought of; the value only has to arrive in a shape you
+  forgot for the gate to go green on nothing. Accept the one shape that means
+  "answered" and refuse everything else.
 - **Rebuild the local binary after a bundle-layout change, and use a control
   before blaming your edit.** #1241 split this bot into `lib/nodes.bot` /
   `lib/prompts.bot` / `lib/schemas.bot` mid-session. A binary built an hour
