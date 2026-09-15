@@ -205,6 +205,14 @@ func (e *Error) Error() string {
 // reached recovery as ordinary text, classified as EXECUTION_FAILED, and was
 // replayed two seconds later — the duplicate mutation the class exists to
 // prevent, arriving through the one path that never asked.
+//
+// It deliberately does NOT read the idempotency key, and the divergence from
+// Retryable is the point rather than an oversight: the two answer different
+// questions. A key makes a REPEAT safe; it does not make the EFFECT known. On a
+// 5xx the write may have committed, and five keyed attempts that all fail leave
+// that exactly as undecided as the first — so the node may retry while the run
+// still ends parked for a human. Aligning the two would trade a duplicate-free
+// retry for a silent claim that nothing happened.
 func (e *Error) AmbiguousEffect() bool {
 	return e != nil && (e.Class == spec.ErrUnknownOutcome || e.Ambiguous)
 }
@@ -296,9 +304,18 @@ func (e *Error) Retryable(op spec.Operation, params map[string]any) bool {
 	// may never have happened and the key is what makes the second chance
 	// safe; a 302/303 is that same "may have", and keeps it too. The Ambiguous
 	// term carries the rest of the precision — a 2xx the vendor sent to report
-	// its OWN failure (Slack's `ok:false`) is deliberately never marked, so it
-	// keeps the retry a key has always licensed.
-	if e.Ambiguous && e.Status >= 200 && e.Status < 300 {
+	// its OWN failure (Slack's `ok:false`) is deliberately never marked, so this
+	// guard does not touch it and its class decides as it always has. That is a
+	// retry only where the package MAPS the vendor code onto a retryable class:
+	// an unmapped code classifies from the status, and a 200 falls back to
+	// `bad_request`, which is not retryable and was not before either.
+	//
+	// 202 is excluded for the reason readResponse states when it makes 202
+	// pending by default: "accepted" means the work has NOT happened yet. It is
+	// therefore a "may have", not a proof, and belongs with the 5xx and the
+	// redirects — re-sending an acceptance under a key is the safest repeat
+	// there is, and refusing it would park a run over work never performed.
+	if e.Ambiguous && e.Status >= 200 && e.Status < 300 && e.Status != http.StatusAccepted {
 		return false
 	}
 	// A mutation may only be repeated when THIS call carried a key that makes

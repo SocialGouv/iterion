@@ -125,6 +125,13 @@ func TestOnlyAConfirmedMutationLosesTheRetryItsKeyBought(t *testing.T) {
 			true,
 		},
 		{
+			// The one 2xx that is not a proof: readResponse makes 202 pending
+			// by default precisely because the work has not happened yet.
+			"a 202: accepted is not performed, so a key still licenses the repeat",
+			&exec.Error{Class: spec.ErrUpstream, Status: 202, Ambiguous: true},
+			true,
+		},
+		{
 			"a 5xx: the mutation may never have happened",
 			&exec.Error{Class: spec.ErrUpstream, Status: 503, Ambiguous: true},
 			true,
@@ -258,6 +265,10 @@ func TestAPageBreakingItsContractStopsTheWalkInsteadOfContributing(t *testing.T)
 	if len(items) != 2 {
 		t.Errorf("items = %v, want the two rows page one legitimately delivered", items)
 	}
+	// The count above is what proves non-contribution today, since CallPaged
+	// returns before it collects a refused page's rows. This names the row
+	// itself so a walk that later kept the page WHILE dropping a legitimate one
+	// cannot satisfy the count and pass.
 	for _, item := range items {
 		row, _ := item.(map[string]any)
 		if id, _ := row["id"].(string); id == "not-an-integer" {
@@ -308,5 +319,59 @@ func TestAResponseContractSeesExactIntegersTheFloatPathLoses(t *testing.T) {
 		if accepted := res.Err == nil; accepted != tc.accept {
 			t.Errorf("body id=%s accepted=%v, want %v (err=%v)", tc.body, accepted, tc.accept, res.Err)
 		}
+	}
+}
+
+// TestAVendorReportingItsOwnFailureKeepsThatDiagnosisOverTheContract is the
+// only witness reachable ONLY by the order in which readResponse judges.
+//
+// The package declares both an outcome policy and a contract on the same
+// status, and the vendor answers 201 with the Slack shape: a body that reports
+// its own failure AND satisfies no contract, since the contract describes the
+// SUCCESS shape. Judging the contract first turns every such business failure
+// into an ambiguous mutation, parked instead of branched on — a total change of
+// meaning that no other test can see, because with either order alone the call
+// still fails.
+func TestAVendorReportingItsOwnFailureKeepsThatDiagnosisOverTheContract(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"ratelimited"}`))
+	})
+	defer done()
+
+	op := withContract(t, pkg, "probe.issue.comment", 201, spec.ResponseSchema{
+		Type: "object", Required: []string{"id"},
+		Properties: map[string]spec.ResponseSchema{"id": {Type: "integer"}},
+	})
+	op.Outcome = &spec.OutcomePolicy{
+		SuccessWhen:    "body.ok == true",
+		ErrorCodeField: "error",
+		ErrorCodeMap:   map[string]spec.ErrorClass{"ratelimited": spec.ErrRateLimited},
+	}
+	// Keyed on purpose: the retry this case keeps is the one a key licenses,
+	// and the contract path is precisely what would take it away.
+	op.IdempotencyKeyParam = "body"
+	args := commentArgs()
+
+	res, err := e.Call(context.Background(), pkg, op, args, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatal("a body reporting ok:false is a failure, contract or not")
+	}
+	if res.Err.Class != spec.ErrRateLimited {
+		t.Errorf("Class = %q, want %q — the package authored this diagnosis and must keep it",
+			res.Err.Class, spec.ErrRateLimited)
+	}
+	if res.Err.Ambiguous {
+		t.Error("the vendor said it did NOT act: that is a decided failure, not an undecided mutation")
+	}
+	if res.Data == nil {
+		t.Error("the body carrying the vendor's own error code must stay readable")
+	}
+	if !res.Err.Retryable(op, args) {
+		t.Error("a business failure under an idempotency key keeps the retry it has always had")
 	}
 }

@@ -110,9 +110,14 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 		// The same certainty as the undecodable 2xx above: the vendor answered,
 		// so a mutation CERTAINLY happened and only its answer is unusable.
 		markAmbiguous(op, res.Err, resp.StatusCode)
-		// A body that broke its contract must not be readable. Leaving it would
+		// A body that broke its contract must not be readable: leaving it would
 		// hand the workflow the very fields the contract just refused to vouch
-		// for — and a paginated walk would accumulate them page after page.
+		// for.
+		//
+		// No reader can reach it today — every consumer of Data is guarded on
+		// success, and CallPaged returns before it collects a refused page's
+		// rows. This is defence in depth for the next reader, not the thing that
+		// makes the refusal effective.
 		res.Data = nil
 		return res
 	}
