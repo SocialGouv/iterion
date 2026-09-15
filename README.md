@@ -91,7 +91,7 @@ More than a DAG runner: Iterion is built for long, autonomous, multi-agent work 
 - 🌐 **Provider routing** — `claw` validates Anthropic and OpenAI as first-class lanes and also wires xAI, Bedrock, Vertex, Foundry, and compatible endpoints with varying test coverage; OpenAI can use an API key or a ChatGPT/Codex OAuth forfait
 - 💰 **Budget enforcement** — Shared, mutex-protected caps on tokens, cost (USD), duration, parallel branches, and loop iterations
 - 🎛️ **Live control and recovery** — Queue operator/supervisor messages, raise budgets, grant loop iterations, retry eligible failures, and resume from persisted checkpoints
-- 🛡️ **Tool-permission gate** — Shared `off` / `ask` / `deny` policy for `claude_code`, `claw`, and `pi`, with allow/ask/deny rule lists; restrictive modes are opt-in
+- 🛡️ **Tool-permission gate** — One `off` / `ask` / `deny` policy with allow/ask/deny rule lists, shared by five backends; restrictive modes are opt-in. `claude_code`, `claw` and `pi` (RPC transport) gate in-process and can pause the run on `ask`; `grok` and `kimi` gate through an external `PreToolUse` hook installed in a per-invocation shadow home and enforce `deny` only — a CLI hook cannot pause the run — see [docs/permissions.md](docs/permissions.md)
 - 🌳 **Worktree finalization** — `worktree: auto` runs in a fresh Git worktree and protects committed results with a named branch; CLI or studio merge policy decides when and how it lands — see [docs/merge-policy.md](docs/merge-policy.md)
 - 🛡️ **Per-run sandbox** — Opt-in Docker/Podman/Kubernetes isolation. Local containers preserve the host worktree path by default; network mode is open unless the workflow selects an allowlist/denylist proxy — see [docs/sandbox.md](docs/sandbox.md)
 - 🧰 **Reproducible bot tools** — A bot and its target repository can each declare a pinned `devbox.json`; Iterion composes both toolchains and exposes them to non-interactive nodes
@@ -332,7 +332,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 **Author workflows**
 - [docs/dsl.md](docs/dsl.md) — full `.bot` DSL reference
 - [docs/routers.md](docs/routers.md) — routing modes deep dive
-- [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; all six interaction values and their node-specific behavior
+- [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; all seven interaction values (`none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host`) and their node-specific behavior
 - [docs/recipes.md](docs/recipes.md) — preset-driven runs (benchmarking, prompt comparison)
 - [docs/backends.md](docs/backends.md) + [docs/delegation.md](docs/delegation.md) — model/provider routing and the `claw`, Claude Code, Codex, `pi`, Kimi and Grok execution paths
 - [docs/cursors.md](docs/cursors.md) — prompt-engineering cursors (ambition / depth / rigor / autonomy dials)
