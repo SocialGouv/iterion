@@ -311,6 +311,13 @@ func TestCanonicalRedirectHonoursForwardedHost(t *testing.T) {
 		{"proxy rewrote Host, client was elsewhere", "iterion.svc.cluster.local", "iterion.fabrique.social.gouv.fr", true},
 		{"chain, client entry first", "iterion.svc.cluster.local", "iterion.cloud, inner.proxy", false},
 		{"no forwarded header falls back to Host", "iterion.cloud", "", false},
+		// The dangerous direction: already ON the canonical host. Taking the
+		// forwarded value alone would 302 this request to the identical URL —
+		// an unbounded loop as soon as the chain sets the header consistently.
+		// A disagreement may only SKIP a redirect, never create one.
+		{"on canonical, forwarded disagrees (spoofed)", "iterion.cloud", "evil.example", false},
+		{"on canonical, forwarded is an internal name", "iterion.cloud", "iterion.svc.cluster.local", false},
+		{"on canonical, forwarded is empty-ish", "iterion.cloud", " , inner.proxy", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := canonicalTestHandler(t, true, "https://iterion.cloud")

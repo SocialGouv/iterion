@@ -48,19 +48,29 @@ func canonicalRedirect(enabled bool, publicURL string, next http.Handler) http.H
 	origin := normalizeOrigin(u)
 	scheme := strings.ToLower(u.Scheme)
 
+	onCanonical := func(host string) bool {
+		return host != "" && normalizeOrigin(&url.URL{Scheme: scheme, Host: host}) == origin
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if normalizeOrigin(&url.URL{Scheme: scheme, Host: requestHost(r)}) == origin {
+		// Vary names every header the decision reads, unconditionally: the
+		// decision is taken before we know which branch we are on, and a
+		// shared cache that keyed only on the URL would hand a cached 302 to a
+		// fetch, or a cached 200 to a navigation on a secondary host.
+		w.Header().Add("Vary", "Sec-Fetch-Dest, Accept, X-Forwarded-Host")
+
+		// EITHER host matching is enough to pass through. Taking the forwarded
+		// host alone would let a request that already arrived on the canonical
+		// origin — carrying a spoofed or simply unexpected X-Forwarded-Host —
+		// be redirected to the identical URL, which is an unbounded loop
+		// whenever the chain is consistently misconfigured. With both consulted
+		// a header disagreement can only SKIP a redirect, never create one,
+		// which is the asymmetry that made trusting the header safe in the
+		// first place.
+		if onCanonical(r.Host) || onCanonical(requestHost(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Off the canonical host the answer depends on the navigation signal
-		// AND on the forwarded host, so a shared cache must key on all three —
-		// otherwise it hands a cached 302 to a fetch, a cached 200 to a
-		// navigation, or stores a 302 produced by a spoofed X-Forwarded-Host
-		// and replays it to requests already on the canonical origin, which is
-		// the loop this middleware exists to avoid. Vary names every header
-		// the decision reads; requestHost reads that one.
-		w.Header().Add("Vary", "Sec-Fetch-Dest, Accept, X-Forwarded-Host")
 
 		// RequestURI() is not guaranteed to start with "/": an opaque request
 		// target (`GET foo:.evil.example/ HTTP/1.1`) comes back verbatim, and

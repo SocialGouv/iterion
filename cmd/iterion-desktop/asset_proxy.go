@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -293,6 +294,13 @@ func (h *assetProxyHandler) serveScoped(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "missing connection id", http.StatusBadRequest)
 		return
 	}
+	// Normalise the scoped remainder ONCE, as the browser workspace host does:
+	// this handler is reached through the Wails asset server with nothing to
+	// collapse a doubled slash, and every test below is an equality or prefix
+	// check. `/x/<id>//api/foo` yields sub == "/api/foo", which matches none of
+	// them, so an API call falls through to the SPA shell and its JSON client
+	// parses HTML.
+	sub = strings.TrimPrefix(path.Clean("/"+sub), "/")
 	c := h.app.lookupConn(connID)
 	if c == nil {
 		http.Error(w, "connection not open: "+connID, http.StatusNotFound)
@@ -329,7 +337,7 @@ func (h *assetProxyHandler) serveScoped(w http.ResponseWriter, r *http.Request) 
 		return
 	default:
 		if iserver.IsBuildAssetPath("/" + sub) {
-			http.NotFound(w, r)
+			iserver.NotFoundBuildAsset(w, r)
 			return
 		}
 		h.serveScopedIndex(w, "/x/"+connID)
