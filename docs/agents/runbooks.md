@@ -110,6 +110,10 @@ the hours this one spent.
   against a 20-job organisation cap, and the trap that promoting an advisory
   job to required without deleting its `merge_group` skip produces a silent
   FALSE GREEN rather than a stalled queue.
+- [Revi's positive/negative audit](../bot-runs/review-pr.md#2026-09-14--falsifiable-claw--gpt-review-proof-1203)
+  — when a clean GPT/Claw review looks suspicious: verify actual source/tool
+  events, seeded-defect detection, exact-head inline publication and the clean
+  corrected control; distinguish review coverage from full test-suite success.
 - [docs/revi-billy-loop.md](../revi-billy-loop.md) — the Revi → Billy loop,
   **paused on THIS repo since 2026-09-15** (cost; see
   [docs/agents/review-and-merge.md](../agents/review-and-merge.md)): what
