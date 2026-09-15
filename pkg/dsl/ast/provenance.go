@@ -42,8 +42,10 @@ var spanType = reflect.TypeOf(Span{})
 // AST's field names — and writes on every mirror that has a File field
 // the file its AST carrier's span starts in. Done by reflection, so a
 // declaration kind added to the AST later carries its provenance without
-// anyone remembering to list it: its mirror needs the File field, nothing
-// else.
+// anyone remembering to list it: its mirror needs the File field, and its
+// fields the AST's names — the walk pairs fields by NAME, so a mirror
+// field renamed, or an embedded struct flattened into the mirror, is
+// where the walk stops (TestProvenanceIsOnEveryCarrier holds it).
 func stampProvenance(av, jv reflect.Value, rel func(string) string) {
 	av, jv = derefValue(av), derefValue(jv)
 	if !av.IsValid() || !jv.IsValid() {

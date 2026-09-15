@@ -121,6 +121,21 @@ func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 	}
 	root := filepath.Dir(abs)
 	mainRel := filepath.Base(abs)
+	// A file under lib/ is a fragment of the bot whose root holds that
+	// lib/: loaded alone — validated, opened in the editor — it is read
+	// from that root under its lib/ name, so a sibling it imports by bare
+	// name resolves as it does through the main, held to the same rule.
+	if filepath.Base(root) == FragmentDir {
+		mainRel = path.Join(FragmentDir, mainRel)
+		root = filepath.Dir(root)
+		if len(staged) > 0 {
+			rebased := make(map[string][]byte, len(staged))
+			for rel, src := range staged {
+				rebased[path.Join(FragmentDir, rel)] = src
+			}
+			staged = rebased
+		}
+	}
 	realRoot := root
 	if r, err := filepath.EvalSymlinks(root); err == nil {
 		realRoot = r
@@ -130,6 +145,12 @@ func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 			return src, nil
 		}
 		full := filepath.Join(root, filepath.FromSlash(rel))
+		if rel == mainRel {
+			// The file the caller named is read as named — a symlink
+			// followed, as every reader of a .bot always has; the
+			// confinement below is for the files an import reaches.
+			return os.ReadFile(full) // #nosec G304 -- the path the caller named
+		}
 		info, err := os.Lstat(full)
 		if err != nil {
 			return nil, err
@@ -175,6 +196,7 @@ func LoadMap(files map[string]string, main string) *Unit {
 // the parser with name.
 func Load(read Reader, main string, name func(rel string) string) *Unit {
 	l := &loader{read: read, name: name, u: &Unit{Main: path.Clean(main)}, state: map[string]int{}}
+	l.fragmentPrefix = fragmentPrefixOf(l.u.Main)
 	l.visit(l.u.Main, nil, "")
 	l.u.Files = l.files
 	l.merge()
@@ -213,6 +235,22 @@ type loader struct {
 	// is absent for a file never reached.
 	state map[string]int
 	stack []string
+	// fragmentPrefix is where this unit's fragments live, from the root.
+	fragmentPrefix string
+}
+
+// fragmentPrefixOf is the slash prefix under which the fragments of the
+// bot whose main is mainRel live: `lib/` under the main's directory — or,
+// for a main that is itself a fragment under lib/, that same lib/.
+func fragmentPrefixOf(mainRel string) string {
+	dir := path.Dir(mainRel)
+	if path.Base(dir) == FragmentDir {
+		dir = path.Dir(dir)
+	}
+	if dir == "." {
+		return FragmentDir + "/"
+	}
+	return path.Join(dir, FragmentDir) + "/"
 }
 
 func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
@@ -223,7 +261,7 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 		return
 	}
 	isMain := from == nil
-	if !isMain && !strings.HasPrefix(rel, FragmentDir+"/") {
+	if !isMain && !strings.HasPrefix(rel, l.fragmentPrefix) {
 		l.diag(parser.DiagBadImportPath, fromName, from, fmt.Sprintf("import %q resolves to %s, outside the bot's `%s/` directory where every fragment lives", from.Path, rel, FragmentDir))
 		return
 	}
@@ -452,10 +490,13 @@ func (l *loader) relOf(name string) string {
 
 // nodeKinds are the declaration kinds that share the node namespace
 // (C041: a node ID is unique across all kinds); every other named kind has
-// a namespace of its own. Names are the ast.File field names.
+// a namespace of its own — a group is a macro and a `use` prefix names
+// `<prefix>.<node>` ids, so neither collides with a node, in one file or
+// in two. Names are the ast.File field names; TestSplitPreservesAcceptance
+// holds the list to the compiler's own rule.
 var nodeKinds = map[string]bool{
 	"Agents": true, "Judges": true, "Routers": true, "Humans": true, "Tools": true, "Computes": true,
-	"Emits": true, "Waits": true, "AwaitAnswers": true, "Fails": true, "Subbots": true, "Groups": true, "Uses": true,
+	"Emits": true, "Waits": true, "AwaitAnswers": true, "Fails": true, "Subbots": true,
 }
 
 // checkNamedDuplicates reports (E010) a name declared in two DIFFERENT
@@ -469,6 +510,7 @@ func (l *loader) checkNamedDuplicates(merged *ast.File) {
 		line int
 	}
 	seen := map[string]first{} // namespace + "\x00" + name
+	inlineBodies := map[string]string{}
 	if len(merged.Workflows) > 1 {
 		w0, w1 := merged.Workflows[0], merged.Workflows[1]
 		l.u.Diagnostics = append(l.u.Diagnostics, parser.Diagnostic{
@@ -500,6 +542,17 @@ func (l *loader) checkNamedDuplicates(merged *ast.File) {
 			name, pos, ok := namedAt(el)
 			if !ok || name == "" {
 				continue
+			}
+			if field.Name == "Prompts" && merged.Prompts[j].Inline {
+				// The same text is one prompt (parser.InlinePromptName):
+				// written inline in two files, it is declared once per file
+				// under the name its body gives it, and that is no collision
+				// — the compiler keeps one. A different body under the same
+				// name is one.
+				if body, seenInline := inlineBodies[name]; seenInline && body == merged.Prompts[j].Body {
+					continue
+				}
+				inlineBodies[name] = merged.Prompts[j].Body
 			}
 			key := namespace + "\x00" + name
 			if prev, dup := seen[key]; dup {
@@ -575,9 +628,38 @@ func (l *loader) canonicaliseSubbots(merged *ast.File) {
 			continue
 		}
 		cp := *sb
-		cp.Source = path.Clean(path.Join(path.Dir(rel), filepath.ToSlash(sb.Source)))
+		cp.Source = CanonicalSubbotSource(rel, sb.Source)
 		merged.Subbots[i] = &cp
 	}
+}
+
+// CanonicalSubbotSource is a subbot's `source:` as every host resolves it
+// — relative to the unit's root — given the file it is declared in (a
+// slash path from the root) and the source as written there, relative to
+// that file's directory. An absolute source is returned as is.
+func CanonicalSubbotSource(ownerRel, source string) string {
+	if source == "" || filepath.IsAbs(source) || strings.HasPrefix(source, "/") {
+		return source
+	}
+	return path.Clean(path.Join(path.Dir(ownerRel), filepath.ToSlash(source)))
+}
+
+// AuthoredSubbotSource is the inverse of CanonicalSubbotSource: the source
+// to write in ownerRel for a root-relative one — what a save by provenance
+// puts back in a fragment. For a file at the root the two are the same.
+func AuthoredSubbotSource(ownerRel, canonical string) string {
+	if canonical == "" || filepath.IsAbs(canonical) || strings.HasPrefix(canonical, "/") {
+		return canonical
+	}
+	dir := path.Dir(ownerRel)
+	if dir == "." {
+		return canonical
+	}
+	rel, err := filepath.Rel(filepath.FromSlash(dir), filepath.FromSlash(canonical))
+	if err != nil {
+		return canonical
+	}
+	return filepath.ToSlash(rel)
 }
 
 // within reports whether p lies under root (both resolved).

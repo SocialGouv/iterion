@@ -113,3 +113,20 @@ func TestImportIsAKeywordUsableAsAName(t *testing.T) {
 		t.Fatalf("names: %+v %+v", res.File.Agents[0], res.File.Schemas[0])
 	}
 }
+
+// The header precedes the imports: the lexer takes the profile off the
+// file's first significant line, so a `dsl:` below an import was not
+// applied — the file was read as profile 1 — and the parser says so (E041)
+// rather than record a profile the strings above it never got.
+func TestTheHeaderPrecedesTheImports(t *testing.T) {
+	res := Parse("x.bot", "import \"lib/x.bot\"\ndsl: 2\n\nagent a:\n  description: \"d\"\n")
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagMisplacedHeader || !strings.Contains(res.Diagnostics[0].Message, "import") {
+		t.Fatalf("diagnostics %v", res.Diagnostics)
+	}
+	if res.File.Profile != 0 || res.File.EffectiveProfile() != 1 {
+		t.Fatalf("the AST claims profile %d while the file was read as profile 1", res.File.Profile)
+	}
+	if len(res.File.Imports) != 1 {
+		t.Fatalf("imports %v", res.File.Imports)
+	}
+}

@@ -62,7 +62,7 @@ var hints = map[DiagCode]string{
 	DiagElseWithWhen:        "An edge is either guarded (`when`) or the fallback (`else`), never both.",
 	DiagClauseBeforeArrow:   "In a chain `a -> b -> c …` the clauses apply to the LAST segment only; to guard, loop or map an earlier one, write that segment as its own edge line.",
 	DiagUnknownProfile:      "Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: \">= <version>\" }` in the bundle manifest.",
-	DiagMisplacedHeader:     "Move the `dsl:` line above every declaration — after the leading comments, before the first block or node — and keep a single one.",
+	DiagMisplacedHeader:     "Move the `dsl:` line above every import and every declaration — after the leading comments, before the first `import`, block or node — and keep a single one.",
 	DiagDirectiveInProfile:  "Profile 2 reads standard escapes in every quoted string by default: delete the `strict-escape` directive (a backslash that must stay literal is written `\\\\`).",
 	DiagRemovedInProfile:    "Keep the file in profile 1 (drop the `dsl: 2` header), or redesign the memory scope: `visibility:` is a different axis (C171), not a drop-in replacement for `project_root:`.",
 	DiagMisplacedImport:     "Move the `import` lines to the head of the file — after the `dsl:` header and the leading comments, before the first block or node.",

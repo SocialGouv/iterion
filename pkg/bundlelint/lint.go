@@ -688,7 +688,7 @@ func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequir
 	}
 	uses := req.Describe()
 	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: a runner older than the release that reads it re-parses a subbot child, or a fragment, as text and fails at that parse", uses)
-	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest — `iterion dsl migrate` writes it for a profile — so such a runner refuses the bundle at admission instead", floor)
+	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest, so such a runner refuses the bundle at admission instead", floor)
 	if pf.Declared != "" {
 		msg = fmt.Sprintf("the bundle uses %s but requires.iterion %q does not reach %s, the release that reads it: a runner between the two re-parses a subbot child, or a fragment, as text and fails at that parse", uses, pf.Declared, floor)
 		hint = fmt.Sprintf("raise it to `requires: { iterion: \">= %s\" }`", floor)

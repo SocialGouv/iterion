@@ -575,6 +575,8 @@ func (p *parser) parseDSLHeader(f *ast.File, declared bool) {
 		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+v.Value+"'")
 	case profile > MaxProfile:
 		p.addError(DiagUnknownProfile, v, fmt.Sprintf("unknown dsl profile %d — this build reads profiles 1 to %d", profile, MaxProfile))
+	case len(f.Imports) > 0:
+		p.addError(DiagMisplacedHeader, t, "dsl: must be the first significant line of the file, above its imports — everything above it was read as profile 1")
 	case declared:
 		p.addError(DiagMisplacedHeader, t, "dsl: must be the first declaration of the file — everything above it was read as profile 1")
 	case f.Profile != 0:

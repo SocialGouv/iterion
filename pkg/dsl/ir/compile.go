@@ -457,6 +457,30 @@ func (c *compiler) validateNodeNames() {
 	for _, d := range c.file.Fails {
 		all = append(all, decl{"fail", d.Name, d.Span})
 	}
+	for _, d := range c.file.Emits {
+		all = append(all, decl{"emit", d.Name, d.Span})
+	}
+	for _, d := range c.file.Waits {
+		all = append(all, decl{"wait", d.Name, d.Span})
+	}
+	for _, d := range c.file.AwaitAnswers {
+		all = append(all, decl{"await_answers", d.Name, d.Span})
+	}
+
+	// A group is a macro, not a node: its name is unique among groups, as a
+	// prompt's is among prompts, and never collides with a node's.
+	groups := make(map[string]bool, len(c.file.Groups))
+	for _, g := range c.file.Groups {
+		if g.Name == "" {
+			continue
+		}
+		if groups[g.Name] {
+			c.errorfAtSpan(DiagDuplicateNodeID, g.Span,
+				"duplicate group name %q: groups must be unique within a file", g.Name)
+			continue
+		}
+		groups[g.Name] = true
+	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
 	for _, d := range all {
@@ -890,10 +914,17 @@ func (c *compiler) canAutoResolveBackend() bool {
 // ---------------------------------------------------------------------------
 
 func (c *compiler) compilePrompts() {
-	seen := make(map[string]bool, len(c.file.Prompts))
+	seen := make(map[string]*ast.PromptDecl, len(c.file.Prompts))
 	budget := &includeBudget{} // one per file: a budget per prompt multiplies by the prompt count
 	for _, p := range c.file.Prompts {
-		if seen[p.Name] {
+		if first := seen[p.Name]; first != nil {
+			if p.Inline && first.Inline && p.Body == first.Body {
+				// The same text written inline in two files of a unit is
+				// one prompt, declared once per file under the name its
+				// body gives it (parser.InlinePromptName): the first serves
+				// every reference.
+				continue
+			}
 			// Mirror compileSchemas: a second `prompt foo:` used to
 			// silently overwrite the first in c.prompts, leaving the
 			// audit-relevant earlier body invisible.
@@ -901,7 +932,7 @@ func (c *compiler) compilePrompts() {
 				"duplicate prompt name %q: prompts must be unique within a file", p.Name)
 			continue
 		}
-		seen[p.Name] = true
+		seen[p.Name] = p
 		// Expand {{include "..."}} markers once, at compile time, before
 		// ParseRefs sees the body — the injected file content becomes part
 		// of the resolved prompt (auditable, no runtime file reads).

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -170,9 +170,9 @@ func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements 
 		}
 	}
 	visit(MainBotFile)
-	sort.Strings(declaredBy)
-	sort.Strings(unread)
-	sort.Strings(importedBy)
+	declaredBy = slices.Compact(slices.Sorted(slices.Values(declaredBy)))
+	unread = slices.Compact(slices.Sorted(slices.Values(unread)))
+	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))
 	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, Unread: unread}
 }
 
@@ -243,23 +243,10 @@ type ProfileFloor struct {
 // is exactly what the floor exists to refuse.
 func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
 	pf := ProfileFloor{Profile: req.Profile}
-	type need struct{ release, reason string }
-	var needs []need
-	if req.Profile >= 2 {
-		needs = append(needs, need{parser.ProfileSince[req.Profile], fmt.Sprintf("dsl profile %d", req.Profile)})
-	}
-	if req.UsesImport() {
-		needs = append(needs, need{parser.ImportSince, "import"})
-	}
-	if len(needs) == 0 {
+	pf.Need, pf.Reason = RequiredRelease(req)
+	if pf.Reason == "" {
 		pf.OK = true
 		return pf
-	}
-	// The highest release among what the sources use is the floor asked for.
-	for _, n := range needs {
-		if pf.Reason == "" || laterRelease(n.release, pf.Need) {
-			pf.Need, pf.Reason = n.release, n.reason
-		}
 	}
 	if m != nil && m.Requires != nil {
 		pf.Declared = strings.TrimSpace(m.Requires.Iterion)
@@ -278,6 +265,28 @@ func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
 	}
 	pf.OK = compareVersionParts(c.Min, needParts) >= 0
 	return pf
+}
+
+// RequiredRelease is the release a set of sources needs — the HIGHEST among
+// what they use: the profile's (parser.ProfileSince) and `import`'s
+// (parser.ImportSince) — with the reason, or "" and "" when they use
+// nothing a floor is asked for. The one arithmetic behind `validate`'s
+// C252, the push admission and the scaffold's manifest.
+func RequiredRelease(req SyntaxRequirements) (release, reason string) {
+	type need struct{ release, reason string }
+	var needs []need
+	if req.Profile >= 2 {
+		needs = append(needs, need{parser.ProfileSince[req.Profile], fmt.Sprintf("dsl profile %d", req.Profile)})
+	}
+	if req.UsesImport() {
+		needs = append(needs, need{parser.ImportSince, "import"})
+	}
+	for _, n := range needs {
+		if reason == "" || laterRelease(n.release, release) {
+			release, reason = n.release, n.reason
+		}
+	}
+	return release, reason
 }
 
 // laterRelease reports whether a orders after b; a release not on record
