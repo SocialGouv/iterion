@@ -210,7 +210,7 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 				if result.Status == 204 || result.Status == 205 || op.HTTP.Method == "HEAD" {
 					continue
 				}
-				name, reason := g.contractFor(op.ID, result.Status, responses)
+				name, reason := g.contractFor(op.ID, result.Status, responses, method)
 				switch {
 				case reason != "":
 					uncontracted = append(uncontracted, Uncontracted{OperationID: op.ID, Status: result.Status, Reason: reason})
@@ -238,7 +238,23 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 // contractFor emits the contract for one status and returns the name to
 // reference, or the reason no contract was emitted. Both empty means the
 // vendor declared no body for this status, which is not a limitation.
-func (g *contractGen) contractFor(opID string, status int, responses map[string]any) (string, string) {
+func (g *contractGen) contractFor(opID string, status int, responses, method map[string]any) (string, string) {
+	// Swagger 2 anchors the media type on the OPERATION, not on the response:
+	// `schema: {type: string}` under `produces: [text/plain]` describes a RAW
+	// body, and a contract there refuses every answer. OAS 3 needs no such check
+	// because the schema is read from `content["application/json"]` already.
+	//
+	// Measured on the repository's reference description: eleven contracts sat
+	// on `text/plain`, `text/html` and — plainly wrong — `application/zip`.
+	if g.format == FormatSwagger2 {
+		produces := sliceAt(method, "produces")
+		if len(produces) == 0 {
+			produces = sliceAt(g.doc, "produces")
+		}
+		if len(produces) > 0 && !anyJSONMedia(produces) {
+			return "", "the operation does not produce JSON, so its body is not a shape a contract can state"
+		}
+	}
 	rm := mapAt(responses, strconv.Itoa(status))
 	if ref := str(rm, "$ref"); ref != "" {
 		resolved, ok := g.resolve(ref)
@@ -497,6 +513,24 @@ func (g *contractGen) writeOnlyProperty(node map[string]any) bool {
 	if ref := str(node, "$ref"); ref != "" {
 		if target, ok := g.resolve(ref); ok {
 			return boolAt(target, "writeOnly")
+		}
+	}
+	return false
+}
+
+// anyJSONMedia reports whether a `produces` list contains a JSON media type.
+// Matched on the structured suffix as well, so `application/vnd.api+json` and
+// `application/problem+json` count — they are JSON bodies whatever the vendor
+// registered them as.
+func anyJSONMedia(produces []any) bool {
+	for _, raw := range produces {
+		media, _ := raw.(string)
+		media = strings.ToLower(strings.TrimSpace(media))
+		if i := strings.IndexByte(media, ';'); i >= 0 {
+			media = strings.TrimSpace(media[:i])
+		}
+		if media == "application/json" || strings.HasSuffix(media, "+json") {
+			return true
 		}
 	}
 	return false

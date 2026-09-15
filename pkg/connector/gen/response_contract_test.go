@@ -507,3 +507,52 @@ func TestSpecExtensionsDoNotStopAContract(t *testing.T) {
 		t.Error("the contract stopped checking anything")
 	}
 }
+
+// TestSwagger2HonoursProduces.
+//
+// Swagger 2 anchors the media type on the OPERATION, not on the response, so
+// `schema: {type: string}` under `produces: [text/plain]` describes a RAW body.
+// Reading the schema without the media type put contracts on text/plain,
+// text/html and an application/zip — eleven of them on the repository's
+// reference description — each refusing every answer the endpoint can give.
+func TestSwagger2HonoursProduces(t *testing.T) {
+	sw2 := func(produces string) string {
+		return `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/token": {"get": {"tags": ["item"], "operationId": "itemToken", ` + produces + `
+    "responses": {"200": {"description": "ok", "schema": {"type": "string"}}}}}}
+}`
+	}
+
+	t.Run("a raw body gets no contract, and says why", func(t *testing.T) {
+		pkg, report := generateWith(t, sw2(`"produces": ["text/plain"],`), true)
+		if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
+			t.Errorf("a text/plain body got contract %q", ref)
+		}
+		if len(report.Uncontracted) != 1 || !strings.Contains(report.Uncontracted[0].Reason, "does not produce JSON") {
+			t.Fatalf("Uncontracted = %+v, want the media type named", report.Uncontracted)
+		}
+	})
+
+	t.Run("a JSON body still gets one", func(t *testing.T) {
+		pkg, _ := generateWith(t, sw2(`"produces": ["application/json"],`), true)
+		if onlyOp(t, pkg).Results[0].ResponseSchemaRef == "" {
+			t.Error("a JSON operation lost its contract")
+		}
+	})
+
+	t.Run("a structured JSON suffix counts as JSON", func(t *testing.T) {
+		pkg, _ := generateWith(t, sw2(`"produces": ["application/vnd.api+json"],`), true)
+		if onlyOp(t, pkg).Results[0].ResponseSchemaRef == "" {
+			t.Error("application/vnd.api+json is a JSON body; refusing it drops a legitimate contract")
+		}
+	})
+
+	t.Run("no produces at all leaves the historical behaviour", func(t *testing.T) {
+		pkg, _ := generateWith(t, sw2(``), true)
+		if onlyOp(t, pkg).Results[0].ResponseSchemaRef == "" {
+			t.Error("a description that declares no media type must not lose its contract")
+		}
+	})
+}
