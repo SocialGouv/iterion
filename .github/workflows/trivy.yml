@@ -62,6 +62,17 @@ jobs:
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         if: always()
+        # This step can fail with NO diagnostic anywhere: the log ends on
+        # "Uploading results" with its group never closed, and the check run
+        # carries no error annotation — so the failure names neither an HTTP
+        # status nor a rejected payload. RUNNER_DEBUG is what `core.isDebug()`
+        # reads, so setting it here turns on the action's own debug trace for
+        # this step alone, without the repository-wide ACTIONS_STEP_DEBUG
+        # secret. It changes no behaviour: an upload that fails still fails the
+        # job, because a security result that never reached Code scanning is a
+        # delivery failure and not a finding to publish.
+        env:
+          RUNNER_DEBUG: "1"
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
@@ -138,6 +149,10 @@ jobs:
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         if: always()
+        # Same reason as the fs-scan upload above: a failure here is otherwise
+        # undiagnosable.
+        env:
+          RUNNER_DEBUG: "1"
         with:
           sarif_file: trivy-${{ matrix.image }}.sarif
           category: ${{ matrix.image }}
