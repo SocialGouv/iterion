@@ -42,9 +42,22 @@ propose launching it (visible in the operator's studio, actively monitored,
 bilan in `docs/bot-runs/`), and improve the bot on every friction the run
 surfaces. Propose this mode regularly; don't impose it. Otherwise *direct
 dev*: a normal coding session. Either way the existing contracts apply
-(Revi→Billy habit on PRs, commit scope discipline, bilans).
+(the before-merge review loop, commit scope discipline, bilans).
 
 **Phase C — close with evidence.** The issue closes with a link to the
 PR/commit/bilan that proves the work; board status updated before the
 session ends. A ticket that says In progress with nobody on it is a bug
 in the board — fix it when you see it.
+
+**Before merge, the review loop is required.** A change reaches `main`
+through a PR whose `revi/review` gate is green, and the gate is not the
+first reviewer: run a **local adversarial round on the diff before
+pushing** — a subagent whose posture is to break the change, with every
+finding *and every fix it proposes* verified before a line is written.
+The gate closes the loop; a sterile local round only means "time to
+push". Findings are the developer's to fix, by hand or through another
+local round — **`/billy` is paused on this repo** (cost, until the team
+spends its own BYOK key). Protocol:
+[docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);
+gate and merge mechanics:
+[docs/agents/review-and-merge.md](docs/agents/review-and-merge.md).

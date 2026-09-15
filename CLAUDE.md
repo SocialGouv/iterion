@@ -252,12 +252,13 @@ the hours this one spent.
   against a 20-job organisation cap, and the trap that promoting an advisory
   job to required without deleting its `merge_group` skip produces a silent
   FALSE GREEN rather than a stalled queue.
-- [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy habit
-  on THIS repo: findings on a PR here → comment `/billy` (don't hand-fix),
-  what the command seeds (prior-review hand-off, push-back, ledger, gate),
-  the session gotchas (don't touch the branch while he runs, pull after his
-  push), and the dogfood duty (bilan per run). Read it before acting on a
-  Revi review of an iterion PR.
+- [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy loop,
+  **paused on THIS repo since 2026-09-15** (cost; see
+  [docs/agents/review-and-merge.md](docs/agents/review-and-merge.md)): what
+  `/billy` seeds (prior-review hand-off, push-back, ledger, gate), the session
+  gotchas (don't touch the branch while he runs, pull after his push), and the
+  dogfood duty (bilan per run). Read it before a deliberate `/billy` pass, and
+  before re-arming the zero-touch lane.
 - [docs/probes-and-graceful-shutdown.md](docs/probes-and-graceful-shutdown.md) —
   what `/healthz` and `/readyz` promise on the server AND the runner, the
   lame-duck window (`ITERION_SHUTDOWN_DELAY`) that keeps a deploy or an HPA
@@ -464,6 +465,40 @@ is the file every agent harness reads natively (Codex, pi, …), and pi
 injects both AGENTS.md and CLAUDE.md on every call, so duplicating the
 contract here would pay its token cost twice. Read AGENTS.md at the start
 of every session, before picking work.
+
+## Before merge — the required loop
+
+Every change lands through a pull request whose `revi/review` gate is green.
+The loop is **local adversarial round → fix → re-attack the fix → push →
+`/revi` → green**. Protocol:
+[docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);
+gate, merge queue and release mechanics:
+[docs/agents/review-and-merge.md](docs/agents/review-and-merge.md).
+
+1. **Run a local adversarial round on the diff BEFORE pushing.** A subagent
+   whose posture is to break the change, not to bless it; every finding AND
+   every fix it proposes verified before a line is written. Measured on this
+   repo: five consecutive gate verdicts at ≥ 1 medium on a fresh line (~6 h of
+   queue) against one 15-min local round followed by a first verdict at
+   0 findings.
+2. **The gate closes the loop; the local round never does.** A sterile local
+   round means "time to push", not "done". Revi's `questions` channel is
+   non-blocking, but each question gets a doc fix or a written refusal — never
+   silence.
+3. **The developer fixes the findings** — by hand or through another local
+   round. **Do not comment `/billy`.**
+
+**Billy is paused (2026-09-15).** The fixer campaign is a whole-session
+claude_code agent whose verify gate re-runs this repo's full build+test
+(~10 min a pass) — the most expensive thing in the loop, drawn from the shared
+forfait / platform credential that funds this repo's runs. The zero-touch lane
+was spending it with nobody typing a command, so `auto_fix_on_gate_failure` is
+**off** here. `/billy` still answers, deliberately: a pass someone chooses to
+pay for stays available. **Re-arm when this repo's team spends its own BYOK
+key** ([docs/byok.md](docs/byok.md)) — the procedure, and the mechanics worth
+re-reading first, are in
+[docs/agents/review-and-merge.md](docs/agents/review-and-merge.md) and
+[docs/revi-billy-loop.md](docs/revi-billy-loop.md).
 
 ## Development setup
 
@@ -2034,62 +2069,14 @@ session scratch; **board issues** are open tasks; **bilans** are the durable,
 committed, PR-reviewable record. Index + template:
 [docs/bot-runs/README.md](docs/bot-runs/README.md).
 
-## CI/CD
+## CI/CD and merge
 
-- **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
-- **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
-- **version.yml** — conventional changelog via release-it, version from `package.json`.
-  release-it writes the new section into [CHANGELOG.md](CHANGELOG.md) as part of the
-  release commit itself (`infile` + `git add . --update`), so the file cannot drift
-  from the tags — never hand-edit it. It holds the **current major only**; earlier
-  ones are archived under [docs/changelog/](docs/changelog/) because GitHub stops
-  rendering markdown past 512 KB. Each entry carries a collapsed `why` excerpt taken
-  from the commit body — the rendering lives in
-  [scripts/changelog-writer.mjs](scripts/changelog-writer.mjs), shared by release-it
-  ([.release-it.mjs](.release-it.mjs)) and the regenerator (`task changelog:gen`), so
-  a rebuilt section is byte-identical to a released one. Re-run `task changelog:gen`
-  after a major bump, or when it warns the file is nearing the ceiling.
-
-**`main` is protected by a merge queue** (ruleset "main protected — merge
-queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
-rebuilds each on `main` + earlier-queued PRs and merges only if that combined
-tree is green — closing the semantic inter-PR conflict class (two PRs green
-apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
-push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`.
-`nats-conformance` remains advisory until an admin adds it to ruleset
-18857412. Full details + revert command:
-[docs/merge-policy.md](docs/merge-policy.md).
-
-**Revi merge gate.** Revi (`bots/review-pr`) posts a
-deterministic `revi/review` commit status on a PR head — `success` when 0
-findings meet `gate_severity` (default `high`), else `failure`. Add that
-context to another repository's required checks to make its verdict block the
-merge; it is already required here by ruleset 18857412. The verdict is a COUNT
-computed in the bot, never an LLM judgment; the review comments stay
-non-blocking advice. Pairs with the webhook
-`review_on_sync` opt-in (re-review each push so the status tracks the fixed
-head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
-never gate). The forge-agnostic write path is `forge.CommitStatusClient`
-([pkg/forge/status.go](pkg/forge/status.go)); the endpoint posts it after the
-review ([pkg/server/forge_publish.go](pkg/server/forge_publish.go)). See
-[docs/merge-gate.md](docs/merge-gate.md) — which also covers the two bots
-sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
-(`auto_fix_on_gate_failure`) where a red gate launches the repo's fixer once per
-head sha, off by default so the developer keeps the choice.
-
-**Revi → Billy is the habit on this repo.** When Revi leaves findings on a PR
-here, comment **`/billy`** on the PR and let the fixer work — don't hand-fix
-the findings in a session. The command seeds Billy with Revi's review
-(kind-matched hand-off), he pushes fixes onto the PR branch, posts his ledger +
-gate count, and the push re-triggers Revi. Every such run is a dogfood run:
-monitor it, fix the frictions it surfaces, write the bilan. Full habit +
-gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). The zero-touch
-`auto_fix_on_gate_failure` lane is **enabled here** since 2026-08-28: a red
-`revi/review` launches Billy by itself, with no comment. So **check no fixer
-run is already in flight** (`iterion remote runs list`, or the gate's `pending`
-link) before hand-fixing a red PR — a manual push while he works recreates the
-mid-run collision.
+`main` sits behind a **merge queue**; required checks are `test`, `race`,
+`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`. The queue, the
+Revi gate, the release/changelog pipeline (never hand-edit `CHANGELOG.md`) and
+the Billy pause all live in
+[docs/agents/review-and-merge.md](docs/agents/review-and-merge.md) — read it
+before opening, merging or unblocking a PR.
 
 ## Conventions
 

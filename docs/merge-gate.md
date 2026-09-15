@@ -517,6 +517,12 @@ bot.
 
 ### <a name="autofix"></a>Zero-touch: letting a red gate launch the fixer itself (opt-in)
 
+> **State on the iterion repo itself: OFF since 2026-09-15.** The lane was
+> enabled here from 2026-08-28 and is turned off for cost — a fixer campaign
+> re-runs the full build+test per pass on a shared credential. Nothing below
+> changed as a *feature*; only this repo's choice did. Re-arming procedure:
+> [agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused).
+
 By default nothing happens when the gate goes red: the findings are on the pull
 request and the developer decides — fix them, argue one, or hand the work over
 with a `/command`. That is deliberate. A reviewer already leaves the human in
