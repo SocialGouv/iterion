@@ -288,6 +288,14 @@ func (h *WorkspaceHost) serveScoped(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "missing project scope")
 		return
 	}
+	// Normalise the scoped remainder ONCE. This handler is reached without a
+	// ServeMux, so sub arrives exactly as the client wrote it, and every test
+	// below is an equality or prefix check: `/x/<id>//api/foo` — a doubled
+	// slash no browser collapses — yields sub == "/api/foo", which matches
+	// none of them. The request then falls through to the SPA shell and a JSON
+	// client JSON.parses HTML. Cleaning here also normalises the path this
+	// handler proxies onward, so the backend sees what the client meant.
+	sub = strings.TrimPrefix(path.Clean("/"+sub), "/")
 	h.mu.RLock()
 	rt := h.runtimes[id]
 	h.mu.RUnlock()
@@ -350,6 +358,10 @@ func (h *WorkspaceHost) serveScoped(w http.ResponseWriter, r *http.Request) {
 		rt.server.Handler().ServeHTTP(w, clone)
 		return
 	}
+	if IsBuildAssetPath("/" + sub) {
+		NotFoundBuildAsset(w, r)
+		return
+	}
 	ServeInjectedIndex(w, r, h.static, "/x/"+id, false)
 }
 
@@ -365,10 +377,18 @@ func workspaceSafeOrigin(r *http.Request) bool {
 func (h *WorkspaceHost) serveWorkspaceAsset(w http.ResponseWriter, r *http.Request) {
 	clean := path.Clean(r.URL.Path)
 	if clean != "/" && clean != "." {
+		if IsBuildAssetDir(h.static, clean) {
+			NotFoundBuildAsset(w, r)
+			return
+		}
 		rel := strings.TrimPrefix(clean, "/")
 		if f, err := h.static.Open(rel); err == nil {
 			_ = f.Close()
 			http.FileServer(http.FS(h.static)).ServeHTTP(w, r)
+			return
+		}
+		if IsBuildAssetPath(clean) {
+			NotFoundBuildAsset(w, r)
 			return
 		}
 	}
