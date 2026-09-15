@@ -29,6 +29,7 @@ const (
 	Int           Form = "int"          // an unquoted integer
 	Number        Form = "number"       // an unquoted integer or float
 	Bool          Form = "bool"         // true or false
+	JSON          Form = "json value"   // one JSON value on one line ("text", 12, true, null, [...], {key: value}): the subset the text writes — no signed number, no exponent, keys unique; null explicit, a bare word is not a value
 	Enum          Form = "enum"         // one of Property.Values, bare
 	// Every list form is written inline (`[a, b]`) or as one `- item` per
 	// line indented under the property; both read as the same list.
@@ -246,7 +247,7 @@ var llmProperties = []Property{
 }
 
 // Kinds is the registry, in the order the reference renders them.
-var Kinds = []Kind{
+var Kinds = append([]Kind{
 	// ---- top-level declarations ----
 	{Name: "prompt", Role: Declaration, Doc: "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives. Blank lines in the body are dropped by the lexer; a bare header declares an empty prompt.",
 		Entries: &Entries{Shape: "indented text lines", Doc: "Free text; the first line's indentation is stripped from every line"}},
@@ -433,6 +434,7 @@ var Kinds = []Kind{
 	{Name: "workflow", Role: Declaration, Doc: "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; a bare header declares an empty workflow (C008).",
 		Properties: []Property{
 			prop("entry", Ident, "Node the run starts at; a dotted name addresses a group instance's node"),
+			prop("contract", Ident, "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)"),
 			block("vars", "vars", "Workflow-scoped vars (merged with the file's)"),
 			block("attachments", "attachments", "Workflow-scoped attachments"),
 			block("budget", "budget", "Run caps, each overridable by the matching run flag"),
@@ -531,4 +533,4 @@ var Kinds = []Kind{
 			checked("action", "skip: complete the node with a zero-value output stamped _skipped instead of failing", "skip"),
 			prop("when", String, "Expression over vars that gates the route"),
 		}},
-}
+}, contractKinds...)

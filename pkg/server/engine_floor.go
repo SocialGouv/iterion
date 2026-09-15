@@ -118,34 +118,13 @@ func orderableBuild(v string) bool {
 // write already produces.
 func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Request, bs botsource.BotSource) (warning string, ok bool) {
 	m := bs.Manifest()
-	// A bundle written in a syntax profile above 1 — or in several files,
-	// whose fragments a runner parses as text — needs a floor at or above
-	// the release that reads the profile (bundle.CheckProfileFloor, shared
-	// with `validate`'s C252): the main workflow reaches a runner as an AST,
-	// but a subbot child is re-parsed as text by the runner's own binary, and
-	// a build older than the profile fails at that parse — after admission,
-	// on a pod. A floor declared but lower admits exactly those builds.
-	// Refused here instead, unless forced.
-	if syntax := bundle.MaxSyntaxRequirements(bs.Files); syntax.Profile >= 2 || syntax.UsesImport() {
-		if pf := bundle.CheckSyntaxFloor(m, syntax); !pf.OK {
-			need := pf.Need
-			if need == "" {
-				need = "<the release that reads " + pf.Reason + ">"
-			}
-			gap := "declares no requires.iterion"
-			if pf.Declared != "" {
-				gap = fmt.Sprintf("declares requires.iterion %q, below %s (the release that reads it)", pf.Declared, need)
-			}
-			uses := syntax.Describe()
-			if forceRequested(r) {
-				return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child or a fragment",
-					bs.Slug, uses, gap), true
-			}
-			s.httpErrorFor(w, r, http.StatusConflict,
-				"bot %q uses %s but its manifest %s: declare `requires: { iterion: \">= %s\" }` (`iterion dsl migrate` writes it for a profile), or push anyway with --force",
-				bs.Slug, uses, gap, need)
-			return "", false
+	if gap := bundleSyntaxFloorGap(bs); gap != nil {
+		if forceRequested(r) {
+			return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child, a fragment or the contract",
+				bs.Slug, gap.uses, gap.gap), true
 		}
+		s.httpErrorFor(w, r, http.StatusConflict, "%s, or push anyway with --force", gap.refusal(bs.Slug))
+		return "", false
 	}
 	if m == nil || m.Requires == nil || strings.TrimSpace(m.Requires.Iterion) == "" {
 		return "", true
@@ -169,6 +148,49 @@ func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Req
 		"bot %q: %s (floor from %s). Bump the runner image and restart the server first (docs/platform-bots.md § Shipping a baked-catalog change), or push anyway with --force",
 		bs.Slug, reason, strings.Join(sources, ", "))
 	return "", false
+}
+
+// syntaxFloorGap is what a bundle's sources use that its manifest's floor
+// does not reach: the shape every write of a bundle refuses on (the push
+// routes, the assistant's authoring commit), one predicate for all of them.
+type syntaxFloorGap struct {
+	uses string // what the sources use: "`contract` (main.bot)"
+	gap  string // what the manifest declares, or does not
+	need string // the release the floor must reach
+}
+
+// refusal is the sentence a write is refused with.
+func (g *syntaxFloorGap) refusal(slug string) string {
+	return fmt.Sprintf("bot %q uses %s but its manifest %s: declare `requires: { iterion: \">= %s\" }` (`iterion dsl migrate` writes it for a profile)", slug, g.uses, g.gap, g.need)
+}
+
+// bundleSyntaxFloorGap holds a bundle about to be WRITTEN to what its
+// sources use. A bundle written in a syntax profile above 1, in several
+// files whose fragments a runner parses as text, or declaring a contract,
+// needs a floor at or above the release that reads it
+// (bundle.CheckSyntaxFloor, shared with `validate`'s C252;
+// bundle.RequiredRelease is the one list of what asks): a build older than
+// the syntax fails at its first parse of a child, a fragment or the
+// contract — after admission, on a pod. A floor declared but lower admits
+// exactly those builds. nil when the floor reads what the sources use.
+func bundleSyntaxFloorGap(bs botsource.BotSource) *syntaxFloorGap {
+	syntax := bundle.MaxSyntaxRequirements(bs.Files)
+	if !syntax.Asks() {
+		return nil
+	}
+	pf := bundle.CheckSyntaxFloor(bs.Manifest(), syntax)
+	if pf.OK {
+		return nil
+	}
+	need := pf.Need
+	if need == "" {
+		need = "<the release that reads " + pf.Reason + ">"
+	}
+	gap := "declares no requires.iterion"
+	if pf.Declared != "" {
+		gap = fmt.Sprintf("declares requires.iterion %q, below %s (the release that reads it)", pf.Declared, need)
+	}
+	return &syntaxFloorGap{uses: syntax.Describe(), gap: gap, need: need}
 }
 
 // forceRequested reads the explicit override off the request.

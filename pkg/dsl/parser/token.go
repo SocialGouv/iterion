@@ -55,8 +55,9 @@ const (
 	TokenHuman
 	TokenTool
 	TokenWorkflow
-	TokenDSL    // `dsl`: the syntax-profile header that may open a file
-	TokenImport // `import`: a fragment of the file's compilation unit, at its head
+	TokenDSL      // `dsl`: the syntax-profile header that may open a file
+	TokenImport   // `import`: a fragment of the file's compilation unit, at its head
+	TokenContract // `contract`: the bot's public contract (ADR-099)
 	TokenCompute
 	TokenEmit
 	TokenWait
@@ -246,6 +247,7 @@ var tokenNames = map[TokenType]string{
 	TokenWorkflow:           "workflow",
 	TokenDSL:                "dsl",
 	TokenImport:             "import",
+	TokenContract:           "contract",
 	TokenCompute:            "compute",
 	TokenEmit:               "emit",
 	TokenWait:               "wait",
@@ -394,6 +396,7 @@ var keywords = map[string]TokenType{
 	"workflow":              TokenWorkflow,
 	"dsl":                   TokenDSL,
 	"import":                TokenImport,
+	"contract":              TokenContract,
 	"compute":               TokenCompute,
 	"emit":                  TokenEmit,
 	"wait":                  TokenWait,

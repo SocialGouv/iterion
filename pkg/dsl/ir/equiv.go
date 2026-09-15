@@ -83,10 +83,12 @@ func firstWorkflowDifference(a, b *Workflow) string {
 		{"loops", a.Loops, b.Loops},
 		{"budget", a.Budget, b.Budget},
 		{"resources", a.Resources, b.Resources},
+		{"contracts", a.Contracts, b.Contracts},
+		{"the workflow's contract", a.Contract, b.Contract},
 	} {
 		if !reflect.DeepEqual(part.x, part.y) {
 			return part.name + " differ"
 		}
 	}
-	return "the workflows differ outside nodes, edges, prompts, schemas, vars, loops, budget and resources"
+	return "the workflows differ outside nodes, edges, prompts, schemas, vars, loops, budget, resources and contracts"
 }

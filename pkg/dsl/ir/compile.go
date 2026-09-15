@@ -652,6 +652,9 @@ func (c *compiler) compile() *Workflow {
 	// Compile edges.
 	edges, loops, foreaches := c.compileEdges(wf.Edges)
 
+	// Bind the public contracts: nodes, schemas, vars and edges are compiled.
+	contracts, contract := c.compilePublicContracts(wf, vars, edges)
+
 	// Compile budget.
 	var budget *Budget
 	if wf.Budget != nil {
@@ -697,6 +700,8 @@ func (c *compiler) compile() *Workflow {
 		Cursors:             cursors,
 		Supervisors:         supervisors,
 		Interaction:         interaction,
+		Contracts:           contracts,
+		Contract:            contract,
 		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,

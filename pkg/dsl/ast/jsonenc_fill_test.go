@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -66,8 +67,18 @@ const fillDepth = 9
 // fillValue sets v to a distinct non-zero value, recursively. Slices and
 // maps get one element; pointers are allocated; recursion is bounded so a
 // self-referential type (a schema field's fields) terminates.
+// rawJSONType is a field carried as JSON bytes (a contract default, a
+// criterion's parameters): filled with a JSON value, since the transport
+// refuses bytes that are not one.
+var rawJSONType = reflect.TypeOf(json.RawMessage{})
+
 func fillValue(v reflect.Value, n *int, depth int) {
 	if transportlessTypes[v.Type()] {
+		return
+	}
+	if v.Type() == rawJSONType {
+		*n++
+		v.SetBytes([]byte(fmt.Sprintf(`{"v":%d}`, *n)))
 		return
 	}
 	switch v.Kind() {

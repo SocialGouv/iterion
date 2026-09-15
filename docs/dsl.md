@@ -694,6 +694,65 @@ A subbot is a real nested run with its own loops, state, and budget. Parent budg
 
 See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) for pause/resume, board-write, and concurrency boundaries.
 
+## The public contract — `contract`
+
+A bot has a face the outside reads without opening its prompts: what it takes, what it produces, the files it delivers, the deterministic checks that condition what follows, and the effects it has. `contract <name>:` declares it once at top level; the workflow names the one it keeps with `contract: <name>`. A contract carries no prompt, tool or provider setting — and it is **bound to the program** ([ADR-099](adr/099-public-contracts.md)): every declared contract is held to what the program does — an input the program has no var for, an output no node produces — and a contract the program contradicts is a compile error, never a display.
+
+```iter
+vars:
+  goal: string
+
+schema report:
+  summary: string
+  pr_url: string
+
+prompt build_user:
+  Implement {{vars.goal}} and report the pull request URL.
+
+agent build:
+  model: "anthropic/claude-sonnet-4-6"
+  user: build_user
+  output: report
+
+contract feature:
+  display_name: "Feature dev"
+  responsibility: "Implements a feature and opens a pull request"
+  version: 1
+  inputs:
+    goal: string
+      description: "What to build"
+  outputs:
+    pr_url: string
+      from: build.pr_url
+  criteria:
+    goal_is_not_empty:
+      kind: min_length
+      port: input.goal
+      params: {min: 1}
+  effects:
+    opens_pr:
+      description: "Opens a pull request on the repository"
+
+workflow feature_dev:
+  contract: feature
+  entry: build
+  build -> done
+```
+
+What the compiler holds, and where:
+
+- **C300** — every input is a declared var of the port's type, its value comes from the launch (an input carries no `from:` and no `file:`), and its requiredness and default are the var's — an input is required exactly when its var has no default, and defaults to what the var defaults to, read as the launch reads a value of that type (a `string[]` or `json` var's text as a list or an object); a port may repeat them, never contradict them; on a var without a default, a `nullable: true` port may be `required: false` — with no default, or `default: null` — since omitted, the run starts with the var unset, which is null; a var's `[enum: …]` is the domain the contract advertises. A contract is declared once, its `version:` starts at 1, and the workflow's `contract:` names a declaration.
+- **C301** — every output names its producer: `from: <node>.<field>`, a field of the node's output schema of the port's type; `from: <node>` for a port typed with the node's whole output schema, or for a file port — a port with a `file:` block — on a node that publishes an artifact (`publish:`). An instance of a group is named `<prefix>.<node>`; an `await_answers` binds through its implicit `answers` field, typed `json`. An output is never defaulted.
+- **C302** — a criterion names a declared port, singular (`input.goal`, `output.pr_url`), an evaluator that takes the port's type (a file port is a file, which none takes), and parameters its declaration accepts; a default has the port's type, and is `null` only on a `nullable: true` port.
+- **C303** (warning) — a criterion whose `kind:` has no registered evaluator (this build ships `min_length` and `pattern`) is declared and rendered, not evaluated.
+- **C304** (warning) — an output whose producer is on no path to `done` is produced only when the bot fails.
+
+A `default:` or `params:` is **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word, no signed number and no exponent: the `.bot` text refuses the other forms outright, at the lexer (E001, E002), and a value that reaches the compiler through a document — the studio's — and the text cannot write is C302.
+
+`iterion validate` renders the bound contract (each port with its producer, each criterion with its evaluator, each effect) and returns it as `public_contract` in `--json`, the result the MCP `local_validate` tool reads — for a program that compiles, never for one that does not. The studio saves a contract back to the file it came from, and `Verify` holds the saved text to the document: a name that is not an identifier, or a value the text cannot write, is refused by name before a file is touched. Two more readers are held to the contract as warnings: the manifest (**C254** — a `launch.primary` entry that is not a contract input, a `produces[].node` that produces no contract output; `launch.hidden`, the inputs the form never renders, is not held) and a parent's `subbot` (**C255** — a `with:` that misses an input the child's contract requires; the parent's `output:` schema is the child's terminal output, which the contract does not define, and is not held).
+
+A bundle that declares a contract declares the engine floor that reads one (`requires: { iterion: ">= 3.150.0" }`, `parser.ContractSince`): `validate` asks for it (C252), a push refuses without it (409), a studio authoring commit likewise (400, `bot_engine_floor`), `iterion dsl migrate` raises a bundle's floor to what its sources need. A comment survives a studio save only at the file's head, before the first declaration: written inside a contract — as inside any declaration, or between two — it is dropped when the studio writes the file back.
+
 ## Cursors and supervisors
 
 A cursor declares reusable prompt calibration; a supervisor is a concurrent watcher, not a graph node:

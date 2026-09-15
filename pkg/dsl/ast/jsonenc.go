@@ -124,6 +124,7 @@ type jsonFile struct {
 	MCPServers   []*jsonMCPServerDecl    `json:"mcp_servers,omitempty"`
 	Prompts      []*jsonPromptDecl       `json:"prompts,omitempty"`
 	Schemas      []*jsonSchemaDecl       `json:"schemas,omitempty"`
+	Contracts    []*jsonContractDecl     `json:"contracts,omitempty"`
 	Cursors      []*jsonCursorDecl       `json:"cursors,omitempty"`
 	Supervisors  []*jsonSupervisorDecl   `json:"supervisors,omitempty"`
 	Agents       []*jsonAgentDecl        `json:"agents,omitempty"`
@@ -810,6 +811,7 @@ type jsonWorkflowDecl struct {
 	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
 	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
 	Entry          string                `json:"entry,omitempty"`
+	Contract       string                `json:"contract,omitempty"`
 	DefaultBackend string                `json:"default_backend,omitempty"`
 	ToolPolicy     []string              `json:"tool_policy,omitempty"`
 	Capabilities   []string              `json:"capabilities,omitempty"`
@@ -895,13 +897,16 @@ type jsonWithEntry struct {
 // Marshal converts an File to JSON with human-readable string enums.
 // Span fields are omitted from the output.
 func MarshalFile(f *File) ([]byte, error) {
-	jf := toJSON(f)
+	jf, err := toJSON(f)
+	if err != nil {
+		return nil, err
+	}
 	return json.MarshalIndent(jf, "", "  ")
 }
 
-func toJSON(f *File) *jsonFile {
+func toJSON(f *File) (*jsonFile, error) {
 	if f == nil {
-		return nil
+		return nil, nil
 	}
 	jf := &jsonFile{}
 
@@ -1012,6 +1017,16 @@ func toJSON(f *File) *jsonFile {
 	for _, u := range f.Uses {
 		jf.Uses = append(jf.Uses, useToJSON(u))
 	}
+	for i, c := range f.Contracts {
+		if c == nil {
+			return nil, fmt.Errorf("astjson: contracts[%d] is nil — every element of that list is an object", i)
+		}
+		jc, err := contractToJSON(c)
+		if err != nil {
+			return nil, err
+		}
+		jf.Contracts = append(jf.Contracts, jc)
+	}
 	for _, w := range f.Workflows {
 		jf.Workflows = append(jf.Workflows, workflowToJSON(w))
 	}
@@ -1023,7 +1038,7 @@ func toJSON(f *File) *jsonFile {
 		jf.Imports = append(jf.Imports, im.Path)
 	}
 
-	return jf
+	return jf, nil
 }
 
 func routerToJSON(r *RouterDecl) *jsonRouterDecl {
@@ -1548,6 +1563,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 	jw := &jsonWorkflowDecl{
 		Name:                w.Name,
 		Entry:               w.Entry,
+		Contract:            w.Contract,
 		DefaultBackend:      w.DefaultBackend,
 		ToolPolicy:          w.ToolPolicy,
 		Capabilities:        w.Capabilities,
@@ -1687,6 +1703,9 @@ func rejectNilElements(v reflect.Value, path string) error {
 			}
 		}
 	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return nil // a JSON value carried as bytes holds no element to refuse
+		}
 		for i := 0; i < v.Len(); i++ {
 			e := v.Index(i)
 			at := fmt.Sprintf("%s[%d]", path, i)
@@ -1901,6 +1920,13 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		f.Uses = append(f.Uses, useFromJSON(ju))
 	}
 
+	for _, jc := range jf.Contracts {
+		c, err := contractFromJSON(jc)
+		if err != nil {
+			return nil, err
+		}
+		f.Contracts = append(f.Contracts, c)
+	}
 	for _, jw := range jf.Workflows {
 		w, err := workflowFromJSON(jw)
 		if err != nil {
@@ -2347,6 +2373,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 	w := &WorkflowDecl{
 		Name:                jw.Name,
 		Entry:               jw.Entry,
+		Contract:            jw.Contract,
 		DefaultBackend:      jw.DefaultBackend,
 		ToolPolicy:          jw.ToolPolicy,
 		Capabilities:        jw.Capabilities,

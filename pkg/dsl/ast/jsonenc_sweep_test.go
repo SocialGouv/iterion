@@ -45,6 +45,11 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		{PromptDecl{}, jsonPromptDecl{}, nil},
 		{SchemaDecl{}, jsonSchemaDecl{}, nil},
 		{SchemaField{}, jsonSchemaField{}, nil},
+		{ContractDecl{}, jsonContractDecl{}, nil},
+		{PortDecl{}, jsonPortDecl{}, nil},
+		{PortFileDecl{}, jsonPortFileDecl{}, nil},
+		{CriterionDecl{}, jsonCriterionDecl{}, nil},
+		{PublicEffect{}, jsonPublicEffect{}, nil},
 		{SupervisorDecl{}, jsonSupervisorDecl{}, nil},
 		{CursorDecl{}, jsonCursorDecl{}, nil},
 		{CursorBlock{}, jsonCursorBlock{}, nil},
@@ -88,7 +93,7 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		"Span":           "source positions never travel",
 		"Pos":            "source positions never travel",
 	}
-	for _, name := range exportedStructTypes(t, "ast.go") {
+	for _, name := range append(exportedStructTypes(t, "ast.go"), exportedStructTypes(t, "contract.go")...) {
 		if !listed[name] {
 			if _, ok := excluded[name]; !ok {
 				t.Errorf("ast.%s has no entry in the sweep's pair list (nor an exclusion) — a field added to it can be dropped by the transport unseen", name)

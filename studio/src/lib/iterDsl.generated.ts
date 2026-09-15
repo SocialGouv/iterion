@@ -27,6 +27,7 @@ export const iterDslKeywords = [
   "compress",
   "compute",
   "condition",
+  "contract",
   "cursor",
   "cursors",
   "default_backend",
@@ -141,6 +142,7 @@ export const iterDslDeclarations = [
   "agent",
   "await_answers",
   "compute",
+  "contract",
   "cursor",
   "emit",
   "fail",
@@ -240,6 +242,42 @@ export const iterDslPropertiesByKind = {
     "output",
     "publish"
   ],
+  "contract": [
+    "criteria",
+    "display_name",
+    "effects",
+    "inputs",
+    "outputs",
+    "responsibility",
+    "version"
+  ],
+  "contract.criteria": [],
+  "contract.criterion": [
+    "kind",
+    "params",
+    "port"
+  ],
+  "contract.effect": [
+    "description",
+    "paid"
+  ],
+  "contract.effects": [],
+  "contract.file": [
+    "media_type",
+    "min_bytes",
+    "schema"
+  ],
+  "contract.port": [
+    "default",
+    "description",
+    "file",
+    "from",
+    "max_items",
+    "min_items",
+    "nullable",
+    "required"
+  ],
+  "contract.ports": [],
   "cursor": [
     "bands",
     "description",
@@ -473,6 +511,7 @@ export const iterDslPropertiesByKind = {
     "capabilities",
     "compaction",
     "compress",
+    "contract",
     "default_backend",
     "deny",
     "entry",
