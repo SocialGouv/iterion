@@ -15,6 +15,10 @@ type Scenario struct {
 	// non-empty — the semantic-presence check that schema validation
 	// (which accepts an empty json array/object) cannot express.
 	RequiredNonEmpty []string
+	// RequiredSubstrings freezes a few factual anchors in text fields without
+	// snapshotting an entire model paragraph. Useful for host-stamped diagnoses:
+	// the golden must carry the resolved run/status/node through to the reply.
+	RequiredSubstrings map[string][]string
 
 	// CheckAssignees enables the no-hallucinated-assignee scan over the
 	// recorded output.
@@ -70,6 +74,24 @@ func Scenarios() []Scenario {
 	}
 	campaigns = append(campaigns, featureDev)
 	return append(campaigns,
+		Scenario{
+			Bot:              "copilot",
+			Name:             "run_failure_host_context",
+			Node:             "copi",
+			RequiredNonEmpty: []string{"reply", "context_brief"},
+			RequiredSubstrings: map[string][]string{
+				"reply": {"run-failed", "failed_resumable", "seal_experience"},
+			},
+			Vars: map[string]string{
+				"initial_message": "Pourquoi ce run a échoué ?",
+				"mode":            "debug",
+			},
+			Input: map[string]any{
+				"operator_message": "[page context: run/run-failed]\n<resolved-assistant-context>{\"references\":[{\"reference\":\"run/run-failed\",\"resolved\":true,\"kind\":\"run\",\"run\":{\"id\":\"run-failed\",\"status\":\"failed_resumable\",\"failing_node\":\"seal_experience\",\"error_code\":\"EXECUTION_FAILED\",\"error\":\"candidate artifact missing\"}}]}</resolved-assistant-context>\n\nPourquoi ce run a échoué ?",
+				"mode":             "debug",
+				"context_brief":    "",
+			},
+		},
 		Scenario{
 			// whats-next v2: ONE conversational agent. The golden freezes a
 			// full nexie turn (reply + close + quick_replies + dispatched_ids)

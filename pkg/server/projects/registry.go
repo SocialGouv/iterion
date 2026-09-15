@@ -38,6 +38,8 @@ type Project struct {
 	Name       string    `json:"name"`
 	Dir        string    `json:"dir"`
 	StoreDir   string    `json:"store_dir,omitempty"`
+	BotsPaths  []string  `json:"bots_paths,omitempty"`
+	EnvFile    string    `json:"env_file,omitempty"`
 	LastOpened time.Time `json:"last_opened"`
 	Color      string    `json:"color,omitempty"`
 }
@@ -157,14 +159,19 @@ func loadFrom(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// pruneDeadProjects filters out entries whose Dir no longer resolves
-// to an existing directory on disk. The check is best-effort: a
-// transient Stat error (permissions, removable media) keeps the entry
-// so a brief filesystem hiccup doesn't nuke the list. Only definite
-// "does not exist" outcomes drop the row.
+// pruneDeadProjects filters legacy test pollution while retaining durable
+// registrations. A pinned StoreDir makes the entry authoritative even when
+// its workspace is temporarily unavailable (for example an unmounted disk):
+// dropping it would also discard the store binding and mint a new identity on
+// re-registration. Legacy entries without a store pin keep the historical
+// pruning behaviour.
 func pruneDeadProjects(in []Project) []Project {
 	out := make([]Project, 0, len(in))
 	for _, p := range in {
+		if p.StoreDir != "" {
+			out = append(out, p)
+			continue
+		}
 		if p.Dir == "" {
 			continue
 		}
@@ -183,6 +190,128 @@ func pruneDeadProjects(in []Project) []Project {
 		out = append(out, p)
 	}
 	return out
+}
+
+// RegisterWithStore adds or refreshes a durable local project registration.
+// Both the workspace root and store must already exist: this method records a
+// validated binding and never creates or rediscovers storage. Equivalent
+// symlink aliases resolve to the same project identity; one store cannot be
+// registered to two different roots.
+func (c *Config) RegisterWithStore(dir, storeDir string, botsPaths []string, envFile string) (Project, bool, error) {
+	root, err := canonicalDir(dir)
+	if err != nil {
+		return Project{}, false, fmt.Errorf("project root: %w", err)
+	}
+	pinnedStore, err := canonicalDir(storeDir)
+	if err != nil {
+		return Project{}, false, fmt.Errorf("project store: %w", err)
+	}
+	canonicalBots := make([]string, 0, len(botsPaths))
+	seenBots := map[string]struct{}{}
+	for _, raw := range botsPaths {
+		if raw == "" {
+			continue
+		}
+		p, pathErr := filepath.Abs(raw)
+		if pathErr != nil {
+			return Project{}, false, fmt.Errorf("bot path %q: %w", raw, pathErr)
+		}
+		if resolved, evalErr := filepath.EvalSymlinks(p); evalErr == nil {
+			p = resolved
+		}
+		p = filepath.Clean(p)
+		if _, ok := seenBots[p]; ok {
+			continue
+		}
+		seenBots[p] = struct{}{}
+		canonicalBots = append(canonicalBots, p)
+	}
+	if envFile != "" {
+		envFile, err = filepath.Abs(envFile)
+		if err != nil {
+			return Project{}, false, fmt.Errorf("env file: %w", err)
+		}
+		envFile = filepath.Clean(envFile)
+	}
+
+	for i := range c.RecentProjects {
+		p := &c.RecentProjects[i]
+		registeredRoot := canonicalExistingOrClean(p.Dir)
+		registeredStore := canonicalExistingOrClean(p.StoreDir)
+		if registeredStore == pinnedStore && registeredRoot != root {
+			return Project{}, false, fmt.Errorf("store %q is already registered to project %q", pinnedStore, p.Name)
+		}
+		if registeredRoot != root {
+			continue
+		}
+		if p.StoreDir != "" && registeredStore != pinnedStore {
+			return Project{}, false, fmt.Errorf("project %q is pinned to store %q, not %q", p.Name, p.StoreDir, pinnedStore)
+		}
+		p.Dir = root
+		p.StoreDir = pinnedStore
+		if len(canonicalBots) > 0 {
+			p.BotsPaths = canonicalBots
+		}
+		// An empty value is meaningful: callers importing a legacy `no-env`
+		// project must be able to clear a previously pinned .env file.
+		p.EnvFile = envFile
+		p.LastOpened = time.Now().UTC()
+		c.CurrentProjectID = p.ID
+		result := *p
+		c.sortByMRU()
+		return result, false, nil
+	}
+
+	p := Project{
+		ID:         randomID(),
+		Name:       filepath.Base(root),
+		Dir:        root,
+		StoreDir:   pinnedStore,
+		BotsPaths:  canonicalBots,
+		EnvFile:    envFile,
+		LastOpened: time.Now().UTC(),
+	}
+	c.RecentProjects = append(c.RecentProjects, p)
+	c.CurrentProjectID = p.ID
+	c.sortByMRU()
+	c.capRecents()
+	return p, true, nil
+}
+
+func canonicalDir(raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", resolved)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func canonicalExistingOrClean(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if resolved, err := canonicalDir(raw); err == nil {
+		return resolved
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return filepath.Clean(raw)
+	}
+	return filepath.Clean(abs)
 }
 
 // Save atomically writes the registry, preserving every Extras key

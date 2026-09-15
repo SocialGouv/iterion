@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -291,7 +293,9 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		s.botSourceError(w, r, err)
 		return
 	}
-	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
+	// The file put is what is checked: a companion workflow through its
+	// own unit, a fragment through every workflow that may import it.
+	if diags := validateBundleCompileSelected(bs.Files, []string{path}); len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
@@ -338,10 +342,29 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 			files[k] = v
 		}
 	}
+	// A delete mutates the bundle as a put does, and is held to the same
+	// two guards, scoped to what it changes: a diagnostic the bundle drew
+	// WITH the file is not this delete's (a bundle that never compiled can
+	// still shed a file), one it draws only without the file is — a
+	// fragment an import reaches is load-bearing at parse time. And its
+	// manifest still declares the floor its sources need.
+	before := validateBundleCompileSelected(bs.Files, []string{path})
 	bs.Files = files
 	bs.Version = 0 // no if-match on a delete
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
+		return
+	}
+	if fresh := newDiagnostics(before, validateBundleCompileSelected(bs.Files, []string{path})); len(fresh) > 0 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bot no longer compiles without %s: %s", path, strings.Join(fresh, "; "))
+		return
+	}
+	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	if !ok {
+		return
+	}
+	if engineWarning != "" {
+		s.writeBotSource(w, r, tenantID, userID, bs, engineWarning)
 		return
 	}
 	s.writeBotSource(w, r, tenantID, userID, bs)
@@ -524,6 +547,13 @@ func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, er
 // oracle the pure structural botsource.Validate deliberately leaves to the
 // route, where the full bundle context is available.
 func validateBundleCompile(files map[string]string) []string {
+	return validateBundleCompileSelected(files, nil)
+}
+
+// validateBundleCompileSelected compiles main.bot plus every explicitly
+// modified companion .bot. A bundle may contain independently-invoked subbots;
+// compiling only main.bot would let an assistant batch persist a broken one.
+func validateBundleCompileSelected(files map[string]string, modified []string) []string {
 	dir, err := os.MkdirTemp("", "botsource-validate-*")
 	if err != nil {
 		return []string{"internal: " + err.Error()}
@@ -534,31 +564,85 @@ func validateBundleCompile(files map[string]string) []string {
 		return []string{err.Error()}
 	}
 
-	mainPath := filepath.Join(dir, botsource.MainBotFile)
-	src, err := os.ReadFile(mainPath)
-	if err != nil {
-		return []string{"internal: " + err.Error()}
-	}
 	var diags []string
-	pr := parser.Parse(mainPath, string(src))
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			diags = append(diags, d.Error())
+	paths := []string{botsource.MainBotFile}
+	seen := map[string]bool{botsource.MainBotFile: true}
+	add := func(rel string) {
+		// A path the bundle no longer holds — the file a delete removed —
+		// is not a workflow to compile.
+		if _, held := files[rel]; seen[rel] || !held {
+			return
 		}
+		seen[rel] = true
+		paths = append(paths, rel)
 	}
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return append(diags, "no workflow found in main.bot")
+	for _, rel := range modified {
+		rel = filepath.ToSlash(filepath.Clean(rel))
+		if !strings.HasSuffix(strings.ToLower(rel), ".bot") {
+			continue
+		}
+		if strings.HasPrefix(rel, unit.FragmentDir+"/") {
+			// A fragment is validated through the workflows that import it,
+			// and any workflow of the bundle may: every one of them is
+			// recompiled, or a fragment only a sibling imports is checked
+			// by nobody.
+			for name := range files {
+				if !strings.Contains(name, "/") && strings.HasSuffix(strings.ToLower(name), ".bot") {
+					add(name)
+				}
+			}
+			continue
+		}
+		add(rel)
 	}
-	if b, berr := bundle.OpenDir(dir); berr == nil && b != nil {
-		_ = runview.MergeBundlePrompts(pr.File, b)
-	}
-	cr := ir.Compile(pr.File)
-	for _, d := range cr.Diagnostics {
-		if d.Severity == ir.SeverityError {
-			diags = append(diags, d.Error())
+	sort.Strings(paths[1:])
+	b, _ := bundle.OpenDir(dir)
+	for _, rel := range paths {
+		// A fragment under lib/ holds no workflow by design: it is validated
+		// through the main that imports it.
+		if strings.HasPrefix(rel, unit.FragmentDir+"/") {
+			continue
+		}
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		// The workflow's unit: the file and the fragments its imports reach.
+		u := unit.LoadDir(path)
+		for _, d := range u.Diagnostics {
+			if d.Severity == parser.SeverityError {
+				// The unit was read from a temporary directory the editor
+				// never sees: a diagnostic names the file as the bundle holds it.
+				diags = append(diags, rel+": "+strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), ""))
+			}
+		}
+		if u.Merged == nil || len(u.Merged.Workflows) == 0 {
+			diags = append(diags, rel+": no workflow found")
+			continue
+		}
+		if b != nil {
+			_ = runview.MergeBundlePrompts(u.Merged, b)
+		}
+		cr := ir.Compile(u.Merged)
+		for _, d := range cr.Diagnostics {
+			if d.Severity == ir.SeverityError {
+				diags = append(diags, rel+": "+d.Error())
+			}
 		}
 	}
 	return diags
+}
+
+// newDiagnostics is what after reports that before did not.
+func newDiagnostics(before, after []string) []string {
+	known := make(map[string]bool, len(before))
+	for _, d := range before {
+		known[d] = true
+	}
+	var fresh []string
+	for _, d := range after {
+		if !known[d] {
+			fresh = append(fresh, d)
+		}
+	}
+	return fresh
 }
 
 // botSourceError maps store errors to actionable status codes.

@@ -67,15 +67,15 @@ func TestGateSweepAbstain_StaysQuietWhileTheNetIsStillTrying(t *testing.T) {
 	}
 }
 
-// The last pass is the one that matters: past the lookback the run leaves the
+// The last pass is the one that matters: past the horizon the run leaves the
 // candidate window and NOTHING revisits it, so whatever the reconciler
-// abstained on becomes permanent. Before this, the whole sweep history was
-// Debug — suppressed at info — so a pull request blocked for 22 hours behind an
-// unanswered required check left no line anywhere naming the reason.
+// abstained on becomes permanent. The whole sweep history below it is Debug —
+// suppressed at info — so without this line a pull request blocked for 22 hours
+// behind an unanswered required check leaves nothing anywhere naming the reason.
 func TestGateSweepAbstain_LastPassNamesTheReasonAndThePermanence(t *testing.T) {
 	s, runID, logs := abstainingSweepFixture(t)
 	at := runUpdatedAt(t, s, runID)
-	s.gateClock = func() time.Time { return at.Add(gateSweepLookback - gateSweepInterval) }
+	s.gateClock = func() time.Time { return at.Add(gateSweepHorizon - gateDeepSweepEvery*gateSweepInterval) }
 
 	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
 		t.Fatalf("reconcile: %v", err)

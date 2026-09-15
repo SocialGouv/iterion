@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -31,7 +32,7 @@ func TestCheckWorkflowHash_AcceptsTheLegacyBareDigest(t *testing.T) {
 
 	e := &Engine{workflowHash: promoted, bundle: &bundle.Bundle{IterPath: mainBot}}
 	r := &store.Run{ID: "run-legacy", WorkflowHash: bare}
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(context.Background(), r); err != nil {
 		t.Fatalf("the legacy bare digest was refused: %v", err)
 	}
 	if !e.legacyDigestAccepted {
@@ -42,7 +43,7 @@ func TestCheckWorkflowHash_AcceptsTheLegacyBareDigest(t *testing.T) {
 	}
 
 	other := &Engine{workflowHash: promoted, bundle: &bundle.Bundle{IterPath: mainBot}}
-	if err := other.checkWorkflowHash(&store.Run{ID: "run-other", WorkflowHash: "2222222222222222222222222222222222222222222222222222222222222222"}); !errors.Is(err, ErrWorkflowSourceChanged) {
+	if err := other.checkWorkflowHash(context.Background(), &store.Run{ID: "run-other", WorkflowHash: "2222222222222222222222222222222222222222222222222222222222222222"}); !errors.Is(err, ErrWorkflowSourceChanged) {
 		t.Fatalf("a run that recorded neither digest: err = %v, want the source-changed refusal", err)
 	}
 	if other.legacyDigestAccepted {
@@ -50,7 +51,7 @@ func TestCheckWorkflowHash_AcceptsTheLegacyBareDigest(t *testing.T) {
 	}
 
 	loose := &Engine{workflowHash: promoted}
-	if err := loose.checkWorkflowHash(&store.Run{ID: "run-loose", WorkflowHash: bare}); !errors.Is(err, ErrWorkflowSourceChanged) {
+	if err := loose.checkWorkflowHash(context.Background(), &store.Run{ID: "run-loose", WorkflowHash: bare}); !errors.Is(err, ErrWorkflowSourceChanged) {
 		t.Fatalf("with no bundle the bare digest matched nothing to accept: err = %v", err)
 	}
 }

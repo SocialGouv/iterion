@@ -20,6 +20,7 @@
     "_session_fingerprint": "anthropic-env",
     "_session_id": "3b1dc79e-a02f-4220-8523-f7fcbba5b563",
     "_tokens": 8009,
+    "assistant_actions": [],
     "close": false,
     "dispatched_ids": "[]",
     "quick_replies": "[\"Lance le survey\", \"Vérifie le store/connexion board\", \"Montre le git log récent\"]",

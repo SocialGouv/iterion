@@ -160,7 +160,11 @@ func (s *Server) handleAnswerHuman(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "answers are required")
 		return
 	}
-	res, err := s.runs.AnswerHumanCtx(r.Context(), id, req.Answers)
+	// Detach the resumed run from the HTTP request lifecycle: returning the
+	// 202 cancels r.Context, but the engine goroutine must keep running. Keep
+	// the request values so tenant/auth scoping still reaches the run store.
+	ctx := context.WithoutCancel(r.Context())
+	res, err := s.runs.AnswerHumanCtx(ctx, id, req.Answers)
 	if err != nil {
 		s.writeSteerError(w, r, err)
 		return

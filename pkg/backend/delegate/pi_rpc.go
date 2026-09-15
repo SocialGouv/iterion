@@ -629,6 +629,34 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 				task.NodeID, task.Iteration, BackendPi)
 		}
 	}
+	if HasRunsReadCapability(task.Capabilities) {
+		switch {
+		case task.RunsHTTPEndpoint != "" && task.BoardRunToken != "":
+			out = append(out, piMCPServerSpec{
+				Name:      runsMCPServerName,
+				Transport: "http",
+				URL:       task.RunsHTTPEndpoint,
+				Headers:   map[string]string{"X-Iterion-Run": task.BoardRunToken},
+			})
+		case task.Hostless() && task.RunStoreDir != "":
+			if selfPath := proc.LocateIterionBinary(); selfPath == "" {
+				warn("[%s#%d/%s] iterion binary not found; runs.read disabled", task.NodeID, task.Iteration, BackendPi)
+			} else {
+				out = append(out, piMCPServerSpec{
+					Name:      runsMCPServerName,
+					Transport: "stdio",
+					Command:   selfPath,
+					Args:      []string{runsMCPSubcommand},
+					Env: map[string]string{
+						"ITERION_RUN_STORE_DIR": task.RunStoreDir,
+						"ITERION_RUN_CAPS":      strings.Join(task.Capabilities, ","),
+					},
+				})
+			}
+		default:
+			warn("[%s#%d/%s] runs.read granted but no host transport is available", task.NodeID, task.Iteration, BackendPi)
+		}
+	}
 	for _, s := range task.MCPServers {
 		// Tools are registered as mcp__<server>__<tool>, and iterion's
 		// permission layer exempts the whole mcp__iterion… namespace as

@@ -42,6 +42,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/mail"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -49,6 +50,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
@@ -483,6 +485,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("server: build events bus: %w", err)
 	}
+	// The operator's remembered model choice, per (team, user, scope key).
+	// Ungated: a model preference is convenience, not a feature flag, and a
+	// cloud operator who cannot keep one is back to re-picking every session.
+	modelPrefStore := modelprefs.NewMongoStore(st.DB())
+	if sErr := modelPrefStore.EnsureSchema(rootCtx); sErr != nil {
+		return fmt.Errorf("server: ensure model prefs schema: %w", sErr)
+	}
+
 	var pushSubs usernotifywebpush.SubscriptionStore
 	var notifPrefs usernotify.PrefsStore
 	// The episode-claim store + terminal-run window scan serve BOTH
@@ -705,6 +715,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CookieSecure:                cfg.Auth.CookieSecure,
 		DisableAuth:                 disableAuth,
 		Metrics:                     mreg,
+		ModelPrefs:                  modelPrefStore,
+		RunWatches:                  runwatch.NewMongoStore(st.DB()),
 		// /readyz pings each dependency under a 1s deadline. Only Mongo is
 		// CRITICAL (it is the store — without it the pod serves nothing
 		// real): the others are reported as "degraded" in the probe body
@@ -858,6 +870,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
 		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},
+		{"assistant_run_watches", func(c context.Context) error { return runwatch.NewMongoStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
 		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
 	}

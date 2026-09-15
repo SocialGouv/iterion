@@ -52,6 +52,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `verified-action` | entry gates (unset or TAKEN `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
+| `library` | the graph in `main.bot` (and its vars, when the spec has any), the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
 
 `blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
 render the single-agent workflow (one adaptive agent carrying the mission).
@@ -224,6 +225,17 @@ shipped bots, so they are written here:
   line; `a -> b -> c` is two edges with the clauses on the last one; a plain
   bare word is a string value (`backend: claw`); `with { n: 3 }` reads `3`
   as text. Every one of these holds in both profiles.
+- **A bot in several files is one program.** `import "lib/x.bot"` lines sit
+  at the head of the main (after `dsl:`, before any declaration); every
+  fragment lives under `lib/` beside the main, may import a sibling by bare
+  name, and holds no `workflow`. The unit compiles as one text: a name
+  declared in two files is refused by name (E010); `validate`, `run`, the
+  studio and the cloud editor read the whole unit, a remote launch uploads
+  it written out as one file, and a fragment validated alone says where it
+  is validated. The run's identity covers every file, so a fragment edited
+  under a parked run is a source change (`--force`). A bundle that imports
+  declares `requires: { iterion: ">= 3.145.0" }` (C252 asks, a push refuses
+  without). `iterion bots create <slug> --template library` is the shape.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
   `-> fail` target carries no code. The engine's own codes are reserved
   (C248 names them: `BUDGET_EXCEEDED`, `TIMEOUT`, … — the list is
@@ -316,7 +328,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `attachment` (`attachments:` in attachments) — description str · accept_mime [str] · required bool
 - `secrets` (`secrets:` in the file) — entries `name: "value"`
 - `secret` (`secrets:` in secrets) — value str · as value|file · mount_path str · env str|id · optional bool · hosts [str] · description str
-- `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · system id · user id · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort low|medium|high|xhigh|max|ultracode · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · permission off|ask|deny · needs id|[id] · fallbacks {fallback} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
+- `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · system id · user id · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · session_slot id · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort low|medium|high|xhigh|max|ultracode · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · permission off|ask|deny · needs id|[id] · fallbacks {fallback} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
 - `router` — description str · mode fan_out_all|fan_out_each|condition|round_robin|llm · model str · backend str · provider str · system id · user id · multi bool · reasoning_effort low|medium|high|xhigh|max|ultracode · over str · as id · key id · depends_on id · needs id|[id]
 - `human` — description str · input id · output id · publish id · artifact_labels [tool] · instructions id · system id · model str · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · min_answers int · await wait_all|best_effort · review_url str · posture human_required|agent_verdict_ok · merge_strategy squash|merge · merge_into str|id · max_turns int
 - `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery} · action id · connection id · params {params} · retry str · timeout str

@@ -42,6 +42,78 @@ const defaultClaudeCodeModel = "claude-opus-5"
 // Workflows can always override via `reasoning_effort:`.
 const defaultClaudeCodeEffort = "xhigh"
 
+// claudeNativeTools is the built-in Claude Code surface which remains present
+// unless explicitly removed with --disallowedTools. The DSL's tools: list is
+// expressed in Iterion aliases (read_file, glob, ...), while
+// --allowedTools only auto-approves matching calls; it does not hide the
+// other native tools. Keep this closed list deliberately small and explicit:
+// MCP tools are supplied separately and must not be guessed here.
+var claudeNativeTools = []string{
+	"Bash", "Read", "Glob", "Grep", "Write", "Edit", "MultiEdit",
+	"NotebookEdit", "Task", "WebFetch", "WebSearch", "ToolSearch",
+	"TodoWrite", "Skill",
+}
+
+// claudeNativeToolsForAllowed maps Iterion declarations to the corresponding
+// Claude Code tool names. Unknown declarations are intentionally not treated
+// as native permissions: they may be an Iterion wrapper or an MCP tool, but
+// must never widen the ambient native surface by accident.
+func claudeNativeToolsForAllowed(allowed []string, diagnosticShell bool) map[string]bool {
+	native := make(map[string]bool)
+	for _, declared := range allowed {
+		switch strings.ToLower(strings.TrimSpace(declared)) {
+		case "bash", "run_command":
+			native["Bash"] = true
+		case "read", "read_file", "readfile", "cat":
+			native["Read"] = true
+		case "glob", "find":
+			native["Glob"] = true
+		case "grep":
+			native["Grep"] = true
+		case "write", "write_file", "file_write":
+			native["Write"] = true
+		case "edit", "edit_file", "file_edit":
+			native["Edit"] = true
+			native["MultiEdit"] = true
+		case "notebook_edit":
+			native["NotebookEdit"] = true
+		case "task":
+			native["Task"] = true
+		case "web_fetch":
+			native["WebFetch"] = true
+		case "web_search":
+			native["WebSearch"] = true
+		case "tool_search":
+			native["ToolSearch"] = true
+		case "todo_write":
+			native["TodoWrite"] = true
+		case "skill":
+			native["Skill"] = true
+		}
+	}
+	if diagnosticShell {
+		native["Bash"] = true
+	}
+	return native
+}
+
+// claudeNativeDisallowedTools turns a non-empty DSL tools: declaration into
+// an actual Claude Code visibility boundary. With no declaration, legacy
+// unrestricted native-tool semantics are preserved.
+func claudeNativeDisallowedTools(allowed []string, diagnosticShell bool) []string {
+	if len(allowed) == 0 {
+		return nil
+	}
+	nativeAllowed := claudeNativeToolsForAllowed(allowed, diagnosticShell)
+	disallowed := make([]string, 0, len(claudeNativeTools))
+	for _, tool := range claudeNativeTools {
+		if !nativeAllowed[tool] {
+			disallowed = append(disallowed, tool)
+		}
+	}
+	return disallowed
+}
+
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
 // via the Claude Agent SDK.
 type ClaudeCodeBackend struct {
@@ -456,6 +528,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	opts = installMaterializeSecretsHook(task, opts)
 	opts = installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
+	opts = b.wireRunsMCP(task, opts, &extraAllowedTools)
 	opts = b.wireUserMCP(task, opts, &extraAllowedTools)
 
 	// Watch capabilities (watch.subscribe / watch.unsubscribe) are wired for
@@ -478,6 +551,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		combined := append([]string(nil), task.AllowedTools...)
 		combined = append(combined, extraAllowedTools...)
 		opts = append(opts, claudesdk.WithAllowedTools(combined...))
+		// WithAllowedTools is an approval list, not an availability boundary.
+		// Remove every undeclared built-in tool as well so a restricted judge
+		// with Read/Glob cannot silently fall back to Bash or a write surface.
+		opts = append(opts, claudesdk.WithDisallowedTools(
+			claudeNativeDisallowedTools(task.AllowedTools, task.DiagnosticShell)...,
+		))
 	}
 
 	// Operator-chatbox mid-session inbox delivery (see helper) and

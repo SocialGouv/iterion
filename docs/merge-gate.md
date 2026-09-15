@@ -20,7 +20,8 @@ The split is deliberate:
   (see [Overriding](#overriding-a-finding)).
 
 This mirrors the repo's standing doctrine: **gates stay deterministic**
-(see `CLAUDE.md` → "Improvement loops must converge"). The reviews
+(see [agents/bot-authoring.md](agents/bot-authoring.md) → "Improvement loops
+must converge"). The reviews
 themselves stay non-blocking advice (`forge.NewReview` never
 approves/requests-changes); the entire gate lives in the separate commit
 status.
@@ -517,6 +518,12 @@ bot.
 
 ### <a name="autofix"></a>Zero-touch: letting a red gate launch the fixer itself (opt-in)
 
+> **State on the iterion repo itself: OFF since 2026-09-15.** The lane was
+> enabled here from 2026-08-28 and is turned off for cost — a fixer campaign
+> re-runs the full build+test per pass on a shared credential. Nothing below
+> changed as a *feature*; only this repo's choice did. Re-arming procedure:
+> [agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused).
+
 By default nothing happens when the gate goes red: the findings are on the pull
 request and the developer decides — fix them, argue one, or hand the work over
 with a `/command`. That is deliberate. A reviewer already leaves the human in
@@ -606,8 +613,9 @@ re-derives it from three scattered sections. This is that place
 - **Hand-off by KIND, never by bot id.** A reviewer's `produces: kind:
   review` and a fixer's `consumes: kind: review_ledger` are what let Billy
   start from Revi's findings and answer them back, with neither manifest
-  naming the other bot — the generic mechanism documented in CLAUDE.md's
-  "The ENGINE stays bot-agnostic" section and exercised end to end in
+  naming the other bot — the generic mechanism documented in
+  [agents/bot-authoring.md](agents/bot-authoring.md)'s "The ENGINE stays
+  bot-agnostic" section and exercised end to end in
   [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
   Adding a second reviewer or a second fixer is a bundle, never an engine
   PR.
@@ -622,16 +630,29 @@ re-derives it from three scattered sections. This is that place
   ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683); before it, a
   parked Billy read as a parked Revi, observed live on PR #646).
 
+<a name="what-is-not-wired"></a>
 **What is NOT wired (yet):**
 
-- **No "fixer in flight" signal exists BEFORE its first push.** From the
-  moment `/billy` (or the zero-touch lane) launches to its first commit,
-  `revi/review` stays green on the OLD head and nothing on the PR says a
-  fixer is working — the only signals are the run console itself and,
-  once it parks, the pause notice above. This is the phase the operator
-  rules below are written for; see
+- **The "fixer in flight" signal is partial, and it is NOT the gate.** The
+  merge-queue auto-heal posts its own context,
+  **`iterion/fix-in-flight`** — deliberately as `success`, so it can never
+  block a merge ([forge_fix_in_flight.go](../pkg/server/forge_fix_in_flight.go)).
+  A `/billy` pass and the zero-touch lane do **not** post it: from launch
+  to first commit `revi/review` stays green on the OLD head and nothing on
+  the PR says a fixer is working, so the run console remains the only
+  signal for those two.
+
+  The heal lane's silence on the gate is a *design choice, not a gap*: it
+  publishes its revision as `fix_head_sha` precisely so `head_sha` does not
+  also arm `markGateInFlight` and make it claim a required check it never
+  answers ([webhooks_github.go](../pkg/server/webhooks_github.go),
+  pinned by `TestMarkFixInFlight_NeverWritesOnTheGateContext`). The
+  consequence for a reader is the part worth remembering: **the gate's
+  `pending` link does not cover the heal lane**, so it can never stand in
+  for the run list. See
   [revi-billy-loop.md's "What to expect on the PR"](revi-billy-loop.md#what-to-expect-on-the-pr)
-  for the exact wording and (SocialGouv/iterion#664) for the tracking card.
+  and (SocialGouv/iterion#664) for the tracking card on the two lanes that
+  still have no pre-push signal.
 
 **Operator rules, one line each:**
 
@@ -639,16 +660,34 @@ re-derives it from three scattered sections. This is that place
    branch; a manual push mid-run recreates the exact collision the "no
    in-flight signal" gap above cannot warn you about. `git pull` after his
    push before resuming any local work on the branch.
-2. **`/billy` is the escalation from a review, not a replacement for one.**
-   Comment it once Revi has left findings — never hand-fix them in a
-   session on this repo (the dogfood habit in
-   [revi-billy-loop.md](revi-billy-loop.md)).
-3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes step 2
-   automatic** on repos that opt in — a red `revi/review` launches the
-   fixer with no comment, bounded by [its own brakes](#autofix). Check
-   `iterion remote runs list` (or the gate's `pending` link) before
-   hand-fixing a red PR: a manual fix racing an already-launched fixer is
-   the same collision as rule 1.
+2. **`/billy` is an escalation from a review, not a replacement for one.**
+   It is comment-driven and costs a full fixer campaign, so whether it is
+   the default answer to findings or a deliberate exception is **the
+   repo's call**, not this page's. On iterion itself the answer is
+   currently *exception* — findings are the developer's to fix through
+   the local review loop
+   ([agents/review-and-merge.md](agents/review-and-merge.md)); the fixer's
+   mechanics and the conditions for re-arming it stay in
+   [revi-billy-loop.md](revi-billy-loop.md).
+3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes the `/billy`
+   escalation of rule 2 automatic** on repos that opt in — a red
+   `revi/review` launches the fixer with no comment, bounded by
+   [its own brakes](#autofix). **`iterion remote runs list` is the check
+   before hand-fixing a red or ejected PR**, whatever that lane is set
+   to: a manual fix racing a running fixer is the same collision as
+   rule 1. The PR's own statuses do not substitute for it — they are
+   *per-lane* and none covers every fixer
+   ([above](#what-is-not-wired)): the gate's `pending` link covers a
+   reviewer and the zero-touch fixer, `iterion/fix-in-flight` covers the
+   auto-heal, and a `/billy` pass shows nothing until its first commit.
+   In particular, turning the lane off does NOT reduce this to "did I
+   type `/billy`": the
+   [merge-queue auto-heal](#auto-heal-and-when-it-stands-down) dispatches
+   the same brancher bot with no comment when the queue ejects the PR
+   **for a healable reason**, and it never consults
+   `auto_fix_on_gate_failure`
+   ([webhooks_github.go](../pkg/server/webhooks_github.go),
+   `NeedsAutoHeal`). A heal in flight force-pushes the branch.
 
 ## Overriding a finding
 
@@ -873,9 +912,46 @@ trace of having considered any of them.
 
 So a **sweep** offers the same runs to the same repair a second time: every
 minute, terminal runs in a bounded window (a 3-minute grace so the two paths
-race only on the dropped ones, a 60-minute lookback so it never reaches back
-and paints a failure onto a long-merged PR). The repair re-reads the live
-status before writing, so the redundant offer costs one API read.
+race only on the dropped ones, a 60-minute lookback on the ordinary pass). The
+repair re-reads the live status before writing, so the redundant offer costs
+one API read.
+
+Every 30th pass reaches the full **horizon** instead — `gateSweepHorizon`,
+anchored on `retrypolicy.DefaultMaxWait` (8 days) — and so does the first pass
+after a start or a rollout. The outage this net exists for is a provider usage
+window, and a weekly one shuts for days: measured 2026-09-15, seven runs died
+on one weekly cap and two gating runs kept a `pending` required check for 81
+hours, because every pass that could have answered them had stopped 80 hours
+earlier. Splitting the two cadences is what makes a horizon of days affordable
+— the per-minute scan stays the size of an hour.
+
+A pass is still capped at `gateSweepMaxPages × gateSweepBatch` rows, and rows
+arrive newest-first — so a deep pass that restarted at the newest end every
+time would re-examine the same recent rows forever and never reach the old
+ones, which are precisely the batch-death runs the horizon exists for. A deep
+pass that runs out of budget therefore **returns its cursor**, and the next one
+resumes there; when it exhausts the window (or the cursor cannot advance) it
+starts fresh at the newest end. Successive deep passes descend toward the
+horizon instead of starving its far edge. The cursor is per-replica and in
+memory: the repair is idempotent, so a lost cursor costs a re-scan, and two
+replicas at different depths cover more of the window rather than less. The
+fast pass always starts at the newest end, so a deep pass parked in the past
+never delays a fresh death.
+
+What keeps a long reach safe is not the bound but the repair's own live reads:
+it stands down on a closed or merged pull request, on a head that has moved
+since the run reviewed it, and on a check that already carries a real verdict.
+And what bounds it is the **grant**, which is why the post-run grace comes in
+two: `forgePublishGateGrace` is *derived* from the horizon, since a grant
+expiring first would turn every later pass into a guaranteed abstain that reads
+exactly like a net still trying — while every run that owes no verdict keeps
+the ordinary short `forgePublishPostRunGrace`. Both halves matter:
+`forgePublishMaxTokens` is sized as `1024 × days(TTL)` on the argument that
+terminal eviction holds the steady state near "gating launches in flight", and
+on the in-memory registry saturation *refuses a launch*. The predicate that
+routes between the two graces is `runOwesGateVerdict` — the reconciler's own,
+read by the reaper, so the credential lives exactly as long as the thing that
+needs it says a repair may still happen.
 
 Telling "already answered" from "must escalate" is what makes the second offer
 safe, and the answer turns on WHOSE marker is on the head. **Its own** — the
@@ -922,8 +998,9 @@ run itself.
 A TTL sized for a seven-day quota wait is a long life for a credential that a
 normal review needs for minutes. So the run's terminal outcome brings the
 expiry forward: the same run-outcome event the reconciler consumes shortens the
-grant to the reconciler's own window (the sweep lookback plus a margin), after
-which nothing revisits the run and the grant has no reader left. Two shapes
+grant to the reconciler's own window (the sweep **horizon** plus a margin, and
+derived from it in code so the two cannot drift apart), after which nothing
+revisits the run and the grant has no reader left. Two shapes
 keep the full TTL, because something *will* come back and post their own
 verdict — a **paused** run, and a `failed_resumable` one with an **armed**
 retry. "Abandoned" is not re-derived here: the retry sweeper enforces the

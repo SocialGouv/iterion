@@ -106,7 +106,7 @@ func (wc worktreeContext) anchor() string {
 // containing repoHint (typically the engine's workDir before override).
 // On success returns the worktreeContext, a cleanup closure
 // (`git worktree remove --force <path>`), and nil error.
-func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (worktreeContext, func(), error) {
+func setupWorktree(storeRoot, runID, repoHint, baseCommit string, logger *iterlog.Logger) (worktreeContext, func(), error) {
 	repoRoot, err := findGitRoot(repoHint)
 	if err != nil {
 		return worktreeContext{}, nil, fmt.Errorf("locate git repo: %w", err)
@@ -163,7 +163,22 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 	// from repoRoot, where `HEAD` means the main checkout's HEAD and not the
 	// anchor's. Any working-tree state (staged, unstaged, untracked) is
 	// intentionally NOT copied — that is the whole point of isolation.
-	startPoint := originalTip
+	startPoint := strings.TrimSpace(baseCommit)
+	if startPoint != "" {
+		verify, verifyCancel := gitCmd("-C", repoRoot, "rev-parse", "--verify", startPoint+"^{commit}")
+		out, verifyErr := verify.CombinedOutput()
+		verifyCancel()
+		if verifyErr != nil {
+			return worktreeContext{}, nil, fmt.Errorf("verify delegated worktree base %s: %w (output: %s)", startPoint, verifyErr, strings.TrimSpace(string(out)))
+		}
+		originalTip = startPoint
+		// An explicit snapshot is not the operator's checked-out branch. It
+		// must never acquire implicit fast-forward authority.
+		originalBranch = ""
+	}
+	if startPoint == "" {
+		startPoint = originalTip
+	}
 	if startPoint == "" {
 		startPoint = "HEAD"
 	}

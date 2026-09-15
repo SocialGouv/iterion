@@ -714,6 +714,21 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	locks, err := acquireAuthoringLocalLocks(r.Context(), []string{abs})
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	defer closeAuthoringLocalLocks(locks)
+	fresh, ok := s.resolveRunWorktreePath(w, r, run, req.Path)
+	if !ok {
+		return
+	}
+	if fresh != abs {
+		s.httpErrorFor(w, r, http.StatusConflict, "run file path changed while waiting to save")
+		return
+	}
+
 	// #nosec G304 — abs is the output of safePathWithin (symlink-aware
 	// containment against run.WorkDir); request input cannot escape the
 	// worktree.
@@ -722,7 +737,7 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// #nosec G304 — see rationale above; abs is containment-checked.
-	if err := os.WriteFile(abs, []byte(req.Content), 0o644); err != nil {
+	if err := locks[0].writeEditorFile([]byte(req.Content), false, nil); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "write: %v", err)
 		return
 	}

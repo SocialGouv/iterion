@@ -17,6 +17,8 @@ on GitLab — the issue-label → PR lineage).
 | Var | Required | Description |
 |---|---|---|
 | `feature_prompt` | yes | High-level description of the feature, with a clear done-state |
+| `failure_context` | no | Host-attested failed-run envelope for cross-project delegation |
+| `delegation_instructions` | no | Operator-approved scope for the delegated worker |
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` (the run's worktree — do not override) |
 | `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
 | `max_passes` | no | Continuation-loop cap (default 8) |

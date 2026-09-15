@@ -248,11 +248,18 @@ func handleLocalBotsList(_ context.Context, s *Server, raw json.RawMessage) (str
 	if len(existing) == 0 {
 		return fmt.Sprintf("[]\n(no bot paths found under %s: looked for %s)", s.WorkDir, strings.Join(paths, ", ")), false, nil
 	}
-	var buf strings.Builder
-	if err := cli.BotsList(cli.BotsListOptions{Paths: existing, Format: "json"}, &buf); err != nil {
+	var buf, warnBuf strings.Builder
+	if err := cli.BotsList(cli.BotsListOptions{Paths: existing, Format: "json", ErrW: &warnBuf}, &buf); err != nil {
 		return "", false, err
 	}
-	return strings.TrimSpace(buf.String()), false, nil
+	out := strings.TrimSpace(buf.String())
+	// The operator driving iterion through MCP must also SEE a skipped
+	// bundle: the warnings ride after the JSON payload as plain text (the
+	// tool result is LLM-consumed, not machine-parsed).
+	if warnings := strings.TrimSpace(warnBuf.String()); warnings != "" {
+		out += "\n" + warnings
+	}
+	return out, false, nil
 }
 
 // runSummary is the compact per-run projection local_runs_list returns.

@@ -72,7 +72,7 @@ func render(f *ast.File, strict bool, profile int) (string, bool) {
 }
 
 func (w *fileWriter) writeFile(f *ast.File) {
-	w.writeHead(f.Comments)
+	w.writeHead(f.Comments, f.Imports)
 	w.writeVars(f.Vars)
 	w.writePresets(f.Presets)
 	w.writeAttachments(f.Attachments)
@@ -324,7 +324,7 @@ func (w *fileWriter) blankLine() {
 // escape directive, which the lexer reads among the first 32 lines before
 // the first line of code, then the other comments, then, from profile 2,
 // the `dsl: N` header on the first significant line (parser.ReadPreamble).
-func (w *fileWriter) writeHead(comments []*ast.Comment) {
+func (w *fileWriter) writeHead(comments []*ast.Comment, imports []*ast.ImportDecl) {
 	fm := frontmatterLen(comments)
 	w.writeComments(comments[:fm])
 	if w.writeDirective {
@@ -336,6 +336,17 @@ func (w *fileWriter) writeHead(comments []*ast.Comment) {
 			w.b.WriteByte('\n')
 		}
 		fmt.Fprintf(&w.b, "dsl: %d\n", w.profile)
+		w.needBlank = true
+	}
+	// The imports follow the header (or the comments, in profile 1), one
+	// per line, before any declaration — where the parser reads them.
+	if len(imports) > 0 {
+		if w.profile <= ast.DefaultProfile && w.b.Len() > 0 {
+			w.b.WriteByte('\n')
+		}
+		for _, im := range imports {
+			fmt.Fprintf(&w.b, "import %s\n", QuoteStrict(im.Path))
+		}
 		w.needBlank = true
 	}
 }
@@ -526,7 +537,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider, Command: a.Command,
 			Input: a.Input, Output: a.Output, Publish: a.Publish, ArtifactLabels: a.ArtifactLabels,
-			System: a.System, User: a.User, Session: a.Session,
+			System: a.System, User: a.User, Session: a.Session, SessionSlot: a.SessionSlot,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Timeout:  a.Timeout,
@@ -563,7 +574,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider, Command: j.Command,
 			Input: j.Input, Output: j.Output, Publish: j.Publish, ArtifactLabels: j.ArtifactLabels,
-			System: j.System, User: j.User, Session: j.Session,
+			System: j.System, User: j.User, Session: j.Session, SessionSlot: j.SessionSlot,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Timeout:  j.Timeout,
@@ -1422,6 +1433,7 @@ type llmFields struct {
 	ArtifactLabels                      []string
 	System, User                        string
 	Session                             ast.SessionMode
+	SessionSlot                         string
 	Tools, ToolPolicy                   []string
 	Capabilities                        []string
 	Skills                              []string
@@ -1476,6 +1488,9 @@ func writeAgentFields(b *buf, f llmFields) {
 	// `session: fresh` line that wasn't in the source).
 	if f.Session != ast.SessionFresh {
 		writeProp(b, "session", f.Session.String())
+	}
+	if f.SessionSlot != "" {
+		writeIdentProp(b, "session_slot", f.SessionSlot)
 	}
 	if len(f.Tools) > 0 {
 		fmt.Fprintf(b, "  tools: [%s]\n", strings.Join(f.Tools, ", "))

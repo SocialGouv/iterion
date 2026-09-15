@@ -1,0 +1,17 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: a bot in several files.
+##
+## main.bot keeps the imports, the vars and the workflow. The schemas live
+## in lib/schemas.bot and the nodes in lib/nodes.bot: each `import` names
+## a fragment under lib/, relative to this file, and the files compile as
+## ONE program — a name declared in two of them is refused by name (E010),
+## a fragment holds no workflow, and every surface (validate, run, resume,
+## the studio) reads the whole unit. Fill in: the mission (in
+## lib/nodes.bot), the schemas, the graph. docs/dsl.md#import
+
+dsl: 2
+import "lib/schemas.bot"
+import "lib/nodes.bot"
+<%template "vars_block" .%>
+workflow <%.WorkflowName%>:
+  entry: campaign<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>
+  campaign -> done

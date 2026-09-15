@@ -22,7 +22,7 @@ func TestExecutorSpecBindsInboxAndAsyncAsk(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
-	msg := &queue.RunMessage{RunID: "run-spec", WorkflowName: "wf"}
+	msg := &queue.RunMessage{RunID: "run-spec", WorkflowName: "wf", Permission: "deny"}
 
 	spec, usage, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, iterlog.Nop(), nil)
 	if err != nil {
@@ -36,6 +36,9 @@ func TestExecutorSpecBindsInboxAndAsyncAsk(t *testing.T) {
 	}
 	if spec.AsyncAsk == nil {
 		t.Fatal("ExecutorSpec.AsyncAsk not bound — ask_user_async would have no store on a pod")
+	}
+	if spec.Permission != "deny" {
+		t.Fatalf("ExecutorSpec.Permission = %q, want run-level deny from queue", spec.Permission)
 	}
 	if spec.Inbox.Bind(context.Background(), msg.RunID) == nil {
 		t.Fatal("inbox binder refuses to bind for the run — store not wired through")
