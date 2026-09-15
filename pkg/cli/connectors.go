@@ -88,6 +88,21 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		return err
 	}
 
+	// Regenerating without the flag over a package that HAS contracts drops
+	// them: the package goes back to format 1 and responses.json is removed.
+	// That is the right write — a v1 package must not keep a v2 artifact — but
+	// it silently un-makes a choice the operator made on a previous run, so it
+	// is said out loud. A warning rather than a refusal: dropping contracts is
+	// a legitimate thing to want, and only an invisible drop is a defect.
+	if !opts.ValidateResponses {
+		if _, statErr := os.Stat(filepath.Join(opts.Out, spec.ResponsesFile)); statErr == nil {
+			fmt.Fprintf(out, "warning: %s exists and --validate-responses was not given: the regenerated package drops its response contracts and returns to format %d\n",
+				filepath.Join(opts.Out, spec.ResponsesFile), spec.LegacySchemaVersion)
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
+	}
+
 	pkg, report, err := gen.Generate(data, gen.Options{
 		ConnectorID:             opts.ID,
 		Version:                 opts.Version,
