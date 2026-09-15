@@ -205,8 +205,25 @@ func TestOAuthRefreshIdentifiesTheReturnedBearer(t *testing.T) {
 				wantAccount, wantEmail = accountA, "account-a@example.invalid"
 			}
 			if tc.unavailable {
-				if secrets.IsAccountFingerprint(rec.Fingerprint) || rec.AccountID != "" || rec.AccountOrganizationID != "" || rec.AccountEmail != "" || rec.AccountCheckedAt != nil || rec.AccountError == "" {
-					t.Fatal("failed profile lookup retained a verified identity")
+				// A rotated bearer whose profile could not be READ has not
+				// confirmed anything, so the identity claim drops — the
+				// posture this test was written to hold.
+				if rec.AccountID != "" || rec.AccountOrganizationID != "" || rec.AccountEmail != "" || rec.AccountCheckedAt != nil {
+					t.Fatalf("an unread profile still asserted an identity: %+v", rec)
+				}
+				if rec.AccountError == "" {
+					t.Fatal("the failed pass left no trace: a run of these must be visible, not silent")
+				}
+				// The METER is a different fact, and a 503 disproved nothing
+				// about it. It used to be re-keyed to the hash of the
+				// just-rotated payload — a value the next refresh rotates
+				// away — so usagecap.Key stopped resolving to the account
+				// scope, Latest returned no readings, and the closed-window
+				// skip this PR exists to provide went quiet until some later
+				// lookup happened to succeed. The key stays put; only the
+				// claim on it is withdrawn.
+				if !secrets.IsAccountFingerprint(rec.Fingerprint) {
+					t.Fatalf("fingerprint = %q: an unavailable lookup un-keyed the usage ledger", rec.Fingerprint)
 				}
 				wantEmail = ""
 			} else {

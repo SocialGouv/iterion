@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,26 @@ import (
 
 const anthropicProfileURL = "https://api.anthropic.com/api/oauth/profile"
 const accountFingerprintPrefix = "account:anthropic:"
+
+// ErrAccountLookupUnavailable marks a profile lookup that could not be
+// PERFORMED — a transport failure, a 429, a 5xx, a body no parser
+// recognises. It disproves nothing, which is the point of naming it: only
+// a definitive answer (a bearer the provider refuses, or a 200 naming a
+// different account) is evidence about whose subscription this is.
+//
+// It exists because a refreshed record carries two facts the failure path
+// used to collapse into one. Whether the identity is CONFIRMED is a
+// verification fact, and a rotated bearer whose profile could not be read
+// has indeed not confirmed it. Which meter the spend belongs to is a
+// CONTINUITY fact, and a 503 says nothing about the subscription having
+// changed. usagecap.Key reads the fingerprint ALONE — never AccountID — so
+// re-minting SubscriptionFingerprint on an unavailable lookup files the
+// next readings under the hash of a payload the next refresh rotates away,
+// and the closed-window skip stops protecting that forfait in silence.
+//
+// The text is terse because it composes into AccountError, which an
+// operator reads: "anthropic profile: HTTP 503: lookup unavailable".
+var ErrAccountLookupUnavailable = errors.New("lookup unavailable")
 
 // OAuthAccount is identity returned by the provider, never inferred from an
 // operator label or a reset time. An account can have seats in several provider
@@ -71,23 +92,29 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicProfileURL, nil)
 	if err != nil {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: request construction failed")
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: request construction failed: %w", ErrAccountLookupUnavailable)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: request failed")
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: request failed: %w", ErrAccountLookupUnavailable)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: HTTP %d", resp.StatusCode)
+		// 401/403 is the provider refusing THIS bearer — the only status
+		// that says something about the credential. Every other one (429,
+		// any 5xx, an endpoint that moved) is the lookup being unavailable.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return OAuthAccount{}, fmt.Errorf("anthropic profile: HTTP %d", resp.StatusCode)
+		}
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: HTTP %d: %w", resp.StatusCode, ErrAccountLookupUnavailable)
 	}
 	const maxProfileBytes = 64 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileBytes+1))
 	if err != nil || len(body) > maxProfileBytes {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: unreadable or oversized response")
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: unreadable or oversized response: %w", ErrAccountLookupUnavailable)
 	}
 	var profile struct {
 		Account struct {
@@ -99,12 +126,16 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 		} `json:"organization"`
 	}
 	if err := json.Unmarshal(body, &profile); err != nil {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: malformed response")
+		// A captive portal, or an error envelope served with 200. Neither is
+		// the provider saying anything about this credential.
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: malformed response: %w", ErrAccountLookupUnavailable)
 	}
 	a := OAuthAccount{ID: profile.Account.UUID, OrganizationID: profile.Organization.UUID, Email: strings.TrimSpace(profile.Account.Email)}
 	addr, err := mail.ParseAddress(a.Email)
 	if a.Fingerprint() == "" || err != nil || addr.Address != a.Email || len(a.Email) > 320 || strings.ContainsAny(a.Email, "\r\n\t") {
-		return OAuthAccount{}, fmt.Errorf("anthropic profile: missing or invalid account identity")
+		// Parsed, but naming no usable identity — a shape this code does not
+		// recognise, not a statement that another account owns the bearer.
+		return OAuthAccount{}, fmt.Errorf("anthropic profile: missing or invalid account identity: %w", ErrAccountLookupUnavailable)
 	}
 	return a, nil
 }
@@ -114,26 +145,55 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 // endpoint override is not proof of that relationship either. A failed lookup
 // must preserve rotated tokens but cannot assert the previous bearer identity.
 func identifyRefreshedAnthropicAccount(ctx context.Context, hc *http.Client, rec *OAuthRecord, payload []byte, token string) {
-	previousEmail := rec.AccountEmail
-	rec.accountUpdate = &OAuthAccountUpdate{PreviousEmail: previousEmail}
+	rec.accountUpdate = &OAuthAccountUpdate{PreviousEmail: rec.AccountEmail}
+	defer func() {
+		rec.accountUpdate.ID, rec.accountUpdate.OrganizationID, rec.accountUpdate.Email = rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail
+		rec.accountUpdate.CheckedAt, rec.accountUpdate.Error = rec.AccountCheckedAt, rec.AccountError
+	}()
+
+	// The identity claim always drops: this bearer is not the one that was
+	// verified, and nothing below re-asserts it without proof.
 	rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail = "", "", ""
 	rec.AccountCheckedAt = nil
-	rec.AccountError = "Profile unavailable: this credential has no user:profile scope; reconnect through the browser to identify the account."
-	if slices.Contains(rec.Scopes, "user:profile") {
-		account, err := DiscoverAnthropicAccount(ctx, hc, token)
-		if err == nil {
-			now := time.Now().UTC()
-			rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail = account.ID, account.OrganizationID, account.Email
-			rec.AccountCheckedAt, rec.AccountError = &now, ""
-			rec.Fingerprint = account.Fingerprint()
-		} else {
-			rec.AccountError = err.Error()
-		}
+
+	if !slices.Contains(rec.Scopes, "user:profile") {
+		// Definitive, and no retry changes it: this bearer cannot be
+		// identified at all, so its meter returns to a local one too.
+		rec.AccountError = "Profile unavailable: this credential has no user:profile scope; reconnect through the browser to identify the account."
+		demoteToLocalMeter(rec, payload)
+		return
 	}
-	if rec.AccountID == "" && IsAccountFingerprint(rec.Fingerprint) {
-		// Without proof, this bearer returns to a local, unverified meter.
+
+	account, err := DiscoverAnthropicAccount(ctx, hc, token)
+	switch {
+	case err == nil:
+		now := time.Now().UTC()
+		rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail = account.ID, account.OrganizationID, account.Email
+		rec.AccountCheckedAt, rec.AccountError = &now, ""
+		rec.Fingerprint = account.Fingerprint()
+	case errors.Is(err, ErrAccountLookupUnavailable):
+		// The claim is dropped above, as the posture requires — but the
+		// METER is a different fact, and this outcome disproved nothing
+		// about it. Keeping the fingerprint is what lets the readings keep
+		// accumulating under the key they were filed under; minting a new
+		// SubscriptionFingerprint here would move them to the hash of a
+		// payload the next refresh rotates away, which no reader can find.
+		rec.AccountError = err.Error()
+	default:
+		// The provider answered about THIS bearer: refused it, or named
+		// another account. Either way the meter must not follow.
+		rec.AccountError = err.Error()
+		demoteToLocalMeter(rec, payload)
+	}
+}
+
+// demoteToLocalMeter returns a credential whose account was DEFINITIVELY
+// disproved to a local, unverified meter. Reserved for that case: it costs
+// the account fingerprint, which is the shared, rotation-stable key every
+// tier's usage readings are filed under (usagecap.Key promotes the scope to
+// "account" on it alone), and replaces it with the hash of one payload.
+func demoteToLocalMeter(rec *OAuthRecord, payload []byte) {
+	if IsAccountFingerprint(rec.Fingerprint) {
 		rec.Fingerprint = SubscriptionFingerprint(rec.Kind, payload)
 	}
-	rec.accountUpdate.ID, rec.accountUpdate.OrganizationID, rec.accountUpdate.Email = rec.AccountID, rec.AccountOrganizationID, rec.AccountEmail
-	rec.accountUpdate.CheckedAt, rec.accountUpdate.Error = rec.AccountCheckedAt, rec.AccountError
 }
