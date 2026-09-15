@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"sort"
 	"strings"
 	"sync"
@@ -2830,17 +2831,33 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 		}
 		parserPath = filepath.Join(bundleDir, entry)
 	}
-	pr := parser.Parse(parserPath, src)
-	for _, d := range pr.Diagnostics {
+	// The program that travels is the UNIT's: the entry's text as its main
+	// — the snapshot's file, or the studio's document — with the fragments
+	// its imports reach read beside the entry in the snapshot, merged into
+	// one file with no import line left, since the runner compiles the AST
+	// it receives and never reads a file beside it. An inline upload has no
+	// files beside its source: an import it carries is refused here, with
+	// the remedy, rather than compiled on the pod with its pieces missing.
+	var u *unit.Unit
+	if bundleDir != "" || source == "" {
+		u = unit.LoadDirWithMain(parserPath, parserPath, []byte(src))
+	} else {
+		u = unit.LoadMap(map[string]string{parserPath: src}, parserPath)
+		if len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
+			return nil, fmt.Errorf("cloudpublisher: %w — launch the bot as a bundle", runview.ErrInlineImport)
+		}
+	}
+	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", parserPath, d.Error())
 		}
 	}
-	if pr.File == nil {
+	file := u.Merged
+	if file == nil {
 		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
 	}
 	if source != "" && bundleDir == "" {
-		for _, p := range pr.File.Prompts {
+		for _, p := range file.Prompts {
 			if ir.HasPromptInclude(p.Body) {
 				return nil, fmt.Errorf("cloudpublisher: prompt %q uses {{include}}, which an inline launch cannot carry (the included file is not uploaded with the source) — launch the bot as a bundle", p.Name)
 			}
@@ -2851,17 +2868,17 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 		if err != nil {
 			return nil, fmt.Errorf("cloudpublisher: open snapshotted bundle: %w", err)
 		}
-		if err := runview.MergeBundlePrompts(pr.File, b); err != nil {
+		if err := runview.MergeBundlePrompts(file, b); err != nil {
 			return nil, err
 		}
 	}
 	// The AST that travels must compile on a pod that has none of the files
 	// beside the source: every include is resolved into its prompt body here,
 	// on the server that has them.
-	if err := ir.InlinePromptIncludes(pr.File); err != nil {
+	if err := ir.InlinePromptIncludes(file); err != nil {
 		return nil, fmt.Errorf("cloudpublisher: %w", err)
 	}
-	body, err := ast.MarshalFile(pr.File)
+	body, err := ast.MarshalFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("cloudpublisher: marshal IR: %w", err)
 	}

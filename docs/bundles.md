@@ -78,6 +78,8 @@ my-bot/
 │   └── probe.md
 ├── prompts/           # optional — reusable .md prompts (flat: a file in a subdirectory is not read)
 │   └── helper.md
+├── lib/               # optional — fragments main.bot imports (`import "lib/nodes.bot"`)
+│   └── nodes.bot
 ├── attachments/       # optional — default values for `attachments:` block
 │   └── logo.png
 └── presets/           # optional — file-based presets ("sous-bots")
@@ -90,6 +92,7 @@ my-bot/
 | `manifest.yaml`   | Bundle metadata (name, version, schema_version, optional `attachments:` map). Optional. |
 | `skills/`         | Claude Code skills. Mirrored into `<workDir>/.claude/skills/` at run time. Workspace files always win on collision (warn-logged). |
 | `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. An `{{include "x.md"}}` inside one resolves next to that file, inside `prompts/`. |
+| `lib/`            | Fragments of a bot in several files: `.bot` files `main.bot` imports (`import "lib/x.bot"`, [dsl.md](dsl.md#import--a-bot-in-several-files)), merged with it into one program. Never a bot of their own; a bundle that imports declares `requires.iterion` at or above v3.145.0 (C252, 409). |
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
 | `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
 
@@ -172,6 +175,14 @@ stamps on the runs it executes. The cost is named: a fork or a backport
 carrying the feature under a different version reads as too old, and a build
 with no orderable version (`dev`, a fork's scheme) makes the check
 *inconclusive*, which is reported, never passed in silence.
+
+Two things a bundle's sources use ask for a floor by themselves: a syntax
+profile above 1 (`dsl: 2`, read since v3.141.0) and `import "lib/x.bot"` (a
+bot in several files, read since v3.145.0). A cloud runner receives the main
+workflow as an AST but parses a subbot child, and a fragment, as text with
+its own binary, so a build older than the release fails at that parse — after
+admission, on a pod. `iterion validate` says so (C252), and a push refuses
+the bundle without the floor (409, `--force` overrides).
 
 Four surfaces honour it, all through the same predicate
 (`bundle.CheckManifestEngine`):

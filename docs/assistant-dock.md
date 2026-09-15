@@ -120,7 +120,7 @@ chat:
 that listing, and a picker appears in the dock header the moment a second
 bot declares one. Adding a chat bot needs **no studio code** — the same
 rule that keeps the engine free of bot ids
-([CLAUDE.md](../CLAUDE.md), "The ENGINE stays bot-agnostic").
+([agents/bot-authoring.md](agents/bot-authoring.md), "The ENGINE stays bot-agnostic").
 
 Two ship today:
 

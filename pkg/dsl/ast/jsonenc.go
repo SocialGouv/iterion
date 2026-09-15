@@ -116,6 +116,7 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 
 type jsonFile struct {
 	Profile      int                     `json:"profile,omitempty"`
+	Imports      []string                `json:"imports,omitempty"`
 	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
 	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
 	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
@@ -147,6 +148,9 @@ type jsonFile struct {
 // declared (never pre-expanded), so the runner compiles the same program
 // the author wrote and a canvas save keeps the macro.
 type jsonGroupDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File     string              `json:"file,omitempty"`
 	Name     string              `json:"name,omitempty"`
 	Params   []string            `json:"params,omitempty"`
 	Agents   []*jsonAgentDecl    `json:"agents,omitempty"`
@@ -160,20 +164,32 @@ type jsonGroupDecl struct {
 
 // jsonUseDecl mirrors UseDecl (`use <group> as <prefix> with { … }`).
 type jsonUseDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string           `json:"file,omitempty"`
 	Group  string           `json:"group,omitempty"`
 	Prefix string           `json:"prefix,omitempty"`
 	With   []*jsonWithEntry `json:"with,omitempty"`
 }
 
 type jsonComment struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File string `json:"file,omitempty"`
 	Text string `json:"text,omitempty"`
 }
 
 type jsonVarsBlock struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string          `json:"file,omitempty"`
 	Fields []*jsonVarField `json:"fields,omitempty"`
 }
 
 type jsonVarField struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File    string       `json:"file,omitempty"`
 	Name    string       `json:"name,omitempty"`
 	Type    string       `json:"type,omitempty"`
 	Enum    []string     `json:"enum,omitempty"`
@@ -181,10 +197,16 @@ type jsonVarField struct {
 }
 
 type jsonSecretsBlock struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string             `json:"file,omitempty"`
 	Fields []*jsonSecretField `json:"fields,omitempty"`
 }
 
 type jsonSecretField struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string   `json:"file,omitempty"`
 	Name        string   `json:"name,omitempty"`
 	Value       string   `json:"value,omitempty"`
 	As          string   `json:"as,omitempty"`
@@ -196,10 +218,16 @@ type jsonSecretField struct {
 }
 
 type jsonPresetsBlock struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File    string        `json:"file,omitempty"`
 	Entries []*jsonPreset `json:"entries,omitempty"`
 }
 
 type jsonPreset struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string             `json:"file,omitempty"`
 	Name   string             `json:"name,omitempty"`
 	Values []*jsonPresetValue `json:"values,omitempty"`
 }
@@ -210,10 +238,16 @@ type jsonPresetValue struct {
 }
 
 type jsonAttachmentsBlock struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string                 `json:"file,omitempty"`
 	Fields []*jsonAttachmentField `json:"fields,omitempty"`
 }
 
 type jsonAttachmentField struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string   `json:"file,omitempty"`
 	Name        string   `json:"name,omitempty"`
 	Type        string   `json:"type,omitempty"` // "file" | "image"
 	Required    *bool    `json:"required,omitempty"`
@@ -231,6 +265,9 @@ type jsonLiteral struct {
 }
 
 type jsonMCPServerDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File      string           `json:"file,omitempty"`
 	Name      string           `json:"name,omitempty"`
 	Transport string           `json:"transport,omitempty"`
 	Command   string           `json:"command,omitempty"`
@@ -272,12 +309,18 @@ type jsonMemoryBlock struct {
 }
 
 type jsonPromptDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string `json:"file,omitempty"`
 	Name   string `json:"name,omitempty"`
 	Body   string `json:"body,omitempty"`
 	Inline bool   `json:"inline,omitempty"`
 }
 
 type jsonCursorDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string                 `json:"file,omitempty"`
 	Name        string                 `json:"name,omitempty"`
 	Description string                 `json:"description,omitempty"`
 	Values      []*jsonCursorEnumValue `json:"values,omitempty"`
@@ -299,6 +342,9 @@ type jsonCursorBand struct {
 // declaration missing here compiles fine locally and silently vanishes on
 // every runner pod (the supervisor never spawns, no skip logged).
 type jsonSupervisorDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File     string   `json:"file,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	Watches  []string `json:"watches,omitempty"`
 	Model    string   `json:"model,omitempty"`
@@ -335,6 +381,9 @@ type jsonCursorSetting struct {
 }
 
 type jsonSchemaDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File   string             `json:"file,omitempty"`
 	Name   string             `json:"name,omitempty"`
 	Fields []*jsonSchemaField `json:"fields,omitempty"`
 }
@@ -346,6 +395,9 @@ type jsonSchemaField struct {
 }
 
 type jsonAgentDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File              string               `json:"file,omitempty"`
 	Name              string               `json:"name,omitempty"`
 	Description       string               `json:"description,omitempty"`
 	Model             string               `json:"model,omitempty"`
@@ -388,6 +440,9 @@ type jsonAgentDecl struct {
 }
 
 type jsonJudgeDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File              string               `json:"file,omitempty"`
 	Name              string               `json:"name,omitempty"`
 	Description       string               `json:"description,omitempty"`
 	Model             string               `json:"model,omitempty"`
@@ -430,6 +485,9 @@ type jsonJudgeDecl struct {
 }
 
 type jsonRouterDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File            string   `json:"file,omitempty"`
 	Name            string   `json:"name,omitempty"`
 	Description     string   `json:"description,omitempty"`
 	Mode            string   `json:"mode,omitempty"`
@@ -448,6 +506,9 @@ type jsonRouterDecl struct {
 }
 
 type jsonHumanDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File              string   `json:"file,omitempty"`
 	Name              string   `json:"name,omitempty"`
 	Description       string   `json:"description,omitempty"`
 	Input             string   `json:"input,omitempty"`
@@ -470,6 +531,9 @@ type jsonHumanDecl struct {
 }
 
 type jsonToolNodeDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File           string             `json:"file,omitempty"`
 	Name           string             `json:"name,omitempty"`
 	Description    string             `json:"description,omitempty"`
 	Command        string             `json:"command,omitempty"`
@@ -665,6 +729,9 @@ func sandboxNetworkBlockFromJSON(j *jsonSandboxNetworkBlock) *SandboxNetworkBloc
 }
 
 type jsonComputeDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File           string             `json:"file,omitempty"`
 	Name           string             `json:"name,omitempty"`
 	Description    string             `json:"description,omitempty"`
 	Input          string             `json:"input,omitempty"`
@@ -681,6 +748,9 @@ type jsonComputeExpr struct {
 }
 
 type jsonSubbotDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string           `json:"file,omitempty"`
 	Name        string           `json:"name"`
 	Description string           `json:"description,omitempty"`
 	Source      string           `json:"source,omitempty"`
@@ -691,6 +761,9 @@ type jsonSubbotDecl struct {
 }
 
 type jsonEmitDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string           `json:"file,omitempty"`
 	Name        string           `json:"name,omitempty"`
 	Description string           `json:"description,omitempty"`
 	Event       string           `json:"event,omitempty"`
@@ -698,6 +771,9 @@ type jsonEmitDecl struct {
 }
 
 type jsonWaitDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string `json:"file,omitempty"`
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"`
 	Event       string `json:"event,omitempty"`
@@ -706,6 +782,9 @@ type jsonWaitDecl struct {
 }
 
 type jsonAwaitAnswersDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string `json:"file,omitempty"`
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"`
 	From        string `json:"from,omitempty"`
@@ -713,6 +792,9 @@ type jsonAwaitAnswersDecl struct {
 }
 
 type jsonFailDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File        string `json:"file,omitempty"`
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"`
 	Code        string `json:"code,omitempty"`
@@ -721,6 +803,9 @@ type jsonFailDecl struct {
 }
 
 type jsonWorkflowDecl struct {
+	// File is the declaration's file of origin, set by
+	// MarshalFileWithProvenance alone: the transport never carries it.
+	File           string                `json:"file,omitempty"`
 	Name           string                `json:"name,omitempty"`
 	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
 	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
@@ -934,6 +1019,9 @@ func toJSON(f *File) *jsonFile {
 		jf.Comments = append(jf.Comments, &jsonComment{Text: c.Text})
 	}
 	jf.Profile = f.Profile
+	for _, im := range f.Imports {
+		jf.Imports = append(jf.Imports, im.Path)
+	}
 
 	return jf
 }
@@ -1564,7 +1652,14 @@ func UnmarshalFile(data []byte) (*File, error) {
 	if err := rejectNilElements(reflect.ValueOf(&jf), "document"); err != nil {
 		return nil, err
 	}
-	return fromJSON(&jf)
+	f, err := fromJSON(&jf)
+	if err != nil {
+		return nil, err
+	}
+	// A document that came with provenance (MarshalFileWithProvenance)
+	// parses back into an AST whose spans name their files.
+	readProvenance(reflect.ValueOf(&jf), reflect.ValueOf(f))
+	return f, nil
 }
 
 // rejectNilElements refuses a document with a null where a declaration is
@@ -1818,6 +1913,9 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		f.Comments = append(f.Comments, &Comment{Text: jc.Text})
 	}
 	f.Profile = jf.Profile
+	for _, p := range jf.Imports {
+		f.Imports = append(f.Imports, &ImportDecl{Path: p})
+	}
 
 	return f, nil
 }

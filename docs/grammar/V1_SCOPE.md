@@ -55,7 +55,7 @@ Environment references use `${...}`. Tool commands distinguish shell-escaped
 
 | Concept | Boundary |
 |---|---|
-| General source modules/imports | Prompt files can be included and groups can be expanded, but a `.bot` cannot import arbitrary declarations from another source file. Use a `subbot` for runtime composition. |
+| General source modules/imports | `import "lib/x.bot"` at the head of a file merges fragments under `lib/` into ONE program (every declaration kind; keyed blocks by key; a name declared twice is E010). It is not a module system: no selective import, no renaming, no path outside the bot's `lib/`. A `subbot` is the runtime composition. |
 | Multiple workflows in one file | The parser can represent them, but IR compilation emits C007; one file selects exactly one workflow. |
 | Nested schema declarations | Schemas remain flat; use `json` for nested or open shapes. |
 | Runtime node creation or inheritance | Groups clone a statically declared cluster at compile time; they do not create dynamic graph nodes or provide `extends`. |

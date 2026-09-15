@@ -3,6 +3,54 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.145.1](https://github.com/SocialGouv/iterion/compare/v3.145.0...v3.145.1) (2026-09-15)
+
+### Bug Fixes
+
+* **golden-master:** the seal declines per SET, never per directory ([#1149](https://github.com/SocialGouv/iterion/issues/1149)) ([6ceb323](https://github.com/SocialGouv/iterion/commit/6ceb32386d8672b3fa60a52b64f9cccd9c0cf64e))
+
+    <details><summary>why</summary>
+
+    seal_holdout relocates the held-out set so the hardening loop cannot read it -- the seal was a sentence in a skill until it was made mechanical. A COMMITTED set is deliberately exempt: it awaits its own gate, and moving tracked files would leave uncommitted deletions a finalize refuses to merge while burning that set's single scoring on a gate that does not own it.
+
+    </details>
+
+## [3.145.0](https://github.com/SocialGouv/iterion/compare/v3.144.1...v3.145.0) (2026-09-15)
+
+### Features
+
+* **dsl:** a bot in several files — import "lib/x.bot" read as one unit, one identity, saved by provenance ([#1225](https://github.com/SocialGouv/iterion/issues/1225)) ([309d6c1](https://github.com/SocialGouv/iterion/commit/309d6c1321341fbac1748644d5bac85f69a0c454)), references [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1164](https://github.com/SocialGouv/iterion/issues/1164) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    The first piece of the multi-file unit (ADR-098 §3, lot 3 of #1010): `import` is a keyword like `dsl`, read at the head of a file — after the header and the leading comments, before any declaration (E044 otherwise) — with a quoted, relative, slash-separated `.bot` path (E045 for the rest: absolute, a drive, `..`, `\`, NUL, junk after it); the same path twice is one import. The AST carries the imports as written, the JSON document as their paths, the writer puts them back where the parser reads…
+
+    </details>
+
+## [3.144.1](https://github.com/SocialGouv/iterion/compare/v3.144.0...v3.144.1) (2026-09-15)
+
+### Bug Fixes
+
+* **server:** the merge-gate net must outlive the outage it exists for ([#1224](https://github.com/SocialGouv/iterion/issues/1224)) ([1f30ed3](https://github.com/SocialGouv/iterion/commit/1f30ed3fca566a412b5f806944e5f12c7544aab8))
+
+    <details><summary>why</summary>
+
+    A dead gating run was reachable by the reconciler's net for 60 minutes. The outage class that net exists for is a provider usage window, and a weekly one shuts for DAYS — so the net closed while the thing it guards against was still happening.
+
+    </details>
+
+## [3.144.0](https://github.com/SocialGouv/iterion/compare/v3.143.0...v3.144.0) (2026-09-14)
+
+### Features
+
+* **remote:** a CLI launch can aim a run at a repository ([#1161](https://github.com/SocialGouv/iterion/issues/1161)) ([0c95277](https://github.com/SocialGouv/iterion/commit/0c952778b46c88671b10090154b1fbc6e55e884e))
+
+    <details><summary>why</summary>
+
+    `POST /api/runs` has accepted `repo_url` / `repo_ref` / `connection_id` all along — the cloud runner clones the repo into the workspace before sandboxing, and the inbound-webhook path sets all three. `iterion remote runs launch` exposed none of them, so the only way to launch a repo-scoped bot with a checkout was a webhook or the studio.
+
+    </details>
+
 ## [3.143.0](https://github.com/SocialGouv/iterion/compare/v3.142.6...v3.143.0) (2026-09-13)
 
 ### Features

@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // The AST that travels to a runner must compile there, where none of the
@@ -122,5 +124,61 @@ func TestInlineLaunchRefusesAnIncludeItCannotCarry(t *testing.T) {
 	_, err = marshalIRFromSpec("bots/probe/main.bot", source)
 	if err == nil || !strings.Contains(err.Error(), "bundle") {
 		t.Fatalf("a client-named path is not a server path; want the same refusal, got %v", err)
+	}
+}
+
+// A bundle launch of a bot in several files transports the UNIT, flat: the
+// fragments' declarations are in the AST, no import line travels, and an
+// include in a fragment is resolved beside the fragment — so the runner,
+// with none of the files, compiles the whole program.
+func TestBundleLaunchTransportsTheUnitFlat(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: a\n  a -> done\n",
+		"lib/nodes.bot": "schema out:\n  ok: bool\n\nprompt p:\n  {{include \"part.md\"}}\n\nagent a:\n  model: \"m\"\n  output: out\n  system: p\n",
+		"lib/part.md":   "PART-FROM-THE-FRAGMENT",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, _ := os.ReadFile(filepath.Join(dir, "main.bot"))
+	body, err := marshalIRFromSpec("bots/probe/main.bot", string(source), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte("\"imports\"")) || bytes.Contains(body, []byte("{{include")) {
+		t.Fatalf("an import or include marker travels: %s", body)
+	}
+	if !bytes.Contains(body, []byte("PART-FROM-THE-FRAGMENT")) {
+		t.Fatalf("the fragment's include was not resolved beside the fragment: %s", body)
+	}
+	t.Chdir(t.TempDir())
+	f, err := ast.UnmarshalFile(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := ir.Compile(f)
+	if cr.HasErrors() {
+		t.Fatalf("the runner's compile fails: %v", cr.Diagnostics)
+	}
+	if _, ok := cr.Workflow.Nodes["a"]; !ok {
+		t.Fatal("the fragment's node did not travel")
+	}
+}
+
+// An inline upload has no files beside its source: an import it carries is
+// refused at publish, typed and with the remedy, instead of a program with
+// pieces missing dying on the runner.
+func TestInlineLaunchRefusesAnImportItCannotCarry(t *testing.T) {
+	source := "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: done\n"
+	for _, p := range []string{"", "bots/probe/main.bot"} {
+		_, err := marshalIRFromSpec(p, source)
+		if !errors.Is(err, runview.ErrInlineImport) || !strings.Contains(err.Error(), "bundle") {
+			t.Fatalf("path %q: want the typed refusal naming the bundle remedy, got %v", p, err)
+		}
 	}
 }
