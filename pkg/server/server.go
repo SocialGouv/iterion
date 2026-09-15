@@ -315,6 +315,17 @@ type Server struct {
 	// lookback window by (test seam — a test cannot wait an hour to reach the
 	// last pass over a run). nil → time.Now().UTC().
 	gateClock func() time.Time
+	// gateDeepCycleLen is how many DEEP sweep passes it currently takes to
+	// walk the horizon once — max(the last completed traversal, the one in
+	// progress). It is MEASURED rather than assumed because the deep pass
+	// resumes across passes, so the interval at which a given run is revisited
+	// is one full traversal, not one deep pass, and a backlog decides how long
+	// that is. gateSweepLastPassMargin turns it into the band in which the
+	// "nothing will offer this run again" warning must fire.
+	//
+	// Written only by the sweeper goroutine and read on its own reconcile
+	// path, but atomic so a future second reader is not a data race.
+	gateDeepCycleLen atomic.Int64
 	// sweepDegraded brackets the orphan sweeper's degradation episode
 	// (edge-triggered Warn on entry, Info on recovery). The two failing
 	// stages are tracked as INDEPENDENT flags because they recover on

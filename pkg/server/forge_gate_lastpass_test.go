@@ -51,6 +51,75 @@ func runUpdatedAt(t *testing.T, s *Server, runID string) time.Time {
 	return run.UpdatedAt
 }
 
+// The band in which that line is written has to be at least as wide as the
+// interval at which the run is actually REVISITED — and since the deep pass
+// resumes its cursor across passes, that interval is one full traversal of the
+// horizon, not one deep pass. A backlog wider than a single pass budget makes a
+// traversal several deep passes long, and a fixed two-interval band is then
+// stepped clean over: the run is visited just before it and never again after.
+//
+// So the band is derived from the traversal the sweeper MEASURED. A guess
+// pinned in a test would be a guess pinned in a contract.
+func TestGateSweepAbstain_TheGiveUpBandFollowsTheMeasuredTraversal(t *testing.T) {
+	// A traversal taking six deep passes — a backlog of five page budgets.
+	const measured = 6
+	// An age past the floor band's reach, still inside a six-pass one.
+	age := gateSweepHorizon - 4*gateDeepSweepEvery*gateSweepInterval
+
+	t.Run("a fixed floor band misses it", func(t *testing.T) {
+		s, runID, logs := abstainingSweepFixture(t)
+		at := runUpdatedAt(t, s, runID)
+		s.gateClock = func() time.Time { return at.Add(age) }
+
+		if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if logs.Len() != 0 {
+			t.Fatalf("this age must be outside the floor band, or the test below proves nothing: %s", logs)
+		}
+	})
+
+	t.Run("the measured band reaches it", func(t *testing.T) {
+		s, runID, logs := abstainingSweepFixture(t)
+		at := runUpdatedAt(t, s, runID)
+		s.gateClock = func() time.Time { return at.Add(age) }
+		s.noteGateDeepCycle(measured, true)
+
+		if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if !strings.Contains(logs.String(), "last sweep pass") {
+			t.Fatalf("a traversal of %d deep passes revisits this run every %s, so it ages out between two visits and the give-up line is never written; got: %s",
+				measured, time.Duration(measured)*gateDeepSweepEvery*gateSweepInterval, logs)
+		}
+	})
+}
+
+// The measure must SHRINK again when the backlog does, or one busy day widens
+// the band for good and the warning starts firing while the net is still
+// trying — the noise the Debug/Warn split exists to prevent.
+func TestGateSweepAbstain_TheBandNarrowsAgainWhenTheBacklogDoes(t *testing.T) {
+	s, _, _ := abstainingSweepFixture(t)
+	s.noteGateDeepCycle(6, true)
+	wide := s.gateSweepLastPassMargin()
+	s.noteGateDeepCycle(1, true)
+	if narrow := s.gateSweepLastPassMargin(); narrow >= wide {
+		t.Errorf("the band stayed at %s after a traversal that took one pass — a high-water mark never comes back down", narrow)
+	}
+}
+
+// A traversal longer than the horizon means the net is not keeping up at all.
+// That is one fact about the deployment, already stated once per pass by the
+// page-cap warning; letting it widen the band without bound would turn it into
+// a per-run Warn on every candidate in the window.
+func TestGateSweepAbstain_TheBandCannotSwallowTheWholeWindow(t *testing.T) {
+	s, _, _ := abstainingSweepFixture(t)
+	s.noteGateDeepCycle(100000, true)
+	if got := s.gateSweepLastPassMargin(); got > gateSweepHorizon/2 {
+		t.Errorf("band = %s of a %s horizon — every run in the window would warn on every pass", got, gateSweepHorizon)
+	}
+}
+
 // While the net is still trying, a stuck check is not news: the sweep re-offers
 // the same run every minute and would otherwise emit ~60 identical lines an
 // hour, per replica, burying the branches that carry new information.

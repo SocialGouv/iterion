@@ -123,6 +123,11 @@ func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
 	// carries one: the fast pass's contract is "answer a dropped event within
 	// the minute", which means always starting at the head.
 	var deepResume time.Time
+	// Deep passes spent on the traversal currently in progress. It is what
+	// makes the give-up warning's band a MEASUREMENT instead of a guess: with
+	// a resuming cursor a run is revisited once per full traversal, not once
+	// per deep pass, and how long that is depends on the backlog.
+	deepThisCycle := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -130,12 +135,38 @@ func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
 		case <-t.C:
 			now := time.Now().UTC()
 			if gateSweepIsDeep(pass) {
+				deepThisCycle++
 				deepResume = s.sweepGates(ctx, lister, now, gateSweepHorizon, deepResume)
+				if deepResume.IsZero() { // the traversal reached the end of the window
+					s.noteGateDeepCycle(deepThisCycle, true)
+					deepThisCycle = 0
+				} else {
+					s.noteGateDeepCycle(deepThisCycle, false)
+				}
 			} else {
 				s.sweepGates(ctx, lister, now, gateSweepLookback, time.Time{})
 			}
 			pass++
 		}
+	}
+}
+
+// noteGateDeepCycle records how long a traversal of the horizon is taking.
+// `complete` says whether the walk just finished, which is what lets the
+// measure SHRINK again: a high-water mark would keep a band wide forever
+// after one busy day.
+func (s *Server) noteGateDeepCycle(passes int, complete bool) {
+	if s == nil {
+		return
+	}
+	if complete {
+		s.gateDeepCycleLen.Store(int64(passes))
+		return
+	}
+	// Mid-traversal: the cycle is already at least this long, so widen the
+	// band now rather than after the run it needs to warn about has aged out.
+	if int64(passes) > s.gateDeepCycleLen.Load() {
+		s.gateDeepCycleLen.Store(int64(passes))
 	}
 }
 
@@ -253,16 +284,50 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 //
 // That instant is the only one worth a Warn out of every identical pass: a
 // stuck check is not news while the net is still trying, and is news the
-// moment the net gives up. The margin is two DEEP intervals, the spacing of
-// the passes that actually reach the horizon, so a late or skipped one does
-// not swallow the only line that names the reason (2026-08-29: a pull request
-// sat behind an unanswered required check for 22h and the whole sweep history
-// had been Debug, which deployments suppress at info level).
+// moment the net gives up (2026-08-29: a pull request sat behind an unanswered
+// required check for 22h and the whole sweep history had been Debug, which
+// deployments suppress at info level).
+//
+// The band has to be at least as wide as the interval at which this run is
+// actually REVISITED, or the run ages out between two visits and the one line
+// that names the reason is never written. See gateSweepLastPassMargin: that
+// interval is a full traversal of the horizon, which the deep pass measures
+// rather than assumes.
 func (s *Server) gateSweepIsLastPass(run *store.Run) bool {
 	if run == nil || run.UpdatedAt.IsZero() {
 		return false
 	}
-	return s.gateNow().Sub(run.UpdatedAt) >= gateSweepHorizon-2*gateDeepSweepEvery*gateSweepInterval
+	return s.gateNow().Sub(run.UpdatedAt) >= gateSweepHorizon-s.gateSweepLastPassMargin()
+}
+
+// gateSweepLastPassMargin is how wide the give-up band is.
+//
+// It used to be two deep intervals, on the assumption that a run is revisited
+// every deep pass. That stopped being true when the deep pass started resuming
+// its cursor across passes: a run is now revisited once per full TRAVERSAL of
+// the horizon, and a backlog wider than one pass budget makes a traversal
+// several deep passes long. A fixed band would then be stepped clean over —
+// the run is visited before it, and never again after it.
+//
+// So it is derived from what the sweeper measured (gateDeepCycleLen), floored
+// at the historical two deep intervals so a late or skipped pass still cannot
+// swallow the line, and capped at half the horizon: a traversal longer than
+// THAT means the net is not keeping up at all, which is a per-deployment fact
+// the page-cap warning already states once per pass — turning it into a
+// per-run Warn storm would bury the branches that carry new information, the
+// very thing the Debug/Warn split exists to prevent.
+func (s *Server) gateSweepLastPassMargin() time.Duration {
+	passes := int64(2)
+	if s != nil {
+		if measured := s.gateDeepCycleLen.Load(); measured > passes {
+			passes = measured
+		}
+	}
+	margin := time.Duration(passes) * gateDeepSweepEvery * gateSweepInterval
+	if max := gateSweepHorizon / 2; margin > max {
+		margin = max
+	}
+	return margin
 }
 
 // gateNow reads the wall clock the gate lanes measure by — the sweeper's
