@@ -192,6 +192,9 @@ the hours this one spent.
   `BOT_REQUIRES_NEWER_ENGINE`, and `iterion validate` says the same
   locally (C250/C251). Read it when a push is refused, or when a bot that
   compiles dies at its first expression.
+- [docs/catalogue-dsl2-lot1.md](../catalogue-dsl2-lot1.md) — the first
+  catalogue profile-2 migration: rendered prompt goldens, generated dispatcher
+  mirrors, and fleet/campaign checks required before activating changed hashes.
 - [docs/dispatcher.md](../dispatcher.md#claim-lease--watchdog-native-board-adr-096) —
   the board **claim lease + watchdog** (ADR-096,
   `ITERION_BOARD_CLAIM_REAPER`, default off): the fenced leased claim
