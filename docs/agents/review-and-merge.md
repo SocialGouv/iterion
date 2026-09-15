@@ -1,7 +1,9 @@
 # Before merge — the required loop, and how a change reaches `main`
 
-Every change lands through a pull request whose `revi/review` gate is green
-(the one documented exception is the admin queue bypass for a hotfix, below).
+Every change lands through a pull request whose `revi/review` gate is green.
+The documented exceptions are the admin bypass below — which allows a direct
+push to `main`, not just a queue skip — and the release bot, whose
+`chore: release` commits land on `main` with no PR and no gate.
 The loop is:
 
 **local adversarial round → fix → re-attack the fix → push → `/revi` → green**
@@ -72,7 +74,8 @@ through the local loop, and nothing spends a campaign on its own.
 The mechanics and the paid-for gotchas are unchanged and still worth reading
 before a deliberate pass: [../revi-billy-loop.md](../revi-billy-loop.md).
 
-**Revi's own review summary still ends with `Correction : /billy`.** That line
+**Revi's own review summary still carries `Correction : /billy`**, inside its
+collapsed "Détails du run IA" block. That line
 is the catalog bot's generic advice to any repo it reviews
 ([../../bots/review-pr/main.bot](../../bots/review-pr/main.bot)), published
 whenever a review has findings — and on this repo it does not apply. It is

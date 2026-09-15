@@ -72,7 +72,8 @@ of every session, before picking work.
 ## Before merge — the required loop
 
 Every change lands through a pull request whose `revi/review` gate is green
-(admins may bypass the queue for a hotfix — see review-and-merge.md).
+(admins may bypass — including a direct push to `main`, no PR; the release
+bot does the same — see review-and-merge.md).
 The loop is **local adversarial round → fix → re-attack the fix → push →
 `/revi` → green**. Protocol:
 [docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);

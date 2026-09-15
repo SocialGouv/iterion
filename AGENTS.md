@@ -54,8 +54,8 @@ session ends. A ticket that says In progress with nobody on it is a bug
 in the board — fix it when you see it.
 
 **Before merge, the review loop is required.** A change reaches `main`
-through a PR whose `revi/review` gate is green (admins may bypass the
-queue for a hotfix), and the gate is not the first reviewer: run a **local
+through a PR whose `revi/review` gate is green (admins, and the release
+bot, may bypass), and the gate is not the first reviewer: run a **local
 adversarial round on the diff before pushing** — a subagent whose posture is to break the change, with every
 finding *and every fix it proposes* verified before a line is written.
 The gate closes the loop; a sterile local round only means "time to

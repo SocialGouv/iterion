@@ -20,7 +20,8 @@ The split is deliberate:
   (see [Overriding](#overriding-a-finding)).
 
 This mirrors the repo's standing doctrine: **gates stay deterministic**
-(see `CLAUDE.md` → "Improvement loops must converge"). The reviews
+(see [agents/bot-authoring.md](agents/bot-authoring.md) → "Improvement loops
+must converge"). The reviews
 themselves stay non-blocking advice (`forge.NewReview` never
 approves/requests-changes); the entire gate lives in the separate commit
 status.
@@ -612,8 +613,9 @@ re-derives it from three scattered sections. This is that place
 - **Hand-off by KIND, never by bot id.** A reviewer's `produces: kind:
   review` and a fixer's `consumes: kind: review_ledger` are what let Billy
   start from Revi's findings and answer them back, with neither manifest
-  naming the other bot — the generic mechanism documented in CLAUDE.md's
-  "The ENGINE stays bot-agnostic" section and exercised end to end in
+  naming the other bot — the generic mechanism documented in
+  [agents/bot-authoring.md](agents/bot-authoring.md)'s "The ENGINE stays
+  bot-agnostic" section and exercised end to end in
   [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
   Adding a second reviewer or a second fixer is a bundle, never an engine
   PR.
@@ -654,15 +656,19 @@ re-derives it from three scattered sections. This is that place
    ([agents/review-and-merge.md](agents/review-and-merge.md)); the fixer's
    mechanics and the conditions for re-arming it stay in
    [revi-billy-loop.md](revi-billy-loop.md).
-3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes step 2
-   automatic** on repos that opt in — a red `revi/review` launches the
-   fixer with no comment, bounded by [its own brakes](#autofix). **Where
-   the lane is armed**, check `iterion remote runs list` (or the gate's
-   `pending` link) before hand-fixing a red PR: a manual fix racing an
-   already-launched fixer is the same collision as rule 1. Where it is
-   off — iterion's own repo since 2026-09-15 — only a `/billy` comment
-   can put a fixer in flight, so the check costs nothing: you know
-   whether you typed it.
+3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes the `/billy`
+   escalation of rule 2 automatic** on repos that opt in — a red
+   `revi/review` launches the fixer with no comment, bounded by
+   [its own brakes](#autofix). **Always check `iterion remote runs list`
+   (or the gate's `pending` link) before hand-fixing a red or ejected
+   PR**, whatever that lane is set to: a manual fix racing a running
+   fixer is the same collision as rule 1. Turning the lane off does NOT
+   reduce this to "did I type `/billy`" — the
+   [merge-queue auto-heal](#auto-heal-and-when-it-stands-down) dispatches
+   the same brancher bot with no comment whenever the queue ejects the
+   PR, and it never consults `auto_fix_on_gate_failure`
+   ([webhooks_github.go](../pkg/server/webhooks_github.go), `NeedsAutoHeal`).
+   A heal in flight force-pushes the branch.
 
 ## Overriding a finding
 

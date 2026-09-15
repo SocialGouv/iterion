@@ -59,12 +59,15 @@ FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is"),
 and an omitted `auto_fix_on_gate_failure` means "leave the current choice
 alone" — it has to be written explicitly.
 
-**Corollary while the lane is armed**: before hand-fixing a red PR, check no
-fixer run is already in flight on it (`iterion remote runs list` or the gate's
-`pending` link) — a manual push while the fixer works recreates the
-mid-run-push collision the session discipline below warns about. With the lane
-off, only a `/billy` comment can put a run in flight, so the check is cheap:
-you know whether you typed it.
+**Corollary, whatever the lane is set to**: before hand-fixing a red or ejected
+PR, check no fixer run is already in flight on it (`iterion remote runs list`
+or the gate's `pending` link) — a manual push while the fixer works recreates
+the mid-run-push collision the session discipline below warns about. Turning
+the lane off does not retire this check: the **merge-queue auto-heal**
+dispatches the same brancher bot with no comment when the queue ejects a PR,
+and it never reads `auto_fix_on_gate_failure`
+([merge-gate.md](merge-gate.md#auto-heal-and-when-it-stands-down)). A heal in
+flight force-pushes the branch.
 
 ## <a name="what-the-command-seeds"></a>What the command seeds — you type nothing else
 
