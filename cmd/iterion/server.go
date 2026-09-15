@@ -710,6 +710,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		AccessTTL:                   cfg.Auth.AccessTTL,
 		RefreshTTL:                  cfg.Auth.RefreshTTL,
 		PublicURL:                   cfg.Auth.PublicURL,
+		CanonicalRedirect:           cfg.Auth.CanonicalRedirect,
 		SignupMode:                  cfg.Auth.SignupMode,
 		CookieDomain:                cfg.Auth.CookieDomain,
 		CookieSecure:                cfg.Auth.CookieSecure,

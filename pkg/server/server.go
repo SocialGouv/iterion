@@ -961,9 +961,14 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// securityHeaders sits outermost so the headers ride EVERY response,
 	// including the ones the layers below short-circuit (a 401 from the auth
 	// gate, a 403 from the origin gate, a panic recovered by errtrack).
+	// canonicalRedirect sits INSIDE securityHeaders so the 302 carries the
+	// same headers as any other response, and outside everything else: a
+	// navigation to the wrong host has no business reaching the auth gate.
 	s.handler = securityHeaders(
-		errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
-			s.authMiddleware(s.mux),
+		canonicalRedirect(cfg.CanonicalRedirect, cfg.PublicURL,
+			errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
+				s.authMiddleware(s.mux),
+			),
 		),
 	)
 	s.server = &http.Server{

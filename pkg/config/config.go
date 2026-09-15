@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -180,6 +181,18 @@ type AuthConfig struct {
 	// used to build OIDC redirect URIs (e.g. https://iterion.example).
 	// Required when any OIDC provider is enabled.
 	PublicURL string `yaml:"public_url"`
+
+	// CanonicalRedirect sends browser DOCUMENT navigations that arrive on
+	// any other host to PublicURL, so a deployment reachable under several
+	// names has one origin for sessions, storage and CSP. The API is never
+	// redirected: inbound webhooks, the CLI and the SDK keep answering on
+	// every host they were configured with.
+	//
+	// Off by default, and deliberately: PublicURL is set on deployments that
+	// are also reached legitimately by another name — a port-forward to
+	// localhost, an in-cluster Service DNS, a preview host — and redirecting
+	// those would move the operator off the instance they asked for.
+	CanonicalRedirect bool `yaml:"canonical_redirect"`
 
 	// CookieDomain narrows the auth cookie's Domain attribute when
 	// the SPA is served from a different host than the API (rare).
@@ -608,6 +621,24 @@ func (c *Config) Validate() error {
 		}
 		if c.Auth.OIDC.Generic.Enabled && c.Auth.OIDC.Generic.IssuerURL == "" {
 			return fmt.Errorf("ITERION_OIDC_GENERIC_ISSUER_URL required when generic OIDC is enabled")
+		}
+	}
+
+	// The canonical redirect is honoured in EVERY mode (cmd wires it
+	// unconditionally), so its validation lives outside the cloud block. A
+	// redirect with no canonical origin has nowhere to send anyone, and
+	// refusing at startup beats a silently inert setting that an operator
+	// believes is consolidating their hosts.
+	if c.Auth.CanonicalRedirect {
+		if c.Auth.PublicURL == "" {
+			return fmt.Errorf("ITERION_PUBLIC_URL required when ITERION_CANONICAL_REDIRECT is on — it names the origin every document navigation is sent to")
+		}
+		u, err := url.Parse(c.Auth.PublicURL)
+		// The scheme matters as much as the host: the Location header is built
+		// from both, and a scheme-relative value would send browsers to a
+		// protocol-relative target instead of the configured origin.
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("ITERION_PUBLIC_URL %q needs a scheme and a host (e.g. https://iterion.example) for ITERION_CANONICAL_REDIRECT to name a target", c.Auth.PublicURL)
 		}
 	}
 

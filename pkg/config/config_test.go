@@ -822,3 +822,51 @@ func TestLoad_ZeroNATSStreamReplicasInheritsDefault(t *testing.T) {
 		})
 	}
 }
+
+// The canonical redirect is honoured in every mode, so its validation must be
+// too. A local-mode deployment that accepted the flag with no origin would get
+// exactly the silently-inert setting the refusal exists to prevent.
+func TestValidate_CanonicalRedirectNeedsAnOriginInEveryMode(t *testing.T) {
+	cases := []struct {
+		name      string
+		mode      Mode
+		enabled   bool
+		publicURL string
+		wantErr   bool
+	}{
+		{"local, on, no origin", ModeLocal, true, "", true},
+		{"local, on, scheme-relative", ModeLocal, true, "//iterion.cloud", true},
+		{"local, on, path only", ModeLocal, true, "/just/a/path", true},
+		{"local, on, valid", ModeLocal, true, "https://iterion.cloud", false},
+		{"local, off, no origin", ModeLocal, false, "", false},
+		{"cloud, on, no origin", ModeCloud, true, "", true},
+		{"cloud, on, valid", ModeCloud, true, "https://iterion.cloud", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Mode = tc.mode
+			if tc.mode == ModeCloud {
+				// Cloud mode refuses on its own prerequisites first, and a
+				// probe that mistook THAT refusal for this one would report
+				// every case as correctly refused.
+				cfg.NATS.URL = "nats://localhost:4222"
+				cfg.Mongo.URI = "mongodb://localhost:27017"
+				cfg.S3.Endpoint = "http://localhost:9000"
+				cfg.Auth.JWTSecret = strings.Repeat("A", 44)
+				cfg.Auth.SecretsKey = strings.Repeat("A", 44)
+			}
+			cfg.Auth.CanonicalRedirect = tc.enabled
+			cfg.Auth.PublicURL = tc.publicURL
+			// Only the canonical-redirect error may decide this test.
+			err := cfg.Validate()
+			mentions := err != nil && strings.Contains(err.Error(), "ITERION_CANONICAL_REDIRECT")
+			if tc.wantErr && !mentions {
+				t.Fatalf("want a canonical-redirect refusal, got %v", err)
+			}
+			if !tc.wantErr && mentions {
+				t.Fatalf("refused a valid pairing: %v", err)
+			}
+		})
+	}
+}
