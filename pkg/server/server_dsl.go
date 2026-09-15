@@ -79,6 +79,11 @@ type unparseRequest struct {
 	Files    map[string]string `json:"files,omitempty"`
 	Main     string            `json:"main,omitempty"`
 	Revision string            `json:"revision,omitempty"`
+	// Flatten renders the merged program of a bot in several files as one
+	// text for DISPLAY — the Source view — which is never written back:
+	// without it a document whose declarations name their files is
+	// refused here, since one file could only fold every file into it.
+	Flatten bool `json:"flatten,omitempty"`
 }
 
 type unparseResponse struct {
@@ -162,6 +167,10 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Files) > 0 {
 		s.unparseUnitFiles(w, req, f)
+		return
+	}
+	if hasProvenance(f) && !req.Flatten {
+		httpError(w, http.StatusUnprocessableEntity, "the document is a bot in several files (its declarations name their files): write it back with its files and revision, never as one file")
 		return
 	}
 

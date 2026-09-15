@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -340,4 +341,137 @@ func TestDeleteBotSourceFileKeepsTheGuards(t *testing.T) {
 		t.Fatalf("the refused deletes changed the bundle: %v %v", err, stored.Files)
 	}
 	_ = botsource.MainBotFile
+}
+
+// The routes check what they change: a fragment put or deleted is checked
+// through every workflow that may import it — a fragment only a sibling
+// imports included — and a bundle that never compiled can still shed a
+// file the compiler never reads.
+func TestBotSourceFileRoutesCheckWhatTheyChange(t *testing.T) {
+	pinServerBuild(t, "v3.145.0+deadbeef")
+	s, editor, _ := newBotSourceTestServer(t)
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.145.0+abc123"}}
+	edCtx := auth.WithIdentity(context.Background(), editor)
+	files := map[string]string{
+		"main.bot":      "workflow main:\n  entry: done\n",
+		"child.bot":     "import \"lib/x.bot\"\n\nworkflow other:\n  entry: t\n  t -> done\n",
+		"lib/x.bot":     "tool t:\n  command: \"true\"\n",
+		"README.md":     "# demo\n",
+		"manifest.yaml": "name: multi\nversion: 1.0.0\nrequires:\n  iterion: \">= 3.145.0\"\n",
+	}
+	seed := func(slug string, files map[string]string) {
+		body, _ := json.Marshal(botSourcePutReq{Files: files})
+		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/"+slug, strings.NewReader(string(body))).WithContext(edCtx)
+		r.SetPathValue("id", "t1")
+		r.SetPathValue("slug", slug)
+		w := httptest.NewRecorder()
+		s.handlePutBotSource(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("seed %s: %d %s", slug, w.Code, w.Body.String())
+		}
+	}
+	seed("multi", files)
+	putFile := func(slug, path, content string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"content": content})
+		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/"+slug+"/files/"+path, strings.NewReader(string(body))).WithContext(edCtx)
+		r.SetPathValue("id", "t1")
+		r.SetPathValue("slug", slug)
+		r.SetPathValue("path", path)
+		w := httptest.NewRecorder()
+		s.handlePutBotSourceFile(w, r)
+		return w
+	}
+	del := func(slug, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("DELETE", "/api/teams/t1/bot-sources/"+slug+"/files/"+path, nil).WithContext(edCtx)
+		r.SetPathValue("id", "t1")
+		r.SetPathValue("slug", slug)
+		r.SetPathValue("path", path)
+		w := httptest.NewRecorder()
+		s.handleDeleteBotSourceFile(w, r)
+		return w
+	}
+	if w := putFile("multi", "lib/x.bot", "tool t:\n  command: ?\n"); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "child.bot") {
+		t.Fatalf("a broken fragment only a sibling imports was stored: %d %s", w.Code, w.Body.String())
+	}
+	if w := del("multi", "lib/x.bot"); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "E046") {
+		t.Fatalf("a fragment only a sibling imports was deleted: %d %s", w.Code, w.Body.String())
+	}
+	if w := del("multi", "README.md"); w.Code != http.StatusOK {
+		t.Fatalf("a file the compiler never reads could not be deleted: %d %s", w.Code, w.Body.String())
+	}
+	// A root workflow deleted is not compiled from a path that is gone.
+	if w := del("multi", "child.bot"); w.Code != http.StatusOK {
+		t.Fatalf("a companion workflow could not be deleted: %d %s", w.Code, w.Body.String())
+	}
+	// A bundle that never compiled sheds a file the compiler never reads.
+	broken := map[string]string{"main.bot": "workflow main:\n  entry: nope\n", "README.md": "# broken\n", "manifest.yaml": "name: broken\nversion: 1.0.0\n"}
+	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{TenantID: "t1", Slug: "broken", Files: broken, Origin: "tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := del("broken", "README.md"); w.Code != http.StatusOK {
+		t.Fatalf("a broken bundle could not shed README.md: %d %s", w.Code, w.Body.String())
+	}
+	stored, err := s.botSources.GetBySlug(context.Background(), "t1", "broken")
+	if err != nil || len(stored.Files) != 2 {
+		t.Fatalf("the delete did not land: %v %v", err, stored.Files)
+	}
+}
+
+// A document of a bot in several files is never folded into one file:
+// the single-file write-back refuses it, and only a render asked for
+// display — the Source view — flattens it.
+func TestUnparseRefusesToFoldAUnitIntoOneFile(t *testing.T) {
+	s := &Server{}
+	files := map[string]string{"main.bot": unitFixtureMain, "lib/nodes.bot": unitFixtureNodes}
+	rec := postDSL(t, s.handleParse, "/api/parse", map[string]any{"files": files, "main": "main.bot"})
+	var opened struct {
+		Document json.RawMessage `json:"document"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &opened); err != nil {
+		t.Fatal(err)
+	}
+	rec = postDSL(t, s.handleUnparse, "/api/unparse", map[string]any{"document": opened.Document})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a unit document rendered as one file: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = postDSL(t, s.handleUnparse, "/api/unparse", map[string]any{"document": opened.Document, "flatten": true})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "agent worker") || strings.Contains(rec.Body.String(), "import ") {
+		t.Fatalf("flatten for display: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A text two files wrote inline is one prompt in the document and comes
+// back in each file that refers to it: a save with no edit rewrites
+// nothing, and a rewritten fragment keeps its inline text.
+func TestSaveAUnitKeepsASharedInlinePromptInEachFile(t *testing.T) {
+	workdir := t.TempDir()
+	main := "import \"lib/nodes.bot\"\n\nagent one:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  system: \"Same text.\"\n\nworkflow w:\n  entry: one\n  one -> two\n  two -> done\n"
+	nodes := "agent two:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  system: \"Same text.\"\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": main, "demo/lib/nodes.bot": nodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	rec, opened := openPath(t, s, "demo/main.bot")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body.String())
+	}
+	rec, saved := savePath(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision)
+	if rec.Code != http.StatusOK || len(saved.Files) != 0 {
+		t.Fatalf("a save with no edit: %d %s rewrote %v", rec.Code, rec.Body.String(), saved.Files)
+	}
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		for _, a := range agentsOf(m) {
+			if agent := a.(map[string]any); agent["name"] == "two" {
+				agent["model"] = "anthropic/claude-opus-5"
+			}
+		}
+	})
+	rec, saved = savePath(t, s, "demo/main.bot", edited, saved.Revision)
+	if rec.Code != http.StatusOK || len(saved.Files) != 1 || saved.Files[0] != "lib/nodes.bot" {
+		t.Fatalf("edit the fragment's agent: %d %s rewrote %v", rec.Code, rec.Body.String(), saved.Files)
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); !strings.Contains(got, "system: \"Same text.\"") || strings.Contains(got, "_inline_") {
+		t.Fatalf("the fragment lost its inline text:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != main {
+		t.Fatalf("the main changed:\n%s", got)
+	}
 }

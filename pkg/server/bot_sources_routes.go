@@ -293,7 +293,9 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		s.botSourceError(w, r, err)
 		return
 	}
-	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
+	// The file put is what is checked: a companion workflow through its
+	// own unit, a fragment through every workflow that may import it.
+	if diags := validateBundleCompileSelected(bs.Files, []string{path}); len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
@@ -340,18 +342,21 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 			files[k] = v
 		}
 	}
+	// A delete mutates the bundle as a put does, and is held to the same
+	// two guards, scoped to what it changes: a diagnostic the bundle drew
+	// WITH the file is not this delete's (a bundle that never compiled can
+	// still shed a file), one it draws only without the file is — a
+	// fragment an import reaches is load-bearing at parse time. And its
+	// manifest still declares the floor its sources need.
+	before := validateBundleCompileSelected(bs.Files, []string{path})
 	bs.Files = files
 	bs.Version = 0 // no if-match on a delete
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
 	}
-	// A delete mutates the bundle as a put does, and is held to the same
-	// two guards: the bundle still compiles without the file — a fragment
-	// an import reaches is load-bearing at parse time — and its manifest
-	// still declares the floor its sources need.
-	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile without %s: %s", path, strings.Join(diags, "; "))
+	if fresh := newDiagnostics(before, validateBundleCompileSelected(bs.Files, []string{path})); len(fresh) > 0 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bot no longer compiles without %s: %s", path, strings.Join(fresh, "; "))
 		return
 	}
 	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
@@ -563,7 +568,9 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 	paths := []string{botsource.MainBotFile}
 	seen := map[string]bool{botsource.MainBotFile: true}
 	add := func(rel string) {
-		if seen[rel] {
+		// A path the bundle no longer holds — the file a delete removed —
+		// is not a workflow to compile.
+		if _, held := files[rel]; seen[rel] || !held {
 			return
 		}
 		seen[rel] = true
@@ -621,6 +628,21 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 		}
 	}
 	return diags
+}
+
+// newDiagnostics is what after reports that before did not.
+func newDiagnostics(before, after []string) []string {
+	known := make(map[string]bool, len(before))
+	for _, d := range before {
+		known[d] = true
+	}
+	var fresh []string
+	for _, d := range after {
+		if !known[d] {
+			fresh = append(fresh, d)
+		}
+	}
+	return fresh
 }
 
 // botSourceError maps store errors to actionable status codes.

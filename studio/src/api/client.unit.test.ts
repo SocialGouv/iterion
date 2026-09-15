@@ -65,4 +65,31 @@ describe("saveFile of a cloud bot in several files", () => {
     expect(result.revision).toBe("r2");
     expect(result.files).toEqual(["lib/nodes.bot"]);
   });
+
+  it("takes the unit path on the document's revision, never on the stored text", async () => {
+    // The stored main lost its import since the open: the document is
+    // still a unit, and says so through its revision.
+    const bundle = { id: "b1", slug: "demo", version: 4, files: { "main.bot": "workflow w:\n  entry: done\n", "lib/nodes.bot": "agent a:\n  model: \"m\"\n" } };
+    const calls = mockFetch(({ url, init }) => {
+      if (url.endsWith("/unparse")) return { source: "workflow w:\n  entry: done\n", files: {}, revision: "r9" };
+      if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") return bundle;
+      return {};
+    });
+    const document = { agents: [] } as unknown as IterDocument;
+    await saveFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`, document, { revision: "r1" });
+    expect(calls.some((c) => c.url.endsWith("/unparse") && JSON.parse(String(c.init?.body)).revision === "r1")).toBe(true);
+    expect(calls.some((c) => c.init?.method === "PUT" && c.url.endsWith("/files/main.bot"))).toBe(false);
+
+    // Without a revision the save is a single file's, whatever the
+    // stored main says: the server refuses a unit document there.
+    const importing = { ...bundle, files: { ...bundle.files, "main.bot": 'import "lib/nodes.bot"\n\nworkflow w:\n  entry: done\n' } };
+    const single = mockFetch(({ url, init }) => {
+      if (url.endsWith("/unparse")) return { source: "workflow w:\n  entry: done\n" };
+      if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") return importing;
+      return {};
+    });
+    await saveFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`, document);
+    expect(single.some((c) => c.init?.method === "PUT" && c.url.endsWith("/files/main.bot"))).toBe(true);
+    expect(single.some((c) => c.url.endsWith("/unparse") && "files" in JSON.parse(String(c.init?.body)))).toBe(false);
+  });
 });

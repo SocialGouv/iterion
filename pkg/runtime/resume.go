@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3159,7 +3158,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	if r == nil {
 		return
 	}
-	sourceChanged := src != "" && (src != r.WorkflowSource || !slices.Equal(files, r.WorkflowSources))
+	sourceChanged := src != "" && (src != r.WorkflowSource || !sameSourceFiles(files, r.WorkflowSources))
 	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""
 	if !sourceChanged && !recordArtifactCompatibility {
 		return

@@ -130,3 +130,24 @@ func TestTheHeaderPrecedesTheImports(t *testing.T) {
 		t.Fatalf("imports %v", res.File.Imports)
 	}
 }
+
+// The rule keys on the import KEYWORD: a malformed import, recorded
+// nowhere, still put a header below it out of the lexer's reach — and a
+// header twice, an import between, is named as a duplicate.
+func TestTheHeaderPrecedesEvenAMalformedImport(t *testing.T) {
+	res := Parse("x.bot", "import \"../x.bot\"\ndsl: 2\n\ntool t:\n  command: \"a\\nb\"\n")
+	codes := map[DiagCode]bool{}
+	for _, d := range res.Diagnostics {
+		codes[d.Code] = true
+	}
+	if !codes[DiagBadImportPath] || !codes[DiagMisplacedHeader] || len(res.Diagnostics) != 2 {
+		t.Fatalf("diagnostics %v", res.Diagnostics)
+	}
+	if res.File.Profile != 0 || res.File.Tools[0].Command != "a\\nb" {
+		t.Fatalf("the AST claims profile %d for a file read as profile 1 (command %q)", res.File.Profile, res.File.Tools[0].Command)
+	}
+	res = Parse("x.bot", "dsl: 2\nimport \"lib/x.bot\"\ndsl: 2\n\nagent a:\n  description: \"d\"\n")
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagMisplacedHeader || !strings.Contains(res.Diagnostics[0].Message, "duplicate") || res.File.Profile != 2 {
+		t.Fatalf("a duplicate header below an import: %v (profile %d)", res.Diagnostics, res.File.Profile)
+	}
+}

@@ -92,7 +92,11 @@ export default function EditorChangeOffer({
   // A bot in several files: the editor holds the merged program with each
   // declaration's file, and a proposal is one text — it could only be
   // folded into the main, which the save refuses.
-  const unitBound = !!resolved?.store.getState().unit;
+  const readUnitBound = useCallback(
+    () => !!targetStore?.getState().unit,
+    [targetStore],
+  );
+  const unitBound = useSyncExternalStore(subscribeRevision, readUnitBound, () => false);
   const unavailable = targetStale || !onEditor || readOnly || unitBound;
   const hasDraft = !!proposal.source;
   // Intent is model-reported but never grants authority: it can only select

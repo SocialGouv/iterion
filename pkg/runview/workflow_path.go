@@ -37,7 +37,7 @@ func resolveWorkflowPath(r *store.Run) string {
 	// bundle as BundlePath. What is read here is the source as it is NOW,
 	// and a bot in several files is read beside its fragments: a copy
 	// outside its bundle resolves to the bundle's main.
-	if r.BundlePath != "" && !insideDir(r.FilePath, r.BundlePath) {
+	if r.BundlePath != "" && filepath.IsAbs(r.FilePath) && !insideDir(r.FilePath, r.BundlePath) {
 		if main := filepath.Join(r.BundlePath, bundle.MainBotFile); fileIsRegular(main) {
 			return main
 		}

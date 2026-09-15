@@ -24,7 +24,7 @@ export default function SourceView() {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
-        const result = await api.unparse(document);
+        const result = await api.unparse(document, unit ? { flatten: true } : undefined);
         setSource(result);
         setParseError(null);
       } catch (err) {
@@ -35,7 +35,7 @@ export default function SourceView() {
       }
     }, 500);
     return () => clearTimeout(debounceRef.current);
-  }, [document, editing]);
+  }, [document, editing, unit]);
 
   const handleApply = useCallback(async () => {
     try {

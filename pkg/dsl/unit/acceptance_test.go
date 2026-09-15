@@ -4,6 +4,7 @@ package unit_test
 // pkg/bundle and the unit loader — a cycle for an in-package test.
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"reflect"
 	"sort"
 	"strings"
@@ -123,6 +124,25 @@ func acceptanceErrors(files map[string]string) []string {
 	return codes
 }
 
+// sameVerdict: the split refuses exactly what one file refuses, for the
+// same reasons — the loader's own E010 beside a duplicate the compiler
+// reports too is the one code the split may add.
+func sameVerdict(oneFile, split []string) bool {
+	set := func(codes []string, drop string) []string {
+		var out []string
+		for _, c := range codes {
+			if c != drop && (len(out) == 0 || out[len(out)-1] != c) {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	if len(oneFile) == 0 {
+		return len(split) == 0
+	}
+	return reflect.DeepEqual(set(oneFile, ""), set(split, "E010"))
+}
+
 // A mechanical split changes nothing about what the language accepts: two
 // declarations that share a name are refused in one file exactly when they
 // are refused across two — the loader's namespaces are the compiler's own,
@@ -142,7 +162,7 @@ func TestSplitPreservesAcceptance(t *testing.T) {
 				"main.bot":  "import \"lib/f.bot\"\n\n" + acceptanceBase + "\n" + a.decl("x") + "\n" + wf,
 				"lib/f.bot": b.decl("x"),
 			})
-			if (len(oneFile) == 0) != (len(split) == 0) {
+			if !sameVerdict(oneFile, split) {
 				t.Errorf("%s x + %s x: one file %v, split %v — a split must not change what the language accepts", a.kind, b.kind, oneFile, split)
 			}
 		}
@@ -164,5 +184,32 @@ func TestSplitPreservesAcceptance(t *testing.T) {
 	}
 	if errs := acceptanceErrors(map[string]string{"main.bot": "vars:\n  x: string\n  x: int\n\n" + base}); !reflect.DeepEqual(errs, []string{"E010"}) {
 		t.Fatalf("a var declared twice in one block: %v", errs)
+	}
+}
+
+// The same inline text in two files is ONE prompt in the merge, so the
+// merged program writes and re-reads as itself — with or without a
+// workflow, which is where the writer's check compares the documents.
+func TestTheSameInlineTextInTwoFilesIsOnePromptInTheMerge(t *testing.T) {
+	files := map[string]string{
+		"main.bot":  "import \"lib/f.bot\"\n\nagent one:\n  model: \"" + pinnedModel + "\"\n  system: \"You are careful.\"\n",
+		"lib/f.bot": "agent two:\n  model: \"" + pinnedModel + "\"\n  system: \"You are careful.\"\n",
+	}
+	u := unit.LoadMap(files, "main.bot")
+	if u.HasErrors() {
+		t.Fatalf("diagnostics: %v", u.Diagnostics)
+	}
+	inline := 0
+	for _, p := range u.Merged.Prompts {
+		if p.Inline {
+			inline++
+		}
+	}
+	if inline != 1 {
+		t.Fatalf("the merge holds %d inline prompts for one text", inline)
+	}
+	flat := unparse.Unparse(u.Merged)
+	if err := unparse.Verify(u.Merged, flat); err != nil {
+		t.Fatalf("the merged program is not its own text: %v", err)
 	}
 }

@@ -204,8 +204,87 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 			}
 		}
 	}
+	ensureInlinePrompts(parts, doc)
 	restoreSubbotSources(parts, u)
 	return parts, nil
+}
+
+// ensureInlinePrompts gives each file the inline prompts its nodes refer
+// to. The merged document holds ONE declaration for a text several files
+// wrote inline (unit.Load keeps the first); the writer puts an inline
+// prompt back on the property that refers to it, so every file whose
+// nodes refer to one needs its declaration in its own part — with this
+// file's provenance.
+func ensureInlinePrompts(parts map[string]*ast.File, doc *ast.File) {
+	inline := map[string]*ast.PromptDecl{}
+	for _, p := range doc.Prompts {
+		if p.Inline {
+			inline[p.Name] = p
+		}
+	}
+	if len(inline) == 0 {
+		return
+	}
+	for rel, part := range parts {
+		declared := map[string]bool{}
+		for _, p := range part.Prompts {
+			declared[p.Name] = true
+		}
+		for _, name := range promptRefsOf(part) {
+			p, ok := inline[name]
+			if !ok || declared[name] {
+				continue
+			}
+			cp := *p
+			cp.Span = ast.Span{Start: ast.Pos{File: rel}, End: ast.Pos{File: rel}}
+			part.Prompts = append(part.Prompts, &cp)
+			declared[name] = true
+		}
+	}
+}
+
+// promptRefsOf lists the prompt names the nodes of f refer to — the
+// System, User, Instructions and InteractionPrompt properties of every
+// kind that carries one, group members included — by reflection over the
+// fields' names, so a kind added later is walked without being listed.
+func promptRefsOf(f *ast.File) []string {
+	var out []string
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		for v.IsValid() && v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				return
+			}
+			v = v.Elem()
+		}
+		if !v.IsValid() {
+			return
+		}
+		switch v.Kind() {
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				field := v.Type().Field(i)
+				if !field.IsExported() {
+					continue
+				}
+				fv := v.Field(i)
+				switch field.Name {
+				case "System", "User", "Instructions", "InteractionPrompt":
+					if fv.Kind() == reflect.String && fv.String() != "" {
+						out = append(out, fv.String())
+					}
+					continue
+				}
+				walk(fv)
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		}
+	}
+	walk(reflect.ValueOf(f))
+	return out
 }
 
 // restoreSubbotSources puts a subbot's `source:` back as its file wrote

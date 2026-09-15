@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -65,6 +66,20 @@ func (e *Engine) recordedSources() (string, []store.WorkflowSourceFile) {
 		files[f.Rel] = string(f.Source)
 	}
 	return sourcesOf(u.Main, files)
+}
+
+// sameSourceFiles reports whether two recorded file lists hold the same
+// files with the same text, whatever their order: a run recorded before
+// the files were sorted compares by content, not by position.
+func sameSourceFiles(a, b []store.WorkflowSourceFile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sa := append([]store.WorkflowSourceFile(nil), a...)
+	sb := append([]store.WorkflowSourceFile(nil), b...)
+	sort.Slice(sa, func(i, j int) bool { return sa[i].Path < sa[j].Path })
+	sort.Slice(sb, func(i, j int) bool { return sb[i].Path < sb[j].Path })
+	return slices.Equal(sa, sb)
 }
 
 // sourcesOf orders a unit's files main first, the rest by path, under one

@@ -105,3 +105,65 @@ func TestResolveWorkflowPath_ReadsTheBundlesMainForACopyOutsideIt(t *testing.T) 
 		t.Fatalf("gone bundle: got %q", got)
 	}
 }
+
+// A relative FilePath — a catalog run, a subbot child under a relative
+// parent — is never "outside" its bundle: the redirect to the bundle's main
+// is for the store's absolute copy, and a child workflow keeps its own path.
+func TestResolveWorkflowPath_KeepsARelativeChildPath(t *testing.T) {
+	dir := unitBundle(t)
+	if err := os.MkdirAll(filepath.Join(dir, "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(dir, "workflows", "child.bot")
+	if err := os.WriteFile(child, []byte("workflow c:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(mustGetwd(t), child)
+	if err != nil {
+		t.Skipf("no relative path from the working directory: %v", err)
+	}
+	if got := resolveWorkflowPath(&store.Run{FilePath: rel, BundlePath: dir}); got != rel {
+		t.Fatalf("a relative child path was redirected to %q", got)
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
+}
+
+// A file with a lib/ of its own beside it is a unit of its own wherever its
+// bundle is: only a copy with nothing beside it reads as the bundle's main.
+func TestAFileWithItsOwnFragmentsIsItsOwnUnit(t *testing.T) {
+	dir := unitBundle(t)
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(filepath.Join(other, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "main.bot"), []byte(copyUnitMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	foreign := "agent a:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"FOREIGN\"\n"
+	if err := os.WriteFile(filepath.Join(other, "lib", "nodes.bot"), []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, cs, _, err := compileForLaunch(filepath.Join(other, "main.bot"), "", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Files["lib/nodes.bot"] != foreign {
+		t.Fatalf("a file with its own lib/ read the bundle's fragments: %q", cs.Files["lib/nodes.bot"])
+	}
+	// The bundle reached through a symlinked directory is still the bundle.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if !insideDir(filepath.Join(link, "main.bot"), dir) || !insideDir(filepath.Join(dir, "main.bot"), link) {
+		t.Fatal("a path under a symlinked bundle directory reads as outside it")
+	}
+}

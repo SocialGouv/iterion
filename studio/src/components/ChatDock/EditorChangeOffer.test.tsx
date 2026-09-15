@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -130,6 +130,21 @@ describe("EditorChangeOffer", () => {
 
     const apply = await screen.findByRole("button", { name: "Apply to editor" });
     expect((apply as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/in several files/i)).toBeTruthy();
+    expect(api.parseSource).not.toHaveBeenCalled();
+  });
+
+  it("follows a unit that arrives after the proposal rendered", async () => {
+    const { store } = await liveProposal();
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+
+    act(() => {
+      store.getState().setUnit({ root: "bots/demo", main: "main.bot", revision: "r1", files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }] });
+    });
+
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(true));
     expect(screen.getByText(/in several files/i)).toBeTruthy();
     expect(api.parseSource).not.toHaveBeenCalled();
   });

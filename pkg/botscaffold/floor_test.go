@@ -2,6 +2,7 @@ package botscaffold
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -35,7 +36,12 @@ func TestEveryTemplateDeclaresTheFloorItsSourcesNeed(t *testing.T) {
 				if !req.UsesImport() {
 					t.Fatal("the library template no longer imports: the test proves nothing")
 				}
-				if c, ok := bundle.CompareVersions(m.Requires.Iterion[len(">= "):], parser.ImportSince); !ok || c < 0 {
+				c, err := bundle.ParseEngineConstraint(m.Requires.Iterion)
+				if err != nil {
+					t.Fatalf("the library template declares %q: %v", m.Requires.Iterion, err)
+				}
+				need, _ := bundle.ParseEngineConstraint(">= " + parser.ImportSince)
+				if slices.Compare(c.Min, need.Min) < 0 {
 					t.Fatalf("the library template declares %q, below the release that reads import (%s)", m.Requires.Iterion, parser.ImportSince)
 				}
 			}

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,5 +66,30 @@ func TestRecordedSourcesFollowTheCompile(t *testing.T) {
 	e = &Engine{filePath: copyPath, workflowSource: "workflow w:\n  entry: done\n"}
 	if src, files := e.recordedSources(); src != "workflow w:\n  entry: done\n" || files != nil {
 		t.Fatalf("supplied text: src=%q files=%v", src, files)
+	}
+}
+
+// A run recorded before the files were sorted holds them in import order:
+// the same files in another order are the same sources, not a change.
+func TestSameSourceFilesIgnoresOrder(t *testing.T) {
+	a := []store.WorkflowSourceFile{{Path: "main.bot", Text: "m"}, {Path: "lib/nodes.bot", Text: "n"}, {Path: "lib/a.bot", Text: "a"}}
+	b := []store.WorkflowSourceFile{{Path: "main.bot", Text: "m"}, {Path: "lib/a.bot", Text: "a"}, {Path: "lib/nodes.bot", Text: "n"}}
+	if !sameSourceFiles(a, b) {
+		t.Fatal("the same files in another order read as changed")
+	}
+	b[1].Text = "changed"
+	if sameSourceFiles(a, b) {
+		t.Fatal("a changed fragment read as the same sources")
+	}
+	if sameSourceFiles(a, a[:2]) || !sameSourceFiles(nil, nil) {
+		t.Fatal("length is part of sameness")
+	}
+	// The restamp of an unchanged unit recorded in the old order touches
+	// nothing.
+	r := &store.Run{WorkflowSource: "m", WorkflowSources: a, WorkflowHash: "old"}
+	e := &Engine{compiledMain: "main.bot", compiledFiles: map[string]string{"main.bot": "m", "lib/nodes.bot": "n", "lib/a.bot": "a"}, workflowHash: "new"}
+	e.restampWorkflowSource(context.Background(), r)
+	if r.WorkflowHash != "old" || len(r.WorkflowSources) != 3 || r.WorkflowSources[1].Path != "lib/nodes.bot" {
+		t.Fatalf("an unchanged unit was restamped: hash %q files %v", r.WorkflowHash, r.WorkflowSources)
 	}
 }

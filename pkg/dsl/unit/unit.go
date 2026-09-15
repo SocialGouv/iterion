@@ -121,17 +121,20 @@ func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 	}
 	root := filepath.Dir(abs)
 	mainRel := filepath.Base(abs)
-	// A file under lib/ is a fragment of the bot whose root holds that
-	// lib/: loaded alone — validated, opened in the editor — it is read
-	// from that root under its lib/ name, so a sibling it imports by bare
-	// name resolves as it does through the main, held to the same rule.
-	if filepath.Base(root) == FragmentDir {
-		mainRel = path.Join(FragmentDir, mainRel)
-		root = filepath.Dir(root)
+	// A file that declares no workflow below a lib/ ancestor is a fragment
+	// of the bot whose root holds that lib/: loaded alone — validated,
+	// opened in the editor — it is read from that root under its lib/
+	// name, so a sibling it imports by bare name resolves as it does
+	// through the main, held to the same rule. A main — a file with a
+	// workflow — stays where it is, whatever its directory is called, and
+	// so does the confinement of its imports.
+	if fragRoot, rel, ok := fragmentAlone(abs, staged[mainRel]); ok {
+		root, mainRel = fragRoot, rel
 		if len(staged) > 0 {
+			prefix := path.Dir(rel)
 			rebased := make(map[string][]byte, len(staged))
-			for rel, src := range staged {
-				rebased[path.Join(FragmentDir, rel)] = src
+			for key, src := range staged {
+				rebased[path.Join(prefix, key)] = src
 			}
 			staged = rebased
 		}
@@ -176,6 +179,40 @@ func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 	u := Load(read, mainRel, name)
 	u.Root = root
 	return u
+}
+
+// fragmentAlone reports whether the file at abs — read from text when
+// given, from disk otherwise — is a fragment loaded on its own: a file
+// that declares no workflow below a directory named lib/. It returns the
+// root of the bot that lib/ belongs to, the parent of the NEAREST lib/
+// ancestor, and the file's slash path from it.
+func fragmentAlone(abs string, text []byte) (root, rel string, ok bool) {
+	libDir := ""
+	for d := filepath.Dir(abs); ; d = filepath.Dir(d) {
+		if filepath.Base(d) == FragmentDir {
+			libDir = d
+			break
+		}
+		if filepath.Dir(d) == d {
+			return "", "", false
+		}
+	}
+	if text == nil {
+		b, err := os.ReadFile(abs) // #nosec G304 -- the path the caller named
+		if err != nil {
+			return "", "", false
+		}
+		text = b
+	}
+	if pr := parser.Parse(abs, string(text)); pr.File == nil || len(pr.File.Workflows) > 0 {
+		return "", "", false
+	}
+	root = filepath.Dir(libDir)
+	r, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", "", false
+	}
+	return root, filepath.ToSlash(r), true
 }
 
 // LoadMap loads the unit from a files map keyed by slash path relative to
@@ -241,11 +278,15 @@ type loader struct {
 
 // fragmentPrefixOf is the slash prefix under which the fragments of the
 // bot whose main is mainRel live: `lib/` under the main's directory — or,
-// for a main that is itself a fragment under lib/, that same lib/.
+// for a main that is itself a fragment below a lib/, that same lib/ (the
+// nearest one above it).
 func fragmentPrefixOf(mainRel string) string {
 	dir := path.Dir(mainRel)
-	if path.Base(dir) == FragmentDir {
-		dir = path.Dir(dir)
+	for d := dir; d != "." && d != "/"; d = path.Dir(d) {
+		if path.Base(d) == FragmentDir {
+			dir = path.Dir(d)
+			break
+		}
 	}
 	if dir == "." {
 		return FragmentDir + "/"
@@ -350,9 +391,31 @@ func (l *loader) merge() {
 		}
 	}
 	l.mergeKeyedBlocks(&merged)
+	dedupeInlinePrompts(&merged)
 	l.canonicaliseSubbots(&merged)
 	l.checkNamedDuplicates(&merged)
 	l.u.Merged = &merged
+}
+
+// dedupeInlinePrompts keeps one of the inline prompts several files wrote
+// with the same text: the same text is one prompt (parser.InlinePromptName),
+// declared once per file under the name its body gives it. The first —
+// the main's, or the first fragment's — stays with its provenance; a save
+// by provenance puts one back in every file whose nodes refer to it. A
+// different body under the same name stays, for E010 to name.
+func dedupeInlinePrompts(merged *ast.File) {
+	seen := map[string]string{}
+	kept := merged.Prompts[:0]
+	for _, p := range merged.Prompts {
+		if p.Inline {
+			if body, ok := seen[p.Name]; ok && body == p.Body {
+				continue
+			}
+			seen[p.Name] = p.Body
+		}
+		kept = append(kept, p)
+	}
+	merged.Prompts = kept
 }
 
 // mergeKeyedBlocks merges the at-most-one blocks by key: a fragment's block
@@ -510,7 +573,6 @@ func (l *loader) checkNamedDuplicates(merged *ast.File) {
 		line int
 	}
 	seen := map[string]first{} // namespace + "\x00" + name
-	inlineBodies := map[string]string{}
 	if len(merged.Workflows) > 1 {
 		w0, w1 := merged.Workflows[0], merged.Workflows[1]
 		l.u.Diagnostics = append(l.u.Diagnostics, parser.Diagnostic{
@@ -542,17 +604,6 @@ func (l *loader) checkNamedDuplicates(merged *ast.File) {
 			name, pos, ok := namedAt(el)
 			if !ok || name == "" {
 				continue
-			}
-			if field.Name == "Prompts" && merged.Prompts[j].Inline {
-				// The same text is one prompt (parser.InlinePromptName):
-				// written inline in two files, it is declared once per file
-				// under the name its body gives it, and that is no collision
-				// — the compiler keeps one. A different body under the same
-				// name is one.
-				if body, seenInline := inlineBodies[name]; seenInline && body == merged.Prompts[j].Body {
-					continue
-				}
-				inlineBodies[name] = merged.Prompts[j].Body
 			}
 			key := namespace + "\x00" + name
 			if prev, dup := seen[key]; dup {

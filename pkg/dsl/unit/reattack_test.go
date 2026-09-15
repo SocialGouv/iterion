@@ -140,3 +140,53 @@ func TestSubbotSourceCanonicalAndAuthoredAreInverses(t *testing.T) {
 		}
 	}
 }
+
+// A fragment nested below lib/ loaded alone is read from the bot's root
+// too — the nearest lib/ above it is the bot's — so its sibling import by
+// bare name resolves; a main in a directory that happens to be called lib
+// is a main: it stays rooted where it is, and its imports stay confined to
+// it.
+func TestAFragmentBelowLibAndAMainInADirectoryNamedLib(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("bot/main.bot", "import \"lib/deep/x.bot\"\n\nworkflow w:\n  entry: a\n  a -> done\n")
+	write("bot/lib/deep/x.bot", "import \"y.bot\"\n\nagent a:\n  model: \""+pinnedModel+"\"\n  description: \"d\"\n  output: s\n")
+	write("bot/lib/deep/y.bot", "schema s:\n  ok: bool\n")
+	u := LoadDir(filepath.Join(dir, "bot", "lib", "deep", "x.bot"))
+	if u.HasErrors() || u.Main != "lib/deep/x.bot" || u.Root != filepath.Join(dir, "bot") || len(u.Files) != 2 {
+		t.Fatalf("a nested fragment alone: %v main=%q root=%q files=%d", u.Diagnostics, u.Main, u.Root, len(u.Files))
+	}
+	if got := fragmentPrefixOf("lib/deep/x.bot"); got != "lib/" {
+		t.Fatalf("fragmentPrefixOf(lib/deep/x.bot) = %q", got)
+	}
+	// A bot whose directory is named lib, with a workflow: rooted at itself.
+	write("lib/main.bot", "import \"lib/esc/hidden.bot\"\n\nworkflow w:\n  entry: c\n  c -> done\n")
+	write("sibling/hidden.bot", "agent c:\n  model: \""+pinnedModel+"\"\n  description: \"outside\"\n")
+	if err := os.MkdirAll(filepath.Join(dir, "lib", "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "sibling"), filepath.Join(dir, "lib", "lib", "esc")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	u = LoadDir(filepath.Join(dir, "lib", "main.bot"))
+	if u.Root != filepath.Join(dir, "lib") || u.Main != "main.bot" {
+		t.Fatalf("a main in a directory named lib was re-rooted: root=%q main=%q", u.Root, u.Main)
+	}
+	if !u.HasErrors() || !strings.Contains(u.Diagnostics[0].Message, "outside the unit") {
+		t.Fatalf("an import escaping through a symlink was read: %v", u.Diagnostics)
+	}
+	// A file with no workflow and no lib/ above it is what it is.
+	write("loose/frag.bot", "schema s:\n  ok: bool\n")
+	if u := LoadDir(filepath.Join(dir, "loose", "frag.bot")); u.Root != filepath.Join(dir, "loose") || u.Main != "frag.bot" {
+		t.Fatalf("a loose file was re-rooted: root=%q main=%q", u.Root, u.Main)
+	}
+}

@@ -37,6 +37,10 @@ type parser struct {
 	// hosts (an mcp: block under a workflow is not an agent's). Set by
 	// enterBlock, "" at the top level.
 	blockHost string
+	// importSeen is set at the first `import` keyword, well-formed or not:
+	// the lexer took the profile off the first significant line, so a
+	// header below any import was not applied (parseDSLHeader).
+	importSeen bool
 	// inlinePrompts are the prompts written as the text of a referencing
 	// property (promptRef), appended to the file's prompts at the end;
 	// inlineByHash dedupes them by body.
@@ -343,6 +347,7 @@ func (p *parser) parseFile() *ast.File {
 			continue
 
 		case TokenImport:
+			p.importSeen = true
 			p.parseImportDecl(f, declared)
 			continue
 
@@ -575,12 +580,12 @@ func (p *parser) parseDSLHeader(f *ast.File, declared bool) {
 		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+v.Value+"'")
 	case profile > MaxProfile:
 		p.addError(DiagUnknownProfile, v, fmt.Sprintf("unknown dsl profile %d — this build reads profiles 1 to %d", profile, MaxProfile))
-	case len(f.Imports) > 0:
+	case f.Profile != 0:
+		p.addError(DiagMisplacedHeader, t, "duplicate dsl: header — keeping the first")
+	case p.importSeen:
 		p.addError(DiagMisplacedHeader, t, "dsl: must be the first significant line of the file, above its imports — everything above it was read as profile 1")
 	case declared:
 		p.addError(DiagMisplacedHeader, t, "dsl: must be the first declaration of the file — everything above it was read as profile 1")
-	case f.Profile != 0:
-		p.addError(DiagMisplacedHeader, t, "duplicate dsl: header — keeping the first")
 	default:
 		f.Profile = profile
 	}

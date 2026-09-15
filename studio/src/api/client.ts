@@ -254,10 +254,14 @@ export async function parseSource(
   });
 }
 
-export async function unparse(document: IterDocument): Promise<string> {
+/** unparse renders a document as .bot source. `flatten` renders the merged
+ *  program of a bot in several files for DISPLAY only: the server refuses
+ *  to render such a document as one file otherwise, since a save of that
+ *  text would fold every file into the main. */
+export async function unparse(document: IterDocument, options?: { flatten?: boolean }): Promise<string> {
   const res = await request<{ source: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document }),
+    body: JSON.stringify(options?.flatten ? { document, flatten: true } : { document }),
   });
   return res.source;
 }
@@ -452,13 +456,16 @@ export async function saveFile(
     const current = await apiRequest<BotSourceFilesResponse>(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
-    if (bs.rel === "main.bot" && importsFragments(current.files?.["main.bot"] ?? "")) {
-      // A bot in several files: the document is written back file by file
+    if (options?.revision !== undefined) {
+      // A bot in several files — the document was opened as its unit and
+      // carries the revision it was opened at, which decides the path:
+      // never the stored text at save time, which may have moved. It is
+      // written back file by file
       // — only the files whose program changed come back — patched into
       // the whole bundle the store holds, and written as ONE versioned
       // PUT, so manifest, prompts, skills and every other file survive and
       // a concurrent editor is a conflict, never a silent overwrite.
-      const rewritten = await unparseUnit(document, current.files ?? {}, "main.bot", options?.revision ?? "");
+      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision);
       const files = { ...(current.files ?? {}), ...rewritten.files };
       await apiRequest(
         `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,

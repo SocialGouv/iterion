@@ -241,10 +241,23 @@ func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSo
 	return wf, cs, b, err
 }
 
-// insideDir reports whether path lies under dir (both absolute).
+// insideDir reports whether path lies under dir (both absolute), symlinks
+// resolved on both sides when they can be.
 func insideDir(path, dir string) bool {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// hasFragmentDir reports whether a lib/ directory sits beside path.
+func hasFragmentDir(path string) bool {
+	info, err := os.Stat(filepath.Join(filepath.Dir(path), unit.FragmentDir))
+	return err == nil && info.IsDir()
 }
 
 // bundleForPath is the bundle a path-driven compile reads a workflow
@@ -327,10 +340,12 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	switch {
 	case inline != "" && b != nil:
 		u = unit.LoadDirWithMain(b.IterPath, parserPath, []byte(inline))
-	case b != nil && !insideDir(parserPath, b.Dir):
+	case b != nil && !insideDir(parserPath, b.Dir) && !hasFragmentDir(parserPath):
 		// A copy of the bundle's main outside the bundle — the store's
 		// materialised copy a studio run records and resumes from — is
-		// that bundle's main: its fragments live beside the ORIGINAL.
+		// that bundle's main: its fragments live beside the ORIGINAL. A
+		// file with a lib/ of its own beside it is a unit of its own,
+		// wherever its bundle is.
 		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
 		if err != nil {
 			return nil, nil, fmt.Errorf("cannot read file: %w", err)
