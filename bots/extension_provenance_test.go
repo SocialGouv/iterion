@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
@@ -191,11 +190,7 @@ else:
 // FAIL_NODE a forged `done` also produces.
 func TestModernizeProvenanceRefusalIsTerminalAndDeclaredFirst(t *testing.T) {
 	const rel = "modernize/main.bot"
-	src, err := os.ReadFile(rel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pr := parser.Parse(rel, string(src))
+	pr := parseBotUnit(rel)
 	if pr.File == nil {
 		t.Fatal("main.bot does not parse")
 	}
@@ -843,11 +838,7 @@ func TestGoldenMasterExtendRestoreKeepsAMarkerGitDidNotHonour(t *testing.T) {
 // non-loop edge out of the gate must reach the restore.
 func TestGoldenMasterExtendRestoreIsOnEveryWayOut(t *testing.T) {
 	const rel = "golden-master/extend.bot"
-	src, err := os.ReadFile(rel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pr := parser.Parse(rel, string(src))
+	pr := parseBotUnit(rel)
 	if pr.File == nil {
 		t.Fatal("extend.bot does not parse")
 	}

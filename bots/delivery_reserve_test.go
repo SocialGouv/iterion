@@ -2,7 +2,6 @@ package bots
 
 import (
 	"encoding/json"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -24,7 +23,7 @@ import (
 // straight back.
 func TestBillyCampaignIsToldItsWorkingWindow(t *testing.T) {
 	const bot = "branch-improve-loop/main.bot"
-	raw, err := os.ReadFile(bot)
+	raw, err := botUnitSource(bot)
 	if err != nil {
 		t.Fatalf("read %s: %v", bot, err)
 	}

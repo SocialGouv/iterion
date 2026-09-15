@@ -10,7 +10,6 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestVerifyRunDriftTail guards the deterministic codegen-drift tail shared
@@ -407,7 +406,7 @@ func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
 	}
 	carriers := 0
 	for _, rel := range mains {
-		src, err := os.ReadFile(rel)
+		src, err := botUnitSource(rel)
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
@@ -526,7 +525,7 @@ func TestVerifyBuildSkillPromiseMatchesItsBot(t *testing.T) {
 				t.Fatal(err)
 			}
 			mainBot := filepath.Join(filepath.Dir(filepath.Dir(skill)), "main.bot")
-			bot, err := os.ReadFile(mainBot)
+			bot, err := botUnitSource(mainBot)
 			if err != nil {
 				t.Fatalf("read %s: %v", mainBot, err)
 			}
@@ -579,11 +578,7 @@ func commitFixture(t *testing.T, ws string) {
 
 func toolCommand(t *testing.T, rel, node string) string {
 	t.Helper()
-	src, err := os.ReadFile(rel)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	pr := parser.Parse(rel, string(src))
+	pr := parseBotUnit(rel)
 	if pr.File == nil {
 		t.Fatalf("parse produced no File")
 	}

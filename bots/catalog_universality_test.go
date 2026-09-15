@@ -95,7 +95,7 @@ func TestCatalogBotsAreRepoAgnostic(t *testing.T) {
 
 	for _, botPath := range botPaths {
 		bot := filepath.Base(filepath.Dir(botPath))
-		data, err := os.ReadFile(botPath)
+		data, err := botUnitSource(botPath)
 		if err != nil {
 			t.Errorf("%s: read: %v", botPath, err)
 			continue
@@ -239,7 +239,7 @@ func TestPerBotMemoryConsumersHaveStableBotID(t *testing.T) {
 		t.Fatal("no team bots found under bots/*/main.bot")
 	}
 	for _, botPath := range bots {
-		data, err := os.ReadFile(botPath)
+		data, err := botUnitSource(botPath)
 		if err != nil {
 			t.Errorf("%s: read: %v", botPath, err)
 			continue
@@ -290,7 +290,7 @@ func TestCatalogBotsAreStackAgnostic(t *testing.T) {
 
 	for _, botPath := range botPaths {
 		bot := filepath.Base(filepath.Dir(botPath))
-		data, err := os.ReadFile(botPath)
+		data, err := botUnitSource(botPath)
 		if err != nil {
 			t.Errorf("%s: read: %v", botPath, err)
 			continue

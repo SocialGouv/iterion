@@ -2,14 +2,12 @@ package bots
 
 import (
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // outputsRef matches an {{outputs.<node>.<field>}} reference.
@@ -55,12 +53,7 @@ func TestCatalogToolCommandsResolveTheirRefs(t *testing.T) {
 
 	checked := 0
 	for _, path := range targets {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("%s: read: %v", path, err)
-			continue
-		}
-		pr := parser.Parse(path, string(src))
+		pr := parseBotUnit(path)
 		if pr.File == nil {
 			t.Logf("%s: not inspected (unparseable — the parse/compile test owns that)", path)
 			continue

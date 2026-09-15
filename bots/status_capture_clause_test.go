@@ -1,7 +1,6 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -31,7 +30,7 @@ const statusCaptureMarker = "CAPTURE THE STATUS, THEN FILTER"
 func TestCampaignContractsCaptureStatusBeforeFiltering(t *testing.T) {
 	for _, bot := range statusCaptureCarriers {
 		t.Run(bot, func(t *testing.T) {
-			raw, err := os.ReadFile(bot)
+			raw, err := botUnitSource(bot)
 			if err != nil {
 				t.Fatalf("read %s: %v", bot, err)
 			}
