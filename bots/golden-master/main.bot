@@ -195,6 +195,15 @@ schema mutation_report:
   ## Held-out mutants that repeat an already-scored, already-published one.
   ## Must be empty: a set the hardening loop can read is not held out.
   holdout_reused: string[]
+  ## Paths not committed when the verdict was taken. Must be empty, because a
+  ## mutant's revert restores HEAD: uncommitted changes are destroyed DURING
+  ## the run, so every figure below them describes a tree that stopped existing
+  ## partway through. The harness has always said exactly that, in a notice —
+  ## "the verdict below describes a tree that never existed" — and nothing read
+  ## it. Declared here so a term can exist at all: C031 refuses an expression
+  ## over an undeclared field, which is why the three held-out debt fields
+  ## stayed unwired for so long.
+  workspace_dirty: string[]
   log_tail: string
 
 schema audit_state:
@@ -2613,6 +2622,35 @@ tool oracle_run:
         """
         code, out = run("git ls-files -- mutants/holdout", gm_dir, timeout=60)
         return code == 0 and bool(out.strip())
+
+
+    def workspace_dirty_paths(ws):
+        """The paths git reports as NOT committed, sorted.
+
+        A mutant's revert restores HEAD, so anything uncommitted is destroyed
+        DURING the run: a verdict taken on such a tree describes a tree that
+        stopped existing partway through the measurement. Both gates refuse on a
+        non-empty result, which is why this is a function with a bench rather than
+        four lines inside `main()` that nothing could reach.
+
+        Split BEFORE any global strip. `git status --porcelain` writes
+        `XY <path>`, and X is ' ' for an unstaged modification: `strip()` on the
+        whole output eats the leading space of the FIRST line only, which then
+        shifts by one and loses its first character (`build.gradle` ->
+        `uild.gradle`). The later lines, intact, give a list where a single entry
+        is wrong -- and when one file is dirty, it is the only one named.
+
+        KNOWN GAP, named rather than closed: a git that FAILS (no repository, a
+        broken index) reads here as "nothing uncommitted", so the guard disables
+        itself in silence. Refusing instead is defensible and is a different
+        change with its own blast radius -- every caller of this harness would
+        have to be a git worktree, which today is a premise rather than a check.
+        """
+        p = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            return []
+        return sorted(l[3:] for l in p.stdout.splitlines() if l.strip())
 
 
     def holdout_committed_entries(gm_dir):
@@ -5178,6 +5216,42 @@ tool oracle_run:
                    sorted(os.listdir(sealed_mix)) if os.path.isdir(sealed_mix) else []],
                   [True, True, False, ["t02"]])
 
+            # L'ARBRE JUGE DOIT ETRE L'ARBRE. Le revert d'un mutant restaure HEAD,
+            # donc tout ce qui n'est pas commite est DETRUIT pendant le run : le
+            # verdict decrit alors un arbre qui a cesse d'exister en cours de
+            # mesure. Le harnais le disait deja, mot pour mot, dans une notice --
+            # et rien ne la lisait. Les deux portes refusent maintenant sur le
+            # champ ; voici le banc qui prouve que le champ se remplit.
+            wrepo = os.path.join(sroot, "workspace")
+            os.makedirs(wrepo)
+            with open(os.path.join(wrepo, "a.txt"), "w", encoding="utf-8") as f:
+                f.write("un\n")
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+                fixture_git(wrepo, *args)
+            propre = workspace_dirty_paths(wrepo)
+            with open(os.path.join(wrepo, "a.txt"), "w", encoding="utf-8") as f:
+                f.write("deux\n")                 # modification NON indexee : X = ' '
+            with open(os.path.join(wrepo, "b.txt"), "w", encoding="utf-8") as f:
+                f.write("neuf\n")                 # non suivi : XY = '??'
+            check("arbre commite -> aucun chemin sale ; arbre sale -> les deux nommes",
+                  [propre, workspace_dirty_paths(wrepo)],
+                  [[], ["a.txt", "b.txt"]])
+            # La regression que le decoupage evite, epinglee sur le cas qui la
+            # revele : UN SEUL fichier modifie non indexe. `git status --porcelain`
+            # ecrit ' M a.txt' ; un strip() global mangerait l'espace de tete et
+            # rendrait 'a.txt' ampute de son premier caractere -- et comme c'est le
+            # seul nomme, le diagnostic entier serait faux.
+            solo = os.path.join(sroot, "workspace-solo")
+            os.makedirs(solo)
+            with open(os.path.join(solo, "build.gradle"), "w", encoding="utf-8") as f:
+                f.write("un\n")
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+                fixture_git(solo, *args)
+            with open(os.path.join(solo, "build.gradle"), "w", encoding="utf-8") as f:
+                f.write("deux\n")
+            check("un seul fichier modifie -> son nom est entier, pas ampute",
+                  workspace_dirty_paths(solo), ["build.gradle"])
+
             # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
             # sont pas la meme, et aucune n'est un echec : ce sont des etats que
             # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
@@ -7318,6 +7392,14 @@ tool oracle_run:
                   "holdout_awaiting_gate": False,
                   "holdout_spent_unreplaced": False, "holdout_spent_cycles": 0,
                   "holdout_sealed_uncommitted": False,
+                  # Les chemins non commites au moment ou le verdict se prend. Un
+                  # CHAMP, pas une notice : la notice existait deja et disait tout
+                  # -- « the verdict below describes a tree that never existed » --
+                  # sans qu'aucune conjonction ne la lise, et un rite a convergé
+                  # sur exactement cet etat. Le harnais condamne ce motif ailleurs
+                  # dans ce meme fichier : « a notice string is where debts go to
+                  # hide ».
+                  "workspace_dirty": [],
                   "pending_rebaselines": [],
                   "pending_extensions": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
@@ -7470,22 +7552,17 @@ tool oracle_run:
             note(report, text)
 
         if mode != "record":
-            dirty = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
-                                   capture_output=True, text=True)
-            if dirty.returncode == 0 and dirty.stdout.strip():
-                # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
-                # `XY <chemin>`, et X vaut ' ' pour une modification non indexee :
-                # strip() sur la sortie entiere mange alors l'espace de tete de la
-                # PREMIERE ligne seulement, qui se decale d'un cran et perd son
-                # premier caractere (`build.gradle` -> `uild.gradle`). Les suivantes,
-                # intactes, donnent une liste ou une seule entree est fausse — et
-                # quand un seul fichier est sale, c'est la seule nommee.
-                paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
+            paths = workspace_dirty_paths(ws)
+            if paths:
+                # Le champ porte la liste ENTIERE ; la notice n'en nomme que douze.
+                # Une porte qui refuse doit pouvoir dire sur quoi, et un compte
+                # tronque a douze ferait mentir le diagnostic des le treizieme.
+                report["workspace_dirty"] = paths
                 note(report, (
                     "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                     "these changes are destroyed during the run and the verdict below describes "
                     "a tree that never existed. Commit, then gate."
-                    % (len(paths), ", ".join(sorted(paths)[:12]))))
+                    % (len(paths), ", ".join(paths[:12]))))
 
         visible = load_mutants(gm_dir, holdout=False)
 
@@ -8322,7 +8399,23 @@ compute oracle_gate:
     ## a floor there would refuse trees whose defect is somewhere else entirely.
     ## That asymmetry is stated on the runner's `ok`, where it is visible to
     ## whoever reads the weaker of the two gates.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_total > 0 && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    ##
+    ## `workspace_dirty` carries NO such asymmetry, and that is the point: it is
+    ## a term on BOTH gates. The held-out floor is a debt, owed by one party and
+    ## payable by one party. An uncommitted tree is not a debt — it voids the
+    ## MEASUREMENT, identically for whoever takes it. A mutant's revert restores
+    ## HEAD, so uncommitted changes are destroyed mid-run and every figure
+    ## describes a tree that stopped existing partway through. A lot's verify
+    ## reading green on that tree is exactly as worthless as a rite's.
+    ##
+    ## Measured before proposing, on the last four rites: `01a08f18` clean,
+    ## `01a09459` clean, `01a091a0` other cause, `01a0a3a8` DIRTY — and
+    ## `01a0a3a8` CONVERGED. Two of the three that converged had a clean tree,
+    ## so this term refuses no legitimate run; it fires on the pathological case
+    ## and on that alone. The check itself is taken BEFORE `seal_holdout` moves
+    ## anything, so a gate that opted into `seal_committed` is not refused by
+    ## the uncommitted deletions its own seal leaves behind.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && length(outputs.oracle_run.workspace_dirty) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_total > 0 && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -8379,6 +8472,15 @@ tool emit_runner:
         # spent, published set from being replayed as if it were fresh -- and
         # the standalone entry point is what CI and humans run.
         "    and r.get(\"runner_replayable\") and not r.get(\"holdout_reused\")\n"
+        # `workspace_dirty` belongs on BOTH gates, with no asymmetry — unlike
+        # the held-out floor below. That floor is a DEBT: one party owes the
+        # next set, one party can pay. An uncommitted tree is not a debt, it
+        # voids the MEASUREMENT, and it voids it identically for whoever takes
+        # it. Mutant reverts restore HEAD, so uncommitted changes are destroyed
+        # mid-run and every figure above describes a tree that stopped existing
+        # partway through. A lot's verify reading green on that tree is exactly
+        # as worthless as a rite's, and this entry point is what CI runs.
+        "    and not r.get(\"workspace_dirty\")\n"
         "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
         # THE ONE TERM THIS VERDICT DOES NOT CARRY, stated so it is a decision
         # and not an oversight: the graph gate also requires `holdout_total > 0`

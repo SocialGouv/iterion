@@ -2392,6 +2392,35 @@ def holdout_committed_in_tree(gm_dir):
     return code == 0 and bool(out.strip())
 
 
+def workspace_dirty_paths(ws):
+    """The paths git reports as NOT committed, sorted.
+
+    A mutant's revert restores HEAD, so anything uncommitted is destroyed
+    DURING the run: a verdict taken on such a tree describes a tree that
+    stopped existing partway through the measurement. Both gates refuse on a
+    non-empty result, which is why this is a function with a bench rather than
+    four lines inside `main()` that nothing could reach.
+
+    Split BEFORE any global strip. `git status --porcelain` writes
+    `XY <path>`, and X is ' ' for an unstaged modification: `strip()` on the
+    whole output eats the leading space of the FIRST line only, which then
+    shifts by one and loses its first character (`build.gradle` ->
+    `uild.gradle`). The later lines, intact, give a list where a single entry
+    is wrong -- and when one file is dirty, it is the only one named.
+
+    KNOWN GAP, named rather than closed: a git that FAILS (no repository, a
+    broken index) reads here as "nothing uncommitted", so the guard disables
+    itself in silence. Refusing instead is defensible and is a different
+    change with its own blast radius -- every caller of this harness would
+    have to be a git worktree, which today is a premise rather than a check.
+    """
+    p = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        return []
+    return sorted(l[3:] for l in p.stdout.splitlines() if l.strip())
+
+
 def holdout_committed_entries(gm_dir):
     """The NAMES under mutants/holdout/ that git tracks.
 
@@ -4955,6 +4984,42 @@ def _selftest():
                sorted(os.listdir(sealed_mix)) if os.path.isdir(sealed_mix) else []],
               [True, True, False, ["t02"]])
 
+        # L'ARBRE JUGE DOIT ETRE L'ARBRE. Le revert d'un mutant restaure HEAD,
+        # donc tout ce qui n'est pas commite est DETRUIT pendant le run : le
+        # verdict decrit alors un arbre qui a cesse d'exister en cours de
+        # mesure. Le harnais le disait deja, mot pour mot, dans une notice --
+        # et rien ne la lisait. Les deux portes refusent maintenant sur le
+        # champ ; voici le banc qui prouve que le champ se remplit.
+        wrepo = os.path.join(sroot, "workspace")
+        os.makedirs(wrepo)
+        with open(os.path.join(wrepo, "a.txt"), "w", encoding="utf-8") as f:
+            f.write("un\n")
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(wrepo, *args)
+        propre = workspace_dirty_paths(wrepo)
+        with open(os.path.join(wrepo, "a.txt"), "w", encoding="utf-8") as f:
+            f.write("deux\n")                 # modification NON indexee : X = ' '
+        with open(os.path.join(wrepo, "b.txt"), "w", encoding="utf-8") as f:
+            f.write("neuf\n")                 # non suivi : XY = '??'
+        check("arbre commite -> aucun chemin sale ; arbre sale -> les deux nommes",
+              [propre, workspace_dirty_paths(wrepo)],
+              [[], ["a.txt", "b.txt"]])
+        # La regression que le decoupage evite, epinglee sur le cas qui la
+        # revele : UN SEUL fichier modifie non indexe. `git status --porcelain`
+        # ecrit ' M a.txt' ; un strip() global mangerait l'espace de tete et
+        # rendrait 'a.txt' ampute de son premier caractere -- et comme c'est le
+        # seul nomme, le diagnostic entier serait faux.
+        solo = os.path.join(sroot, "workspace-solo")
+        os.makedirs(solo)
+        with open(os.path.join(solo, "build.gradle"), "w", encoding="utf-8") as f:
+            f.write("un\n")
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(solo, *args)
+        with open(os.path.join(solo, "build.gradle"), "w", encoding="utf-8") as f:
+            f.write("deux\n")
+        check("un seul fichier modifie -> son nom est entier, pas ampute",
+              workspace_dirty_paths(solo), ["build.gradle"])
+
         # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
         # sont pas la meme, et aucune n'est un echec : ce sont des etats que
         # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
@@ -7095,6 +7160,14 @@ def main():
               "holdout_awaiting_gate": False,
               "holdout_spent_unreplaced": False, "holdout_spent_cycles": 0,
               "holdout_sealed_uncommitted": False,
+              # Les chemins non commites au moment ou le verdict se prend. Un
+              # CHAMP, pas une notice : la notice existait deja et disait tout
+              # -- « the verdict below describes a tree that never existed » --
+              # sans qu'aucune conjonction ne la lise, et un rite a convergé
+              # sur exactement cet etat. Le harnais condamne ce motif ailleurs
+              # dans ce meme fichier : « a notice string is where debts go to
+              # hide ».
+              "workspace_dirty": [],
               "pending_rebaselines": [],
               "pending_extensions": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
@@ -7247,22 +7320,17 @@ def main():
         note(report, text)
 
     if mode != "record":
-        dirty = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
-                               capture_output=True, text=True)
-        if dirty.returncode == 0 and dirty.stdout.strip():
-            # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
-            # `XY <chemin>`, et X vaut ' ' pour une modification non indexee :
-            # strip() sur la sortie entiere mange alors l'espace de tete de la
-            # PREMIERE ligne seulement, qui se decale d'un cran et perd son
-            # premier caractere (`build.gradle` -> `uild.gradle`). Les suivantes,
-            # intactes, donnent une liste ou une seule entree est fausse — et
-            # quand un seul fichier est sale, c'est la seule nommee.
-            paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
+        paths = workspace_dirty_paths(ws)
+        if paths:
+            # Le champ porte la liste ENTIERE ; la notice n'en nomme que douze.
+            # Une porte qui refuse doit pouvoir dire sur quoi, et un compte
+            # tronque a douze ferait mentir le diagnostic des le treizieme.
+            report["workspace_dirty"] = paths
             note(report, (
                 "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                 "these changes are destroyed during the run and the verdict below describes "
                 "a tree that never existed. Commit, then gate."
-                % (len(paths), ", ".join(sorted(paths)[:12]))))
+                % (len(paths), ", ".join(paths[:12]))))
 
     visible = load_mutants(gm_dir, holdout=False)
 
