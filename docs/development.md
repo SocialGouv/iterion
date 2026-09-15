@@ -39,8 +39,10 @@ task test              # all Go unit tests
 task test:e2e          # deterministic/stub E2E suite
 task test:goldens      # recorded bot-schema/invariant replays; no credentials
 task studio:check      # ESLint + TypeScript + Vitest
-task check             # lint + unit + goldens + studio:check
+task check             # the seven gates: lint, test, goldens, studio, pi-ext, brand, dsl
 ```
+
+`check`'s last three gates guard generated artefacts rather than behaviour: `pi-ext:check` typechecks the pi extension and rebuilds its embedded asset into a temp file to compare, `brand:check` does the same for every committed copy of `assets/brand/`, and `dsl:check` fails when the committed rendering of the DSL property registry is stale or when the registry and the parser disagree. Regenerate with `task brand:gen` / `task dsl:gen` instead of hand-editing generated output.
 
 Useful narrower gates:
 
@@ -159,7 +161,9 @@ iterion/
 ├── docker/ + sandbox/       # container images/helpers and sandbox fixtures
 ├── docs/                    # living guides plus explicitly dated records
 ├── scripts/ + tooling/      # generation, release, and verification helpers
-├── internal/httpx/          # module-private HTTP utility
+├── internal/                # module-private helpers: gittest (MANDATORY for every
+│                            # git subprocess a test spawns — docs/agents/testing.md),
+│                            # httpx, ciguard, fswatch, proctest, subbottest
 ├── third_party/             # checked-in third-party source/assets
 └── vendor/                  # vendored Go modules, including claw-code-go
 ```
