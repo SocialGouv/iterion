@@ -42,9 +42,14 @@ type Workflow struct {
 	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
 	Skills          []string               // workflow-level default skill-library references (nil = none)
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
-	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory      string                 // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	// Contracts are the unit's `contract` declarations by name, each bound
+	// to this program (ADR-099); Contract is the one the workflow names by
+	// `contract:` (nil = none).
+	Contracts  map[string]*PublicContract
+	Contract   *PublicContract
+	Worktree   string // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Compress   string // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).

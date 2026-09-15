@@ -69,6 +69,10 @@ var fragmentElsewhereCodes = map[DiagCode]bool{
 	// fragment omits (the synthetic workflow appended for it has neither).
 	DiagRoundRobinTooFewEdges: true, DiagLLMRouterTooFewEdges: true,
 	DiagFanOutEachEdges: true, DiagUnknownResourceInNeeds: true,
+	// A contract fragment binds to vars and nodes the page declares
+	// elsewhere (C300 an input's var, C301 an output's producer); its own
+	// shape errors (C302) are not excused.
+	DiagContractInput: true, DiagContractOutput: true,
 }
 
 var diagCodeRe = regexp.MustCompile(`\[(C\d{3})\]`)

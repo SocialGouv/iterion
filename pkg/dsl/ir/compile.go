@@ -650,6 +650,9 @@ func (c *compiler) compile() *Workflow {
 	// Compile attachments (merge top-level + workflow-level).
 	attachments := c.compileAttachments(c.file.Attachments, wf.Attachments, vars)
 
+	// Bind the public contracts: nodes, schemas and vars are compiled.
+	contracts, contract := c.compilePublicContracts(wf, vars)
+
 	// Compile edges.
 	edges, loops, foreaches := c.compileEdges(wf.Edges)
 
@@ -698,6 +701,8 @@ func (c *compiler) compile() *Workflow {
 		Cursors:             cursors,
 		Supervisors:         supervisors,
 		Interaction:         interaction,
+		Contracts:           contracts,
+		Contract:            contract,
 		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,

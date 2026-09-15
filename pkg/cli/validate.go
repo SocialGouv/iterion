@@ -39,6 +39,10 @@ type ValidateResult struct {
 	// MCP local_validate tool) acts on. The string lists stay for readers
 	// that only print.
 	Diagnostics []ValidateDiagnostic `json:"diagnostics,omitempty"`
+	// PublicContract is the contract the workflow keeps, as the compiler
+	// bound it (ADR-099) — present only when the program compiles without
+	// an error, so a view is never shown of a program that is not one.
+	PublicContract *ir.PublicContract `json:"public_contract,omitempty"`
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -305,6 +309,9 @@ func RunValidate(path string, p *Printer) error {
 		result.WorkflowName = cr.Workflow.Name
 		result.NodeCount = len(cr.Workflow.Nodes)
 		result.EdgeCount = len(cr.Workflow.Edges)
+		if result.Valid {
+			result.PublicContract = cr.Workflow.Contract
+		}
 	}
 
 	// Bundle consistency: cross-check the manifest against the compiled
@@ -379,6 +386,9 @@ func RunValidate(path string, p *Printer) error {
 			p.KV("Workflow", result.WorkflowName)
 			p.KV("Nodes", fmt.Sprintf("%d", result.NodeCount))
 			p.KV("Edges", fmt.Sprintf("%d", result.EdgeCount))
+			if result.PublicContract != nil {
+				printPublicContract(p, result.PublicContract)
+			}
 		}
 		printDiagnostics(p, result.Diagnostics)
 		p.Blank()
@@ -393,6 +403,52 @@ func RunValidate(path string, p *Printer) error {
 		return validationFailed(p)
 	}
 	return nil
+}
+
+// printPublicContract renders the contract the workflow keeps, as the
+// compiler bound it: each port with its producer, each criterion with its
+// evaluator, each effect.
+func printPublicContract(p *Printer, c *ir.PublicContract) {
+	title := fmt.Sprintf("%s v%d", c.Name, c.Version)
+	if c.Responsibility != "" {
+		title += " — " + c.Responsibility
+	}
+	p.KV("Contract", title)
+	for _, side := range []struct {
+		label string
+		ports []*ir.PublicPort
+	}{{"Input", c.Inputs}, {"Output", c.Outputs}} {
+		for _, port := range side.ports {
+			line := port.Name + ": " + port.Type
+			if !port.Required {
+				line += " (optional)"
+			}
+			if port.File != nil {
+				line += " (file)"
+			}
+			if port.FromNode != "" {
+				line += " ← " + port.FromNode
+				if port.FromField != "" {
+					line += "." + port.FromField
+				}
+			}
+			p.KV(side.label, line)
+		}
+	}
+	for _, k := range c.Criteria {
+		line := k.Name + ": " + k.Kind + " on " + k.Port
+		if !k.Registered {
+			line += " (not evaluated: no registered evaluator)"
+		}
+		p.KV("Criterion", line)
+	}
+	for _, e := range c.Effects {
+		line := e.Name
+		if e.Paid {
+			line += " (paid)"
+		}
+		p.KV("Effect", line)
+	}
 }
 
 // validationFailed is the non-zero exit of an invalid workflow. In --json mode
