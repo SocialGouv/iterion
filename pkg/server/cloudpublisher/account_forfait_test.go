@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -52,7 +53,54 @@ func TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow(t *testing.T) {
 	// trust window a recorded reading does, and then the account is asked
 	// again rather than assumed answered forever.
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), rec.Fingerprint)
-	f.pub.rememberEmptyProbe(key, time.Now().Add(-2*time.Hour))
+	f.pub.rememberProbeWithoutReading(key, time.Now().Add(-2*time.Hour))
+	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload")); probes != 2 {
+		t.Fatalf("provider probes=%d, want the account re-asked once the memo aged out", probes)
+	}
+}
+
+// The twin of the test above, for the answer that never ARRIVES — and the one
+// that costs more, because an outage is exactly when the probe re-fires
+// hardest and each attempt burns a full timeout on the synchronous publish
+// path. The memo was written for the successful-but-empty branch only, so the
+// likelier branch kept spinning: one test covering its own branch and not its
+// sibling. (Revi R780903 / R7094da.)
+func TestNewAccountMeterConvergesWhenTheProviderCannotBeReached(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	withTenantForfait(t, f, "sk-ant-unreachable-provider")
+	owner := secrets.OrgOwnerKey(poolTeam)
+	rec, err := f.pub.oauthForfait.Get(t.Context(), owner, secrets.OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Fingerprint = (secrets.OAuthAccount{ID: "c7f30bce-7e8b-4bb7-8199-afc172f3d580", OrganizationID: "0d05ce64-6b67-4368-909c-0d26f5a5870a"}).Fingerprint()
+	if err := f.pub.oauthForfait.Upsert(t.Context(), rec); err != nil {
+		t.Fatal(err)
+	}
+	f.pub.usageCaps = usagecap.NewMemStore()
+	f.pub.trust = usagecap.Trust{MaxAge: time.Hour, Window: 2 * time.Hour}
+	probes := 0
+	f.pub.usageProbe = func(context.Context, []byte) ([]usagecap.Reading, error) {
+		probes++
+		return nil, errors.New("the provider is unreachable")
+	}
+
+	for pass := range 3 {
+		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload"))
+		// The documented posture on an unavailable provider: fail OPEN. The
+		// fix must stop the re-probing without turning an outage into a wall.
+		if !until.IsZero() {
+			t.Fatalf("pass %d: an unreachable provider must not close the window", pass)
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("provider probes=%d over three launches, want one — a failed probe re-fires at every launch, %v per ranked candidate, for as long as the outage lasts", probes, usageProbeTimeout)
+	}
+
+	// Same as its twin: an observation, not a verdict. Once the memo ages out
+	// the account is asked again rather than assumed unreachable forever.
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), rec.Fingerprint)
+	f.pub.rememberProbeWithoutReading(key, time.Now().Add(-2*time.Hour))
 	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload")); probes != 2 {
 		t.Fatalf("provider probes=%d, want the account re-asked once the memo aged out", probes)
 	}

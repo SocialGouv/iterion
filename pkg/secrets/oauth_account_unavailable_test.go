@@ -154,3 +154,74 @@ func TestMissingProfileScopeDemotesTheMeter(t *testing.T) {
 		t.Fatalf("the reason must name the missing scope, got %q", rec.AccountError)
 	}
 }
+
+// The label is a THIRD fact, next to the identity claim and the meter, and the
+// unavailable branch used to take it down with the claim.
+//
+// PreviousEmail exists so a genuinely changed address rewrites a label that was
+// derived from the old one. On this branch AccountEmail has just been cleared,
+// so leaving PreviousEmail set rewrote the label to "" — and because the next
+// successful refresh then carries PreviousEmail == "", the condition never
+// fired again: one five-second blip left the connection permanently unnamed.
+//
+// Asserted through the STORE, which is where the rewrite lives; asserting on
+// accountUpdate alone would test the intention and not the outcome. Both
+// directions, because a guard that merely stopped rewriting would pass the
+// first half and silently break renames. (Revi Ree13cf.)
+func TestUnavailableProfileLookupKeepsTheOperatorVisibleLabel(t *testing.T) {
+	const label = "person@example.org"
+	store := NewMemoryOAuthStore()
+
+	seed := func(t *testing.T) *OAuthRecord {
+		t.Helper()
+		rec, _ := verifiedAnthropicRecord(t)
+		rec.ID = ""
+		if err := store.Upsert(t.Context(), *rec); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := store.Get(t.Context(), rec.UserID, rec.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetAccountLabel(t.Context(), stored.ID, label); err != nil {
+			t.Fatal(err)
+		}
+		return &stored
+	}
+
+	t.Run("an unreachable provider leaves the name alone", func(t *testing.T) {
+		rec := seed(t)
+		identifyRefreshedAnthropicAccount(t.Context(), profileClient(status(503)), rec, []byte(`{"claudeAiOauth":{"accessToken":"rotated"}}`), "rotated")
+		if rec.AccountError == "" {
+			t.Fatal("fixture never armed: the 503 produced no account error")
+		}
+		if err := store.UpdateTokens(t.Context(), rec.ID, OAuthTokenUpdate{Account: rec.accountUpdate}); err != nil {
+			t.Fatal(err)
+		}
+		back, err := store.Get(t.Context(), rec.UserID, rec.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back.AccountLabel != label {
+			t.Errorf("account_label = %q, want %q — a transient blip must not unname the connection", back.AccountLabel, label)
+		}
+		if back.AccountEmail != "" {
+			t.Errorf("account_email = %q, want it cleared — the identity claim still drops", back.AccountEmail)
+		}
+	})
+
+	t.Run("a genuine rename still rewrites the derived name", func(t *testing.T) {
+		rec := seed(t)
+		upd := &OAuthAccountUpdate{PreviousEmail: label, Email: "moved@example.org", ID: accountA, OrganizationID: organizationA}
+		if err := store.UpdateTokens(t.Context(), rec.ID, OAuthTokenUpdate{Account: upd}); err != nil {
+			t.Fatal(err)
+		}
+		back, err := store.Get(t.Context(), rec.UserID, rec.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back.AccountLabel != "moved@example.org" {
+			t.Errorf("account_label = %q, want the new address — the conditional rewrite must still work", back.AccountLabel)
+		}
+	})
+}

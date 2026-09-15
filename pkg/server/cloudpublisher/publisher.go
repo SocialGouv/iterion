@@ -206,15 +206,21 @@ type Publisher struct {
 	orgCacheMu sync.Mutex
 	orgCache   map[string]orgCacheEntry
 
-	// probedEmpty remembers the account keys whose provider probe SUCCEEDED
-	// and reported no window at all, with the instant it did.
+	// probedNoReading remembers the account keys whose provider probe came back
+	// with NO READING — the provider reported no window at all, or it could not
+	// be reached — with the instant it did.
+	//
+	// Both outcomes belong here, and the unreachable one is the likelier: an
+	// outage is what re-fires the probe hardest, exactly when each attempt
+	// costs a full timeout. A memo kept only for the successful-but-empty
+	// answer converges on the rare branch and leaves the common one spinning.
 	//
 	// Without it the initial-account probe cannot converge: it fires
 	// whenever a verified-account key holds zero readings, and the only
-	// thing that ends that is a reading being recorded — which a probe
-	// returning an empty slice never does. The provider produces exactly
-	// that whenever the usage body omits the window keys, sets them null,
-	// or omits utilization, so the answer "nothing to report" was
+	// thing that ends that is a reading being recorded — which neither a probe
+	// returning an empty slice nor a failing one ever does. The provider
+	// produces the empty answer whenever the usage body omits the window keys,
+	// sets them null, or omits utilization, so "nothing to report" was
 	// indistinguishable from "never asked". Since fillFromPlatform probes
 	// per ranked candidate, one publish could serialize a 5s round trip for
 	// each of user + team + org + every platform rank, on the SYNCHRONOUS
@@ -224,8 +230,8 @@ type Publisher struct {
 	// an absence, and the trust window already governs how long an
 	// observation is believed. A replica that restarts, or a second one,
 	// simply asks once more.
-	probedEmptyMu sync.Mutex
-	probedEmpty   map[string]time.Time
+	probedNoReadingMu sync.Mutex
+	probedNoReading   map[string]time.Time
 
 	// detached tracks fire-and-forget goroutines (e.g. MarkUsed
 	// observability writes) so Drain can wait for them on shutdown
@@ -1341,6 +1347,13 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKe
 	defer cancel()
 	readings, err := p.usageProbe(pctx, payload)
 	if err != nil {
+		// A probe that FAILED records nothing either, so it re-fires at every
+		// launch for as long as the provider is down — serializing the probe
+		// timeout per ranked candidate on the synchronous publish path, at the
+		// worst possible moment. Memoized on the same window as the empty
+		// answer: both mean "asked, came away with no reading", and neither
+		// can be written to the ledger.
+		p.rememberProbeWithoutReading(key, time.Now())
 		p.logger.Info("cloudpublisher: oauth-forfait fp=%s: new or stale account ledger could not be refreshed (%v) — trusting the credential", rec.Fingerprint, err)
 		return time.Time{}, ""
 	}
@@ -1348,7 +1361,7 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKe
 		// A successful probe that reports no window records nothing, so the
 		// ledger stays empty and the initial-account probe would fire again
 		// at the next launch, forever. Remember the answer instead.
-		p.rememberEmptyProbe(key, time.Now())
+		p.rememberProbeWithoutReading(key, time.Now())
 	}
 	for _, r := range readings {
 		if rerr := p.usageCaps.Record(ctx, key, r); rerr != nil {
@@ -1380,41 +1393,43 @@ func (p *Publisher) accountNeedsInitialProbe(ctx context.Context, key, fp string
 // initialProbeWanted is the single decision both the launch path and the
 // preview read, so the preview cannot announce a probe the launch will skip.
 // A verified account with no reading has never been asked — unless the memo
-// says it was asked and the provider reported nothing, which is an answer,
-// just not one that can be recorded as a reading.
+// says it WAS asked and came away with nothing, whether the provider reported
+// no window or could not be reached. Neither can be recorded as a reading, and
+// neither is a reason to ask again on the very next launch.
 func (p *Publisher) initialProbeWanted(key, fp string, readings []usagecap.Reading, now time.Time) bool {
 	if !secrets.IsAccountFingerprint(fp) || len(readings) != 0 {
 		return false
 	}
-	return !p.probedEmptyFresh(key, now)
+	return !p.probedWithoutReadingFresh(key, now)
 }
 
-// probedEmptyFresh reports whether this key was probed to an empty answer
+// probedWithoutReadingFresh reports whether this key was probed to no reading
 // recently enough to still believe it, on the same trust window that governs
 // a recorded reading.
-func (p *Publisher) probedEmptyFresh(key string, now time.Time) bool {
-	p.probedEmptyMu.Lock()
-	defer p.probedEmptyMu.Unlock()
-	at, ok := p.probedEmpty[key]
+func (p *Publisher) probedWithoutReadingFresh(key string, now time.Time) bool {
+	p.probedNoReadingMu.Lock()
+	defer p.probedNoReadingMu.Unlock()
+	at, ok := p.probedNoReading[key]
 	return ok && now.Sub(at) < p.trust.Normalized().MaxAge
 }
 
-// rememberEmptyProbe records that the provider answered with no window at
-// all. Expired entries are dropped on the way through, so the map cannot
-// outgrow the set of credentials in play.
-func (p *Publisher) rememberEmptyProbe(key string, now time.Time) {
+// rememberProbeWithoutReading records that a probe happened and yielded no
+// reading — an answer naming no window, or no answer at all. Expired entries
+// are dropped on the way through, so the map cannot outgrow the set of
+// credentials in play.
+func (p *Publisher) rememberProbeWithoutReading(key string, now time.Time) {
 	maxAge := p.trust.Normalized().MaxAge
-	p.probedEmptyMu.Lock()
-	defer p.probedEmptyMu.Unlock()
-	if p.probedEmpty == nil {
-		p.probedEmpty = make(map[string]time.Time, 4)
+	p.probedNoReadingMu.Lock()
+	defer p.probedNoReadingMu.Unlock()
+	if p.probedNoReading == nil {
+		p.probedNoReading = make(map[string]time.Time, 4)
 	}
-	for k, at := range p.probedEmpty {
+	for k, at := range p.probedNoReading {
 		if now.Sub(at) >= maxAge {
-			delete(p.probedEmpty, k)
+			delete(p.probedNoReading, k)
 		}
 	}
-	p.probedEmpty[key] = now
+	p.probedNoReading[key] = now
 }
 
 // staleSuggestsClosed reports whether the credential's ledger holds a

@@ -179,6 +179,18 @@ func identifyRefreshedAnthropicAccount(ctx context.Context, hc *http.Client, rec
 		// SubscriptionFingerprint here would move them to the hash of a
 		// payload the next refresh rotates away, which no reader can find.
 		rec.AccountError = err.Error()
+		// The operator-visible LABEL is a third fact, and it must not follow
+		// either. PreviousEmail exists to rewrite an email-derived label when
+		// the address genuinely changed; left set here it rewrites the label
+		// to the empty Email this branch just cleared — and the next
+		// successful refresh carries PreviousEmail == "", so the condition
+		// never fires again and the name never comes back. One unreachable
+		// provider would leave the connection permanently unnamed in Studio.
+		//
+		// Clearing PreviousEmail rather than restoring the old address into
+		// the update is what keeps this scoped: putting the address back
+		// would re-assert the identity the posture above just dropped.
+		rec.accountUpdate.PreviousEmail = ""
 	default:
 		// The provider answered about THIS bearer: refused it, or named
 		// another account. Either way the meter must not follow.
