@@ -425,9 +425,11 @@ export async function openFile(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
     const source = bundle.files?.[bs.rel] ?? "";
-    if (bs.rel === "main.bot" && importsFragments(source)) {
-      // The bundle's main in several files: the unit is parsed from the
-      // whole files map, so the fragments under lib/ are in the document.
+    if (bs.rel.endsWith(".bot") && importsFragments(source)) {
+      // A workflow in several files — the bundle's main, or a companion
+      // workflow of its own: the unit is parsed from the whole files map
+      // with that file as its main, so the fragments its imports reach
+      // are in the document.
       const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
       return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit };
     }
