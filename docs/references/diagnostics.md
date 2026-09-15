@@ -1,8 +1,40 @@
 # Iterion DSL — Validation Diagnostics
 
-All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`ir.Validate`), plus the bundle-consistency codes (`C2xx`) that `iterion validate` reports for a packaged bot. Diagnostics are either **errors** (block execution) or **warnings** (informational).
+All diagnostic codes `iterion validate` can report, in the order the pipeline produces them: the parse codes (`E0xx`), then the codes emitted during compilation (`ir.Compile`) and validation (`ir.Validate`), plus the bundle-consistency codes (`C2xx`) reported for a packaged bot. Diagnostics are either **errors** (block execution) or **warnings** (informational).
 
-The compiler carries its own copy of each row's *Fix* ([`pkg/dsl/ir/diag_catalog.go`](../../pkg/dsl/ir/diag_catalog.go)): `iterion validate` prints it as the `fix:` line under every finding, the studio shows it in the diagnostic badge, and the MCP `local_validate` result carries it as `hint`. A code the compiler can emit that has no catalogue entry fails `TestDiagCatalogCoversEveryCode`, so a finding never arrives without a next step. Parse-stage codes (`E0xx`, [`pkg/dsl/parser/diagnostic.go`](../../pkg/dsl/parser/diagnostic.go)) carry a fix line the same way.
+The compiler carries its own copy of each row's *Fix* ([`pkg/dsl/ir/diag_catalog.go`](../../pkg/dsl/ir/diag_catalog.go)): `iterion validate` prints it as the `fix:` line under every finding, the studio shows it in the diagnostic badge, and the MCP `local_validate` result carries it as `hint`. A code the compiler can emit that has no catalogue entry fails `TestDiagCatalogCoversEveryCode`, so a finding never arrives without a next step. Parse-stage codes (`E0xx`, [`pkg/dsl/parser/diagnostic.go`](../../pkg/dsl/parser/diagnostic.go)) carry a fix line the same way, served by `parser.HintFor`; they are listed in [Parse Diagnostics](#parse-diagnostics) below.
+
+## Parse Diagnostics
+
+Emitted by the parser ([`pkg/dsl/parser/diagnostic.go`](../../pkg/dsl/parser/diagnostic.go)) before the compiler ever runs: `iterion validate` parses, then compiles, then validates, so a file that draws an `E0xx` reports it and nothing else. Each one is positioned to the token, and all of them are errors — there is no graph yet to warn about. The fix is always in the `.bot` text itself: tokens, indentation, declarations, edge clauses, the `dsl:` profile header and `import`.
+
+| Code | Severity | Description | Cause | Fix |
+|------|----------|-------------|-------|-----|
+| **E001** | error | Unexpected token | A line the parser cannot read in this position | Inside a block every line is `key: value` (or `src -> dst` inside `workflow:`); check this line's indentation and that its block is still open |
+| **E002** | error | Expected a specific token | The position wanted a different shape | Give the position the shape the parser wanted: a bare name for a prompt/schema/node reference, a quoted string for a value, an indented block under a header, an inline `[a, b]` list |
+| **E003** | error | Bad indentation | Tabs, a misaligned dedent, or nesting past the depth limit | Indent with spaces only, by the same width at every level, and align the line with an enclosing block |
+| **E004** | error | Unterminated string literal | A quote is never closed | Close the quote, or use a backtick raw string / a `\|` block scalar for multi-line content |
+| **E005** | error | Unknown escape sequence | A backslash escape the strict-escape reading does not define | In strict-escape mode a backslash only escapes `\"`, `\\`, `\n`, `\t`, `\r` and `\0`: double the backslash for a literal one, or move the text to a backtick raw string / a `\|` block scalar |
+| **E010** | error | Duplicate declaration name | Two declarations share a name, in one file or anywhere in the imported unit | Rename one of the two declarations |
+| **E011** | error | Reserved name | `done` or `fail` used as a declaration name | `done` and `fail` are the reserved terminal targets; pick another name |
+| **E012** | error | Unknown property | A property this node kind does not accept | Check the property table for this node kind in [dsl-grammar.md](dsl-grammar.md) — a property another kind accepts is not accepted here |
+| **E013** | error | Required property missing | A mandatory property is absent | Add the property the message names |
+| **E014** | error | Duplicate top-level block | `vars:` / `presets:` / `attachments:` / `secrets:` declared twice | Keep one such block per file and merge the entries into it |
+| **E020** | error | Invalid value | A value outside the accepted set (e.g. a bad session mode) | Use one of the accepted values the message lists |
+| **E021** | error | Invalid type expression | An unknown type name | Types are `string`, `bool`, `int`, `float`, `json` and `string[]` (a schema field may also be `file`) |
+| **E030** | error | Duplicate edge clause | `when` / `as` / `with` repeated on one edge | Each of `when`/`else`, `as` and `with` may appear once per edge |
+| **E031** | error | `else` together with `when` | An edge carries both a guard and the fallback | An edge is either guarded (`when`) or the fallback (`else`), never both |
+| **E032** | error | Clause before a further arrow | A clause in the middle of a chain, `a -> b when x -> c` | In a chain `a -> b -> c` the clauses apply to the LAST segment only; to guard, loop or map an earlier one, write that segment as its own edge line |
+| **E040** | error | Unknown syntax profile | The `dsl:` header names a profile this build does not read, or is not a positive integer | Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: ">= <version>" }` in the bundle manifest |
+| **E041** | error | Misplaced `dsl:` header | The header is not the first declaration, or appears twice | Move the `dsl:` line above every import and every declaration — after the leading comments, before the first `import`, block or node — and keep a single one |
+| **E042** | error | Directive refused by the profile | The profile-1 `strict-escape` directive in a file of profile 2 or later | Profile 2 reads standard escapes in every quoted string by default: delete the `strict-escape` directive (a backslash that must stay literal is written `\\`) |
+| **E043** | error | Property removed by the profile | A property the file's profile retired (`project_root:` from profile 2) | Keep the file in profile 1 (drop the `dsl: 2` header), or redesign the memory scope: `visibility:` is a different axis (C171), not a drop-in replacement for `project_root:` |
+| **E044** | error | Misplaced `import` | An `import` after the file's first declaration | Move the `import` lines to the head of the file — after the `dsl:` header and the leading comments, before the first block or node |
+| **E045** | error | Bad import path | A path that is not a quoted, relative, slash-separated `.bot` path into the bot's `lib/` | Write `import "lib/<name>.bot"`: a quoted, relative, slash-separated path to a `.bot` fragment under the bot's `lib/` directory, one import per line |
+| **E046** | error | Import unreadable | An imported fragment that cannot be read: missing, or beyond what the unit may read | Create the fragment under the bot's `lib/` directory, or fix the path; a symlink, an absolute path or a path leaving the bot's directory is never read |
+| **E047** | error | Import cycle | A fragment that imports itself, through however many files | A fragment may not import a file that imports it back: move the shared declarations into a third fragment both import |
+
+The syntax-profile and `import` codes (`E040`–`E047`) are discussed in context in the [DSL guide](../dsl.md) — see the syntax profile and `import` sections.
 
 ## Compilation Diagnostics
 
@@ -72,7 +104,7 @@ The compiler carries its own copy of each row's *Fix* ([`pkg/dsl/ir/diag_catalog
 | **C070** | error | Preset references unknown variable | A `presets:` entry sets a key that does not match any name in `vars:` | Add the variable to `vars:`, or remove/rename the preset key |
 | **C071** | error | Preset value type mismatch | A `presets:` value's type (string/int/bool/list) does not match the declared `vars:` type | Cast the value to the declared type, or change the var's type |
 | **C072** | error | Duplicate preset name | The same preset name appears more than once in the `presets:` block | Rename or merge the duplicate preset |
-| **C080** | warning | Unknown capability | A `capabilities:` entry isn't in the built-in registry (currently: `board.read`, `board.create`, `board.move`, `board.assign`, `board.label`, `board.close`, `board.comment`, `watch.subscribe`, `watch.unsubscribe`) | Either fix the typo or accept the warning — unknown caps still propagate to the executor (the registry is open for extension) |
+| **C080** | warning | Unknown capability | A `capabilities:` entry isn't in the built-in registry (currently: `board.read`, `board.create`, `board.move`, `board.assign`, `board.label`, `board.close`, `board.comment`, `watch.subscribe`, `watch.unsubscribe`, `runs.read` — the last opening `run_get` / `run_events` / `runs_list` over the run store) | Either fix the typo or accept the warning — unknown caps still propagate to the executor (the registry is open for extension) |
 | **C081** | error | Malformed capability | A `capabilities:` entry doesn't match the shape `domain` or `domain.action` (lowercase letters/digits/underscores) | Use the lowercase `domain.action` form, e.g. `board.create` |
 | **C082** | warning | Board capability inside sandbox | A node grants a `board.*` capability while running under a sandbox — the stdio `__mcp-board` transport is unavailable, the runtime falls back to the HTTP transport on the iterion server | No action required if the iterion HTTP server is reachable from the sandbox; otherwise drop the capability or disable the sandbox for that node |
 | **C083** | warning | Unknown cursor reference | An agent/judge `cursors:` setting references a cursor name not declared at workflow scope | Declare it with `cursor <name>:` or drop the setting — see [docs/cursors.md](../cursors.md) |

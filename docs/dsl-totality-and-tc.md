@@ -80,11 +80,15 @@ body has no exit edge, so only fuel/liveness can ever stop it).
 
 ## The static-predictability surface
 
-Compilation is a two-phase pipeline that emits ~110 diagnostics
-(C001–C199 plus the async band C240–C242 + bundlelint C200–C234, all sparse ranges). The full catalogue, with severity and fix,
-is in [references/diagnostics.md](references/diagnostics.md); a drift guard
-(`TestDiagCodesAreDocumented`) and a uniqueness guard (`TestDiagCodesAreUnique`)
-in [pkg/dsl/ir/diag_codes_test.go](../pkg/dsl/ir/diag_codes_test.go) keep that
+Compilation is a two-phase pipeline that emits 185 diagnostics over sparse
+ranges: the DSL core C001–C199, the async/parallel/fail band C240–C249, the
+connector-`action:` band C260–C268, and bundlelint's C200–C212, C220–C223,
+C230–C234 and C250–C253. The parser adds 23 `E0xx` codes ahead of it, so a file
+that does not parse never reaches the compiler. The full catalogue, with
+severity and fix, is in [references/diagnostics.md](references/diagnostics.md);
+a drift guard (`TestDiagCodesAreDocumented`) and a uniqueness guard
+(`TestDiagCodesAreUnique`) in
+[pkg/dsl/ir/diag_codes_test.go](../pkg/dsl/ir/diag_codes_test.go) keep that
 catalogue accurate and every code unambiguous.
 
 | Phase | Owns | Examples |
@@ -124,7 +128,8 @@ was always partial.
 
 - **Turing-complete?** Yes — opt-in, via `as name(unbounded)` + `compute` +
   `loop.previous_output` + `when`-exit, bounded by runtime fuel + liveness.
-- **Statically predictable?** Yes, strongly — ~110 compile-time diagnostics over
-  a two-phase pipeline, with the default (no `unbounded`) still statically
-  terminating. The runtime boundary is small, documented, and is exactly the one
-  Rice's theorem makes unavoidable.
+- **Statically predictable?** Yes, strongly — 208 compile-time diagnostics (23
+  parse `E0xx`, 159 compile/validate `Cnnn`, 26 bundle-consistency `C2xx`), with
+  the default (no `unbounded`) still statically terminating. The runtime
+  boundary is small, documented, and is exactly the one Rice's theorem makes
+  unavoidable.
