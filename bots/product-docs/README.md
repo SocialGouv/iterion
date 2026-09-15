@@ -68,7 +68,11 @@ authorise the bot to invent. See
 ```
 catalog_ingest ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint ─▶ gate
 gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
-                                          ─▶ surface_pr_link ─▶ done
+                                          ─▶ surface_pr_link ─▶ publish_gate
+          (EVERY mr-tail outcome lands on publish_gate: no PR asked for, no
+           credential, PR not opened, PR opened)
+publish_gate ──(publish)──▶ publish ─▶ verify_publish ─▶ surface_site_link ─▶ done
+publish_gate ─────────────▶ done            (tail skipped, with its reason)
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
 ```
 
@@ -92,12 +96,21 @@ gate ─────────────────▶ scan_hints          
   `<product_dir>/**/*.md` and nothing else: not the source clones, not
   the docs repo's editorial skills, not another product's directory.
 - **`page_lint`** (deterministic truth gate) — a published page carries
-  no working notes: no HTML comments, no "Sources" box or section, no
-  "Points à clarifier" section, no "Correspondance technique" annex. A
-  violation is **not converged** and the located failures feed the next
+  neither working notes nor credential material: no HTML comments, no
+  "Sources" box or section, no "Points à clarifier" section, no
+  "Correspondance technique" annex, and no secret material (private-key
+  blocks and the like — a published page is read by the product's users).
+  A violation is **not converged** and the located failures feed the next
   pass.
 - **`gate`** — `converged = scope_ok ∧ lint_ok ∧ docs_aligned`. Nothing
   else; the hint counts are telemetry, never conditions.
+- **`publish_gate` / `publish` / `verify_publish` / `surface_site_link`**
+  (opt-in tail, `publish=true`) — `publish_gate` is deterministic and
+  skips the tail **with its reason** unless the opt-in, `publish_base_url`,
+  `publish_image`, both credentials and a mirrored `deploy-target` skill
+  are all present; `verify_publish` polls the live URL from outside the
+  agent's narrative and FAILS the run when the site is not serving. See
+  [Publication (opt-in)](#publication-opt-in).
 
 A documentation-only change cannot break a build, so there is no build
 gate — `page_lint` is this bot's equivalent truth oracle on the artifact
@@ -154,6 +167,7 @@ computed is **never** reported as an empty one.
 
 | Var | Default | Description |
 |---|---|---|
+| `workspace_dir` | `${PROJECT_DIR}` | The docs repo the run works in (its worktree); source repos are cloned OUT of tree, into `scratch_dir` |
 | `catalog_path` | **required** | Product catalog: a YAML/JSON file, or a directory holding `<product_id>.yml` |
 | `product_id` | **required** | Which product to document (selects the entry and its `product_dir`) |
 | `scope_notes` | `""` | Operator attention pin |
@@ -162,7 +176,7 @@ computed is **never** reported as an empty one.
 | `editorial_dir` | `.product-docs` | Where the docs repo publishes its own AUTHORITATIVE editorial skills. Empty disables the override |
 | `clone_depth` | `1` | Shallow-clone depth for the source repos; `0` = full clone (raise it when a deep incremental base is needed) |
 | `secret_globs` | credential-carrier globs | Files deleted from every source clone before the agent may read them |
-| `lint_rules` | all four | Editorial rules `page_lint` enforces — drop a name to disable that rule |
+| `lint_rules` | all five | Editorial rules `page_lint` enforces — `html_comments`, `sources_box`, `clarify_section`, `technical_annex`, `secret_material`. Drop a name to disable that rule |
 | `extra_forbidden_headings` | `""` | Extra heading titles a published page must never carry |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
@@ -172,6 +186,12 @@ computed is **never** reported as an empty one.
 | `mr_draft` | `true` | Open that PR as a **draft** — human validation happens on the forge |
 | `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/product-docs/<run-id>`) / base |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
+| `publish` | `false` | Opt in to the publication tail (`publish_gate` → `publish` → `verify_publish` → `surface_site_link`) |
+| `publish_base_url` | `""` | Public URL the site must serve under. Required when `publish=true`: `verify_publish` accepts no URL outside it and FAILS the run when nothing answers |
+| `publish_image` | `""` | Image repository the packaged site is pushed to, WITHOUT a tag — the agent tags it with the docs commit and deploys the DIGEST that push resolved to |
+| `publish_registry_user` | `""` | Login the `registry_token` authenticates as; empty = the registry's own convention for token logins |
+| `publish_slug` | `""` | DNS-safe slug the deploy target derives namespace and host from; empty = `prody-<product id>` |
+| `publish_tools_ref` | `main` | Ref of SocialGouv/iterion the publish agent fetches the GitBook→MkDocs converter from; pin a tag/SHA for reproducible deployments |
 
 ## PR finalization (opt-in)
 

@@ -21,7 +21,11 @@ on GitLab — the issue-label → PR lineage).
 | `delegation_instructions` | no | Operator-approved scope for the delegated worker |
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` (the run's worktree — do not override) |
 | `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
+| `scratch_dir` | no | Out-of-tree working files — the gate's `verify.sh` / `verify.log` only; git is the durable state. Defaults to `${PROJECT_SCRATCH_DIR}/feature-dev`, engine-resolved OFF the repo |
 | `max_passes` | no | Continuation-loop cap (default 8) |
+| `plan_phase` | no | `on` (default) authors the plan before the campaign; `off` plans in stride — see **Plan phase** below |
+| `plan_review` | no | `auto` (default) resolves at launch to on iff a second model family is credentialed; `on` forces the peer review |
+| `plan_review_policy` | no | What a mid-run peer failure does: `skip` (default) or `wait` |
 | `open_mr` | no | Push the series + open a PR on convergence (default false) |
 | `mr_branch` / `mr_base` / `source_issue_ref` | no | PR wiring — see main.bot |
 
@@ -56,10 +60,14 @@ attaches no repository.
 deployment (claude, read-only); `plan_phase: off` is the explicit opt-out
 (plan in stride, the v2 shape). `plan_review: auto` resolves at launch
 from the run's credentials and gates ONLY the peer review: when a SECOND
-model family is available, the plan is critiqued by a cross-family peer
-(`claw` + `openai/gpt-5.6-sol` by default) and revised by the SAME author
-session before the campaign implements; otherwise the campaign receives
-the author's plan stamped as unreviewed (`plan_provenance`).
+model family is available, the plan is critiqued by an external peer and
+revised by the SAME author session before the campaign implements;
+otherwise the campaign receives the author's plan stamped as unreviewed
+(`plan_provenance`). feature-dev's peer is the `kimi` backend on
+`kimi-code/kimi-for-coding` — a `judge` node pinned in `lib/nodes.bot`,
+with no `ITERION_PLAN_REVIEW_BACKEND_GPT` / `ITERION_PLAN_REVIEW_MODEL_GPT`
+override, unlike the sibling campaign bots that run the review on `claw` +
+`openai/gpt-5.6-sol`.
 `plan_review_policy` picks the mid-run peer-unavailability behaviour:
 `skip` (default — the reviewer's `action: skip` route: continue
 unreviewed, loudly stamped) or `wait` (the run parks failed_resumable,
@@ -70,6 +78,17 @@ the usage-window retry resumes it — the deliberate-spend posture).
 premature "impossible" verdicts, expedient shortcuts, failure loops and
 unbanked state under budget pressure. `--supervisors off` disables it per
 run.
+
+**Quota fallback.** Five nodes — `plan`, `plan_revise`, `verify_build`,
+`review` and `finalize_mr` — declare a `kimi_quota` fallback: when the
+primary claude_code call comes back `usage_window` or `unavailable`, the
+node is re-executed on the `kimi` backend (`kimi-code/kimi-for-coding`)
+rather than parking the run. `campaign` deliberately declares none — the
+implementing agent stays on one family for the whole pass. Grok is
+deliberately not in the lane (its CLI is installed but its entitlement is
+unverified here). So on a shut forfait window the plan, the generated
+`verify.sh`, the in-loop adversarial review or the PR body can come from a
+different model family than the rest of this page describes.
 
 - `campaign` — one adaptive claude_code agent: brief exploration, living
   todo of slices, one verified commit per slice, ADR obligation and

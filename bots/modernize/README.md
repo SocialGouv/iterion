@@ -75,6 +75,39 @@ interrupted after such a write relaunches as a green no-op. Measured: four
 `finished` runs in 24 h that crossed no gate, every one a relaunch from a
 banked branch carrying a completion nobody had proven.
 
+## Variables
+
+| var | default | |
+|---|---|---|
+| `workspace_dir` | `${PROJECT_DIR}` | The repo being modernised (the run's worktree — do not override) |
+| `plan_path` | `.modernize/plan.yaml` | The programme contract, versioned in the TARGET repo |
+| `only_lot` | `""` | Restrict the run to one lot id; empty = take the first ready lot |
+| `max_passes` | `4` | Bounded repair loop for a single lot. Exhausting it ships what is banked and says so, rather than grinding |
+| `reanchor` | `true` | Repair a mutant whose foothold this lot legitimately removed, by running the net's own bot as a subbot |
+| `extend` | `true` | Act the lot's EXTENSION requests — new observation points, by pure addition — by running the net's own bot as a subbot |
+| `source_issue_ref` | `""` | Issue this programme run answers, for the PR lineage |
+
+## The two net-repair subbots
+
+A lot is entitled to rename a method or restructure a template, and a lot's
+intent may need a surface the net does not cover yet. Neither entitles the lot
+to write under the net — that is the separation of powers the `golden-master`
+bundle exists to hold. Two child runs of that bundle close the gap on the
+lot's own checkout, each held by a deterministic check rather than by its
+prompt, and each entered from `lot_gate` for exactly one pass:
+
+- **`reanchor`** (`../golden-master/reanchor.bot`, `reanchor_loop("1")`) runs
+  when `lot_verify` reports invalidated mutants. `--var reanchor=false` leaves
+  them in the report and the surface they probed uncovered — the status quo,
+  which nothing goes red about.
+- **`extend`** (`../golden-master/extend.bot`, `extend_loop("1")`) runs when
+  the lot filed extension requests in the ledger. `--var extend=false` leaves
+  the requests pending, where the oracle gate refuses until a human acts them
+  — pending is loud by design, never a silent skip.
+
+Both return through `lot_verify`, so their work faces the same gate the lot's
+does. Set both to `false` to keep a run purely gate-to-gate.
+
 ## Running
 
 ```sh
