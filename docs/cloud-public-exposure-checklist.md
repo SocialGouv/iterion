@@ -11,10 +11,19 @@ This is not a substitute for a full security review. It is the minimum bar.
 ## 1. Authentication is enforced on every public route
 
 - [ ] **Auth enforcement on** in the server config: confirm `DisableAuth` is **not** set in the iterion server config (cloud mode requires auth by default; see `pkg/config/config.go`). There is no `AUTH_REQUIRED` env var — auth is gated by the `DisableAuth` config field, which must remain `false`/unset in any public deployment.
-- [ ] **Every `/api/*` route** is gated by `requireAuth` (verified in `pkg/server/server.go`). The health endpoints (`/healthz`, `/readyz`) and auth bootstrap routes are the only intentional exceptions; both are read-only and reveal no tenant state.
+- [ ] **Every `/api/*` route is gated by `requireAuth`, except a bypass list you have walked.** The gate is `pkg/server/middleware.go:isPublicPath` (method-agnostic) plus `isPublicMarketplaceRead` (GET-only). Confirm each exception is one you meant to expose:
+  - *Read-only, no tenant state:* `/healthz`, `/readyz`, `/api/server/info` (it carries the `AuthRequired` flag the SPA reads before deciding to show Login), `/`, `/index.html`, `/assets/*`, `/static/*`.
+  - *Auth bootstrap:* `/api/auth/login`, `/register`, `/refresh`, `/logout`, `/providers`, `/password/change`, `/password/reset/request`, `/password/reset/confirm`, `/desktop/exchange`, `/invitations/lookup`, `/invitations/accept`, and every `/api/auth/oidc/*`.
+  - *Forge OAuth callbacks* — top-level GET navigations from the forge IdP that carry no operator JWT: `/api/forge/oauth/callback`, `/api/forge/github/app/callback`, `/api/forge/github/app-manifest/callback`. They authenticate on the signed state plus the per-flow agent-binding cookie.
+  - *`/api/webhooks/*` — **not** read-only: these launch runs.* They skip the JWT gate because they authenticate with a per-org webhook token (`webhookAuth`). Confirm every registered webhook has a strong token, that signature verification is on for your forge, and that the throttle is sized (`iterion_webhook_throttled_total`, the `IterionWebhookThrottling` alert). See [webhooks.md](webhooks.md).
+  - *`/api/config-share/*` — **not** read-only.* Self-authenticated by a per-share `Bearer iws_` token, no JWT: anyone holding the share link can edit that config. Treat share links as credentials.
+  - *Per-run `X-Iterion-Run` token surfaces:* `/api/v1/mcp/*` (the board MCP HTTP transport), `/api/v1/forge/publish-review`, `/api/v1/forge/pull-request`, `/api/v1/forge/delivery-preflight`. A sandboxed or runner-launched run carries no operator JWT, so the handler authenticates the run token itself and 401s on a missing or unknown one.
+  - *Marketplace anonymous reads*, only when `config.marketplace.enabled` is on: `GET /api/v1/marketplace/bots`, `…/config`, `…/bots/{slug}` and `…/bots/{slug}/download` serve unauthenticated. Every mutating or privileged marketplace endpoint (`POST …/submit`, `POST`|`DELETE …/bots/{slug}/install`, `GET …/moderation`) stays behind auth. Leave the toggle off unless you intend a publicly browsable bot registry — see [cloud-deployment.md](cloud-deployment.md#hosted-bot-marketplace-optional).
 - [ ] **JWT signing key** rotated from the chart default. `ITERION_JWT_SECRET` must be a base64-encoded signing key with at least 32 decoded random bytes (for example, `openssl rand -base64 48`), held in a Kubernetes Secret, not the values file.
 - [ ] **SSO / OIDC** wired if you have ≥ 2 users. See [cloud-admin.md](cloud-admin.md) for OIDC bootstrap.
 - [ ] **Super-admin account** created with a strong password and 2FA enabled where the IdP supports it.
+
+How to verify the bypass list has not grown since this page was written: read `isPublicPath` and `isPublicMarketplaceRead` in [pkg/server/middleware.go](../pkg/server/middleware.go) end to end and reconcile every `return true` against the bullets above.
 
 How to verify: try `curl https://<host>/api/runs` with no token — must return 401. Try with an expired token — must return 401. Try with a valid token from tenant A reading tenant B's run — must return 404 or 403.
 

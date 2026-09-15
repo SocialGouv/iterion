@@ -96,6 +96,7 @@ existing deployments.
 
 | Limit | Override field | Platform env var | Denial reason | HTTP |
 |---|---|---|---|---|
+| No workspace | n/a — team membership | n/a | `no_workspace` | 403 |
 | Org suspended / read-only | `Status` | n/a — admin action | `org_suspended` | 403 |
 | Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
 | Launches per minute | `LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
@@ -124,6 +125,12 @@ tenant override wins when > 0; else platform default; zero = unlimited).
 The denial reason tokens are stable strings — clients (the studio, SDKs,
 CI scripts) switch on them. The HTTP status codes follow the standard
 "402 = paying issue (resets next month), 429 = retry later" convention.
+`no_workspace` is not a quota: it refuses a signed-in user who belongs to no
+team (the GitHub "submitter" tier), because the gate has no workspace to scope
+the run to. It carries no `reset_at` and no `Retry-After` — the fix is an
+invitation, not a wait — but it shares the denial envelope and the
+`iterion_launch_denied_total{reason=…}` label space, so a client switching
+exhaustively on the token has to handle it.
 
 The env vars are read at boot by
 [cmd/iterion/server.go:orgLimitDefaultsFromEnv](../cmd/iterion/server.go).
@@ -439,6 +446,7 @@ accounting lives in the Mongo counters above.
 | `iterion_auth_password_resets_total` | `step` (`requested` / `confirmed`) | Self-service reset flow |
 | `iterion_dlq_depth` | — | Runs parked on the DLQ (the orphan / max-deliver bridge) |
 | `iterion_runs_orphan_recovered_total` | — | The orphan sweeper's flips to `failed_resumable` |
+| `iterion_orphan_sweep_errors_total` | `stage` (`scan` / `lease` / `flip`) | Orphan-sweeper steps that failed. The companion of the counter above: recovered-flat with errors-flat is health, recovered-flat with errors-growing is the sweeper silently disarmed — a distinction the success counter alone cannot make |
 | `iterion_runs_usage_window_blocked_total` | — | Runs stopped by an exhausted provider quota window |
 | `iterion_runs_retry_scheduled_total` | — | Durable automatic retries armed for a provider reset |
 | `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed`) | Retry-sweeper outcomes for due runs |
@@ -457,3 +465,10 @@ fires:
 
 The thresholds are deliberately conservative starting points — tune
 them per deployment.
+
+One rule the pack does **not** ship but that most deployments want:
+`increase(iterion_orphan_sweep_errors_total[30m]) > 0`. The five above all
+fire on something happening; a sweeper that has stopped working shows up as
+*nothing* happening, and `iterion_runs_orphan_recovered_total` is flat in that
+state exactly as it is when the fleet is healthy. The error counter is what
+tells the two apart.

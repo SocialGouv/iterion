@@ -449,8 +449,8 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs` | super-admin | Create org |
 | `GET` | `/api/admin/orgs/{id}` | super-admin | Read |
 | `PATCH` | `/api/admin/orgs/{id}` | super-admin | Update name / slug / quotas |
-| `DELETE` | `/api/admin/orgs/{id}` | super-admin | Schedule org deletion (reversible until it runs) |
-| `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a scheduled deletion |
+| `DELETE` | `/api/admin/orgs/{id}` | super-admin | **Soft**-delete: sets `status: pending_deletion` and `purge_after = now + 24h`. The org is blocked **immediately** (it reads as suspended everywhere, and no team in it can launch) — the grace window buys a restore, not continued service. **409** when `{id}` is the caller's own active org: switch orgs first, no self-lockout |
+| `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a pending deletion and return the org to `active`. Only meaningful before `purge_after` |
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
 | `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
@@ -471,6 +471,17 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET/PUT` | `/api/admin/settings/bot-roles` | super-admin | Webhook role→bot bindings (merge semantics; `null` clears a field) |
 | `GET/PUT` | `/api/admin/settings/sandbox` | super-admin | `sandbox: auto` fallback image override |
 
+The org purge is irreversible and unattended. A nightly sweeper
+([pkg/cloud/orgsweep](../pkg/cloud/orgsweep/sweep.go)) runs at **02:00 UTC**,
+plus one catch-up pass at boot, and for every org whose `purge_after` has
+passed it HARD-deletes all team-scoped data across the cloud Mongo
+collections, then cascades the identity records — teams, memberships,
+invitations and the org itself. It is idempotent and safe across replicas.
+Once it has run there is no restore path and no REST route that brings the
+tenant back; recovery is a Mongo restore ([cloud-backup.md](cloud-backup.md)).
+`GET /api/admin/orgs/{id}` returns `purge_after` (RFC3339) while the deletion
+is pending, so a UI or a script can show the remaining window.
+
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 [pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
 [pkg/server/platform_settings.go](../pkg/server/platform_settings.go),
@@ -482,7 +493,7 @@ Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 |---|---|---|---|
 | `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
-| `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 reachable under 1s deadline |
+| `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 + Valkey pinged under a 1s deadline each. Only Mongo is critical: the rest report `degraded` in the body and still answer 200 ([probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md)) |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |
 
 ## Non-obvious JSON shapes

@@ -176,6 +176,56 @@ that never saw the paired request).
 A Valkey outage degrades gracefully — each operation is bounded by a
 short round-trip timeout rather than blocking the request path.
 
+## Hosted bot marketplace (optional)
+
+Off by default in cloud mode. When you enable it, the server wires the
+Mongo-backed bot registry, seeds the image's `bots/` catalog as built-in
+entries at startup, and sets `marketplace_enabled` on `GET /api/server/info`
+— which is how the studio decides whether to show the Marketplace view.
+
+| Env var | Helm key | Default | Effect |
+|---|---|---|---|
+| `ITERION_CLOUD_MARKETPLACE` | `config.marketplace.enabled` | `false` | Wires the registry and the anonymous browse/download routes |
+
+```yaml
+config:
+  marketplace:
+    enabled: true
+```
+
+The part that matters for a publicly-exposed deployment: four of the
+endpoints serve **without authentication**.
+
+| Method | Path | Auth |
+|---|---|---|
+| `GET` | `/api/v1/marketplace/bots` | **anonymous** — browse |
+| `GET` | `/api/v1/marketplace/config` | **anonymous** — registry config |
+| `GET` | `/api/v1/marketplace/bots/{slug}` | **anonymous** — detail |
+| `GET` | `/api/v1/marketplace/bots/{slug}/download` | **anonymous** — `.botz` download |
+| `POST` | `/api/v1/marketplace/submit` | member — in cloud the entry lands `pending` and waits for moderation |
+| `POST` / `DELETE` | `/api/v1/marketplace/bots/{slug}/install` | **403 in cloud mode** — install is local-studio only |
+| `GET` | `/api/v1/marketplace/moderation` | org admin (scoped to their org; a super-admin sees every org) |
+| `POST` | `/api/v1/marketplace/moderation/{slug}/approve` / `/reject` | org admin for an org-scoped entry, super-admin for a public one |
+
+The anonymous set is pinned in
+`isPublicMarketplaceRead` ([pkg/server/middleware.go](../pkg/server/middleware.go)),
+kept separate from the method-agnostic `isPublicPath` so folding in a
+method-aware rule can never open a POST on the same path. Every mutating or
+privileged endpoint stays behind auth.
+
+Two mode differences are worth knowing before you turn this on. Submissions
+are **moderated in cloud** and auto-approved locally (the sole operator is the
+submitter) — `GET /api/v1/marketplace/config` reports this as `moderated:
+true`, and a submitted entry stays `pending` until an admin approves it.
+Install and uninstall answer **403 in cloud mode**: a cloud user consumes a
+registry entry by downloading its `.botz`, not by installing into the server.
+
+Leave the toggle off unless you intend a publicly browsable bot registry; it
+is an item on the [public exposure
+checklist](cloud-public-exposure-checklist.md). A self-hosted local studio
+wires its own JSON-backed store unconditionally and is unaffected by this
+setting.
+
 ## NetworkPolicy egress
 
 `values-prod.yaml` ships with `networkPolicy.enabled=true` + an empty
