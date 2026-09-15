@@ -107,6 +107,9 @@ type Skip struct {
 // `issue_id` on a path templated `{epic_issue_id}`.
 type Report struct {
 	Skipped []Skip
+	// Uncontracted lists the success responses that were asked for a v2
+	// contract and could not be given one. Empty unless ValidateResponses.
+	Uncontracted []Uncontracted
 }
 
 // Format is a recognised description format.
@@ -174,13 +177,22 @@ func Generate(data []byte, opts Options) (*spec.Package, *Report, error) {
 		Ops:     w.opsFiles(),
 		Schemas: w.schemas,
 	}
+	report := &Report{Skipped: w.skipped}
+	if opts.ValidateResponses {
+		contracts, uncontracted, err := attachResponseContracts(data, format, pkg)
+		if err != nil {
+			return nil, report, err
+		}
+		pkg.ResponseSchemas = contracts
+		report.Uncontracted = uncontracted
+	}
 	if err := pkg.ValidateGenerated(); err != nil {
 		// A failure HERE is a generator bug, not bad vendor data: every
 		// operation was already validated on its own during the walk, so
 		// what is left is a package-level contradiction the walk built.
 		return nil, nil, fmt.Errorf("gen: generated package is invalid: %w", err)
 	}
-	return pkg, &Report{Skipped: w.skipped}, nil
+	return pkg, report, nil
 }
 
 // decode reads a description that may be JSON or YAML into a generic tree.

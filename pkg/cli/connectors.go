@@ -43,6 +43,10 @@ type ConnectorsGenOptions struct {
 	// generating, which is what turns a regeneration into a diff of the
 	// vendor's changes rather than a loss of every correction.
 	KeepOverlay bool
+	// ValidateResponses derives explicit response contracts and stamps package
+	// format v2. Opt-in, because a v2 package does not load on an older
+	// iterion — and because the contracts are only as good as the description.
+	ValidateResponses bool
 }
 
 // ConnectorsGen generates a connector package from a vendor API description.
@@ -87,6 +91,7 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		Redistributable:         opts.Redistributable,
 		OperatorSuppliedBaseURL: opts.OperatorSuppliedBaseURL,
 		GeneratedBy:             "iterion " + appinfo.Version,
+		ValidateResponses:       opts.ValidateResponses,
 	})
 	if err != nil {
 		return err
@@ -128,6 +133,9 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 				Redistributable:         opts.Redistributable,
 				OperatorSuppliedBaseURL: opts.OperatorSuppliedBaseURL,
 				GeneratedBy:             "iterion " + appinfo.Version,
+				// Same options as the package being written, or the overlay
+				// would be checked against a package of a different format.
+				ValidateResponses: opts.ValidateResponses,
 			})
 			if gerr != nil {
 				return gerr
@@ -166,6 +174,16 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		fmt.Fprintf(out, "\n%d operations were NOT published — the description does not describe them well enough to call:\n", len(report.Skipped))
 		for _, s := range report.Skipped {
 			fmt.Fprintf(out, "  %-6s %s (%s)\n      %s\n", s.Method, s.Path, orNone(s.SourceOperationID), s.Reason)
+		}
+	}
+	// Printed for the same reason the skips are: an operator who asked for
+	// response validation must see WHICH answers did not get it, or they will
+	// read the package as fully validated. Not a failure — a description the
+	// vocabulary cannot represent is the vendor's shape, not a generator bug.
+	if len(report.Uncontracted) > 0 {
+		fmt.Fprintf(out, "\n%d success responses got NO contract — their shape is outside what a contract can state:\n", len(report.Uncontracted))
+		for _, u := range report.Uncontracted {
+			fmt.Fprintf(out, "  %s %d\n      %s\n", u.OperationID, u.Status, u.Reason)
 		}
 	}
 	// Judged on the MERGED package: what a launch will load is the generated
