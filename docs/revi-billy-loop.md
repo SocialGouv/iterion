@@ -60,12 +60,18 @@ and an omitted `auto_fix_on_gate_failure` means "leave the current choice
 alone" — it has to be written explicitly.
 
 **Corollary, whatever the lane is set to**: before hand-fixing a red or ejected
-PR, check no fixer run is already in flight on it (`iterion remote runs list`
-or the gate's `pending` link) — a manual push while the fixer works recreates
-the mid-run-push collision the session discipline below warns about. Turning
-the lane off does not retire this check: the **merge-queue auto-heal**
-dispatches the same brancher bot with no comment when the queue ejects a PR,
-and it never reads `auto_fix_on_gate_failure`
+PR, check no fixer run is already in flight on it — a manual push while the
+fixer works recreates the mid-run-push collision the session discipline below
+warns about. **`iterion remote runs list` is that check.** The PR's own
+statuses are per-lane and none covers every fixer, so none replaces it: the
+gate's `pending` link covers a reviewer and the zero-touch fixer,
+`iterion/fix-in-flight` covers the auto-heal, and a `/billy` pass shows nothing
+at all until its first commit
+([merge-gate.md](merge-gate.md#what-is-not-wired)).
+
+Turning the lane off does not retire the check: the **merge-queue auto-heal**
+dispatches the same brancher bot with no comment when the queue ejects a PR
+**for a healable reason**, and it never reads `auto_fix_on_gate_failure`
 ([merge-gate.md](merge-gate.md#auto-heal-and-when-it-stands-down)). A heal in
 flight force-pushes the branch.
 

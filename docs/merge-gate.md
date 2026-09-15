@@ -630,16 +630,29 @@ re-derives it from three scattered sections. This is that place
   ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683); before it, a
   parked Billy read as a parked Revi, observed live on PR #646).
 
+<a name="what-is-not-wired"></a>
 **What is NOT wired (yet):**
 
-- **No "fixer in flight" signal exists BEFORE its first push.** From the
-  moment `/billy` (or the zero-touch lane) launches to its first commit,
-  `revi/review` stays green on the OLD head and nothing on the PR says a
-  fixer is working — the only signals are the run console itself and,
-  once it parks, the pause notice above. This is the phase the operator
-  rules below are written for; see
+- **The "fixer in flight" signal is partial, and it is NOT the gate.** The
+  merge-queue auto-heal posts its own context,
+  **`iterion/fix-in-flight`** — deliberately as `success`, so it can never
+  block a merge ([forge_fix_in_flight.go](../pkg/server/forge_fix_in_flight.go)).
+  A `/billy` pass and the zero-touch lane do **not** post it: from launch
+  to first commit `revi/review` stays green on the OLD head and nothing on
+  the PR says a fixer is working, so the run console remains the only
+  signal for those two.
+
+  The heal lane's silence on the gate is a *design choice, not a gap*: it
+  publishes its revision as `fix_head_sha` precisely so `head_sha` does not
+  also arm `markGateInFlight` and make it claim a required check it never
+  answers ([webhooks_github.go](../pkg/server/webhooks_github.go),
+  pinned by `TestMarkFixInFlight_NeverWritesOnTheGateContext`). The
+  consequence for a reader is the part worth remembering: **the gate's
+  `pending` link does not cover the heal lane**, so it can never stand in
+  for the run list. See
   [revi-billy-loop.md's "What to expect on the PR"](revi-billy-loop.md#what-to-expect-on-the-pr)
-  for the exact wording and (SocialGouv/iterion#664) for the tracking card.
+  and (SocialGouv/iterion#664) for the tracking card on the two lanes that
+  still have no pre-push signal.
 
 **Operator rules, one line each:**
 
@@ -659,16 +672,22 @@ re-derives it from three scattered sections. This is that place
 3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes the `/billy`
    escalation of rule 2 automatic** on repos that opt in — a red
    `revi/review` launches the fixer with no comment, bounded by
-   [its own brakes](#autofix). **Always check `iterion remote runs list`
-   (or the gate's `pending` link) before hand-fixing a red or ejected
-   PR**, whatever that lane is set to: a manual fix racing a running
-   fixer is the same collision as rule 1. Turning the lane off does NOT
-   reduce this to "did I type `/billy`" — the
+   [its own brakes](#autofix). **`iterion remote runs list` is the check
+   before hand-fixing a red or ejected PR**, whatever that lane is set
+   to: a manual fix racing a running fixer is the same collision as
+   rule 1. The PR's own statuses do not substitute for it — they are
+   *per-lane* and none covers every fixer
+   ([above](#what-is-not-wired)): the gate's `pending` link covers a
+   reviewer and the zero-touch fixer, `iterion/fix-in-flight` covers the
+   auto-heal, and a `/billy` pass shows nothing until its first commit.
+   In particular, turning the lane off does NOT reduce this to "did I
+   type `/billy`": the
    [merge-queue auto-heal](#auto-heal-and-when-it-stands-down) dispatches
-   the same brancher bot with no comment whenever the queue ejects the
-   PR, and it never consults `auto_fix_on_gate_failure`
-   ([webhooks_github.go](../pkg/server/webhooks_github.go), `NeedsAutoHeal`).
-   A heal in flight force-pushes the branch.
+   the same brancher bot with no comment when the queue ejects the PR
+   **for a healable reason**, and it never consults
+   `auto_fix_on_gate_failure`
+   ([webhooks_github.go](../pkg/server/webhooks_github.go),
+   `NeedsAutoHeal`). A heal in flight force-pushes the branch.
 
 ## Overriding a finding
 
