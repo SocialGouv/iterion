@@ -26,9 +26,10 @@ func contracted(inputs, outputs []*ir.PublicPort) *ir.Workflow {
 }
 
 // The manifest's launch form and hand-off are held to the contract: a
-// launch name the contract declares no input for, a produces node the
-// contract's outputs do not come from — warnings that name both sides. A
-// bot without a contract, or a manifest that agrees, draws nothing.
+// launch.primary name the contract declares no input for, a produces node
+// the contract's outputs do not come from — warnings that name both sides.
+// launch.hidden — the inputs the form never renders — is not held. A bot
+// without a contract, or a manifest that agrees, draws nothing.
 func TestContractManifestMismatch(t *testing.T) {
 	inputs := []*ir.PublicPort{{Name: "goal", Type: "string", Required: true}}
 	outputs := []*ir.PublicPort{{Name: "url", Type: "string", FromNode: "build", FromField: "url"}}
@@ -47,7 +48,7 @@ func TestContractManifestMismatch(t *testing.T) {
 			}
 		}
 	}
-	if got := strings.Join(fields, " "); got != "launch.hidden.secret_flag launch.primary.depth produces[0].node" { // sorted by field
+	if got := strings.Join(fields, " "); got != "launch.primary.depth produces[0].node" { // sorted by field
 		t.Fatalf("C254 fields: %q\n%v", got, diags)
 	}
 	if find(bundlelint.CheckConsistency(bundlelint.Input{Manifest: m, Workflow: wf("b", []string{"goal"}, nil, nil)}), bundlelint.DiagContractManifestMismatch) != nil {
@@ -59,10 +60,13 @@ func TestContractManifestMismatch(t *testing.T) {
 	}
 }
 
-// A subbot node is held to its child's contract: a required input the
-// with: block does not pass, an output field the child does not produce
-// or produces as another type. A child without a contract is held to
-// nothing.
+// A subbot node is held to its child's contract on what it passes: a
+// required input — one whose var has no default (C300) — the with: block
+// does not pass is named, with a hint that forwards a parent var of that
+// name only when the parent declares one; an optional input is not asked
+// for. The parent's output: schema is not held: a subbot's output is the
+// child's terminal node output, which the contract's outputs do not
+// define. A child without a contract is held to nothing.
 func TestSubbotContractMismatch(t *testing.T) {
 	parent := wf("p", []string{"goal"}, nil, nil, &ir.SubbotNode{
 		BaseNode:     ir.BaseNode{ID: "child"},
@@ -71,29 +75,34 @@ func TestSubbotContractMismatch(t *testing.T) {
 		OutputSchema: "result",
 	})
 	parent.Schemas = map[string]*ir.Schema{"result": {Name: "result", Fields: []*ir.SchemaField{
-		{Name: "url", Type: ir.FieldTypeString}, {Name: "score", Type: ir.FieldTypeInt}, {Name: "notes", Type: ir.FieldTypeString},
+		{Name: "url", Type: ir.FieldTypeString}, {Name: "notes", Type: ir.FieldTypeString},
 	}}}
 	child := &ir.PublicContract{Name: "kid",
 		Inputs: []*ir.PublicPort{
 			{Name: "goal", Type: "string", Required: true},
 			{Name: "depth", Type: "int", Required: true},
-			{Name: "mode", Type: "string", Required: true, Default: json.RawMessage(`"fast"`)},
+			{Name: "mode", Type: "string", Required: false, Default: json.RawMessage(`"fast"`)},
 			{Name: "tags", Type: "string[]", Required: false},
 		},
-		Outputs: []*ir.PublicPort{
-			{Name: "url", Type: "string", FromNode: "b", FromField: "url"},
-			{Name: "score", Type: "float", FromNode: "b", FromField: "score"},
-		},
+		Outputs: []*ir.PublicPort{{Name: "url", Type: "string", FromNode: "b", FromField: "url"}},
 	}
 	diags := bundlelint.CheckConsistency(bundlelint.Input{Workflow: parent, SubbotContracts: map[string]*ir.PublicContract{"child": child}})
 	var fields []string
 	for _, d := range diags {
 		if d.Code == bundlelint.DiagSubbotContractMismatch {
 			fields = append(fields, d.Field)
+			if !strings.Contains(d.Hint, "with { depth: <value> }") || strings.Contains(d.Hint, "{{vars.depth}}") {
+				t.Errorf("the parent declares no var depth, yet the hint forwards one: %q", d.Hint)
+			}
 		}
 	}
-	if got := strings.Join(fields, " "); got != "subbot.child.output.notes subbot.child.output.score subbot.child.with.depth" { // sorted by field
+	if got := strings.Join(fields, " "); got != "subbot.child.with.depth" {
 		t.Fatalf("C255 fields: %q\n%v", got, diags)
+	}
+	forwarding := wf("p", []string{"goal", "depth"}, nil, nil, parent.Nodes["child"])
+	d := find(bundlelint.CheckConsistency(bundlelint.Input{Workflow: forwarding, SubbotContracts: map[string]*ir.PublicContract{"child": child}}), bundlelint.DiagSubbotContractMismatch)
+	if d == nil || !strings.Contains(d.Hint, "{{vars.depth}}") {
+		t.Fatalf("the parent declares depth, yet the hint does not forward it: %+v", d)
 	}
 	if diags := bundlelint.CheckConsistency(bundlelint.Input{Workflow: parent}); find(diags, bundlelint.DiagSubbotContractMismatch) != nil {
 		t.Fatal("a child without a contract was held to one")

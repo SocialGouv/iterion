@@ -826,7 +826,8 @@ export interface PortDecl {
   /** A builtin or a declared schema's name, with `[]` suffixes. */
   type: string;
   description?: string;
-  /** Absent = required. */
+  /** Absent = the var's word: an input is required exactly when its var
+   *  has no default; a written value must agree (C300). */
   required?: boolean;
   nullable?: boolean;
   /** One JSON value, canonical on the wire (compact, keys in order); absent

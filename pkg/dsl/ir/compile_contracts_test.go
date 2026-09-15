@@ -14,7 +14,13 @@ import (
 // contract the fixture supplies.
 const contractProgramFmt = `vars:
   goal: string
-  depth: int
+  depth: int = 2
+  ratio: float = 1.5
+  mode: string = "fast"
+  tags: string[] = "a,b"
+  cfg: json = "[1, 2]"
+  tiny: float = 0.0000001
+  note: string
 
 schema report:
   summary: string
@@ -161,7 +167,13 @@ func TestAContractTheProgramDoesNotKeepIsRefused(t *testing.T) {
 		"input not a var":                         {"contract c:\n  inputs:\n    nope: string\n", DiagContractInput, "not a declared var"},
 		"input of another type":                   {"contract c:\n  inputs:\n    depth: string\n", DiagContractInput, "the var depth is int"},
 		"input with a producer":                   {"contract c:\n  inputs:\n    goal: string\n      from: build.summary\n", DiagContractInput, "carries `from:`"},
-		"default on a required input":             {"contract c:\n  inputs:\n    goal: string\n      default: \"x\"\n", DiagContractInput, "has a default and is required"},
+		"default the var does not carry":          {"contract c:\n  inputs:\n    goal: string\n      default: \"x\"\n", DiagContractInput, "does not carry"},
+		"required false without a default":        {"contract c:\n  inputs:\n    goal: string\n      required: false\n", DiagContractInput, "has no default"},
+		"required true on a var with a default":   {"contract c:\n  inputs:\n    depth: int\n      required: true\n", DiagContractInput, "the var depth has a default"},
+		"default of another value":                {"contract c:\n  inputs:\n    depth: int\n      default: 3\n", DiagContractInput, "mirrors the var's default"},
+		"string default of another value":         {"contract c:\n  inputs:\n    mode: string\n      default: \"slow\"\n", DiagContractInput, "mirrors the var's default"},
+		"list default of another value":           {"contract c:\n  inputs:\n    tags: string[]\n      default: [\"a\"]\n", DiagContractInput, "mirrors the var's default"},
+		"required with a null default":            {"contract c:\n  inputs:\n    note: string\n      nullable: true\n      required: true\n      default: null\n", DiagContractInput, "is required and defaults to null"},
 		"version 0":                               {"contract c:\n  version: 0\n", DiagContractInput, "starts at 1"},
 		"duplicate input":                         {"contract c:\n  inputs:\n    goal: string\n    goal: string\n", DiagContractInput, "declared twice"},
 		"items on a scalar":                       {"contract c:\n  inputs:\n    goal: string\n      min_items: 1\n", DiagContractInput, "not an array"},
@@ -255,13 +267,59 @@ func TestAContractDefaultTheTextCannotWriteIsRefusedAtCompile(t *testing.T) {
 // The compiled program carries the contract: two programs whose contracts
 // differ are not the same program, and the difference is named.
 func TestSameProgramSeesTheContract(t *testing.T) {
-	a := compileContractProgram(t, "contract c:\n  inputs:\n    depth: int\n      required: false\n      default: 1\n", "c")
-	b := compileContractProgram(t, "contract c:\n  inputs:\n    depth: int\n      required: false\n      default: 2\n", "c")
+	a := compileContractProgram(t, "contract c:\n  inputs:\n    depth: int\n      description: \"one\"\n", "c")
+	b := compileContractProgram(t, "contract c:\n  inputs:\n    depth: int\n      description: \"two\"\n", "c")
 	if why := SameProgram(a, b); why != "contracts differ" {
 		t.Fatalf("SameProgram: %q, want the contracts named", why)
 	}
-	if why := SameProgram(a, compileContractProgram(t, "contract c:\n  inputs:\n    depth: int\n      required: false\n      default: 1\n", "c")); why != "" {
+	if why := SameProgram(a, compileContractProgram(t, "contract c:\n  inputs:\n    depth: int\n      description: \"one\"\n", "c")); why != "" {
 		t.Fatalf("the same contract reads as different: %s", why)
+	}
+}
+
+// An input's requiredness and default are the var's: a port that says
+// nothing is optional when its var has a default, with that default in the
+// view — read as the launch reads it: a `string[]` var's text as a list, a
+// `json` var's as JSON, a float without an exponent; a port may repeat the
+// var's default — a number written another way included — and never
+// contradict it (the refusals sit in the table). On a var without a
+// default, a nullable port may be optional, with no default or a null one.
+func TestAnInputMirrorsItsVar(t *testing.T) {
+	cr := compileContractProgram(t, "contract c:\n  inputs:\n    goal: string\n    depth: int\n    ratio: float\n      default: 1.50\n    mode: string\n      required: false\n      default: \"fast\"\n    tags: string[]\n    cfg: json\n      default: [1, 2]\n    tiny: float\n    note: string\n      nullable: true\n      required: false\n", "c")
+	if codes := errorCodes(cr); len(codes) != 0 {
+		t.Fatalf("errors: %v — %v", codes, cr.Diagnostics)
+	}
+	in := cr.Workflow.Contract.Inputs
+	if !in[0].Required || in[0].Default != nil {
+		t.Errorf("goal, whose var has no default, came out as %+v", in[0])
+	}
+	if in[1].Required || string(in[1].Default) != "2" {
+		t.Errorf("depth, whose var defaults to 2 and whose port says nothing, came out as %+v", in[1])
+	}
+	if in[2].Required || !strings.Contains(string(in[2].Default), "1.5") {
+		t.Errorf("ratio, written 1.50 over a var defaulting to 1.5, came out as %+v", in[2])
+	}
+	if in[3].Required || string(in[3].Default) != `"fast"` {
+		t.Errorf("mode came out as %+v", in[3])
+	}
+	if in[4].Required || string(in[4].Default) != `["a","b"]` {
+		t.Errorf("tags, a string[] var defaulting to the text a,b, came out as %+v", in[4])
+	}
+	if in[5].Required || string(in[5].Default) != `[1,2]` {
+		t.Errorf("cfg, a json var whose port repeats its list, came out as %+v", in[5])
+	}
+	if in[6].Required || string(in[6].Default) != "0.0000001" {
+		t.Errorf("tiny, a float the view must write without an exponent, came out as %+v", in[6])
+	}
+	if in[7].Required || in[7].Default != nil {
+		t.Errorf("note, nullable and optional on a var without a default, came out as %+v", in[7])
+	}
+	cr = compileContractProgram(t, "contract c:\n  inputs:\n    note: string\n      nullable: true\n      default: null\n", "c")
+	if codes := errorCodes(cr); len(codes) != 0 {
+		t.Fatalf("errors: %v — %v", codes, cr.Diagnostics)
+	}
+	if in := cr.Workflow.Contract.Inputs[0]; in.Required || string(in.Default) != "null" {
+		t.Errorf("note, defaulting to null on a var without a default, came out as %+v", in)
 	}
 }
 

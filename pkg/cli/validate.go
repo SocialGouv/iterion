@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
 	"sort"
@@ -337,7 +338,7 @@ func RunValidate(path string, p *Printer) error {
 			// The children's contracts, for the subbot projection (C255):
 			// each `subbot source:` read within the bundle's collection and
 			// compiled as its own unit.
-			SubbotContracts: subbotContracts(bundleHandle.Dir, parsePath, cr.Workflow),
+			SubbotContracts: subbotcontracts.Read(bundleHandle.Dir, parsePath, cr.Workflow),
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
@@ -404,48 +405,6 @@ func RunValidate(path string, p *Printer) error {
 		return validationFailed(p)
 	}
 	return nil
-}
-
-// subbotContracts reads each `subbot` child of w that resolves within the
-// bundle's collection (bundle.ResolveChild), compiles it as its own unit
-// and returns the contract its workflow keeps, by the parent's node id —
-// what bundlelint holds the parent's `with:` and `output:` to (C255). A
-// child beyond the collection, unreadable, or compiling with an error is
-// left out: C253 names an unread child, and a child's own errors are the
-// child's to show.
-func subbotContracts(dir, parent string, w *ir.Workflow) map[string]*ir.PublicContract {
-	if w == nil {
-		return nil
-	}
-	out := map[string]*ir.PublicContract{}
-	for id, n := range w.Nodes {
-		sb, ok := n.(*ir.SubbotNode)
-		if !ok || strings.HasPrefix(sb.Source, "bot://") {
-			continue
-		}
-		path, src, ok := bundle.ResolveChild(dir, parent, sb.Source)
-		if !ok {
-			continue
-		}
-		u := unit.LoadDirWithMain(path, path, src)
-		if u.HasErrors() || u.Merged == nil {
-			continue
-		}
-		child := ir.Compile(u.Merged)
-		if child.Workflow == nil || child.Workflow.Contract == nil {
-			continue
-		}
-		for _, d := range child.Diagnostics {
-			if d.Severity == ir.SeverityError {
-				child.Workflow = nil
-				break
-			}
-		}
-		if child.Workflow != nil {
-			out[id] = child.Workflow.Contract
-		}
-	}
-	return out
 }
 
 // printPublicContract renders the contract the workflow keeps, as the

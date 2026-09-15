@@ -388,7 +388,7 @@ json_value = "null" | bool_value | INT_LIT | FLOAT_LIT | STRING_LIT
            | "{" [ json_member { "," json_member } ] "}" ;
 ```
 
-A `contract` is the bot's public face — inputs, outputs, delivered files, deterministic criteria, visible effects — declared once at top level, named by the workflow's `contract:`, and checked against the program: an input is a declared var (C300), an output names the node and field that produce it — `from: build.pr_url`, or `from: build` for a file (C301) — and a criterion names a port in the singular (`input.goal`, `output.pr_url`) and a registered `kind` (C302; an unregistered kind is declared, not evaluated, C303). `default:` and `params:` take **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word (unlike every string property), no signed number and no exponent, which the `.bot` text cannot write. The full productions are in [iterion_v1.ebnf](../grammar/iterion_v1.ebnf); the decision and its bounds in [ADR-099](../adr/099-public-contracts.md). A bare `contract` header, or a bare `inputs:` / `outputs:` / `criteria:` / `effects:` header and a port's bare `file:`, declares an empty one under the rule of every [empty declaration and block](#prompts-and-schemas): a blank line, the parent's dedent or the end of the file must follow the bare header. A comment written inside a contract moves to the file's head on a studio save, as inside every declaration.
+A `contract` is the bot's public face — inputs, outputs, delivered files, deterministic criteria, visible effects — declared once at top level, named by the workflow's `contract:`, and checked against the program: an input is a declared var, required exactly when the var has no default (C300), an output names the node and field that produce it — `from: build.pr_url`, or `from: build` for a file (C301) — and a criterion names a port in the singular (`input.goal`, `output.pr_url`) and a registered `kind` (C302; an unregistered kind is declared, not evaluated, C303). `default:` and `params:` take **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word (unlike every string property), no signed number and no exponent, which the `.bot` text cannot write. The full productions are in [iterion_v1.ebnf](../grammar/iterion_v1.ebnf); the decision and its bounds in [ADR-099](../adr/099-public-contracts.md). A bare `contract` header, or a bare `inputs:` / `outputs:` / `criteria:` / `effects:` header and a port's bare `file:`, declares an empty one under the rule of every [empty declaration and block](#prompts-and-schemas): a blank line, the parent's dedent or the end of the file must follow the bare header. A comment survives a studio save only at the file's head, before the first declaration: written inside a contract, as inside any declaration, it is dropped when the studio writes the file back.
 
 ```iter
 vars:
@@ -449,11 +449,11 @@ A port (an `inputs:` / `outputs:` entry, `name: type`):
 | Property | Value | Meaning |
 |---|---|---|
 | `description` | string | Meaning of the value |
-| `required` | bool | Mandatory port (default true) |
-| `nullable` | bool | Permit an explicit null value (default false) |
-| `default` | json value | Typed default of an optional input (C300); omission means absence. One JSON value on one line — `"text"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write (C302) |
-| `min_items` | int | Minimum array cardinality (C301) |
-| `max_items` | int | Maximum array cardinality (C301) |
+| `required` | bool | Mandatory port (default true). An input mirrors its var — required exactly when the var has no default — and a written value that disagrees is refused (C300) |
+| `nullable` | bool | Permit an explicit null value (default false); on an input whose var has no default, the one way to be optional — omitted, the var is null (C300) |
+| `default` | json value | Typed default of an optional input: the var's default, read as the launch reads a value of its type (a `string[]` or `json` var's text as a list or an object) — written, it must be the var's (C300); omitted, the var's is the port's. One JSON value on one line — `"text"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write and the compiler refuses from a document (C302) |
+| `min_items` | int | Minimum array cardinality (C300 on an input, C301 on an output) |
+| `max_items` | int | Maximum array cardinality (C300 on an input, C301 on an output) |
 | `from` | ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
 | `file` | block → [contract.file](#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
 <!-- dsl-spec:end -->

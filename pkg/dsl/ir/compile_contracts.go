@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -16,7 +17,7 @@ import (
 // catalogue, the snapshot and a parent's `subbot` trust what a contract
 // says.
 const (
-	DiagContractInput            DiagCode = "C300" // an input the program does not keep (not a declared var, another type, a `from:`, a `file:`, a default while required), a contract declared twice, a version below 1, a workflow naming no declared contract
+	DiagContractInput            DiagCode = "C300" // an input the program does not keep (not a declared var, another type, a `from:`, a `file:`, a `required:` or `default:` the var contradicts), a contract declared twice, a version below 1, a workflow naming no declared contract
 	DiagContractOutput           DiagCode = "C301" // an output the program does not produce: no `from:`, an unknown node or field, another type, a default, a file port on a node that publishes none, an undeclared file schema
 	DiagContractCriterion        DiagCode = "C302" // a criterion or a value the contract cannot hold: an unknown port, a type the evaluator does not take, invalid parameters, a default the text cannot write or of another type
 	DiagContractUnknownKind      DiagCode = "C303" // warning: a criterion's kind has no registered evaluator — declared, not evaluated
@@ -256,8 +257,16 @@ func scalarFits(value any, typ string) string {
 
 // bindInput holds an input to the program: it is a declared var of the
 // same type, its value comes from the launch (never a `from:`, never a
-// file — a var carries none), a default makes it optional, and the var's
-// enum is the domain the contract advertises.
+// file — a var carries none), and its requiredness and default are the
+// var's: an input is required exactly when its var has no default, and
+// defaults to what the var defaults to, read as the launch reads a value
+// of that type (seededDefault). A port may repeat what the var says,
+// never contradict it: a `required:` that disagrees, a `default:` the var
+// does not carry or carries as another value, is refused. On a var
+// without a default, a `nullable: true` port may be `required: false` —
+// with no default, or `default: null` — because omitted, the run starts
+// with the var unset, which is null. The var's enum is the domain the
+// contract advertises.
 func (c *compiler) bindInput(contract string, p *ast.PortDecl, pp *PublicPort, vars map[string]*Var) {
 	if p.From != "" {
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q carries `from:` — an input is a declared var whose value comes from the launch; drop from:, or declare the port under outputs:", contract, p.Name)
@@ -268,15 +277,109 @@ func (c *compiler) bindInput(contract string, p *ast.PortDecl, pp *PublicPort, v
 	v, ok := vars[p.Name]
 	if !ok {
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is not a declared var — declare `%s: %s` under vars: (the contract describes this program)", contract, p.Name, p.Name, p.Type)
-	} else {
-		if p.Type != "" && v.Type.String() != p.Type {
-			c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is %s, the var %s is %s — the port takes the var's type", contract, p.Name, p.Type, p.Name, v.Type.String())
+		return
+	}
+	if p.Type != "" && v.Type.String() != p.Type {
+		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is %s, the var %s is %s — the port takes the var's type", contract, p.Name, p.Type, p.Name, v.Type.String())
+	}
+	pp.EnumValues = v.EnumValues
+	switch {
+	case v.HasDefault:
+		pp.Required = false
+		if p.Default == nil {
+			pp.Default = varDefaultJSON(v)
+		} else if !defaultAgrees(p.Default, v) {
+			c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q defaults to %s, the var %s defaults to %s — the port mirrors the var's default", contract, p.Name, string(p.Default), p.Name, varDefaultJSON(v))
 		}
-		pp.EnumValues = v.EnumValues
+		if p.Required != nil && *p.Required {
+			c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is required, the var %s has a default (%s) — the run proceeds without the input; drop `required:` (the port mirrors the var), or drop the var's default", contract, p.Name, p.Name, varDefaultJSON(v))
+		}
+	case p.Default != nil && !isJSONNull(p.Default):
+		pp.Required = p.IsRequired()
+		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q declares a default the var %s does not carry — the run never seeds it; give the var the default (`%s: %s = …`), or drop default:", contract, p.Name, p.Name, p.Name, v.Type.String())
+	case p.Default != nil:
+		// A null default: on a nullable port (C302 otherwise), what an
+		// omitted var is at the run — optional, by the default it declares.
+		pp.Required = false
+		if p.Required != nil && *p.Required {
+			c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is required and defaults to null — drop `required:` (a default makes it optional), or drop the default", contract, p.Name)
+		}
+	default:
+		pp.Required = p.IsRequired()
+		if !pp.Required && !p.Nullable {
+			c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is `required: false`, the var %s has no default and the port is not nullable — omitted, the run starts with the var unset, which is null; give the var a default (`%s: %s = …`), make the port `nullable: true`, or drop `required: false`", contract, p.Name, p.Name, p.Name, v.Type.String())
+		}
 	}
-	if p.Default != nil && pp.Required {
-		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q has a default and is required — set `required: false`, or drop the default", contract, p.Name)
+}
+
+// isJSONNull reports a written default that is the one value null.
+func isJSONNull(raw json.RawMessage) bool {
+	value, err := spec.DecodePublicJSON(raw)
+	return err == nil && value == nil
+}
+
+// seededDefault is a var's default as the launch reads a value of its
+// type — a `string[]` or `json` var's text as a list or an object, the
+// reading an override gets (CoerceVarValue); a scalar is typed already.
+func seededDefault(v *Var) any {
+	seeded, err := CoerceVarValue(v.Default, v.Type)
+	if err != nil {
+		return v.Default
 	}
+	return seeded
+}
+
+// varDefaultJSON is a var's default as the canonical JSON the public view
+// carries: a number without an exponent, as the text writes one, a
+// string, a bool, a list or an object.
+func varDefaultJSON(v *Var) json.RawMessage {
+	switch x := seededDefault(v).(type) {
+	case float64:
+		return json.RawMessage(strconv.FormatFloat(x, 'f', -1, 64))
+	case int64:
+		return json.RawMessage(strconv.FormatInt(x, 10))
+	default:
+		raw, err := json.Marshal(x)
+		if err != nil {
+			return nil
+		}
+		return raw
+	}
+}
+
+// defaultAgrees reports whether a port's written default is the var's: the
+// same string, integer, number or bool — a number the text writes two ways
+// (`1.50`, `1.5`) is one value — or, for a list or an object, the same
+// canonical JSON.
+func defaultAgrees(raw json.RawMessage, v *Var) bool {
+	value, err := spec.DecodePublicJSON(raw)
+	if err != nil {
+		return false
+	}
+	switch want := seededDefault(v).(type) {
+	case string:
+		got, ok := value.(string)
+		return ok && got == want
+	case bool:
+		got, ok := value.(bool)
+		return ok && got == want
+	case int64:
+		n, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		got, err := n.Int64()
+		return err == nil && got == want
+	case float64:
+		n, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		got, err := n.Float64()
+		return err == nil && got == want
+	}
+	got, err := json.Marshal(value)
+	return err == nil && string(got) == string(varDefaultJSON(v))
 }
 
 // producerOf resolves a `from:` against the program's nodes: the whole

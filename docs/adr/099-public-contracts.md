@@ -35,8 +35,10 @@ studio — trusts it.
    header declares an empty contract, like every other named declaration.
 
 2. **The contract is bound to the program.** The compiler holds it:
-   - **C300** — every input is a declared var of the same name; an input is
-     refused a `from:`.
+   - **C300** — every input is a declared var of the same name, required
+     exactly when the var has no default and defaulting to what the var
+     defaults to — a port may repeat the var's word, never contradict it;
+     an input is refused a `from:`.
    - **C301** — every output names its producer, `from: <node>.<field>`, and
      the field's declared type matches the port's type structurally (a
      builtin, a schema name, `[]` cardinality); a file port names its node,

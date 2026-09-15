@@ -52,6 +52,20 @@ func TestRunValidate_ShowsTheBoundContract(t *testing.T) {
 	if strings.Count(out.String(), `"default": null`) != 1 {
 		t.Errorf("the explicit null default is not the one `\"default\": null` of the result:\n%s", out.String())
 	}
+	// An input whose var has a default is optional with that default in
+	// the view, written on the port or not: the wire carries the var's word.
+	mirrored := strings.Replace(validateContractBot, "  inputs:\n    goal: string\n", "  inputs:\n    goal: string\n    note: string\n      nullable: true\n", 1)
+	mirrored = strings.Replace(mirrored, "vars:\n  goal: string\n", "vars:\n  goal: string\n  note: string = \"n/a\"\n", 1)
+	if err := os.WriteFile("mirrored.bot", []byte(mirrored), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out = jsonPrinter()
+	if err := RunValidate("mirrored.bot", jp); err != nil {
+		t.Fatalf("validate: %v\n%s", err, out.String())
+	}
+	if s := out.String(); strings.Count(s, `"default": "n/a"`) != 1 || strings.Count(s, `"required": false`) != 1 {
+		t.Errorf("the var's default is not the port's on the wire:\n%s", s)
+	}
 	hp, hout := testPrinter()
 	if err := RunValidate("c.bot", hp); err != nil {
 		t.Fatalf("validate: %v\n%s", err, hout.String())

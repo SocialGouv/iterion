@@ -56,11 +56,11 @@ func MaxSyntaxRequirements(files map[string]string) SyntaxRequirements {
 // there; a source that resolves beyond the collection, through `..` or a
 // symlink, is not read and is reported as unread.
 func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
-	root := filepath.Clean(dir)
-	if real, err := filepath.EvalSymlinks(root); err == nil {
-		root = real
+	root, collection, ok := collectionOf(dir)
+	if !ok {
+		root = filepath.Clean(dir) // not there: every source of it is missing
+		collection = filepath.Dir(root)
 	}
-	collection := filepath.Dir(root)
 	return walkSyntax(func(rel string) (string, sourceState) {
 		if strings.HasPrefix(rel, "../../") || rel == "../.." {
 			return "", sourceOutside // two levels up leaves the collection by construction
