@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.148.2](https://github.com/SocialGouv/iterion/compare/v3.148.1...v3.148.2) (2026-09-15)
+
+### Bug Fixes
+
+* **runtime:** isolate subbot bundles across all four runners ([#1195](https://github.com/SocialGouv/iterion/issues/1195)) ([e8efd95](https://github.com/SocialGouv/iterion/commit/e8efd95e6a074218ff7d2ba8af7d76a61e505066))
+
+    <details><summary>why</summary>
+
+    A resource scope is opened for ANY run carrying a bundle, contributions or a subbot node — `beginRunResources` says so — not only for a child that borrows the workspace's resources. Two places read the scope's existence as proof of borrowing, and both were wrong for the majority of runs that have one.
+
+    </details>
+
 ## [3.148.1](https://github.com/SocialGouv/iterion/compare/v3.148.0...v3.148.1) (2026-09-15)
 
 ### Bug Fixes
