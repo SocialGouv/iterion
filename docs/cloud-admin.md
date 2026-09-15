@@ -139,6 +139,16 @@ is meaningful elsewhere in that value — the OIDC redirect URI is built as
 origin alone, so a navigation would land on the right host at the wrong path.
 That pairing is refused at startup rather than half-honoured.
 
+**Check the proxy before flipping it.** The comparison needs the host the
+*client* addressed, which it takes from `X-Forwarded-Host`, falling back to
+`Host`. A proxy that rewrites `Host` to an internal Service name *and* omits
+`X-Forwarded-Host` leaves neither, so every navigation is redirected to a
+target whose host can never match — an unbounded loop taking the whole browser
+surface down. ingress-nginx satisfies this by default (it preserves the client
+`Host` and sets `X-Forwarded-Host`); a chart or mesh that sets
+`nginx.ingress.kubernetes.io/upstream-vhost`, or an equivalent rewrite, does
+not. Verify on the deployment, not on the class of proxy.
+
 ## 5. SSO providers
 
 | Provider | Required values | Notes |

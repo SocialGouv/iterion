@@ -53,12 +53,6 @@ func canonicalRedirect(enabled bool, publicURL string, next http.Handler) http.H
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Vary names every header the decision reads, unconditionally: the
-		// decision is taken before we know which branch we are on, and a
-		// shared cache that keyed only on the URL would hand a cached 302 to a
-		// fetch, or a cached 200 to a navigation on a secondary host.
-		w.Header().Add("Vary", "Sec-Fetch-Dest, Accept, X-Forwarded-Host")
-
 		// EITHER host matching is enough to pass through. Taking the forwarded
 		// host alone would let a request that already arrived on the canonical
 		// origin — carrying a spoofed or simply unexpected X-Forwarded-Host —
@@ -67,10 +61,18 @@ func canonicalRedirect(enabled bool, publicURL string, next http.Handler) http.H
 		// a header disagreement can only SKIP a redirect, never create one,
 		// which is the asymmetry that made trusting the header safe in the
 		// first place.
+		//
+		// Vary names each header WHERE it is read, in ONE line per response.
+		// The forwarded host decides every request, so it is always named; the
+		// navigation signals are read only past this branch, and naming them
+		// everywhere would make a CDN store each immutable /assets/* file once
+		// per Sec-Fetch-Dest value it sees.
 		if onCanonical(r.Host) || onCanonical(requestHost(r)) {
+			w.Header().Add("Vary", "X-Forwarded-Host")
 			next.ServeHTTP(w, r)
 			return
 		}
+		w.Header().Add("Vary", "X-Forwarded-Host, Sec-Fetch-Dest, Accept")
 
 		// RequestURI() is not guaranteed to start with "/": an opaque request
 		// target (`GET foo:.evil.example/ HTTP/1.1`) comes back verbatim, and

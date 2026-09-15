@@ -289,11 +289,32 @@ func TestCanonicalRedirectVaryNamesEveryHeaderItReads(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	vary := rec.Header().Get("Vary")
+	vary := strings.Join(rec.Header().Values("Vary"), ", ")
 	for _, want := range []string{"Sec-Fetch-Dest", "Accept", "X-Forwarded-Host"} {
 		if !strings.Contains(vary, want) {
 			t.Errorf("Vary = %q, missing %q", vary, want)
 		}
+	}
+}
+
+// On the canonical host the navigation signals are never read — the host
+// comparison decides alone — so naming them would make a CDN store each
+// immutable asset once per Sec-Fetch-Dest value. The forwarded host IS read on
+// every request, so it stays named.
+func TestCanonicalRedirectVaryIsNarrowOnTheCanonicalHost(t *testing.T) {
+	h, _ := canonicalTestHandler(t, true, "https://iterion.cloud")
+	req := httptest.NewRequest("GET", "http://iterion.cloud/assets/app-Hash.js", nil)
+	req.Host = "iterion.cloud"
+	req.Header.Set("Sec-Fetch-Dest", "script")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	vary := strings.Join(rec.Header().Values("Vary"), ", ")
+	if !strings.Contains(vary, "X-Forwarded-Host") {
+		t.Fatalf("Vary = %q, want it to name X-Forwarded-Host", vary)
+	}
+	if strings.Contains(vary, "Sec-Fetch-Dest") || strings.Contains(vary, "Accept") {
+		t.Fatalf("Vary = %q names a header this branch never reads — a CDN would split every asset on it", vary)
 	}
 }
 
