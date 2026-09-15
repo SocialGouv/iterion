@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.3](https://github.com/SocialGouv/iterion/compare/v3.146.2...v3.146.3) (2026-09-15)
+
+### Bug Fixes
+
+* **golden-master:** the tree the gate judged must be the tree that existed ([#1240](https://github.com/SocialGouv/iterion/issues/1240)) ([f7178b5](https://github.com/SocialGouv/iterion/commit/f7178b50e9e926013fe6065a6786c355d1b6a713))
+
+    <details><summary>why</summary>
+
+    A mutant's revert restores HEAD. So anything uncommitted when the gate runs is DESTROYED during the run, and every figure the gate then reports describes a tree that stopped existing partway through the measurement.
+
+    </details>
+
 ## [3.146.2](https://github.com/SocialGouv/iterion/compare/v3.146.1...v3.146.2) (2026-09-15)
 
 ### Bug Fixes
