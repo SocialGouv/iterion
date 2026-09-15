@@ -133,6 +133,12 @@ DNS, a preview host — and redirecting those moves the operator off the instanc
 they asked for. Turning it on without a `ITERION_PUBLIC_URL` carrying both a
 scheme and a host is refused at startup, in every mode.
 
+`ITERION_PUBLIC_URL` must be a **bare origin** while this is on. A path prefix
+is meaningful elsewhere in that value — the OIDC redirect URI is built as
+`${PUBLIC_URL}/api/auth/oidc/<name>/callback` — but the redirect targets the
+origin alone, so a navigation would land on the right host at the wrong path.
+That pairing is refused at startup rather than half-honoured.
+
 ## 5. SSO providers
 
 | Provider | Required values | Notes |

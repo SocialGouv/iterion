@@ -640,6 +640,16 @@ func (c *Config) Validate() error {
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return fmt.Errorf("ITERION_PUBLIC_URL %q needs a scheme and a host (e.g. https://iterion.example) for ITERION_CANONICAL_REDIRECT to name a target", c.Auth.PublicURL)
 		}
+		// The redirect target is an ORIGIN: scheme and host, nothing else. A
+		// path, query, fragment or userinfo is legitimate elsewhere in this
+		// value — the OIDC redirect URI is built as ${PUBLIC_URL}/api/auth/… so
+		// a path prefix means something there — but the redirect drops it, and
+		// a navigation on a secondary host would land at the right host and the
+		// wrong path with nothing said. Refuse the pairing rather than honour
+		// half of the operator's value.
+		if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			return fmt.Errorf("ITERION_PUBLIC_URL %q carries a path, query, fragment or userinfo, which ITERION_CANONICAL_REDIRECT cannot honour: the redirect targets the origin alone, so navigations would land on the right host at the wrong path. Use the bare origin, or turn the redirect off", c.Auth.PublicURL)
+		}
 	}
 
 	if c.Runner.Concurrency < 1 {

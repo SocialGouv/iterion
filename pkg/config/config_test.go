@@ -838,6 +838,15 @@ func TestValidate_CanonicalRedirectNeedsAnOriginInEveryMode(t *testing.T) {
 		{"local, on, scheme-relative", ModeLocal, true, "//iterion.cloud", true},
 		{"local, on, path only", ModeLocal, true, "/just/a/path", true},
 		{"local, on, valid", ModeLocal, true, "https://iterion.cloud", false},
+		{"local, on, trailing slash is still an origin", ModeLocal, true, "https://iterion.cloud/", false},
+		// The redirect targets the origin alone, so anything else in the value
+		// would be honoured by the OIDC redirect URI and dropped by the
+		// redirect — the right host at the wrong path, silently.
+		{"local, on, path prefix", ModeLocal, true, "https://iterion.cloud/studio", true},
+		{"local, on, query", ModeLocal, true, "https://iterion.cloud?a=b", true},
+		{"local, on, fragment", ModeLocal, true, "https://iterion.cloud#f", true},
+		{"local, on, userinfo", ModeLocal, true, "https://u:p@iterion.cloud", true},
+		{"local, off, path prefix is fine", ModeLocal, false, "https://iterion.cloud/studio", false},
 		{"local, off, no origin", ModeLocal, false, "", false},
 		{"cloud, on, no origin", ModeCloud, true, "", true},
 		{"cloud, on, valid", ModeCloud, true, "https://iterion.cloud", false},
