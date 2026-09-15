@@ -75,6 +75,7 @@ func convergedReport(detected, total int64) map[string]any {
 		"blind_lanes":               []any{},
 		"missing_archetypes":        []any{},
 		"duplicate_groups_unproven": []any{},
+		"workspace_dirty":           []any{},
 		"corpus_distinct":           int64(42),
 		"runner_replayable":         true,
 		"holdout_reused":            []any{},
