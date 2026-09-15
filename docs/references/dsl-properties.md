@@ -495,7 +495,7 @@ A top-level declaration: `workflow <name>:`.
 | Property | Value | Meaning |
 |---|---|---|
 | `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
-| `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C302) |
+| `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
 | `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |

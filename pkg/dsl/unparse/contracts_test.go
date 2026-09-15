@@ -226,9 +226,13 @@ func TestContractNamesThatAreNotIdentifiersAreRefusedAtTheName(t *testing.T) {
 	}
 }
 
-// The guard holds the contract to the document even when the program
-// compiles: a text that lost the contract, a property of it, a criterion's
-// parameter or the workflow's `contract:` is refused, named.
+// The guard holds the contract to the document in two layers. The
+// compiled program carries the bound contract: a text that lost the
+// contract, a property of it, a criterion's parameter, an output's
+// producer or the workflow's `contract:` is not the same program. What the
+// program normalises away — an explicit `version: 1`, an explicit
+// `required: true` — the span-free mirror holds: a text that dropped one is
+// not the same document.
 func TestVerifyHoldsTheContractToTheDocument(t *testing.T) {
 	res := parser.Parse("x.bot", contractSource)
 	out := Unparse(res.File)
@@ -240,20 +244,47 @@ func TestVerifyHoldsTheContractToTheDocument(t *testing.T) {
 		"a changed parameter":  func(s string) string { return strings.Replace(s, "params: {min: 2,", "params: {min: 3,", 1) },
 		"a dropped version":    func(s string) string { return strings.Replace(s, "  version: 2\n", "", 1) },
 		"a dropped required":   func(s string) string { return strings.Replace(s, "      required: false\n", "", 1) },
-		"a dropped producer":   func(s string) string { return strings.Replace(s, "      from: write\n", "", 1) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			text := edit(out)
 			if text == out {
 				t.Fatal("the edit changed nothing")
 			}
-			if err := Verify(res.File, text); err == nil || !strings.Contains(err.Error(), "not the same document") {
+			if err := Verify(res.File, text); err == nil || !strings.Contains(err.Error(), "not the same program") {
 				t.Fatalf("Verify: %v\n%s", err, text)
 			}
 		})
 	}
+	// A producer the program does not declare never enters the IR (the
+	// binding refuses it without recording it), so a text that dropped it
+	// is the same program and the mirror is what tells.
+	t.Run("a dropped unresolved producer", func(t *testing.T) {
+		text := strings.Replace(out, "      from: write\n", "", 1)
+		if err := Verify(res.File, text); err == nil || !strings.Contains(err.Error(), "not the same document") {
+			t.Fatalf("Verify: %v\n%s", err, text)
+		}
+	})
 	if err := Verify(res.File, out); err != nil {
 		t.Fatalf("the unedited text is refused: %v", err)
+	}
+	normalised := parser.Parse("x.bot", "contract c:\n  version: 1\n  inputs:\n    goal: string\n      required: true\n\nagent a:\n  description: \"d\"\n\nworkflow w:\n  contract: c\n  entry: a\n  a -> done\n")
+	if len(normalised.Diagnostics) != 0 {
+		t.Fatalf("fixture: %v", normalised.Diagnostics)
+	}
+	written := Unparse(normalised.File)
+	for name, edit := range map[string]func(string) string{
+		"a dropped explicit version 1": func(s string) string { return strings.Replace(s, "  version: 1\n", "", 1) },
+		"a dropped explicit required":  func(s string) string { return strings.Replace(s, "      required: true\n", "", 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			text := edit(written)
+			if text == written {
+				t.Fatal("the edit changed nothing")
+			}
+			if err := Verify(normalised.File, text); err == nil || !strings.Contains(err.Error(), "not the same document") {
+				t.Fatalf("Verify: %v\n%s", err, text)
+			}
+		})
 	}
 }
 

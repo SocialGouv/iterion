@@ -18,7 +18,7 @@ import (
 // garbage collection landing on one of them does not decide the verdict.
 func TestUnmarshalFileDoesNotWalkAJSONValueByteByByte(t *testing.T) {
 	if raceEnabled || testing.Short() {
-		t.Skip("a timing witness: measured without the race detector")
+		t.Skip("a timing witness: skipped under -short and under the race detector, which measure themselves")
 	}
 	big := strings.Repeat("x", 16<<20)
 	control := []byte(`{"contracts":[{"name":"c","responsibility":"` + big + `"}]}`)

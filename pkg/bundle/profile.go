@@ -289,27 +289,77 @@ func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
 	return pf
 }
 
+// syntaxFloor is one syntax a floor is asked for: the pins it contributes
+// to the registry (by the name of the parser constant), and what it needs
+// of a set of sources. The table below is the ONE list — RequiredRelease
+// reads it, SyntaxFloors projects it — so a syntax added to it is asked
+// for by `validate`'s C252, the push admission, the scaffold and the
+// release test at once, and one added anywhere else is a test failure
+// (TestEveryFloorTheTableAsksForIsPinned).
+type syntaxFloor struct {
+	pins map[string]string
+	need func(SyntaxRequirements) (release, reason string, asks bool)
+}
+
+var syntaxFloors = []syntaxFloor{
+	{
+		pins: profilePins(),
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			if req.Profile < 2 {
+				return "", "", false
+			}
+			return parser.ProfileSince[req.Profile], fmt.Sprintf("dsl profile %d", req.Profile), true
+		},
+	},
+	{
+		pins: map[string]string{"parser.ImportSince": parser.ImportSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return parser.ImportSince, "import", req.UsesImport()
+		},
+	},
+	{
+		pins: map[string]string{"parser.ContractSince": parser.ContractSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return parser.ContractSince, "contract", req.UsesContract()
+		},
+	},
+}
+
+func profilePins() map[string]string {
+	pins := map[string]string{}
+	for profile, since := range parser.ProfileSince {
+		pins[fmt.Sprintf("parser.ProfileSince[%d]", profile)] = since
+	}
+	return pins
+}
+
+// SyntaxFloors is the registry of the releases a syntax first ships in, by
+// the name of the parser constant that pins each — the projection of the
+// one table the floor predicate reads, so the release test and a reference
+// walk exactly what asks for a floor.
+func SyntaxFloors() map[string]string {
+	out := map[string]string{}
+	for _, f := range syntaxFloors {
+		for name, release := range f.pins {
+			out[name] = release
+		}
+	}
+	return out
+}
+
 // RequiredRelease is the release a set of sources needs — the HIGHEST among
-// what they use: the profile's (parser.ProfileSince), `import`'s
-// (parser.ImportSince) and `contract`'s (parser.ContractSince) — with the
-// reason, or "" and "" when they use nothing a floor is asked for. The one
-// arithmetic behind `validate`'s C252, the push admission and the
-// scaffold's manifest; a syntax added here is asked for by all three.
+// what they use, read from the one table of syntaxes that ask for a floor —
+// with the reason, or "" and "" when they use nothing a floor is asked for.
+// The one arithmetic behind `validate`'s C252, the push admission, the
+// scaffold's manifest and `dsl migrate`'s floor.
 func RequiredRelease(req SyntaxRequirements) (release, reason string) {
-	type need struct{ release, reason string }
-	var needs []need
-	if req.Profile >= 2 {
-		needs = append(needs, need{parser.ProfileSince[req.Profile], fmt.Sprintf("dsl profile %d", req.Profile)})
-	}
-	if req.UsesImport() {
-		needs = append(needs, need{parser.ImportSince, "import"})
-	}
-	if req.UsesContract() {
-		needs = append(needs, need{parser.ContractSince, "contract"})
-	}
-	for _, n := range needs {
-		if reason == "" || laterRelease(n.release, release) {
-			release, reason = n.release, n.reason
+	for _, f := range syntaxFloors {
+		rel, why, asks := f.need(req)
+		if !asks {
+			continue
+		}
+		if reason == "" || laterRelease(rel, release) {
+			release, reason = rel, why
 		}
 	}
 	return release, reason

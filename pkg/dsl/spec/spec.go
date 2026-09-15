@@ -434,7 +434,7 @@ var Kinds = append([]Kind{
 	{Name: "workflow", Role: Declaration, Doc: "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; a bare header declares an empty workflow (C008).",
 		Properties: []Property{
 			prop("entry", Ident, "Node the run starts at; a dotted name addresses a group instance's node"),
-			prop("contract", Ident, "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C302)"),
+			prop("contract", Ident, "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)"),
 			block("vars", "vars", "Workflow-scoped vars (merged with the file's)"),
 			block("attachments", "attachments", "Workflow-scoped attachments"),
 			block("budget", "budget", "Run caps, each overridable by the matching run flag"),

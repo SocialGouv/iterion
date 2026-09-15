@@ -30,11 +30,33 @@ func TestRunValidate_ShowsTheBoundContract(t *testing.T) {
 	if c == nil || c.Name != "feature" || len(c.Outputs) != 1 || c.Outputs[0].FromNode != "build" || c.Outputs[0].FromField != "pr_url" || !c.Criteria[0].Registered {
 		t.Fatalf("the public contract came out as %+v\n%s", c, out.String())
 	}
+	// The wire form is snake_case like every other key of the result, and an
+	// absent default is no key while an explicit null is `null`.
+	for _, want := range []string{`"public_contract"`, `"from_node": "build"`, `"from_field": "pr_url"`, `"registered": true`, `"required": true`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the JSON result lacks %s:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), `"FromNode"`) || strings.Contains(out.String(), `"default"`) {
+		t.Errorf("the JSON result carries a Go field name or a default nobody declared:\n%s", out.String())
+	}
+	withNull := strings.Replace(validateContractBot, "  inputs:\n    goal: string\n", "  inputs:\n    goal: string\n    note: string\n      required: false\n      nullable: true\n      default: null\n", 1)
+	withNull = strings.Replace(withNull, "vars:\n  goal: string\n", "vars:\n  goal: string\n  note: string\n", 1)
+	if err := os.WriteFile("null.bot", []byte(withNull), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out = jsonPrinter()
+	if err := RunValidate("null.bot", jp); err != nil {
+		t.Fatalf("validate: %v\n%s", err, out.String())
+	}
+	if strings.Count(out.String(), `"default": null`) != 1 {
+		t.Errorf("the explicit null default is not the one `\"default\": null` of the result:\n%s", out.String())
+	}
 	hp, hout := testPrinter()
 	if err := RunValidate("c.bot", hp); err != nil {
 		t.Fatalf("validate: %v\n%s", err, hout.String())
 	}
-	for _, want := range []string{"feature v1 — Implements a feature", "pr_url: string ← build.pr_url", "k: min_length on input.goal", "opens_pr (paid)"} {
+	for _, want := range []string{"feature v1 — Implements a feature", "goal: string", "pr_url: string ← build.pr_url", `k: min_length {"min":1} on input.goal`, "opens_pr (paid)"} {
 		if !strings.Contains(hout.String(), want) {
 			t.Errorf("the rendering lacks %q:\n%s", want, hout.String())
 		}

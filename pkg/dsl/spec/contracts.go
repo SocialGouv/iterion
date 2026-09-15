@@ -7,7 +7,7 @@ package spec
 // workflow (`contract: <name>`). It carries no prompt, tool or provider
 // setting. A contract is BOUND to the program it describes: an input is a
 // declared var, an output names the node and field that produce it, a file
-// names its producing node — what the compiler checks (C300–C302) so that a
+// names its producing node — what the compiler checks (C300–C304) so that a
 // contract the program does not keep is refused rather than displayed.
 // Concept harvested from #1216 (ADR-099); the graph that would compose
 // contracts across nodes waits for the execution semantics that runs it.

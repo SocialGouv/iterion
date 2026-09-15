@@ -16,18 +16,20 @@ import (
 // catalogue, the snapshot and a parent's `subbot` trust what a contract
 // says.
 const (
-	DiagContractInput       DiagCode = "C300" // an input the program does not keep (not a declared var, another type, a `from:`, a default while required), a contract declared twice, a version below 1, a workflow naming no declared contract
-	DiagContractOutput      DiagCode = "C301" // an output the program does not produce: no `from:`, an unknown node or field, another type, a default
-	DiagContractCriterion   DiagCode = "C302" // a criterion or a value the contract cannot hold: an unknown port, a type the evaluator does not take, invalid parameters, a default the text cannot write or of another type
-	DiagContractUnknownKind DiagCode = "C303" // warning: a criterion's kind has no registered evaluator — declared, not evaluated
+	DiagContractInput            DiagCode = "C300" // an input the program does not keep (not a declared var, another type, a `from:`, a `file:`, a default while required), a contract declared twice, a version below 1, a workflow naming no declared contract
+	DiagContractOutput           DiagCode = "C301" // an output the program does not produce: no `from:`, an unknown node or field, another type, a default, a file port on a node that publishes none, an undeclared file schema
+	DiagContractCriterion        DiagCode = "C302" // a criterion or a value the contract cannot hold: an unknown port, a type the evaluator does not take, invalid parameters, a default the text cannot write or of another type
+	DiagContractUnknownKind      DiagCode = "C303" // warning: a criterion's kind has no registered evaluator — declared, not evaluated
+	DiagContractOutputOffSuccess DiagCode = "C304" // warning: an output's producer is on no path to done — produced only when the bot fails
 )
 
 // compilePublicContracts binds every contract of the unit to the program —
-// its vars, nodes and schemas are compiled by now — and returns them by
-// name with the one the workflow keeps. Every contract is held, named by
+// its vars, nodes, schemas and edges are compiled by now — and returns them
+// by name with the one the workflow keeps. Every contract is held, named by
 // the workflow or not: a contract describes THIS program.
-func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]*Var) (map[string]*PublicContract, *PublicContract) {
+func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]*Var, edges []*Edge) (map[string]*PublicContract, *PublicContract) {
 	contracts := map[string]*PublicContract{}
+	succeeds := nodesOnAPathToDone(c.nodes, edges)
 	for _, decl := range c.file.Contracts {
 		if decl == nil {
 			continue
@@ -36,20 +38,51 @@ func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]
 			c.errorfAtSpan(DiagContractInput, decl.Span, "contract %q is declared twice: a name declares one contract", decl.Name)
 			continue
 		}
-		contracts[decl.Name] = c.compilePublicContract(decl, vars)
+		contracts[decl.Name] = c.compilePublicContract(decl, vars, succeeds)
 	}
 	if wf.Contract == "" {
 		return contracts, nil
 	}
 	bound, ok := contracts[wf.Contract]
 	if !ok {
-		c.errorf(DiagContractInput, "workflow %q names contract %q, which no `contract %s:` declares", wf.Name, wf.Contract, wf.Contract)
+		c.errorfAtSpan(DiagContractInput, wf.Span, "workflow %q names contract %q, which no `contract %s:` declares", wf.Name, wf.Contract, wf.Contract)
 		return contracts, nil
 	}
 	return contracts, bound
 }
 
-func (c *compiler) compilePublicContract(decl *ast.ContractDecl, vars map[string]*Var) *PublicContract {
+// nodesOnAPathToDone is the set of nodes from which `done` is reachable
+// along the edges, conditions aside — what the bot can produce on success.
+// A node with no outgoing edge at all is counted in: the compiler's own
+// edge checks say what such a node is, this one does not guess.
+func nodesOnAPathToDone(nodes map[string]Node, edges []*Edge) map[string]bool {
+	pred := map[string][]string{}
+	outgoing := map[string]bool{}
+	for _, e := range edges {
+		pred[e.To] = append(pred[e.To], e.From)
+		outgoing[e.From] = true
+	}
+	reach := map[string]bool{"done": true}
+	stack := []string{"done"}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, p := range pred[n] {
+			if !reach[p] {
+				reach[p] = true
+				stack = append(stack, p)
+			}
+		}
+	}
+	for id := range nodes {
+		if !outgoing[id] {
+			reach[id] = true
+		}
+	}
+	return reach
+}
+
+func (c *compiler) compilePublicContract(decl *ast.ContractDecl, vars map[string]*Var, succeeds map[string]bool) *PublicContract {
 	pc := &PublicContract{Name: decl.Name, DisplayName: decl.DisplayName, Responsibility: decl.Responsibility, Version: 1}
 	if decl.Version != nil {
 		if *decl.Version < 1 {
@@ -74,7 +107,7 @@ func (c *compiler) compilePublicContract(decl *ast.ContractDecl, vars map[string
 			continue
 		}
 		pp := c.compilePublicPort(decl.Name, "output", p, seen)
-		c.bindOutput(decl.Name, p, pp)
+		c.bindOutput(decl.Name, p, pp, succeeds)
 		pc.Outputs = append(pc.Outputs, pp)
 		ports["output."+pp.Name] = pp
 	}
@@ -134,6 +167,11 @@ func (c *compiler) compilePublicPort(contract, side string, p *ast.PortDecl, see
 	}
 	if p.FileSpec != nil {
 		pp.File = &PublicFile{MediaType: p.FileSpec.MediaType, MinBytes: p.FileSpec.MinBytes, Schema: p.FileSpec.Schema}
+		if p.FileSpec.Schema != "" {
+			if _, ok := c.schemas[p.FileSpec.Schema]; !ok {
+				c.errorfAtSpan(code, p.Span, "contract %q: %s %q: file schema %q is not a declared schema", contract, side, p.Name, p.FileSpec.Schema)
+			}
+		}
 	}
 	if p.Type == "" {
 		c.errorfAtSpan(code, p.Span, "contract %q: %s %q has no type — a port is written `name: type`", contract, side, p.Name)
@@ -156,8 +194,10 @@ func (c *compiler) compilePublicPort(contract, side string, p *ast.PortDecl, see
 }
 
 // defaultFits reports why a default does not fit the port's type — "" when
-// it does. A builtin type takes its own JSON shape; a schema-typed port
-// takes an object; `null` only on a nullable port; `json` takes anything.
+// it does. A builtin type takes its own JSON shape; `null` only on a
+// nullable port; `json` takes anything. A schema name takes an object — a
+// branch no declared port reaches today: an input is a var, and no var is
+// schema-typed (C300); an output has no default (C301).
 func defaultFits(raw json.RawMessage, portType string, nullable bool) string {
 	value, err := spec.DecodePublicJSON(raw)
 	if err != nil {
@@ -215,28 +255,53 @@ func scalarFits(value any, typ string) string {
 }
 
 // bindInput holds an input to the program: it is a declared var of the
-// same type, its value comes from the launch (never a `from:`), and a
-// default makes it optional.
+// same type, its value comes from the launch (never a `from:`, never a
+// file — a var carries none), a default makes it optional, and the var's
+// enum is the domain the contract advertises.
 func (c *compiler) bindInput(contract string, p *ast.PortDecl, pp *PublicPort, vars map[string]*Var) {
 	if p.From != "" {
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q carries `from:` — an input is a declared var whose value comes from the launch; drop from:, or declare the port under outputs:", contract, p.Name)
 	}
+	if p.FileSpec != nil {
+		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q declares file: — an input is a var the launch carries, and a var carries no file; drop file: (a file the bot takes is an attachment)", contract, p.Name)
+	}
 	v, ok := vars[p.Name]
 	if !ok {
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is not a declared var — declare `%s: %s` under vars: (the contract describes this program)", contract, p.Name, p.Name, p.Type)
-	} else if p.Type != "" && v.Type.String() != p.Type {
-		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is %s, the var %s is %s — the port takes the var's type", contract, p.Name, p.Type, p.Name, v.Type.String())
+	} else {
+		if p.Type != "" && v.Type.String() != p.Type {
+			c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is %s, the var %s is %s — the port takes the var's type", contract, p.Name, p.Type, p.Name, v.Type.String())
+		}
+		pp.EnumValues = v.EnumValues
 	}
 	if p.Default != nil && pp.Required {
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q has a default and is required — set `required: false`, or drop the default", contract, p.Name)
 	}
 }
 
+// producerOf resolves a `from:` against the program's nodes: the whole
+// reference as a node id first (an instance of a group is `<prefix>.<node>`),
+// then the longest node id before the last dot, the rest being the field.
+func (c *compiler) producerOf(from string) (nodeID, field string, n Node, ok bool) {
+	if n, ok := c.nodes[from]; ok {
+		return from, "", n, true
+	}
+	if i := strings.LastIndex(from, "."); i > 0 {
+		if n, ok := c.nodes[from[:i]]; ok {
+			return from[:i], from[i+1:], n, true
+		}
+	}
+	nodeID, field, _ = strings.Cut(from, ".")
+	return nodeID, field, nil, false
+}
+
 // bindOutput holds an output to its producer: `from: <node>.<field>` names
 // a declared node and a field of its output schema, of the port's type;
-// `from: <node>` binds a file port, or a port typed with the node's whole
-// output schema. An output is produced, never defaulted.
-func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort) {
+// `from: <node>` binds a file port to a node that publishes, or a port
+// typed with the node's whole output schema. An output is produced, never
+// defaulted; one whose producer is on no path to done is produced only
+// when the bot fails (C304).
+func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort, succeeds map[string]bool) {
 	if p.Default != nil {
 		c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q has a default — an output is produced by the program, never defaulted", contract, p.Name)
 	}
@@ -244,21 +309,37 @@ func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort) 
 		c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q names no producer — write `from: <node>.<field>` (a file port, or a port typed with a node's output schema: `from: <node>`)", contract, p.Name)
 		return
 	}
-	nodeID, field, _ := strings.Cut(p.From, ".")
-	n, ok := c.nodes[nodeID]
+	nodeID, field, n, ok := c.producerOf(p.From)
 	if !ok {
-		c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q: from: names node %q, which the program does not declare", contract, p.Name, nodeID)
+		c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q: from: names node %q, which the program does not declare (an instance of a group is named `<prefix>.<node>`)", contract, p.Name, nodeID)
 		return
 	}
 	pp.FromNode, pp.FromField = nodeID, field
+	if !succeeds[nodeID] {
+		c.warnfAtSpan(DiagContractOutputOffSuccess, p.Span, "contract %q: output %q: node %q is on no path to done — the bot produces it only when it fails", contract, p.Name, nodeID)
+	}
 	if p.FileSpec != nil {
 		if field != "" {
 			c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q is a file port: it names its node alone, `from: %s`", contract, p.Name, nodeID)
+		}
+		if NodePublish(n) == "" {
+			c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q: node %q publishes no file — a file port names an agent, judge, human, tool or compute node with `publish:`", contract, p.Name, nodeID)
 		}
 		return
 	}
 	schemaName := NodeOutputSchema(n)
 	if schemaName == "" {
+		if implicit := NodeImplicitOutputFields(n); len(implicit) > 0 {
+			switch {
+			case field == "":
+				c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q: node %q has no output schema; name its field (`from: %s.%s`)", contract, p.Name, nodeID, nodeID, implicit[0])
+			case !slices.Contains(implicit, field):
+				c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q: node %q has no field %q (it has %s)", contract, p.Name, nodeID, field, strings.Join(implicit, ", "))
+			case p.Type != "json":
+				c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q is %s, %s.%s is json — the port takes json", contract, p.Name, p.Type, nodeID, field)
+			}
+			return
+		}
 		c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q: node %q has no output schema to produce it", contract, p.Name, nodeID)
 		return
 	}
@@ -289,8 +370,9 @@ func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort) 
 }
 
 // compilePublicCriterion holds a criterion to a port of the contract and
-// to its evaluator: a registered kind takes the port's type and its
-// parameters compile; an unregistered kind is declared, not evaluated.
+// to its evaluator: a registered kind takes the port's type — a file port is
+// a file, whatever its declared type — and its parameters compile; an
+// unregistered kind is declared, not evaluated.
 func (c *compiler) compilePublicCriterion(contract string, k *ast.CriterionDecl, ports map[string]*PublicPort) *PublicCriterion {
 	pk := &PublicCriterion{Name: k.Name, Kind: k.Kind, Port: k.Port, Params: k.Params}
 	if k.Kind == "" {
@@ -316,15 +398,17 @@ func (c *compiler) compilePublicCriterion(contract string, k *ast.CriterionDecl,
 	}
 	pk.Registered = true
 	if port != nil {
-		class := "string"
+		class, is := "string", port.Type
 		switch {
+		case port.File != nil:
+			class, is = "file", "a file"
 		case strings.HasSuffix(port.Type, "[]"):
 			class = "array"
 		case port.Type != "string":
 			class = port.Type
 		}
 		if !slices.Contains(ev.Types, class) {
-			c.errorfAtSpan(DiagContractCriterion, k.Span, "contract %q: criterion %q: %s checks a %s, port %s is %s", contract, k.Name, k.Kind, strings.Join(ev.Types, " or "), k.Port, port.Type)
+			c.errorfAtSpan(DiagContractCriterion, k.Span, "contract %q: criterion %q: %s checks a %s, port %s is %s", contract, k.Name, k.Kind, strings.Join(ev.Types, " or "), k.Port, is)
 		}
 	}
 	if _, err := spec.CompilePublicCriterion(k.Kind, k.Params); err != nil {

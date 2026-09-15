@@ -154,7 +154,18 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			})
 			continue
 		}
-		mf, err := raiseManifestFloor(mp, floor, write)
+		// The floor a bundle gets is at least what its sources need
+		// (bundle.RequiredRelease, the one arithmetic every floor site
+		// reads): a bundle that declares a contract, migrated on a build
+		// older than the release reading contracts, is not left with a
+		// floor `validate` then asks to raise (C252).
+		bundleFloor := floor
+		if need, _ := bundle.RequiredRelease(bundle.MaxSyntaxRequirementsDir(dir)); need != "" {
+			if c, ok := bundle.CompareVersions(need, bundleFloor); !ok || c > 0 {
+				bundleFloor = need
+			}
+		}
+		mf, err := raiseManifestFloor(mp, bundleFloor, write)
 		if err != nil {
 			return res, err
 		}

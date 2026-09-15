@@ -69,10 +69,17 @@ var fragmentElsewhereCodes = map[DiagCode]bool{
 	// fragment omits (the synthetic workflow appended for it has neither).
 	DiagRoundRobinTooFewEdges: true, DiagLLMRouterTooFewEdges: true,
 	DiagFanOutEachEdges: true, DiagUnknownResourceInNeeds: true,
-	// A contract fragment binds to vars and nodes the page declares
-	// elsewhere (C300 an input's var, C301 an output's producer); its own
-	// shape errors (C302) are not excused.
-	DiagContractInput: true, DiagContractOutput: true,
+}
+
+// fragmentElsewhereMessages are the compile errors a `fragment` fence may
+// raise only because it omits what it references, told apart by message
+// where the code also covers shape errors of the fragment itself: a
+// contract's input whose var the page declares elsewhere (C300) or output
+// whose producer it does (C301) — never a contract with `version: 0`, a
+// default on a required input, or a port without a producer.
+var fragmentElsewhereMessages = []string{
+	"is not a declared var",
+	"which the program does not declare",
 }
 
 var diagCodeRe = regexp.MustCompile(`\[(C\d{3})\]`)
@@ -84,6 +91,15 @@ func fragmentShapeErrors(compileErrs []string) []string {
 		m := diagCodeRe.FindStringSubmatch(e)
 		if m != nil && fragmentElsewhereCodes[DiagCode(m[1])] {
 			continue
+		}
+		if m != nil && (DiagCode(m[1]) == DiagContractInput || DiagCode(m[1]) == DiagContractOutput) {
+			var elsewhere bool
+			for _, msg := range fragmentElsewhereMessages {
+				elsewhere = elsewhere || strings.Contains(e, msg)
+			}
+			if elsewhere {
+				continue
+			}
 		}
 		out = append(out, e)
 	}

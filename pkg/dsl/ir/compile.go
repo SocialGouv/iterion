@@ -650,11 +650,11 @@ func (c *compiler) compile() *Workflow {
 	// Compile attachments (merge top-level + workflow-level).
 	attachments := c.compileAttachments(c.file.Attachments, wf.Attachments, vars)
 
-	// Bind the public contracts: nodes, schemas and vars are compiled.
-	contracts, contract := c.compilePublicContracts(wf, vars)
-
 	// Compile edges.
 	edges, loops, foreaches := c.compileEdges(wf.Edges)
+
+	// Bind the public contracts: nodes, schemas, vars and edges are compiled.
+	contracts, contract := c.compilePublicContracts(wf, vars, edges)
 
 	// Compile budget.
 	var budget *Budget

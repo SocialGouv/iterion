@@ -47,8 +47,47 @@ func TestSyntaxRequirementsRecordContractsAndAskForTheirRelease(t *testing.T) {
 	}
 	// The registry of floors names every pin, so a floor added later is
 	// held by the release test and the scaffold alike.
-	floors := parser.SyntaxFloors()
+	floors := SyntaxFloors()
 	if floors["parser.ContractSince"] != parser.ContractSince || floors["parser.ImportSince"] != parser.ImportSince || floors["parser.ProfileSince[2]"] != parser.ProfileSince[2] {
 		t.Fatalf("SyntaxFloors: %v", floors)
+	}
+}
+
+// Every release the table can ask for is a pin of the registry, and every
+// entry contributes at least one pin: the two views of the table cannot
+// drift, since both are projections of it.
+func TestEveryFloorTheTableAsksForIsPinned(t *testing.T) {
+	pinned := map[string]bool{}
+	for _, release := range SyntaxFloors() {
+		pinned[release] = true
+	}
+	probes := []SyntaxRequirements{
+		{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}},
+		{Profile: 1, ImportedBy: []string{"main.bot"}},
+		{Profile: 1, ContractedBy: []string{"main.bot"}},
+	}
+	for i, f := range syntaxFloors {
+		if len(f.pins) == 0 {
+			t.Errorf("table entry %d contributes no pin to the registry", i)
+		}
+		var asked bool
+		for _, req := range probes {
+			release, reason, asks := f.need(req)
+			if !asks {
+				continue
+			}
+			asked = true
+			if !pinned[release] {
+				t.Errorf("table entry %d asks for %s (%s), which no pin of the registry names", i, release, reason)
+			}
+		}
+		if !asked {
+			t.Errorf("table entry %d asks for nothing on any probe: the probes are stale", i)
+		}
+	}
+	for p := 2; p <= parser.MaxProfile; p++ {
+		if !pinned[parser.ProfileSince[p]] {
+			t.Errorf("profile %d's release is not in the registry", p)
+		}
 	}
 }

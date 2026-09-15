@@ -416,24 +416,15 @@ func printPublicContract(p *Printer, c *ir.PublicContract) {
 		ports []*ir.PublicPort
 	}{{"Input", c.Inputs}, {"Output", c.Outputs}} {
 		for _, port := range side.ports {
-			line := port.Name + ": " + port.Type
-			if !port.Required {
-				line += " (optional)"
-			}
-			if port.File != nil {
-				line += " (file)"
-			}
-			if port.FromNode != "" {
-				line += " ← " + port.FromNode
-				if port.FromField != "" {
-					line += "." + port.FromField
-				}
-			}
-			p.KV(side.label, line)
+			p.KV(side.label, describePublicPort(port))
 		}
 	}
 	for _, k := range c.Criteria {
-		line := k.Name + ": " + k.Kind + " on " + k.Port
+		line := k.Name + ": " + k.Kind
+		if len(k.Params) > 0 {
+			line += " " + string(k.Params)
+		}
+		line += " on " + k.Port
 		if !k.Registered {
 			line += " (not evaluated: no registered evaluator)"
 		}
@@ -446,6 +437,59 @@ func printPublicContract(p *Printer, c *ir.PublicContract) {
 		}
 		p.KV("Effect", line)
 	}
+}
+
+// describePublicPort renders one port with everything an author checks a
+// contract for: its requiredness and default, its nullability, its
+// cardinality, its enum, its file shape and its producer.
+func describePublicPort(port *ir.PublicPort) string {
+	var notes []string
+	if !port.Required {
+		notes = append(notes, "optional")
+	}
+	if port.Default != nil {
+		notes = append(notes, "default "+string(port.Default))
+	}
+	if port.Nullable {
+		notes = append(notes, "nullable")
+	}
+	if port.MinItems != nil || port.MaxItems != nil {
+		lo, hi := "0", "∞"
+		if port.MinItems != nil {
+			lo = fmt.Sprintf("%d", *port.MinItems)
+		}
+		if port.MaxItems != nil {
+			hi = fmt.Sprintf("%d", *port.MaxItems)
+		}
+		notes = append(notes, lo+".."+hi+" items")
+	}
+	if len(port.EnumValues) > 0 {
+		notes = append(notes, "one of "+strings.Join(port.EnumValues, "|"))
+	}
+	if port.File != nil {
+		file := "file"
+		if port.File.MediaType != "" {
+			file += " " + port.File.MediaType
+		}
+		if port.File.MinBytes > 0 {
+			file += fmt.Sprintf(" ≥ %d B", port.File.MinBytes)
+		}
+		if port.File.Schema != "" {
+			file += " schema " + port.File.Schema
+		}
+		notes = append(notes, file)
+	}
+	line := port.Name + ": " + port.Type
+	if len(notes) > 0 {
+		line += " (" + strings.Join(notes, ", ") + ")"
+	}
+	if port.FromNode != "" {
+		line += " ← " + port.FromNode
+		if port.FromField != "" {
+			line += "." + port.FromField
+		}
+	}
+	return line
 }
 
 // validationFailed is the non-zero exit of an invalid workflow. In --json mode

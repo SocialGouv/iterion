@@ -99,10 +99,13 @@ func Verify(f *ast.File, text string) error {
 	if why := ir.SameProgram(ca, cb); why != "" {
 		return fmt.Errorf("the serialised source is not the same program: %s", why)
 	}
-	// The compiled program does not carry the contract, so SameProgram
-	// cannot see one lost, changed or forged by the text: the span-free
-	// mirror is its oracle. A contract is canonical by construction (names
-	// bare, JSON values compact in key order), so the comparison is exact.
+	// The compiled program carries the bound contract (SameProgram sees one
+	// lost, changed or forged by the text), but it normalises what the
+	// author wrote — `version: 1` and none, an explicit `required: true`
+	// and none read the same — and a document that does not compile has
+	// no program at all: the span-free mirror holds the rest. A contract is
+	// canonical by construction (names bare, JSON values compact in key
+	// order), so the comparison is exact.
 	if why := sameContracts(f, pr.File); why != "" {
 		return fmt.Errorf("the serialised source is not the same document: %s", why)
 	}
