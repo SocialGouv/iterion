@@ -70,18 +70,18 @@ func TestThePublishGrantOutlivesTheSweepHorizon(t *testing.T) {
 // a horizon of days affordable; making every Nth pass deep is what makes the
 // horizon real rather than declared.
 func TestOnlyTheDeepPassReachesTheHorizon(t *testing.T) {
-	if got := gateSweepWindowFor(0); got != gateSweepHorizon {
-		t.Errorf("the first pass reaches %s, want the full %s — a replica that just started is the one that missed the most", got, gateSweepHorizon)
+	if !gateSweepIsDeep(0) {
+		t.Error("the first pass is not deep — a replica that just started is the one that missed the most")
 	}
-	if got := gateSweepWindowFor(1); got != gateSweepLookback {
-		t.Errorf("an ordinary pass reaches %s, want %s", got, gateSweepLookback)
+	if gateSweepIsDeep(1) {
+		t.Error("an ordinary pass reaches the horizon — then the per-minute scan is the size of the horizon, which is what the split exists to avoid")
 	}
-	if got := gateSweepWindowFor(gateDeepSweepEvery); got != gateSweepHorizon {
-		t.Errorf("pass %d reaches %s, want the full %s", gateDeepSweepEvery, got, gateSweepHorizon)
+	if !gateSweepIsDeep(gateDeepSweepEvery) {
+		t.Errorf("pass %d is not deep — the cadence never comes back round", gateDeepSweepEvery)
 	}
 	deep := 0
 	for pass := 0; pass < 4*gateDeepSweepEvery; pass++ {
-		if gateSweepWindowFor(pass) == gateSweepHorizon {
+		if gateSweepIsDeep(pass) {
 			deep++
 		}
 	}
@@ -101,13 +101,13 @@ func TestTheDeepPassScansBackPastAMultiDayOutage(t *testing.T) {
 	diedAt := now.Add(-72 * time.Hour)
 
 	fast := &fakeGateSweepLister{}
-	s.sweepGates(context.Background(), fast, now, gateSweepWindowFor(1), time.Time{})
+	s.sweepGates(context.Background(), fast, now, gateSweepLookback, time.Time{})
 	if !fast.since.After(diedAt) {
 		t.Errorf("the fast pass reached back to %s, past a run that died at %s — then it is not the narrow pass the cadence assumes", fast.since, diedAt)
 	}
 
 	deep := &fakeGateSweepLister{}
-	s.sweepGates(context.Background(), deep, now, gateSweepWindowFor(0), time.Time{})
+	s.sweepGates(context.Background(), deep, now, gateSweepHorizon, time.Time{})
 	if deep.since.After(diedAt) {
 		t.Errorf("the deep pass reached back only to %s, so a run that died at %s is never offered again — the 81-hour pending check reproduces", deep.since, diedAt)
 	}

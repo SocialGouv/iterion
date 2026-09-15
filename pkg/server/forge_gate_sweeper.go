@@ -110,8 +110,8 @@ type gateSweepLister interface {
 // It announces itself for the reason the retry sweeper does: "no PR is stuck"
 // and "every stuck PR is invisible" produce identical silence otherwise.
 func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
-	s.infof("merge-gate sweeper: re-offering dead gating runs to the reconciler (every %s, %s grace, %s lookback, %s horizon reached every %d passes) — the net under the lossy outcome event",
-		gateSweepInterval, gateSweepGrace, gateSweepLookback, gateSweepHorizon, gateDeepSweepEvery)
+	s.infof("merge-gate sweeper: re-offering dead gating runs to the reconciler (every %s, %s grace, %s lookback; every %dth pass walks the %s horizon, resuming across passes at %d rows each) — the net under the lossy outcome event",
+		gateSweepInterval, gateSweepGrace, gateSweepLookback, gateDeepSweepEvery, gateSweepHorizon, gateSweepMaxPages*gateSweepBatch)
 	t := time.NewTicker(gateSweepInterval)
 	defer t.Stop()
 	// The first pass is a deep one: a replica that has just started is exactly
@@ -174,15 +174,11 @@ func (s *Server) noteGateDeepCycle(passes int, complete bool) {
 // Pass 0 — the first after a start or a rollout — is deep on purpose: a
 // replica that has just come up is precisely the one with no idea what died
 // while nothing was watching.
+//
+// It decides the window AND the cursor together, which is why runGateSweeper
+// branches on it rather than on a window-picking helper: only the deep pass
+// resumes, so "which window" and "which cursor" are one question.
 func gateSweepIsDeep(pass int) bool { return pass%gateDeepSweepEvery == 0 }
-
-// gateSweepWindowFor picks how far back pass number `pass` reaches.
-func gateSweepWindowFor(pass int) time.Duration {
-	if gateSweepIsDeep(pass) {
-		return gateSweepHorizon
-	}
-	return gateSweepLookback
-}
 
 // sweepGates performs one pass over the window `lookback` reaches back to,
 // starting at `resume` when a previous pass of the same depth ran out of page
