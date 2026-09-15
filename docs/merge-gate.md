@@ -886,6 +886,19 @@ hours, because every pass that could have answered them had stopped 80 hours
 earlier. Splitting the two cadences is what makes a horizon of days affordable
 — the per-minute scan stays the size of an hour.
 
+A deep pass **resumes** where the last one ran out of page budget. One pass is
+capped at 10 pages of 200 rows, and rows arrive `updated_at`-descending, so a
+backlog wider than 2000 candidates is truncated at its *oldest* end — precisely
+the batch-death runs the horizon exists to reach. Restarting at the head every
+time would drop the same rows on every pass, forever: the reach would be not
+slow but zero, while the log said "not examined this pass" as though a later one
+would get there. Resuming means each deep pass carries the walk further, so a
+backlog of P candidates is traversed in `ceil(P / 2000)` deep passes — about
+`ceil(P / 2000) × 30 min`. The fast pass never resumes: its contract is to
+answer a dropped event within the minute, which means always starting at the
+head. A completed traversal starts over, and a cursor that has aged out below
+the window is dropped rather than followed past the horizon.
+
 What keeps a long reach safe is not the bound but the repair's own live reads:
 it stands down on a closed or merged pull request, on a head that has moved
 since the run reviewed it, and on a check that already carries a real verdict.
@@ -893,6 +906,14 @@ And what bounds it is the **grant** — `forgePublishPostRunGrace` is *derived*
 from the horizon for that reason, since a grant that expired first would turn
 every later pass into a guaranteed abstain that reads exactly like a net still
 trying.
+
+One consequence is worth knowing when reading the logs. Because the deep pass
+resumes, a given run is revisited once per full *traversal*, not once per deep
+pass — so the band in which the "nothing will offer this run again" warning
+fires is **measured** from the traversal the sweeper actually walked, floored at
+two deep intervals and capped at half the horizon. A fixed band would be stepped
+over on a large backlog and that line, the only one a deployment gets when the
+net gives up, would never be written.
 
 Telling "already answered" from "must escalate" is what makes the second offer
 safe, and the answer turns on WHOSE marker is on the head. **Its own** — the
@@ -937,13 +958,32 @@ run itself.
 ### The grant's other two bounds: the run's own end, and a mint that fails
 
 A TTL sized for a seven-day quota wait is a long life for a credential that a
-normal review needs for minutes. So the run's terminal outcome brings the
-expiry forward: the same run-outcome event the reconciler consumes shortens the
-grant to the reconciler's own window (the sweep **horizon** plus a margin, and
-derived from it in code so the two cannot drift apart), after which nothing
-revisits the run and the grant has no reader left. Two shapes
-keep the full TTL, because something *will* come back and post their own
-verdict — a **paused** run, and a `failed_resumable` one with an **armed**
+normal review needs for minutes. So the run's terminal outcome re-anchors the
+expiry on the run's death — and which way it moves depends on whether the run
+**claimed a required check**, because that is what decides whether anything
+will still read the grant:
+
+- a run that claimed one keeps it until the sweep **horizon** plus a margin,
+  derived from the horizon in code so the two cannot drift apart. Past that
+  nothing revisits the run and the grant has no reader left.
+- every other dead run — and that is most of them, since the server mints a
+  grant for *any* bot launched with a `pr_url` — is retired at the ordinary
+  lookback plus the same margin (90 minutes). Nothing reads it, and leaving it
+  alive would both keep a crashed run's forge-*write* token usable for days and
+  stop terminal eviction from trimming the in-memory registry, whose cap is
+  sized on that eviction happening.
+
+The word *re-anchor* is load-bearing, and it is the subtlety to remember here.
+A grant's expiry is stamped at **launch**; the sweep's reach is measured from
+the run's **terminal** instant. For a run parked a week on a usage window those
+are a week apart, so merely *shortening* the grant does nothing — the target
+already falls past the launch-stamped expiry — and the grant dies with days of
+horizon left to run, turning every remaining pass into a silent abstain. That
+is why the terminal event sets the expiry in either direction rather than only
+downwards, bounded so an extending write can never uncap the credential.
+
+Two shapes keep the full TTL, because something *will* come back and post their
+own verdict — a **paused** run, and a `failed_resumable` one with an **armed**
 retry. "Abandoned" is not re-derived here: the retry sweeper enforces the
 policy's `max_wait`, unsets the armed instant when it gives up, and
 **republishes the run outcome**, so the grant is shortened on that event

@@ -147,7 +147,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	//
 	// The notice is posted on the EVENT path only. A declined run is terminal
 	// and its updated_at never moves, so the sweep re-offers it every minute
-	// for the whole lookback — dozens of identical comments on one pull
+	// out to the horizon — dozens of identical comments on one pull
 	// request, per replica. Same guard, for the same reason, as the pause and
 	// DLQ notices next door (R69a603).
 	if run.FailureCode == declinedFailureCode {
@@ -193,8 +193,9 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	}
 
 	// The per-head claim probe comes BEFORE every forge round-trip: the
-	// sweep re-offers each gating run ~once a minute for an hour, on every
-	// replica, and without this exit each offer costs GetPullRequest +
+	// sweep re-offers each gating run ~once a minute for an hour and then on
+	// every deep pass out to the horizon, on every replica, and without this
+	// exit each offer costs GetPullRequest +
 	// ListCommitStatuses (+ GetIssue with hold labels) against the same App
 	// quota the merge-gate reconciler lives on — the net would starve the
 	// gate it backs. `reviewed` is the only sha a launch is possible for

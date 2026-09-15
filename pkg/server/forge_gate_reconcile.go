@@ -34,7 +34,8 @@ const gateReconcilerName = "forge-gate-reconcile"
 
 // The two triggers of the same repair. Which one fired decides how loudly a
 // declined repair speaks: the event fires once per run, the sweep re-offers
-// the same run every minute for its whole lookback.
+// the same run every minute for its whole lookback, and then on every deep
+// pass out to gateSweepHorizon.
 const (
 	gateTriggerEvent = "event"
 	gateTriggerSweep = "sweep"
@@ -223,7 +224,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// on resume did not land), and standing down on it would leave the
 	// required check on its in-flight claim for a run nothing will wake.
 	// So: say so on the PR once (the event path — the sweep re-offers the
-	// same run every minute for an hour), then fall through to the
+	// same run for days), then fall through to the
 	// dead-review repair below, which is what actually happens next — the
 	// synthetic failure on the head and one relaunch per head.
 	if run.Status == store.RunStatusFailedResumable && run.FailureCode == store.FailureDLQParked {
@@ -245,7 +246,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// Not dead, but not silent either: the check stays on its in-flight
 		// claim, which reads identically to a review that died. Say on the
 		// PR that it parked and when it resumes — on the EVENT only, since
-		// the sweep re-offers this same run every minute for an hour.
+		// the sweep re-offers this same run for days.
 		if via == gateTriggerEvent {
 			s.noticeGatePausedForRetry(ctx, run)
 		}
@@ -268,14 +269,15 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// occurrence a grep instead of an investigation.
 	//
 	// Warn on the EVENT path, and on the sweep's LAST pass over this run.
-	// The sweep re-offers the same run every minute for the whole lookback, so
-	// a run sitting in a permanent abstain branch — a lost grant, an
-	// unreachable forge — would log the identical line ~60 times an hour per
-	// replica and bury the branches that carry new information. But Debug is
+	// The sweep re-offers the same run every minute for its whole lookback and
+	// then on every deep pass out to the horizon, so a run sitting in a
+	// permanent abstain branch — a lost grant, an unreachable forge — would log
+	// the identical line ~60 times an hour per replica, and go on doing it for
+	// DAYS, burying the branches that carry new information. But Debug is
 	// suppressed at the info level deployments run at, so those passes said
 	// NOTHING at all: the one Warn the event path emits dies with the pod, and
 	// a check stuck for a day leaves nothing to diagnose it with. The last
-	// pass is the one that matters anyway — past the lookback nothing revisits
+	// pass is the one that matters anyway — past the horizon nothing revisits
 	// the run and the miss becomes permanent — so it speaks, once.
 	abstain := func(format string, args ...any) error {
 		if s.logger == nil {
@@ -380,8 +382,8 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// work that already shipped, and the relaunch below stands down on the
 	// same state anyway. Reachable from every terminal outcome such a run can
 	// have — the retry sweeper's abandon republishes one deliberately, the
-	// stop-on-close cancel IS one, and the sweep re-offers the run for its
-	// whole lookback.
+	// stop-on-close cancel IS one, and the sweep re-offers the run out to the
+	// horizon.
 	//
 	// Same predicate the relaunch and auto-fix lanes use: an EMPTY state is a
 	// provider that does not report one, not a closure, so a verdict is never
