@@ -226,6 +226,11 @@ type Input struct {
 	// Frontmatter: bundlelint stays I/O-free. It travels whole so a syntax
 	// added to the requirements is checked here without a field to thread.
 	Syntax bundle.SyntaxRequirements
+	// SubbotContracts are the bound contracts of the `subbot` children the
+	// caller could read and compile, by the parent's node id (C255); a
+	// child without a contract, or beyond the bundle, is absent. Supplied
+	// by the caller: bundlelint stays I/O-free.
+	SubbotContracts map[string]*ir.PublicContract
 }
 
 // SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
@@ -250,7 +255,9 @@ func CheckConsistency(in Input) []Diag {
 	// manifest that would carry its floor.
 	checkSyntaxFloor(&diags, m, in.Syntax, in.EngineBuild)
 	checkProfileUnread(&diags, in.Syntax.Unread)
+	checkSubbotContracts(&diags, in.Workflow, in.SubbotContracts)
 	if m != nil {
+		checkContractManifest(&diags, m, in.Workflow)
 		checkVarMaps(&diags, m, in.Workflow)
 		checkChatSurface(&diags, m, in.Workflow)
 		checkForgeSecret(&diags, m, in.Workflow)
