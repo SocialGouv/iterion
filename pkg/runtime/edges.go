@@ -67,8 +67,9 @@ func (e *Engine) edgeConditionHolds(edge *ir.Edge, fromNodeID, logPrefix string,
 // has no parsed Expression. The expression evaluation context is built lazily
 // at most once per call (only if at least one outgoing edge uses an
 // expression).
-func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) *ir.Edge {
+func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) (*ir.Edge, error) {
 	var unconditional, elseEdge *ir.Edge
+	var unconditionalErr, elseErr error
 	var exprCtx *expr.Context
 
 	for _, edge := range e.workflow.Edges {
@@ -79,7 +80,23 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		if edge.LoopName != "" {
 			loop, ok := e.workflow.Loops[edge.LoopName]
 			if ok && e.edgeConditionHolds(edge, fromNodeID, logPrefix, output, rs, &exprCtx) {
-				maxIter := e.resolveLoopMax(loop, rs)
+				maxIter, err := e.resolveLoopMaxChecked(loop, rs)
+				if err != nil {
+					capErr := &RuntimeError{Code: ErrCodeExpressionFailed, NodeID: fromNodeID, Message: err.Error(), Hint: "the loop cap must resolve to a non-negative integer at this crossing"}
+					if edge.Condition != "" || edge.Expression != nil {
+						return nil, capErr
+					}
+					// A fallback only becomes a crossing after all conditional
+					// alternatives have been considered. Defer its cap failure.
+					if edge.IsElse {
+						if elseEdge == nil {
+							elseEdge, elseErr = edge, capErr
+						}
+					} else if unconditional == nil {
+						unconditional, unconditionalErr = edge, capErr
+					}
+					continue
+				}
 				if rs.loopCounters[edge.LoopName] >= maxIter {
 					kind := "exhausted"
 					if loop.Unbounded {
@@ -145,7 +162,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				continue
 			}
 			if ok {
-				return edge
+				return edge, nil
 			}
 			continue
 		}
@@ -177,12 +194,12 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 			boolVal = !boolVal
 		}
 		if boolVal {
-			return edge
+			return edge, nil
 		}
 	}
 
 	if elseEdge != nil {
-		return elseEdge
+		return elseEdge, elseErr
 	}
-	return unconditional
+	return unconditional, unconditionalErr
 }

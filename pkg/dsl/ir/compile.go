@@ -8,7 +8,6 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1770,32 +1769,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 					Unbounded:         ae.Loop.Unbounded,
 					FuelCap:           ae.Loop.FuelCap,
 				}
-				if ae.Loop.MaxIterationsExpr != "" {
-					refs, err := ParseRefs(ae.Loop.MaxIterationsExpr)
-					if err != nil {
-						c.errorfOnEdge(DiagBadTemplateRef, ae,
-							"loop %q: template cap %q: %v",
-							ae.Loop.Name, ae.Loop.MaxIterationsExpr, err)
-					}
-					// A cap expr with no template refs is a static string
-					// (the parser catches the `as fix("2")` DSL form, but
-					// group `${}` substitution and AST-JSON import can also
-					// land a bare literal here). It would silently resolve to
-					// MaxIterations=0 and skip the loop edge as exhausted on
-					// the first traversal, so fold a plain integer into the
-					// literal cap and reject anything else outright.
-					if len(refs) == 0 {
-						if n, aerr := strconv.Atoi(strings.TrimSpace(ae.Loop.MaxIterationsExpr)); aerr == nil {
-							loop.MaxIterations = n
-							loop.MaxIterationsExpr = ""
-						} else {
-							c.errorfOnEdge(DiagBadTemplateRef, ae,
-								"loop %q: cap %q has no template refs and is not an integer — a static non-numeric cap would silently limit the loop to 0 iterations",
-								ae.Loop.Name, ae.Loop.MaxIterationsExpr)
-						}
-					}
-					loop.MaxIterationsExprRefs = refs
-				}
+				c.compileLoopCap(loop, ae)
 				loops[ae.Loop.Name] = loop
 			}
 		}
@@ -2450,7 +2424,11 @@ func refInQuotes(command string) []string {
 			i++ // an escaped byte inside double quotes closes nothing
 		case quote != 0 && ch == '{' && i+1 < len(command) && command[i+1] == '{':
 			if end := strings.Index(command[i:], "}}"); end > 0 {
-				hits = append(hits, command[i:i+end+2])
+				// The literal delimiter is source syntax: its renderer adds
+				// no quotes, so authored quotes around it are appropriate.
+				if strings.TrimSpace(command[i+2:i+end]) != LiteralOpenExpression {
+					hits = append(hits, command[i:i+end+2])
+				}
 				i += end + 1
 			}
 		}

@@ -1051,7 +1051,10 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 // same bounded loop/foreach bookkeeping to a private runState and emits the
 // selection with the branch identity.
 func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult, rs *runState) (*ir.Edge, error) {
-	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, fmt.Sprintf("branch %s", branchID), output, rs)
+	selected, capErr := e.evaluateEdgesWithLoopsRS(fromNodeID, fmt.Sprintf("branch %s", branchID), output, rs)
+	if capErr != nil {
+		return nil, capErr
+	}
 	if selected == nil {
 		return nil, fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}

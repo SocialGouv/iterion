@@ -965,7 +965,10 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 // exhausted that edge is skipped — enabling graceful exit patterns like
 // `fix_loop -> outer_loop` or `loop_edge -> done`.
 func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string]any) (string, error) {
-	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, "main", output, rs)
+	selected, capErr := e.evaluateEdgesWithLoopsRS(fromNodeID, "main", output, rs)
+	if capErr != nil {
+		return "", capErr
+	}
 	if selected == nil {
 		return "", &RuntimeError{
 			Code:    ErrCodeNoOutgoingEdge,

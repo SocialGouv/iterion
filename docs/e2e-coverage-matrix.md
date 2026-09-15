@@ -141,6 +141,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | dsl.secrets-block | `secrets:` declarations + optional-secret semantics | dsl | covered-deterministic | pkg/dsl/ir/secrets_test.go, pkg/dsl/ir/optional_secret_test.go | |
 | dsl.memory-block | `memory:` block scopes/visibility validation | dsl | covered-deterministic | pkg/dsl/ir/memory_visibility_test.go | |
 | dsl.verified-action | Verified Action quad (goal/postcondition/policy/recovery) | dsl | covered-deterministic | TestVerifiedActionEngineEmitsAndStrips (e2e/verified_action_test.go) | |
+| dsl.loop-cap-expression | per-crossing expression and template bounds, fresh resume with raised vars, typed invalid-cap failures | dsl | covered-deterministic | pkg/dsl/ir/loop_cap_expression_test.go, pkg/runtime/loop_cap_expression_test.go | Same evaluator on trunk and branch edge selection; v15 queue fence preserves old-runner refusal. |
 | dsl.groups-iteration | `group:` expansion / iteration sugar | dsl | covered-deterministic | pkg/dsl/ir/expand_groups_test.go, pkg/dsl/ir/foreach_test.go | |
 | dsl.diagnostics | compile diagnostics C001–C2xx codes and severities | dsl | covered-deterministic | pkg/dsl/ir/diag_codes_test.go, TestValidate_Invalid (pkg/cli/cli_test.go) | |
 | dsl.unparse-roundtrip | IR → `.bot` serialization round-trips | dsl | covered-deterministic | pkg/dsl/unparse/roundtrip_test.go | |

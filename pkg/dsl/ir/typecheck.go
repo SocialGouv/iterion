@@ -194,11 +194,12 @@ func (env exprEnv) refField(namespace string, path []string) (*SchemaField, bool
 		if len(path) < 2 {
 			return nil, false
 		}
-		node, ok := env.w.Nodes[path[0]]
-		if !ok {
+		id, fields := outputNodePath(env.w, path)
+		node, ok := env.w.Nodes[id]
+		if !ok || len(fields) == 0 {
 			return nil, false
 		}
-		return lookupField(env.w, NodeOutputSchema(node), path[1])
+		return lookupField(env.w, NodeOutputSchema(node), fields[0])
 	case "input":
 		if len(path) < 1 {
 			return nil, false

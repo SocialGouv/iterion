@@ -1259,3 +1259,19 @@ way to perform. Mono now says so in as many words.
 
 <!-- Live probe note: this very PR exercised the 0.7.0 stack end to end —
      PR-open review (immediate), then this push (debounced). -->
+
+
+## 2026-09-13 — literal delimiter rollout consistency (#1201)
+
+[Run 01a09c7b-4575-7eb6-bac0-40c4ec770b5a](https://iterion.cloud/runs/01a09c7b-4575-7eb6-bac0-40c4ec770b5a)
+reviewed `abbce695f26c27a1980de260c0235daab88040cb` and published one medium
+finding, R9f2eac. The implementation and ADR used queue schema 19 for literal
+delimiters, but the mandatory rollout runbook still reserved 19 for connectors.
+The correction adds the real v18-reader refusal proof and a dedicated literal
+rollout checklist, and moves every connector-checklist reference to 19→20.
+
+All CI checks passed on the reviewed head. The correction is documentation-only;
+its numbered transitions were checked against `queue.SchemaVersion=19` and
+`MinSchemaVersion=10`. Billy has no active run on this PR and its Claude weekly
+quota remains blocked until 2026-09-15 21:00 UTC, so R9f2eac was corrected directly
+under the runbook's weekly-cap exception. No Billy run was launched for #1201.

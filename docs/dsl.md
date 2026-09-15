@@ -114,6 +114,62 @@ A prompt may also be written where it is used: `system: "Review the diff"`, `use
 
 What an include resolves against is the prompt's **source file**, named in full, never the working directory of the process compiling it. A prompt whose source is not a file on this host — a document validated from the studio canvas (JSON, no positions), an AST that reached a runner with a marker still in it, a source compiled inline (the studio's run-from-editor, an API payload), a file named by a relative path (which a server started from a bot's directory could otherwise resolve against its own) — is refused with C055; the studio still saves such a document, marker intact, and the next parse of the file on disk resolves it beside that file. To use an include, run the file itself (`iterion run path/to/main.bot`, or the bundle on cloud).
 
+### Literal template delimiters
+
+Write `{{"{{"}}` to emit the two literal opening braces. For example:
+
+```bot
+prompt teach:
+  Write {{"{{"}}vars.name}} exactly as shown.
+```
+
+The rendered prompt is `Write {{vars.name}} exactly as shown.` The result is
+not interpreted again. Ordinary `}}` needs no escape. Whitespace around the
+quoted expression is accepted (`{{ "{{" }}`); arbitrary quoted expressions and
+nested templates remain errors.
+
+This is renderer syntax, shared by both DSL profiles. Inside a DSL 2 quoted
+string, escape its embedded quotes using the normal string syntax:
+
+```bot
+dsl: 2
+tool show:
+  command: "printf '%s' '{{\"{{\"}}vars.name}}'"
+```
+
+Prompt and multiline script bodies carry `{{"{{"}}` directly. Profile 1 retains
+its existing string-decoding rules; prefer a body for text with embedded quotes
+or use DSL 2 for the quoted-string example above. `\{{` is not an alternative
+escape: the optional profile-2 shorthand is not introduced here.
+
+Includes expand first; group parameters and local references are specialized
+at compilation. The literal form survives those passes, so
+`{{"{{"}}include "missing.md"}}` never reads a file and
+`{{"{{"}}params.name}}` never binds a group parameter. At final rendering only
+the original template positions are substituted. A runtime value containing
+`{{vars.x}}` or `{{"{{"}}` remains that value, without a second pass.
+
+The same form works in prompts (including recipes and multimodal text),
+`images:`, commands, scripts, postconditions and data mappings (`with`, fail
+messages). In command/script source it emits raw braces, without adding shell
+or JSON quotes; quote the surrounding authored text as appropriate for that
+language. Dynamic references keep their existing escaping rules. A standalone
+literal is a **string**: it cannot serve as an integer loop cap, and a foreach
+collection still needs an array (the existing non-array/empty behavior stays).
+
+These semantics require queue schema **19**. Old runners reject the message
+before compiling the AST; deploy the new runners before the publisher. The new
+reader still accepts schemas 10–19. This PR is stacked after the schema-18 loop
+cap change; future connector transport work starts at 19→20.
+
+Verified against the actual v18 reader at commit
+`bd3906a725ee4b24fd7669e58e57a0556dbb2ce1`: a v19 message produced
+from a compiled literal prompt was refused before AST decoding with
+`queue: schema version: 19 unsupported (want 10–18)`.
+
+
+
+
 ### Schemas
 
 ```iter fragment
@@ -984,6 +1040,7 @@ src -> dst when "approved && length(outputs.scan.findings) == 0"
 src -> fallback else
 src -> dst as retry(5)
 src -> dst as retry("{{outputs.plan.max_passes}}")
+src -> dst as retry("vars.max_passes - 1")
 src -> dst as retry(unbounded 200)
 src -> dst as foreach scan(item in "{{outputs.plan.items}}")
 src -> dst with {
@@ -997,7 +1054,13 @@ A chain `a -> b -> c` reads as the edges it names (`a -> b`, `b -> c`), and the 
 
 Quoted `when` expressions are evaluated in parallel branch bodies as well as on the trunk, against that branch's private outputs, artifacts, loop state, and shared run variables. Migration note: older runtimes skipped expression-form edges inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branches, so an existing workflow may now take a guarded route that previously fell through to `else` or an unconditional edge.
 
-Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
+Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, one runtime template reference, a quoted expression over `vars.*` and `outputs.*`, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
+
+**Counting crossings.** `as retry(N)` permits N back-edge crossings, hence N+1 executions of the loop body when entered once. To request a total of `max_passes` executions, write `as retry("vars.max_passes - 1")`. The expression is evaluated at each attempted crossing against the current variables and outputs, including after a fresh-engine resume with raised variables. A dynamic result of zero permits no further crossing. Literal caps retain their existing minimum of 1.
+
+The compiler refuses undeclared references and definitely non-integer cap types. At a selected crossing, an absent, fractional, negative or overflowing result fails explicitly with `EXPRESSION_FAILED`, naming the loop and its cap; it is never treated as zero. A fallback cap is not evaluated as a failure if another condition selects an exit. Prompt/display lookups may see an unresolved cap before its producer has run and do not abort the run. Migrate a loop-cap variable declared as `string` to `int`; the compiler now reports that mismatch even when its default happens to contain digits. Numeric strings from dynamically typed legacy template outputs remain accepted; use `floor` or `round` when converting a fractional expression is intended.
+
+Expression caps require the engine release that introduces queue schema v15. New publishers use v15 so older runners reject the message before compilation; new runners retain support for v10–v14. See the [queue rollout contract](cloud-queue-schema-rollout.md) before deploying a mixed fleet.
 
 **Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `NO_OUTGOING_EDGE`. The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
 

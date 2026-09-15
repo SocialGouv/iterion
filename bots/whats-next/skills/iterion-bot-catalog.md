@@ -1637,7 +1637,7 @@ Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
   edits source. Reach for Doki (docs-refresh) instead when the goal is to
   fix a repo's EXISTING hand-authored docs (README/docs/**) against the
   code, editing them in place.
-- **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (string), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
+- **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (int), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/wiki-gen/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->

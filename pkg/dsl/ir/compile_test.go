@@ -391,6 +391,7 @@ func TestCompileLoopTemplatedCap(t *testing.T) {
 	const src = `
 schema s:
   ok: bool
+  cap: int
 
 prompt sys:
   S.
