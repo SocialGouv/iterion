@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.148.1](https://github.com/SocialGouv/iterion/compare/v3.148.0...v3.148.1) (2026-09-15)
+
+### Bug Fixes
+
+* **runtime:** replace stale fan-out outputs at convergence ([#1187](https://github.com/SocialGouv/iterion/issues/1187)) ([ee47e96](https://github.com/SocialGouv/iterion/commit/ee47e9685dfa710f3eb43e6ff1b0241b32bbcf36))
+
 ## [3.148.0](https://github.com/SocialGouv/iterion/compare/v3.147.1...v3.148.0) (2026-09-15)
 
 ### Features
