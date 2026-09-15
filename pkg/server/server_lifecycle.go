@@ -854,7 +854,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if watchCancel != nil {
 		watchCancel()
 	}
-	s.stopAssistantMissions()
+	missionDone := s.stopAssistantMissions()
 	if s.gateAutofixCancel != nil {
 		s.gateAutofixCancel()
 		s.gateAutofixCancel = nil
@@ -894,10 +894,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// only requirement is that the PROCESS not exit mid-release, and the
 	// dispatcher drains while HTTP connections wind down.
 	err := s.server.Shutdown(ctx)
-	if watchDone != nil && ctx.Err() == nil {
+	// The two assistant coordinators were cancelled above; their loops are
+	// joined here, after the drain, each within 250ms of a context that
+	// still has time — so the process does not exit while a sweep is
+	// mid-write, and a sweep that ignores its cancel cannot hold the exit.
+	for _, done := range []<-chan struct{}{watchDone, missionDone} {
+		if done == nil || ctx.Err() != nil {
+			continue
+		}
 		joinCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 		select {
-		case <-watchDone:
+		case <-done:
 		case <-joinCtx.Done():
 		}
 		cancel()

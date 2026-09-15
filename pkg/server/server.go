@@ -106,6 +106,7 @@ type Server struct {
 	assistantWatch         *assistantWatchCoordinator
 	assistantWatchCancel   func()
 	assistantWatchDone     <-chan struct{}
+	assistantMissionDone   <-chan struct{}
 	assistantMissions      assistantmission.Store
 	assistantMission       *assistantMissionCoordinator
 	assistantMissionCancel func()
