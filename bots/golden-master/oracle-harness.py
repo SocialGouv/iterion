@@ -3488,7 +3488,8 @@ def separator_group_ids(corpus, mutant_id):
 
 
 def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
-                              withheld=(), in_the_set=(), deferred=None):
+                              withheld=(), in_the_set=(), deferred=None,
+                              lane_deferred=()):
     """Which byte-identical classes are NOT discharged by measured separators.
 
     `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
@@ -3524,10 +3525,10 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
     # mutant that exists. Strictest AND honest: a caller that forgets the sink
     # can only get a HARSHER verdict, never a softer one, and never a lying one.
     if deferred is None:
-        in_the_set = list(in_the_set) + list(withheld)
-        withheld = set()
+        in_the_set = list(in_the_set) + list(withheld) + list(lane_deferred)
+        withheld, lane_deferred = set(), set()
     else:
-        withheld = set(withheld)
+        withheld, lane_deferred = set(withheld), set(lane_deferred)
     decls = duplicate_group_decls(corpus)
     conflicts = duplicate_group_conflicts(corpus)
     observed = {tuple(sorted(g)) for g in duplicate_refs}
@@ -3571,6 +3572,25 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
                              "verdicts this pass reserves — not scored here, and not scorable "
                              "here. Neither proved nor refuted until the final gate scores "
                              "them."})
+            continue
+        # LANE-DEFERRED is a third state, and folding it into either of the two
+        # below would be false. A separator whose declared targets are ALL
+        # renounced on THIS lane comes back `lane_excluded`: it is not invalid
+        # (nothing about it is broken), and it is not merely unreached (no pass
+        # on this lane will ever score it). Refusing its class here would hand a
+        # convergence term a permanent red that no product work can lift, on the
+        # very lane the declaration exists to unblock — the defect this renders
+        # elsewhere, re-created at the last site that reads the corpus.
+        if missing and all(m in withheld | lane_deferred for m in missing):
+            deferred.append({"ids": list(g), "separated_by": list(seps),
+                             "withheld": sorted(m for m in missing if m in withheld),
+                             "lane_deferred": sorted(m for m in missing if m in lane_deferred),
+                             "why":
+                             "every unscored separator is DEFERRED on this lane: its declared "
+                             "targets are all renounced by a `lane_exclusions` declaration, so "
+                             "it is neither scored nor scorable HERE. The class is neither "
+                             "proved nor refuted on this lane; its proof lives on the lane that "
+                             "renounces nothing."})
             continue
         if missing:
             # THREE reasons, and they send the campaign to three different
@@ -3707,11 +3727,17 @@ def lane_exclusion_decls(corpus):
         if not isinstance(x.get("cause"), str) or not x.get("cause", "").strip():
             problems.append("%s carries no written `cause` — an exclusion is "
                             "a decision, and a decision has a reason" % where)
-        key = (entry, cfg)
-        if key in seen:
-            problems.append("%s declares (entry %r, config %r) twice"
-                            % (where, entry, cfg))
-        seen.add(key)
+        # ONLY over two strings. A wrong-typed field already carries its own
+        # named problem above, and keying on it would raise `unhashable type`
+        # on a list or a dict — a traceback out of a PREFLIGHT, where this
+        # function's docstring promises a named refusal. A crash is a red that
+        # proves nothing about the declaration.
+        if isinstance(entry, str) and isinstance(cfg, str):
+            key = (entry, cfg)
+            if key in seen:
+                problems.append("%s declares (entry %r, config %r) twice"
+                                % (where, entry, cfg))
+            seen.add(key)
     return raw, problems
 
 
@@ -4397,6 +4423,14 @@ def _selftest():
         check("sans lane -> probleme nomme", len(decls_of([{"entry": "052", "cause": "x"}])[1]), 1)
         check("sans cause ecrite -> probleme nomme",
               len(decls_of([{"entry": "052", "config": "c.json"}])[1]), 1)
+        # Un champ MAL TYPE doit sortir par le refus nomme, pas par un
+        # traceback : `key = (entry, cfg)` sur une liste levait `unhashable
+        # type` au milieu d'un preflight. Un plantage est un rouge qui ne prouve
+        # rien sur la declaration.
+        check("entree non-chaine -> probleme nomme, pas de plantage",
+              len(decls_of([{"entry": ["052"], "config": "c.json", "cause": "x"}])[1]), 1)
+        check("lane non-chaine -> probleme nomme, pas de plantage",
+              len(decls_of([{"entry": "052", "config": {"a": 1}, "cause": "x"}])[1]), 1)
         check("declaree deux fois -> probleme nomme",
               len(decls_of([{"entry": "052", "config": "c.json", "cause": "x"},
                             {"entry": "052", "config": "c.json", "cause": "y"}])[1]), 1)
@@ -6639,6 +6673,28 @@ def _selftest():
               [{"id": "held-sep", "valid": True, "targets_declared": ["013"],
                 "undetected_targets": [], "collateral": []}])],
           [])
+    # Un separateur DIFFERE par la lane : ses cibles declarees sont toutes
+    # renoncees ici, donc il revient `lane_excluded` et ne figure pas parmi les
+    # verdicts scores. Sa classe doit tomber dans le puits DIFFERE — jamais dans
+    # le champ que la porte lit. Sinon la lane que la declaration existe pour
+    # debloquer recolte un rouge permanent qu'aucun travail produit ne leve.
+    _corp_ld = {"entries": [], "duplicate_groups": [
+        {"ids": ["012", "013"], "separated_by": "lane-sep"}]}
+    _defer_ld = []
+    check("un separateur differe par la lane ne refuse pas sa classe",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _corp_ld, [], False, (), ["lane-sep"],
+              _defer_ld, ["lane-sep"])],
+          [])
+    check("et il est DIFFERE, nomme comme tel",
+          [(x["ids"], x["lane_deferred"]) for x in _defer_ld],
+          [(["012", "013"], ["lane-sep"])])
+    # Et la falsification du cablage : sans la liste, la MEME classe est refusee.
+    # Un banc qui passerait aussi bien avec et sans ne prouverait rien.
+    check("sans la liste des differes, la classe est refusee",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _corp_ld, [], False, (), ["lane-sep"], [])],
+          [["012", "013"]])
     # ...et l'AUTRE moitie de ce contrat : ce que ce separateur tenu a l'ecart a
     # deplace doit atteindre les memes termes de porte qu'un separateur visible.
     # Le meme verdict etait un rouge dur quand il etait visible (`collateral == 0`
@@ -7749,9 +7805,15 @@ def main():
         # Rien n'est retenu a la porte finale (`withheld_ids` y est vide), donc
         # cette voie ne peut pas adoucir le verdict qui decide.
         deferred = []
+        # Les separateurs DIFFERES par la lane : leurs cibles declarees sont
+        # toutes renoncees ici, donc `scored` les a ecartes. Sans cette liste,
+        # leur classe retombait sur « dans le jeu mais pas scoree », un refus
+        # qu'aucun travail produit ne leve — sur la lane meme que la
+        # declaration existe pour debloquer.
+        lane_deferred_ids = [v.get("id") for v in verdicts if v.get("lane_excluded")]
         unproven = unproven_duplicate_groups(
             report["duplicate_refs"], corpus, list(scored) + list(held),
-            bool(only), withheld_ids, in_the_set, deferred)
+            bool(only), withheld_ids, in_the_set, deferred, lane_deferred_ids)
         problems.extend(duplicate_groups_shape_problems(corpus))
         report["duplicate_groups_unproven"] = unproven
         report["duplicate_groups_deferred"] = deferred
