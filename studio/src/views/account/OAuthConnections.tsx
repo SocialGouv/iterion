@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { formatDateTime } from "@/lib/format";
+import { formatCredentialFingerprint, formatDateTime } from "@/lib/format";
 import { useState } from "react";
+import { Select } from "@/components/ui/Select";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/Badge";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -52,13 +53,20 @@ const KINDS: Array<{
 const ORG_TOS_WARNING =
   "For developing and testing bots only — not intended for fully automated production. A Claude subscription is an individual licence (Anthropic Consumer Terms); use API keys for production automation.";
 
-export default function OAuthConnections({
+type OAuthConnectionsProps = { scope?: OAuthScope; org?: boolean };
+
+export default function OAuthConnections(props: OAuthConnectionsProps) {
+  const scope = props.scope ?? { mine: true };
+  const key = "teamId" in scope ? `team:${scope.teamId}` : "platform" in scope ? "platform" : "mine";
+  // A pending connect/rename form belongs to one owner. Switching owners
+  // must discard it before a subsequent submit can write to the new scope.
+  return <ScopedOAuthConnections key={key} {...props} />;
+}
+
+function ScopedOAuthConnections({
   scope = { mine: true },
   org = false,
-}: {
-  scope?: OAuthScope;
-  org?: boolean;
-}) {
+}: OAuthConnectionsProps) {
   const isPlatform = "platform" in scope;
   const scopeKey = "teamId" in scope ? scope.teamId : isPlatform ? "platform" : "mine";
   const queryClient = useQueryClient();
@@ -67,6 +75,11 @@ export default function OAuthConnections({
     queryFn: () => listOAuthConnections(scope),
   });
   const conns = query.data ?? [];
+  const [selectedRanks, setSelectedRanks] = useState<Record<string, number>>({});
+  const rankFor = (kind: OAuthKind) => selectedRanks[`${scopeKey}:${kind}`] ?? 0;
+  const selectRank = (kind: OAuthKind, rank: number) =>
+    setSelectedRanks((prev) => ({ ...prev, [`${scopeKey}:${kind}`]: rank }));
+  const lookup = (kind: OAuthKind) => conns.find((c) => c.kind === kind && (c.rank ?? 0) === rankFor(kind));
   // Every reload (scope switch, post-connect refresh) replaced the panel
   // with the loading state — isFetching keeps that visible.
   const loading = query.isFetching;
@@ -109,13 +122,10 @@ export default function OAuthConnections({
     reload();
   };
 
-  // A connect form opens with the name the connection already carries: a
-  // claude_code re-connect always mints a new fingerprint (the blob is the
-  // identity), so without this every routine rotation through the studio
-  // would un-name the credential. The operator clears or changes it on a
-  // real account swap.
+  // Keep a custom display name when rotating this selected chain entry.
+  // Provider identity is verified independently of this editable label.
   const openWithCurrentName = (kind: OAuthKind) => {
-    setLabel(conns.find((c) => c.kind === kind)?.account_label ?? "");
+    setLabel(lookup(kind)?.account_label ?? "");
   };
 
   // --- browser OAuth (claude_code) ---
@@ -123,7 +133,7 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      const { authorize_url } = await startOAuthAuthorize(kind, scope);
+      const { authorize_url } = await startOAuthAuthorize(kind, scope, rankFor(kind));
       window.open(authorize_url, "_blank", "noopener,noreferrer");
       setConnecting(kind);
       setCode("");
@@ -141,7 +151,7 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      await completeOAuthAuthorize(connecting, { code: code.trim() }, scope, label);
+      await completeOAuthAuthorize(connecting, { code: code.trim() }, scope, label, rankFor(connecting));
       setConnecting(null);
       setCode("");
       setLabel("");
@@ -160,7 +170,7 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      await uploadOAuthCredentials(pasteKind, draft, scope, label);
+      await uploadOAuthCredentials(pasteKind, draft, scope, label, rankFor(pasteKind));
       setPasteKind(null);
       setDraft("");
       setLabel("");
@@ -180,7 +190,7 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      await renameOAuth(renaming, renameDraft, scope);
+      await renameOAuth(renaming, renameDraft, scope, rankFor(renaming));
       setRenaming(null);
       setRenameDraft("");
       reload();
@@ -195,7 +205,7 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      await refreshOAuth(kind, scope);
+      await refreshOAuth(kind, scope, rankFor(kind));
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -205,6 +215,7 @@ export default function OAuthConnections({
   };
 
   const remove = async (kind: OAuthKind) => {
+    const targetRank = rankFor(kind);
     const ok = await confirm({
       title: `Disconnect ${kind}?`,
       message: `You'll need to reconnect to use this subscription again.`,
@@ -213,14 +224,13 @@ export default function OAuthConnections({
     });
     if (!ok) return;
     try {
-      await deleteOAuth(kind, scope);
+      await deleteOAuth(kind, scope, targetRank);
+      selectRank(kind, 0);
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
     }
   };
-
-  const lookup = (kind: OAuthKind) => conns.find((c) => c.kind === kind);
 
   return (
     <div className="space-y-4">
@@ -260,6 +270,12 @@ export default function OAuthConnections({
         <div className="space-y-4">
           {KINDS.map(({ kind, display, filename, hint, browser }) => {
             const conn = lookup(kind);
+            const chain = conns.filter((c) => c.kind === kind).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+            const ranks = [...new Set([0, ...chain.map((c) => c.rank ?? 0)])];
+            const nextRank = Math.max(...ranks) + 1;
+            const sameAccount = conn?.account_verified
+              ? chain.filter((c) => (c.rank ?? 0) !== (conn.rank ?? 0) && c.fingerprint === conn.fingerprint)
+              : [];
             const expiring = conn?.access_token_expires_at
               ? new Date(conn.access_token_expires_at).getTime() - Date.now() < 24 * 3600_000
               : false;
@@ -292,6 +308,23 @@ export default function OAuthConnections({
                   </div>
                 </div>
 
+                <label className="text-xs text-fg-muted flex items-center gap-2">
+                  Fallback order
+                  <Select
+                    aria-label={`${display} chain entry`}
+                    className="bg-surface-1 border border-border-subtle rounded px-2 py-1 text-fg"
+                    value={rankFor(kind)}
+                    disabled={busy || connecting === kind || pasteKind === kind || renaming === kind}
+                    onChange={(e) => selectRank(kind, Number(e.target.value))}
+                  >
+                    {ranks.map((rank) => {
+                      const entry = chain.find((c) => (c.rank ?? 0) === rank);
+                      return <option key={rank} value={rank}>{rank === 0 ? "Primary" : `Fallback ${rank}`}{entry ? ` — ${entry.account_email || entry.account_label || "unnamed"}` : " — not connected"}</option>;
+                    })}
+                    <option value={nextRank}>Add fallback {nextRank}</option>
+                  </Select>
+                </label>
+
                 {/* Whose subscription this is: the name beside the fingerprint the
                     publisher logs when it picks the credential, so a log line and
                     this card join by eye. */}
@@ -307,10 +340,23 @@ export default function OAuthConnections({
                     </span>
                     {conn.fingerprint && (
                       <span title={conn.fingerprint}>
-                        fp <code className="font-mono">{conn.fingerprint.slice(0, 11)}</code>
+                        fp <code className="font-mono">{formatCredentialFingerprint(conn.fingerprint, 11)}</code>
                       </span>
                     )}
                   </div>
+                )}
+
+                {conn?.account_verified && (
+                  <div className="text-xs text-fg-muted">
+                    Verified account: <span className="text-fg">{conn.account_email}</span>
+                    {conn.account_checked_at && ` · checked ${formatDateTime(conn.account_checked_at)}`}
+                  </div>
+                )}
+                {conn?.account_error && <InlineBanner tone="warning" layout="inline">{conn.account_error}</InlineBanner>}
+                {sameAccount.length > 0 && (
+                  <InlineBanner tone="warning" layout="inline">
+                    This account also occupies {sameAccount.map((c) => c.rank === 0 ? "the primary slot" : `fallback ${c.rank}`).join(", ")}. These entries share one provider quota.
+                  </InlineBanner>
                 )}
 
                 {/* Browser flow code-paste panel (claude_code) */}

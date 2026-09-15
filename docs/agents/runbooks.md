@@ -32,6 +32,9 @@ worked. A five-minute write-up now saves the next session (or the next dev)
 the hours this one spent.
 
 **Operational runbook index** (the discovery entry point — extend it):
+- [docs/connector-identities.md](../connector-identities.md) — connector
+  regeneration identity locks, authored renames, retired names and recovery
+  after an interrupted package replacement.
 - [docs/cloud-llm-credentials.md](../cloud-llm-credentials.md) — provisioning
   a cloud run's LLM credential (BYOK vs Anthropic OAuth-forfait vs OpenAI
   ChatGPT-forfait, the CGU guard, `ITERION_OPENAI_USE_OAUTH`, the
@@ -57,10 +60,14 @@ the hours this one spent.
   name), when asking **which key
   paid for a run** (the `cloudpublisher: … used/SKIPPED … fp=` lines, the only
   place the credential, the window and the reopening are named — a run's own
-  error names none of the three), and before trusting a **fallback**: a Claude
-  blob carries no account id, so one subscription connected twice is two
-  fingerprints and two meters, and a fleet can look redundant while sharing a
-  single provider window.
+  error names none of the three), and before trusting a **fallback**:
+  browser/profile-capable Claude connections now identify the provider account
+  outside the blob and share one usage meter across owners/ranks. Unverified
+  setup tokens remain explicitly unidentified. The runbook covers the required
+  reader-first rollout, Studio rank selection and duplicate-account warnings,
+  and `iterion remote credentials preview` (personal or real webhook source):
+  the actual candidate order, observed quotas, and conditional later tiers,
+  without opening secrets, probing providers or reserving capacity.
 - [docs/web-search.md](../web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](../credential-pool.md) — mutualising
@@ -104,6 +111,10 @@ the hours this one spent.
   job to required without deleting its `merge_group` skip produces a silent
   FALSE GREEN rather than a stalled queue.
 - [docs/resume.md#when-the-final-bank-push-fails](../resume.md#when-the-final-bank-push-fails) — final-bank retries, `bank_state`, failure events and recovery evidence.
+- [Revi's positive/negative audit](../bot-runs/review-pr.md#2026-09-14--falsifiable-claw--gpt-review-proof-1203)
+  — when a clean GPT/Claw review looks suspicious: verify actual source/tool
+  events, seeded-defect detection, exact-head inline publication and the clean
+  corrected control; distinguish review coverage from full test-suite success.
 - [docs/revi-billy-loop.md](../revi-billy-loop.md) — the Revi → Billy loop,
   **paused on THIS repo since 2026-09-15** (cost; see
   [docs/agents/review-and-merge.md](../agents/review-and-merge.md)): what
@@ -292,7 +303,9 @@ the hours this one spent.
   dedicated Forgejo/GitLab account (`iterion remote forge connections
   avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
   App (no logo API; the studio hands over the file + the settings page).
-  Read it when a bot posts with a default avatar, or before touching a logo.
+  Read it when a bot posts with a default avatar, a reconnect preserves a custom
+  avatar, or automatic avatar inspection fails; explicit applies remain replacements.
+- [docs/groups-iteration-subbots.md#child-bundle-resources](../groups-iteration-subbots.md#child-bundle-resources) — child skills/devbox missing or leaking into a parent: bundle identity, borrowed resource restoration, nested resumes and scoped PATH.
 - [docs/bot-bundle-snapshots.md](../bot-bundle-snapshots.md) — cloud launches
   freeze workflow, resources and sibling subbots through the server authority;
   queue v13, bounded immutable snapshot transport, strict runner resolution and

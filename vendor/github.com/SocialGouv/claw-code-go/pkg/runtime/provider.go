@@ -18,23 +18,27 @@ func SelectProvider(name string) api.Provider {
 // ProviderConfig holds the fields needed to create a provider client.
 // This avoids leaking the full internal Config struct.
 type ProviderConfig struct {
-	ProviderName string
-	APIKey       string
-	OAuthToken   string
-	BaseURL      string
-	Model        string
-	MaxTokens    int
+	ProviderName           string
+	APIKey                 string
+	OAuthToken             string
+	BaseURL                string
+	Model                  string
+	MaxTokens              int
+	OpenAIChatGPTAccountID string
+	CodexAuthFile          string
 }
 
 // NewProviderClient creates an API client for the named provider.
 func NewProviderClient(cfg *ProviderConfig) (api.APIClient, error) {
 	return internalrt.NewProviderClient(&internalrt.Config{
-		ProviderName: cfg.ProviderName,
-		APIKey:       cfg.APIKey,
-		OAuthToken:   cfg.OAuthToken,
-		BaseURL:      cfg.BaseURL,
-		Model:        cfg.Model,
-		MaxTokens:    cfg.MaxTokens,
+		ProviderName:           cfg.ProviderName,
+		APIKey:                 cfg.APIKey,
+		OAuthToken:             cfg.OAuthToken,
+		BaseURL:                cfg.BaseURL,
+		Model:                  cfg.Model,
+		MaxTokens:              cfg.MaxTokens,
+		OpenAIChatGPTAccountID: cfg.OpenAIChatGPTAccountID,
+		CodexAuthFile:          cfg.CodexAuthFile,
 	})
 }
 

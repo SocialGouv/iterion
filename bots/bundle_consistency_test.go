@@ -8,7 +8,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // consistencyAllowlist records (bot dir, diagnostic code) pairs that are
@@ -63,12 +62,7 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 			continue
 		}
 
-		src, err := os.ReadFile(mainBot)
-		if err != nil {
-			t.Errorf("%s: read: %v", mainBot, err)
-			continue
-		}
-		pr := parser.Parse(mainBot, string(src))
+		pr := parseBotUnit(mainBot)
 		if pr.File == nil {
 			continue // parse failure is another test's job
 		}

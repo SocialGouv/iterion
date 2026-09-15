@@ -316,47 +316,13 @@ func Resolve(
 	if err != nil {
 		return nil, err
 	}
-	// Stable order: user-default, user-other, team-default, team-other.
-	sort.SliceStable(visible, func(i, j int) bool {
-		ai := keyRank(visible[i], userID)
-		aj := keyRank(visible[j], userID)
-		if ai != aj {
-			return ai < aj
-		}
-		return visible[i].CreatedAt.Before(visible[j].CreatedAt)
-	})
-
 	out := make(map[Provider]Resolution, len(providers))
-	wantSet := make(map[Provider]bool, len(providers))
-	for _, p := range providers {
-		wantSet[p] = true
-	}
-
-	// Pass 1: explicit overrides.
-	for prov, keyID := range keyOverrides {
-		if !wantSet[prov] || keyID == "" {
-			continue
-		}
-		for _, k := range visible {
-			if k.ID == keyID && k.Provider == prov {
-				if r, ok := buildResolution(k, sealer, userID); ok {
-					out[prov] = r
-				}
-				break
-			}
-		}
-	}
-
-	// Pass 2: walk visible in priority order, taking the first
-	// match per provider that wasn't already pinned.
-	for _, k := range visible {
-		if !wantSet[k.Provider] {
-			continue
-		}
+	for _, candidate := range OrderedAPIKeyCandidates(visible, userID, providers, keyOverrides) {
+		k := candidate.Key
 		if _, already := out[k.Provider]; already {
 			continue
 		}
-		if usable != nil && !usable(k) {
+		if !candidate.Pinned && usable != nil && !usable(k) {
 			continue
 		}
 		if r, ok := buildResolution(k, sealer, userID); ok {
@@ -364,6 +330,47 @@ func Resolve(
 		}
 	}
 	return out, nil
+}
+
+// APIKeyCandidate is an ordered attempt, before any secret is opened.
+// A pin is tried first and deliberately bypasses the availability predicate.
+type APIKeyCandidate struct {
+	Key    ApiKey
+	Pinned bool
+}
+
+// OrderedAPIKeyCandidates is the common selection order for live resolution
+// and its read-only preview. It copies its input and never decrypts a key.
+// Pinned keys also occur in the ordinary walk: if opening a pin fails, Resolve
+// retains its historical fallback behavior, including that ordinary attempt.
+func OrderedAPIKeyCandidates(visible []ApiKey, userID string, providers []Provider, overrides map[Provider]string) []APIKeyCandidate {
+	keys := append([]ApiKey(nil), visible...)
+	sort.SliceStable(keys, func(i, j int) bool {
+		a, b := keyRank(keys[i], userID), keyRank(keys[j], userID)
+		if a != b {
+			return a < b
+		}
+		return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+	})
+	wanted := make(map[Provider]bool, len(providers))
+	out := make([]APIKeyCandidate, 0, len(keys)+len(overrides))
+	for _, provider := range providers {
+		wanted[provider] = true
+		if pin := overrides[provider]; pin != "" {
+			for _, key := range keys {
+				if key.ID == pin && key.Provider == provider && keyRank(key, userID) != 99 {
+					out = append(out, APIKeyCandidate{Key: key, Pinned: true})
+					break
+				}
+			}
+		}
+	}
+	for _, key := range keys {
+		if wanted[key.Provider] && keyRank(key, userID) != 99 {
+			out = append(out, APIKeyCandidate{Key: key})
+		}
+	}
+	return out
 }
 
 // keyRank assigns a sort key. Lower rank = higher priority.

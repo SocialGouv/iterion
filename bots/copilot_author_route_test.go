@@ -1,13 +1,12 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
 
 func TestCopilotPersistedAuthorsUseClawWithClaudeFallback(t *testing.T) {
-	raw, err := os.ReadFile("copilot/main.bot")
+	raw, err := botUnitSource("copilot/main.bot")
 	if err != nil {
 		t.Fatalf("read copilot: %v", err)
 	}

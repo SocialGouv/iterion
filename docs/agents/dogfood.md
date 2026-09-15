@@ -139,3 +139,7 @@ session scratch; **board issues** are open tasks; **bilans** are the durable,
 committed, PR-reviewable record. Index + template:
 [docs/bot-runs/README.md](../bot-runs/README.md).
 
+The ARC Actions-runner image has a separate version and build pipeline; see
+[ci/arc-runner/README.md](../../ci/arc-runner/README.md) for the C/race smoke check,
+immutable publication and the activation proofs required before job routing.
+

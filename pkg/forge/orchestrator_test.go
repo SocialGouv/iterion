@@ -222,11 +222,11 @@ func TestNarrowGitHubAppSecret(t *testing.T) {
 	}
 
 	// A scoped minter narrows the token in place.
-	o.GitHubAppMinter = func(_ context.Context, c Connection) (string, error) {
+	o.GitHubAppMinter = func(_ context.Context, c Connection) (RefreshedToken, error) {
 		if c.Kind != KindGitHubApp {
 			t.Errorf("minter got kind %q", c.Kind)
 		}
-		return "ghs_scoped", nil
+		return RefreshedToken{AccessToken: "ghs_scoped"}, nil
 	}
 	o.narrowGitHubAppSecret(ctx, &conn)
 	gs2, _ := o.Secrets.Get(ctx, secID)
@@ -238,7 +238,7 @@ func TestNarrowGitHubAppSecret(t *testing.T) {
 	}
 
 	// Best-effort: a minter error keeps the prior (scoped) token.
-	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "", fmt.Errorf("boom") }
+	o.GitHubAppMinter = func(context.Context, Connection) (RefreshedToken, error) { return RefreshedToken{}, fmt.Errorf("boom") }
 	o.narrowGitHubAppSecret(ctx, &conn)
 	gs3, _ := o.Secrets.Get(ctx, secID)
 	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs3.SealedSecret); string(pt) != "ghs_scoped" {
@@ -273,7 +273,9 @@ func TestEnsureManagedSecret_RemintsGitHubAppAtUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// First call creates the secret AND re-mints it fresh right away.
-	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "ghs_fresh_1", nil }
+	o.GitHubAppMinter = func(context.Context, Connection) (RefreshedToken, error) {
+		return RefreshedToken{AccessToken: "ghs_fresh_1"}, nil
+	}
 	secID, err := o.EnsureManagedSecret(ctx, &conn, "u1")
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +287,9 @@ func TestEnsureManagedSecret_RemintsGitHubAppAtUse(t *testing.T) {
 
 	// A later launch re-mints again — the stored hour-old token is never
 	// served as-is.
-	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "ghs_fresh_2", nil }
+	o.GitHubAppMinter = func(context.Context, Connection) (RefreshedToken, error) {
+		return RefreshedToken{AccessToken: "ghs_fresh_2"}, nil
+	}
 	if _, err := o.EnsureManagedSecret(ctx, &conn, "u1"); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +300,9 @@ func TestEnsureManagedSecret_RemintsGitHubAppAtUse(t *testing.T) {
 
 	// Best-effort: a mint failure keeps the stored token rather than failing
 	// the launch (it may still be live within its hour).
-	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "", fmt.Errorf("mint down") }
+	o.GitHubAppMinter = func(context.Context, Connection) (RefreshedToken, error) {
+		return RefreshedToken{}, fmt.Errorf("mint down")
+	}
 	if _, err := o.EnsureManagedSecret(ctx, &conn, "u1"); err != nil {
 		t.Fatal(err)
 	}

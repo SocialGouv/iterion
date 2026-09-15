@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// LiteralOpenExpression is the sole literal template expression. It emits the
+// opening delimiter as source text at the final render, including shell/script
+// contexts, and survives include and group-parameter expansion unchanged.
+const LiteralOpenExpression = `"{{"`
+
 // ParseRefs extracts all {{...}} template references from a string.
 // Returns the parsed Ref values. Returns an error if a template
 // expression is malformed or nests another {{ inside an open block.
@@ -27,10 +32,10 @@ func ParseRefs(s string) ([]*Ref, error) {
 		}
 		end += start // adjust to absolute position
 		inner := rest[start+2 : end]
-		if nested := strings.Index(inner, "{{"); nested != -1 {
+		expr := strings.TrimSpace(inner)
+		if nested := strings.Index(inner, "{{"); nested != -1 && expr != LiteralOpenExpression {
 			return nil, fmt.Errorf("nested template expression at %q: '{{' may not appear inside an open template block", rest[start:end+2])
 		}
-		expr := strings.TrimSpace(inner)
 		raw := rest[start : end+2]
 		ref, err := parseRef(expr, raw)
 		if err != nil {
@@ -52,6 +57,9 @@ func ParseRefs(s string) ([]*Ref, error) {
 // non-shell template contexts (prompts, edge data mappings) — they always
 // render values via formatValue.
 func parseRef(expr, raw string) (*Ref, error) {
+	if expr == LiteralOpenExpression {
+		return &Ref{Kind: RefLiteralOpen, Raw: raw}, nil
+	}
 	unquoted := false
 	if strings.HasPrefix(expr, "!") {
 		unquoted = true

@@ -156,7 +156,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		}
 		// The child compiles the way every path does: a bundle's main.bot
 		// promoted to its bundle, prompts/*.md in scope, the bundle's hash.
-		childWf, hash, _, err := runview.CompileWorkflowPath(childPath)
+		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -279,13 +279,8 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if req.ParentSandbox != nil {
 			opts = append(opts, runtime.WithSharedSandbox(req.ParentSandbox))
 		}
-		// The child's own bundle: its skills and devbox tools, exactly as a
-		// local `iterion run bots/<child>` would provision them.
-		if b, berr := bundle.OpenDir(filepath.Dir(childPath)); berr == nil {
-			opts = append(opts, runtime.WithBundle(b))
-		} else {
-			runLogger.Warn("subbot %s: bundle open %s: %v (skills not mirrored, devbox tools not provisioned)", req.Source, filepath.Dir(childPath), berr)
-		}
+		// One bundle identity: the engine receives exactly what compiled.
+		opts = append(opts, runtime.WithBundle(childBundle))
 		// Plugin/library skills the LAUNCHING instance resolved: the pod's
 		// iterion home is empty, so without the payload the child would
 		// silently find only the compiled-in builtins.

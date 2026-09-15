@@ -4101,6 +4101,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/credentials/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/credentials/preview */
+        post: operations["postTeamsByIdCredentialsPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/credentials/usage": {
         parameters: {
             query?: never;
@@ -6263,6 +6282,72 @@ export interface components {
             required?: boolean;
             revision?: string;
         };
+        CredentialPreview: {
+            candidates: components["schemas"]["CredentialPreviewCandidate"][];
+            context: components["schemas"]["CredentialPreviewContext"];
+            /** Format: date-time */
+            observed_at: string;
+            pool: components["schemas"]["CredentialPreviewPool"];
+            warnings: string[];
+            wires: components["schemas"]["CredentialPreviewWire"][];
+        };
+        CredentialPreviewCandidate: {
+            account_group?: string;
+            capacity?: components["schemas"]["CredentialPreviewCapacity"];
+            conditional: boolean;
+            id: string;
+            label: string;
+            pinned: boolean;
+            provider: string;
+            rank: number;
+            reason?: string;
+            /** Format: date-time */
+            reopens_at?: string;
+            selected: boolean;
+            selection: string;
+            source: string;
+            state: string;
+            tier: string;
+            windows: components["schemas"]["CredentialPreviewWindow"][];
+            wire: string;
+        };
+        CredentialPreviewCapacity: {
+            live_runs?: number;
+            max_concurrent_runs?: number;
+            remaining_usd?: number;
+        };
+        CredentialPreviewContext: {
+            bot_id: string;
+            source: components["schemas"]["CredentialPreviewSource"];
+            team_id: string;
+        };
+        CredentialPreviewPool: {
+            considered: boolean;
+            reason?: string;
+            wants: string[];
+        };
+        CredentialPreviewRequest: {
+            bot_id?: string;
+            source: components["schemas"]["CredentialPreviewSource"];
+        };
+        CredentialPreviewSource: {
+            id?: string;
+            kind: string;
+        };
+        CredentialPreviewWindow: {
+            fresh: boolean;
+            name: string;
+            /** Format: date-time */
+            observed_at: string;
+            percent?: number;
+            /** Format: date-time */
+            resets_at?: string;
+            status?: string;
+        };
+        CredentialPreviewWire: {
+            candidate_ids: string[];
+            wire: string;
+        };
         DependencyGraphEdge: {
             from: string;
             to: string;
@@ -7184,6 +7269,26 @@ export interface components {
             model?: string;
             set: boolean;
         };
+        oauthConnectionView: {
+            access_token_expires_at?: string;
+            account_checked_at?: string;
+            account_email?: string;
+            account_error?: string;
+            account_label?: string;
+            account_verified: boolean;
+            created_at: string;
+            fingerprint?: string;
+            kind: string;
+            last_refreshed_at?: string;
+            rank: number;
+            refreshable: boolean;
+            same_account_ranks?: number[];
+            scopes?: string[];
+            updated_at: string;
+        };
+        oauthConnectionsView: {
+            connections: components["schemas"]["oauthConnectionView"][];
+        };
         orgView: {
             created_at?: string;
             id: string;
@@ -7650,12 +7755,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["oauthConnectionsView"];
+                };
             };
         };
     };
@@ -9046,12 +9153,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["oauthConnectionsView"];
+                };
             };
         };
     };
@@ -9974,12 +10083,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["oauthConnectionsView"];
+                };
             };
         };
     };
@@ -12938,6 +13049,32 @@ export interface operations {
             };
         };
     };
+    postTeamsByIdCredentialsPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialPreview"];
+                };
+            };
+        };
+    };
     getTeamsByIdCredentialsUsage: {
         parameters: {
             query?: never;
@@ -13557,12 +13694,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["oauthConnectionsView"];
+                };
             };
         };
     };

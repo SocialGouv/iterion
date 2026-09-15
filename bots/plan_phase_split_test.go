@@ -1,13 +1,11 @@
 package bots
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // compilePlanPhaseBot compiles one campaign bot for the plan-phase guards,
@@ -16,11 +14,7 @@ import (
 func compilePlanPhaseBot(t *testing.T, bot string) *ir.Workflow {
 	t.Helper()
 	path := filepath.Join(bot, "main.bot")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	cr := ir.Compile(parser.Parse(path, string(src)).File)
+	cr := ir.Compile(parseBotUnit(path).File)
 	if cr.HasErrors() {
 		t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
 	}
@@ -213,12 +207,16 @@ func TestCampaignWorkspacePrecondition(t *testing.T) {
 				}
 			}
 			var toGate, toFail bool
+			nextGate := "plan_topology"
+			if bot == "branch-improve-loop" {
+				nextGate = "delivery_probe"
+			}
 			for _, e := range wf.Edges {
 				if e.From != "workspace_probe" {
 					continue
 				}
 				switch {
-				case e.To == "plan_topology" && e.Condition == "ok" && !e.Negated:
+				case e.To == nextGate && e.Condition == "ok" && !e.Negated:
 					toGate = true
 				case e.To == "workspace_not_a_repo" && e.Condition == "ok" && e.Negated:
 					toFail = true

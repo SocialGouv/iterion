@@ -39,6 +39,15 @@ type assistantMissionCoordinator struct {
 	// sweepLoop. Buffered size 1 so a burst of run events coalesces into one
 	// extra pass instead of one goroutine each.
 	wake chan struct{}
+	// done is closed when sweepLoop returns — after the sweep's last store
+	// call, never during it. Cancellation stays immediate; whoever needs
+	// the loop gone joins done with a budget of its own: the shutdown after
+	// the HTTP drain (250ms, gated on its context, like the watch
+	// coordinator), a project switch within its hot-swap budget, a test
+	// before its temp dir goes. A sweep inside a segment that ignores its
+	// context (a resume's handoff) can outlast a join; the join is bounded
+	// for that reason, and the write it lands is the class of #1254.
+	done chan struct{}
 }
 
 func (s *Server) startAssistantMissions() {
@@ -62,10 +71,26 @@ func (s *Server) startAssistantMissions() {
 // The lock is never held across the bus subscription or the previous
 // coordinator's cancel — eventsBus and the cancel closure reach back into
 // the server.
-func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatch.Store, missions assistantmission.Store) {
+//
+// The previous coordinator is cancelled, never joined here; its done
+// channel is returned (nil when there was none) for the caller to join
+// within a budget of its own — a project switch does, inside its hot-swap
+// budget, so the previous project's store is quiet before the request
+// returns.
+func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatch.Store, missions assistantmission.Store) <-chan struct{} {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &assistantMissionCoordinator{server: s, runs: runs, watches: watches, missions: missions, worker: "assistant-mission:" + uuid.NewString()}
 	c.wake = make(chan struct{}, 1)
+	c.done = make(chan struct{})
+	// The loop is spawned before the coordinator is published, so done is
+	// always going to close — a join never waits on a loop that was never
+	// started; it runs once the previous coordinator has been cancelled.
+	started := make(chan struct{})
+	go func() {
+		defer close(c.done)
+		<-started
+		c.sweepLoop(ctx)
+	}()
 	cancelBus := func() {}
 	if bus := s.eventsBus(); bus != nil {
 		if stop, err := bus.Subscribe("assistant-mission-"+uuid.NewString(), trigger.Matcher{Sources: []trigger.Source{trigger.SourceRun}}, c.handleEvent); err != nil {
@@ -82,26 +107,33 @@ func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatc
 		s.stateMu.Unlock()
 		cancel()
 		cancelBus()
-		return
+		close(started)
+		return nil
 	}
-	prevCancel := s.assistantMissionCancel
+	prevCancel, prevDone := s.assistantMissionCancel, s.assistantMissionDone
 	s.assistantMission = c
 	s.assistantMissionCancel = func() { cancel(); cancelBus() }
+	s.assistantMissionDone = c.done
 	s.stateMu.Unlock()
 	if prevCancel != nil {
 		prevCancel()
 	}
-	go c.sweepLoop(ctx)
+	close(started)
+	return prevDone
 }
 
-func (s *Server) stopAssistantMissions() {
+// stopAssistantMissions cancels the coordinator and returns its done
+// channel (nil when none runs) for the shutdown to join after the HTTP
+// drain.
+func (s *Server) stopAssistantMissions() <-chan struct{} {
 	s.stateMu.Lock()
-	cancel := s.assistantMissionCancel
-	s.assistantMission, s.assistantMissionCancel = nil, nil
+	cancel, done := s.assistantMissionCancel, s.assistantMissionDone
+	s.assistantMission, s.assistantMissionCancel, s.assistantMissionDone = nil, nil, nil
 	s.stateMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	return done
 }
 
 // handleEvent coalesces instead of spawning. The matcher filters only by

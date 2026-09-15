@@ -426,8 +426,9 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	}
 	s.stateMu.Unlock()
 	watchCoordinator.nudge()
+	var prevMissionDone <-chan struct{}
 	if newAssistantMissions != nil {
-		s.restartAssistantMissions(newRuns, watchesForMissions, newAssistantMissions)
+		prevMissionDone = s.restartAssistantMissions(newRuns, watchesForMissions, newAssistantMissions)
 	}
 
 	// Re-point the concurrency gate's reservation source at the new run
@@ -440,9 +441,19 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	}
 	// Detached from the caller: the swap has already happened, so a requester
 	// that hung up must not leave the previous project's workers running.
-	if oldRuns != nil && oldRuns != newRuns {
+	// The previous mission sweep is joined within the same budget, so the
+	// previous project's store is quiet when the switch returns.
+	if (oldRuns != nil && oldRuns != newRuns) || prevMissionDone != nil {
 		stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), hotSwapStopBudget)
-		oldRuns.StopBackground(stopCtx)
+		if oldRuns != nil && oldRuns != newRuns {
+			oldRuns.StopBackground(stopCtx)
+		}
+		if prevMissionDone != nil {
+			select {
+			case <-prevMissionDone:
+			case <-stopCtx.Done():
+			}
+		}
 		cancelStop()
 	}
 	if newWatcher != nil {

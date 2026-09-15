@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -213,9 +212,10 @@ func (s *Server) resolvedStoreDir() string {
 	return store.ResolveStoreDir(s.cfg.WorkDir, s.cfg.StoreDir)
 }
 
-// materializeEmbeddedRecipe writes an embedded recipe into a stable
-// per-run-store directory (one copy per binary release) and returns
-// its absolute path. The lookup key is filePath as given; the caller
+// materializeEmbeddedRecipe writes an embedded bot — its main and, for a
+// bot in several files, the fragments the main imports — into a stable
+// per-run-store directory (one copy per binary release) and returns the
+// main's absolute path. The lookup key is filePath as given; the caller
 // passes whatever the API received, so a UI that lists recipes by
 // basename ("feature-dev/main.bot" or another embedded bot path) all
 // resolve correctly.
@@ -229,25 +229,12 @@ func (s *Server) resolvedStoreDir() string {
 // Returns ok=false when the recipe is not in the embed FS, or when
 // the server has no writable store dir to cache it under.
 func (s *Server) materializeEmbeddedRecipe(filePath string) (string, bool) {
-	data, ok := bots.Get(filePath)
-	if !ok {
-		return "", false
-	}
 	cacheRoot := s.embeddedRecipeCacheDir()
 	if cacheRoot == "" {
 		return "", false
 	}
-	dst := filepath.Join(cacheRoot, filePath)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", false
-	}
-	// Idempotent: skip the write if the cached file already matches.
-	// Compare bytes, not just length — a same-length but changed recipe
-	// must be rewritten, not silently served from the stale cache.
-	if existing, err := os.ReadFile(dst); err == nil && bytes.Equal(existing, data) {
-		return dst, true
-	}
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	dst, err := bots.Materialize(cacheRoot, filePath)
+	if err != nil {
 		return "", false
 	}
 	return dst, true

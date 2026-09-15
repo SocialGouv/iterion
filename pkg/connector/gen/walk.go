@@ -1093,7 +1093,7 @@ func (w *walker) opsFiles() []spec.OpsFile {
 		ops := w.ops[d]
 		sort.Slice(ops, func(i, j int) bool { return ops[i].ID < ops[j].ID })
 		out = append(out, spec.OpsFile{
-			SchemaVersion: spec.SchemaVersion,
+			SchemaVersion: w.opts.schemaVersion(),
 			Connector:     w.opts.ConnectorID,
 			Domain:        d,
 			Operations:    ops,

@@ -1644,7 +1644,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 
-	bundleHost := bundleResourceDir(e.bundle, e.filePath)
+	bundleHost := e.resourceDirForRun()
 	var secretVars map[string]any
 	if workflowHasFileSecrets(e.workflow) {
 		secretVars = e.resolveVars(inputs)
@@ -2056,10 +2056,21 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 // files this run mirrored into the host workdir before this point (its
 // bundle's skills) are written through into a copy-based sandbox, which
 // would otherwise never see them. No Prepare, no Start, no Cleanup: the
-// parent owns the sandbox's lifecycle, and the cleanup returned here is a
-// no-op. Grandchildren inherit the same facts through activeShare.
+// parent owns the sandbox's lifecycle; cleanup removes only this child's
+// staged devbox project. Grandchildren inherit the scoped handle via activeShare.
 func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSandbox func(store.EventType, map[string]any) error) (func(), error) {
+	if err := e.clearBorrowedSandboxResources(ctx); err != nil {
+		return nil, err
+	}
+	// Copy the inherited handle metadata; a child must not replace the
+	// parent's PATH or the handle passed to a sibling.
 	shared := e.sharedSandbox
+	scopedRun, devboxCleanup := e.provisionSharedChildDevbox(ctx, runID, shared.Run)
+	if scopedRun != shared.Run {
+		sharedValue := *shared
+		shared = &sharedValue
+		shared.Run = scopedRun
+	}
 	e.sandboxSettled = true
 	e.attachmentsContainerDir = ""
 	e.activeShare = shared
@@ -2111,10 +2122,8 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 			e.logger.Warn("runtime: child has interactive nodes but the parent's sandbox has no ask-user MCP listener (the parent has no interactive node): native ask_user is disabled, the JSON protocol fallback applies")
 		}
 	}
-	devboxDeclared := fileExists(filepath.Join(bundleResourceDir(e.bundle, e.filePath), "devbox.json"))
-	if devboxDeclared && e.logger != nil {
-		e.logger.Warn("runtime: child bundle ships a devbox.json; in the parent's sandbox it is not provisioned — its packages are the parent's provisioning or nothing")
-	}
+	devboxDeclared := fileExists(filepath.Join(e.resourceDirForRun(), "devbox.json"))
+
 	if e.logger != nil {
 		e.logger.Info("runtime: executing in the parent run's sandbox (driver=%s, workspace=%s, copy_based=%v, files written through=%d)", shared.Run.Driver(), shared.WorkspaceFolder, copyBased, pushed)
 	}
@@ -2127,7 +2136,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	}); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
 	}
-	return func() {}, nil
+	return devboxCleanup, nil
 }
 
 // writeThroughMirroredSkills pushes what the run mirrored into the host

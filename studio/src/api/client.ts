@@ -349,7 +349,30 @@ export async function listExamples(): Promise<string[]> {
 
 export async function loadExample(
   name: string,
-): Promise<{ source: string; document: IterDocument; diagnostics: string[] }> {
+): Promise<{
+  source: string;
+  document: IterDocument;
+  diagnostics: string[];
+  /** The path the studio opens and saves the example by: set for a file
+   *  inside the workspace that parses clean, in one file or several;
+   *  absent for an embedded bot, one outside the workspace, or one that
+   *  does not parse — the studio then binds bots/<name>, where a save of
+   *  the one program lands. */
+  path?: string;
+  /** The on-disk path the server read, when `path` is set — what
+   *  /api/files/open confirms for the same path. */
+  confirmed_disk_path?: string;
+  /** False when the example does not parse: the studio binds no path at
+   *  all — a save asks where and never lands on the file as the author
+   *  wrote it, which bots/<name> would name in the default layout. Absent
+   *  (an older server, a unit response) reads as true. */
+  bindable?: boolean;
+  /** Set when the example is a bot in several files inside the workspace
+   *  that loads clean: the document is the merged unit. An embedded bot, or
+   *  one outside the workspace, is served as one flat program; one that
+   *  does not load is served as what the loader salvaged, unbound. */
+  unit?: UnitInfo;
+}> {
   // Encode each path segment but keep the slashes so subdirectory
   // examples (e.g. "feature_dev/main.bot") route correctly.
   const encoded = name.split("/").map(encodeURIComponent).join("/");
@@ -425,9 +448,11 @@ export async function openFile(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
     const source = bundle.files?.[bs.rel] ?? "";
-    if (bs.rel === "main.bot" && importsFragments(source)) {
-      // The bundle's main in several files: the unit is parsed from the
-      // whole files map, so the fragments under lib/ are in the document.
+    if (bs.rel.endsWith(".bot") && importsFragments(source)) {
+      // A workflow in several files — the bundle's main, or a companion
+      // workflow of its own: the unit is parsed from the whole files map
+      // with that file as its main, so the fragments its imports reach
+      // are in the document.
       const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
       return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit };
     }

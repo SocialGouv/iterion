@@ -98,7 +98,7 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
       setBusy(true);
       // Open the bot in a fresh editor tab. Create the tab first so its
       // per-tab document store exists, then load + apply via the shared
-      // helper (binds bots/<name> so Run enables, keeps source/diagnostics,
+      // helper (binds the served path, else bots/<name>, so Run enables, keeps source/diagnostics,
       // marks the loaded state as the clean baseline). On failure, close
       // the empty tab so a load error doesn't strand an untitled tab.
       const tabId = useTabsStore.getState().newEditorTab(name);

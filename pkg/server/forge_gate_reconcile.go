@@ -449,7 +449,24 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// Nothing on the head: this run owes the answer.
 
 	case !isGateInFlight(gate) && !isSyntheticGateInterruption(gate.Description):
-		return nil // a real verdict — never overwrite one
+		// A real verdict — never overwrite one. When it is THIS run's own, the
+		// run has already said everything it had to say, and that is the only
+		// moment the grant is PROVABLY without a reader: not "the run ended"
+		// (a repair may still owe a verdict, which is why a gating run keeps
+		// forgePublishGateGrace) but "the verdict this run owed is posted".
+		//
+		// Worth the narrowness. The grant is a forge-write bearer held by an
+		// agent that reads untrusted pull-request content and can post a
+		// review AND a commit status — including a green one on the required
+		// check. Keeping it live for the whole horizon on every gating run,
+		// rather than on the few a repair may still reach, is 128× more window
+		// than the job needs. Deliberately NOT extended to a verdict posted by
+		// ANOTHER run: a repo's gate context is shared between bots, so that
+		// would revoke the grant of a run still on its way to publishing.
+		if gateStatusSpeaksFor(gate, runURL) {
+			s.forgePublishTokens.Revoke(token)
+		}
+		return nil
 
 	case isGateInFlight(gate):
 		// A CLAIM is not an answer, so a run that died still holding its OWN

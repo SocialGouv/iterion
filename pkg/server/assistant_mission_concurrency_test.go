@@ -36,7 +36,11 @@ func TestRestartAssistantMissionsIsRaceFree(t *testing.T) {
 				return
 			default:
 			}
-			s.restartAssistantMissions(nil, watches, missions)
+			// Joined at once: the loop this restart cancelled must be gone
+			// before the next restart, and before the temp dir goes.
+			if prev := s.restartAssistantMissions(nil, watches, missions); prev != nil {
+				<-prev
+			}
 		}
 	}()
 
@@ -81,10 +85,11 @@ func TestRestartAssistantMissionsIsRaceFree(t *testing.T) {
 	wg.Wait()
 
 	s.stateMu.Lock()
-	last := s.assistantMissionCancel
+	last, lastDone := s.assistantMissionCancel, s.assistantMissionDone
 	s.stateMu.Unlock()
 	if last != nil {
 		last()
+		<-lastDone
 	}
 }
 
@@ -155,7 +160,11 @@ func TestAssistantMissionReplacementAndDrainCancelInFlightSweeps(t *testing.T) {
 		}
 	}
 	s.restartAssistantMissions(nil, nil, st)
-	t.Cleanup(s.stopAssistantMissions)
+	t.Cleanup(func() {
+		if done := s.stopAssistantMissions(); done != nil {
+			<-done
+		}
+	})
 	first := receive()
 	s.restartAssistantMissions(nil, nil, st)
 	second := receive()

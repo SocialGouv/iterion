@@ -54,6 +54,9 @@ func workspaceProbeRefusals() []codedRefusal {
 func codedRefusals() []codedRefusal {
 	out := workspaceProbeRefusals()
 	return append(out,
+		codedRefusal{bot: "branch-improve-loop", from: "delivery_probe", condition: "ok", negated: true,
+			failNode: "delivery_permission_denied", code: "FORGE_PERMISSION_DENIED",
+			messageRefs: []string{"{{outputs.delivery_probe.reason}}"}},
 		// The plan phase outgrew its share of the run's budget. The cure
 		// is "raise the caps and carry on": a terminal failure would make
 		// the operator re-pay a plan phase the run already completed,

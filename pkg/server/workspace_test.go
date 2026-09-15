@@ -232,3 +232,155 @@ func TestWorkspaceHandoffIsScopedAndSingleUse(t *testing.T) {
 		t.Fatalf("generation redeem = %d: %s", generationResult.Code, generationResult.Body.String())
 	}
 }
+
+// The scoped pane handler is a bare http.Handler — nothing cleans the path
+// before it, and a browser does not collapse a doubled slash. Exercised from
+// the real caller rather than from IsBuildAssetPath: the guard is only worth
+// what the path reaching it is worth.
+func TestWorkspaceScopedAssetMissNeverServesTheShell(t *testing.T) {
+	root, store := t.TempDir(), filepath.Join(t.TempDir(), "a")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := &projects.Config{
+		Version:          1,
+		RecentProjects:   []projects.Project{{ID: "a", Name: "A", Dir: root, StoreDir: store}},
+		CurrentProjectID: "a",
+	}
+	host, err := NewWorkspaceHost(registry, func(projects.Project) (*Server, error) {
+		return New(Config{DisableAuth: true, SkipProjectRegistration: true}, iterlog.Nop()), nil
+	}, iterlog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = host.Shutdown(ctx)
+	})
+	// Own the fixture rather than the real embed: pkg/server/static is filled
+	// by the studio build, and a job that skips it would make the "client
+	// route still gets the shell" witness 404 for a reason that has nothing to
+	// do with this guard — green where it should be red, red where it is fine.
+	host.static = fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html><head></head>SHELL</html>")},
+	}
+
+	for _, target := range []string{
+		"/x/a/assets/missing-XYZ.js",
+		"/x/a//assets/missing-XYZ.js",
+		"/x/a/./assets/missing-XYZ.js",
+	} {
+		t.Run(target, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			rec := httptest.NewRecorder()
+			host.ServeHTTP(rec, req)
+
+			if ct := rec.Header().Get("Content-Type"); strings.Contains(ct, "text/html") {
+				t.Fatalf("answered as HTML (%q) — the MIME-block bug, through the scoped path", ct)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("want 404, got %d body=%q", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// The witness for the other direction: a scoped client route still gets
+	// the shell, so the guard did not simply 404 the pane.
+	req := httptest.NewRequest(http.MethodGet, "/x/a/orgs/5f916212", nil)
+	rec := httptest.NewRecorder()
+	host.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("scoped client route lost the shell: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
+
+// The workspace host is the OTHER handler that delegates to http.FileServer,
+// and a directory under the asset prefix is where the shell/404 invariant is
+// easiest to break: FileServer renders an index of every chunk and sourcemap.
+// Guarding SPAHandler alone left this surface serving the listing.
+func TestWorkspaceAssetDirectoryIsNotEnumerable(t *testing.T) {
+	host := &WorkspaceHost{static: fstest.MapFS{
+		"index.html":        &fstest.MapFile{Data: []byte("<html>SHELL</html>")},
+		"assets/app.js":     &fstest.MapFile{Data: []byte("console.log('hi')")},
+		"assets/app.js.map": &fstest.MapFile{Data: []byte(`{"sources":["../../src/secret.tsx"]}`)},
+	}}
+
+	for _, target := range []string{"/assets/", "/assets"} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			host.serveWorkspaceAsset(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("want 404, got %d", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "app.js") {
+				t.Fatalf("enumerated the build: %q", rec.Body.String())
+			}
+		})
+	}
+
+	// The witness: a real asset under the same prefix still serves.
+	rec := httptest.NewRecorder()
+	host.serveWorkspaceAsset(rec, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "console.log") {
+		t.Fatalf("present asset broke: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// The scoped handler has no ServeMux in front of it, so every equality and
+// prefix test it runs sees the path exactly as the client wrote it. A doubled
+// slash made an /api/ request miss the API branch and fall through to the SPA
+// shell — the same uncleaned-prefix family as the asset guard, and the failure
+// the /api/ gate in spa.go exists to prevent: a JSON client JSON.parsing HTML.
+func TestWorkspaceScopedApiIsRecognisedThroughAnUncleanedPath(t *testing.T) {
+	root, store := t.TempDir(), filepath.Join(t.TempDir(), "a")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := &projects.Config{
+		Version:          1,
+		RecentProjects:   []projects.Project{{ID: "a", Name: "A", Dir: root, StoreDir: store}},
+		CurrentProjectID: "a",
+	}
+	host, err := NewWorkspaceHost(registry, func(projects.Project) (*Server, error) {
+		return New(Config{DisableAuth: true, SkipProjectRegistration: true}, iterlog.Nop()), nil
+	}, iterlog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = host.Shutdown(ctx)
+	})
+	host.static = fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html>SHELL</html>")},
+	}
+
+	for _, target := range []string{
+		"/x/a/api/project/identity",
+		"/x/a//api/project/identity",
+		"/x/a/./api/project/identity",
+	} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			host.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+			if strings.Contains(rec.Body.String(), "SHELL") {
+				t.Fatalf("an /api/ request was answered with the SPA shell: %q", rec.Body.String())
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("want 200 from the API, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// The witness for the other direction: a scoped CLIENT route must still
+	// get the shell, or the normalisation would have swallowed the SPA.
+	rec := httptest.NewRecorder()
+	host.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x/a/runs/demo", nil))
+	if !strings.Contains(rec.Body.String(), "SHELL") {
+		t.Fatalf("scoped client route lost the shell: %d %q", rec.Code, rec.Body.String())
+	}
+}

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/SocialGouv/iterion/bots"
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -258,10 +257,16 @@ func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
 	if r == nil {
 		return
 	}
+	// Unconditional, and that is the point: this response depends on Origin
+	// whether or not the origin is allowed, because ACAO is present in one case
+	// and absent in the other. Declaring the dimension only on the allowed path
+	// lets a cache store the ACAO-less variant under the bare URL and hand it
+	// to an allowlisted origin, whose browser then blocks a request that should
+	// have succeeded.
+	httpx.AddVary(w, "Origin")
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.isAllowedOriginReq(r) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
 	}
 }
 
@@ -584,8 +589,13 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// remainder (e.g. "feature_dev/main.bot") against the embed.
 		for _, prefix := range []string{"bots/", "examples/"} {
 			if rest := strings.TrimPrefix(req.Path, prefix); rest != req.Path {
-				if embedded, ok := bots.Get(rest); ok {
-					data = embedded
+				src, ok, embedErr := embeddedRecipe(rest)
+				if embedErr != nil {
+					httpError(w, http.StatusInternalServerError, "%v", embedErr)
+					return
+				}
+				if ok {
+					data = []byte(src)
 					err = nil
 				}
 				break

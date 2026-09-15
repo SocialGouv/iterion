@@ -478,6 +478,55 @@ encoding, so uploading a release asset and rendering raw markdown are out of
 reach for now. Adding one needs a "the body IS this value" parameter shape,
 which is a deliberate later decision, not an oversight.
 
+## Schema v2 — response contracts, opt-in
+
+v1 describes a response; it does not promise one. `schemas.yaml` is a **lossy
+projection** — `nullable`, `oneOf`/`anyOf`, `writeOnly` are dropped, `object` is
+inferred from the presence of `properties`, enums are stringified — so switching
+it to "strict" would refuse bodies vendors legitimately send. v2 therefore adds
+a **separate authority** rather than a strictness flag: `responses.json`, its own
+closed vocabulary, referenced explicitly per result case
+(`response_schema_ref`). Nothing validates a response unless a status names a
+contract, and `--validate-responses` is what asks for one. Without it a package
+is byte-identical v1.
+
+**The vocabulary is closed, and refusing by default is the design.** It carries
+`type`, `nullable`, `required`, `properties`, `items`, local `ref` and JSON
+scalar `enum` — nothing else. The alternative, ignoring what is not modelled, is
+harmless for a `minimum` and silently empty for a schema that is nothing but
+`allOf`: a contract accepting everything, under a name promising otherwise. It
+also never converges, since each unrecognised keyword met in the wild is one
+more spelling to rule on. So an unrepresentable shape gets **no contract at
+all** and the reason is reported against its operation and status. A half-checked
+answer an operator reads as "validated" is worse than an unchecked one.
+
+**Numbers are compared on their source text.** The generic decode is `float64`,
+which is right for the historical `Data` projection and wrong for a contract:
+9007199254740993 and ...992 are one `float64`. Generation makes a second, exact
+pass over the same bytes, and validation decodes the response body privately
+with `UseNumber`. `Result.Data` is unchanged — same projection, same `expr`
+arithmetic, same resume behaviour.
+
+**`integer` means two different things and both are correct.** Draft-04, which
+Swagger 2 inherits, defines it on the *token*, so `1.0` is not an integer.
+OAS 3.0.4 settled the *mathematical* reading for OpenAPI 3. The dialect follows
+the description's format; it is not guessed.
+
+**A confirmed mutation is not replayable.** A 2xx the vendor actually sent
+proves the write happened, so a body that breaks its contract clears `Data` and
+marks the failure undecided — and, unlike a 5xx or a transport loss, an
+idempotency key does **not** license a repeat. A key buys a second chance at
+work that may not have happened, never a repeat of work that certainly did.
+`Error.Retryable` and `AmbiguousEffect` disagreed on exactly this case, which
+is the one that duplicates writes.
+
+**Compatibility.** v2 is stamped only when contracts are requested; a v2 package
+does not load on an older iterion, which is why the flag is off by default. The
+package's documents must agree on their format version, and a repeated JSON key
+is refused rather than silently resolved to its last occurrence — for a document
+whose job is to state what a vendor may answer, the text reviewed and the rule
+enforced have to be the same text.
+
 ## Adversarial review disposition (codex `gpt-6-astra`, xhigh — 22 findings)
 
 Reviewed at commit `4b8a9bd3c`, read-only against the worktree. 4 critical,
@@ -516,7 +565,7 @@ than a deferred contract, but `unknown_outcome` stays in the vocabulary now;
 the resume path it must survive is `pkg/runtime/resume.go`'s node
 re-execution. F9: real, and the repository already answers it —
 `docs/cloud-queue-schema-rollout.md` carries the ordering policy and a
-per-bump checklist, so the ADR references it and P1 adds the v14 → v15 entry
+per-bump checklist, so the ADR references it and P1 adds the v19 → v20 entry (v19 now carries literal template delimiters)
 instead of inventing a procedure. F17: adopted as a contract to write, minus
 the premise — ADR-094 is cited as the *pattern* for durable materialization,
 never as a ready-made generic inbox, and connector ingress owes its own
@@ -765,10 +814,11 @@ forge kind, decided before any store changes.
 - **F13 (part)** — response-schema validation. A 2xx whose body does not match
   the declared schema is accepted as data. The status and redirect halves are
   fixed; this one needs a schema validator the package does not have.
-- **The operation identity lock** — the overlay's `id:` pins match DERIVED ids,
-  not canonical method+path identities, so they cannot actually prevent a
-  vendor's next release from moving an id onto another operation. A committed
-  method+path → id mapping is what would.
+- **The operation identity lock — implemented in P1a (#1209).** The overlay's
+  `id:` pins alone match derived names, not canonical method+path identities.
+  `connectors gen` now reconciles both generated and effective public identities
+  through a committed, versioned `identity.lock.yaml`, retaining retired names
+  and auth scheme shapes. See [the generation contract and recovery procedure](../connector-identities.md).
 
 ### What is still only prose
 
@@ -1373,7 +1423,7 @@ shipping a `connectors` directory iterion may not read.
 |---|---|
 | Pinned origin (which host a credential may reach) | **Shipped** (round four) — recorded at `connections add`, no package fallback |
 | Pinned placement (where in the request it goes) | **Shipped** (round five) — `PlacementOf` is the one definition, written and compared |
-| Pinned operation identity (what the call DOES) | **Not pinned, and now unreachable by default** — the untrusted tier that could redefine it is a grant (`ITERION_CONNECTOR_PROJECT_CATALOG`). The identity lock this ADR has owed since round two is still owed, and is what a granted project tier or a future team/marketplace tier will need |
+| Pinned operation identity (what the call DOES) | **Generation history protected in P1a (#1209)** — `identity.lock.yaml` prevents `connectors gen` from reassigning operation/auth names across regeneration. This is not a runtime package signature or immutable grant: the project-catalog trust opt-in remains, and cloud package pinning is still owed. See [connector-identities.md](../connector-identities.md) |
 
 ### A call that never LEFT was parked as an undecided mutation
 

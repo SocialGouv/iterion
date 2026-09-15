@@ -1376,13 +1376,34 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// tool list so the LLM can natively escalate. We don't require the
 	// workflow author to declare it in their `tools:` field — the
 	// presence of `interaction:` is the opt-in.
+	//
+	// Appended ONLY when the node already restricts its tool set, like the
+	// board / runs / ultracode appends below. An empty `tools:` means "no
+	// restriction", and the ask_user surface is reached through its MCP
+	// registration either way. Promoting it here turns "no declaration" into
+	// a ONE-ENTRY allowlist — and a non-empty list is exactly what the
+	// claude_code backend reads as a restrictive boundary, stripping every
+	// native tool the list does not name. `ask_user` names none of them, so
+	// a node that declared no `tools:` but did declare `interaction:` was
+	// left unable to read, write or run anything.
+	// The premise "empty means no restriction" holds for the CLI backends
+	// ONLY. claw resolves its ToolDefs from this list alone — buildTask calls
+	// resolveToolsForNode behind `len(effectiveTools) > 0 && claw`, and
+	// claw_backend sets `opts.Tools` from ToolDefs and nothing else — so an
+	// empty list there means "no tools at all". Dropping the append on claw
+	// would remove the very tool loop that carries ask_user (the assignment
+	// site says so: `task.HasTools = true // claw needs the tool loop active
+	// for ask_user`), and on `interaction: async` it would strip the
+	// non-blocking pair while asyncInteractionSystemInstruction — keyed on
+	// PostAsyncQuestion, not on tools — still tells the model to call them.
 	effectiveTools := f.tools
-	if f.interaction != ir.InteractionNone {
+	interactionGranted := len(effectiveTools) > 0 || backendName == delegate.BackendClaw
+	if f.interaction != ir.InteractionNone && interactionGranted {
 		effectiveTools = ensureToolPresent(effectiveTools, askUserToolName)
 	}
 	// interaction: async (ADR-081) additionally grants the non-blocking
 	// pair; the blocking ask_user above stays available for hard stops.
-	if f.interaction == ir.InteractionAsync {
+	if f.interaction == ir.InteractionAsync && interactionGranted {
 		effectiveTools = ensureToolPresent(effectiveTools, delegate.AskUserAsyncToolName)
 		effectiveTools = ensureToolPresent(effectiveTools, delegate.AwaitAnswersToolName)
 	}

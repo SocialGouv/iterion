@@ -179,9 +179,9 @@ func cloneIncoming(m map[string][]store.IncomingEdge) map[string][]store.Incomin
 // mergeJoinIncoming unions the selected incoming edges that successful
 // fan-out branches recorded for the convergence node, and writes that
 // set onto the trunk runState so the join execution applies exactly those
-// mappings. seeds are the nodes this invocation actually entered — the
-// provenance of the settled floor recorded alongside.
-func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult, seeds []string) {
+// mappings. The caller supplies the floor, computed with the evidence scope
+// of its fan-out shape: disjoint targets or independent template replays.
+func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult, floor []store.IncomingEdge) {
 	if rs == nil || joinNodeID == "" {
 		return
 	}
@@ -203,7 +203,7 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 	// Record what this invocation settled on, whichever way it went: a
 	// fresh invocation owns the floor for its join, so one that produced
 	// output must not leave the previous one's floor standing.
-	rs.setSettledFloor(joinNodeID, settledEdgesInto(e.workflow, seeds, joinNodeID, evidenceFromBranches(results)))
+	rs.setSettledFloor(joinNodeID, floor)
 	if len(union) == 0 {
 		// No successful branch recorded an edge into the join (every
 		// branch failed under best_effort, or the join came from the
@@ -226,14 +226,16 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 // Settled floor — the edges a stabilized fan-out left with no output behind
 // ---------------------------------------------------------------------------
 
-// invocationEvidence is what a fan-out invocation actually DID: the nodes it
-// executed to completion, and the edges that fired into each node it entered.
+// invocationEvidence is what the observed branches actually DID: the nodes
+// they executed to completion, and the edges that fired into each node entered.
+// A fan_out_each must read one branch at a time, because every item replays
+// the same node IDs. A sibling's choice is not evidence for an undecided item.
 //
 // It is read from the branch results, the FAILED ones included, because the
 // trunk is not a witness of this: processConvergence merges only successful
-// branches' outputs and never removes what an earlier invocation left behind,
-// so "absent from rs.outputs" conflates "never ran", "ran and failed" and
-// "ran two invocations ago". Anchoring the floor on the trunk made the walk
+// branches' outputs, so "absent from rs.outputs" conflates "never ran" with
+// "ran and failed". Before #1116 it also retained earlier invocations' values.
+// Anchoring the floor on the trunk made the walk
 // resurrect a route routing had rejected, and made a partial failure lose the
 // mapping it was supposed to keep.
 type invocationEvidence struct {
@@ -302,12 +304,10 @@ func settledSeedsPerEdge(routerNodeID string, launched []*ir.Edge, results []*br
 	return seeds
 }
 
-// settledSeedsForTemplate is the `fan_out_each` shape, where every item
-// replays the SAME template subgraph: one branch's recorded start node speaks
-// for all of them, and it OUTRANKS the template edge because a resumed cursor
-// names the node the branch is really running even when an edit re-pointed
-// the template. Only an invocation where NO branch started at all falls back
-// on the declaration.
+// settledSeedsForTemplate prefers recorded start nodes over the declaration:
+// a resumed cursor names the node actually running even after an edit
+// re-pointed the template. For a settled floor, call it separately for each
+// item, so an item that never started falls back on its own declaration.
 func settledSeedsForTemplate(tmplEdge *ir.Edge, results []*branchResult) []string {
 	var seeds []string
 	seen := map[string]bool{}
@@ -326,6 +326,39 @@ func settledSeedsForTemplate(tmplEdge *ir.Edge, results []*branchResult) []strin
 	return nil
 }
 
+// settledTemplateEdgesInto walks each item's own evidence before unioning
+// the floor. An item that failed before routing keeps both alternatives;
+// a sibling that did route prunes only its own rejected alternative. The
+// existing floor resolver then keeps agreeing values, drops disagreements,
+// and lets live mappings override the floor. No branch values are synthesized.
+// Empty invocations retain the declared template's floor, as before.
+func settledTemplateEdgesInto(wf *ir.Workflow, tmplEdge *ir.Edge, joinNodeID string, results []*branchResult) []store.IncomingEdge {
+	if len(results) == 0 {
+		return settledEdgesInto(wf, settledSeedsForTemplate(tmplEdge, nil), joinNodeID, evidenceFromBranches(nil))
+	}
+	seen := make(map[string]bool)
+	for _, result := range results {
+		branch := []*branchResult{result}
+		seeds := settledSeedsForTemplate(tmplEdge, branch)
+		for _, in := range settledEdgesInto(wf, seeds, joinNodeID, evidenceFromBranches(branch)) {
+			seen[incomingKey(in)] = true
+		}
+	}
+	// Keep graph order, independent of the order in which branches finish.
+	var floor []store.IncomingEdge
+	if wf != nil {
+		for _, edge := range wf.Edges {
+			in := incomingFromEdge(edge)
+			key := incomingKey(in)
+			if seen[key] {
+				floor = append(floor, in)
+				delete(seen, key)
+			}
+		}
+	}
+	return floor
+}
+
 // settledEdgesInto returns the edges into joinNodeID that a fan-out
 // invocation would have fired, found by walking forward from the nodes it
 // actually entered.
@@ -339,8 +372,8 @@ func settledSeedsForTemplate(tmplEdge *ir.Edge, results []*branchResult) []strin
 // would sweep in the very foreign edge the floor exists to exclude.
 //
 // The walk is ROUTING-AWARE, which is what keeps it from resurrecting a
-// rejected route: leaving a node the invocation executed, it follows only the
-// edge that node's branch recorded as firing. Leaving a node that did NOT run
+// rejected route: leaving a node the observed branch executed, it follows only
+// the edge that branch recorded as firing. Leaving a node that did NOT run
 // it follows every forward edge — that is the whole point, since the node
 // that would have carried the mapping is precisely the one that died.
 //
