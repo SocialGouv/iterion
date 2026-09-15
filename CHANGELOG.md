@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.0](https://github.com/SocialGouv/iterion/compare/v3.145.1...v3.146.0) (2026-09-15)
+
+### Features
+
+* **golden-master:** the net HONOURS a declared lane exclusion instead of calling it noise ([#1228](https://github.com/SocialGouv/iterion/issues/1228)) ([a4e2e01](https://github.com/SocialGouv/iterion/commit/a4e2e012789350fa81be2d8157698464bf695003))
+
+    <details><summary>why</summary>
+
+    A multi-environment net can renounce ONE observation on ONE lane — a decision, written down and arbitrated, never a deletion. `corpus.json` already carried the declaration:
+
+    </details>
+
+### Bug Fixes
+
+* **golden-master:** a held-out set of zero is not a proof, and the gate now says so ([#1152](https://github.com/SocialGouv/iterion/issues/1152)) ([3fe5ab2](https://github.com/SocialGouv/iterion/commit/3fe5ab24d291d811ce1c5a518735049f36daea69))
+
+    <details><summary>why</summary>
+
+    `oracle_gate.converged` ends on `holdout_detected == holdout_total`, its strongest clause — and `0 == 0` satisfies it. A rite whose held-out set is empty converges on a term that measured nothing, which is the no-op confirmed as a success this bot exists to refuse in other people's deliveries.
+
+    </details>
+
 ## [3.145.1](https://github.com/SocialGouv/iterion/compare/v3.145.0...v3.145.1) (2026-09-15)
 
 ### Bug Fixes
