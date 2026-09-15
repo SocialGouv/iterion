@@ -63,14 +63,23 @@ header by hand) but does NOT overwrite them.
 
 ## Recognising the duplicate-prefix pattern
 
-This repo carries TWO ADRs prefixed `002-*` from concurrent PRs that
-each took the same NNN. Adry's `scan_adrs` emits
-`duplicates: ["002"]` in that case. Rules:
+Concurrent PRs that each take the same NNN leave two files on one
+prefix. It is common on an active tree and it is not a bug: iterion's
+own `docs/adr/` carries EIGHT colliding prefixes as of 2026-09-15 —
+`002`, `075`, `076`, `090`, `091`, `093`, `094` and `098` — so Adry's
+`scan_adrs` emits
+`duplicates: ["002", "075", "076", "090", "091", "093", "094", "098"]`
+there. Treat the array as open-ended and expect it to grow; never
+assume a single entry. Rules:
 
 - Do NOT renumber existing ADRs (would break inbound references).
-- Do NOT author a third `002-*` to "fix" the duplicate.
-- Advance `next_adr_number` past the duplicate so new ADRs do not
-  inherit the collision.
+- Do NOT author an extra file on a colliding prefix to "fix" the
+  duplicate.
+- Advance `next_adr_number` (`max(NNN) + 1`) past every collision so
+  new ADRs do not inherit one.
+- When citing an ADR whose number collides, cite the filename slug
+  rather than the bare number — "ADR-098" alone is ambiguous in a repo
+  that has two of them.
 
 ## Recognising sibling structures
 

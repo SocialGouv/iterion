@@ -1,6 +1,25 @@
 # ADR-098 — The connector catalog: MCP for agents, deterministic nodes for workflows
 
-- Status: proposed (2026-09-10)
+- Status: **accepted (lot P0 shipped)** (proposed 2026-09-10) — the
+  deterministic substrate is on main: the declarative model and generator
+  ([pkg/connector/spec](../../pkg/connector/spec),
+  [pkg/connector/gen](../../pkg/connector/gen)), the overlay merge and the
+  identity lock ([pkg/connector/overlay](../../pkg/connector/overlay),
+  [pkg/connector/identity](../../pkg/connector/identity)), the executor
+  ([pkg/connector/exec](../../pkg/connector/exec)), tiered catalog
+  resolution ([pkg/connection](../../pkg/connection)), the `action:` third
+  recipe on `tool` ([docs/dsl.md](../dsl.md)), the
+  `iterion connectors gen|validate` and `iterion connections add|list|rm`
+  commands, and the reference package
+  [connectors/forgejo](../../connectors/forgejo). Landed as
+  [#1119](https://github.com/SocialGouv/iterion/pull/1119) (lot P0), then
+  [#1211](https://github.com/SocialGouv/iterion/pull/1211) (identities
+  preserved across regeneration) and
+  [#1266](https://github.com/SocialGouv/iterion/pull/1266) (opt-in v2
+  response contracts). The later lots below are NOT built: §2's served MCP
+  facade exists only as the per-operation `mcp:` curation flag in the spec
+  ([pkg/connector/spec/operation.go](../../pkg/connector/spec/operation.go)),
+  nothing serves it, and §5/§8's redistribution tiers are untouched.
 - Serves: epic [#1072](https://github.com/SocialGouv/iterion/issues/1072) — an
   autonomous, redistributable connector catalog; lot P0 is
   [#1073](https://github.com/SocialGouv/iterion/issues/1073)
@@ -9,6 +28,12 @@
   settings), ADR-094 (durable effect outbox),
   [docs/plugins.md](../plugins.md), [docs/bundles.md](../bundles.md),
   the study in `etudes/catalogue-connecteurs` (v1→v4 + an adversarial review)
+- Number collision: `098` is shared with
+  [098-dsl-versioning-and-authoring-surface.md](098-dsl-versioning-and-authoring-surface.md),
+  a separate decision accepted 2026-09-09. The two landed days apart from
+  different work streams. Neither is renumbered — merged PRs, commit
+  messages and inbound doc references already say "ADR-098" for both, so a
+  rename would strand them. Cite the filename slug, not the bare number.
 
 ## Context
 
