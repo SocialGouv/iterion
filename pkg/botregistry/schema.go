@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
@@ -97,12 +98,54 @@ type PresetValue struct {
 // instantly without a server restart.
 type cachedSchema struct {
 	// digest is the unit's source identity — every file's path and
-	// content — so an edit to a fragment, or one of the same size at a
-	// restored mtime, is a miss.
-	digest  string
+	// content — as read when the entry was built.
+	digest string
+	// stamps is what a stat of each file of the unit said when it was
+	// read: the cheap test a hit takes before any file is read. An edit
+	// moves a size or an mtime; a file added to the unit is an edit of
+	// the file that imports it. (An edit of the same size at a restored
+	// mtime is invisible to it, as it always was for a single file.)
+	stamps  map[string]fileStamp
 	vars    *VarsBlock
 	presets *PresetsBlock
 	err     string
+}
+
+// fileStamp is a file's size and modification time as a stat reports them.
+type fileStamp struct {
+	size  int64
+	mtime time.Time
+}
+
+// stampsOf stats every file of the unit; nil when one cannot be stat'd,
+// so that the entry never hits.
+func stampsOf(u *unit.Unit) map[string]fileStamp {
+	if len(u.Files) == 0 {
+		return nil
+	}
+	out := make(map[string]fileStamp, len(u.Files))
+	for _, f := range u.Files {
+		info, err := os.Stat(f.Name)
+		if err != nil {
+			return nil
+		}
+		out[f.Name] = fileStamp{size: info.Size(), mtime: info.ModTime()}
+	}
+	return out
+}
+
+// stampsHold reports whether every file still stats as it did.
+func stampsHold(stamps map[string]fileStamp) bool {
+	if len(stamps) == 0 {
+		return false
+	}
+	for name, want := range stamps {
+		info, err := os.Stat(name)
+		if err != nil || info.Size() != want.size || !info.ModTime().Equal(want.mtime) {
+			return false
+		}
+	}
+	return true
 }
 
 var schemaCache sync.Map // map[string]cachedSchema
@@ -184,18 +227,13 @@ func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// The unit's files are read on every call — a handful of small files
-	// per bot — because a stat of the main cannot see a fragment edited,
-	// nor an edit of the same size at a restored mtime.
-	u := unit.LoadDir(abs)
-	if len(u.Files) == 0 {
-		if _, err := os.Stat(abs); err != nil {
-			return nil, nil, err
-		}
-	}
+	// A hit costs a stat of each file of the unit — the main and the
+	// fragments its imports reach — never a read: the catalog is listed
+	// on every bots request and every launch, over a hundred bots at a
+	// time. A stamp that moved, a file gone, an entry with none: a read.
 	if v, ok := schemaCache.Load(abs); ok {
 		c := v.(cachedSchema)
-		if c.digest == u.Digest {
+		if stampsHold(c.stamps) {
 			var schemaErr error
 			if c.err != "" {
 				schemaErr = fmt.Errorf("%s", c.err)
@@ -206,9 +244,16 @@ func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 			return c.vars, mergeFilePresets(e, c.presets), schemaErr
 		}
 	}
+	u := unit.LoadDir(abs)
+	if len(u.Files) == 0 {
+		if _, err := os.Stat(abs); err != nil {
+			return nil, nil, err
+		}
+	}
 	vars, presets, schemaErr := loadSchemaFromUnit(u)
 	cached := cachedSchema{
 		digest:  u.Digest,
+		stamps:  stampsOf(u),
 		vars:    vars,
 		presets: presets, // cache the in-source block only; file presets merge fresh
 	}

@@ -37,7 +37,7 @@ func resolveWorkflowPath(r *store.Run) string {
 	// bundle as BundlePath. What is read here is the source as it is NOW,
 	// and a bot in several files is read beside its fragments: a copy
 	// outside its bundle resolves to the bundle's main.
-	if r.BundlePath != "" && filepath.IsAbs(r.FilePath) && !insideDir(r.FilePath, r.BundlePath) {
+	if r.BundlePath != "" && filepath.IsAbs(r.FilePath) && !insideDir(r.FilePath, r.BundlePath) && copyOfMain(r.FilePath) {
 		if main := filepath.Join(r.BundlePath, bundle.MainBotFile); fileIsRegular(main) {
 			return main
 		}
@@ -61,6 +61,15 @@ func resolveWorkflowPath(r *store.Run) string {
 		}
 	}
 	return r.FilePath
+}
+
+// copyOfMain reports whether path is named as the bundle's main or as the
+// store's materialised copy of it (`<hash>-main.bot`): a copy of a
+// companion workflow, should a launch ever materialise one, is not the
+// main and does not read as it.
+func copyOfMain(path string) bool {
+	base := filepath.Base(path)
+	return base == bundle.MainBotFile || strings.HasSuffix(base, "-"+bundle.MainBotFile)
 }
 
 // fileIsRegular reports whether path is an existing regular file.

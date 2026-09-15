@@ -104,6 +104,15 @@ func TestResolveWorkflowPath_ReadsTheBundlesMainForACopyOutsideIt(t *testing.T) 
 	if got := resolveWorkflowPath(&store.Run{FilePath: copyPath, BundlePath: filepath.Join(dir, "gone")}); got != copyPath {
 		t.Fatalf("gone bundle: got %q", got)
 	}
+	// A copy of a COMPANION workflow, should a launch ever materialise one,
+	// is not the main and never reads as it.
+	companion := filepath.Join(filepath.Dir(copyPath), "a1b2c3d4e5f6-reanchor.bot")
+	if err := os.WriteFile(companion, []byte("workflow r:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveWorkflowPath(&store.Run{FilePath: companion, BundlePath: dir}); got != companion {
+		t.Fatalf("a companion's copy was redirected to %q", got)
+	}
 }
 
 // A relative FilePath — a catalog run, a subbot child under a relative

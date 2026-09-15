@@ -213,3 +213,35 @@ func TestTheSameInlineTextInTwoFilesIsOnePromptInTheMerge(t *testing.T) {
 		t.Fatalf("the merged program is not its own text: %v", err)
 	}
 }
+
+// A unit whose files declare different profiles writes out as one file: the
+// merged program is written under the main's profile, and a value only a
+// newer profile could spell there switches the text to the strict-escape
+// form — the writer's own check holds the text to the program.
+func TestAMixedProfileUnitWritesOutAsOneFile(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"profile-2 fragment under a profile-1 main": {
+			"main.bot":  "import \"lib/f.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n",
+			"lib/f.bot": "dsl: 2\ntool t:\n  command: \"printf 'a\\nb'\"\n",
+		},
+		"profile-1 fragment under a profile-2 main": {
+			"main.bot":  "dsl: 2\nimport \"lib/f.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n",
+			"lib/f.bot": "tool t:\n  command: \"printf 'a\\nb'\"\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := unit.LoadMap(files, "main.bot")
+			if u.HasErrors() {
+				t.Fatalf("diagnostics: %v", u.Diagnostics)
+			}
+			flat := unparse.Unparse(u.Merged)
+			if err := unparse.Verify(u.Merged, flat); err != nil {
+				t.Fatalf("the merged program is not its own text: %v\n%s", err, flat)
+			}
+			again := parser.Parse("flat.bot", flat)
+			if len(again.Diagnostics) != 0 || again.File.Tools[0].Command != u.Merged.Tools[0].Command {
+				t.Fatalf("the flat text reads another command: %q vs %q (%v)\n%s", again.File.Tools[0].Command, u.Merged.Tools[0].Command, again.Diagnostics, flat)
+			}
+		})
+	}
+}
