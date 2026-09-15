@@ -43,7 +43,12 @@ func Write(dir string, p *Package) error {
 		}
 	}
 	if len(p.ResponseSchemas) > 0 {
-		rf := responsesDoc{SchemaVersion: ResponseContractsVersion, Connector: p.Connector.ID, Schemas: p.ResponseSchemas}
+		// Stamped from the PACKAGE, never from a constant: a document that
+		// names its own version independently of the package it sits in is a
+		// second source of truth, and the day the format moves past 2 it would
+		// mislabel every file it writes. ValidateResponseContracts above has
+		// already refused a package too old to carry contracts at all.
+		rf := responsesDoc{SchemaVersion: p.Connector.SchemaVersion, Connector: p.Connector.ID, Schemas: p.ResponseSchemas}
 		body, err := json.MarshalIndent(rf, "", "  ")
 		if err != nil {
 			return fmt.Errorf("spec: encode %s: %w", ResponsesFile, err)
@@ -232,6 +237,9 @@ func readResponseContracts(dir string, p *Package) error {
 	if err := checkDocVersion(ResponsesFile, body); err != nil {
 		return err
 	}
+	if err := checkNoDuplicateJSONKeys(ResponsesFile, body); err != nil {
+		return err
+	}
 	var rf responsesDoc
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
@@ -241,14 +249,86 @@ func readResponseContracts(dir string, p *Package) error {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("spec: %s must contain one JSON document", ResponsesFile)
 	}
-	if rf.SchemaVersion != ResponseContractsVersion || p.Connector.SchemaVersion < ResponseContractsVersion {
-		return fmt.Errorf("spec: %s requires package and document schema_version %d", ResponsesFile, ResponseContractsVersion)
+	if p.Connector.SchemaVersion < ResponseContractsVersion {
+		return fmt.Errorf("spec: %s is present but %s declares schema_version %d; response contracts require %d",
+			ResponsesFile, ConnectorFile, p.Connector.SchemaVersion, ResponseContractsVersion)
+	}
+	// One package, one format. A document naming a different version than the
+	// connector it sits beside means the two halves were written by different
+	// iterions, and whichever is older silently lacks fields the other emits.
+	if rf.SchemaVersion != p.Connector.SchemaVersion {
+		return fmt.Errorf("spec: %s declares schema_version %d but %s declares %d",
+			ResponsesFile, rf.SchemaVersion, ConnectorFile, p.Connector.SchemaVersion)
 	}
 	if err := checkDocConnector(ResponsesFile, rf.Connector, p.Connector.ID); err != nil {
 		return err
 	}
 	p.ResponseSchemas = rf.Schemas
 	return nil
+}
+
+// checkNoDuplicateJSONKeys refuses a document that names the same key twice in
+// one object.
+//
+// encoding/json keeps the LAST value and says nothing, so a file holding
+// `"Item"` twice loads as whichever copy came second — while a reviewer diffing
+// the file sees both and has no way to tell which one runs. For a document
+// whose whole job is to state what a vendor may answer, "what was reviewed" and
+// "what is enforced" must be the same text.
+//
+// The token stream is the only place the repetition is still visible; by the
+// time Decode returns, one of the two is gone.
+func checkNoDuplicateJSONKeys(where string, body []byte) error {
+	type frame struct {
+		keys      map[string]bool // nil for an array
+		expectKey bool
+	}
+	const maxDocDepth = 256
+	dec := json.NewDecoder(bytes.NewReader(body))
+	var stack []*frame
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("spec: parse %s: %w", where, err)
+		}
+		top := func() *frame {
+			if len(stack) == 0 {
+				return nil
+			}
+			return stack[len(stack)-1]
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				if len(stack) >= maxDocDepth {
+					return fmt.Errorf("spec: %s nests deeper than %d levels", where, maxDocDepth)
+				}
+				next := &frame{}
+				if delim == '{' {
+					next.keys, next.expectKey = map[string]bool{}, true
+				}
+				stack = append(stack, next)
+				continue
+			default:
+				stack = stack[:len(stack)-1]
+			}
+		} else if f := top(); f != nil && f.keys != nil && f.expectKey {
+			key, _ := tok.(string)
+			if f.keys[key] {
+				return fmt.Errorf("spec: %s names the key %q twice in one object; the second silently replaces the first", where, key)
+			}
+			f.keys[key] = true
+			f.expectKey = false
+			continue
+		}
+		// A completed value: inside an object, the next token is a key again.
+		if f := top(); f != nil && f.keys != nil {
+			f.expectKey = true
+		}
+	}
 }
 
 // checkDocVersion runs the tolerant version pre-pass on EVERY document, not

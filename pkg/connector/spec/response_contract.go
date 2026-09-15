@@ -239,7 +239,9 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		}
 		return p.validateResponseValue(target, value, path, depth+1, visits)
 	}
-	if s.Type != "" && !(value == nil && s.Nullable) {
+	// A declared null on a nullable schema skips the type check; everything
+	// else has to match the declared type.
+	if s.Type != "" && (value != nil || !s.Nullable) {
 		valid := false
 		switch s.Type {
 		case "object":
