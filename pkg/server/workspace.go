@@ -288,6 +288,14 @@ func (h *WorkspaceHost) serveScoped(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "missing project scope")
 		return
 	}
+	// Normalise the scoped remainder ONCE. This handler is reached without a
+	// ServeMux, so sub arrives exactly as the client wrote it, and every test
+	// below is an equality or prefix check: `/x/<id>//api/foo` — a doubled
+	// slash no browser collapses — yields sub == "/api/foo", which matches
+	// none of them. The request then falls through to the SPA shell and a JSON
+	// client JSON.parses HTML. Cleaning here also normalises the path this
+	// handler proxies onward, so the backend sees what the client meant.
+	sub = strings.TrimPrefix(path.Clean("/"+sub), "/")
 	h.mu.RLock()
 	rt := h.runtimes[id]
 	h.mu.RUnlock()
