@@ -217,38 +217,33 @@ func TestAnOrdinaryPageIsNotRefusedForBeingLarge(t *testing.T) {
 		}
 	})
 
-	t.Run("the backstop still stops a walk that is not linear in the body", func(t *testing.T) {
-		// Each value is compared against every enum member, so cost is
-		// values × members while the body grows by two bytes per value.
+	t.Run("a page of values against one enum validates too", func(t *testing.T) {
+		// Comparison is against a set decoded once per body, so a page does not
+		// pay values × members. What the budget still bounds is the DECODING of
+		// many distinct enums — proved in
+		// TestResponseContractBoundsAndClosedVocabulary, which is where that
+		// backstop lives rather than here.
 		members := make([]json.RawMessage, 1024)
 		for i := range members {
 			members[i] = json.RawMessage(strconv.Itoa(i + 1000000))
 		}
-		p, op := responsePackage(ResponseSchema{
-			Type:  "array",
-			Items: &ResponseSchema{Enum: members},
-		})
+		p, op := responsePackage(ResponseSchema{Type: "array", Items: &ResponseSchema{Enum: members}})
 		if err := p.ValidateResponseContracts(); err != nil {
 			t.Fatalf("preflight: %v", err)
 		}
-		// The LAST member, so every value scans the whole list instead of
-		// matching early or failing on the first comparison.
+		// The LAST member, so a per-value scan would pay the whole list.
 		last := strconv.Itoa(1000000 + len(members) - 1)
 		var body strings.Builder
 		body.WriteByte('[')
-		for i := range 1000 {
+		for i := range 5000 {
 			if i > 0 {
 				body.WriteByte(',')
 			}
 			body.WriteString(last)
 		}
 		body.WriteByte(']')
-		_, err := p.ValidateResponse(op, 200, []byte(body.String()))
-		if err == nil {
-			t.Fatal("a walk costing values × enum members must still be stopped")
-		}
-		if !strings.Contains(err.Error(), "traversal limit") {
-			t.Errorf("err = %v, want the traversal limit named", err)
+		if _, err := p.ValidateResponse(op, 200, []byte(body.String())); err != nil {
+			t.Fatalf("five thousand values against one enum were refused: %v", err)
 		}
 	})
 }
@@ -301,7 +296,15 @@ func TestResponseContractReferencesAreCheckedBeforeDispatch(t *testing.T) {
 	if _, err := p.ValidateResponse(op, 200, []byte(`{"next":{"next":{}}}`)); err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat(`{"next":`, 100) + `{}` + strings.Repeat(`}`, 100)
+	// A hundred levels is deep but not pathological, and the contract describes
+	// it exactly. The value walk used to share the CONTRACT graph's ceiling and
+	// refused this, for a body the pre-flight check had accepted.
+	deep := strings.Repeat(`{"next":`, 100) + `{}` + strings.Repeat(`}`, 100)
+	if _, err := p.ValidateResponse(op, 200, []byte(deep)); err != nil {
+		t.Fatalf("a hundred conformant levels were refused: %v", err)
+	}
+	// The recursion is still bounded, one order of magnitude further out.
+	body := strings.Repeat(`{"next":`, 1200) + `{}` + strings.Repeat(`}`, 1200)
 	if _, err := p.ValidateResponse(op, 200, []byte(body)); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("unbounded recursive response: %v", err)
 	}
@@ -337,9 +340,38 @@ func TestResponseContractBoundsAndClosedVocabulary(t *testing.T) {
 			t.Errorf("invalid contract accepted: %+v", s)
 		}
 	}
+	// Enum comparison no longer costs values × members: each enum is decoded
+	// once per body and compared as a set. The bound is structural rather than
+	// a counter, which is why a page of ten thousand values now validates
+	// instead of tripping a limit on a shape that was never pathological.
 	p, op := responsePackage(ResponseSchema{Type: "array", Items: &ResponseSchema{Type: "integer", Enum: rawEnum("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")}})
 	body := `[` + strings.Repeat(`10,`, 10000) + `10]`
-	if _, err := p.ValidateResponse(op, 200, []byte(body)); err == nil || !strings.Contains(err.Error(), "limit") {
-		t.Fatalf("enum comparisons are unbounded: %v", err)
+	if _, err := p.ValidateResponse(op, 200, []byte(body)); err != nil {
+		t.Fatalf("ten thousand values against a ten-member enum were refused: %v", err)
+	}
+	// What the budget still bounds is the DECODING of the enums themselves: a
+	// small body reaching many distinct large enums pays per member, once each.
+	many := ResponseSchema{Type: "object", Properties: map[string]ResponseSchema{}}
+	members := make([]json.RawMessage, 1024)
+	var wide strings.Builder
+	wide.WriteByte('{')
+	for i := range 400 {
+		for m := range members {
+			members[m] = json.RawMessage(strconv.Itoa(i*100000 + m))
+		}
+		name := "p" + strconv.Itoa(i)
+		many.Properties[name] = ResponseSchema{Type: "integer", Enum: append([]json.RawMessage(nil), members...)}
+		if i > 0 {
+			wide.WriteByte(',')
+		}
+		wide.WriteString(`"` + name + `":` + strconv.Itoa(i*100000))
+	}
+	wide.WriteByte('}')
+	pw, opw := responsePackage(many)
+	if err := pw.ValidateResponseContracts(); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if _, err := pw.ValidateResponse(opw, 200, []byte(wide.String())); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("enum decoding is unbounded: %v", err)
 	}
 }

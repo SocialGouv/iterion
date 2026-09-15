@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -41,6 +42,16 @@ const (
 	maxContractNodes  = 10000
 	maxContractList   = 1024
 	maxResponseVisits = 100000
+	// maxResponseDepth bounds the DATA's nesting during validation, and is
+	// separate from maxContractDepth on purpose: that one bounds the contract
+	// GRAPH at pre-flight, where the memo stops at an already-checked component
+	// and so measures a shorter path than the value walk takes. Sharing one
+	// number made the walk refuse bodies the pre-flight had accepted — a
+	// recursive contract spends two or three of it per level of real data, so
+	// a tree nested past about twenty-five levels was refused. This ceiling is
+	// far above any nesting an API returns and still low enough to be reached
+	// deliberately, which is what keeps it a guard rather than a decoration.
+	maxResponseDepth = 1000
 )
 
 // ValidateResponseContracts is the canonical package/pre-dispatch check.
@@ -214,17 +225,17 @@ func (p *Package) ValidateResponse(op Operation, status int, body []byte) (check
 	if err != nil {
 		return true, fmt.Errorf("response contract requires one valid JSON value")
 	}
-	// The walk is bounded by the body the transport ALREADY admitted: a JSON
-	// tree cannot hold more nodes than it has bytes, so this can never refuse a
-	// page the vendor was allowed to send. A fixed ceiling did: measured, an
-	// ordinary 2000-row page of sixty fields (1.2 MB) was refused at row 1639,
-	// and on a mutation that is a parked run rather than a failure a workflow
-	// can branch on. maxResponseVisits stays as the floor for small bodies.
-	budget := len(body)
-	if budget < maxResponseVisits {
-		budget = maxResponseVisits
+	// The node budget is bounded by the body the transport ALREADY admitted: a
+	// JSON tree cannot hold more nodes than it has bytes. A fixed ceiling
+	// refused pages the vendor was allowed to send — measured, an ordinary
+	// 2000-row page of sixty fields (1.2 MB) refused at row 1639, and on a
+	// mutation that is a parked run rather than a failure a workflow can branch
+	// on. maxResponseVisits stays as the floor for small bodies.
+	walk := &responseWalk{budget: len(body)}
+	if walk.budget < maxResponseVisits {
+		walk.budget = maxResponseVisits
 	}
-	if err := p.validateResponseValue(schema, data, "$", 0, &budget); err != nil {
+	if err := p.validateResponseValue(schema, data, "$", 0, walk); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -252,15 +263,65 @@ func responseViolation(path, reason string) error {
 	return fmt.Errorf("response contract at %q: %s", path, reason)
 }
 
+// errWalkExhausted marks the budget running out, so the caller reports the
+// traversal limit rather than blaming the package's enum.
+var errWalkExhausted = errors.New("response walk budget exhausted")
+
+// responseWalk carries the state of one body validation.
+type responseWalk struct {
+	// budget is a REMAINING node count, derived by the caller from the body the
+	// transport already admitted. It is a termination backstop for a contract
+	// shape that revisits value nodes, not a limit on how much a vendor returns.
+	budget int
+	// enums memoises each enum's scalar identities. Without it every value
+	// compared re-decodes every member: O(values × members) JSON decodes on a
+	// page the budget now lets run to the body's full length. The key is the
+	// backing array of the member slice, which survives the copying of a
+	// ResponseSchema value, so one enum is decoded once per body.
+	enums map[*json.RawMessage]map[string]bool
+}
+
+// enumSet decodes an enum's members once and returns their identities. A member
+// whose identity cannot be taken is left out rather than failing the body: the
+// pre-flight check already refused such a contract, and a body is not the place
+// to report a defect in the package validating it.
+func (w *responseWalk) enumSet(members []json.RawMessage) (map[string]bool, error) {
+	key := &members[0]
+	if set, ok := w.enums[key]; ok {
+		return set, nil
+	}
+	w.budget -= len(members)
+	if w.budget < 0 {
+		return nil, errWalkExhausted
+	}
+	set := make(map[string]bool, len(members))
+	for _, raw := range members {
+		member, err := decodeResponseJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("enum member is not one JSON scalar")
+		}
+		if id, err := scalarIdentity(member); err == nil {
+			set[id] = true
+		}
+	}
+	if w.enums == nil {
+		w.enums = map[*json.RawMessage]map[string]bool{}
+	}
+	w.enums[key] = set
+	return set, nil
+}
+
 // validateResponseValue walks the contract and the decoded body together.
 //
-// budget is a REMAINING count, derived by the caller from the body the
-// transport already admitted, so this walk cannot refuse a page the vendor was
-// allowed to send. It is a termination backstop for a contract shape that
-// revisits value nodes, not a limit on how much a vendor may return.
-func (p *Package) validateResponseValue(s ResponseSchema, value any, path string, depth int, budget *int) error {
-	*budget--
-	if depth > maxContractDepth || *budget < 0 {
+// maxResponseDepth bounds the DATA's nesting, and is deliberately not
+// maxContractDepth: that one bounds the contract graph at pre-flight, where the
+// memo stops at an already-checked component and therefore measures a shorter
+// path than this walk takes. Reusing it here refused bodies the pre-flight had
+// accepted. This ceiling sits far above what encoding/json will decode, so it
+// is a stack backstop rather than a bound on how deeply a vendor may nest.
+func (p *Package) validateResponseValue(s ResponseSchema, value any, path string, depth int, walk *responseWalk) error {
+	walk.budget--
+	if depth > maxResponseDepth || walk.budget < 0 {
 		return responseViolation(path, "validation traversal limit exceeded")
 	}
 	if s.Ref != "" {
@@ -268,7 +329,7 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		if !ok {
 			return responseViolation(path, "contract reference is missing")
 		}
-		return p.validateResponseValue(target, value, path, depth+1, budget)
+		return p.validateResponseValue(target, value, path, depth+1, walk)
 	}
 	// A declared null on a nullable schema skips the type check; everything
 	// else has to match the declared type.
@@ -311,23 +372,14 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		if err != nil {
 			return responseViolation(path, "value is outside the declared scalar enum")
 		}
-		found := false
-		for _, raw := range s.Enum {
-			*budget--
-			if *budget < 0 {
-				return responseViolation(path, "validation traversal limit exceeded")
-			}
-			member, err := decodeResponseJSON(raw)
-			if err != nil {
-				return responseViolation(path, "enum contract is invalid")
-			}
-			other, err := scalarIdentity(member)
-			if err == nil && id == other {
-				found = true
-				break
-			}
+		set, err := walk.enumSet(s.Enum)
+		switch {
+		case errors.Is(err, errWalkExhausted):
+			return responseViolation(path, "validation traversal limit exceeded")
+		case err != nil:
+			return responseViolation(path, "enum contract is invalid")
 		}
-		if !found {
+		if !set[id] {
 			return responseViolation(path, "value is outside the declared scalar enum")
 		}
 	}
@@ -339,7 +391,7 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		}
 		for _, name := range responseKeys(s.Properties) {
 			if member, exists := object[name]; exists {
-				if err := p.validateResponseValue(s.Properties[name], member, path+"."+name, depth+1, budget); err != nil {
+				if err := p.validateResponseValue(s.Properties[name], member, path+"."+name, depth+1, walk); err != nil {
 					return err
 				}
 			}
@@ -347,7 +399,7 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 	}
 	if array, ok := value.([]any); ok && s.Items != nil {
 		for i, member := range array {
-			if err := p.validateResponseValue(*s.Items, member, path+"["+strconv.Itoa(i)+"]", depth+1, budget); err != nil {
+			if err := p.validateResponseValue(*s.Items, member, path+"["+strconv.Itoa(i)+"]", depth+1, walk); err != nil {
 				return err
 			}
 		}

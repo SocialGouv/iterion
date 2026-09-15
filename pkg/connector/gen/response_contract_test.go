@@ -575,6 +575,69 @@ func TestSwagger2HonoursProduces(t *testing.T) {
 	})
 }
 
+// TestANullableReferenceIsReportedRatherThanStripped.
+//
+// `{"$ref": …, "x-nullable": true}` is go-swagger's standard way of writing a
+// nullable model reference, and the vocabulary cannot carry it: a contract
+// reference takes no siblings. Treating `x-nullable` as a non-normative
+// extension dropped the nullability and kept the reference, so the contract
+// refused the `null` the vendor had documented — on a mutation, a parked run
+// for an answer the vendor served correctly.
+//
+// The two dialects must agree: the OAS 3 spelling beside the same `$ref` was
+// already refused, and this one now is too.
+func TestANullableReferenceIsReportedRatherThanStripped(t *testing.T) {
+	doc := func(sibling string) string {
+		return `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/issues": {"get": {"tags": ["issue"], "operationId": "issueGet",
+    "responses": {"200": {"description": "ok", "schema": {"$ref": "#/definitions/Issue"}}}}}},
+  "definitions": {
+    "Issue": {"type": "object", "required": ["id"], "properties": {
+      "id": {"type": "integer"},
+      "assignee": {"$ref": "#/definitions/User"` + sibling + `}}},
+    "User": {"type": "object", "properties": {"login": {"type": "string"}}}
+  }
+}`
+	}
+
+	t.Run("x-nullable beside a ref stops the contract", func(t *testing.T) {
+		pkg, report := generateWith(t, doc(`, "x-nullable": true`), true)
+		if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
+			t.Errorf("ResponseSchemaRef = %q — a contract that would refuse the documented null must not ship", ref)
+		}
+		if len(report.Uncontracted) != 1 {
+			t.Fatalf("Uncontracted = %+v, want the response reported", report.Uncontracted)
+		}
+	})
+
+	t.Run("the OAS 3 spelling behaves identically", func(t *testing.T) {
+		pkg, report := generateWith(t, doc(`, "nullable": true`), true)
+		if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
+			t.Errorf("ResponseSchemaRef = %q — the two dialects must agree", ref)
+		}
+		if len(report.Uncontracted) != 1 {
+			t.Fatalf("Uncontracted = %+v, want the response reported", report.Uncontracted)
+		}
+	})
+
+	t.Run("a plain reference still gets its contract", func(t *testing.T) {
+		pkg, report := generateWith(t, doc(``), true)
+		if len(report.Uncontracted) != 0 {
+			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+		}
+		op := onlyOp(t, pkg)
+		if op.Results[0].ResponseSchemaRef == "" {
+			t.Fatal("an ordinary reference lost its contract")
+		}
+		// And it still discriminates: the null it does NOT document is refused.
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1,"assignee":null}`)); err == nil {
+			t.Error("a contract that declares no null must still refuse one")
+		}
+	})
+}
+
 // TestABodyOnlyOneDecoderSeesIsReportedRatherThanDropped.
 //
 // Operations are built from a generic decode; contracts are derived from a

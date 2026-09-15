@@ -617,6 +617,16 @@ func isSpecExtension(key string) bool { return strings.HasPrefix(key, "x-") }
 // would change what the reference means.
 func onlyDescriptiveSiblings(node map[string]any) bool {
 	for key := range node {
+		// `x-nullable` is Swagger 2's spelling of `nullable`, and this
+		// generator MODELS it rather than ignoring it. Skipping it here as a
+		// non-normative extension would drop the null the vendor documented
+		// while the OAS 3 spelling beside the same `$ref` is refused — the two
+		// dialects would disagree about one shape. Reported as uncontracted,
+		// like `nullable`, because a reference carries no siblings: the
+		// vocabulary cannot say "this reference may also be null".
+		if key == "x-nullable" {
+			return false
+		}
 		if isSpecExtension(key) {
 			continue
 		}
