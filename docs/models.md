@@ -199,8 +199,9 @@ Two things about the API worth knowing:
 
 `key` is **opaque** — the studio passes a bot id and the engine never
 interprets it. That is deliberate: iterion the engine must not know that one
-particular catalog bot is "the assistant" ([CLAUDE.md](../CLAUDE.md) — the
-engine stays bot-agnostic), and it means a second conversational bot needs a
+particular catalog bot is "the assistant"
+([agents/bot-authoring.md](agents/bot-authoring.md) — the engine stays
+bot-agnostic), and it means a second conversational bot needs a
 bundle, not an engine change. Storage still bounds this caller-controlled
 namespace: a key is at most **128 bytes**, uses letters/digits plus
 `._:/-`, and each `(tenant, user)` may record at most **64 distinct keys**.
