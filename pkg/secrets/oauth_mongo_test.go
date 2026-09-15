@@ -70,6 +70,70 @@ func TestMongoOAuth_EmptyLabelClearsThroughUpsert(t *testing.T) {
 	}
 }
 
+// The label above is ONE field; this is the same property for the rest,
+// because the bug came back after being fixed there. A record stored
+// not-refreshable could not be marked refreshable again by re-connecting: the
+// $set carried no key for false, Mongo kept true, and the only writer able to
+// clear it is a successful refresh — which the flag itself makes the worker
+// skip. Measured in production: a platform forfait whose re-upload answered
+// `refreshable: true` while every later read said false, until the record was
+// deleted and re-created.
+//
+// TestOAuthRecordUpsertCanClearEveryFieldItCanSet guards the tags with no
+// Mongo; this proves the same thing end to end against the store that has the
+// behaviour, on the re-connect path that clears.
+func TestMongoOAuth_EveryClearableFieldClearsThroughUpsert(t *testing.T) {
+	s, ctx := mongoOAuthStore(t)
+	when := time.Date(2026, 9, 14, 21, 27, 4, 0, time.UTC)
+	rec := OAuthRecord{
+		UserID: "alice", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed"),
+		Scopes:               []string{"user:inference"},
+		AccessTokenExpiresAt: &when,
+		LastRefreshedAt:      &when,
+		NotRefreshable:       true,
+		Fingerprint:          "fp-1",
+		AccountLabel:         "old name",
+	}
+	if err := s.Upsert(ctx, rec); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// A re-connect whose blob carries none of them — the shape the codex
+	// exchange itself answers with, and the shape a fresh claude_code paste
+	// takes when it restores a refresh token.
+	if err := s.Upsert(ctx, OAuthRecord{
+		UserID: "alice", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed-2"),
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+
+	got, err := s.Get(ctx, "alice", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NotRefreshable {
+		t.Error("not_refreshable survived a re-connect: the credential can never be renewed again")
+	}
+	if got.Fingerprint != "" {
+		t.Errorf("fingerprint = %q, want cleared — the previous subscription's identity would meter the new one", got.Fingerprint)
+	}
+	if got.Scopes != nil {
+		t.Errorf("scopes = %v, want cleared", got.Scopes)
+	}
+	if got.AccessTokenExpiresAt != nil {
+		t.Errorf("access_token_expires_at = %v, want cleared — the refresh worker selects on it", got.AccessTokenExpiresAt)
+	}
+	if got.LastRefreshedAt != nil {
+		t.Errorf("last_refreshed_at = %v, want cleared — a stale one reads as 'renewed then' on a record that was pasted", got.LastRefreshedAt)
+	}
+	if got.AccountLabel != "" {
+		t.Errorf("account_label = %q, want cleared", got.AccountLabel)
+	}
+	if string(got.SealedPayload) != "sealed-2" {
+		t.Errorf("sealed_payload = %q, want the re-connected blob", got.SealedPayload)
+	}
+}
+
 // A rename touches two keys and nothing else: the sealed payload and the
 // fingerprint stay whatever the last connect/refresh wrote, even when the
 // caller's copy of the record is stale.
