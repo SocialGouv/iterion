@@ -135,8 +135,75 @@ investigation.
 The `[high]`s are the ones worth remembering: a review of a review-scope fix
 caught the fix turning a *wrong* review into a *silently empty* one — twice.
 
+### The validation round found the hole the fix left open (run `01a0a4ea`)
+
+Ran the MERGED bot inline (`iterion remote runs launch <file.bot>`) against a
+real PR, on the production default path (claude_code / claude-sonnet-5), so the
+fix could be exercised without pushing the platform override. The measurement:
+
+```
+base_is_current: false   base_sha: "main"   changed_files: -1   reviewed_sha: ""
+```
+
+The cloud workspace held **no git checkout at all** — `rev-parse HEAD` returned
+nothing. The fix behaved exactly as designed: it did not collapse to HEAD, did
+not report an empty diff, emitted the ignorance sentinel and routed to the
+reviewers. And the reviewers were honest, with zero invented findings:
+
+> "The review workspace /tmp/iterion contains no checkout at all … no diff could
+> be read and therefore no code was reviewed"
+
+**But that message rides `questions`, which is a NON-BLOCKING channel by
+design** — and `pr_gate` counts findings, not scope. Zero findings out of zero
+files read would have posted `success`. The reviewers became honest; the
+deterministic gate did not. Closed here: `changed_files: -1` now fails the gate
+closed with a note naming the reason, on the exact precedent already in that
+node (an unparseable finding set blocks rather than reporting green by
+omission). `0` stays a real answer.
+
+The wiring was **inert on the first attempt**, and a repo guard caught it:
+`{{outputs.…}}` is not substituted inside a tool node's command body — only
+`input`/`vars`/`secrets`/`run.id` are — so the value would have reached the
+shell as literal text. `TestCatalogToolCommandsResolveTheirRefs` failed with
+exactly that sentence. Worth noting that the behavioural test did **not** catch
+it, because it substitutes the ref itself: the two guards cover different
+halves, and only together do they cover the feature.
+
+### And the round after that: the guard failed OPEN (`Ra43054`)
+
+The scope guard shipped as `SCOPE_FILES == '-1'` — a **blacklist**. Revi caught
+that it leaves `blocking = 0` on every other way the value fails to arrive: an
+unsubstituted template render (*precisely* what the first wiring of that
+mapping produced), `null`, `<nil>`, `None`, empty, prose. Each of those silently
+reinstates the exact defect the change closes, and they are not hypothetical —
+`ai_value`, twenty lines below in the same command, exists to filter those same
+renders out of the sibling `AI_*` mappings.
+
+Inverted to a whitelist, on the house idiom already next door (`ai_tokens`'
+`try: int(...)` + sign check): a **non-negative count** is the only shape that
+means the scope was answered; everything else fails closed. Measured under
+mutation — restoring the blacklist lets **six of the seven shapes through**,
+and only the literal `-1` is still caught.
+
+It also turned a pre-existing fixture red, correctly:
+`TestReviewPRConcisePublication` substitutes *every* `{{…}}` ref, so the new
+mapping arrived empty and blocked. Its cases all describe reviews that DID read
+code, so the fixture was completed with a real count rather than the guard
+weakened.
+
 ### Lessons for next run
 
+- **Write an ignorance guard as a whitelist.** A blacklist of failure shapes is
+  a list of the ones you thought of; the value only has to arrive in a shape you
+  forgot for the gate to go green on nothing. Accept the one shape that means
+  "answered" and refuse everything else.
+- **Rebuild the local binary after a bundle-layout change, and use a control
+  before blaming your edit.** #1241 split this bot into `lib/nodes.bot` /
+  `lib/prompts.bot` / `lib/schemas.bot` mid-session. A binary built an hour
+  earlier rejected the SPLIT bundle with `E001: unexpected token 'import' at
+  top level` — on the pristine files from `main`, which is how that was told
+  apart from a broken edit in seconds. Validate the untouched version first;
+  the answer is almost always the tool, not the change.
 - **Do not hand-launch a review on a PR that has just opened** — the webhook
   lane reviews it, and the two race. This is the review-side twin of the
   fixer-collision rule in `CLAUDE.md`.
@@ -147,6 +214,70 @@ caught the fix turning a *wrong* review into a *silently empty* one — twice.
 - The local `iterion` binary was at **v3.69.0** against a v3.144.0 tree, which
   is why the repo-targeting flags appeared not to exist at all. Check
   `iterion version` before concluding a flag is missing.
+## 2026-09-14 — #1212: verified account meters and credential preview (#945)
+
+- **Result:** automatic [Revi run `01a09ec6-b5b3-7660-8ef1-295031b7260d`](https://iterion.cloud/runs/01a09ec6-b5b3-7660-8ef1-295031b7260d) finished and published [review 5195055206](https://github.com/SocialGouv/iterion/pull/1212#pullrequestreview-5195055206) at 07:37:30 UTC: zero findings, `revi/review=success` on `fdca64e5d9c95da493ccb9740f51ffd83541d9b8`. No manual `/revi` or Billy launch. The run list since before PR creation contained only two completed Revi runs; the other belongs to #1211, with no Billy on #1212.
+- **Provenance:** runtime event identifies engine `v3.132.0`; this is not the PR/main version. `delegate_started` names claw with `openai/gpt-5.6-sol`; actual `llm_request` events name the same GPT model family. Published reviewer effort high (3,982,111 cumulative tokens), convergence medium (26,073), total 4,008,184. The input `mono_family=claude` is not the effective route. Lifecycle `effective_model` is absent, so provenance rests on the actual request events plus publication metadata, not that optional field.
+- **Observed work:** successful read-file events include OAuth/secrets routes and tests, credential preview, pool broker, Studio connections, webhook types and authz. Completed tool events include bash 36, grep 21, read_file 13, glob 2 and the publication tools (event counts are not guaranteed unique logical actions). Six targeted test commands returned `ok`: cloudpublisher 0.063s, server 0.107s, CLI 0.089s, secrets 0.017s, usagecap 0.009s, credpool 0.008s. `DIFF_CHECK_PASS` at seq 256.
+- **Limits/frictions:** Revi's broad race command failed because its runtime had cgo disabled; four broader commands hit the 30s tool timeout. Reading a test log outside the workspace failed for grep/read_file; another bash command exited 1 without a detailed output. Convergence's todo_write was denied by its policy. Ambient Sentry MCP failed initialization with EOF (already tracked by #1208). The reviewer recovered with targeted tests; this run did not establish a full-suite or full-race pass. The separate developer/CI checks provide that evidence.
+- **CI and correction:** every completed CI job except `test` passed, including race, Mongo, NATS, cloud-e2e, Go lint, vulnerability/vendor checks and Helm. The sole failure was Studio source-discipline: `OAuthConnections.tsx:312` used native `<select>` instead of the shared `Select` primitive. Revi reported zero findings despite reading that file; the CI assertion caught this project-specific rule. The correction was prepared without pushing during review and passed the complete Studio suite (227 files / 2022 tests). It will be published once with this bilan, then receive the normal automatic re-review.
+- **Independent validation:** full-race secrets 1.143s / server 147.510s; real Mongo OAuth 1.242s / usagecap 1.079s under race; lint 0 and OpenAPI check PASS. No quota/routing change, merge or deployment. Zero findings is the review's bounded verdict, not proof of perfect defect recall.
+
+## 2026-09-14 — safe MCP startup diagnostics (run 01a09eab, PR #1210)
+
+- Status: **review validated** — [published review](https://github.com/SocialGouv/iterion/pull/1210#pullrequestreview-5194770789), run [01a09eab-4a83-7418-ae51-3ca32edaf9fb](https://iterion.cloud/runs/01a09eab-4a83-7418-ae51-3ca32edaf9fb), exact head `7906726adfa2572992f0256d6e8b69100b8ba121`. Zero findings; security, concurrency, error handling, tests, documentation and #1208/#1203 conformance are included in the stated review scope.
+- Versions and method: source base `8fdbd3de19` (3.143.0), live review-pr platform override, PR-open webhook launch. The run's provenance reports executing engine **v3.132.0 / `505c54c16b60e8bfbda3e758079abbe451fb7c6e`**, launched by **v3.142.1+f1230b15956f**. These are distinct from the PR build. Actual LLM routes: **openai/gpt-5.6-sol / claw**, high effort for review, medium for synthesis.
+- Result: 2026-09-14 06:47:01–06:54:56 UTC. Reviewer 503,338 tokens + synthesis 25,464 = **528,802** at publication. No finding required Billy; no deployment or merge was performed.
+- Tool evidence: reviewer 15 model requests and 24 successful tool calls (16 bash, 5 todo_write, 2 read_file, 1 grep). It ran MCP tests successfully with three `ok` package results (7.074s, 0.654s, 10.905s). Its attempted `-race` validation could not run in the sandbox: CGO was disabled and gcc absent. Several shell calls reached the declared 30s limit; grep rejected an out-of-workspace module-cache path and reported an absent path. Synthesis denied todo_write under its own phase policy. These were explicit failures, not empty successful tool results.
+- Value: the review inspected a deterministic fix for the ambient MCP observability gap found by #1203. The SDK command hook drains stderr into a bounded tail; only fixed categories, exit status and counts reach diagnostics. Controlled tests include secret-bearing stderr/protocol errors, inherited pipes, cancellation and forced shutdown. Local MCP/model tests passed under `-race`; the full PR CI also passed, including test (10m11s), race (12m30s), cloud-e2e and lint.
+- Limits and lesson: the live runtime still reported ambient Sentry initialization degradation. This review does not prove the unmerged diagnostic is deployed or identify the historical EOF's cause. Preserve the distinction between source verification, sandbox test capability, server version and executing engine version; the observed old engine also prevents treating server health alone as the DSL 2 fleet floor.
+
+## 2026-09-14 — #1207: corrected policy identity re-reviewed, release floor still open
+
+- Status: **correction reviewed; delivery remains blocked**. [Review 5194648699](https://github.com/SocialGouv/iterion/pull/1207#pullrequestreview-5194648699), run [01a09e9c-461e-786c-9c8d-9d349feff5b6](https://iterion.cloud/runs/01a09e9c-461e-786c-9c8d-9d349feff5b6), head `ea720e91d410c88c416e7dd38808c0c15b83671e`. All GitHub CI checks passed, including test, race, cloud-e2e and both conformance suites.
+- Result: one high finding **R85d46f**, the same release-floor condition as **Rda4616** on the prior head. No other finding. The registry-identity policy correction and its red-to-green regression test were included in this review. PR #1207 stays draft until `ToolAliasesSince` is aligned with the actual first release containing the resolver and the preceding-release compatibility probe is rerun. No gate override or merge was requested.
+- Telemetry: effective `openai/gpt-5.6-sol` through `claw`, reviewer high 1,184,468 tokens + synthesis medium 21,702 = **1,206,170 accumulated tokens**. This is one follow-up review, not an assertion of perfect recall; the policy counterexample missed in the first review remains documented in that bilan.
+- Billy: the red gate auto-launched [01a09ea5-4156-7103-afd0-f7b484947441](https://iterion.cloud/runs/01a09ea5-4156-7103-afd0-f7b484947441), rejected before any node execution by the hard seven-day quota at 99% (threshold 95%, reset 2026-09-15 21:00 UTC). The session confirmed its PR/head, cancelled the scheduled retry, and verified `cancelled`, with no final commit or branch. No new manual fix or third review is needed for the already-known release condition. Quotas were unchanged.
+
+## 2026-09-14 — catalogue DSL 2 first lot, final-head re-review (run 01a09e90)
+
+- Status: **validated review, draft preparation only** — [published review](https://github.com/SocialGouv/iterion/pull/1206#pullrequestreview-5194515720), run [01a09e90-c572-7152-828a-1378588914ad](https://iterion.cloud/runs/01a09e90-c572-7152-828a-1378588914ad), exact PR1206 head `c0fe9eabd2224623fb822c279da530b631f93ca1`. Zero findings; #1159 remains explicitly partial.
+- Versions and method: source base `882c76afbb` (3.143.0), observed server v3.142.1 / `f1230b15956f0cbd45da2d8945b87475cbeb5382`; live platform review override. An explicit `/revi` comment re-reviewed the draft after the fixture and first-run bilan changes. The published telemetry confirms **openai/gpt-5.6-sol / claw**, high effort for review and medium for synthesis.
+- Result: reviewer 432,204 tokens + synthesis 25,505 = **457,709** at publication. The reviewed scope covers both workflow headers, manifest floors, full-IR equivalence, real request captures, prompt goldens, convergence truth tables, mixed-profile corpus checks and the documented activation prerequisites. The review also reports focused bots/migration/bundlelint/botreplay verification and whitespace validation.
+- Value and follow-up: the final head preserves explicit empty-scope rendering coverage without trimming prompt bytes, alongside the readable nonempty checked-in example. No findings required Billy. The first run's phase-specific policy refusal and declared shell timeout are not themselves tool-wiring defects; the separate ambient Sentry degradation was investigated in audit #1203. No deployment, platform catalogue push, migration of an active campaign or merge was performed.
+- Lesson: a clean exact-head review validates this small preparation scope. It does not satisfy the remaining catalogue migration, actual release-floor record, fleet verification or deployment-wide campaign check, which stay open in #1159.
+## 2026-09-14 — #1211: connector identity history, clean review and one independent counterexample
+
+- Status: **first review published, initial CI green** — [review 5194884352](https://github.com/SocialGouv/iterion/pull/1211#pullrequestreview-5194884352),
+  run [01a09eb5-b298-7543-b45a-9de9e37044a7](https://iterion.cloud/runs/01a09eb5-b298-7543-b45a-9de9e37044a7),
+  head `7553c416eb9524e5ab330503e6be11ca9c95d6d1`. All CI checks passed,
+  including test, race, cloud-e2e and both conformance suites.
+- Method: automatic PR-open review, effective `openai/gpt-5.6-sol` through
+  `claw`. High-effort reviewer 873,176 tokens + medium-effort synthesis
+  25,682 = **898,858 accumulated tokens**, about 13m21s active duration.
+  A tool invocation reached its 30-second deadline; subsequent tool and model
+  events confirm that the reviewer continued. A completed review does not
+  assert that every test ran inside its tool deadlines.
+- Result: **0 findings**. The review covered lock ownership, CLI generation,
+  concurrent/error paths, tests, the Forgejo seed and documentation. No Billy
+  run was needed for this verdict; the session checked that no fixer was active
+  before its next push.
+- Independent counterexample: while this head was under review,
+  `TestNewOperationAvoidsAnExistingOverlayPublicName` reproduced a refusal when
+  a new operation proposed a name already owned by an authored overlay. The
+  old name stayed protected, but the newcomer should have received an unused
+  suffix. Revi did **not** report this availability defect. The correction
+  reserves public names during allocation too, without changing existing
+  generated identities; the regression failed before and passes after it.
+- Validation: complete connector/CLI suites passed with `-race` before the
+  first review. After the additional correction, complete identity/CLI race
+  suites passed again, with zero lint issues. The seed preserves the **503
+  actually shipped** Forgejo operations and changes no existing `ops/` bytes;
+  the old 506 count was the initial PoC measurement, corrected on #1209.
+- Lesson: retain adversarial tests and their red-to-green evidence even when
+  an independently published review is green. The final correction is followed
+  by a separate review on its published head; this entry describes the first
+  run only, not that later verdict.
 ## 2026-09-14 — falsifiable Claw / GPT review proof (#1203)
 
 - Status: **validated end to end on both controls**. The isolated draft [PR #1204](https://github.com/SocialGouv/iterion/pull/1204)
@@ -220,6 +351,14 @@ continued. Engine request/delegate events establish the routed backend/model
 and real tool execution; they are not independent attestation of the provider's
 internal model implementation. Tokens in the review table are cumulative
 usage, not proof of source access or test coverage.
+## 2026-09-13 — ARC Docker startup gate (#981, infra-apps #56)
+
+- Status: **reviewed, activation pending** — [PR #56](https://github.com/SocialGouv/infra-apps/pull/56), head `6cefd0d18ab526971656fe3af3fde69559e9e516`; run [01a09c85-9579-7738-8516-baa9880e9f4c](https://iterion.cloud/runs/01a09c85-9579-7738-8516-baa9880e9f4c) published a review with no findings.
+- Method: visible cloud `review-pr`, mono GPT through Claw, existing Ministères-Sociaux forge connection; exact head and the inotify PR #55 branch as base. No auto-merge, board publishing or deployment.
+- Result: the rendered pod starts dind as a native init sidecar and waits for `docker info` before starting the runner. The historical Mongo failure was a daemon startup race, not missing Docker group membership; the runner user, Docker GID and socket mounts are preserved.
+- Validation: the eleven inotify checks and rendered dind startup checks pass, Helm lint passes, and server dry-runs accept both the changed AutoscalingRunnerSet and its extracted PodSpec on `ovh-dev` Kubernetes 1.31.6. Infrastructure Actions remain disabled, so no remote CI result is claimed.
+- Remaining proof: approved activation, then real ARC `services:`, race and cloud E2E jobs. The separate Iterion CI image adds gcc/libc headers; its real cgo/race smoke fails on upstream and passes on the derived image. Neither local check establishes the historical cloud E2E cause or closes #981.
+- Billy: no findings to fix and no Billy launch; the previously observed weekly Claude cap remains unavailable until September 15. No runtime quota was changed.
 
 ## 2026-09-13 — concise review and linked run ID (#1172)
 
@@ -1193,3 +1332,19 @@ way to perform. Mono now says so in as many words.
 
 <!-- Live probe note: this very PR exercised the 0.7.0 stack end to end —
      PR-open review (immediate), then this push (debounced). -->
+
+
+## 2026-09-13 — literal delimiter rollout consistency (#1201)
+
+[Run 01a09c7b-4575-7eb6-bac0-40c4ec770b5a](https://iterion.cloud/runs/01a09c7b-4575-7eb6-bac0-40c4ec770b5a)
+reviewed `abbce695f26c27a1980de260c0235daab88040cb` and published one medium
+finding, R9f2eac. The implementation and ADR used queue schema 19 for literal
+delimiters, but the mandatory rollout runbook still reserved 19 for connectors.
+The correction adds the real v18-reader refusal proof and a dedicated literal
+rollout checklist, and moves every connector-checklist reference to 19→20.
+
+All CI checks passed on the reviewed head. The correction is documentation-only;
+its numbered transitions were checked against `queue.SchemaVersion=19` and
+`MinSchemaVersion=10`. Billy has no active run on this PR and its Claude weekly
+quota remains blocked until 2026-09-15 21:00 UTC, so R9f2eac was corrected directly
+under the runbook's weekly-cap exception. No Billy run was launched for #1201.

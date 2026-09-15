@@ -83,6 +83,7 @@ data:
   {{- if eq .Values.mode "cloud" }}
   # --- Auth (Phase A) ---------------------------------------------
   ITERION_PUBLIC_URL: {{ .Values.config.auth.publicUrl | quote }}
+  ITERION_CANONICAL_REDIRECT: {{ .Values.config.auth.canonicalRedirect | quote }}
   ITERION_COOKIE_DOMAIN: {{ .Values.config.auth.cookieDomain | quote }}
   ITERION_COOKIE_SECURE: {{ .Values.config.auth.cookieSecure | quote }}
   ITERION_ACCESS_TTL: {{ .Values.config.auth.accessTtl | quote }}

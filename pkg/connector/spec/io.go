@@ -1,7 +1,10 @@
 package spec
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 const (
 	ConnectorFile = "connector.yaml"
 	SchemasFile   = "schemas.yaml"
+	ResponsesFile = "responses.json"
 	OpsDir        = "ops"
 )
 
@@ -23,6 +27,9 @@ const (
 // produces byte-identical output and a diff shows only real change. That is
 // what makes a generated package reviewable in a PR rather than a blob.
 func Write(dir string, p *Package) error {
+	if err := p.ValidateResponseContracts(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, OpsDir), 0o755); err != nil {
 		return fmt.Errorf("spec: create %s: %w", dir, err)
 	}
@@ -30,10 +37,30 @@ func Write(dir string, p *Package) error {
 		return err
 	}
 	if len(p.Schemas) > 0 {
-		sf := schemasDoc{SchemaVersion: SchemaVersion, Connector: p.Connector.ID, Schemas: p.Schemas}
+		sf := schemasDoc{SchemaVersion: p.Connector.SchemaVersion, Connector: p.Connector.ID, Schemas: p.Schemas}
 		if err := writeYAML(filepath.Join(dir, SchemasFile), sf); err != nil {
 			return err
 		}
+	}
+	if len(p.ResponseSchemas) > 0 {
+		// Stamped from the PACKAGE, never from a constant: a document that
+		// names its own version independently of the package it sits in is a
+		// second source of truth, and the day the format moves past 2 it would
+		// mislabel every file it writes. ValidateResponseContracts above has
+		// already refused a package too old to carry contracts at all.
+		rf := responsesDoc{SchemaVersion: p.Connector.SchemaVersion, Connector: p.Connector.ID, Schemas: p.ResponseSchemas}
+		body, err := json.MarshalIndent(rf, "", "  ")
+		if err != nil {
+			return fmt.Errorf("spec: encode %s: %w", ResponsesFile, err)
+		}
+		if len(body) > maxResponseContractBytes {
+			return fmt.Errorf("spec: %s exceeds the contract size limit", ResponsesFile)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ResponsesFile), append(body, '\n'), 0o644); err != nil {
+			return fmt.Errorf("spec: write %s: %w", ResponsesFile, err)
+		}
+	} else if err := os.Remove(filepath.Join(dir, ResponsesFile)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("spec: remove obsolete %s: %w", ResponsesFile, err)
 	}
 	for _, f := range p.Ops {
 		name := f.Domain
@@ -54,6 +81,14 @@ type schemasDoc struct {
 	Connector     string            `yaml:"connector"`
 	Schemas       map[string]Schema `yaml:"schemas"`
 }
+
+type responsesDoc struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Connector     string                    `json:"connector"`
+	Schemas       map[string]ResponseSchema `json:"schemas"`
+}
+
+const maxResponseContractBytes = 4 << 20
 
 func writeYAML(path string, v any) error {
 	body, err := yaml.Marshal(v)
@@ -144,6 +179,9 @@ func read(dir string) (*Package, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("spec: read %s: %w", SchemasFile, err)
 	}
+	if err := readResponseContracts(dir, p); err != nil {
+		return nil, err
+	}
 
 	opsDir := filepath.Join(dir, OpsDir)
 	entries, err := os.ReadDir(opsDir)
@@ -177,6 +215,120 @@ func read(dir string) (*Package, error) {
 		p.Ops = append(p.Ops, f)
 	}
 	return p, nil
+}
+
+func readResponseContracts(dir string, p *Package) error {
+	f, err := os.Open(filepath.Join(dir, ResponsesFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("spec: read %s: %w", ResponsesFile, err)
+	}
+	defer func() { _ = f.Close() }()
+	body, err := io.ReadAll(io.LimitReader(f, maxResponseContractBytes+1))
+	if err != nil {
+		return fmt.Errorf("spec: read %s: %w", ResponsesFile, err)
+	}
+	if len(body) > maxResponseContractBytes {
+		return fmt.Errorf("spec: %s exceeds the contract size limit", ResponsesFile)
+	}
+	// Probe the version before strict fields, just like every other document.
+	if err := checkDocVersion(ResponsesFile, body); err != nil {
+		return err
+	}
+	if err := checkNoDuplicateJSONKeys(ResponsesFile, body); err != nil {
+		return err
+	}
+	var rf responsesDoc
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rf); err != nil {
+		return fmt.Errorf("spec: parse %s: %w", ResponsesFile, err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("spec: %s must contain one JSON document", ResponsesFile)
+	}
+	if p.Connector.SchemaVersion < ResponseContractsVersion {
+		return fmt.Errorf("spec: %s is present but %s declares schema_version %d; response contracts require %d",
+			ResponsesFile, ConnectorFile, p.Connector.SchemaVersion, ResponseContractsVersion)
+	}
+	// One package, one format. A document naming a different version than the
+	// connector it sits beside means the two halves were written by different
+	// iterions, and whichever is older silently lacks fields the other emits.
+	if rf.SchemaVersion != p.Connector.SchemaVersion {
+		return fmt.Errorf("spec: %s declares schema_version %d but %s declares %d",
+			ResponsesFile, rf.SchemaVersion, ConnectorFile, p.Connector.SchemaVersion)
+	}
+	if err := checkDocConnector(ResponsesFile, rf.Connector, p.Connector.ID); err != nil {
+		return err
+	}
+	p.ResponseSchemas = rf.Schemas
+	return nil
+}
+
+// checkNoDuplicateJSONKeys refuses a document that names the same key twice in
+// one object.
+//
+// encoding/json keeps the LAST value and says nothing, so a file holding
+// `"Item"` twice loads as whichever copy came second — while a reviewer diffing
+// the file sees both and has no way to tell which one runs. For a document
+// whose whole job is to state what a vendor may answer, "what was reviewed" and
+// "what is enforced" must be the same text.
+//
+// The token stream is the only place the repetition is still visible; by the
+// time Decode returns, one of the two is gone.
+func checkNoDuplicateJSONKeys(where string, body []byte) error {
+	type frame struct {
+		keys      map[string]bool // nil for an array
+		expectKey bool
+	}
+	const maxDocDepth = 256
+	dec := json.NewDecoder(bytes.NewReader(body))
+	var stack []*frame
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("spec: parse %s: %w", where, err)
+		}
+		top := func() *frame {
+			if len(stack) == 0 {
+				return nil
+			}
+			return stack[len(stack)-1]
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				if len(stack) >= maxDocDepth {
+					return fmt.Errorf("spec: %s nests deeper than %d levels", where, maxDocDepth)
+				}
+				next := &frame{}
+				if delim == '{' {
+					next.keys, next.expectKey = map[string]bool{}, true
+				}
+				stack = append(stack, next)
+				continue
+			default:
+				stack = stack[:len(stack)-1]
+			}
+		} else if f := top(); f != nil && f.keys != nil && f.expectKey {
+			key, _ := tok.(string)
+			if f.keys[key] {
+				return fmt.Errorf("spec: %s names the key %q twice in one object; the second silently replaces the first", where, key)
+			}
+			f.keys[key] = true
+			f.expectKey = false
+			continue
+		}
+		// A completed value: inside an object, the next token is a key again.
+		if f := top(); f != nil && f.keys != nil {
+			f.expectKey = true
+		}
+	}
 }
 
 // checkDocVersion runs the tolerant version pre-pass on EVERY document, not
@@ -244,7 +396,7 @@ func Measure(dir string) (Size, error) {
 		switch {
 		case filepath.Base(path) == ConnectorFile:
 			out.Connector += info.Size()
-		case filepath.Base(path) == SchemasFile:
+		case filepath.Base(path) == SchemasFile || filepath.Base(path) == ResponsesFile:
 			out.Schemas += info.Size()
 		default:
 			out.Ops += info.Size()

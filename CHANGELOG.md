@@ -3,6 +3,156 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.149.2](https://github.com/SocialGouv/iterion/compare/v3.149.1...v3.149.2) (2026-09-15)
+
+### Bug Fixes
+
+* two gaps the [#1258](https://github.com/SocialGouv/iterion/issues/1258) review surfaced — Vary replaced instead of appended, and a package no CI compiles ([#1274](https://github.com/SocialGouv/iterion/issues/1274)) ([53dd19a](https://github.com/SocialGouv/iterion/commit/53dd19ac626576552cc66bd03442d75f38f7ba9b))
+
+    <details><summary>why</summary>
+
+    Both CORS sites wrote their own token with Header().Set("Vary", "Origin"), which discards whatever a middleware upstream recorded. The loss is invisible: the response still looks correct, it is merely cacheable across a dimension it genuinely varies on, so a shared cache can hand one client's representation to another. Found while reviewing #1258, where a middleware adds a Vary token and those two handlers silently dropped it.
+
+    </details>
+
+## [3.149.1](https://github.com/SocialGouv/iterion/compare/v3.149.0...v3.149.1) (2026-09-15)
+
+### Bug Fixes
+
+* **server:** a missing build asset must 404, not masquerade as the SPA shell ([#1258](https://github.com/SocialGouv/iterion/issues/1258)) ([aef881d](https://github.com/SocialGouv/iterion/commit/aef881d0db6c25c106fd209db7d409824d882bfb))
+
+    <details><summary>why</summary>
+
+    The SPA fallback answered every unrouted GET with index.html, /assets/* included. A content-hashed chunk is absent for exactly one reason — the document came from a different build than the replica answering — and 200 text/html turns that into "blocked due to a disallowed MIME type", which no client can act on and which caches as a broken script.
+
+    </details>
+
+## [3.149.0](https://github.com/SocialGouv/iterion/compare/v3.148.2...v3.149.0) (2026-09-15)
+
+### Features
+
+* **connectors:** opt-in v2 response contracts, without replaying a confirmed mutation ([#1266](https://github.com/SocialGouv/iterion/issues/1266)) ([e1c0f05](https://github.com/SocialGouv/iterion/commit/e1c0f05f344b1ad67adf447ce82c7bb10f026b34))
+
+    <details><summary>why</summary>
+
+    Response validation is a NEW authority, not strictness switched on over the existing descriptive schemas: those are a lossy projection (nullable, oneOf, writeOnly dropped, object inferred from properties, enums stringified), so enforcing them would refuse bodies the vendor legitimately sends. Contracts live in their own responses.json, are referenced explicitly per result case, and package format v2 is selected only when they are asked for.
+
+    </details>
+
+## [3.148.2](https://github.com/SocialGouv/iterion/compare/v3.148.1...v3.148.2) (2026-09-15)
+
+### Bug Fixes
+
+* **runtime:** isolate subbot bundles across all four runners ([#1195](https://github.com/SocialGouv/iterion/issues/1195)) ([e8efd95](https://github.com/SocialGouv/iterion/commit/e8efd95e6a074218ff7d2ba8af7d76a61e505066))
+
+    <details><summary>why</summary>
+
+    A resource scope is opened for ANY run carrying a bundle, contributions or a subbot node — `beginRunResources` says so — not only for a child that borrows the workspace's resources. Two places read the scope's existence as proof of borrowing, and both were wrong for the majority of runs that have one.
+
+    </details>
+
+## [3.148.1](https://github.com/SocialGouv/iterion/compare/v3.148.0...v3.148.1) (2026-09-15)
+
+### Bug Fixes
+
+* **runtime:** replace stale fan-out outputs at convergence ([#1187](https://github.com/SocialGouv/iterion/issues/1187)) ([ee47e96](https://github.com/SocialGouv/iterion/commit/ee47e9685dfa710f3eb43e6ff1b0241b32bbcf36))
+
+## [3.148.0](https://github.com/SocialGouv/iterion/compare/v3.147.1...v3.148.0) (2026-09-15)
+
+### Features
+
+* **cloud:** verify subscription accounts and preview credential fallbacks ([#1212](https://github.com/SocialGouv/iterion/issues/1212)) ([694d5d6](https://github.com/SocialGouv/iterion/commit/694d5d68f2a1f27d1e02a1d15fe09c88622498de)), references [#945](https://github.com/SocialGouv/iterion/issues/945) [#945](https://github.com/SocialGouv/iterion/issues/945)
+
+    <details><summary>why</summary>
+
+    The oauth connections row is one space short of the column gofmt computes for the map literal, which is the whole of the test job's failure. No behaviour changes.
+
+    </details>
+* **dsl:** evaluate loop cap expressions at each crossing ([#1192](https://github.com/SocialGouv/iterion/issues/1192)) ([42b5048](https://github.com/SocialGouv/iterion/commit/42b50480865f7441eea81b73cd64390ce09a476f)), references [#1201](https://github.com/SocialGouv/iterion/issues/1201)
+
+### Bug Fixes
+
+* **runtime:** settle fan-out template evidence per item ([#1193](https://github.com/SocialGouv/iterion/issues/1193)) ([7ff4a66](https://github.com/SocialGouv/iterion/commit/7ff4a66b1a9e154957bfe39374f64ba1ae18e353))
+
+## [3.147.1](https://github.com/SocialGouv/iterion/compare/v3.147.0...v3.147.1) (2026-09-15)
+
+### Bug Fixes
+
+* **billy:** verify workflow delivery permission before analysis ([#1199](https://github.com/SocialGouv/iterion/issues/1199)) ([f7db671](https://github.com/SocialGouv/iterion/commit/f7db671d719759c6dd5a8871dc3a8469e6886aa2))
+* **server:** an assistant-mission sweep is joined after the drain and on a project switch, never inside its cancel ([#1259](https://github.com/SocialGouv/iterion/issues/1259)) ([60aabc8](https://github.com/SocialGouv/iterion/commit/60aabc8569f53c186057b13f20ab76414d1ef105)), closes [#1254](https://github.com/SocialGouv/iterion/issues/1254) [#821](https://github.com/SocialGouv/iterion/issues/821) [#848](https://github.com/SocialGouv/iterion/issues/848) [#1250](https://github.com/SocialGouv/iterion/issues/1250) [#1257](https://github.com/SocialGouv/iterion/issues/1257), references [#1254](https://github.com/SocialGouv/iterion/issues/1254) [#821](https://github.com/SocialGouv/iterion/issues/821) [#848](https://github.com/SocialGouv/iterion/issues/848)
+
+    <details><summary>why</summary>
+
+    restartAssistantMissions started a sweep loop for the new coordinator and cancelled the previous one without anything ever waiting for it, and the shutdown did the same: a sweep mid-store-call returned after the cancel did, still writing into the store of a project that had been switched away from — and, in TestRestartAssistantMissionsIsRaceFree, into a temp dir the test was removing (#1254, the class of #821 and #848).
+
+    </details>
+
+## [3.147.0](https://github.com/SocialGouv/iterion/compare/v3.146.10...v3.147.0) (2026-09-15)
+
+### Features
+
+* **connector:** preserve operation and auth identities across regeneration ([#1211](https://github.com/SocialGouv/iterion/issues/1211)) ([047a2cf](https://github.com/SocialGouv/iterion/commit/047a2cf3c388567fc19c96bb02f296de8625b213))
+
+## [3.146.10](https://github.com/SocialGouv/iterion/compare/v3.146.9...v3.146.10) (2026-09-15)
+
+### Bug Fixes
+
+* **mcp:** preserve safe stdio startup diagnostics ([#1210](https://github.com/SocialGouv/iterion/issues/1210)) ([17cdcc6](https://github.com/SocialGouv/iterion/commit/17cdcc6102438837cdb0d93ec09396fc38963570))
+
+## [3.146.9](https://github.com/SocialGouv/iterion/compare/v3.146.8...v3.146.9) (2026-09-15)
+
+### Bug Fixes
+
+* **forge:** preserve existing bot avatars on reconnect ([#1196](https://github.com/SocialGouv/iterion/issues/1196)) ([9cdcef8](https://github.com/SocialGouv/iterion/commit/9cdcef87c932d84f889731c854aef3fe3ee82ccd))
+
+## [3.146.8](https://github.com/SocialGouv/iterion/compare/v3.146.7...v3.146.8) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** the scope guard must be a whitelist, not a list of failures ([#1253](https://github.com/SocialGouv/iterion/issues/1253)) ([84b9cd8](https://github.com/SocialGouv/iterion/commit/84b9cd8577801d8862ccc2979db685df88fb375c)), references [#1246](https://github.com/SocialGouv/iterion/issues/1246)
+
+    <details><summary>why</summary>
+
+    Review finding Ra43054 on #1246, and it is right.
+
+    </details>
+
+## [3.146.7](https://github.com/SocialGouv/iterion/compare/v3.146.6...v3.146.7) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is bound to its path only when it is the file it names and parses clean; fragments are written before the mains ([#1250](https://github.com/SocialGouv/iterion/issues/1250)) ([243efe9](https://github.com/SocialGouv/iterion/commit/243efe9c38a6bab51042f4512a832dbb6a360acb)), references [#1248](https://github.com/SocialGouv/iterion/issues/1248)
+
+    <details><summary>why</summary>
+
+    Third slice behind #1241: Revi's medium and question on #1248, and a local adversarial round on this diff before it reaches the gate.
+
+    </details>
+
+## [3.146.6](https://github.com/SocialGouv/iterion/compare/v3.146.5...v3.146.6) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** zero findings out of zero files read is not an approval ([#1246](https://github.com/SocialGouv/iterion/issues/1246)) ([9406931](https://github.com/SocialGouv/iterion/commit/9406931dad7d347844c799d94a8030b8e6c4dd5d))
+
+    <details><summary>why</summary>
+
+    Found by running the merged bot against a real PR before pushing it to production — the validation the platform override was being held for.
+
+    </details>
+
+## [3.146.5](https://github.com/SocialGouv/iterion/compare/v3.146.4...v3.146.5) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is served whole, published atomically, and the studio keeps the unit it binds ([#1248](https://github.com/SocialGouv/iterion/issues/1248)) ([2ddbfe5](https://github.com/SocialGouv/iterion/commit/2ddbfe59478818e78835e1e65302058f5b2d9962)), references [#1241](https://github.com/SocialGouv/iterion/issues/1241)
+
+    <details><summary>why</summary>
+
+    Follow-up of the embed fix: Revi's second verdict on #1241 and a local adversarial re-attack of the same commit.
+
+    </details>
+
 ## [3.146.4](https://github.com/SocialGouv/iterion/compare/v3.146.3...v3.146.4) (2026-09-15)
 
 ### Bug Fixes

@@ -23,8 +23,8 @@ type Operation struct {
 	// stable across regenerations and quoted verbatim in a `.bot`. It is
 	// derived from the vendor's operationId when there is one, but it is NOT
 	// that id: a vendor rename must not break every workflow that calls it,
-	// so the mapping is recorded (SourceOperationID) and an overlay pins the
-	// id whenever the derivation would move.
+	// so connectors gen reconciles method+path identities with identity.lock.yaml
+	// before applying authored overlay names.
 	ID string `yaml:"id" json:"id"`
 	// SourceOperationID is the vendor's own operationId, kept so a
 	// regeneration can tell "this operation moved" from "this is a new one".
@@ -278,8 +278,12 @@ func (p Param) ExplodeOrDefault() bool {
 type ResultCase struct {
 	// Status is the documented success status (200, 201, 204…).
 	Status int `yaml:"status" json:"status"`
-	// SchemaRef names the response schema; empty for an empty body.
+	// SchemaRef names the legacy descriptive schema. Its absence does not
+	// imply an empty body: that projection omits several vendor shapes.
 	SchemaRef string `yaml:"schema_ref,omitempty" json:"schema_ref,omitempty"`
+	// ResponseSchemaRef opts this status into a v2 response contract. Only
+	// Package.ResponseSchemas is authoritative for response validation.
+	ResponseSchemaRef string `yaml:"response_schema_ref,omitempty" json:"response_schema_ref,omitempty"`
 	// Array marks a response that is a bare array of SchemaRef.
 	Array bool `yaml:"array,omitempty" json:"array,omitempty"`
 	// Description is the vendor's own wording for this case.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // AppConfig is the global GitHub-App identity (registered once on GitHub),
@@ -552,6 +553,13 @@ func AppSlug(ctx context.Context, httpClient *http.Client, apiBase string, cfg A
 // may be nil for an unconstrained (whole-installation) token, or narrow it to
 // specific repositories + a permission subset (least-privilege).
 func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time, opts *InstallationTokenOptions) (string, time.Time, error) {
+	out, err := MintInstallationTokenWithPermissions(ctx, httpClient, apiBase, cfg, installationID, now, opts)
+	return out.AccessToken, out.ExpiresAt, err
+}
+
+// MintInstallationTokenWithPermissions retains the exact permission evidence
+// returned by GitHub, bound to the returned token and its actual expiry.
+func MintInstallationTokenWithPermissions(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time, opts *InstallationTokenOptions) (forge.RefreshedToken, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -563,7 +571,7 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	// asked".
 	jwt, err := signAppJWT(cfg.AppID, cfg.PrivateKeyPEM, now)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: %w", forge.ErrLocalPreflight, err)
+		return forge.RefreshedToken{}, fmt.Errorf("%w: %w", forge.ErrLocalPreflight, err)
 	}
 	var body io.Reader
 	if opts != nil {
@@ -577,7 +585,7 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		if len(payload) > 0 {
 			raw, err := json.Marshal(payload)
 			if err != nil {
-				return "", time.Time{}, fmt.Errorf("%w: marshal installation token request: %w", forge.ErrLocalPreflight, err)
+				return forge.RefreshedToken{}, fmt.Errorf("%w: marshal installation token request: %w", forge.ErrLocalPreflight, err)
 			}
 			body = bytes.NewReader(raw)
 		}
@@ -585,7 +593,7 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		apiBase+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", body)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: build installation token request: %w", forge.ErrLocalPreflight, err)
+		return forge.RefreshedToken{}, fmt.Errorf("%w: build installation token request: %w", forge.ErrLocalPreflight, err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -595,11 +603,11 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", time.Time{}, err
+		return forge.RefreshedToken{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return "", time.Time{}, forge.ErrUnauthorized
+		return forge.RefreshedToken{}, forge.ErrUnauthorized
 	}
 	if resp.StatusCode/100 != 2 {
 		// GitHub's 4xx body always names the cause (e.g. a 422 "there is at
@@ -615,9 +623,9 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		// connection degraded and stops re-minting it every tick, while keeping
 		// GitHub's own actionable message in the wrapped error.
 		if resp.StatusCode == http.StatusUnprocessableEntity && isPermissionsNotGranted(err) {
-			return "", time.Time{}, fmt.Errorf("%w: %w", forge.ErrPermissionsNotGranted, err)
+			return forge.RefreshedToken{}, fmt.Errorf("%w: %w", forge.ErrPermissionsNotGranted, err)
 		}
-		return "", time.Time{}, err
+		return forge.RefreshedToken{}, err
 	}
 	var out struct {
 		Token     string            `json:"token"`
@@ -625,13 +633,14 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		Perms     map[string]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", time.Time{}, err
+		return forge.RefreshedToken{}, err
 	}
 	exp, _ := time.Parse(time.RFC3339, out.ExpiresAt)
+	proof := secrets.NewTokenPermissionProof(out.Token, out.Perms, exp)
 	if exp.IsZero() {
 		exp = now.Add(time.Hour)
 	}
-	return out.Token, exp, nil
+	return forge.RefreshedToken{AccessToken: out.Token, ExpiresAt: exp, TokenProof: proof}, nil
 }
 
 // lastMintedPermissions remembers what the most recent RUNTIME token for an
@@ -1173,12 +1182,13 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 		}
 		opts.Repositories = repos
 	}
-	tok, exp, err := MintInstallationToken(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, conn.InstallationID, now, opts)
+	out, err := MintInstallationTokenWithPermissions(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, conn.InstallationID, now, opts)
 	if err != nil {
 		return forge.RefreshedToken{}, err
 	}
-	RecordRuntimePermissions(conn.InstallationID, opts.Permissions)
-	out := forge.RefreshedToken{AccessToken: tok, ExpiresAt: exp}
+	if out.TokenProof != nil {
+		RecordRuntimePermissions(conn.InstallationID, out.TokenProof.Permissions)
+	}
 	if conn.AppSlug == "" {
 		// A record without the slug names no bot identity (iterionBotLogins
 		// builds "<slug>[bot]" from it). The configured slug serves first, a

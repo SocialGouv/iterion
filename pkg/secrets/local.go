@@ -37,16 +37,17 @@ const LocalSecretsFileName = "secrets.json"
 // the sealed bytes. encoding/json renders []byte as base64, so the sealed
 // blob lands as a base64 string — never plaintext.
 type localSecretRecord struct {
-	ID           string     `json:"id"`
-	ScopeUserID  string     `json:"scope_user_id,omitempty"`
-	Name         string     `json:"name"`
-	Last4        string     `json:"last4,omitempty"`
-	Sealed       []byte     `json:"sealed"`
-	CreatedBy    string     `json:"created_by,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
-	Fingerprint  string     `json:"fingerprint,omitempty"`
-	AllowedHosts []string   `json:"allowed_hosts,omitempty"`
+	ID              string                `json:"id"`
+	ScopeUserID     string                `json:"scope_user_id,omitempty"`
+	Name            string                `json:"name"`
+	Last4           string                `json:"last4,omitempty"`
+	Sealed          []byte                `json:"sealed"`
+	CreatedBy       string                `json:"created_by,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
+	LastUsedAt      *time.Time            `json:"last_used_at,omitempty"`
+	Fingerprint     string                `json:"fingerprint,omitempty"`
+	AllowedHosts    []string              `json:"allowed_hosts,omitempty"`
+	ForgeTokenProof *TokenPermissionProof `json:"forge_token_proof,omitempty"`
 }
 
 type localSecretsFile struct {
@@ -56,33 +57,35 @@ type localSecretsFile struct {
 
 func recordFromGeneric(s GenericSecret) localSecretRecord {
 	return localSecretRecord{
-		ID:           s.ID,
-		ScopeUserID:  s.ScopeUserID,
-		Name:         s.Name,
-		Last4:        s.Last4,
-		Sealed:       s.SealedSecret,
-		CreatedBy:    s.CreatedBy,
-		CreatedAt:    s.CreatedAt,
-		LastUsedAt:   s.LastUsedAt,
-		Fingerprint:  s.Fingerprint,
-		AllowedHosts: s.AllowedHosts,
+		ID:              s.ID,
+		ScopeUserID:     s.ScopeUserID,
+		Name:            s.Name,
+		Last4:           s.Last4,
+		Sealed:          s.SealedSecret,
+		CreatedBy:       s.CreatedBy,
+		CreatedAt:       s.CreatedAt,
+		LastUsedAt:      s.LastUsedAt,
+		Fingerprint:     s.Fingerprint,
+		AllowedHosts:    s.AllowedHosts,
+		ForgeTokenProof: s.ForgeTokenProof,
 	}
 }
 
 func (r localSecretRecord) toGeneric() GenericSecret {
 	return GenericSecret{
-		ID:           r.ID,
-		TenantID:     "",
-		ScopeTeamID:  LocalScopeTeam,
-		ScopeUserID:  r.ScopeUserID,
-		Name:         r.Name,
-		Last4:        r.Last4,
-		SealedSecret: r.Sealed,
-		CreatedBy:    r.CreatedBy,
-		CreatedAt:    r.CreatedAt,
-		LastUsedAt:   r.LastUsedAt,
-		Fingerprint:  r.Fingerprint,
-		AllowedHosts: r.AllowedHosts,
+		ID:              r.ID,
+		TenantID:        "",
+		ScopeTeamID:     LocalScopeTeam,
+		ScopeUserID:     r.ScopeUserID,
+		Name:            r.Name,
+		Last4:           r.Last4,
+		SealedSecret:    r.Sealed,
+		CreatedBy:       r.CreatedBy,
+		CreatedAt:       r.CreatedAt,
+		LastUsedAt:      r.LastUsedAt,
+		Fingerprint:     r.Fingerprint,
+		AllowedHosts:    r.AllowedHosts,
+		ForgeTokenProof: r.ForgeTokenProof,
 	}
 }
 

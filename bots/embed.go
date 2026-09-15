@@ -10,11 +10,11 @@
 //
 // An embedded bot is its main.bot and, for a bot in several files, the
 // lib/ fragments its main imports: Materialize writes them together, so
-// a materialised main is the program it is in the tree. A manifest is
-// not embedded — the engine floor it would declare is met by
-// construction, the binary that carries the bot being the one that reads
-// it. Companion .md design journals and large non-recipe assets are
-// excluded to keep the binary slim. Bundle directories (`<name>/main.bot`
+// a materialised main compiles to the program the .bot unit is in the
+// tree. Nothing else of the bundle travels — not the manifest (the engine
+// floor it would declare is met by construction, the binary that carries
+// the bot being the one that reads it), not the skills its prompts name,
+// not the .md design journals — to keep the binary slim. Bundle directories (`<name>/main.bot`
 // + manifest + skills + prompts + attachments) are NOT embedded either —
 // they have to be loaded by explicit path (`iterion run bots/<name>/`
 // or against the packed `<name>.botz`); embedding them would lose
@@ -48,17 +48,6 @@ import (
 //go:embed feature-dev/main.bot feature-dev/lib whole-improve-loop/main.bot branch-improve-loop/main.bot
 var Files embed.FS
 
-// Get returns the contents of the embedded example with the given
-// basename (e.g. "feature-dev/main.bot" or "skill/human_gate.bot").
-// Returns ok=false if no such embedded recipe exists.
-func Get(name string) ([]byte, bool) {
-	data, err := Files.ReadFile(name)
-	if err != nil {
-		return nil, false
-	}
-	return data, true
-}
-
 // List returns the relative paths (within the embed FS) of all embedded
 // workflow recipes, sorted alphabetically. A fragment — a file under a
 // bot's lib/ directory — is a piece of a recipe, not one, and is not
@@ -83,33 +72,67 @@ func List() []string {
 }
 
 // botFiles lists the embedded files of the bot that owns name — every
-// file under name's directory, sorted, name last — with the directory.
-// name must be an embedded FILE: a miss, or a directory, is
-// fs.ErrNotExist.
-func botFiles(name string) (dir string, paths []string, err error) {
-	name = path.Clean(filepath.ToSlash(name))
-	info, err := fs.Stat(Files, name)
+// file under the bot's directory, in the order they are written — with
+// the bot's directory and name cleaned. name must be an embedded FILE: a
+// miss, or a directory, is fs.ErrNotExist.
+func botFiles(name string) (dir, cleaned string, paths []string, err error) {
+	cleaned = path.Clean(filepath.ToSlash(name))
+	info, err := fs.Stat(Files, cleaned)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	if info.IsDir() {
-		return "", nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+		return "", "", nil, &fs.PathError{Op: "open", Path: cleaned, Err: fs.ErrNotExist}
 	}
-	dir = path.Dir(name)
+	dir = botDirOf(cleaned)
+	var all []string
 	err = fs.WalkDir(Files, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && p != name {
-			paths = append(paths, p)
+		if !d.IsDir() {
+			all = append(all, p)
 		}
 		return nil
 	})
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	sort.Strings(paths)
-	return dir, append(paths, name), nil
+	return dir, cleaned, orderForWrite(dir, all), nil
+}
+
+// botDirOf is the directory of the bot that owns the embedded file at the
+// cleaned slash path: the parent of the nearest lib/ ancestor when the
+// file is a fragment, the file's own directory otherwise — the unit
+// loader's rule, which reads a fragment at any depth under lib/. A
+// top-level directory named lib is a bot of its own.
+func botDirOf(cleaned string) string {
+	dir := path.Dir(cleaned)
+	for d := dir; strings.Contains(d, "/"); d = path.Dir(d) {
+		if path.Base(d) == unit.FragmentDir {
+			return path.Dir(d)
+		}
+	}
+	return dir
+}
+
+// orderForWrite is paths — the files of the bot at dir — in the order they
+// are written: the fragments (under dir/lib/, at any depth) first, then
+// the mains, each group sorted, so a main on disk never wants for a
+// fragment, whatever the names sort like.
+func orderForWrite(dir string, paths []string) []string {
+	var fragments, mains []string
+	prefix := dir + "/" + unit.FragmentDir + "/"
+	for _, p := range paths {
+		if strings.HasPrefix(p, prefix) {
+			fragments = append(fragments, p)
+		} else {
+			mains = append(mains, p)
+		}
+	}
+	sort.Strings(fragments)
+	sort.Strings(mains)
+	return append(fragments, mains...)
 }
 
 // Sources returns the embedded bot that owns name as a files map keyed by
@@ -117,7 +140,7 @@ func botFiles(name string) (dir string, paths []string, err error) {
 // with name's own key — the shape unit.LoadMap reads. ok is false when
 // name is not an embedded file.
 func Sources(name string) (files map[string]string, main string, ok bool) {
-	dir, paths, err := botFiles(name)
+	dir, cleaned, paths, err := botFiles(name)
 	if err != nil {
 		return nil, "", false
 	}
@@ -129,18 +152,18 @@ func Sources(name string) (files map[string]string, main string, ok bool) {
 		}
 		files[strings.TrimPrefix(p, dir+"/")] = string(data)
 	}
-	return files, strings.TrimPrefix(paths[len(paths)-1], dir+"/"), true
+	return files, strings.TrimPrefix(cleaned, dir+"/"), true
 }
 
-// Materialize writes the bot that owns name — every embedded file under
-// name's directory, so a bot in several files lands with the fragments
-// its main imports — under root, and returns the on-disk path of name.
-// A file whose cached bytes already match is left alone; the fragments
-// are written before the main, so a main on disk never wants for one.
+// Materialize writes the bot that owns name — every embedded file of it,
+// so a bot in several files lands with the fragments its main imports —
+// under root, and returns the on-disk path of name. A file whose cached
+// bytes already match is left alone; the fragments are written before the
+// mains, whichever file name is, so a main on disk never wants for one.
 // name must be an embedded FILE: a miss, or a directory, is
 // fs.ErrNotExist, and nothing is written.
 func Materialize(root, name string) (string, error) {
-	_, paths, err := botFiles(name)
+	_, cleaned, paths, err := botFiles(name)
 	if err != nil {
 		return "", err
 	}
@@ -153,12 +176,15 @@ func Materialize(root, name string) (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(root, filepath.FromSlash(paths[len(paths)-1])), nil
+	return filepath.Join(root, filepath.FromSlash(cleaned)), nil
 }
 
-// writeIfChanged writes data at dst unless the file already holds it.
-// Bytes are compared, not lengths: a same-length edit would otherwise be
-// served from the stale copy forever.
+// writeIfChanged writes data at dst unless the file already holds it, and
+// publishes it atomically — a temp file beside dst, renamed into place —
+// so a reader opening dst while another materialisation of the same bot
+// rewrites it sees the previous bytes or the new ones, never a truncated
+// file. Bytes are compared, not lengths: a same-length edit would
+// otherwise be served from the stale copy forever.
 func writeIfChanged(dst string, data []byte) error {
 	if existing, err := os.ReadFile(dst); err == nil && bytes.Equal(existing, data) {
 		return nil
@@ -166,5 +192,20 @@ func writeIfChanged(dst string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
 }

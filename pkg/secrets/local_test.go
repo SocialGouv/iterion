@@ -70,6 +70,64 @@ func TestFileStore_RoundTripSealedAndResolve(t *testing.T) {
 	}
 }
 
+// A permission proof and its sealed token must survive a fresh file-store
+// instance, and rotating the token must never retain the old proof.
+func TestFileStore_TokenPermissionProofSurvivesRestartAndRotation(t *testing.T) {
+	sealer := newTestSealer(t)
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	st, err := NewFileGenericSecretStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	token := "ghs_permission_roundtrip"
+	rec := sealedRec(t, sealer, "forge_token", token, "github.com")
+	rec.ForgeTokenProof = NewTokenPermissionProof(token, map[string]string{"workflows": "write", "contents": "write"}, now.Add(time.Hour))
+	if err := st.Create(t.Context(), rec); err != nil {
+		t.Fatal(err)
+	}
+	reopen := func() (*FileGenericSecretStore, GenericSecret) {
+		t.Helper()
+		fresh, err := NewFileGenericSecretStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := fresh.Get(t.Context(), rec.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := OpenGenericSecret(sealer, got.ID, got.SealedSecret)
+		if err != nil || string(raw) != token {
+			t.Fatalf("sealed token did not survive restart: %v", err)
+		}
+		return fresh, got
+	}
+	st, got := reopen()
+	if !got.ForgeTokenProof.Allows(token, "workflows", now) || !got.ForgeTokenProof.Allows(token, "contents", now) {
+		t.Fatal("file store dropped the matching token's permission proof")
+	}
+	token = "ghs_rotated_narrow_permission"
+	if err := SealInto(sealer, &got, token); err != nil {
+		t.Fatal(err)
+	}
+	got.ForgeTokenProof = NewTokenPermissionProof(token, map[string]string{"contents": "write"}, now.Add(2*time.Hour))
+	if err := st.Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+	st, got = reopen()
+	if got.ForgeTokenProof.Allows(token, "workflows", now) || !got.ForgeTokenProof.Allows(token, "contents", now) {
+		t.Fatal("rotation did not replace the proof with the new token's narrower grant")
+	}
+	token = "ghs_manual_replacement"
+	if _, _, err := st.UpsertByName(sealer, rec.Name, token, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	_, got = reopen()
+	if got.ForgeTokenProof != nil {
+		t.Fatal("manual replacement retained provider permission evidence")
+	}
+}
+
 func TestLayered_ProjectOverridesGlobal(t *testing.T) {
 	sealer := newTestSealer(t)
 	dir := t.TempDir()

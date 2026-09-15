@@ -47,6 +47,9 @@ type Package struct {
 	Connector Connector
 	Ops       []OpsFile
 	Schemas   map[string]Schema
+	// ResponseSchemas are explicit v2 contracts, read only from responses.json.
+	// The older Schemas projection is never used to validate a response.
+	ResponseSchemas map[string]ResponseSchema
 }
 
 // Operations flattens every domain's operations, sorted by id, so callers
@@ -240,6 +243,9 @@ func checkRequirement(c *Connector, req SecurityRequirement, where string) error
 // making judgements it has no basis for, and a package that only satisfies
 // this one must never reach a launch.
 func (p *Package) ValidateGenerated() error {
+	if err := p.ValidateResponseContracts(); err != nil {
+		return err
+	}
 	c := &p.Connector
 	if c.SchemaVersion > SchemaVersion {
 		return fmt.Errorf("connector %q: schema_version %d newer than supported %d (upgrade iterion)", c.ID, c.SchemaVersion, SchemaVersion)

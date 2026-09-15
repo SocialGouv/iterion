@@ -130,6 +130,11 @@ type Config struct {
 	// https://iterion.example) used to build OIDC redirect URIs.
 	PublicURL string
 
+	// CanonicalRedirect sends browser document navigations arriving on any
+	// other host to PublicURL. /api/ is never redirected, so webhooks, the
+	// CLI and the SDK keep answering on every host.
+	CanonicalRedirect bool
+
 	// SignupMode is "open" or "invite_only"; surfaced to the SPA.
 	SignupMode string
 

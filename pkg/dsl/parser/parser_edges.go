@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // isTemplate reports whether s carries a `{{ ... }}` substitution marker,
@@ -252,15 +253,15 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 		p.addError(DiagExpectedToken, t, "expected loop name after 'as'")
 	}
 	p.expect(TokenLParen)
-	// The cap is either a literal int (`as fix_loop(3)`) or a quoted
-	// template (`as fix_loop("{{outputs.X.cap}}")`) resolved at runtime.
+	// The cap is a literal int, a quoted template or expression, or unbounded.
+	// Expressions use the same quoted surface as compute and when.
 	// Anything else is an error reported at the offending token; we
 	// still consume it to keep the parser advancing past the cap.
 	switch nt := p.peek(); {
 	case nt.Type == TokenInt:
 		lc.MaxIterations = p.expectInt()
 	case nt.Type == TokenString:
-		// A quoted cap is a runtime template (`as fix("{{vars.cap}}")`) —
+		// A quoted cap is a runtime template or expression —
 		// UNLESS it is a plain integer literal (`as fix("2")`), which is an
 		// easy mistake since every template form is quoted. Treat that as the
 		// integer it obviously is rather than a template with no refs, which
@@ -270,9 +271,10 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 			lc.MaxIterationsExpr = s
 		} else if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 			lc.MaxIterations = n
+		} else if _, err := expr.Parse(s); err != nil {
+			p.addError(DiagExpectedToken, nt, fmt.Sprintf("loop %q cap %q: invalid expression: %v", lc.Name, s, err))
 		} else {
-			p.addError(DiagExpectedToken, nt,
-				fmt.Sprintf("loop cap %q must be an unquoted integer, a template, or 'unbounded' — a quoted non-numeric string has no template refs and would silently cap the loop at 0", s))
+			lc.MaxIterationsExpr = s
 		}
 	case tokenAsIdent(nt) == "unbounded":
 		// `as <name>(unbounded)` or `as <name>(unbounded <fuel>)`: the loop

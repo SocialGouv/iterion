@@ -15,7 +15,7 @@ what you fall back to when neither ordering can spare the queue.
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v12 consumer accepts v10/v11 backlog explicitly;
+  directions. The current v19 consumer accepts v10–v18 backlog explicitly;
   this is not implicit forward compatibility.
 - **Server first by default.** Both orders can park a message; only one park is
   replayable. Old runners rejecting the new version park messages a DLQ replay
@@ -362,16 +362,53 @@ This version also carries `ModelOverride.Effort`. The assistant branch's
 former v10/v11 additions are renumbered to v15 when integrated with main's
 v14 contract, so existing main runners reject choices they cannot enforce.
 
-## Checklist: v17 → v18 (connector packages) — NOT YET BUMPED
+## Checklist: v17 → v18 (loop cap expressions)
 
-v18 will carry the connector packages a run resolved at launch
+v18 carries AST loop caps that may contain expressions over vars and outputs.
+An older runner cannot compile that meaning of `max_iterations_expr`; it must
+reject the envelope before admission. Every new publication uses v18, including
+runs whose loop caps are still literals or templates.
+
+- [x] Schema version is 18 and `MinSchemaVersion` remains 10.
+- [x] The AST JSON retains the authored cap for runner-side compilation.
+- [ ] Roll out v18-capable runners first, then the server publisher. This order
+      is safe because the minimum accepted version remains 10; the new runners
+      can still consume all messages accepted by the outgoing fleet.
+- [ ] Confirm the fleet reports support before publishing v18. A rollback to
+      the old publisher emits v17, which the new runners continue to accept.
+
+## Checklist: v18 → v19 (literal template delimiters)
+
+v19 carries the canonical `{{"{{"}}` source form. It is rendered once as
+literal opening braces in prompts, tools and runtime mappings, after compile-time
+includes and group specialization. An older renderer cannot implement these
+semantics and must reject the envelope before AST decoding. Every new
+publication uses v19, including workflows without a literal delimiter.
+
+- [x] Schema version is 19 and `MinSchemaVersion` remains 10.
+- [x] The AST preserves the canonical source form through transport; all final
+      rendering sites understand the literal delimiter.
+- [x] A real v19 message from a compiled literal prompt was refused by the actual
+      v18 reader at `bd3906a725ee4b24fd7669e58e57a0556dbb2ce1` before AST
+      decoding: `queue: schema version: 19 unsupported (want 10–18)`.
+- [ ] Roll out v19-capable runners first, then the server publisher. The minimum
+      remains 10, so the new window includes everything the outgoing fleet
+      accepts and the runner-first precondition above holds.
+- [ ] Confirm fleet support before publishing v19. Rolling the publisher back
+      emits v18, which the new runners still accept. Keep the new runners until
+      no v19 messages remain queued or resumable; an old runner cannot execute
+      those literals safely.
+
+## Checklist: v19 → v20 (connector packages) — NOT YET BUMPED
+
+v20 will carry the connector packages a run resolved at launch
 (`ConnectorRefs`), so a runner materialises the same immutable package the
 publisher compiled against. See [ADR-098](adr/098-connector-catalog.md).
 
 **Nothing is bumped yet**, and this entry exists so the ordering is decided
 before it is rather than discovered during a deploy. The trap to avoid is
 specific: `SchemaVersion` is stamped on **every** message, so the moment the
-server emits v18, a fleet of digest-pinned v17 runners rejects *all* new
+server emits v20, a fleet of digest-pinned v19 runners rejects *all* new
 messages — connector runs and ordinary ones alike. That parks the whole
 queue, not one feature.
 
@@ -380,15 +417,15 @@ queue, not one feature.
       is 651 KiB and GitHub 4.8 MiB, so the payload goes out of band beside
       the IR's own offload — ADR-075).
 - [ ] `MinSchemaVersion` stays **10**. The addition is additive from a new
-      runner's point of view, so new runners keep consuming v17 for the whole
+      runner's point of view, so new runners keep consuming v19 for the whole
       window.
 - [ ] **Runners first, then the server** — the inverse of the default order,
       and legitimately so per the rule above: nothing below
       `MinSchemaVersion(new)` exists, so rolling runners first parks nothing.
       The runner is digest-pinned, so this is an explicit values bump, not a
       restart.
-- [ ] Only after the runner fleet reports v18-capable: let the server publish
-      v18. A rollback then re-publishes v17, which the new runners still
+- [ ] Only after the runner fleet reports v20-capable: let the server publish
+      v20. A rollback then re-publishes v19, which the new runners still
       accept.
 - [ ] A package referenced by a queued or resumable run is **retained**. A
       reference plus a drift guard cannot retrieve a package replaced after

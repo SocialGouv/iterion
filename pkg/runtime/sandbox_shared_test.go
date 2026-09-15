@@ -225,6 +225,11 @@ func (b bindOnly) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts)
 func (b bindOnly) Cleanup(ctx context.Context) error { return b.r.Cleanup(ctx) }
 
 func sharedTestEngine(t *testing.T, wf *ir.Workflow, workDir string, share *SharedSandbox, extra ...EngineOption) (*Engine, *sandboxCapturingExecutor, store.RunStore) {
+	// These fake commands run on the host: use a real test-owned pod copy,
+	// never the literal /workspace path used in the logical driver examples.
+	shareCopy := *share
+	share = &shareCopy
+	share.WorkspaceFolder = t.TempDir()
 	t.Helper()
 	st := tmpStore(t)
 	exec := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}

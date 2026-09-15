@@ -130,3 +130,31 @@ You promote cards, observe their states, and report. You do NOT launch
 or reload the dispatcher, do NOT read child-run internals, do NOT touch
 caps, do NOT resume paused runs. Everything beyond the board is a
 recommendation to the operator, with the exact command they'd run.
+
+## A forge bot keeps its existing avatar
+
+At connect time, automatic branding preserves existing avatars, including
+reconnects and Gravatar images. If inspection fails, `avatar_error` names why
+and the connection remains active. Read [the brand runbook](../../../docs/brand.md)
+before diagnosing a missing bot face or requesting an explicit replacement.
+
+## GitHub workflow edits need a delivery-capable token
+
+Billy 1.8 refuses a `.github/workflows/` diff before planning when the
+runtime token lacks verified `workflows:write`. Treat
+`FORGE_PERMISSION_DENIED` as an operator configuration decision: approve
+App delivery permissions deliberately, refresh the token and relaunch.
+Installation grants alone do not prove the narrower token's capabilities.
+Do not schedule repeated analysis attempts against the same missing proof.
+See [Revi/Billy delivery preflight](../../../docs/revi-billy-loop.md).
+
+## Child resources differ from the parent
+
+When a subbot cannot read its skills/tools, or its parent sees child resources
+later, consult [Child bundle resources](../../../docs/groups-iteration-subbots.md#child-bundle-resources).
+Check the child's `FilePath`/`BundlePath` and `sandbox_devbox_provisioned`
+event (`target`, `bin_dirs`, `errors`). A workflow inside a bundle, including
+`step.bot` beside `main.bot`, inherits that bundle; a standalone file outside
+one has no bundle resources. Shared-workspace resources are borrowed for each
+active pass and restored on return, including pauses; child devbox PATH never replaces the
+parent's. A restoration error names a retained backup to inspect.

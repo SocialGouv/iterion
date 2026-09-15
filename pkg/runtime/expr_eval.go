@@ -64,9 +64,18 @@ func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[stri
 		return resolveRunPath(rs, path)
 	}
 	return &expr.Context{
-		Vars:      mapResolver(sc.vars),
-		Input:     mapResolver(input),
-		Outputs:   keyedMapResolver(sc.outputs),
+		Vars:  mapResolver(sc.vars),
+		Input: mapResolver(input),
+		Outputs: func(path []string) any {
+			if len(path) == 0 {
+				return sc.outputs
+			}
+			out, fields := matchOutputNode(e.workflow, sc.outputs, path)
+			if out == nil {
+				return nil
+			}
+			return drillPath(out, fields)
+		},
 		Artifacts: keyedMapResolver(sc.artifacts),
 		Loop:      loopResolver,
 		Run:       runResolver,

@@ -845,6 +845,12 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 	}
 	subs := make(map[string]string, len(refs))
 	for _, ref := range refs {
+		if ref.Kind == ir.RefLiteralOpen {
+			// Delimiter escaping is source syntax, not a dynamic value. Do
+			// not shell-escape/JSON-quote it or rescan the emitted braces.
+			subs[ref.Raw] = "{{"
+			continue
+		}
 		var val any
 		var handled bool
 		switch {
