@@ -39,11 +39,24 @@ push / `--squash` without `--auto`). Required checks: `test`, `race`,
 
 **Revi merge gate.** Revi (`bots/review-pr`) posts a
 deterministic `revi/review` commit status on a PR head — `success` when 0
-findings meet `gate_severity` (default `high`), else `failure`. Add that
+findings meet `gate_severity` (default `high`) **and** the review actually read
+a diff, else `failure`. Add that
 context to another repository's required checks to make its verdict block the
 merge; it is already required here by ruleset 18857412. The verdict is a COUNT
 computed in the bot, never an LLM judgment; the review comments stay
-non-blocking advice. Pairs with the webhook
+non-blocking advice.
+
+**It fails closed, and that is what a red check with nothing on it means.** A
+run whose scope never resolved (`diff_precheck` returned no non-negative file
+count — no checkout in the workspace, an unreachable base) or whose findings
+came back unparseable forces the count to 1 and posts `failure` with an
+explicit `note` that REPLACES the rendered description — *"no diff could be
+read, so no code was reviewed - gate fails closed"*. So a red `revi/review`
+carrying zero findings and no inline comments is that signal, not a broken
+gate: re-run `/revi` once the workspace carries a checkout, and do not go
+hunting for a blocking finding that was never published
+([../../bots/review-pr/lib/nodes.bot](../../bots/review-pr/lib/nodes.bot) —
+`scope_unresolved`). Pairs with the webhook
 `review_on_sync` opt-in (re-review each push so the status tracks the fixed
 head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
 never gate). The forge-agnostic write path is `forge.CommitStatusClient`
@@ -146,7 +159,17 @@ appearing (or not) in `iterion remote runs list`.
 
 ## Release and changelog
 
-- **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
+- **tests.yml** — eleven jobs, on push to `main`, on pull requests and in
+  `merge_group`: `test`, `race`, `golangci`, `vendor-check`,
+  `mongo-conformance`, `nats-conformance`, `cloud-e2e`, `helm-lint`,
+  `govulncheck`, `desktop-vet-linux`, `desktop-vet-cross`. The first five plus
+  `revi/review` are the required checks ([above](#the-merge-queue)); the other
+  six carry `if: github.event_name != 'merge_group'` so they advise on the PR
+  without holding a runner slot the queue needs. `gofmt` and `go vet` are
+  **steps of the `test` job**, not jobs of their own — alongside the studio
+  build, the studio lint/typecheck/unit tests, the OpenAPI and Helm drift
+  checks, the unit tests and the e2e suite. `golangci` is the separate curated
+  `golangci-lint` pass ([.golangci.yml](../../.golangci.yml)).
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`.
   release-it writes the new section into [CHANGELOG.md](../../CHANGELOG.md) as part of the

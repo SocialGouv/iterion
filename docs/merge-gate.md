@@ -14,7 +14,13 @@ The split is deliberate:
   above a severity floor and the server posts a `revi/review` **commit
   status** (`success` when the count is 0, else `failure`). The gate is a
   count, never the review verdict. Non-blocking [`questions`](#questions)
-  never count.
+  never count. Two conditions force that count to 1 and **fail the gate
+  closed** whatever the findings say, because a green status by omission is
+  the one failure mode a gate must not have: a **scope that never resolved**
+  (zero findings out of zero files read is not an approval) and **findings
+  that were not machine-readable**. Both post `failure` carrying an explicit
+  `note` that names the real reason, instead of claiming a blocking finding
+  nobody can find.
 - **A human arbitrates** — a false positive is cleared by pushing a fix
   (which re-reviews) or, for a disputed finding, by a maintainer override
   (see [Overriding](#overriding-a-finding)).
@@ -37,7 +43,9 @@ PR opened / pushed ──▶ launch claims the head:  revi/review = pending
                               ├─ inline comments  (advisory)
                               └─ revi/review status on the head SHA
                                     success  ⟺  0 findings ≥ gate_severity
-                                    failure  ⟺  ≥1 finding  ≥ gate_severity
+                                                AND the scope resolved
+                                                AND the findings parsed
+                                    failure  ⟺  anything else (fails closed)
 
                run dies without publishing ──▶ reconciler posts failure
                                                (event + 1-min sweep)
@@ -56,14 +64,25 @@ claim](#inflight) and [the repair](#interrupted).
    would never appear on the pushed SHA and the merge would deadlock.
 2. **Verdict.** The bot's deterministic `publish_review` node counts findings
    whose severity is at or above `gate_severity` (default `high`), and sends
-   `{enabled, blocking_count, threshold, total_findings}` in the publish
-   payload.
+   `{enabled, context, blocking_count, threshold, total_findings, note}` in
+   the publish payload. The count is forced to **1** — fail closed — when the
+   review's scope never resolved (`SCOPE_FILES` is not a non-negative integer:
+   the `-1` sentinel, an empty value, `None`, or a template that was never
+   substituted — a whitelist, because the blacklist form fails *open* on every
+   shape it forgot) or when its findings could not be parsed. `note` then
+   **replaces** the server's rendered description, so the check reads *"no
+   diff could be read, so no code was reviewed - gate fails closed"* rather
+   than inventing a blocking finding the operator would go hunting for
+   ([`bots/review-pr/lib/nodes.bot`](../bots/review-pr/lib/nodes.bot),
+   [`pkg/server/forge_publish.go`](../pkg/server/forge_publish.go)).
 3. **Status.** The server (`/api/v1/forge/publish-review`) resolves the PR
    head SHA and posts the `revi/review` commit status through the team
    connection's **live** forge client (a GitHub App mints a fresh token per
    call — no workspace credential, no ~1h token freeze). Forge-agnostic:
    GitHub commit-status / GitLab commit status / Forgejo commit status all
    expose the same primitive ([`pkg/forge/status.go`](../pkg/forge/status.go)).
+   *Reading* a status back is a second, optional capability that Forgejo does
+   not implement — it costs no gating, only the repairs ([below](#lister)).
 
    > **Forge permission (required).** Posting a commit status needs write on
    > statuses: a **GitHub App** must grant **Commit statuses: Read and write**
@@ -524,6 +543,22 @@ bot.
 > changed as a *feature*; only this repo's choice did. Re-arming procedure:
 > [agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused).
 
+> <a name="lister"></a>**Provider support: GitHub and GitLab only.** *Posting*
+> the verdict is forge-agnostic — `CommitStatusClient` is implemented by all
+> three providers. But every lane that has to **read** the statuses already on
+> a head SHA needs the separate, optional `CommitStatusLister`
+> ([`pkg/forge/status.go`](../pkg/forge/status.go)), and only GitHub
+> (`AdminClient` and `AppClient`) and GitLab implement it:
+> [`pkg/forge/forgejo/status.go`](../pkg/forge/forgejo/status.go) carries
+> `SetCommitStatus` and nothing else, so **Forgejo/Gitea cannot be read back**.
+> On a Forgejo connection `gateStatusOn` reports the gate unreadable and each
+> reader abstains by design — this lane never launches, [the
+> repair](#interrupted) never posts a verdict it cannot tell from a real one,
+> and [the in-flight claim](#inflight) is never written. Setting
+> `auto_fix_on_gate_failure: true` on a Forgejo repo is accepted and then
+> inert. Such a provider still **gates** normally; what it loses is every
+> after-the-fact repair.
+
 By default nothing happens when the gate goes red: the findings are on the pull
 request and the developer decides — fix them, argue one, or hand the work over
 with a `/command`. That is deliberate. A reviewer already leaves the human in
@@ -776,7 +811,8 @@ Two rules keep the claim from doing harm:
   launching on a head another bot already judged must not blank that judgment
   back to "running". It writes only over nothing, over a previous claim, or
   over a synthetic interruption (a fresh review on that head IS the recovery).
-  A provider iterion cannot read statuses back from is left alone.
+  A provider iterion cannot read statuses back from is left alone — on
+  Forgejo the claim is therefore never posted at all ([why](#lister)).
 - **Every consumer knows the marker, and whose it is.** A guard written as
   "this head already has a status, so someone answered" would read the claim as
   a verdict — which would make posting it *worse* than the absence, by
@@ -821,7 +857,9 @@ that from doing harm of its own:
   verdict landed — not any bookkeeping of ours, which a second replica would
   not share and a restart would lose. A provider iterion cannot read statuses
   back from is left alone: overwriting a real success with a synthetic failure
-  is worse than the problem being fixed.
+  is worse than the problem being fixed. Today that means **Forgejo**, the one
+  provider with no `CommitStatusLister` ([why](#lister)) — a stuck pull request
+  there stays stuck.
 - **It acts only where the operator pinned the gate context.** Holding a
   publish grant is not owing a verdict: the server mints one for ANY bot
   launched with a `pr_url` — the brancher, the docs amender, the implementer —
