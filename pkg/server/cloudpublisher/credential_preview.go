@@ -341,7 +341,8 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 	}
 	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
 	defer cancel()
-	readings, err := x.p.usageCaps.Latest(lctx, usagecap.Key(backend, meter, fp))
+	key := usagecap.Key(backend, meter, fp)
+	readings, err := x.p.usageCaps.Latest(lctx, key)
 	if err != nil {
 		c.Reason = "Usage-window observation unavailable; the launch fails open."
 		return false
@@ -368,7 +369,10 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		c.ReopensAt = &until
 		return true
 	}
-	if oauth && x.p.usageProbe != nil && ((secrets.IsAccountFingerprint(fp) && len(readings) == 0) || x.p.staleReadingsSuggestClosed(ctx, readings, x.out.ObservedAt)) {
+	// The same decision the launch makes, read through one predicate: a
+	// preview that announced a probe the launch then skipped would be
+	// telling the operator about work that never happens.
+	if oauth && x.p.usageProbe != nil && (x.p.initialProbeWanted(key, fp, readings, x.out.ObservedAt) || x.p.staleReadingsSuggestClosed(ctx, readings, x.out.ObservedAt)) {
 		c.State = "probe_required"
 		c.Reason = "Launch will probe this new or stale account; its availability is unknown until then."
 		return false
