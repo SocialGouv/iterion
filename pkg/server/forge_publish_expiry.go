@@ -28,12 +28,16 @@ var errForgePublishGrantUnavailable = errors.New("forge publish grant unavailabl
 //
 // It is not zero because the run's death is exactly when the grant is needed
 // most: the merge-gate reconciler reads it to post the synthetic verdict a
-// dead review owes, and its net — the sweep — re-offers the same run for
-// gateSweepLookback afterwards. Revoking on the outcome event would race the
+// dead review owes, and its net — the sweep — re-offers the same run until
+// gateSweepHorizon afterwards. Revoking on the outcome event would race the
 // repair and silence it ("its publish grant is expired or revoked").
 //
+// Derived from that horizon rather than restated, because the two are one
+// decision: a grant that dies first turns every later pass of the net into a
+// guaranteed abstain, which reads exactly like a net that is still trying.
+//
 // Past that window nothing revisits the run, so the grant has no reader left.
-const forgePublishPostRunGrace = gateSweepLookback + 30*time.Minute
+const forgePublishPostRunGrace = gateSweepHorizon + 30*time.Minute
 
 // forgePublishExpiryName is the eventbus subscriber name (the NATS queue
 // group), so one replica shortens each grant.

@@ -873,9 +873,26 @@ trace of having considered any of them.
 
 So a **sweep** offers the same runs to the same repair a second time: every
 minute, terminal runs in a bounded window (a 3-minute grace so the two paths
-race only on the dropped ones, a 60-minute lookback so it never reaches back
-and paints a failure onto a long-merged PR). The repair re-reads the live
-status before writing, so the redundant offer costs one API read.
+race only on the dropped ones, a 60-minute lookback on the ordinary pass). The
+repair re-reads the live status before writing, so the redundant offer costs
+one API read.
+
+Every 30th pass reaches the full **horizon** instead — `gateSweepHorizon`,
+anchored on `retrypolicy.DefaultMaxWait` (8 days) — and so does the first pass
+after a start or a rollout. The outage this net exists for is a provider usage
+window, and a weekly one shuts for days: measured 2026-09-15, seven runs died
+on one weekly cap and two gating runs kept a `pending` required check for 81
+hours, because every pass that could have answered them had stopped 80 hours
+earlier. Splitting the two cadences is what makes a horizon of days affordable
+— the per-minute scan stays the size of an hour.
+
+What keeps a long reach safe is not the bound but the repair's own live reads:
+it stands down on a closed or merged pull request, on a head that has moved
+since the run reviewed it, and on a check that already carries a real verdict.
+And what bounds it is the **grant** — `forgePublishPostRunGrace` is *derived*
+from the horizon for that reason, since a grant that expired first would turn
+every later pass into a guaranteed abstain that reads exactly like a net still
+trying.
 
 Telling "already answered" from "must escalate" is what makes the second offer
 safe, and the answer turns on WHOSE marker is on the head. **Its own** — the
@@ -922,8 +939,9 @@ run itself.
 A TTL sized for a seven-day quota wait is a long life for a credential that a
 normal review needs for minutes. So the run's terminal outcome brings the
 expiry forward: the same run-outcome event the reconciler consumes shortens the
-grant to the reconciler's own window (the sweep lookback plus a margin), after
-which nothing revisits the run and the grant has no reader left. Two shapes
+grant to the reconciler's own window (the sweep **horizon** plus a margin, and
+derived from it in code so the two cannot drift apart), after which nothing
+revisits the run and the grant has no reader left. Two shapes
 keep the full TTL, because something *will* come back and post their own
 verdict — a **paused** run, and a `failed_resumable` one with an **armed**
 retry. "Abandoned" is not re-derived here: the retry sweeper enforces the

@@ -288,7 +288,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 			s.logger.Warn(msg, args...)
 		case s.gateSweepIsLastPass(run):
 			s.logger.Warn(msg+" — this was the last sweep pass inside the "+
-				gateSweepLookback.String()+" window: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
+				gateSweepHorizon.String()+" horizon: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
 		default:
 			s.logger.Debug(msg, args...)
 		}

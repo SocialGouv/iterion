@@ -39,7 +39,7 @@ func TestGateSweep_ReconcilesARunWhoseEventWasLost(t *testing.T) {
 	lister := &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: runID}}}
 
 	// No event was ever delivered for this run.
-	s.sweepGates(context.Background(), lister, time.Now().UTC())
+	s.sweepGates(context.Background(), lister, time.Now().UTC(), gateSweepLookback)
 
 	if gc.setCalls != 1 {
 		t.Fatalf("posted %d statuses, want 1 — a dropped outcome event leaves the PR blocked forever", gc.setCalls)
@@ -64,7 +64,7 @@ func TestGateSweep_IsIdempotentWithTheEventPath(t *testing.T) {
 	gc.statuses = []forge.CommitStatus{gc.last}
 	before := gc.setCalls
 
-	s.sweepGates(context.Background(), &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: runID}}}, time.Now().UTC())
+	s.sweepGates(context.Background(), &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: runID}}}, time.Now().UTC(), gateSweepLookback)
 
 	if gc.setCalls != before {
 		t.Fatalf("posted %d more statuses, want 0 — the sweep must not double-post behind the event path", gc.setCalls-before)
@@ -73,15 +73,17 @@ func TestGateSweep_IsIdempotentWithTheEventPath(t *testing.T) {
 
 // Both bounds carry a decision. The grace keeps the sweep off runs the event
 // path is still working through (a repair does several forge round-trips), so
-// the two paths race only on the dropped ones. The lookback is what stops the
-// sweep reaching back into history and painting a synthetic failure onto pull
-// requests that merged days ago.
+// the two paths race only on the dropped ones. The lookback keeps the ORDINARY
+// pass narrow, which is what makes a horizon of days affordable at a
+// once-a-minute cadence — it is not what keeps a long reach safe, since the
+// repair stands down on a merged pull request, a moved head and an answered
+// check on its own (see forge_gate_horizon_test.go).
 func TestGateSweep_WindowIsBoundedOnBothSides(t *testing.T) {
 	s, _ := gateReconcileFixture(t, gatingInputs(), &listingGateClient{})
 	lister := &fakeGateSweepLister{}
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 
-	s.sweepGates(context.Background(), lister, now)
+	s.sweepGates(context.Background(), lister, now, gateSweepLookback)
 
 	if lister.calls != 1 {
 		t.Fatalf("scanned %d times, want 1", lister.calls)
@@ -90,7 +92,7 @@ func TestGateSweep_WindowIsBoundedOnBothSides(t *testing.T) {
 		t.Errorf("upper bound = %s, want %s — without the grace the sweep races the event path on every run", got, want)
 	}
 	if got, want := lister.since, now.Add(-gateSweepLookback); !got.Equal(want) {
-		t.Errorf("lower bound = %s, want %s — an unbounded reach posts failures onto long-merged PRs", got, want)
+		t.Errorf("lower bound = %s, want %s — the ordinary pass must stay narrow, or the per-minute scan grows to the size of the horizon", got, want)
 	}
 	if lister.since.After(lister.before) {
 		t.Error("empty window: the lookback must exceed the grace or nothing is ever examined")
@@ -194,7 +196,7 @@ func TestGateSweep_PagesTheWindowInsteadOfStarvingOldCandidates(t *testing.T) {
 		UpdatedAt: now.Add(-gateSweepGrace - time.Duration(gateSweepBatch+1)*time.Second),
 	})
 
-	s.sweepGates(context.Background(), lister, now)
+	s.sweepGates(context.Background(), lister, now, gateSweepLookback)
 
 	if len(lister.requests) < 2 {
 		t.Fatalf("scanned %d page(s) — a full page must advance the cursor, or the oldest candidate is never examined", len(lister.requests))
@@ -215,7 +217,7 @@ func TestGateSweep_StopsWhenTheCursorCannotAdvance(t *testing.T) {
 		stuck.refs = append(stuck.refs, mongostore.NotifiableRunRef{ID: "no-timestamp"})
 	}
 
-	s.sweepGates(context.Background(), stuck, now)
+	s.sweepGates(context.Background(), stuck, now, gateSweepLookback)
 
 	if stuck.calls != 1 {
 		t.Fatalf("scanned %d times, want 1 — a stalled cursor re-scanned the same rows", stuck.calls)
@@ -227,5 +229,5 @@ func TestGateSweep_StopsWhenTheCursorCannotAdvance(t *testing.T) {
 // being a net at all.
 func TestGateSweep_SurvivesAScanError(t *testing.T) {
 	s, _ := gateReconcileFixture(t, gatingInputs(), &listingGateClient{})
-	s.sweepGates(context.Background(), &fakeGateSweepLister{err: errors.New("mongo down")}, time.Now().UTC())
+	s.sweepGates(context.Background(), &fakeGateSweepLister{err: errors.New("mongo down")}, time.Now().UTC(), gateSweepLookback)
 }
