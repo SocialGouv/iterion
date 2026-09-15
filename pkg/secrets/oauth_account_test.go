@@ -19,7 +19,7 @@ func (f profileTransport) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 func TestDiscoverAnthropicAccount(t *testing.T) {
 	client := &http.Client{Transport: profileTransport(func(r *http.Request) (*http.Response, error) {
-		if r.Method != "GET" || r.URL.String() != anthropicProfileURL || r.Header.Get("Authorization") != "Bearer opaque-token" || r.Header.Get("anthropic-beta") != "oauth-2025-04-20" {
+		if r.Method != "GET" || r.URL.String() != anthropicProfileURL() || r.Header.Get("Authorization") != "Bearer opaque-token" || r.Header.Get("anthropic-beta") != "oauth-2025-04-20" {
 			t.Fatal("profile request did not use the fixed provider endpoint and headers")
 		}
 		if _, bounded := r.Context().Deadline(); !bounded {

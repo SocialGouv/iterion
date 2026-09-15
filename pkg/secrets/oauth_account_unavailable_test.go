@@ -225,3 +225,36 @@ func TestUnavailableProfileLookupKeepsTheOperatorVisibleLabel(t *testing.T) {
 		}
 	})
 }
+
+// The profile leg is the last member of the ITERION_OAUTH_FORFAIT_ANTHROPIC_*
+// family, and the only one that carries a BEARER outbound. Hardcoded, it
+// contradicted the family's own promise that an override "moves the whole flow,
+// not three quarters of it": a deployment pointing the token endpoint at its
+// own gateway still shipped the token that gateway minted to api.anthropic.com,
+// on every connect and every refresh.
+//
+// Asserted on the URL the request actually reached, not on the accessor — the
+// defect was a call site reading a constant. (Revi R04756b.)
+func TestProfileLookupFollowsTheEndpointOverride(t *testing.T) {
+	var reached string
+	capture := profileClient(func(r *http.Request) (*http.Response, error) {
+		reached = r.URL.String()
+		return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+
+	if _, err := DiscoverAnthropicAccount(t.Context(), capture, "opaque-token"); err == nil {
+		t.Fatal("fixture never armed: the 503 produced no error")
+	}
+	if reached != defaultAnthropicProfileURL {
+		t.Fatalf("default reached %q, want %q", reached, defaultAnthropicProfileURL)
+	}
+
+	const gateway = "https://gateway.internal.example/oauth/profile"
+	t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL", gateway)
+	if _, err := DiscoverAnthropicAccount(t.Context(), capture, "opaque-token"); err == nil {
+		t.Fatal("fixture never armed on the override pass")
+	}
+	if reached != gateway {
+		t.Fatalf("reached %q, want the override %q — the bearer went to a host the operator steered away from", reached, gateway)
+	}
+}

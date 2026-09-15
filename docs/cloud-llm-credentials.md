@@ -817,6 +817,7 @@ restart):
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | `https://platform.claude.com/oauth/code/callback` |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | `user:profile user:inference user:sessions:claude_code user:mcp_servers` |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL` | `https://console.anthropic.com/v1/oauth/token` — the auth-code exchange **and** the refresh worker |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL` | `https://api.anthropic.com/api/oauth/profile` — the account lookup. Move it with the token endpoint: this is the leg that sends a **bearer** outbound, on every connect and every refresh |
 | `ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL` | `https://auth.openai.com/oauth/token` |
 
 The two client ids (`ITERION_OAUTH_FORFAIT_{ANTHROPIC,CODEX}_CLIENT_ID`) ride

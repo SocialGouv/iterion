@@ -17,8 +17,22 @@ import (
 	"github.com/google/uuid"
 )
 
-const anthropicProfileURL = "https://api.anthropic.com/api/oauth/profile"
+const defaultAnthropicProfileURL = "https://api.anthropic.com/api/oauth/profile"
 const accountFingerprintPrefix = "account:anthropic:"
+
+// anthropicProfileURL is the last leg of the same override family as the
+// authorize, token, redirect and scope endpoints — and the one that carries a
+// BEARER outbound.
+//
+// Hardcoded, it contradicted anthropicTokenURL's own promise that an override
+// "moves the whole flow, not three quarters of it": a deployment pointing the
+// token endpoint at a gateway or a test double still shipped the token that
+// gateway minted to api.anthropic.com, on every connect and every refresh —
+// credential egress to a host the operator had deliberately steered away from,
+// and an outbound call per record that offline and CI environments cannot mock.
+func anthropicProfileURL() string {
+	return envOr("ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL", defaultAnthropicProfileURL)
+}
 
 // ErrAccountLookupUnavailable marks a profile lookup that could not be
 // PERFORMED — a transport failure, a 429, a 5xx, a body no parser
@@ -90,7 +104,7 @@ func DiscoverAnthropicAccount(ctx context.Context, hc *http.Client, token string
 	}
 	client := *hc
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicProfileURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicProfileURL(), nil)
 	if err != nil {
 		return OAuthAccount{}, fmt.Errorf("anthropic profile: request construction failed: %w", ErrAccountLookupUnavailable)
 	}

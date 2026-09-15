@@ -87,6 +87,7 @@ values are overridable per deployment:
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | Override the headless redirect (default `https://platform.claude.com/oauth/code/callback`). |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | Override the requested scopes. |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL` | Override the token endpoint (default `https://console.anthropic.com/v1/oauth/token`). Used by BOTH the auth-code exchange and the server-side refresh. |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL` | Override the account-lookup endpoint (default `https://api.anthropic.com/api/oauth/profile`). **Move it with the token endpoint**: this leg sends the bearer outbound on every connect and every refresh, so a deployment that re-points the token URL and leaves this one ships tokens its own gateway minted to Anthropic. |
 | `ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL` | Override the Codex token endpoint (default `https://auth.openai.com/oauth/token`). |
 
 Re-pointing an OEM-repackaged CLI takes the whole family: the authorize

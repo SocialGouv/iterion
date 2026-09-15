@@ -233,6 +233,20 @@ func TestOAuthRefreshIdentifiesTheReturnedBearer(t *testing.T) {
 				}
 			}
 			wantLabel := wantEmail
+			if tc.unavailable {
+				// The LABEL is a third fact, beside the identity claim and the
+				// meter, and an unread profile disproved nothing about it
+				// either. Derived from wantEmail — cleared just above — a
+				// five-second 503 rewrote the operator-visible name to "" in
+				// both store twins, and the next successful refresh carried
+				// PreviousEmail == "", so the condition never fired again and
+				// the connection stayed unnamed in Studio for good.
+				//
+				// The old "" here was never an arbitration: it was the
+				// label-follows-email coupling showing through. The rename case
+				// below already knew the two can differ.
+				wantLabel = "account-a@example.invalid"
+			}
 			if tc.rename {
 				wantLabel = "operator renamed"
 			}

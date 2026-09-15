@@ -136,6 +136,15 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 				// A partial write: the flag is the only thing learned here,
 				// and the record read a round trip ago may already be stale.
 				if uerr := w.Store.UpdateTokens(ctx, rec.ID, OAuthTokenUpdate{NotRefreshable: true}.WithClaim(owner)); uerr != nil && !errors.Is(uerr, ErrRefreshClaimLost) {
+					// The fenced write is what normally hands the claim back, so
+					// a write that failed for any OTHER reason — a store
+					// timeout, a transient network error — leaves the record
+					// fenced for the whole lease. That is the opposite of the
+					// promise three lines above, and it delays every later
+					// legacy sweep by RefreshClaimTTL on a momentary blip.
+					// Best-effort, exactly like the sibling path below: a claim
+					// we no longer own has already been superseded.
+					_ = w.Store.ReleaseRefreshClaim(ctx, rec.ID, owner, nil)
 					failures++
 					if firstErr == nil {
 						firstErr = fmt.Errorf("mark not-refreshable %s/%s: %w", rec.UserID, rec.Kind, uerr)
