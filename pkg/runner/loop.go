@@ -967,18 +967,25 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 // force-push from a lease that may have moved. Keep any new deadline
 // below executeRun's.
 //
-// The detached ctx gets its OWN aggregate deadline: per-op gitOpTimeout
-// bounds each git subprocess but not the sequence — the bank issues up
-// to four network ops (ls-remote, fetch, archive push, push), and a
-// wedged forge must not pin a pod for 4×op-timeout past the deadline
-// the operator set precisely to cap the run. When the operator disabled
-// per-op bounds (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"),
-// that choice is honoured here too.
+// BOTH arms get an aggregate deadline: per-op gitOpTimeout bounds each
+// git subprocess but not the sequence — the bank issues up to four
+// network ops (ls-remote, fetch, archive push, push) and retries the
+// push, and a wedged forge must not pin a pod for attempts×ops×op-timeout.
+// The live arm needs it just as much as the detached one: a run launched
+// without --timeout carries NO deadline, so the run ctx bounds nothing
+// there. When the operator disabled per-op bounds
+// (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"), that choice is
+// honoured on both.
 func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	cause := context.Cause(ctx)
 	switch {
 	case cause == nil:
-		return ctx, func() {}, true // live ctx — nothing to detach
+		// Live ctx — nothing to detach, but still to bound.
+		if gitOpTimeout > 0 {
+			bounded, cancel := context.WithTimeout(ctx, bankBudget)
+			return bounded, cancel, true
+		}
+		return ctx, func() {}, true
 	case errors.Is(cause, context.DeadlineExceeded):
 		detached := context.WithoutCancel(ctx)
 		if gitOpTimeout > 0 {
@@ -991,7 +998,7 @@ func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool
 	}
 }
 
-// bankBudget bounds the whole post-deadline bank sequence. Generous
+// bankBudget bounds the whole bank sequence, retries included. Generous
 // against the nominal case (seconds) and small against the run
 // deadlines it may outlive (hours).
 const bankBudget = 10 * time.Minute

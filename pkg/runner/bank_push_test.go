@@ -262,6 +262,55 @@ fi
 	}
 }
 
+// TestALiveRunBoundsItsBankSequenceToo.
+//
+// gitOpTimeout bounds one git subprocess; nothing bounds the SEQUENCE the
+// bank runs (ls-remote, fetch, archive push, push) once the push retries
+// multiply it. On the deadlined path the detached ctx carries bankBudget,
+// but a run launched without --timeout has no deadline for the live path
+// to sit under, so attempts×ops×gitOpTimeout pins the pod that carries it.
+func TestALiveRunBoundsItsBankSequenceToo(t *testing.T) {
+	previous := gitOpTimeout
+	t.Cleanup(func() { gitOpTimeout = previous })
+	gitOpTimeout = time.Minute
+
+	ctx, cancel, ok := bankContext(context.Background())
+	defer cancel()
+	if !ok {
+		t.Fatal("a live ctx must still bank")
+	}
+	deadline, bounded := ctx.Deadline()
+	if !bounded {
+		t.Fatal("a run without --timeout banks under no deadline at all")
+	}
+	if budget := time.Until(deadline); budget > bankBudget {
+		t.Fatalf("bank budget = %s, want <= %s", budget, bankBudget)
+	}
+
+	// A shorter run deadline is not EXTENDED to the budget.
+	short, cancelShort := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShort()
+	kept, cancelKept, ok := bankContext(short)
+	defer cancelKept()
+	if !ok {
+		t.Fatal("a live ctx must still bank")
+	}
+	if got, _ := kept.Deadline(); time.Until(got) > 2*time.Second {
+		t.Fatalf("the bank outlives the run's own deadline by %s", time.Until(got))
+	}
+
+	// The operator who disabled per-op bounds keeps unbounded git ops.
+	gitOpTimeout = 0
+	unbounded, cancelUnbounded, ok := bankContext(context.Background())
+	defer cancelUnbounded()
+	if !ok {
+		t.Fatal("a live ctx must still bank")
+	}
+	if _, has := unbounded.Deadline(); has {
+		t.Fatal("ITERION_RUNNER_GIT_TIMEOUT<=0 asked for unbounded git ops")
+	}
+}
+
 func TestBankFailureEventSurvivesDocumentWriteFailure(t *testing.T) {
 	for _, integrity := range []bool{false, true} {
 		t.Run(fmt.Sprint(integrity), func(t *testing.T) {
