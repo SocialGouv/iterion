@@ -1386,13 +1386,24 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// native tool the list does not name. `ask_user` names none of them, so
 	// a node that declared no `tools:` but did declare `interaction:` was
 	// left unable to read, write or run anything.
+	// The premise "empty means no restriction" holds for the CLI backends
+	// ONLY. claw resolves its ToolDefs from this list alone — buildTask calls
+	// resolveToolsForNode behind `len(effectiveTools) > 0 && claw`, and
+	// claw_backend sets `opts.Tools` from ToolDefs and nothing else — so an
+	// empty list there means "no tools at all". Dropping the append on claw
+	// would remove the very tool loop that carries ask_user (the assignment
+	// site says so: `task.HasTools = true // claw needs the tool loop active
+	// for ask_user`), and on `interaction: async` it would strip the
+	// non-blocking pair while asyncInteractionSystemInstruction — keyed on
+	// PostAsyncQuestion, not on tools — still tells the model to call them.
 	effectiveTools := f.tools
-	if f.interaction != ir.InteractionNone && len(effectiveTools) > 0 {
+	interactionGranted := len(effectiveTools) > 0 || backendName == delegate.BackendClaw
+	if f.interaction != ir.InteractionNone && interactionGranted {
 		effectiveTools = ensureToolPresent(effectiveTools, askUserToolName)
 	}
 	// interaction: async (ADR-081) additionally grants the non-blocking
 	// pair; the blocking ask_user above stays available for hard stops.
-	if f.interaction == ir.InteractionAsync && len(effectiveTools) > 0 {
+	if f.interaction == ir.InteractionAsync && interactionGranted {
 		effectiveTools = ensureToolPresent(effectiveTools, delegate.AskUserAsyncToolName)
 		effectiveTools = ensureToolPresent(effectiveTools, delegate.AwaitAnswersToolName)
 	}

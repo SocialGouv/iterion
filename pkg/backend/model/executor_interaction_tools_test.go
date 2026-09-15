@@ -93,3 +93,53 @@ func TestAssembleEffectiveTools_UnrestrictedInteractiveNodeLeavesAllowedToolsEmp
 			"makes claude_code strip every native tool", effective, f.tools)
 	}
 }
+
+// The claw face, and the reason the guard above cannot be backend-blind.
+//
+// On claw the assembled list is not an allowlist over an ambient surface — it
+// IS the surface: buildTask resolves ToolDefs only when the list is non-empty,
+// and claw_backend sets opts.Tools from ToolDefs and nothing else. So an empty
+// list there means "no tools at all", the opposite of what it means for the
+// CLI backends. A tool-less interactive claw node must therefore still be
+// granted ask_user, or the tool loop that carries it never exists — the
+// assignment site says as much: "claw needs the tool loop active for ask_user".
+func TestAssembleEffectiveTools_ClawKeepsAskUserOnAToolLessNode(t *testing.T) {
+	e := &ClawExecutor{botID: "tester"}
+	f := backendFields{id: "n", interaction: ir.InteractionHuman}
+
+	got := e.assembleEffectiveTools(f, delegate.BackendClaw, nil, false)
+
+	var hasAskUser bool
+	for _, name := range got {
+		if name == askUserToolName {
+			hasAskUser = true
+		}
+	}
+	if !hasAskUser {
+		t.Errorf("a tool-less claw node with interaction must keep %q — on claw an empty "+
+			"list is \"no tools\", not \"no restriction\"; got %v", askUserToolName, got)
+	}
+}
+
+// Same asymmetry for interaction: async. Worse there than for the blocking
+// case: the blocking one degrades to the _needs_interaction JSON protocol,
+// while the async pair has no fallback — the model is instructed to call
+// tools that were never bound.
+func TestAssembleEffectiveTools_ClawKeepsTheAsyncPairOnAToolLessNode(t *testing.T) {
+	e := &ClawExecutor{botID: "tester"}
+	f := backendFields{id: "n", interaction: ir.InteractionAsync}
+
+	got := e.assembleEffectiveTools(f, delegate.BackendClaw, nil, false)
+
+	for _, want := range []string{delegate.AskUserAsyncToolName, delegate.AwaitAnswersToolName} {
+		var found bool
+		for _, name := range got {
+			if name == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("a tool-less async claw node must keep %q, got %v", want, got)
+		}
+	}
+}
