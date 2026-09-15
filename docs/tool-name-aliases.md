@@ -1,15 +1,21 @@
 # Claw tool-name aliases
 
-**Unreleased: the 3.146.0 floor in this change is provisional.** Before merging,
-set `bundle.ToolAliasesSince` to the first release that contains this resolver;
-other changes may have advanced the next release number. Re-run the compatibility
-probe with the finalized floor. Do not publish an alias-using bundle before the
-runner image carrying that release has been deployed.
+**Unreleased, and the floor is UNSET: `bundle.ToolAliasesSince` is `9999.0.0`,
+a sentinel.** No manifest can declare a floor at or above it, so the resolver is
+inert — aliases never resolve, whatever a bundle asks for. That is deliberate.
 
-The number is always the next *unreleased* version. It read 3.144.0 while that
-release was still ahead; 3.144.0, 3.144.1 and 3.145.0 have since shipped without
-this resolver, and a floor naming any of them would admit a runner that treats
-`Read` as MCP only — the exact failure this gate exists to prevent.
+Before merging, set the constant to the release that actually ships this
+resolver, re-run the compatibility probe with that floor, and only then take the
+PR out of draft. Do not publish an alias-using bundle before the runner image
+carrying that release has been deployed.
+
+Why a sentinel rather than the next version number: the constant named 3.144.0,
+then 3.146.0, and both rotted within days — 3.144.0, 3.144.1, 3.145.0 and
+3.146.x all shipped while the resolver sat on this branch, each release turning
+the floor into a claim that a published runner carries a capability it does not.
+Releases move faster than a branch, so the number cannot be kept true by
+attention; a comment saying "provisional" did not stop it rotting twice. The
+sentinel makes the unfinished state **fail closed** instead of merely documented.
 
 Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`,
 and `grep` when the bundle declares `requires.iterion` at or above the release
@@ -18,9 +24,10 @@ on older engines. This is engine-version-dependent behavior in both DSL profiles
 it is not a profile-1 lowering that an older reader can reproduce.
 
 ```yaml
-# manifest.yaml — use the finalized first release, currently provisional:
+# manifest.yaml — the finalized first release, once the constant names one.
+# While ToolAliasesSince is the 9999.0.0 sentinel, no value here enables aliases.
 requires:
-  iterion: ">= 3.146.0"
+  iterion: ">= 3.147.0" # example only — replace with the shipping release
 ```
 
 ```iterion
