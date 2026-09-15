@@ -246,6 +246,14 @@ weakened.
   an independently published review is green. The final correction is followed
   by a separate review on its published head; this entry describes the first
   run only, not that later verdict.
+## 2026-09-13 — ARC Docker startup gate (#981, infra-apps #56)
+
+- Status: **reviewed, activation pending** — [PR #56](https://github.com/SocialGouv/infra-apps/pull/56), head `6cefd0d18ab526971656fe3af3fde69559e9e516`; run [01a09c85-9579-7738-8516-baa9880e9f4c](https://iterion.cloud/runs/01a09c85-9579-7738-8516-baa9880e9f4c) published a review with no findings.
+- Method: visible cloud `review-pr`, mono GPT through Claw, existing Ministères-Sociaux forge connection; exact head and the inotify PR #55 branch as base. No auto-merge, board publishing or deployment.
+- Result: the rendered pod starts dind as a native init sidecar and waits for `docker info` before starting the runner. The historical Mongo failure was a daemon startup race, not missing Docker group membership; the runner user, Docker GID and socket mounts are preserved.
+- Validation: the eleven inotify checks and rendered dind startup checks pass, Helm lint passes, and server dry-runs accept both the changed AutoscalingRunnerSet and its extracted PodSpec on `ovh-dev` Kubernetes 1.31.6. Infrastructure Actions remain disabled, so no remote CI result is claimed.
+- Remaining proof: approved activation, then real ARC `services:`, race and cloud E2E jobs. The separate Iterion CI image adds gcc/libc headers; its real cgo/race smoke fails on upstream and passes on the derived image. Neither local check establishes the historical cloud E2E cause or closes #981.
+- Billy: no findings to fix and no Billy launch; the previously observed weekly Claude cap remains unavailable until September 15. No runtime quota was changed.
 
 ## 2026-09-13 — concise review and linked run ID (#1172)
 
