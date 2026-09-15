@@ -53,10 +53,14 @@ func canonicalRedirect(enabled bool, publicURL string, next http.Handler) http.H
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Off the canonical host the answer depends on the navigation signal,
-		// so a shared cache must key on it — otherwise it hands a cached 302
-		// to a fetch, or a cached 200 to a navigation.
-		w.Header().Add("Vary", "Sec-Fetch-Dest, Accept")
+		// Off the canonical host the answer depends on the navigation signal
+		// AND on the forwarded host, so a shared cache must key on all three —
+		// otherwise it hands a cached 302 to a fetch, a cached 200 to a
+		// navigation, or stores a 302 produced by a spoofed X-Forwarded-Host
+		// and replays it to requests already on the canonical origin, which is
+		// the loop this middleware exists to avoid. Vary names every header
+		// the decision reads; requestHost reads that one.
+		w.Header().Add("Vary", "Sec-Fetch-Dest, Accept, X-Forwarded-Host")
 
 		// RequestURI() is not guaranteed to start with "/": an opaque request
 		// target (`GET foo:.evil.example/ HTTP/1.1`) comes back verbatim, and

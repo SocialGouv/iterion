@@ -1,3 +1,5 @@
+import { scopePrefix } from "./scope";
+
 /**
  * Recovery for a lazy chunk the server no longer carries.
  *
@@ -16,14 +18,21 @@
  */
 
 /**
- * Keyed per DOCUMENT, not per tab. The workspace shell hosts one same-origin
- * `<iframe src="/x/<id>/">` per open connection, and same-origin frames share
- * the tab's sessionStorage — so a single key would let whichever document fails
- * first spend the allowance for the shell and every pane, leaving the others on
- * the vanished build with no reload AND no cancelled event.
+ * Keyed per DOCUMENT, not per tab and not per route. The workspace shell hosts
+ * one same-origin `<iframe src="/x/<id>/">` per open connection, and
+ * same-origin frames share the tab's sessionStorage — so a single key would let
+ * whichever document fails first spend the allowance for the shell and every
+ * pane, leaving the others on the vanished build with no reload AND no
+ * cancelled event.
+ *
+ * scopePrefix() is the document's identity — "/x/<id>" in a pane, "" in the
+ * shell or plain browser mode — injected into the HTML and immune to
+ * client-side routing. Keying on location.pathname instead would hand every
+ * route its own allowance, so a user navigating during an incident reloads
+ * once per route visited rather than once per document.
  */
 function reloadMarker(): string {
-  return "iterion:chunk-reload-at:" + window.location.pathname;
+  return "iterion:chunk-reload-at:" + scopePrefix();
 }
 
 /** Long enough to cover a rolling deploy, short enough that a later, unrelated

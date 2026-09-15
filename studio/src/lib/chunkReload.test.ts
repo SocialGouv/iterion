@@ -47,29 +47,46 @@ describe("reloadForStaleChunk", () => {
 });
 
 describe("per-document budget", () => {
-  function at(pathname: string) {
+  function asDocument(scope: string | undefined) {
+    (globalThis as { __ITERION_SCOPE__?: unknown }).__ITERION_SCOPE__ = scope;
+  }
+  function navigateTo(pathname: string) {
     Object.defineProperty(window, "location", {
       configurable: true,
       value: { ...window.location, pathname, reload },
     });
   }
+  afterEach(() => asDocument(undefined));
 
   it("does not let one document spend another's allowance", () => {
     // The shell and its panes are same-origin documents sharing ONE
     // sessionStorage. A single key would make the second caller a no-op.
-    at("/");
+    asDocument(undefined); // the shell
     expect(reloadForStaleChunk(1_000)).toBe(true);
-    at("/x/conn-a/");
+    asDocument("/x/conn-a");
     expect(reloadForStaleChunk(1_000)).toBe(true);
-    at("/x/conn-b/");
+    asDocument("/x/conn-b");
     expect(reloadForStaleChunk(1_000)).toBe(true);
     expect(reload).toHaveBeenCalledTimes(3);
   });
 
   it("still holds the cooldown within one document", () => {
-    at("/x/conn-a/");
+    asDocument("/x/conn-a");
     expect(reloadForStaleChunk(1_000)).toBe(true);
     expect(reloadForStaleChunk(1_500)).toBe(false);
+  });
+
+  // The budget is per document, and a document survives its own routing: a key
+  // derived from location.pathname would hand every visited route a fresh
+  // allowance, so navigating during an incident reloads once per route.
+  it("does not refresh the allowance on client-side navigation", () => {
+    asDocument("/x/conn-a");
+    navigateTo("/x/conn-a/runs");
+    expect(reloadForStaleChunk(1_000)).toBe(true);
+    navigateTo("/x/conn-a/orgs/5f916212");
+    expect(reloadForStaleChunk(1_500)).toBe(false);
+    navigateTo("/x/conn-a/board");
+    expect(reloadForStaleChunk(2_000)).toBe(false);
   });
 });
 

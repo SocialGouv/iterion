@@ -277,3 +277,55 @@ func TestCanonicalRedirectAcceptFallback(t *testing.T) {
 		})
 	}
 }
+
+// requestHost reads X-Forwarded-Host, so the response depends on it and Vary
+// has to name it: a cache that keys without it can store a 302 produced by a
+// spoofed value and replay it to requests already on the canonical origin.
+func TestCanonicalRedirectVaryNamesEveryHeaderItReads(t *testing.T) {
+	h, _ := canonicalTestHandler(t, true, "https://iterion.cloud")
+	req := httptest.NewRequest("GET", "http://other.example/orgs/x", nil)
+	req.Host = "other.example"
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	vary := rec.Header().Get("Vary")
+	for _, want := range []string{"Sec-Fetch-Dest", "Accept", "X-Forwarded-Host"} {
+		if !strings.Contains(vary, want) {
+			t.Errorf("Vary = %q, missing %q", vary, want)
+		}
+	}
+}
+
+// A proxy that rewrites Host to an internal name leaves the original in
+// X-Forwarded-Host. Comparing the rewritten value would redirect a request
+// already on the canonical origin — straight into a loop.
+func TestCanonicalRedirectHonoursForwardedHost(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		host         string
+		forwarded    string
+		wantRedirect bool
+	}{
+		{"proxy rewrote Host, client was on canonical", "iterion.svc.cluster.local", "iterion.cloud", false},
+		{"proxy rewrote Host, client was elsewhere", "iterion.svc.cluster.local", "iterion.fabrique.social.gouv.fr", true},
+		{"chain, client entry first", "iterion.svc.cluster.local", "iterion.cloud, inner.proxy", false},
+		{"no forwarded header falls back to Host", "iterion.cloud", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := canonicalTestHandler(t, true, "https://iterion.cloud")
+			req := httptest.NewRequest("GET", "http://"+tc.host+"/orgs/x", nil)
+			req.Host = tc.host
+			req.Header.Set("Sec-Fetch-Dest", "document")
+			if tc.forwarded != "" {
+				req.Header.Set("X-Forwarded-Host", tc.forwarded)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if got := rec.Code == http.StatusFound; got != tc.wantRedirect {
+				t.Fatalf("redirect=%v want %v (Location %q)", got, tc.wantRedirect, rec.Header().Get("Location"))
+			}
+		})
+	}
+}
