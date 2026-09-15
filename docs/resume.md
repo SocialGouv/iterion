@@ -185,6 +185,14 @@ recorded (rewriting the document outside the engine's claim would race its
 other writers), so the acceptance is logged on every resume of such a run.
 Any other mismatch stays a refusal.
 
+A forced source edit revalidates a convergence node's settled incoming edges
+against the current graph. If the node executes and publishes again after an
+artifact-supplying edge was removed, its new artifact contract records only
+the dependencies it now consumes. The old immutable revision keeps the
+dependencies it actually consumed before the edit. This works under `enforce`;
+`--force` still requires valid persisted producer identities and required
+historical dependencies.
+
 `--answer` is repeatable and carries strings; the runtime coerces them to the
 paused node's output schema. `--answers-file` preserves JSON types. Explicit
 flags override keys loaded from the file. A `file`-typed field is answered
