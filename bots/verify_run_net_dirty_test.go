@@ -210,7 +210,7 @@ func TestVerifyRunNetDirtyGatePresentInAllCarriers(t *testing.T) {
 	for _, c := range netDirtyGateCarriers {
 		c := c
 		t.Run(c.rel, func(t *testing.T) {
-			src, err := os.ReadFile(c.rel)
+			src, err := botUnitSource(c.rel)
 			if err != nil {
 				t.Fatalf("read %s: %v", c.rel, err)
 			}

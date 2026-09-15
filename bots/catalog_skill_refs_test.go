@@ -73,7 +73,7 @@ func TestCatalogSkillReferencesResolve(t *testing.T) {
 
 	checked := 0
 	for _, botPath := range all {
-		src, err := os.ReadFile(botPath)
+		src, err := botUnitSource(botPath)
 		if err != nil {
 			t.Fatalf("read %s: %v", botPath, err)
 		}
@@ -163,7 +163,7 @@ func declaredSkills(src string) []string {
 // the real runs: Copi calls `skill` unprompted and picks by posture
 // (run 01a02e43 loaded iterion-dsl-authoring three times while drafting).
 func TestCopilotHasASkillPerPosture(t *testing.T) {
-	raw, err := os.ReadFile("copilot/main.bot")
+	raw, err := botUnitSource("copilot/main.bot")
 	if err != nil {
 		t.Fatalf("read copilot: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestCopilotHasASkillPerPosture(t *testing.T) {
 // copy. Besides being nondeterministic, that lookup once spent sixteen minutes
 // in a single glob rooted at /home/victor.
 func TestCopilotAuthoringStandardIsEmbedded(t *testing.T) {
-	mainRaw, err := os.ReadFile("copilot/main.bot")
+	mainRaw, err := botUnitSource("copilot/main.bot")
 	if err != nil {
 		t.Fatalf("read copilot: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestCopilotAuthoringStandardIsEmbedded(t *testing.T) {
 }
 
 func TestCopilotUsesRawBytesForExactActiveFileChanges(t *testing.T) {
-	raw, err := os.ReadFile("copilot/main.bot")
+	raw, err := botUnitSource("copilot/main.bot")
 	if err != nil {
 		t.Fatalf("read copilot: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestCopilotUsesRawBytesForExactActiveFileChanges(t *testing.T) {
 }
 
 func TestCopilotRunWatchContractBoundsOutcomeKinds(t *testing.T) {
-	raw, err := os.ReadFile("copilot/main.bot")
+	raw, err := botUnitSource("copilot/main.bot")
 	if err != nil {
 		t.Fatalf("read copilot: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestCopilotRunWatchContractBoundsOutcomeKinds(t *testing.T) {
 }
 
 func TestCopilotRunWatchContractUnderstandsRootedTreeCoverage(t *testing.T) {
-	raw, err := os.ReadFile("copilot/main.bot")
+	raw, err := botUnitSource("copilot/main.bot")
 	if err != nil {
 		t.Fatalf("read copilot: %v", err)
 	}

@@ -158,3 +158,12 @@ only read tools (`bash`, `read_file`, `glob`, `grep` — no
 only the report file and creates board issues over MCP.
 
 See [main.bot](main.bot) for the full DSL.
+
+## Layout — a bot in several files
+
+`main.bot` holds the header, the vars, the secrets, the supervisor and the workflow; the
+rest lives beside it under `lib/` and is reached through the `import` lines at the head of
+the main — `lib/schemas.bot` (the schemas), `lib/prompts.bot` (the prompts), `lib/nodes.bot`
+(the nodes). The four files are ONE program: `iterion validate`, `run`, the studio and a
+remote launch read the unit; the manifest's `requires.iterion` names the release that reads
+`import`. See docs/dsl.md, "import — a bot in several files".

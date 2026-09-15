@@ -1,7 +1,6 @@
 package bots
 
 import (
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -44,7 +43,7 @@ func TestReviewPRPublishCommandsRunCleanly(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	data, err := os.ReadFile("review-pr/main.bot")
+	data, err := botUnitSource("review-pr/main.bot")
 	if err != nil {
 		t.Fatalf("read review-pr/main.bot: %v", err)
 	}

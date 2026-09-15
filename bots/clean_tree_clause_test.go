@@ -1,7 +1,6 @@
 package bots
 
 import (
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -55,7 +54,7 @@ var numberedBullet = regexp.MustCompile(`^\d+\. `)
 // inspected — under-capture is only safe for the presence assertions.
 func cleanTreeClause(t *testing.T, botPath string) string {
 	t.Helper()
-	src, err := os.ReadFile(botPath)
+	src, err := botUnitSource(botPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", botPath, err)
 	}
