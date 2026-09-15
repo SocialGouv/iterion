@@ -1,7 +1,6 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -32,7 +31,7 @@ func TestCopilotInstructionSourcesStayJourneyAgnostic(t *testing.T) {
 	}
 	var sources strings.Builder
 	for _, path := range paths {
-		raw, err := os.ReadFile(path)
+		raw, err := botUnitSource(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}

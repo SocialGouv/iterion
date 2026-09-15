@@ -8,6 +8,145 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-15 — a stale base widened the scope onto an already-merged PR (runs `01a0a3eb`, `01a0a403`, `01a0a414`)
+
+- Status: **partial → fixed**. Five launches on three PRs. Two were perfect, one
+  reviewed the wrong diff and emitted a blocking finding on files the branch
+  never touched, and one duplicate masked a `[high]` by overwriting a stricter
+  verdict. The scope bug is fixed in this change; the other two are recorded
+  below and are NOT fixed.
+- Versions: bot `review-pr` 0.9.2 · deployment v3.142.1 · claw + `openai/gpt-5.6-sol`.
+- Method: `iterion remote runs launch --bot review-pr` with
+  `--var mono_family=gpt --var review_mode=mono --var pr_review_mode=inline
+  --var post_to_board=false` and `--model-overrides` selecting `judge` + `agent`
+  by KIND. The Anthropic weekly window was over its cap all day, so every run
+  went through claw on the ChatGPT forfait.
+- Result: #1149 and #1152 unblocked after 81 hours of a dead `pending` gate;
+  #1224 reviewed three times, landing at `success — 0 total`.
+
+### What it caught
+
+Two genuine defects in an engine change (PR #1224), both confirmed and both
+fixed before merge:
+
+- `[high]` a widened sweep horizon inheriting a fixed 2000-row page budget with
+  no cross-pass cursor, so the oldest candidates — the ones the horizon existed
+  for — were starved on every pass.
+- `[medium]` a post-run grant grace raised for every run, falsifying the
+  argument `forgePublishMaxTokens` is sized on, and widening a crashed run's
+  forge-write token from 90 minutes to 8 days.
+
+Both were reported with the repo evidence that made them checkable
+(`forge_publish.go:58-63` quoted verbatim for the second), and the first named
+the decisive measurement to take rather than asserting the impact.
+
+### What it got wrong, and why
+
+One run reviewed **a different diff than the PR's**. Its own scope line named
+`pkg/connector/exec/guard.go`, `pkg/connection/local.go` and three siblings —
+all files of a pull request merged three days earlier, none of them in the
+branch. It emitted `R146727 [high]` that exists in no comment anywhere (not
+inline, not on the review, not on the issue) and turned the gate red: a
+blocking verdict with nothing to address.
+
+The cause is in the bot, not the model. The scope was taken from
+`git merge-base <base_ref> HEAD` **on the local checkout**, and the run reused a
+workspace (`mode: inherited`) whose `main` predated that merge. A merge-base
+against a stale base lands *below* the branch point, so every file merged since
+falls into the diff. Reproduced outside iterion on a two-commit fixture: the
+committed node reports `changed_files: 2` where the branch introduced one.
+
+**Fixed here**: `diff_precheck` refreshes `base_ref` from the remote before
+taking the merge-base, publishes the resolved `base_sha`, and the reviewers'
+prompt now diffs against *that sha* instead of recomputing a merge-base from a
+ref name — the base was being computed in two places, and fixing only the
+deterministic one would have left the reviewers on the stale ref. Refreshing is
+best-effort: no remote, no network or an opaque `base_ref` degrade to the local
+ref and set `base_is_current: false`, which the reviewers are told to surface in
+`summary`. Verified on the same fixture: `changed_files: 1` with a current base,
+`2` with `base_is_current: false` when the remote is unreachable, and
+`base_ref: HEAD` still means HEAD-vs-working-tree.
+
+### Two frictions NOT fixed here
+
+1. **The gate is last-writer-wins on a head.** On #1224 the webhook review found
+   `1 high · 1 medium` at 07:20Z and a hand-launched review found `1 medium` at
+   07:23Z; the later, laxer verdict replaced the earlier one and the PR showed
+   green with a live `[high]`. `publishGateStatus` posts unconditionally — there
+   is no notion of an existing verdict on the head. Note that the *designed*
+   escapes from a red gate are named in the status text itself ("a push
+   re-reviews, or a maintainer overrides"); a second review on the same head is
+   not one of them. Making a failure sticky is not obviously right either — the
+   reconciler's synthetic failure must stay replaceable, and a wrong red would
+   become un-clearable — so this needs a decision, not a patch.
+2. **Repo targeting is silently dropped by an older server.**
+   `--repo-url/--repo-ref/--connection-id` (#1161) is the remedy for the
+   inherited-workspace problem, but the deployment runs v3.142.1 and #1161
+   landed in v3.144.0: the CLI sends the fields and the server ignores them
+   without a word. A server that cannot honour a repo-targeted launch should
+   refuse it rather than run one without the checkout it was asked for.
+
+### Then it reviewed the fix, and found four things (run on PR #1230)
+
+Launched by the webhook lane alone — no hand-launch this time, which is the
+first lesson below applied. All four were right.
+
+- `[high]` the fix's own degenerate branch published `base_sha: HEAD` when the
+  merge-base does not resolve. The reviewers diff against `base_sha`, and a
+  diff against HEAD is **empty** on a clean checkout: no changed files, no
+  findings, and the gate posts *success on a pull request nobody reviewed*.
+  Strictly worse than the bug being fixed, and it also defeated the node's
+  standing promise that ambiguity routes to the reviewers rather than skipping
+  them. Fixed: `base_sha` is the base that was *tried*, never HEAD, and
+  `base_is_current` is forced false so the prompt's unresolved-scope rule fires.
+- `[medium]` the new `git fetch` had no timeout and an inherited environment, on
+  the workflow's **entry** node. A remote that blackholes packets parks the run
+  until `max_duration` and leaves the required check pending for good — the very
+  shape `docs/merge-gate.md` exists to close. "Degrades to the local ref" only
+  holds if the call returns. Fixed with a bounded timeout and
+  `GIT_TERMINAL_PROMPT=0`.
+- `[medium]` `runOwesGateVerdict` is a pure "has a gate context" test, so the
+  8-day grace reached *every* gating run, not the "small minority" its comment
+  claimed — a forge-write bearer held by an agent that reads untrusted PR
+  content, live 128× longer than before. Fixed by giving the grant back at the
+  one point it is provable it has no reader: the reconciler observing **this
+  run's own** verdict on the head. Deliberately not another run's — a repo's
+  gate context is shared between bots.
+- `[medium]` no committed regression test, and it named the existing harness
+  (`toolCommand` + `gittest`) to use. Fixed: `bots/review_pr_review_base_test.go`
+  drives the real node over the fixture; both bug shapes falsified by mutation.
+
+Then it reviewed *those* fixes and found a fifth, also `[high]`, also right: the
+bounded-timeout wrapper turns a failed diff into empty stdout, and the diff's
+return code was not checked — so a diff that fails reads as "the branch changed
+nothing", short-circuits past both reviewers, and green-gates an unreviewed PR.
+The same shape as the finding before it, one level down: **the site was fixed,
+the class was not.** Every way of not knowing the scope now emits one sentinel
+(`is_empty: false`, `changed_files: -1`), and the test drives it with a `git`
+shim on PATH that fails only on `diff`.
+
+That fifth review also **posted a gate status with no review body** — the
+verdict says "1 blocking finding" while no comment exists anywhere and the
+status carries a null target URL. The finding was only readable by fetching the
+`converge` artifact off the run. Same pathology as the 07:50Z run on #1224, and
+still unexplained: a red gate an author cannot act on is worth its own
+investigation.
+
+The `[high]`s are the ones worth remembering: a review of a review-scope fix
+caught the fix turning a *wrong* review into a *silently empty* one — twice.
+
+### Lessons for next run
+
+- **Do not hand-launch a review on a PR that has just opened** — the webhook
+  lane reviews it, and the two race. This is the review-side twin of the
+  fixer-collision rule in `CLAUDE.md`.
+- **A review whose scope line does not name your files is to be discarded, not
+  argued with.** The scope line is printed in the collapsed run details of every
+  published review; reading it costs nothing and separates a real verdict from
+  one taken against the wrong base.
+- The local `iterion` binary was at **v3.69.0** against a v3.144.0 tree, which
+  is why the repo-targeting flags appeared not to exist at all. Check
+  `iterion version` before concluding a flag is missing.
 ## 2026-09-14 — #1212: verified account meters and credential preview (#945)
 
 - **Result:** automatic [Revi run `01a09ec6-b5b3-7660-8ef1-295031b7260d`](https://iterion.cloud/runs/01a09ec6-b5b3-7660-8ef1-295031b7260d) finished and published [review 5195055206](https://github.com/SocialGouv/iterion/pull/1212#pullrequestreview-5195055206) at 07:37:30 UTC: zero findings, `revi/review=success` on `fdca64e5d9c95da493ccb9740f51ffd83541d9b8`. No manual `/revi` or Billy launch. The run list since before PR creation contained only two completed Revi runs; the other belongs to #1211, with no Billy on #1212.

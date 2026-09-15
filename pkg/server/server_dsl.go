@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -504,25 +505,49 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 
 	// Try on-disk first (lets a project's <ExamplesDir>/<name>
 	// override an embedded recipe of the same basename), then fall
-	// back to the binary-embedded recipe set (examples/embed.go).
-	var data []byte
+	// back to the binary-embedded recipe set (bots/embed.go).
 	if dir := s.cfg.ExamplesDir; dir != "" {
-		if d, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name))); err == nil {
-			data = d
+		abs := filepath.Join(dir, filepath.FromSlash(name))
+		if data, err := os.ReadFile(abs); err == nil {
+			// A bot in several files on disk opens as its unit, the way
+			// /api/files/open opens it: the fragments read beside the
+			// main, merged into one document whose every declaration
+			// names its file, with the unit's revision for the save to
+			// present, under the path the studio binds, bots/<name>.
+			if u := unit.LoadDirWithMain(abs, abs, data); len(u.Files) > 1 && u.Merged != nil {
+				var diags []string
+				for _, d := range u.Diagnostics {
+					diags = append(diags, d.Error())
+				}
+				docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+				if err != nil {
+					httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+					return
+				}
+				reqPath := "bots/" + name
+				writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: reqPath, ConfirmedDiskPath: abs, Unit: unitInfoOf(u, reqPath)})
+				return
+			}
+			writeExample(w, name, string(data))
+			return
 		}
 	}
-	if data == nil {
-		if d, ok := bots.Get(name); ok {
-			data = d
-		}
+	src, ok, err := embeddedRecipe(name)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%v", err)
+		return
 	}
-	if data == nil {
+	if !ok {
 		httpError(w, http.StatusNotFound, "example not found: %s", name)
 		return
 	}
+	writeExample(w, name, src)
+}
 
-	// Parse and return the document + source.
-	pr := parser.Parse(name, string(data))
+// writeExample answers with one program's document and text: a bot in one
+// file, or the flat program an embedded bot in several files is served as.
+func writeExample(w http.ResponseWriter, name, source string) {
+	pr := parser.Parse(name, source)
 	var diags []string
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
@@ -544,7 +569,7 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 		Document    json.RawMessage `json:"document"`
 		Diagnostics []string        `json:"diagnostics,omitempty"`
 	}{
-		Source:      string(data),
+		Source:      source,
 		Document:    json.RawMessage(docJSON),
 		Diagnostics: diags,
 	})

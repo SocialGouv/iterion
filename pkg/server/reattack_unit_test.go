@@ -475,3 +475,36 @@ func TestSaveAUnitKeepsASharedInlinePromptInEachFile(t *testing.T) {
 		t.Fatalf("the main changed:\n%s", got)
 	}
 }
+
+// A declaration a fragment holds that comes back with no provenance did
+// not appear in the editor — the client dropped the file it came from —
+// and is refused by name, never moved into the main; a name no fragment
+// holds is a new declaration, and goes to the main.
+func TestSaveAUnitRefusesADeclarationThatLostItsProvenance(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+	lost := editDocument(t, opened.Document, func(m map[string]any) {
+		delete(agentsOf(m)[0].(map[string]any), "file")
+	})
+	rec, _ := savePath(t, s, "demo/main.bot", lost, opened.Unit.Revision)
+	// The body is JSON: the quotes around the name travel escaped.
+	if body := rec.Body.String(); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(body, "lost the provenance of agent") || !strings.Contains(body, "worker") || !strings.Contains(body, "lib/nodes.bot") {
+		t.Fatalf("a fragment's declaration without provenance: %d %s", rec.Code, rec.Body.String())
+	}
+	if readFixture(t, workdir, "demo/main.bot") != unitFixtureMain || readFixture(t, workdir, "demo/lib/nodes.bot") != unitFixtureNodes {
+		t.Fatal("a refused save wrote files")
+	}
+	// The same for a keyed-block entry the fragment holds.
+	withVars := "vars:\n  depth: int = 1\n\n" + unitFixtureNodes
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/nodes.bot": withVars})
+	_, opened = openPath(t, s, "demo/main.bot")
+	lostVar := editDocument(t, opened.Document, func(m map[string]any) {
+		delete(m["vars"].(map[string]any)["fields"].([]any)[0].(map[string]any), "file")
+	})
+	rec, _ = savePath(t, s, "demo/main.bot", lostVar, opened.Unit.Revision)
+	if body := rec.Body.String(); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(body, "lost the provenance of var") || !strings.Contains(body, "depth") {
+		t.Fatalf("a fragment's var without provenance: %d %s", rec.Code, rec.Body.String())
+	}
+}

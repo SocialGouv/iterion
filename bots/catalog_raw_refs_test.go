@@ -1,14 +1,12 @@
 package bots
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // rawRef matches the bang form `{{!vars.x}}` / `{{!input.x}}` / `{{!outputs…}}`,
@@ -47,11 +45,7 @@ func TestCatalogToolCommandsDoNotOptOutOfShellEscaping(t *testing.T) {
 	}
 	for _, path := range paths {
 		bot := filepath.Dir(path)
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("%s: %v", path, err)
-		}
-		pr := parser.Parse(path, string(src))
+		pr := parseBotUnit(path)
 		if pr.File == nil {
 			t.Logf("%s: not inspected (unparseable — the parse/compile test owns that)", path)
 			continue
@@ -103,11 +97,7 @@ func TestCatalogHasNoAuthorQuotedRefs(t *testing.T) {
 		t.Fatal("no bots found — the lint would pass vacuously")
 	}
 	for _, path := range paths {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("%s: %v", path, err)
-		}
-		pr := parser.Parse(path, string(src))
+		pr := parseBotUnit(path)
 		if pr.File == nil {
 			t.Logf("%s: not inspected (unparseable — the parse/compile test owns that)", path)
 			continue
