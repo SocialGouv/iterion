@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.149.1](https://github.com/SocialGouv/iterion/compare/v3.149.0...v3.149.1) (2026-09-15)
+
+### Bug Fixes
+
+* **server:** a missing build asset must 404, not masquerade as the SPA shell ([#1258](https://github.com/SocialGouv/iterion/issues/1258)) ([aef881d](https://github.com/SocialGouv/iterion/commit/aef881d0db6c25c106fd209db7d409824d882bfb))
+
+    <details><summary>why</summary>
+
+    The SPA fallback answered every unrouted GET with index.html, /assets/* included. A content-hashed chunk is absent for exactly one reason — the document came from a different build than the replica answering — and 200 text/html turns that into "blocked due to a disallowed MIME type", which no client can act on and which caches as a broken script.
+
+    </details>
+
 ## [3.149.0](https://github.com/SocialGouv/iterion/compare/v3.148.2...v3.149.0) (2026-09-15)
 
 ### Features
