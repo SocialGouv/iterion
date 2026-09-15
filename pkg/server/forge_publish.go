@@ -784,6 +784,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	}
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
+	vars["forge_delivery_preflight_url"] = base + "/api/v1/forge/delivery-preflight"
 	vars[forgePublishVarToken] = token
 	return vars, nil
 }

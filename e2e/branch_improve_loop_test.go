@@ -38,6 +38,7 @@ func stubBranchCampaign(exec *scenarioExecutor, st *branchCampaignState) {
 	// budget gate) to the campaign; plan_review is unresolved (auto →
 	// off) in this harness, so the peer never runs.
 	stubWorkspaceProbeOK(exec)
+	stubDeliveryProbeOK(exec)
 	stubPlanAuthor(exec)
 	stubBranchPlanRelay(exec)
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
@@ -347,6 +348,7 @@ const (
 // 3*planCostUSD.
 func planBudgetGateStubs(exec *scenarioExecutor, planCostUSD float64) {
 	stubWorkspaceProbeOK(exec)
+	stubDeliveryProbeOK(exec)
 	stubBranchPlanRelay(exec)
 	exec.on("plan", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"plan": "fix the seam", "assumptions": "small blast radius", "risks": "none flagged",

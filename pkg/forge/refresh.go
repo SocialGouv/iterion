@@ -30,6 +30,7 @@ type RefreshedToken struct {
 	RefreshToken string // may be rotated by the provider; empty = keep current
 	ExpiresAt    time.Time
 	Scopes       []string
+	TokenProof   *secrets.TokenPermissionProof
 	// AppSlug is the GitHub App's slug when the refresher resolved it for a
 	// record that lacked it; the worker persists it so the "<slug>[bot]"
 	// identity the loop guards read exists on every App connection.
@@ -218,7 +219,7 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	// fresh token. A failure here leaves the secret stale-but-valid until
 	// the next tick — acceptable (the connection is already updated).
 	if conn.ManagedSecretID != "" {
-		if err := w.rewriteManagedSecret(ctx, conn.ManagedSecretID, out.AccessToken); err != nil {
+		if err := w.rewriteManagedSecret(ctx, conn.ManagedSecretID, out); err != nil {
 			return err
 		}
 	}
@@ -425,7 +426,8 @@ func (w *RefreshWorker) withdrawSecurityReadEntry(ctx context.Context, conn Conn
 	return nil
 }
 
-func (w *RefreshWorker) rewriteManagedSecret(ctx context.Context, secretID, token string) error {
+func (w *RefreshWorker) rewriteManagedSecret(ctx context.Context, secretID string, out RefreshedToken) error {
+	token := out.AccessToken
 	gs, err := w.Secrets.Get(ctx, secretID)
 	if err != nil {
 		return fmt.Errorf("forge: load managed secret for rewrite: %w", err)
@@ -437,6 +439,7 @@ func (w *RefreshWorker) rewriteManagedSecret(ctx context.Context, secretID, toke
 	gs.SealedSecret = sealed
 	gs.Last4 = secrets.Last4(token)
 	gs.Fingerprint = secrets.FingerprintSHA256(token)
+	gs.ForgeTokenProof = out.TokenProof
 	return w.Secrets.Update(ctx, gs)
 }
 

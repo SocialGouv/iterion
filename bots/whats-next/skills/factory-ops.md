@@ -137,3 +137,13 @@ At connect time, automatic branding preserves existing avatars, including
 reconnects and Gravatar images. If inspection fails, `avatar_error` names why
 and the connection remains active. Read [the brand runbook](../../../docs/brand.md)
 before diagnosing a missing bot face or requesting an explicit replacement.
+
+## GitHub workflow edits need a delivery-capable token
+
+Billy 1.8 refuses a `.github/workflows/` diff before planning when the
+runtime token lacks verified `workflows:write`. Treat
+`FORGE_PERMISSION_DENIED` as an operator configuration decision: approve
+App delivery permissions deliberately, refresh the token and relaunch.
+Installation grants alone do not prove the narrower token's capabilities.
+Do not schedule repeated analysis attempts against the same missing proof.
+See [Revi/Billy delivery preflight](../../../docs/revi-billy-loop.md).
