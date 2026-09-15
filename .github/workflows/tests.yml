@@ -791,30 +791,61 @@ jobs:
     # reached main and surfaced only when desktop-release.yml ran, on a `v*` tag
     # — i.e. during a release, which is the worst moment to discover it.
     #
-    # Build-only, on purpose: packaging, signing and the five-platform matrix
-    # stay in desktop-release.yml. This answers one question — does it still
-    # compile — and answers it in ~3 min.
+    # Type-check only, on purpose: packaging, signing and the five-platform
+    # artefact matrix stay in desktop-release.yml. This answers one question —
+    # does it still compile — for every GOOS the package carries files for.
     #
-    # ubuntu-latest rather than the arc-runners expression used above: this is
-    # the one job that needs `sudo apt-get`, and the self-hosted runners are
-    # containers without it. The dev packages mirror desktop-release.yml's own
+    # The GOOS axis is not decoration. `go vet` on Linux skips every
+    # `*_darwin.go` and `*_windows.go` in the package, so a Linux-only check
+    # would leave path_fix_darwin.go, updater_apply_windows.go,
+    # single_instance_windows.go and daemon_spawn_windows.go compiling for the
+    # first time during a release — the same gap this job exists to close,
+    # narrowed rather than shut.
+    #
+    # Only the Linux leg needs system libraries, and only it runs with cgo:
+    # that is the leg whose wails bindings are C. darwin and windows type-check
+    # with CGO_ENABLED=0 in seconds, which is why the matrix costs almost
+    # nothing over the single check.
+    #
+    # ubuntu-latest rather than the arc-runners expression used above: the
+    # Linux leg needs `sudo apt-get`, and the self-hosted runners are
+    # containers without it. Its dev packages mirror desktop-release.yml's own
     # Linux step; keep the two in step when either moves.
     if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Same tags the Taskfile pins for a Linux desktop build.
+          - goos: linux
+            tags: desktop,webkit2_41
+            cgo: "1"
+            deps: true
+          - goos: windows
+            tags: desktop
+            cgo: "0"
+          - goos: darwin
+            tags: desktop
+            cgo: "0"
+    name: desktop-vet (${{ matrix.goos }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: Linux deps
+        if: matrix.deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
       - name: Vet the desktop package
-        # Same tags the Taskfile pins for a Linux desktop build. vet type-checks
-        # the whole package and runs the analyzers, without linking a binary
-        # nobody here consumes.
-        run: go vet -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+        # vet type-checks the whole package and runs the analyzers, without
+        # linking a binary nobody here consumes.
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: go vet -tags ${{ matrix.tags }} ./cmd/iterion-desktop/
 
   govulncheck:
     # Advisory: not a required check, so it cannot block a merge — see the

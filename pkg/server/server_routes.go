@@ -17,6 +17,11 @@ func (s *Server) routes() {
 	// machine. The 'local-only server' framing didn't address this because
 	// the threat is browser-side, not network-side.
 	s.mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
+		// Declared before the decision, not after it: the refusal below is
+		// itself an Origin-dependent representation, and a cache that saw the
+		// token only on the allowed path could serve that refusal to an
+		// allowlisted origin.
+		httpx.AddVary(w, "Origin")
 		origin := r.Header.Get("Origin")
 		if !s.isAllowedOriginReq(r) {
 			// No ACAO header → browser blocks the cross-origin request.
@@ -24,7 +29,6 @@ func (s *Server) routes() {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		httpx.AddVary(w, "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.WriteHeader(http.StatusNoContent)

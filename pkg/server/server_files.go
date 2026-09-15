@@ -257,10 +257,16 @@ func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
 	if r == nil {
 		return
 	}
+	// Unconditional, and that is the point: this response depends on Origin
+	// whether or not the origin is allowed, because ACAO is present in one case
+	// and absent in the other. Declaring the dimension only on the allowed path
+	// lets a cache store the ACAO-less variant under the bare URL and hand it
+	// to an allowlisted origin, whose browser then blocks a request that should
+	// have succeeded.
+	httpx.AddVary(w, "Origin")
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.isAllowedOriginReq(r) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		httpx.AddVary(w, "Origin")
 	}
 }
 

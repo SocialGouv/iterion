@@ -43,3 +43,40 @@ func TestCorsPreflightKeepsAnUpstreamVary(t *testing.T) {
 		}
 	}
 }
+
+// The refusal is itself an Origin-dependent representation: ACAO is present for
+// an allowed origin and absent otherwise. Declaring the dimension only on the
+// allowed path lets a cache store the ACAO-less variant under the bare URL and
+// hand it to an allowlisted origin, whose browser then blocks a request that
+// should have succeeded.
+func TestCorsDeclaresVaryEvenWhenTheOriginIsRefused(t *testing.T) {
+	srv := New(Config{Port: 4891, DisableAuth: true, SkipProjectRegistration: true}, iterlog.Nop())
+
+	t.Run("preflight", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "http://127.0.0.1/api/files", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("reflected a refused origin: %q", got)
+		}
+		if vary := strings.Join(rec.Header().Values("Vary"), ", "); !strings.Contains(vary, "Origin") {
+			t.Fatalf("refusal did not declare Vary: Origin (got %q)", vary)
+		}
+	})
+
+	t.Run("reflectAllowedOrigin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/runs", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		srv.reflectAllowedOrigin(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("reflected a refused origin: %q", got)
+		}
+		if vary := strings.Join(rec.Header().Values("Vary"), ", "); !strings.Contains(vary, "Origin") {
+			t.Fatalf("refused response did not declare Vary: Origin (got %q)", vary)
+		}
+	})
+}
