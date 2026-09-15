@@ -8,26 +8,27 @@ import (
 
 // The golden-master rite leaves the NEXT gate a held-out set to score, and the
 // instruction that asks for it is one paragraph away from voiding the very term
-// it protects. The harness's committed check is directory-wide —
-// `git ls-files -- mutants/holdout` (oracle-harness.py:holdout_committed_in_tree)
-// — and `seal_holdout` early-returns without moving ANYTHING once that is true
-// and the gate has not opted in. So a successor committed before a harness run
-// has relocated the rite's OWN set leaves that set in the tree: the sealed pile
-// stays empty, `holdout_total` and `holdout_detected` are both 0, the "missing
-// sealed set" bail cannot fire (the committed successor keeps the directory
-// present), and the gate's `holdout_detected == holdout_total` term passes
-// 0 == 0 — the vacuous green this whole bot exists to refuse.
+// it protects.
 //
-// As first shipped, the instruction's own completion criterion fired on exactly
-// that path: `holdout_awaiting_gate` is set for anything committed under
-// `mutants/holdout/` with no opt-in, so the agent read "finished" at the moment
-// it had emptied its strongest term.
+// `seal_holdout` declines PER SET: it keeps the entries `git ls-files --
+// mutants/holdout` reports and relocates every other one. So a committed
+// successor waiting for its own gate does NOT keep the drawing run's set in the
+// tree, and no ordering between the two acts is needed.
+//
+// What survives is a single-entry hazard, and it is the one this file pins: a
+// set the rite commits IN STRIDE is tracked, so the seal leaves it behind —
+// unsealed, readable by the hardening loop that must never see it, and scored
+// as `holdout 0/0`, the vacuous green this whole bot exists to refuse.
 //
 // Same shape and same known limit as clean_tree_clause_test.go: a grep cannot
 // tell a rule from a quotation of one, so this catches the likely regression —
-// a reflow or a tightening that drops the ordering or collapses the conjunction
-// back to a single field — not a semantic inversion. Reword on purpose and
-// update the expectations in the same change.
+// a reflow that drops the tracking rule, or a tightening that restores the
+// superseded ordering doctrine — not a semantic inversion. Reword on purpose
+// and update the expectations in the same change.
+//
+// The behaviour itself is proved against the harness, not here: the `MELANGE`
+// case in `oracle-harness.py`'s `mk_holdout` selftest drives a tree holding a
+// committed successor AND a fresh set, and asserts only the tracked one stays.
 const (
 	holdoutSuccessorBot    = "golden-master/main.bot"
 	holdoutSuccessorMarker = "LEAVE THE NEXT GATE A SET TO SCORE."
@@ -68,44 +69,52 @@ func holdoutSuccessorClause(t *testing.T) string {
 	return strings.Join(strings.Fields(ornament.Replace(strings.ToLower(strings.Join(body, " ")))), " ")
 }
 
-func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
+func TestGoldenMasterHoldoutSuccessorKeepsItsOwnSetUntracked(t *testing.T) {
 	clause := holdoutSuccessorClause(t)
 
-	// 1. THE ORDER. Drawing the successor is safe only after a harness run has
-	//    moved the rite's own set out of the tree, and the agent has no way to
-	//    infer that: the seal declines in silence and selfcheck withholds the
-	//    score, so the wrong order shows up days later as a 0/0.
-	for _, want := range []string{"only after", "gm_mode=selfcheck"} {
+	// 1. THE GRANULARITY, stated. Told only "commit a set under
+	//    mutants/holdout/", an agent has no reason to treat its own set
+	//    differently from the successor — and committing both is the one act
+	//    that still empties the term. Saying the seal declines PER SET is what
+	//    makes the next sentence ("keep yours untracked") a rule instead of a
+	//    superstition, and it is also what stops a later editor from restoring
+	//    the superseded "commit only after the seal" ordering.
+	for _, want := range []string{"per set", "in stride"} {
 		if !strings.Contains(clause, want) {
 			t.Errorf("the successor instruction does not name %q, so it no longer "+
-				"orders the commit after the seal.\n"+
-				"  Why it is there: seal_holdout declines DIRECTORY-WIDE once "+
-				"anything under mutants/holdout/ is committed, so a successor "+
-				"committed first leaves the rite's own set unsealed and unscored.\n"+
+				"tells the rite which set may be committed.\n"+
+				"  Why it is there: seal_holdout keeps what git TRACKS and relocates "+
+				"the rest. A successor is meant to be tracked; the rite's own set "+
+				"must not be, or the seal leaves it in the tree, unsealed and "+
+				"unscored, and the gate reports 0/0.\n"+
 				"  Clause as parsed: %q", want, clause)
 		}
 	}
 
-	// 2. THE STOP-CONDITION, as a conjunction. `holdout_awaiting_gate` alone is
-	//    true for the degenerate case it is meant to prevent — a set committed
-	//    under mutants/holdout/ that nothing ever sealed. `holdout_total` is
-	//    published under selfcheck (the score is not) and discriminates
-	//    exactly: non-zero means the rite's own set reached the sealed pile.
+	// 2. THE STOP-CONDITION, and what it must NOT cost. The criterion is the
+	//    commit itself: `holdout_awaiting_gate` is reported by the gate that
+	//    runs anyway (oracle-harness.py sets it whenever a committed set has no
+	//    opt-in), so sending the agent to run a selfcheck just to watch a field
+	//    turn buys nothing and spends a full harness run.
 	finished := clauseSentence(clause, "finished on this point")
 	if finished == "" {
 		t.Fatalf("the successor instruction no longer states when the agent is "+
 			"finished on this point.\n  Clause as parsed: %q", clause)
 	}
-	for _, want := range []string{"holdout_awaiting_gate", "holdout_total"} {
-		if !strings.Contains(finished, want) {
-			t.Errorf("the completion criterion does not name %q.\n"+
-				"  Why both: holdout_awaiting_gate fires for anything committed "+
-				"under mutants/holdout/ with no opt-in — including a rite whose "+
-				"own set was never sealed — so alone it reads \"finished\" at the "+
-				"moment the held-out term went vacuous. A non-zero holdout_total "+
-				"in the same report is what says the rite's own set is in the "+
-				"sealed pile.\n  Criterion as parsed: %q", want, finished)
-		}
+	if !strings.Contains(finished, "fingerprint") {
+		t.Errorf("the completion criterion no longer keys on the successor being "+
+			"committed with FRESH fingerprints.\n"+
+			"  Why: that is the whole of it. A repeated fingerprint is what turns "+
+			"the later gate red, and it is the only property of the act the rite "+
+			"can still get wrong.\n  Criterion as parsed: %q", finished)
+	}
+	if !strings.Contains(clause, "do not run a selfcheck") {
+		t.Errorf("the successor instruction no longer tells the rite NOT to run a "+
+			"selfcheck to confirm this point.\n"+
+			"  Why it is there: an earlier wording made the criterion a field read "+
+			"from a selfcheck report, which cost a full harness run to observe "+
+			"something the convergence gate reports on its own.\n"+
+			"  Clause as parsed: %q", clause)
 	}
 
 	// 3. A FRESH draw. Both sets are now written in one sitting by one context,
@@ -151,33 +160,30 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"out from under git as uncommitted deletions.\n  Clause as parsed: %q", clause)
 	}
 
-	// 5. THE ESCAPE, or the criterion above becomes a trap. Two INHERITED
-	//    states make it unreachable by any act the rite is allowed to take —
-	//    it may not write the opt-in, and must not delete a set it did not
-	//    draw — so the paragraph has to say how each ENDS: by reporting it.
-	//      - a committed successor an earlier cycle left: `git ls-files --
-	//        mutants/holdout` is non-empty before this rite writes anything, so
-	//        the seal declines for everything, nothing reaches the pile, and
-	//        `holdout_total` is 0 while `holdout_awaiting_gate` is true
-	//        (reproduced against the harness's own functions);
+	// 5. THE ESCAPE, or the criterion above becomes a trap. ONE INHERITED state
+	//    is unreachable by any act the rite is allowed to take — it may not
+	//    write the opt-in, and must not delete a set it did not draw — so the
+	//    paragraph has to say how it ENDS: by reporting it.
 	//      - the judged config already carrying `"seal_committed": true`:
 	//        `awaiting` is `committed_in_tree AND NOT opted_in`, so it never
 	//        turns true, and every successor the rite commits is sealed and
 	//        spent by this same run — an agent chasing the criterion re-commits
 	//        a set each pass and watches the next seal strip it back out.
-	//    (Not keyed on "zero holdout_total": the criterion above already reads
-	//    "a non-zero holdout_total", which contains that substring, so the
-	//    assertion would pass with the escape deleted.)
-	for _, want := range []string{"already tracked", "carries the opt-in", "work_remaining"} {
+	//    The state that used to sit beside it — inheriting a tracked
+	//    mutants/holdout/, which once blocked the seal for EVERYTHING — is gone
+	//    with the per-set decline: an unclaimed successor is now a debt the run
+	//    reports, not a wall it cannot pass.
+	for _, want := range []string{"carries the opt-in", "work_remaining"} {
 		if !strings.Contains(clause, want) {
 			t.Errorf("the successor instruction does not name %q, so it no longer "+
-				"gives the completion criterion an exit on a net that arrived with a "+
-				"tracked mutants/holdout/.\n"+
-				"  Why it is there: in that state nothing can be sealed, holdout_total "+
-				"is 0 and holdout_awaiting_gate is true — the criterion cannot be met "+
-				"by any act the rite may take, and an agent with no stated exit either "+
-				"loops or invents one (writing the opt-in, or deleting the predecessor's "+
-				"set).\n  Clause as parsed: %q", want, clause)
+				"gives the completion criterion an exit on a net whose config already "+
+				"carries the opt-in.\n"+
+				"  Why it is there: in that state `awaiting` never turns true, because "+
+				"it is `committed_in_tree AND NOT opted_in` — every successor the rite "+
+				"commits is sealed and spent by this same run. The criterion cannot be "+
+				"met by any act the rite may take, and an agent with no stated exit "+
+				"either loops or invents one (writing the opt-in, or deleting the "+
+				"predecessor's set).\n  Clause as parsed: %q", want, clause)
 		}
 	}
 

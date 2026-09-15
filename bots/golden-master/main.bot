@@ -100,18 +100,19 @@ prompt campaign_user:
   green by being vacuous.
 
   So draw a SECOND set and leave it COMMITTED under `mutants/holdout/`, unsealed
-  and unscored — and do it ONLY AFTER a harness run (`GM_MODE=selfcheck`) has
-  moved your own set out of the tree. The committed check is directory-wide: one
-  tracked entry under `mutants/holdout/` makes the seal decline for EVERYTHING
-  there, so a successor committed too early — or your own set committed in
-  stride — leaves your own set unsealed, unscored and readable by the next pass,
-  and your own gate then reports that same vacuous `holdout 0/0`.
+  and unscored. The seal declines PER SET, never per directory: a committed
+  successor waiting for its own gate does not stop your fresh set from sealing,
+  so the ORDER of the two acts does not matter. What matters is that your own
+  set stays UNTRACKED. Tracking is exactly how the seal tells the two apart, so
+  a set you commit in stride is one the seal leaves behind — unsealed, unscored,
+  readable by the next pass — and your own gate then reports that same vacuous
+  `holdout 0/0`.
 
-  That sealing run reports `holdout_sealed_uncommitted`: your own set left the
+  The sealing run reports `holdout_sealed_uncommitted`: your own set left the
   tree with no committed copy. Do NOT answer it by putting that set back. It is
   scored here and published as evidence either way, and a copy re-committed
   under `mutants/holdout/` is the same set by fingerprint: the later gate either
-  declines to seal it and reports `0/0` again, or opts in and refuses it as
+  leaves it in place and reports `0/0` for it, or opts in and refuses it as
   `holdout_reused`. A set already published is never a set to score. The
   successor is the answer to that notice.
 
@@ -127,32 +128,24 @@ prompt campaign_user:
   No mutation of the second set may repeat one of the first: identity is the
   `apply.sh` and `revert.sh` bytes plus the declared `targets`, so a rename is
   not a fresh draw, and a repeat turns that later gate red. You are finished on
-  this point when ONE selfcheck report, taken after the commit, reads
-  `holdout_awaiting_gate: true` AND a non-zero `holdout_total` — the first says
-  the successor is waiting, the second that your own set reached the sealed
-  pile. The held-out SCORE is withheld there on purpose; do not go looking
-  for it.
+  this point once the successor is committed with fresh fingerprints. Do NOT run
+  a selfcheck to watch a field turn: the gate that runs anyway reports
+  `holdout_awaiting_gate: true` for a committed set, and the held-out SCORE is
+  withheld there on purpose.
 
-  Read that same pair the other way BEFORE you draw anything: two inherited
-  states make the criterion unreachable, and neither is yours to resolve. A zero
-  `holdout_total` beside `holdout_awaiting_gate: true` — a set was already
-  tracked under `mutants/holdout/` when you arrived, an unclaimed successor, and
-  nothing you write there can be sealed while it sits there. Or `awaiting` never
-  turning true while your own set does reach the pile — the config you are
-  judging already carries the opt-in, so a successor you commit is sealed and
-  spent by this very run instead of waiting for the next. In both you leave it
-  where it is: you do not write the opt-in, you do not delete an artefact you
-  did not draw, and you do not stack a second successor on the first. On this
-  point you are then finished by SAYING so — name which of the two you are in,
-  in `work_remaining` and in `REPORT.md`.
+  ONE inherited state is not yours to resolve: the config you are judging
+  ALREADY carries the opt-in, in which case a successor you commit is sealed and
+  spent by THIS run instead of waiting for the next. Leave it as you found it —
+  you do not write the opt-in, and you do not delete an artefact you did not
+  draw. On this point you are then finished by SAYING so, in `work_remaining`
+  and in `REPORT.md`.
 
   Neither set is yours to run. The first has left the tree; the second is
   readable only because it must WAIT, and applying it here — or hardening the
   comparator against what it catches — spends the next gate's whole
   counter-test while leaving it green. For the same reason, a later pass of this
-  same run does not write a third: your set for this cycle is already in the
-  pile, and by the rule above nothing more can be sealed while the successor
-  sits there — what you add would stay readable and prove nothing.
+  same run does not write a third: untracked, it would seal and be scored HERE,
+  spending on your own gate a set the next one was meant to score.
 
   {{input.fail_log}}
 
