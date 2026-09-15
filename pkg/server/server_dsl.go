@@ -525,21 +525,37 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 	writeExample(w, name, src, "", "")
 }
 
+// exampleResponse is what /api/examples/{name} answers for one program:
+// its text and document, the diagnostics, and — for a file inside the
+// working directory that parses — the path the studio opens and saves it
+// by with the disk path /api/files/open confirms for it. Bindable is false
+// when the file does not parse: the studio then binds no path at all, so a
+// save asks where instead of landing on the file as the author wrote it —
+// its bots/<name> fallback would name that very file in the default layout.
+type exampleResponse struct {
+	Source            string          `json:"source"`
+	Document          json.RawMessage `json:"document"`
+	Diagnostics       []string        `json:"diagnostics,omitempty"`
+	Path              string          `json:"path,omitempty"`
+	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	Bindable          bool            `json:"bindable"`
+}
+
 // writeExample answers with one program's document and text — a bot in
 // one file, or the flat program an embedded bot or one outside the working
 // directory is served as — and, for a file inside the working directory,
-// the path the studio opens and saves it by with the disk path
-// /api/files/open confirms for it (both empty otherwise, and omitted).
+// the path the studio opens and saves it by (empty otherwise).
 func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 	pr := parser.Parse(name, source)
 	var diags []string
+	bindable := true
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
 		// A file that does not parse is never bound to its path: the
 		// document the parser salvaged is not the file, and a save of it
 		// would replace what the author wrote with what the parser kept.
 		if d.Severity == parser.SeverityError {
-			rel, confirmed = "", ""
+			rel, confirmed, bindable = "", "", false
 		}
 	}
 
@@ -554,18 +570,13 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 		return
 	}
 
-	writeJSON(w, struct {
-		Source            string          `json:"source"`
-		Document          json.RawMessage `json:"document"`
-		Diagnostics       []string        `json:"diagnostics,omitempty"`
-		Path              string          `json:"path,omitempty"`
-		ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
-	}{
+	writeJSON(w, exampleResponse{
 		Source:            source,
 		Document:          json.RawMessage(docJSON),
 		Diagnostics:       diags,
 		Path:              rel,
 		ConfirmedDiskPath: confirmed,
+		Bindable:          bindable,
 	})
 }
 
@@ -600,15 +611,16 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 	}
 	if u.HasErrors() {
 		// A unit that does not load is never bound to its files: the studio
-		// gets the program the loader salvaged, with its diagnostics, and no
-		// path or unit — a save of it goes to a new file, never over the
-		// files as the author wrote them.
+		// gets the main's text and the program the loader salvaged, with the
+		// diagnostics, no path or unit, and the word that nothing is to be
+		// bound — a save of it asks where, never lands on the files as the
+		// author wrote them.
 		docJSON, err := ast.MarshalFile(u.Merged)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags})
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags})
 		return
 	}
 	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {

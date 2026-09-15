@@ -28,6 +28,7 @@ type oneProgram struct {
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
+	Bindable          bool            `json:"bindable"`
 	Unit              *unitInfo       `json:"unit"`
 }
 
@@ -77,6 +78,9 @@ func assertOneProgram(t *testing.T, got oneProgram, wantPath string) *ast.File {
 	}
 	if got.Path != wantPath || got.ConfirmedDiskPath != "" {
 		t.Errorf("a flat program was bound: path %q (want %q), confirmed %q", got.Path, wantPath, got.ConfirmedDiskPath)
+	}
+	if wantPath == "" && !got.Bindable {
+		t.Error("a flat program that parses was declared not bindable")
 	}
 	return f
 }
@@ -378,6 +382,15 @@ func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
 		}
 		if got.Path != "" || got.ConfirmedDiskPath != "" || got.Unit != nil {
 			t.Errorf("%s: a file that does not parse was bound to its path: path %q confirmed %q unit %v", name, got.Path, got.ConfirmedDiskPath, got.Unit != nil)
+		}
+		// The studio's bots/<name> fallback would name the very file in
+		// the default layout: the server has to say the file is not
+		// bindable, and keep the text the source pane shows.
+		if got.Bindable {
+			t.Errorf("%s: a file that does not parse was declared bindable", name)
+		}
+		if got.Source == "" || !strings.Contains(got.Source, "!!!") {
+			t.Errorf("%s: the served text is not the file's: %q", name, got.Source)
 		}
 	}
 }
