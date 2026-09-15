@@ -11,8 +11,11 @@ This page maps every public top-level command in the current binary and document
 | `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
 | `clean` | Reclaim disk by deleting run worktrees whose work has landed. |
 | `completion` | Generate Bash, Zsh, Fish, or PowerShell completion. |
+| `connections` | Authenticate this machine to a connector: store, list, and remove credentials. |
+| `connectors` | Generate and validate connector packages from a vendor API description. |
 | `diagram` | Render a workflow as Mermaid. |
 | `dispatch` | Poll a tracker and launch an eligible bot per issue. |
+| `dsl` | Inspect the `.bot` DSL itself and migrate files between syntax profiles. |
 | `fork` | Fork a run at a prior LLM turn. |
 | `import` | Convert a Claude Code workflow script into a draft `.bot`. |
 | `inspect` | Inspect local runs, executions, events, traces, tools, artifacts, and logs. |
@@ -23,6 +26,7 @@ This page maps every public top-level command in the current binary and document
 | `models` | Inspect resolved model capabilities and their source. |
 | `openapi` | Generate this build's OpenAPI 3.1 document offline. |
 | `plugin` | Install/configure/enable/run runtime plugins. |
+| `reliability` | Inspect and roll back the staged workflow-reliability rollout (read-only). |
 | `remote` | Authenticate to and drive a remote/cloud Iterion server. |
 | `report` | Generate a chronological run report. |
 | `resume` | Resume a paused, cancelled, or resumable failed run. |
@@ -505,6 +509,48 @@ iterion skill list
 
 See [skills library](skills-library.md).
 
+### `iterion connectors`
+
+Subcommands are `gen` and `validate`. A connector package is the declarative API
+description a `tool` node's [`action:` recipe](dsl.md#tool) calls.
+
+```bash
+iterion connectors gen --spec https://vendor.example/openapi.json --id vendorx
+iterion connectors gen --spec ./openapi.yaml --id vendorx --self-hosted --validate-responses
+iterion connectors validate connectors/vendorx
+```
+
+`gen` writes a package from a vendor's OpenAPI 3.x or Swagger 2.0 description.
+`--spec` names that description (a path or an `https` URL) and `--id` the
+connector slug — the package name and the first segment of every operation id.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--out` | `connectors/<id>` | Package directory to write. |
+| `--package-version` | `0.1.0` | Package semver to stamp. |
+| `--license` | empty | The licence the *description* carries, recorded verbatim in the package provenance. |
+| `--redistributable` | `false` | Assert the generated operations may ship in iterion's own catalog. |
+| `--self-hosted` | `false` | The product is commonly self-hosted, so a connection supplies its own instance URL. |
+| `--keep-overlay` | `true` | Re-apply the package's existing `overlay.yaml`, failing if it no longer matches. |
+| `--validate-responses` | `false` | Derive explicit response contracts and validate vendor answers against them (package format v2). |
+
+**Response contracts (package format v2).** Off by default. `schemas.yaml` is a
+descriptive, lossy projection of the vendor's types, so enforcing it would refuse
+bodies vendors legitimately send; `--validate-responses` therefore derives a
+*separate* authority into `responses.json`, referenced explicitly per result
+case, and stamps `schema_version: 2`. Nothing is validated unless a status names
+a contract. Two consequences: a v2 package does not load on an older iterion
+(`schema_version 2 newer than supported 1 (upgrade iterion)`), and regenerating
+the same package **without** the flag drops it back to format 1 and removes
+`responses.json` — pass the flag on every regeneration of a package you want
+contracts on.
+
+`validate <package-dir>` applies the package's overlay to a copy and runs the
+complete check, so it reports on the same package a launch resolves. `gen`
+maintains `identity.lock.yaml` beside `connector.yaml` so operation and auth ids
+survive regeneration. See [connector identities](connector-identities.md) and
+[ADR-098](adr/098-connector-catalog.md).
+
 ### `iterion models` and `iterion openapi`
 
 ```bash
@@ -532,6 +578,7 @@ iterion models pricing --check          # non-zero exit on drift, for CI
 iterion studio --dir . --port 4891
 iterion studio --bots-path ./bots --no-browser
 iterion studio --workspace --port 4891
+iterion studio --recovery-passive --dir .
 ```
 
 The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so use it only on trusted networks. Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
@@ -547,6 +594,34 @@ host-bound `workspace.handoff.complete` receipt. The workspace host persists
 the correlation and retries delivery to the originating Copi conversation;
 the notification does not switch the visible project.
 `GET /readyz` reports ready only when every pinned runtime is available.
+
+A project's environment is the studio process environment with the project's
+dotenv layered on top. `--workspace` registers `<project-root>/.env` as that
+dotenv automatically when the file exists, and persists the path as `env_file`
+in the projects registry. It is evaluated in a throwaway
+`bash --noprofile --norc` child running `set -a; . <file>; set +a; env -0`, so
+shell expansion and `export`-free assignments behave as they did under the
+legacy instance manager, and the result is passed to that project's runtime
+only — never installed process-wide.
+
+A project dotenv may not change the variables that decide where the host itself
+reads and writes: `HOME`, `ITERION_HOME`, `XDG_CONFIG_HOME`,
+`ITERION_PROJECTS_CONFIG`, `ITERION_INSTANCES_CONFIG`, `ITERION_INSTANCES_STATE`,
+`ITERION_STUDIO_INSECURE_NONLOOPBACK`, `BIND`, and `PORT`. A file that does is
+refused with `project env <path> may not override reserved variable <NAME>` and
+the workspace does not start — set those in the studio process environment or
+through a CLI flag instead.
+
+`--recovery-passive` starts a deliberately inert console for a supervised
+recovery. The HTTP surface, the assistant chat and explicit run actions stay
+live, but the server starts **no** autonomous worker: no dispatcher, no
+triggers, no assistant watch sweep, no admission/reconciliation loop, no
+notification delivery and no cleanup reaper. The project is not registered in
+the recents list either. It must bind a loopback address — anything else is
+refused with `recovery-passive studio must bind a loopback address` — and the
+mode is advertised to the SPA as `server_info.recovery_passive`. Use it to ask
+the assistant for a repair proposal before normal automation is allowed to
+observe the same store again; it is not a quieter way to run a normal studio.
 
 ### `iterion dispatch`
 
@@ -583,12 +658,13 @@ See [scheduling](scheduling.md), including sub-minute keepalive behavior.
 
 ### `iterion issue`
 
-Subcommands are `create`, `list`, `show`, `move`, `update`, `close`, `board`, and `import`.
+Subcommands are `create`, `list`, `show`, `move`, `update`, `close`, `board`, and `import`. `board` itself takes `init` (initialize — or replace — the kanban board) and `show` (print the current board configuration).
 
 ```bash
 iterion issue create --title "Fix auth" --label backend --priority 10
 iterion issue list --state todo --unclaimed
 iterion issue move ISSUE --to doing
+iterion issue board init
 iterion issue board show
 FORGE_TOKEN=... iterion issue import --forge forgejo \
   --repo owner/name --base-url https://forge.example --token-env FORGE_TOKEN
@@ -614,7 +690,30 @@ iterion runner --config cloud.yaml
 iterion server webpush-keys        # mint a VAPID keypair for Web Push
 ```
 
-`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
+`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. Unlike `iterion studio` it binds every interface by default: `--bind` defaults to `0.0.0.0` (the cloud-pod default) and `--port` to `4891`, so on a workstation pass `--bind 127.0.0.1` explicitly to keep the API on loopback. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
+
+### `iterion reliability`
+
+```bash
+iterion reliability report                  # fleet baseline over the resolved store
+iterion reliability report --run-id <id>    # one run's compatibility report
+iterion reliability rollback                # print the rollback plan
+```
+
+The read-only operator surface over the staged workflow-reliability rollout.
+`report` prints the rollout mode this environment actually resolves —
+`ITERION_RELIABILITY_MODE`, falling back to the older
+`ITERION_EXECUTION_CONTEXT_POLICY` — and the retry-circuit threshold and
+cooldown, then either a fleet baseline over the store or, with `--run-id`, one
+run's compatibility report (legacy or contract context, admission recorded,
+nodes published, rollback-safe or not). `--store-dir` overrides the store it
+reads; the default is the managed store for the working directory.
+
+Nothing here writes. Reporting on a legacy run never upgrades its policy, and
+`rollback` only prints the plan — which variable to set and what evidence to
+keep — because those variables are read where the launch surfaces run (a pod
+spec, a service unit, a shell), which a one-shot CLI process cannot reach. See
+[workflow reliability](workflow-reliability-1006.md).
 
 ## State, knowledge, and supervision
 
@@ -630,6 +729,37 @@ iterion secret list
 ```
 
 See [secrets](secrets.md).
+
+### `iterion connections`
+
+Subcommands are `add`, `list`, and `rm`. A connector package says *what* a vendor
+offers; a connection says which instance, with whose credential, and what it may
+be used for. A `.bot` names one by alias on `connection:`. The command-level
+`--store-dir` selects a non-default run store.
+
+```bash
+FORGE_TOKEN=... iterion connections add --connector forgejo --alias main \
+  --base-url https://forge.example --token-env FORGE_TOKEN
+iterion connections list
+iterion connections rm forgejo main
+```
+
+`add` takes `--connector` (the connector package id, e.g. `forgejo`), `--alias`
+(the name a `.bot` writes on `connection:`, default `main`), `--base-url` (the
+instance to authenticate to — required for a self-hosted connector, otherwise the
+package's own), `--scheme` (which of the package's auth schemes the credential
+satisfies, required when the package declares several), `--token-env` (the
+environment variable holding the credential), repeatable `--capability`, and
+`--name` (display name). `rm` takes the connector and the alias positionally.
+
+The credential is read from an environment variable, never from a flag, and is
+sealed with the same local key as [`iterion secret`](#iterion-secret) before it
+reaches the store. Capabilities are the grant: `action` alone is the default —
+deterministic `tool … action:` nodes where the workflow decides every call;
+adding `agent` lets a model choose calls through the MCP facade, a wider grant
+and therefore never the default. See
+[`iterion connectors`](#iterion-connectors) and
+[ADR-098](adr/098-connector-catalog.md).
 
 ### `iterion memory`
 

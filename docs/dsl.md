@@ -358,7 +358,18 @@ human approval:
   min_answers: 1
 ```
 
-`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, `review`, or `async`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. The `async` mode is an agent/judge mode (not a human-node mode): the node posts non-blocking questions with `ask_user_async` and keeps working, syncing on demand via an `await_answers` node — see [async interaction](async-interaction.md). Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
+`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, or `human_or_host`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. The `async` mode is an agent/judge mode (not a human-node mode): the node posts non-blocking questions with `ask_user_async` and keeps working, syncing on demand via an `await_answers` node — see [async interaction](async-interaction.md). Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
+
+`human_or_host` is a human gate that **also** accepts a value attested by the
+host — a watched run's outcome, say — delivered on a separate answer field. Both
+sources land on the same pause and the first one to arrive resumes the run,
+which is what keeps the operator able to type while the gate stands by. It is
+named for its two sources, following `llm_or_human`: a mode called `host` would
+read as "operator input no longer accepted", the opposite of what it means. In a
+bundle both halves must be declared — the node's `interaction: human_or_host`
+and the manifest's `chat.nodes.<id>.host_event_field` — or
+[C212](references/diagnostics.md) fires: an error for a mode with no field to
+receive on, a warning for a field the workflow never advertises.
 
 Resume a pause with `iterion resume --run-id <id> --file workflow.bot --answer key=value`.
 
@@ -378,7 +389,7 @@ tool run_tests:
   needs: [test_slot]
 ```
 
-`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
+`command` and `script` are mutually exclusive. A script adds `language: js|node|py|python|python3|sh|bash` — `node` is an alias of `js`, `python` and `python3` are aliases of `py`, and the default when `language:` is absent is `sh`. Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
 
 **The output contract.** A tool node's **stdout is its output**: the runtime parses it as a JSON object, and that object is what `{{outputs.<tool>.<field>}}`, an edge `when`, and the declared `output:` schema see. Stdout that is not a JSON object is wrapped as `{"result": "<text>"}` — a downstream `{{outputs.run_tests.passed}}` then finds nothing. A non-zero exit code **fails the node** (resumable), stdout and stderr attached; when the failure is a *result* rather than an error — a test suite that fails, a scanner that finds something — wrap the command so it exits 0 and reports the verdict as a field:
 
@@ -428,9 +439,31 @@ A parameter's name is the **vendor's**, not iterion's, so quote the ones that ar
 
 **The output** is `{status, pending, data}`, plus `{items, complete}` when the operation paginates. Read `complete`: a walk that stopped at its declared ceiling looks exactly like one that finished. Read `pending`: a `202` means the vendor accepted the work, not that it happened.
 
+**When the package declares response contracts** — a format-v2 package,
+generated with [`iterion connectors gen --validate-responses`](cli-reference.md#iterion-connectors) —
+the vendor's body is checked against the contract the operation's status names,
+*after* the status and the operation's own outcome policy, so a body the vendor
+sends to report its own failure still surfaces as that failure rather than as a
+shape violation. A body that breaks its contract fails the node and clears
+`data`: the workflow never reads fields the contract just refused to vouch for.
+Nothing is validated unless a status explicitly names a contract, so a package
+generated without the flag behaves exactly as before.
+
 **What an action node refuses, and why.** Its offer is that *no LLM decides the operation, builds the arguments or reads the answer* — so the two properties that could reintroduce one are compile errors: `recovery:` / `policy: recover` ([C262](references/diagnostics.md), whose ladder ends in an LLM repairing the call) and `postcondition:` ([C263](references/diagnostics.md), a shell exit code that would overrule the vendor's own typed answer). A failure is a node failure carrying its error class (`not_found`, `rate_limited`, `unauthorized`, …); branch on it with a `when` edge rather than expecting the node to return one.
 
-**`unknown_outcome` is a first-class result.** When a mutating operation's request goes out and its answer is lost, and the vendor offers no idempotency key, iterion reports that it cannot tell whether the call happened — and never retries it automatically. Repeating might duplicate a comment, a release, a payment; reporting success would be a lie. A call that never LEFT is not that case and is not reported as one: a refused dial, a name that does not resolve, a header that cannot be sent — nothing reached the vendor, so they are ordinary retryable transport failures. Only a cause that *proves* nothing was sent is treated that way; an unrecognised failure stays undecided, because guessing in that direction is what duplicates an effect.
+**`unknown_outcome` is a first-class result.** When a mutating operation's request goes out and iterion cannot tell whether it took effect, it reports that — and never retries it automatically. Repeating might duplicate a comment, a release, a payment; reporting success would be a lie. A call that never LEFT is not that case and is not reported as one: a refused dial, a name that does not resolve, a header that cannot be sent — nothing reached the vendor, so they are ordinary retryable transport failures. Only a cause that *proves* nothing was sent is treated that way; an unrecognised failure stays undecided, because guessing in that direction is what duplicates an effect.
+
+Two shapes reach that verdict and they are not repeated the same way. A
+**may-have** — a 5xx, a 408/504, a lost answer, a `202`, or a 302/303 iterion
+does not follow — is repeatable only when this call actually carried an
+idempotency key (a 429 is the exception: the request was *refused*, so repeating
+it cannot duplicate anything). A **confirmed mutation iterion could not read** —
+any other 2xx whose body it could not decode, whose outcome predicate it could
+not evaluate, or which broke the response contract the package declared — is
+never repeated at all: the vendor sent that 2xx, so the mutation happened, and
+an idempotency key is ignored on that path. A 2xx the vendor sends to report its
+*own* failure is deliberately not marked undecided; its error class decides as
+it always has.
 
 **Reaching a self-hosted instance.** Every connector call goes out on the guarded dialer, which refuses a private, loopback or link-local address — the guard that keeps a workflow from fetching `http://169.254.169.254/` on the machine an operator is signed into. A self-hosted Forgejo or GitLab is exactly the legitimate case for it, so the exception is deployment-controlled and greppable: **`ITERION_CONNECTOR_ALLOW_PRIVATE=1`** opens the guard for the process. The refusal names the variable, and `iterion connections add` warns at once when a `--base-url` will be refused, rather than leaving the first run to discover it.
 
@@ -479,7 +512,7 @@ block through vars that drift from it in silence.
 |---|---|---|
 | `run.id` | string | The run id. |
 | `run.elapsed_seconds` | float | Active time consumed. Monotonic, so an OS suspend does not count; prior active time is preserved across a resume. |
-| `run.cost_usd` | float | LLM spend booked so far. A call whose price could not be resolved is NOT in it — see [budget](#budget-and-loop-back-edges). |
+| `run.cost_usd` | float | LLM spend booked so far, **including what a node that failed spent** — see [what gets booked](#what-gets-booked). A call whose price could not be resolved is NOT in it. |
 | `run.tokens` | int | Tokens consumed so far. |
 | `run.iterations` | int | Node executions recorded so far. |
 | `run.max_duration_seconds` | float | The **effective** duration cap. |
@@ -692,6 +725,20 @@ subbot run_ticket:
 
 A subbot is a real nested run with its own loops, state, and budget. Parent budget totals do not aggregate child budgets. `isolated: true` is a workspace-safety assertion, not automatic isolation: use it only when the child cannot mutate the parent checkout.
 
+`source:` takes one of two forms. A **filesystem path** — `source: "child.bot"` —
+is resolved relative to the parent `.bot`. A **`bot://<bundle>/<workflow-id>`
+URI** names an export of a shared bot bundle the project depends on (ADR-094),
+and resolves only when all of: the parent workflow itself lives in a bundle with
+a `manifest.yaml`; that manifest declares `<bundle>` under
+`dependencies.workflows`; the project-root `bots.lock` has an entry keyed exactly
+`<bundle>`; the bundle is materialised at `<project>/.botz/<bundle>` with a
+directory content hash equal to the locked `bundle_sha256`; and the shared
+bundle's manifest lists `<workflow-id>` under `exports.workflows`. Matching is
+exact on both names — no prefix, no fuzzy fallback — and each condition that
+fails is an explicit resolution error naming the remedy. The child compiles as a
+bundle workflow, so it carries the shared bundle's own prompts, skills and
+`devbox.json`. See [bundles](bundles.md).
+
 See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) for pause/resume, board-write, and concurrency boundaries.
 
 ## Cursors and supervisors
@@ -785,7 +832,17 @@ workflow review:
   reviewer -> prepare when not approved as retry(3)
 ```
 
-Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
+Workflow controls are `vars`, `attachments`, `entry`, `default_backend`,
+`tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`,
+`compaction`, `interaction`, `worktree`, `compress`, `auto_memory`,
+`loop_budget_guard`, `repo_devbox`, `workspace_checkpoint`, `permission`,
+`allow`, `ask`, `deny`, and `sandbox`. The last four of those have their own
+sections below: [`loop_budget_guard`](#budget-and-loop-back-edges) declines a
+back-edge the budget cannot fund (C133), [`repo_devbox`](#the-target-repos-toolchain--repo_devbox)
+loads the target repo's toolchain (C134), and
+[`workspace_checkpoint`](#the-mid-run-safety-net--workspace_checkpoint)
+preserves a copy-based sandbox's workspace mid-run (C139); each is `on` by
+default and takes `off` to disable.
 
 #### Budget fields
 
@@ -805,6 +862,28 @@ consequences worth knowing:
 The numeric fields (`max_cost_usd`, `max_tokens`, `max_iterations`,
 `warn_tokens`) are typed, so they fail at compile time instead
 (`C046` for a malformed `max_cost_usd`).
+
+#### What gets booked
+
+A node books its spend when it finishes **and when it fails**. A failed node's
+cost, tokens and iteration reach the run's totals, the daily spend cap and a
+credential-pool donor's allowance exactly as a successful node's do — on a long
+agent node a failure is a whole session, and the runs that fail are the ones
+that burned the most. The booking happens at each terminal exit of the failure
+path, before the checkpoint a resume reads its budget carry from, so a resumed
+run does not restart from zero.
+
+Two exits deliberately book nothing, because the attempt is not over: an
+in-place recovery retry, which continues a session whose usage is already
+cumulative, and an interaction pause, which resumes the very call that asked the
+question. Booking either would bill the same tokens twice. Every other exit is
+terminal for that attempt, and a resume re-executes the node in a fresh session
+whose usage is genuinely additional. A node that spent nothing books nothing,
+and does not consume a `max_iterations` slot.
+
+The booking is accounting only: it never raises a budget verdict of its own, so
+a run ending on a node's failure keeps that failure as its verdict instead of
+having it replaced by a generic budget error.
 
 #### Budget and loop back-edges
 
