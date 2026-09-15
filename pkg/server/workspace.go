@@ -369,6 +369,10 @@ func workspaceSafeOrigin(r *http.Request) bool {
 func (h *WorkspaceHost) serveWorkspaceAsset(w http.ResponseWriter, r *http.Request) {
 	clean := path.Clean(r.URL.Path)
 	if clean != "/" && clean != "." {
+		if IsBuildAssetDir(h.static, clean) {
+			NotFoundBuildAsset(w, r)
+			return
+		}
 		rel := strings.TrimPrefix(clean, "/")
 		if f, err := h.static.Open(rel); err == nil {
 			_ = f.Close()

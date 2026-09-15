@@ -35,6 +35,23 @@ func IsBuildAssetPath(p string) bool {
 		strings.HasPrefix(clean, BuildAssetPrefix)
 }
 
+// IsBuildAssetDir reports whether clean names a DIRECTORY under the build-asset
+// prefix. http.FileServer answers such a path with a directory index — an HTML
+// listing of every chunk and sourcemap the build emitted — so the invariant
+// "under /assets/ you get a file or a 404" would be false exactly where it is
+// easiest to reach.
+//
+// It is a shared helper rather than a guard copied into each handler: the two
+// surfaces that delegate to http.FileServer sit two lines apart in different
+// files, and the first round of this change guarded one and not the other.
+func IsBuildAssetDir(sub fs.FS, clean string) bool {
+	if !IsBuildAssetPath(clean) {
+		return false
+	}
+	info, err := fs.Stat(sub, strings.TrimPrefix(path.Clean(clean), "/"))
+	return err == nil && info.IsDir()
+}
+
 // NotFoundBuildAsset answers a request for a build artifact this build does not
 // carry. Exported because every surface that serves the SPA needs the identical
 // answer, including the desktop asset proxy in its own package.
@@ -75,20 +92,13 @@ func SPAHandler(sub fs.FS) http.Handler {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
+		if IsBuildAssetDir(sub, clean) {
+			NotFoundBuildAsset(w, r)
+			return
+		}
 		rel := strings.TrimPrefix(clean, "/")
 		if f, err := sub.Open(rel); err == nil {
-			info, statErr := f.Stat()
 			_ = f.Close()
-			// A DIRECTORY under the asset prefix is not a build artifact, and
-			// http.FileServer would render its index: an HTML listing of every
-			// chunk and sourcemap the build emitted. "Under /assets/ you get a
-			// file or a 404" has to hold at the prefix root too, or the
-			// invariant this handler documents is false where it is easiest to
-			// reach.
-			if statErr == nil && info.IsDir() && IsBuildAssetPath(clean) {
-				NotFoundBuildAsset(w, r)
-				return
-			}
 			fileServer.ServeHTTP(w, r)
 			return
 		} else if !errors.Is(err, fs.ErrNotExist) {

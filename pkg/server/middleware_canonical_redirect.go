@@ -49,7 +49,7 @@ func canonicalRedirect(enabled bool, publicURL string, next http.Handler) http.H
 	scheme := strings.ToLower(u.Scheme)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if normalizeOrigin(&url.URL{Scheme: scheme, Host: r.Host}) == origin {
+		if normalizeOrigin(&url.URL{Scheme: scheme, Host: requestHost(r)}) == origin {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -74,6 +74,32 @@ func canonicalRedirect(enabled bool, publicURL string, next http.Handler) http.H
 		// documents cannot take it back from the users who already saw it.
 		http.Redirect(w, r, origin+target, http.StatusFound)
 	})
+}
+
+// requestHost is the host the CLIENT addressed, which is not always r.Host: a
+// proxy that rewrites Host to an internal Service name leaves the original in
+// X-Forwarded-Host. Comparing the rewritten value would mean the canonical host
+// never matches, so every navigation is redirected to a target whose Host can
+// never match either — an infinite loop taking the whole browser surface down.
+//
+// Trusting the header is the safe direction here, and deliberately so: the
+// redirect TARGET is always the configured origin and never anything from the
+// request, so the only thing a spoofed value buys is NOT being redirected. The
+// asymmetry runs entirely one way — a loop is catastrophic, a skipped redirect
+// is nothing.
+func requestHost(r *http.Request) string {
+	fwd := r.Header.Get("X-Forwarded-Host")
+	if fwd == "" {
+		return r.Host
+	}
+	// A proxy chain appends; the first entry is the one the client addressed.
+	if i := strings.IndexByte(fwd, ','); i >= 0 {
+		fwd = fwd[:i]
+	}
+	if fwd = strings.TrimSpace(fwd); fwd != "" {
+		return fwd
+	}
+	return r.Host
 }
 
 // isCanonicalRedirectable reports whether r is the kind of request a canonical

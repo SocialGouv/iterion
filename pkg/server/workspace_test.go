@@ -294,3 +294,36 @@ func TestWorkspaceScopedAssetMissNeverServesTheShell(t *testing.T) {
 		t.Fatalf("scoped client route lost the shell: %d %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
 }
+
+// The workspace host is the OTHER handler that delegates to http.FileServer,
+// and a directory under the asset prefix is where the shell/404 invariant is
+// easiest to break: FileServer renders an index of every chunk and sourcemap.
+// Guarding SPAHandler alone left this surface serving the listing.
+func TestWorkspaceAssetDirectoryIsNotEnumerable(t *testing.T) {
+	host := &WorkspaceHost{static: fstest.MapFS{
+		"index.html":        &fstest.MapFile{Data: []byte("<html>SHELL</html>")},
+		"assets/app.js":     &fstest.MapFile{Data: []byte("console.log('hi')")},
+		"assets/app.js.map": &fstest.MapFile{Data: []byte(`{"sources":["../../src/secret.tsx"]}`)},
+	}}
+
+	for _, target := range []string{"/assets/", "/assets"} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			host.serveWorkspaceAsset(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("want 404, got %d", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "app.js") {
+				t.Fatalf("enumerated the build: %q", rec.Body.String())
+			}
+		})
+	}
+
+	// The witness: a real asset under the same prefix still serves.
+	rec := httptest.NewRecorder()
+	host.serveWorkspaceAsset(rec, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "console.log") {
+		t.Fatalf("present asset broke: %d %q", rec.Code, rec.Body.String())
+	}
+}
