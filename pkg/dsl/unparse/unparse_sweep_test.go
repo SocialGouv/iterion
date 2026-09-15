@@ -6,7 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"testing"
 )
 
@@ -43,6 +43,10 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"CursorBlock.Settings":    "iterated",
 		"SchemaDecl.Fields":       "iterated",
 		"SchemaDecl.Name":         "written as the declaration header",
+		"ContractDecl.Name":       "written as the declaration header",
+		"PortDecl.Name":           "written as the entry header",
+		"CriterionDecl.Name":      "written as the entry header",
+		"PublicEffect.Name":       "written as the entry header",
 	}
 	types := []string{
 		"WorkflowDecl", "LLMDecl", "AgentDecl", "JudgeDecl", "RouterDecl", "HumanDecl",
@@ -54,12 +58,20 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"CursorBlock", "CursorSetting", "SupervisorDecl", "MCPServerDecl", "MCPAuthDecl",
 		"MCPConfigDecl", "RecoveryBlock", "VarField", "SecretField", "AttachmentField",
 		"PromptDecl", "SchemaDecl", "SchemaField", "Preset", "PresetValue", "Literal",
+		"ContractDecl", "PortDecl", "PortFileDecl", "CriterionDecl", "PublicEffect",
 	}
-	writer, err := os.ReadFile("unparse.go")
-	if err != nil {
-		t.Fatal(err)
+	var writer []byte
+	for _, file := range []string{"unparse.go", "contracts.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer = append(writer, src...)
 	}
 	fields := structFields(t, filepath.Join("..", "ast", "ast.go"))
+	for typ, fs := range structFields(t, filepath.Join("..", "ast", "contract.go")) {
+		fields[typ] = fs
+	}
 	for _, typ := range types {
 		fs, ok := fields[typ]
 		if !ok {
@@ -73,7 +85,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 			if _, ok := unwritten[typ+"."+f]; ok {
 				continue
 			}
-			if !strings.Contains(string(writer), "."+f) {
+			if !regexp.MustCompile(`\.` + regexp.QuoteMeta(f) + `\b`).Match(writer) {
 				t.Errorf("ast.%s.%s is never read by the unparser — a document saved through the studio loses it", typ, f)
 			}
 		}

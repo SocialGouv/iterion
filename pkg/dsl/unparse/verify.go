@@ -63,6 +63,16 @@ func Verify(f *ast.File, text string) error {
 			}
 		}
 	}
+	// A contract's names are written bare and its JSON values in the text's
+	// own syntax: a name that is not an identifier, or a number the lexer
+	// never reads (a sign, an exponent), has no written form — refused here
+	// by name, before the re-parse below refuses the text at a place the
+	// author never wrote.
+	for _, c := range f.Contracts {
+		if err := checkContract(c); err != nil {
+			return fmt.Errorf("contract %q cannot be written as .bot source: %v", contractName(c), err)
+		}
+	}
 	f = canonicalPrompts(f)
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document
@@ -88,6 +98,13 @@ func Verify(f *ast.File, text string) error {
 	ca, cb := ir.Compile(f), ir.Compile(pr.File)
 	if why := ir.SameProgram(ca, cb); why != "" {
 		return fmt.Errorf("the serialised source is not the same program: %s", why)
+	}
+	// The compiled program does not carry the contract, so SameProgram
+	// cannot see one lost, changed or forged by the text: the span-free
+	// mirror is its oracle. A contract is canonical by construction (names
+	// bare, JSON values compact in key order), so the comparison is exact.
+	if why := sameContracts(f, pr.File); why != "" {
+		return fmt.Errorf("the serialised source is not the same document: %s", why)
 	}
 	if ca.Workflow == nil || cb.Workflow == nil {
 		// No compiled program to compare — the shape of every half-authored
@@ -122,6 +139,160 @@ func sourceFile(f *ast.File) string {
 	for _, p := range f.Prompts {
 		if p.Span.Start.File != "" {
 			return p.Span.Start.File
+		}
+	}
+	return ""
+}
+
+// checkContract reports the first thing in c the text cannot carry: a nil
+// entry, a name that is not an identifier, a JSON value with a number the
+// lexer never reads (parser.WritableJSONValue).
+func checkContract(c *ast.ContractDecl) error {
+	if c == nil {
+		return fmt.Errorf("a nil contract has no written form")
+	}
+	if !isBareIdent(c.Name) {
+		return fmt.Errorf("its name is not an identifier")
+	}
+	if c.Version != nil {
+		if err := writableInt("version", int64(*c.Version)); err != nil {
+			return err
+		}
+	}
+	if err := checkContractPorts("input", c.Inputs); err != nil {
+		return err
+	}
+	if err := checkContractPorts("output", c.Outputs); err != nil {
+		return err
+	}
+	for i, k := range c.Criteria {
+		if k == nil {
+			return fmt.Errorf("criterion %d is nil", i+1)
+		}
+		if !isBareIdent(k.Name) {
+			return fmt.Errorf("criterion name %q is not an identifier", k.Name)
+		}
+		if err := writableName("criterion "+k.Name+" kind", k.Kind, true); err != nil {
+			return err
+		}
+		if err := writableName("criterion "+k.Name+" port", k.Port, true); err != nil {
+			return err
+		}
+		if err := parser.WritableJSONValue(k.Params); err != nil {
+			return fmt.Errorf("criterion %q params: %v", k.Name, err)
+		}
+	}
+	for i, e := range c.Effects {
+		if e == nil {
+			return fmt.Errorf("effect %d is nil", i+1)
+		}
+		if !isBareIdent(e.Name) {
+			return fmt.Errorf("effect name %q is not an identifier", e.Name)
+		}
+	}
+	return nil
+}
+
+func checkContractPorts(side string, ports []*ast.PortDecl) error {
+	for i, p := range ports {
+		if p == nil {
+			return fmt.Errorf("%s %d is nil", side, i+1)
+		}
+		if !isBareIdent(p.Name) {
+			return fmt.Errorf("%s name %q is not an identifier", side, p.Name)
+		}
+		base := p.Type
+		for strings.HasSuffix(base, "[]") {
+			base = strings.TrimSuffix(base, "[]")
+		}
+		if base == "" {
+			return fmt.Errorf("%s %q has no type; a port is written `name: type`", side, p.Name)
+		}
+		if err := writableName(side+" "+p.Name+" type", base, false); err != nil {
+			return err
+		}
+		if err := writableName(side+" "+p.Name+" from", p.From, true); err != nil {
+			return err
+		}
+		if p.MinItems != nil {
+			if err := writableInt(side+" "+p.Name+" min_items", int64(*p.MinItems)); err != nil {
+				return err
+			}
+		}
+		if p.MaxItems != nil {
+			if err := writableInt(side+" "+p.Name+" max_items", int64(*p.MaxItems)); err != nil {
+				return err
+			}
+		}
+		if err := parser.WritableJSONValue(p.Default); err != nil {
+			return fmt.Errorf("%s %q default: %v", side, p.Name, err)
+		}
+		if p.FileSpec != nil {
+			if err := writableName(side+" "+p.Name+" file schema", p.FileSpec.Schema, false); err != nil {
+				return err
+			}
+			if err := writableInt(side+" "+p.Name+" file min_bytes", p.FileSpec.MinBytes); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// writableName holds a value the writer renders bare to the shape the
+// grammar reads back — an identifier, dotted when the property is a
+// reference; an empty value is absent, not wrong.
+func writableName(what, v string, dotted bool) error {
+	if v == "" {
+		return nil
+	}
+	ok := isBareIdent(v)
+	if dotted {
+		ok = dottedIdent(v)
+	}
+	if !ok {
+		return fmt.Errorf("%s %q is not an identifier", what, v)
+	}
+	return nil
+}
+
+// writableInt holds an integer the writer renders bare to what the lexer
+// reads: the text has no signed number.
+func writableInt(what string, v int64) error {
+	if v < 0 {
+		return fmt.Errorf("%s: the number %d cannot be written in a .bot, which has no signed number", what, v)
+	}
+	return nil
+}
+
+func contractName(c *ast.ContractDecl) string {
+	if c == nil {
+		return ""
+	}
+	return c.Name
+}
+
+// sameContracts names the first difference between the contracts of the
+// document and those the text reads as, and between the contract each
+// workflow names; "" when they agree.
+func sameContracts(a, b *ast.File) string {
+	x, err := ast.MarshalFile(&ast.File{Contracts: a.Contracts})
+	if err != nil {
+		return "cannot compare the document's contracts: " + err.Error()
+	}
+	y, err := ast.MarshalFile(&ast.File{Contracts: b.Contracts})
+	if err != nil {
+		return "cannot compare the serialised source's contracts: " + err.Error()
+	}
+	if !bytes.Equal(x, y) {
+		return firstJSONDifference(x, y)
+	}
+	for i, w := range a.Workflows {
+		if w == nil || i >= len(b.Workflows) || b.Workflows[i] == nil {
+			continue
+		}
+		if w.Contract != b.Workflows[i].Contract {
+			return fmt.Sprintf("workflow %q names contract %q, the serialised source %q", w.Name, w.Contract, b.Workflows[i].Contract)
 		}
 	}
 	return ""

@@ -35,7 +35,8 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
                | tool_decl | compute_decl | emit_decl | wait_decl
                | await_answers_decl | subbot_decl
                | fail_decl
-               | group_decl | use_decl | workflow_decl ;
+               | group_decl | use_decl | workflow_decl
+               | contract_decl ;
 
 (* ---------- Values and collections ---------- *)
 
@@ -387,6 +388,7 @@ workflow_decl = "workflow" IDENT ":" NEWLINE [ INDENT
                 DEDENT ] ;
 workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "entry" ":" node_ref NEWLINE
+                | "contract" ":" IDENT NEWLINE
                 | "default_backend" ":" str_value NEWLINE
                 | "tool_policy" ":" tool_ref_list NEWLINE
                 | "capabilities" ":" tool_ref_list NEWLINE
@@ -406,6 +408,48 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | sandbox_decl | edge ;
 
 worktree_mode = "auto" | "none" ;
+
+(* ---------- Public contract (ADR-099) ----------
+   The bot's public interface, bound to the program: an input is a declared
+   var (C300), an output names the node and field that produce it (C301), a
+   criterion names a port (C302). json_value is the subset the text writes:
+   no signed number, no exponent, object keys unique, null explicit. *)
+contract_decl = "contract" IDENT ":" NEWLINE [ INDENT { contract_prop } DEDENT ] ;
+contract_prop = "display_name" ":" str_value NEWLINE
+              | "responsibility" ":" str_value NEWLINE
+              | "version" ":" INT_LIT NEWLINE
+              | contract_inputs_block | contract_outputs_block
+              | contract_criteria_block | contract_effects_block ;
+contract_inputs_block = "inputs" ":" NEWLINE [ INDENT { contract_port } DEDENT ] ;
+contract_outputs_block = "outputs" ":" NEWLINE [ INDENT { contract_port } DEDENT ] ;
+contract_port = IDENT ":" port_type NEWLINE [ INDENT { contract_port_prop } DEDENT ] ;
+port_type = ( IDENT | "string[]" ) { "[" "]" } ;
+contract_port_prop = "description" ":" str_value NEWLINE
+                   | "required" ":" bool_value NEWLINE
+                   | "nullable" ":" bool_value NEWLINE
+                   | "default" ":" json_value NEWLINE
+                   | "min_items" ":" INT_LIT NEWLINE
+                   | "max_items" ":" INT_LIT NEWLINE
+                   | "from" ":" dotted_ident NEWLINE
+                   | contract_file_block ;
+contract_file_block = "file" ":" NEWLINE [ INDENT { contract_file_prop } DEDENT ] ;
+contract_file_prop = "media_type" ":" str_value NEWLINE
+                   | "min_bytes" ":" INT_LIT NEWLINE
+                   | "schema" ":" IDENT NEWLINE ;
+contract_criteria_block = "criteria" ":" NEWLINE [ INDENT { contract_criterion } DEDENT ] ;
+contract_criterion = IDENT ":" NEWLINE [ INDENT { contract_criterion_prop } DEDENT ] ;
+contract_criterion_prop = "kind" ":" dotted_ident NEWLINE
+                        | "port" ":" dotted_ident NEWLINE
+                        | "params" ":" json_value NEWLINE ;
+contract_effects_block = "effects" ":" NEWLINE [ INDENT { contract_effect } DEDENT ] ;
+contract_effect = IDENT ":" NEWLINE [ INDENT { contract_effect_prop } DEDENT ] ;
+contract_effect_prop = "description" ":" str_value NEWLINE
+                     | "paid" ":" bool_value NEWLINE ;
+json_value = "null" | bool_value | INT_LIT | FLOAT_LIT | STRING_LIT
+           | "[" [ json_value { "," json_value } [ "," ] ] "]"
+           | "{" [ json_member { "," json_member } [ "," ] ] "}" ;
+json_member = ( STRING_LIT | dotted_ident ) ":" json_value ;
+dotted_ident = IDENT { "." IDENT } ;
 
 budget_block = "budget" ":" NEWLINE [ INDENT { budget_prop } DEDENT ] ;
 budget_prop = "max_parallel_branches" ":" INT_LIT NEWLINE

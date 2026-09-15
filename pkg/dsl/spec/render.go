@@ -184,6 +184,21 @@ func Reference() string {
 			b.WriteString(".\n\n")
 		}
 	}
+	b.WriteString("### Deterministic public criteria\n\n")
+	b.WriteString("A contract's `criteria:` name one of these evaluators by `kind:`; a kind this table does not have is declared and rendered but not evaluated (C303). Parameters are JSON data.\n\n")
+	b.WriteString("| Criterion | Port types | Parameters | Meaning |\n|---|---|---|---|\n")
+	for _, criterion := range PublicCriteria {
+		var params []string
+		for _, parameter := range criterion.Parameters {
+			label := parameter.Name + ": " + string(parameter.Type)
+			if parameter.Required {
+				label += " (required)"
+			}
+			params = append(params, label)
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", codes([]string{criterion.Name}), codes(criterion.Types), codes(params), criterion.Description)
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -307,6 +322,17 @@ func SkillSection() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("- Public criteria (deterministic; parameters are JSON data; an unregistered kind is declared, not evaluated): ")
+	for i, criterion := range PublicCriteria {
+		if i != 0 {
+			b.WriteString(" · ")
+		}
+		fmt.Fprintf(&b, "`%s`", criterion.Name)
+		for _, parameter := range criterion.Parameters {
+			fmt.Fprintf(&b, " `%s:%s`", parameter.Name, parameter.Type)
+		}
+	}
+	b.WriteString(".\n")
 	return b.String()
 }
 
@@ -345,6 +371,8 @@ func shortForm(p Property) string {
 		return "num"
 	case Bool:
 		return "bool"
+	case JSON:
+		return "json"
 	case Enum:
 		return strings.Join(p.Values, "|")
 	case IdentList:

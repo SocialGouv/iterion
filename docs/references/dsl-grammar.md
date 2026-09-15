@@ -16,7 +16,8 @@ dsl_header = "dsl" ":" INT NEWLINE ;   (* the syntax profile, on the first signi
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
                | agent | judge | router | human | tool | compute
-               | emit | wait | await_answers | fail | subbot | group | use | workflow ;
+               | emit | wait | await_answers | fail | subbot | group | use | workflow
+               | contract ;
 ```
 
 At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
@@ -91,7 +92,7 @@ schema = "schema" IDENT ":" [ INDENT { schema_field } DEDENT ] ;
 schema_field = IDENT ":" ( type | "file" ) [ enum ] ;
 ```
 
-A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header may stand with no body at all — followed by a **blank line** and another declaration, or by the end of the file — and declares an empty one: the studio saves a declaration the moment it is created, before it has a field or a line (an empty workflow then draws the compiler's own diagnostics, no entry first). The blank line is what tells an empty declaration from a body at the wrong indentation (a group's members are top-level keywords themselves): a header followed directly by an unindented line, or by an indented comment alone, is still the indentation error. Node declarations (`agent`, `tool`, …) keep needing a body. A **block** header inside a declaration or at the top level — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:` — may stand bare under the same rule and declares an empty block, kept as the author wrote it rather than dropped: a nested block ends at its parent's dedent or before a blank line and a sibling; a top-level block needs the blank line (or the end of the file), having no dedent. What the empty block means is the compiler's: an empty `mcp:` wires nothing, a bare `sandbox:` is the inline block form (C044 until it carries `image:` or `build:`). `fallbacks:` is the exception — a chain with no route is refused by name.
+A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group`, `contract` or `workflow` header may stand with no body at all — followed by a **blank line** and another declaration, or by the end of the file — and declares an empty one: the studio saves a declaration the moment it is created, before it has a field or a line (an empty workflow then draws the compiler's own diagnostics, no entry first). The blank line is what tells an empty declaration from a body at the wrong indentation (a group's members are top-level keywords themselves): a header followed directly by an unindented line, or by an indented comment alone, is still the indentation error. Node declarations (`agent`, `tool`, …) keep needing a body. A **block** header inside a declaration or at the top level — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:`, a contract's `inputs:`/`outputs:`/`criteria:`/`effects:` and a port's `file:` — may stand bare under the same rule and declares an empty block, kept as the author wrote it rather than dropped: a nested block ends at its parent's dedent or before a blank line and a sibling; a top-level block needs the blank line (or the end of the file), having no dedent. What the empty block means is the compiler's: an empty `mcp:` wires nothing, a bare `sandbox:` is the inline block form (C044 until it carries `image:` or `build:`). `fallbacks:` is the exception — a chain with no route is refused by name.
 
 Prompt text may contain runtime `{{...}}` references and compile-time `{{include "relative/file"}}` directives. Schema fields accept the six variable types, plus `file` — an operator-supplied binary valid only on a human node's schema; the compiler rejects it elsewhere ([C129](diagnostics.md)).
 
@@ -333,6 +334,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | Property | Value | Meaning |
 |---|---|---|
 | `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
+| `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C302) |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
 | `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
@@ -368,6 +370,122 @@ resources:
 ```
 
 Nodes acquire them with `needs: browser` or `needs: [browser, worktree]`.
+
+## Public contract
+
+```ebnf
+contract = "contract" IDENT ":" NEWLINE [ INDENT { contract_prop } DEDENT ] ;
+contract_prop = "display_name" ":" str_value NEWLINE
+              | "responsibility" ":" str_value NEWLINE
+              | "version" ":" INT_LIT NEWLINE
+              | ( "inputs" | "outputs" ) ":" NEWLINE [ INDENT { contract_port } DEDENT ]
+              | "criteria" ":" NEWLINE [ INDENT { contract_criterion } DEDENT ]
+              | "effects" ":" NEWLINE [ INDENT { contract_effect } DEDENT ] ;
+contract_port = IDENT ":" port_type NEWLINE [ INDENT { contract_port_prop } DEDENT ] ;
+port_type = ( IDENT | "string[]" ) { "[" "]" } ;
+json_value = "null" | bool_value | INT_LIT | FLOAT_LIT | STRING_LIT
+           | "[" [ json_value { "," json_value } ] "]"
+           | "{" [ json_member { "," json_member } ] "}" ;
+```
+
+A `contract` is the bot's public face — inputs, outputs, delivered files, deterministic criteria, visible effects — declared once at top level, named by the workflow's `contract:`, and checked against the program: an input is a declared var (C300), an output names the node and field that produce it — `from: build.pr_url`, or `from: build` for a file (C301) — and a criterion names a port in the singular (`input.goal`, `output.pr_url`) and a registered `kind` (C302; an unregistered kind is declared, not evaluated, C303). `default:` and `params:` take **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word (unlike every string property), no signed number and no exponent, which the `.bot` text cannot write. The checks land with the compiler binding of the same lot; this build parses, preserves and renders a contract. The full productions are in [iterion_v1.ebnf](../grammar/iterion_v1.ebnf); the decision and its bounds in [ADR-099](../adr/099-public-contracts.md). A bare `contract` header, or a bare `inputs:` / `outputs:` / `criteria:` / `effects:` header and a port's bare `file:`, declares an empty one under the rule of every [empty declaration and block](#prompts-and-schemas): a blank line, the parent's dedent or the end of the file must follow the bare header. A comment written inside a contract moves to the file's head on a studio save, as inside every declaration.
+
+```iter
+vars:
+  goal: string
+
+schema report:
+  summary: string
+  pr_url: string
+
+prompt build_user:
+  Implement {{vars.goal}} and report the pull request URL.
+
+agent build:
+  model: "anthropic/claude-sonnet-4-6"
+  user: build_user
+  output: report
+
+contract feature:
+  display_name: "Feature dev"
+  responsibility: "Implements a feature and opens a pull request"
+  version: 1
+  inputs:
+    goal: string
+      description: "What to build"
+  outputs:
+    pr_url: string
+      from: build.pr_url
+  criteria:
+    goal_is_not_empty:
+      kind: min_length
+      port: input.goal
+      params: {min: 1}
+  effects:
+    opens_pr:
+      description: "Opens a pull request on the repository"
+
+workflow feature_dev:
+  contract: feature
+  entry: build
+  build -> done
+```
+
+<!-- dsl-spec:begin table contract -->
+| Property | Value | Meaning |
+|---|---|---|
+| `display_name` | string | Explicit human-readable name |
+| `responsibility` | string | The single responsibility this bot fulfils |
+| `version` | int | Public contract version, 1 or more (C300); defaults to 1 |
+| `inputs` | block → [contract.ports](#contractports) | Named typed values and files the bot takes; each one is a declared var (C300) |
+| `outputs` | block → [contract.ports](#contractports) | Named typed values and files the bot produces on success; each one names the node and field that produce it (C301) |
+| `criteria` | block → [contract.criteria](#contractcriteria) | Deterministic registered checks on a port; prose is not executable |
+| `effects` | block → [contract.effects](#contracteffects) | Visible effects, including paid operations |
+<!-- dsl-spec:end -->
+
+A port (an `inputs:` / `outputs:` entry, `name: type`):
+
+<!-- dsl-spec:begin table contract.port -->
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Meaning of the value |
+| `required` | bool | Mandatory port (default true) |
+| `nullable` | bool | Permit an explicit null value (default false) |
+| `default` | json value | Typed default of an optional input (C300); omission means absence. One JSON value on one line — `"text"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write (C302) |
+| `min_items` | int | Minimum array cardinality (C301) |
+| `max_items` | int | Maximum array cardinality (C301) |
+| `from` | ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
+| `file` | block → [contract.file](#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
+<!-- dsl-spec:end -->
+
+A port's `file:` block:
+
+<!-- dsl-spec:begin table contract.file -->
+| Property | Value | Meaning |
+|---|---|---|
+| `media_type` | string | Expected media type |
+| `min_bytes` | int | Minimum file size |
+| `schema` | ident | Schema of structured file contents |
+<!-- dsl-spec:end -->
+
+A criterion (a `criteria:` entry):
+
+<!-- dsl-spec:begin table contract.criterion -->
+| Property | Value | Meaning |
+|---|---|---|
+| `kind` | ident | Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303) |
+| `port` | ident | Checked port, singular: `input.<name>` or `output.<name>` (C302) |
+| `params` | json value | Parameters validated against the criterion's parameter declaration (C302): one JSON object on one line, e.g. `{min: 2}` |
+<!-- dsl-spec:end -->
+
+An effect (an `effects:` entry):
+
+<!-- dsl-spec:begin table contract.effect -->
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Externally visible operation |
+| `paid` | bool | The operation may incur a charge; unknown cost remains unknown |
+<!-- dsl-spec:end -->
 
 ## Sandbox block
 
