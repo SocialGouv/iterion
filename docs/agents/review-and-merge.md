@@ -92,7 +92,7 @@ iterion remote api PATCH /api/teams/<team-id>/forge/repo-bots/<integration-id> \
   --data '{"bot_ids":[<complete list read back at step 1>],
            "auto_fix_on_gate_failure":true}'
 
-# 3. Read it back — a write receipt is not a read-back.
+# 3. Read it back — the PATCH response does NOT echo the field.
 iterion remote api GET /api/teams/<team-id>/forge/repo-bots
 ```
 
@@ -103,11 +103,21 @@ so the PATCH goes through the `remote api` escape hatch. The server route is
 `PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`
 ([../../pkg/server/forge_provisioning_routes.go](../../pkg/server/forge_provisioning_routes.go)).
 
-Setting `false` in that same payload is how the lane was turned off; the
-procedure is symmetric.
+Setting `false` in that same payload is how the lane is turned off — but the
+two directions **do not read back the same way**, so the symmetry stops at the
+payload. `AutoFixOnGateFailure` is a plain `bool` tagged `omitempty`
+([../../pkg/forge/repo_integration_store.go](../../pkg/forge/repo_integration_store.go)),
+so `false` is never serialised: **ON reads as `"auto_fix_on_gate_failure": true`,
+OFF reads as the key being absent entirely.** Absence is genuine rather than a
+lost write — `Update` is a full-document `ReplaceOne`
+(`mongoutil.ReplaceOneChecked`), so a previous `true` cannot survive the
+replace — but on its own it is a weak signal: it looks identical to a field
+name you typo'd, a server too old to know the field, and a repo that never
+opted in. What makes it evidence is watching the **transition** on the same
+endpoint: `true` before, absent after.
 
-**Proof of the flip is behavioural, not declarative.** The config read-back
-says what was stored; what settles it is the next red gate — a fixer run
+**And the flip is settled behaviourally, not declaratively.** The read-back
+says what was stored; what proves it is the next red gate — a fixer run
 appearing (or not) in `iterion remote runs list`.
 
 ## Release and changelog

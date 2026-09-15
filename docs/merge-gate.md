@@ -645,16 +645,24 @@ re-derives it from three scattered sections. This is that place
    branch; a manual push mid-run recreates the exact collision the "no
    in-flight signal" gap above cannot warn you about. `git pull` after his
    push before resuming any local work on the branch.
-2. **`/billy` is the escalation from a review, not a replacement for one.**
-   Comment it once Revi has left findings — never hand-fix them in a
-   session on this repo (the dogfood habit in
-   [revi-billy-loop.md](revi-billy-loop.md)).
+2. **`/billy` is an escalation from a review, not a replacement for one.**
+   It is comment-driven and costs a full fixer campaign, so whether it is
+   the default answer to findings or a deliberate exception is **the
+   repo's call**, not this page's. On iterion itself the answer is
+   currently *exception* — findings are the developer's to fix through
+   the local review loop
+   ([agents/review-and-merge.md](agents/review-and-merge.md)); the fixer's
+   mechanics and the conditions for re-arming it stay in
+   [revi-billy-loop.md](revi-billy-loop.md).
 3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes step 2
    automatic** on repos that opt in — a red `revi/review` launches the
-   fixer with no comment, bounded by [its own brakes](#autofix). Check
-   `iterion remote runs list` (or the gate's `pending` link) before
-   hand-fixing a red PR: a manual fix racing an already-launched fixer is
-   the same collision as rule 1.
+   fixer with no comment, bounded by [its own brakes](#autofix). **Where
+   the lane is armed**, check `iterion remote runs list` (or the gate's
+   `pending` link) before hand-fixing a red PR: a manual fix racing an
+   already-launched fixer is the same collision as rule 1. Where it is
+   off — iterion's own repo since 2026-09-15 — only a `/billy` comment
+   can put a fixer in flight, so the check costs nothing: you know
+   whether you typed it.
 
 ## Overriding a finding
 
