@@ -199,10 +199,11 @@ func TestTheIntegerDialectFollowsTheFormat(t *testing.T) {
 	}
 }
 
-// TestAnExactNumberSurvivesGeneration runs the collision through the YAML path,
-// where the legacy tree is float64.
+// TestAnExactNumberSurvivesGeneration runs numbers through the YAML path, where
+// the legacy tree is float64 and the exact re-read is the whole point.
 func TestAnExactNumberSurvivesGeneration(t *testing.T) {
-	const yamlDoc = `
+	yamlDoc := func(enum string) string {
+		return `
 openapi: 3.0.0
 info: {title: Probe, version: "1.0"}
 paths:
@@ -220,31 +221,48 @@ paths:
                 properties:
                   id:
                     type: integer
-                    enum: [9007199254740993]
+                    enum: [` + enum + `]
 `
-	pkg, report := generateWith(t, yamlDoc, true)
-	if len(report.Uncontracted) != 0 {
-		t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
 	}
-	ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef
-	if ref == "" {
-		t.Fatal("the inline response got no contract")
-	}
-	enum := pkg.ResponseSchemas[ref].Properties["id"].Enum
-	if len(enum) != 1 {
-		t.Fatalf("enum = %v, want one member", enum)
-	}
-	if got := string(enum[0]); got != "9007199254740993" {
-		t.Fatalf("enum member = %s, want the SOURCE text — float64 rounds it to ...992", got)
-	}
-	// And the contract the generator wrote actually discriminates.
-	op := onlyOp(t, pkg)
-	if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":9007199254740992}`)); err == nil {
-		t.Error("the generated contract accepted the float64 collision")
-	}
-	if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":9007199254740993}`)); err != nil {
-		t.Errorf("the generated contract refused its own enum member: %v", err)
-	}
+
+	t.Run("a member the run cannot deliver is reported, not emitted", func(t *testing.T) {
+		pkg, report := generateWith(t, yamlDoc("9007199254740993"), true)
+		if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
+			t.Errorf("ResponseSchemaRef = %q — a contract naming a value no run hands on must not ship", ref)
+		}
+		if len(report.Uncontracted) != 1 {
+			t.Fatalf("Uncontracted = %+v, want exactly the operation whose enum cannot be delivered", report.Uncontracted)
+		}
+		if !strings.Contains(report.Uncontracted[0].Reason, "9007199254740993") {
+			t.Errorf("Reason = %q, want the offending value named", report.Uncontracted[0].Reason)
+		}
+	})
+
+	t.Run("a deliverable member keeps its SOURCE text", func(t *testing.T) {
+		// The legacy float64 tree would hand back 1000; the exact re-read keeps
+		// what the vendor wrote, and the contract compares by value regardless.
+		pkg, report := generateWith(t, yamlDoc("1.00e3"), true)
+		if len(report.Uncontracted) != 0 {
+			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+		}
+		ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef
+		if ref == "" {
+			t.Fatal("the inline response got no contract")
+		}
+		enum := pkg.ResponseSchemas[ref].Properties["id"].Enum
+		if len(enum) != 1 || string(enum[0]) != "1.00e3" {
+			t.Fatalf("enum = %v, want the source text 1.00e3", enum)
+		}
+		op := onlyOp(t, pkg)
+		for _, equal := range []string{`{"id":1000}`, `{"id":1.0e3}`, `{"id":1000.0}`} {
+			if _, err := pkg.ValidateResponse(op, 200, []byte(equal)); err != nil {
+				t.Errorf("%s is the same number as 1.00e3 and was refused: %v", equal, err)
+			}
+		}
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1001}`)); err == nil {
+			t.Error("the generated contract stopped discriminating")
+		}
+	})
 }
 
 // TestAnUnrepresentableShapeGetsNoContractAndSaysWhy is the honesty rule.

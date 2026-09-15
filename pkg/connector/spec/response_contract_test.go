@@ -31,7 +31,12 @@ func TestResponseContractsPreserveExactScalarValues(t *testing.T) {
 		valid   []string
 		invalid []string
 	}{
-		{"large integer", ResponseSchema{Type: "integer", Enum: rawEnum("9007199254740993")}, []string{"9007199254740993", "9007199254740993.0", "90071992547409930e-1"}, []string{"9007199254740992", `"9007199254740993"`, "true", "null"}},
+		// 9007199254740992 is the largest integer float64 holds exactly, and
+		// ...993 shares its float64. A validator decoding through the DELIVERED
+		// projection would accept either one for an enum naming the other; this
+		// contract must not, which is what the exact decode buys. An enum
+		// naming ...993 is refused outright — TestAContractCannotNameANumberNoRunDelivers.
+		{"large integer", ResponseSchema{Type: "integer", Enum: rawEnum("9007199254740992")}, []string{"9007199254740992", "9007199254740992.0", "90071992547409920e-1"}, []string{"9007199254740993", `"9007199254740992"`, "true", "null"}},
 		{"integer values", ResponseSchema{Type: "integer"}, []string{"1", "1.0", "1e3", "10e-1", "-0.0", "1e1000000"}, []string{"1.1", "1e-3", `"1"`, "false", "null"}},
 		{"integer tokens", ResponseSchema{Type: "integer", IntegerMode: "token"}, []string{"1", "-1", "9007199254740993"}, []string{"1.0", "1e3"}},
 		{"numeric enum", ResponseSchema{Enum: rawEnum("1.00e3", "false")}, []string{"1000", "1000.0", "false"}, []string{`"1000"`, `"false"`, "true", "0"}},
@@ -55,6 +60,59 @@ func TestResponseContractsPreserveExactScalarValues(t *testing.T) {
 			for _, body := range test.invalid {
 				if checked, err := p.ValidateResponse(op, 200, []byte(body)); !checked || err == nil {
 					t.Errorf("invalid %s accepted", body)
+				}
+			}
+		})
+	}
+}
+
+// TestAContractCannotNameANumberNoRunDelivers.
+//
+// Validation reads the body exactly; Result.Data reaches the workflow through
+// encoding/json's untyped float64. Past 2^53 the two disagree, so a contract
+// naming 9007199254740993 would certify the value the vendor sent while the
+// node hands on ...992 — the value that same contract refuses. The claim is
+// false by construction, so it is refused where the package is admitted rather
+// than discovered by a `.bot` deleting the wrong object.
+//
+// The refusal is on NAMING a value, not on carrying one: a type check stays
+// true of both numbers and is deliberately untouched.
+func TestAContractCannotNameANumberNoRunDelivers(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		schema  ResponseSchema
+		refused bool
+	}{
+		{"an enum past 2^53", ResponseSchema{Type: "integer", Enum: rawEnum("9007199254740993")}, true},
+		{"the same value spelled with an exponent", ResponseSchema{Type: "integer", Enum: rawEnum("90071992547409930e-1")}, true},
+		{"one undeliverable member among deliverable ones", ResponseSchema{Type: "integer", Enum: rawEnum("1", "9007199254740993")}, true},
+		{"nested under a property", ResponseSchema{
+			Type:       "object",
+			Properties: map[string]ResponseSchema{"id": {Type: "integer", Enum: rawEnum("9007199254740993")}},
+		}, true},
+		// The other direction: everything float64 carries stays nameable.
+		{"the largest exactly-held integer", ResponseSchema{Type: "integer", Enum: rawEnum("9007199254740992")}, false},
+		{"an ordinary integer", ResponseSchema{Type: "integer", Enum: rawEnum("42")}, false},
+		{"a fraction float64 holds", ResponseSchema{Enum: rawEnum("0.5")}, false},
+		// Naming nothing claims nothing: the type check is untouched, and a
+		// body past 2^53 still validates against it.
+		{"a type check over the same range", ResponseSchema{Type: "integer"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p, op := responsePackage(test.schema)
+			err := p.ValidateResponseContracts()
+			if refused := err != nil; refused != test.refused {
+				t.Fatalf("refused = %v, want %v (err=%v)", refused, test.refused, err)
+			}
+			if test.refused {
+				if !strings.Contains(err.Error(), "9007199254740993") {
+					t.Errorf("the refusal must name the offending number: %v", err)
+				}
+				return
+			}
+			if test.schema.Type == "integer" && test.schema.Enum == nil {
+				if checked, err := p.ValidateResponse(op, 200, []byte("9007199254740993")); !checked || err != nil {
+					t.Errorf("a type check refused a body it describes correctly: checked=%v err=%v", checked, err)
 				}
 			}
 		})

@@ -427,6 +427,14 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 			if member == nil {
 				nullListed = true
 			}
+			if number, ok := member.(json.Number); ok {
+				// The same rule the reader applies when a package is admitted,
+				// asked here so the operator gets a reported response instead
+				// of a generation that blames itself.
+				if delivered, carried := spec.DeliveredNumber(number); !carried {
+					return out, fmt.Errorf("the enum names %s, a value the decoded body delivers as %s, so a contract naming it would vouch for a number no run hands on", number, delivered)
+				}
+			}
 			encoded, err := encodeScalar(member)
 			if err != nil {
 				return out, err

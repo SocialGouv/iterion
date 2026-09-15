@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -280,16 +281,22 @@ func TestAPageBreakingItsContractStopsTheWalkInsteadOfContributing(t *testing.T)
 	}
 }
 
-// TestAResponseContractSeesExactIntegersTheFloatPathLoses runs the collision
+// TestAResponseContractCertifiesTheNumberTheWorkflowRECEIVES runs the collision
 // through the REAL server, client and reader.
 //
-// 9007199254740993 is the first integer float64 cannot hold: it rounds to
-// ...992. A validator decoding through the historical float64 projection would
-// accept either value for a contract naming one, and the test that proved the
-// contract "worked" would have proved nothing.
-func TestAResponseContractSeesExactIntegersTheFloatPathLoses(t *testing.T) {
-	const declared = "9007199254740993"
-	const collides = "9007199254740992"
+// 9007199254740992 is the largest integer float64 holds exactly; ...993 shares
+// its float64. A validator decoding through the delivered projection would
+// accept either for a contract naming one — so the exact decode is what makes
+// the contract discriminate at all.
+//
+// The second half is the part a test of the validator alone cannot see: what
+// the contract vouched for has to be what the node hands on. A contract naming
+// a value the float64 projection cannot carry is refused when the package is
+// admitted, so the only contracts that reach a call are ones whose certified
+// value and delivered value are the same number.
+func TestAResponseContractCertifiesTheNumberTheWorkflowRECEIVES(t *testing.T) {
+	const declared = "9007199254740992"
+	const collides = "9007199254740993"
 
 	for _, tc := range []struct {
 		body   string
@@ -299,7 +306,7 @@ func TestAResponseContractSeesExactIntegersTheFloatPathLoses(t *testing.T) {
 		// Same float64. Different integer.
 		{collides, false},
 		// The same value written another way is the SAME number.
-		{"90071992547409930e-1", true},
+		{"90071992547409920e-1", true},
 	} {
 		e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(201)
@@ -318,6 +325,19 @@ func TestAResponseContractSeesExactIntegersTheFloatPathLoses(t *testing.T) {
 		}
 		if accepted := res.Err == nil; accepted != tc.accept {
 			t.Errorf("body id=%s accepted=%v, want %v (err=%v)", tc.body, accepted, tc.accept, res.Err)
+		}
+		if !tc.accept {
+			continue
+		}
+		// What the contract certified is what the node hands on.
+		row, _ := res.Data.(map[string]any)
+		got, ok := row["id"].(float64)
+		if !ok {
+			t.Fatalf("body id=%s: Data.id = %#v, want the decoded number", tc.body, row["id"])
+		}
+		if strconv.FormatFloat(got, 'f', -1, 64) != declared {
+			t.Errorf("body id=%s: the contract certified %s and the workflow receives %s",
+				tc.body, declared, strconv.FormatFloat(got, 'f', -1, 64))
 		}
 	}
 }

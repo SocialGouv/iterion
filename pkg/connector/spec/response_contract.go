@@ -150,6 +150,11 @@ func (p *Package) checkResponseSchema(s ResponseSchema, depth, progress int, act
 		if _, err := scalarIdentity(v); err != nil {
 			return fmt.Errorf("enum contains an unsupported or oversized JSON scalar")
 		}
+		if number, ok := v.(json.Number); ok {
+			if delivered, carried := DeliveredNumber(number); !carried {
+				return fmt.Errorf("enum names the number %s, which a decoded body cannot carry: a workflow reading this field receives %s, so the contract would vouch for a value the run never delivers", number, delivered)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, required := range s.Required {
@@ -341,6 +346,40 @@ func scalarIdentity(value any) (string, error) {
 	default:
 		return "", fmt.Errorf("not a JSON scalar")
 	}
+}
+
+// deliveredNumber reports whether a number a contract NAMES survives the
+// projection a workflow actually receives, and what arrives in its place when
+// it does not.
+//
+// Validation reads the body exactly; Result.Data is decoded through
+// encoding/json's untyped float64. The two agree on almost every number and
+// disagree past 2^53: a contract naming 9007199254740993 certifies the value
+// the vendor sent while the node hands on ...992 — the very value that same
+// contract refuses. A `.bot` chaining a delete or an update on that id acts on
+// another object, with the contract's blessing.
+//
+// So an exact value the run cannot deliver is refused where a package is
+// ADMITTED. Refusing at the call instead would turn a legitimate large id into
+// a failed mutation with its body erased, which is the expensive direction; and
+// certifying it would be an assurance false by construction. The type check is
+// untouched — "an integer" stays true of both values, and only naming one of
+// them is the claim that cannot hold.
+func DeliveredNumber(number json.Number) (json.Number, bool) {
+	f, err := number.Float64()
+	if err != nil {
+		return "", false
+	}
+	delivered := json.Number(strconv.FormatFloat(f, 'g', -1, 64))
+	want, _, err := normalizeResponseNumber(number)
+	if err != nil {
+		return delivered, false
+	}
+	got, _, err := normalizeResponseNumber(delivered)
+	if err != nil {
+		return delivered, false
+	}
+	return delivered, want == got
 }
 
 // normalizeResponseNumber compares decimal values without float64 or expanding
