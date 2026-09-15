@@ -114,10 +114,16 @@ workflow w:
   `readonly:`. See [Fanning subbots out in parallel](#fanning-subbots-out-in-parallel)
   below — it is what makes the parallel pattern legal.
 - A depth guard bounds nested subbot recursion. Diagnostic **C119** (no `source`).
-- The runtime invokes a host-supplied `SubbotRunner`; both the `iterion run`
-  CLI (`pkg/cli/run.go`) and the studio's in-process engine
-  (`pkg/runview/subbot.go`, wired for Launch AND Resume) provide one that
-  compiles + runs the child sharing the parent store. Children carry
+- The runtime invokes a host-supplied `SubbotRunner` — it cannot compile a child
+  itself (an import cycle with `runview`), so a surface that wires none makes the
+  node hard-error with `subbot %q: no SubbotRunner is wired`. **All four launch
+  surfaces wire one** and run the child against the parent's store: the `iterion
+  run` CLI (`pkg/cli/run.go`, and `pkg/cli/resume.go` on resume), the studio's
+  in-process engine (`pkg/runview/subbot.go` and `service_launch.go`, wired for
+  Launch AND Resume), the dispatcher (`pkg/dispatcher/subbot.go`) and the cloud
+  runner on a pod (`pkg/runner/subbot.go`, since #743 on 2026-09-05). Each of
+  them re-wires the option for the child too, so a child that declares its own
+  `subbot` nodes resolves them relative to ITS directory. Children carry
   `ParentRunID`, which is what folds them into the parent's card on the
   `/pipelines` board.
 

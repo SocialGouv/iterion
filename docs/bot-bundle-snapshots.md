@@ -40,11 +40,15 @@ the old version-checked stored-bundle/catalog path.
 
 ## Deployment
 
-The queue schema is **v13**. Older runners must reject this new intent, since
-ignoring the payload would silently mix code versions again; new runners retain
-the existing v10–v13 acceptance window. Follow the cloud runbook's rollout/epoch
-procedure and align server and runner builds. A bundle snapshot fixes catalog
-drift, not binary/DSL incompatibility between releases.
+The bundle-snapshot intent entered the wire at queue schema **v13**: a runner
+older than that must reject it, since ignoring the payload would silently mix
+code versions again. The wire has advanced since — `pkg/queue/types.go` declares
+`SchemaVersion = 19` and `MinSchemaVersion = 10`, so today's runners accept
+v10–v19. Treat [cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md) as
+the live window; this page only records the version at which the snapshot field
+appeared. Follow the cloud runbook's rollout/epoch procedure and align server and
+runner builds. A bundle snapshot fixes catalog drift, not binary/DSL
+incompatibility between releases.
 
 The filesystem/local runtime does not need a blob backend because it does not
 cross the cloud queue. Cloud uses the existing Mongo/S3-backed `IRBlobStore`
