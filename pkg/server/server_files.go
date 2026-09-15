@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -40,12 +41,19 @@ type saveFileRequest struct {
 	Path       string          `json:"path"`
 	Document   json.RawMessage `json:"document"`
 	CreateOnly bool            `json:"create_only,omitempty"`
+	// Revision is the unit revision the document was opened at (the open
+	// response's unit.revision); required for a bot in several files.
+	Revision string `json:"revision,omitempty"`
 }
 
 type saveFileResponse struct {
 	Path              string `json:"path"`
 	Source            string `json:"source"`
 	ConfirmedDiskPath string `json:"confirmed_disk_path,omitempty"`
+	// Revision is the unit's revision after the save, Files the files the
+	// save rewrote (from the unit's root); both for a bot in several files.
+	Revision string   `json:"revision,omitempty"`
+	Files    []string `json:"files,omitempty"`
 }
 
 // --- Helpers ---
@@ -597,6 +605,27 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, parseResponse{Diagnostics: diags})
 		return
 	}
+	if confirmedDiskPath != "" && len(pr.File.Imports) > 0 {
+		// A bot in several files opens as its unit: the fragments read
+		// beside the main, merged into one document whose every declaration
+		// names its file, with the unit's revision for the save to present.
+		u := unit.LoadDirWithMain(absPath, absPath, data)
+		diags = diags[:0]
+		for _, d := range u.Diagnostics {
+			diags = append(diags, d.Error())
+		}
+		if u.Merged == nil {
+			writeJSON(w, parseResponse{Diagnostics: diags})
+			return
+		}
+		docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+			return
+		}
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path)})
+		return
+	}
 	docJSON, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
@@ -641,6 +670,19 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
+		return
+	}
+	// A bot in several files saves through its unit: each declaration to
+	// the file its provenance names. A document with provenance headed for
+	// a file that is not such a bot's main would fold every file into one.
+	if current, readErr := os.ReadFile(absPath); readErr == nil && !req.CreateOnly {
+		if on := parser.Parse(absPath, string(current)); on.File != nil && len(on.File.Imports) > 0 {
+			s.saveUnit(w, r, req, absPath, f, current)
+			return
+		}
+	}
+	if hasProvenance(f) {
+		httpError(w, http.StatusUnprocessableEntity, "the document was opened from a bot in several files and names those files: it saves to that bot's main, not to %s", req.Path)
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {

@@ -272,7 +272,9 @@ func readAuthoringIgnore(ctx context.Context, control *authoringDirectory) ([]by
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for {
-		body, _, err := control.read(".gitignore", 2)
+		// Read with room to spare: a file that is not the two bytes `*\n`
+		// is refused for what it holds, not for its length.
+		body, _, err := control.read(".gitignore", 64)
 		if err != nil || len(body) != 0 {
 			return body, err
 		}
@@ -670,6 +672,33 @@ func (tx *authoringLocalTransaction) rollback() error {
 	// retained: an external process could have opened it before rollback.
 	return tx.stage("rolled-back")
 }
+
+// complete drops the journal and the displaced original of a transaction
+// that published: nothing is left to recover. The candidate is the live
+// file now; the lock and the exclusion file stay with the directory.
+func (tx *authoringLocalTransaction) complete() error {
+	if !tx.published {
+		return errors.New("authoring: complete called on a transaction that did not publish")
+	}
+	l := tx.lock
+	var errs []error
+	if tx.displaced {
+		if err := l.control.root.Remove(tx.name("before")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		} else {
+			tx.displaced = false
+		}
+	}
+	if tx.journal != nil {
+		_ = tx.journal.Close()
+		tx.journal = nil
+	}
+	if err := l.control.root.Remove(tx.name("record")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
 func (tx *authoringLocalTransaction) recovery() authoringRecovery {
 	r := authoringRecovery{Scope: tx.preview.Scope, Path: tx.preview.Path, Record: filepath.Join(tx.lock.control.path, tx.name("record")), Files: []string{}}
 	if tx.displaced {
