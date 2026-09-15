@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.147.0](https://github.com/SocialGouv/iterion/compare/v3.146.10...v3.147.0) (2026-09-15)
+
+### Features
+
+* **connector:** preserve operation and auth identities across regeneration ([#1211](https://github.com/SocialGouv/iterion/issues/1211)) ([047a2cf](https://github.com/SocialGouv/iterion/commit/047a2cf3c388567fc19c96bb02f296de8625b213))
+
 ## [3.146.10](https://github.com/SocialGouv/iterion/compare/v3.146.9...v3.146.10) (2026-09-15)
 
 ### Bug Fixes
