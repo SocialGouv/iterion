@@ -85,25 +85,46 @@ type OAuthRecord struct {
 	// Produced only by RefreshRecord; never persisted or exposed.
 	accountUpdate *OAuthAccountUpdate
 
-	ID                   string     `bson:"_id" json:"id"`
-	UserID               string     `bson:"user_id" json:"user_id"`
-	Kind                 OAuthKind  `bson:"kind" json:"kind"`
-	SealedPayload        []byte     `bson:"sealed_payload" json:"-"`
-	Scopes               []string   `bson:"scopes,omitempty" json:"scopes,omitempty"`
-	AccessTokenExpiresAt *time.Time `bson:"access_token_expires_at,omitempty" json:"access_token_expires_at,omitempty"`
-	LastRefreshedAt      *time.Time `bson:"last_refreshed_at,omitempty" json:"last_refreshed_at,omitempty"`
+	ID            string    `bson:"_id" json:"id"`
+	UserID        string    `bson:"user_id" json:"user_id"`
+	Kind          OAuthKind `bson:"kind" json:"kind"`
+	SealedPayload []byte    `bson:"sealed_payload" json:"-"`
+	// None of the three carries a bson omitempty, for the reason spelled
+	// out on AccountLabel below: Upsert writes the record through $set,
+	// where an omitted key keeps the OLD value. A re-connect whose blob
+	// has no scopes, or no expiry, is a legitimate shape the codex
+	// exchange itself produces — and it has to be able to say so instead
+	// of inheriting the previous credential's. A stale LastRefreshedAt is
+	// worse than none: it is read as "this record was renewed then", on a
+	// record that was in fact pasted.
+	Scopes               []string   `bson:"scopes" json:"scopes,omitempty"`
+	AccessTokenExpiresAt *time.Time `bson:"access_token_expires_at" json:"access_token_expires_at,omitempty"`
+	LastRefreshedAt      *time.Time `bson:"last_refreshed_at" json:"last_refreshed_at,omitempty"`
 	// NotRefreshable marks a payload that carries no refresh token: the
 	// refresh worker and manual refresh must skip it — only a re-connect
 	// can renew it. Inverted polarity so legacy records (field absent =
 	// false) keep being attempted; the first ErrNotRefreshable outcome
 	// self-heals them by setting this flag.
-	NotRefreshable bool `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
+	//
+	// The bson tag carries NO omitempty, and that is load-bearing: a
+	// bool's zero value IS false, so omitempty would drop the field from
+	// Upsert's $set and leave a stored true standing. The flag would then
+	// be one-way — settable, never clearable — and self-sustaining, since
+	// the only writer that could clear it is a successful refresh, which
+	// the flag itself makes the worker skip. A re-connect with a payload
+	// that does carry a refreshToken has to be able to say so.
+	NotRefreshable bool `bson:"not_refreshable" json:"not_refreshable,omitempty"`
 	// Fingerprint is the audit identity of the SUBSCRIPTION behind this
 	// record: verified against the actual bearer at connect and refresh.
 	// It is what downstream metering keys on. A verified provider account
 	// keeps it across token rotations, reconnects and owner/rank changes;
 	// unidentified credentials retain a local payload-derived fallback.
-	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	//
+	// No bson omitempty, like every other key here: identity resolution
+	// normally guarantees a value, so dropping the tag changes nothing
+	// observable — but the struct-wide guard asserts the property for EVERY
+	// field, and a per-field exemption is how the defect came back twice.
+	Fingerprint string `bson:"fingerprint" json:"fingerprint,omitempty"`
 	// AccountLabel names the ACCOUNT this credential belongs to, in the
 	// operator's own words ("jothedev", "SocialGouv Revi"). An unnamed
 	// verified account defaults to its provider email. The label is purely
