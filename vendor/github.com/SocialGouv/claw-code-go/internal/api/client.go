@@ -494,6 +494,7 @@ func parseSSEData(data string) (StreamEvent, error) {
 //     adaptive where required and an "off" sentinel suppressing the default;
 //   - temperature/top_p are omitted on models that reject them (400), and
 //     frequency/presence penalties are never forwarded (not Messages API params).
+//
 // thinkingDisplayLevel resolves the thinking.display value applied to
 // adaptive requests that don't set one. Default "summarized" (readable
 // summary text); CLAW_ANTHROPIC_THINKING_DISPLAY overrides — "omitted"
