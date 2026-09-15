@@ -309,6 +309,10 @@ func (g *contractGen) contractFor(opID string, status int, responses, method map
 			g.rollback()
 			return "", err.Error()
 		}
+		if reason := g.readerRefuses(name); reason != "" {
+			g.rollback()
+			return "", reason
+		}
 		g.staged = g.staged[:0]
 		return name, ""
 	}
@@ -322,8 +326,40 @@ func (g *contractGen) contractFor(opID string, status int, responses, method map
 		return "", err.Error()
 	}
 	g.contracts[name] = built
+	g.staged = append(g.staged, name)
+	if reason := g.readerRefuses(name); reason != "" {
+		g.rollback()
+		return "", reason
+	}
 	g.staged = g.staged[:0]
 	return name, ""
+}
+
+// readerRefuses asks the READER whether the contract just built is one it will
+// accept, and returns its reason when it will not.
+//
+// The generator's vocabulary check and the reader's admission check are two
+// different lists, and whatever the second refuses that the first emitted comes
+// back as "gen: generated package is invalid: …" — no package written at all,
+// and the generator blamed for the vendor's data. A duplicate `required` name
+// is one instance (legal JSON that no validator rejects); an over-long property
+// name and the per-contract list and traversal ceilings are others. Asking the
+// reader itself has no list to keep in step: it is the same code that will load
+// the package, so a bound added there reports here instead of aborting.
+func (g *contractGen) readerRefuses(name string) string {
+	probe := &spec.Package{
+		Connector:       spec.Connector{SchemaVersion: spec.ResponseContractsVersion, ID: "probe"},
+		ResponseSchemas: g.contracts,
+	}
+	op := spec.Operation{
+		ID:      "probe.contract.check",
+		HTTP:    spec.HTTPBinding{Method: "GET", Path: "/"},
+		Results: []spec.ResultCase{{Status: 200, ResponseSchemaRef: name}},
+	}
+	if err := probe.ValidateResponseContracts(op); err != nil {
+		return "the contract this schema yields is one the reader refuses: " + err.Error()
+	}
+	return ""
 }
 
 // component builds (once) the contract for a local component schema and
@@ -454,6 +490,16 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 		// place the reader looks.
 		if out.Nullable && !nullListed {
 			out.Enum = append(out.Enum, json.RawMessage("null"))
+		}
+		// And the same agreement read the other way. `{type: string, enum:
+		// [open, closed, null]}` with no `nullable` is how JSON Schema and
+		// OAS 3.1 say a field may be null, and a common Swagger→OAS conversion
+		// residue. Carrying the member without the flag makes the type check
+		// reject the null BEFORE the enum is consulted, so the contract holds a
+		// member it can never accept — and refuses every answer where the
+		// vendor sends one.
+		if nullListed && out.Type != "" {
+			out.Nullable = true
 		}
 	}
 

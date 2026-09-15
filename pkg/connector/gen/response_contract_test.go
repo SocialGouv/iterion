@@ -756,3 +756,100 @@ func TestAStructuredJSONMediaTypeIsAJSONBody(t *testing.T) {
 		t.Errorf("Uncontracted = %+v, want the non-JSON response reported", report.Uncontracted)
 	}
 }
+
+// TestAnEnumListingNullSaysTheFieldIsNullable.
+//
+// `{type: string, enum: [open, closed, null]}` with no `nullable` is how JSON
+// Schema and OAS 3.1 say a field may be null, and a common Swagger→OAS
+// conversion residue. Carrying the member without the flag made the type check
+// reject the null before the enum was consulted: a contract holding a member it
+// could never accept, refusing every answer where the vendor sends one.
+func TestAnEnumListingNullSaysTheFieldIsNullable(t *testing.T) {
+	doc := func(schema string) string {
+		return `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/items": {"get": {"tags": ["item"], "operationId": "itemList",
+    "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+      "type": "object", "properties": {"state": ` + schema + `}}}}}}}}}
+}`
+	}
+
+	pkg, report := generateWith(t, doc(`{"type": "string", "enum": ["open", "closed", null]}`), true)
+	if len(report.Uncontracted) != 0 {
+		t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+	}
+	op := onlyOp(t, pkg)
+	ref := op.Results[0].ResponseSchemaRef
+	if !pkg.ResponseSchemas[ref].Properties["state"].Nullable {
+		t.Error("the enum lists null, so the contract must say the field is nullable")
+	}
+	for _, body := range []string{`{"state":null}`, `{"state":"open"}`} {
+		if _, err := pkg.ValidateResponse(op, 200, []byte(body)); err != nil {
+			t.Errorf("%s: the contract refused a value it lists: %v", body, err)
+		}
+	}
+	// It still discriminates: a value outside the list is refused.
+	if _, err := pkg.ValidateResponse(op, 200, []byte(`{"state":"other"}`)); err == nil {
+		t.Error("the contract stopped discriminating")
+	}
+
+	// The falsifier: an enum WITHOUT null leaves the field non-nullable.
+	strict, _ := generateWith(t, doc(`{"type": "string", "enum": ["open", "closed"]}`), true)
+	sop := onlyOp(t, strict)
+	if strict.ResponseSchemas[sop.Results[0].ResponseSchemaRef].Properties["state"].Nullable {
+		t.Error("nothing listed null, so nothing may relax the type check")
+	}
+	if _, err := strict.ValidateResponse(sop, 200, []byte(`{"state":null}`)); err == nil {
+		t.Error("a null must stay refused where the vendor did not list it")
+	}
+}
+
+// TestVendorDataTheReaderWouldRefuseIsReportedNotFatal.
+//
+// The generator's vocabulary check and the reader's admission check are two
+// different lists. Whatever the second refuses that the first emitted used to
+// come back as "gen: generated package is invalid", producing NO package at all
+// and blaming the generator for the vendor's data — the same failure the
+// staged/rollback work was added to remove. A duplicate `required` name is the
+// instance; it is legal JSON that no validator rejects.
+func TestVendorDataTheReaderWouldRefuseIsReportedNotFatal(t *testing.T) {
+	const doc = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {
+    "/items": {"get": {"tags": ["item"], "operationId": "itemList",
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "required": ["id", "id"], "properties": {"id": {"type": "integer"}}}}}}}}},
+    "/others": {"get": {"tags": ["item"], "operationId": "itemOther",
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}}}}}}}
+  }
+}`
+	pkg, report := generateWith(t, doc, true)
+
+	byID := map[string]spec.Operation{}
+	for _, op := range pkg.Operations() {
+		byID[op.ID] = op
+	}
+	bad, ok := byID["probe.item.list"]
+	if !ok {
+		t.Fatalf("fixture produced %v", byID)
+	}
+	if ref := bad.Results[0].ResponseSchemaRef; ref != "" {
+		t.Errorf("ResponseSchemaRef = %q — a contract the reader refuses must not ship", ref)
+	}
+	if len(report.Uncontracted) != 1 || report.Uncontracted[0].OperationID != "probe.item.list" {
+		t.Fatalf("Uncontracted = %+v, want the offending operation reported", report.Uncontracted)
+	}
+
+	// The sibling keeps its contract: one bad schema is not a failed generation.
+	good := byID["probe.item.other"]
+	if good.Results[0].ResponseSchemaRef == "" {
+		t.Error("an unrelated operation lost its contract")
+	}
+	// And the package the generator wrote is one its own reader accepts.
+	if err := pkg.ValidateResponseContracts(); err != nil {
+		t.Errorf("the generator emitted a package its reader refuses: %v", err)
+	}
+}
