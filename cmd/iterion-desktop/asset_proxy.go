@@ -328,6 +328,10 @@ func (h *assetProxyHandler) serveScoped(w http.ResponseWriter, r *http.Request) 
 		proxy.ServeHTTP(w, r)
 		return
 	default:
+		if iserver.IsBuildAssetPath("/" + sub) {
+			http.NotFound(w, r)
+			return
+		}
 		h.serveScopedIndex(w, "/x/"+connID)
 		return
 	}

@@ -350,6 +350,10 @@ func (h *WorkspaceHost) serveScoped(w http.ResponseWriter, r *http.Request) {
 		rt.server.Handler().ServeHTTP(w, clone)
 		return
 	}
+	if IsBuildAssetPath("/" + sub) {
+		NotFoundBuildAsset(w, r)
+		return
+	}
 	ServeInjectedIndex(w, r, h.static, "/x/"+id, false)
 }
 
@@ -369,6 +373,10 @@ func (h *WorkspaceHost) serveWorkspaceAsset(w http.ResponseWriter, r *http.Reque
 		if f, err := h.static.Open(rel); err == nil {
 			_ = f.Close()
 			http.FileServer(http.FS(h.static)).ServeHTTP(w, r)
+			return
+		}
+		if IsBuildAssetPath(clean) {
+			NotFoundBuildAsset(w, r)
 			return
 		}
 	}

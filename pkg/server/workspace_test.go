@@ -232,3 +232,58 @@ func TestWorkspaceHandoffIsScopedAndSingleUse(t *testing.T) {
 		t.Fatalf("generation redeem = %d: %s", generationResult.Code, generationResult.Body.String())
 	}
 }
+
+// The scoped pane handler is a bare http.Handler — nothing cleans the path
+// before it, and a browser does not collapse a doubled slash. Exercised from
+// the real caller rather than from IsBuildAssetPath: the guard is only worth
+// what the path reaching it is worth.
+func TestWorkspaceScopedAssetMissNeverServesTheShell(t *testing.T) {
+	root, store := t.TempDir(), filepath.Join(t.TempDir(), "a")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := &projects.Config{
+		Version:          1,
+		RecentProjects:   []projects.Project{{ID: "a", Name: "A", Dir: root, StoreDir: store}},
+		CurrentProjectID: "a",
+	}
+	host, err := NewWorkspaceHost(registry, func(projects.Project) (*Server, error) {
+		return New(Config{DisableAuth: true, SkipProjectRegistration: true}, iterlog.Nop()), nil
+	}, iterlog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = host.Shutdown(ctx)
+	})
+
+	for _, target := range []string{
+		"/x/a/assets/missing-XYZ.js",
+		"/x/a//assets/missing-XYZ.js",
+		"/x/a/./assets/missing-XYZ.js",
+	} {
+		t.Run(target, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			rec := httptest.NewRecorder()
+			host.ServeHTTP(rec, req)
+
+			if ct := rec.Header().Get("Content-Type"); strings.Contains(ct, "text/html") {
+				t.Fatalf("answered as HTML (%q) — the MIME-block bug, through the scoped path", ct)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("want 404, got %d body=%q", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// The witness for the other direction: a scoped client route still gets
+	// the shell, so the guard did not simply 404 the pane.
+	req := httptest.NewRequest(http.MethodGet, "/x/a/orgs/5f916212", nil)
+	rec := httptest.NewRecorder()
+	host.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("scoped client route lost the shell: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
