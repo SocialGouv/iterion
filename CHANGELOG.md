@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.10](https://github.com/SocialGouv/iterion/compare/v3.146.9...v3.146.10) (2026-09-15)
+
+### Bug Fixes
+
+* **mcp:** preserve safe stdio startup diagnostics ([#1210](https://github.com/SocialGouv/iterion/issues/1210)) ([17cdcc6](https://github.com/SocialGouv/iterion/commit/17cdcc6102438837cdb0d93ec09396fc38963570))
+
 ## [3.146.9](https://github.com/SocialGouv/iterion/compare/v3.146.8...v3.146.9) (2026-09-15)
 
 ### Bug Fixes
