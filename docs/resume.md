@@ -281,11 +281,22 @@ retrying. `ITERION_RUNNER_BANK_ATTEMPTS=1` disables retries;
 `ITERION_RUNNER_BANK_RETRY_DELAY` accepts a Go duration (including `0`). The
 retry re-reads the remote branch: an already-pushed head is success after a
 lost acknowledgement, a changed head passes the existing richer-chain checks,
-and an unreadable remote stops the retry rather than dropping its lease.
+and an unreadable remote stops the retry rather than dropping its lease. A head
+that has NOT moved was already archived and compared on the first attempt, so
+the retry skips straight to its push instead of re-fetching and re-archiving it.
 Even observed absence is protected by a lease on the second push. Cancellation
 interrupts the wait. Each git operation keeps its existing
 `ITERION_RUNNER_GIT_TIMEOUT` bound (15 minutes by default); a shorter caller
 deadline is identified separately in the error.
+
+The bank sequence as a whole is bounded too, so a wedged forge cannot pin a
+runner pod for attempts × operations × the per-op ceiling. A run past its own
+deadline gets a fixed 10-minute grace period; a run still inside its deadline —
+or launched without `--timeout`, which has none — gets twice
+`ITERION_RUNNER_GIT_TIMEOUT`, so the aggregate never pre-empts an operation the
+per-op setting allows and raising that setting extends the bank with it.
+Setting `ITERION_RUNNER_GIT_TIMEOUT` to `0` or less keeps git operations
+unbounded and leaves the sequence unbounded as well.
 
 Inspect `run_bank_retry` for the failed attempt, planned delay, redacted git
 error, `failure_kind` (`timeout`, `cancelled`, `process_exit`, or `git_error`),

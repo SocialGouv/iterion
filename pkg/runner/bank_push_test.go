@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -272,20 +273,31 @@ fi
 func TestALiveRunBoundsItsBankSequenceToo(t *testing.T) {
 	previous := gitOpTimeout
 	t.Cleanup(func() { gitOpTimeout = previous })
-	gitOpTimeout = time.Minute
 
-	ctx, cancel, ok := bankContext(context.Background())
-	defer cancel()
-	if !ok {
-		t.Fatal("a live ctx must still bank")
+	// The aggregate must never pre-empt an op the operator allowed: at the
+	// default 15m per op a 10m aggregate kills the big first push this very
+	// change exists to retry — and pushBankWithRetry treats a dead ctx as
+	// final, so that push loses its retry too.
+	for _, perOp := range []time.Duration{time.Minute, 15 * time.Minute, time.Hour} {
+		gitOpTimeout = perOp
+		ctx, cancel, ok := bankContext(context.Background())
+		if !ok {
+			t.Fatal("a live ctx must still bank")
+		}
+		deadline, bounded := ctx.Deadline()
+		cancel()
+		if !bounded {
+			t.Fatalf("per-op %s: a run without --timeout banks under no deadline at all", perOp)
+		}
+		budget := time.Until(deadline)
+		if budget <= perOp {
+			t.Fatalf("per-op %s: aggregate %s cannot outlive ONE op — it kills a push the operator allowed", perOp, budget)
+		}
+		if budget > 2*perOp && budget > bankBudget {
+			t.Fatalf("per-op %s: aggregate %s grew past both horizons", perOp, budget)
+		}
 	}
-	deadline, bounded := ctx.Deadline()
-	if !bounded {
-		t.Fatal("a run without --timeout banks under no deadline at all")
-	}
-	if budget := time.Until(deadline); budget > bankBudget {
-		t.Fatalf("bank budget = %s, want <= %s", budget, bankBudget)
-	}
+	gitOpTimeout = time.Minute
 
 	// A shorter run deadline is not EXTENDED to the budget.
 	short, cancelShort := context.WithTimeout(context.Background(), time.Second)
@@ -309,6 +321,115 @@ func TestALiveRunBoundsItsBankSequenceToo(t *testing.T) {
 	if _, has := unbounded.Deadline(); has {
 		t.Fatal("ITERION_RUNNER_GIT_TIMEOUT<=0 asked for unbounded git ops")
 	}
+}
+
+func countEvents(t *testing.T, r *Runner, runID string, typ store.EventType) int {
+	t.Helper()
+	evs, err := r.cfg.Store.LoadEvents(store.WithIdentity(context.Background(), "team-a", ""), runID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	n := 0
+	for _, e := range evs {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// TestARetryOnAnUnchangedTipDoesNotGuardItTwice.
+//
+// A failed push leaves the remote untouched, so the retry reads the SAME
+// oldHead. Guarding it again re-fetches and re-pushes the archive against
+// the very forge that just failed — spending the bounded bank budget
+// before the retry push this change exists to add is even issued — and
+// leaves a second run_bank_superseded on the timeline the runbook tells
+// operators to read.
+func TestARetryOnAnUnchangedTipDoesNotGuardItTwice(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	work2 := filepath.Join(t.TempDir(), "resume")
+	gitOut(t, filepath.Dir(work2), "clone", work, work2)
+	gitOut(t, work2, "config", "user.email", "t@test.invalid")
+	gitOut(t, work2, "config", "user.name", "t")
+	gitOut(t, work2, "remote", "set-url", "origin", origin)
+
+	// Attempt 1 dies holding a LONGER, diverging chain: the finished
+	// outcome below must archive it before superseding.
+	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: one")
+	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: two")
+	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: three")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "budget_exceeded")
+	deadHead := gitOut(t, work, "rev-parse", "HEAD")
+
+	// Only now fault git, and only the STORAGE push: the archive push must
+	// stay observable so a repeat of it is visible.
+	// Count the two kinds apart: the shared push counter is spent by the
+	// archive push, so keying the fault on it never fails the storage push
+	// and the retry under test never runs.
+	counters := t.TempDir()
+	archives := filepath.Join(counters, "archive-pushes")
+	storage := filepath.Join(counters, "storage-pushes")
+	t.Setenv("BANK_TEST_ARCHIVES", archives)
+	t.Setenv("BANK_TEST_STORAGE", storage)
+	bankFaultGit(t, `
+bump() {
+ c=0
+ if test -f "$1"; then read -r c < "$1"; fi
+ c=$((c + 1))
+ printf '%s\n' "$c" > "$1"
+ echo "$c"
+}
+if test "$op" = push; then
+ case "$*" in
+  *-attempt-*) bump "$BANK_TEST_ARCHIVES" > /dev/null ;;
+  *)
+   if test "$(bump "$BANK_TEST_STORAGE")" -eq 1; then echo 'transport failed' >&2; exit 12; fi
+   ;;
+ esac
+fi
+`)
+
+	gitOut(t, work2, "commit", "--allow-empty", "-m", "finished resume: the remaining unit")
+	finishedHead := gitOut(t, work2, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	// The retry still lands, and the dead chain is still preserved.
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != finishedHead {
+		t.Fatalf("branch = %q (present=%v), want the retried finished head %s", got, ok, finishedHead)
+	}
+	archive := "refs/heads/iterion/run-" + msg.RunID + "-attempt-" + deadHead[:12]
+	if got, ok := refAt(t, origin, archive); !ok || got != deadHead {
+		t.Fatalf("archive ref = %q (present=%v), want %s preserved at %s", got, ok, deadHead, archive)
+	}
+
+	// The bench BITES only if the storage push really failed and retried.
+	if got := counterAt(t, storage); got != 2 {
+		t.Fatalf("storage pushed %d times, want 2 — the retry this test exists for never ran", got)
+	}
+
+	if n := countEvents(t, r, msg.RunID, store.EventRunBankSuperseded); n != 1 {
+		t.Errorf("run_bank_superseded × %d — the retry re-announced a takeover that happened once", n)
+	}
+	if got := counterAt(t, archives); got != 1 {
+		t.Errorf("archive pushed %d times — the retry re-spent the bank budget on a tip it had already guarded", got)
+	}
+}
+
+func counterAt(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var n int
+	if _, err := fmt.Sscan(string(b), &n); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return n
 }
 
 func TestBankFailureEventSurvivesDocumentWriteFailure(t *testing.T) {

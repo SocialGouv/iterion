@@ -40,6 +40,12 @@ func (r *Runner) bankPushPolicy() (int, time.Duration) {
 // the earlier banked pair untouched.
 func (r *Runner) pushBankWithRetry(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, head, finalStatus string) (attempts int, allowed bool, pushErr error) {
 	maxAttempts, delay := r.bankPushPolicy()
+	// The tip this call already archived and compared. A failed push leaves
+	// the remote untouched, so without this the retry re-fetches, re-archives
+	// and emits a SECOND run_bank_superseded — against the very forge that
+	// just failed, spending the bank budget before the retry push is issued.
+	// A tip that MOVED is not this one, and passes the guard again.
+	var guarded string
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		var oldHead string
 		if attempt == 1 {
@@ -54,7 +60,7 @@ func (r *Runner) pushBankWithRetry(ctx context.Context, msg *queue.RunMessage, w
 		if oldHead == head {
 			return attempts, true, nil
 		}
-		if oldHead != "" {
+		if oldHead != "" && oldHead != guarded {
 			if finalStatus == "finished" {
 				// A finished chain may be shorter than a dead attempt's;
 				// preserve its old commits before superseding it, as before.
@@ -62,6 +68,7 @@ func (r *Runner) pushBankWithRetry(ctx context.Context, msg *queue.RunMessage, w
 			} else if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
 				return attempts, false, nil
 			}
+			guarded = oldHead
 		}
 		args := bankPushArgs(branch, head, oldHead)
 		if attempt > 1 && oldHead == "" {
