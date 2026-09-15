@@ -258,6 +258,13 @@ func TestWorkspaceScopedAssetMissNeverServesTheShell(t *testing.T) {
 		defer cancel()
 		_ = host.Shutdown(ctx)
 	})
+	// Own the fixture rather than the real embed: pkg/server/static is filled
+	// by the studio build, and a job that skips it would make the "client
+	// route still gets the shell" witness 404 for a reason that has nothing to
+	// do with this guard — green where it should be red, red where it is fine.
+	host.static = fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html><head></head>SHELL</html>")},
+	}
 
 	for _, target := range []string{
 		"/x/a/assets/missing-XYZ.js",
