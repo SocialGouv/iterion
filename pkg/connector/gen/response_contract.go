@@ -154,9 +154,6 @@ type contractGen struct {
 	// different shapes under one contract, silently, and refuse the body the
 	// vendor documents for whichever operation lost.
 	origin map[string]string
-	// pending names a component whose contract is being built, so a recursive
-	// schema terminates instead of re-entering itself.
-	pending map[string]bool
 	// staged lists the component contracts published during the CURRENT
 	// top-level build, so a failure can take them back out.
 	//
@@ -201,7 +198,6 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 		doc: doc, format: format,
 		contracts: map[string]spec.ResponseSchema{},
 		origin:    map[string]string{},
-		pending:   map[string]bool{},
 	}
 	var uncontracted []Uncontracted
 	paths := mapAt(doc, "paths")
@@ -289,7 +285,14 @@ func (g *contractGen) contractFor(opID string, status int, responses, method map
 	}
 	schema := mapAt(rm, "schema") // swagger 2
 	if g.format == FormatOpenAPI3 {
-		schema = mapAt(mapAt(mapAt(rm, "content"), "application/json"), "schema")
+		content := mapAt(rm, "content")
+		schema = jsonContentSchema(content)
+		// The vendor declared a body, just not one a contract can state. That
+		// is the same case Swagger 2's `produces` gate reports, and saying
+		// nothing here left the response with no contract AND no report line.
+		if len(schema) == 0 && len(content) > 0 {
+			return "", "the response declares no JSON media type, so its body is not a shape a contract can state"
+		}
 	}
 	if len(schema) == 0 {
 		return "", ""
@@ -350,10 +353,11 @@ func (g *contractGen) component(ref string, depth int) (string, error) {
 		// recursive shape, which the vocabulary represents natively.
 		return name, nil
 	}
+	// Recorded BEFORE descending: that is what makes a recursive shape
+	// terminate, since re-entry finds the name known and returns it above
+	// instead of building it again.
 	g.origin[name] = ref
-	g.pending[name] = true
 	built, err := g.schema(resolved, depth+1)
-	delete(g.pending, name)
 	if err != nil {
 		// The caller rolls the staged names back; this one never landed.
 		delete(g.origin, name)
@@ -547,7 +551,7 @@ func declaresResponseBody(doc map[string]any, format Format, responses map[strin
 	}
 	schema := mapAt(rm, "schema")
 	if format == FormatOpenAPI3 {
-		schema = mapAt(mapAt(mapAt(rm, "content"), "application/json"), "schema")
+		schema = jsonContentSchema(mapAt(rm, "content"))
 	}
 	return len(schema) > 0
 }
@@ -581,14 +585,43 @@ func (g *contractGen) writeOnlyProperty(node map[string]any) bool {
 // Matched on the structured suffix as well, so `application/vnd.api+json` and
 // `application/problem+json` count — they are JSON bodies whatever the vendor
 // registered them as.
+// jsonContentSchema picks an OAS 3 response's JSON schema, preferring the exact
+// media type and otherwise accepting the structured `+json` suffix.
+//
+// Matching only `application/json` left a response declared solely under
+// `application/vnd.api+json` — or hal+json, or a vendor's own — with no
+// contract AND no line in the report, because the divergence guard applies this
+// same rule and so saw no body either. An operator then reads a silent gap as a
+// clean bill. It also made the two dialects disagree: anyJSONMedia already
+// accepts the suffix for Swagger 2's `produces`.
+func jsonContentSchema(content map[string]any) map[string]any {
+	if schema := mapAt(mapAt(content, "application/json"), "schema"); len(schema) > 0 {
+		return schema
+	}
+	for _, media := range sortedKeys(content) {
+		if isJSONMedia(media) {
+			if schema := mapAt(mapAt(content, media), "schema"); len(schema) > 0 {
+				return schema
+			}
+		}
+	}
+	return nil
+}
+
+// isJSONMedia reports whether a media type carries a JSON body, by the one rule
+// both dialects use.
+func isJSONMedia(media string) bool {
+	media = strings.ToLower(strings.TrimSpace(media))
+	if i := strings.IndexByte(media, ';'); i >= 0 {
+		media = strings.TrimSpace(media[:i])
+	}
+	return media == "application/json" || strings.HasSuffix(media, "+json")
+}
+
 func anyJSONMedia(produces []any) bool {
 	for _, raw := range produces {
 		media, _ := raw.(string)
-		media = strings.ToLower(strings.TrimSpace(media))
-		if i := strings.IndexByte(media, ';'); i >= 0 {
-			media = strings.TrimSpace(media[:i])
-		}
-		if media == "application/json" || strings.HasSuffix(media, "+json") {
+		if isJSONMedia(media) {
 			return true
 		}
 	}

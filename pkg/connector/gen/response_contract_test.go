@@ -712,3 +712,47 @@ paths:
 		t.Errorf("Reason = %q, want it to name the disagreement rather than blame the vendor", reported.Reason)
 	}
 }
+
+// TestAStructuredJSONMediaTypeIsAJSONBody.
+//
+// OAS 3 reads the response schema from `content`, and matching only the exact
+// `application/json` left a JSON:API-style description with neither a contract
+// nor a report line: the divergence guard applies the same rule, so it saw no
+// body either, and the operator read "0 uncontracted" as a clean bill. The two
+// dialects also disagreed, since `produces` already accepted the suffix.
+func TestAStructuredJSONMediaTypeIsAJSONBody(t *testing.T) {
+	oas3 := func(media string) string {
+		return `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/items": {"get": {"tags": ["item"], "operationId": "itemList",
+    "responses": {"200": {"description": "ok", "content": {"` + media + `": {"schema": {
+      "type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}}}}}}}}
+}`
+	}
+
+	for _, media := range []string{"application/json", "application/vnd.api+json", "application/hal+json"} {
+		pkg, report := generateWith(t, oas3(media), true)
+		if len(report.Uncontracted) != 0 {
+			t.Errorf("%s: unexpected refusal: %+v", media, report.Uncontracted)
+		}
+		op := onlyOp(t, pkg)
+		if op.Results[0].ResponseSchemaRef == "" {
+			t.Errorf("%s: a JSON body got no contract", media)
+			continue
+		}
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":"not-an-integer"}`)); err == nil {
+			t.Errorf("%s: the contract stopped discriminating", media)
+		}
+	}
+
+	// The falsifier: a body that is NOT JSON still gets no contract, and says so
+	// rather than passing silently.
+	pkg, report := generateWith(t, oas3("text/csv"), true)
+	if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
+		t.Errorf("a text/csv body got contract %q", ref)
+	}
+	if len(report.Uncontracted) != 1 {
+		t.Errorf("Uncontracted = %+v, want the non-JSON response reported", report.Uncontracted)
+	}
+}
