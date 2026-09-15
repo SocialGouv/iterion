@@ -311,7 +311,7 @@ func RunValidate(path string, p *Printer) error {
 	// workflow (var maps, forge secret, capabilities, per-bot-memory name
 	// stability). Only runs for bundles; plain .bot files have no manifest.
 	if bundleHandle != nil && cr.Workflow != nil {
-		syntaxProfile, profileDeclaredBy, profileUnread := bundle.MaxSyntaxProfileDir(bundleHandle.Dir)
+		syntax := bundle.MaxSyntaxRequirementsDir(bundleHandle.Dir)
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
@@ -324,11 +324,12 @@ func RunValidate(path string, p *Printer) error {
 			// author's local half of the guard the push admission and the
 			// runner apply on a deployment.
 			EngineBuild: appinfo.FullVersion(),
-			// The syntax profile of the executable sources (C252): a profile
-			// above 1 asks for a declared floor.
-			SyntaxProfile:     syntaxProfile,
-			ProfileDeclaredBy: profileDeclaredBy,
-			ProfileUnread:     profileUnread,
+			// What the executable sources use (C252): a profile above 1, or
+			// `import`, asks for a declared floor.
+			SyntaxProfile:     syntax.Profile,
+			ProfileDeclaredBy: syntax.DeclaredBy,
+			ProfileUnread:     syntax.Unread,
+			ImportedBy:        syntax.ImportedBy,
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())

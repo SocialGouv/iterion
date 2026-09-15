@@ -173,6 +173,14 @@ carrying the feature under a different version reads as too old, and a build
 with no orderable version (`dev`, a fork's scheme) makes the check
 *inconclusive*, which is reported, never passed in silence.
 
+Two things a bundle's sources use ask for a floor by themselves: a syntax
+profile above 1 (`dsl: 2`, read since v3.141.0) and `import "lib/x.bot"` (a
+bot in several files, read since v3.145.0). A cloud runner receives the main
+workflow as an AST but parses a subbot child, and a fragment, as text with
+its own binary, so a build older than the release fails at that parse — after
+admission, on a pod. `iterion validate` says so (C252), and a push refuses
+the bundle without the floor (409, `--force` overrides).
+
 Four surfaces honour it, all through the same predicate
 (`bundle.CheckManifestEngine`):
 

@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path"
@@ -36,8 +37,8 @@ const (
 // written in a newer profile than the runner reads fails at its first parse
 // — which is what a declared `requires.iterion` floor exists to refuse at
 // admission instead.
-func MaxSyntaxProfile(files map[string]string) (profile int, declaredBy, unread []string) {
-	return maxSyntaxProfile(func(rel string) (string, sourceState) {
+func MaxSyntaxRequirements(files map[string]string) SyntaxRequirements {
+	return walkSyntax(func(rel string) (string, sourceState) {
 		if escapesBundle(rel) {
 			return "", sourceOutside
 		}
@@ -54,13 +55,13 @@ func MaxSyntaxProfile(files map[string]string) (profile int, declaredBy, unread 
 // bundle — because a sibling bundle is a child shape the runner resolves
 // there; a source that resolves beyond the collection, through `..` or a
 // symlink, is not read and is reported as unread.
-func MaxSyntaxProfileDir(dir string) (profile int, declaredBy, unread []string) {
+func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
 	root := filepath.Clean(dir)
 	if real, err := filepath.EvalSymlinks(root); err == nil {
 		root = real
 	}
 	collection := filepath.Dir(root)
-	return maxSyntaxProfile(func(rel string) (string, sourceState) {
+	return walkSyntax(func(rel string) (string, sourceState) {
 		if strings.HasPrefix(rel, "../../") || rel == "../.." {
 			return "", sourceOutside // two levels up leaves the collection by construction
 		}
@@ -93,9 +94,9 @@ func within(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-func maxSyntaxProfile(read func(rel string) (string, sourceState)) (int, []string, []string) {
+func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread []string
+	var declaredBy, unread, importedBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -139,6 +140,9 @@ func maxSyntaxProfile(read func(rel string) (string, sourceState)) (int, []strin
 			return []byte(body), nil
 		}, main, join)
 		for _, f := range u.Files {
+			if f.AST != nil && len(f.AST.Imports) > 0 {
+				importedBy = append(importedBy, f.Name)
+			}
 			p := f.Profile
 			switch {
 			case p > profile:
@@ -168,7 +172,50 @@ func maxSyntaxProfile(read func(rel string) (string, sourceState)) (int, []strin
 	visit(MainBotFile)
 	sort.Strings(declaredBy)
 	sort.Strings(unread)
-	return profile, declaredBy, unread
+	sort.Strings(importedBy)
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, Unread: unread}
+}
+
+// MaxSyntaxProfile is MaxSyntaxRequirements projected on the profile.
+func MaxSyntaxProfile(files map[string]string) (profile int, declaredBy, unread []string) {
+	r := MaxSyntaxRequirements(files)
+	return r.Profile, r.DeclaredBy, r.Unread
+}
+
+// MaxSyntaxProfileDir is MaxSyntaxRequirementsDir projected on the profile.
+func MaxSyntaxProfileDir(dir string) (profile int, declaredBy, unread []string) {
+	r := MaxSyntaxRequirementsDir(dir)
+	return r.Profile, r.DeclaredBy, r.Unread
+}
+
+// SyntaxRequirements is what a bundle's executable sources ask of the
+// engine that reads them: the highest `dsl: N` profile they declare and
+// whether any of them imports — each with the files that do — plus the
+// children the walk could not read.
+type SyntaxRequirements struct {
+	Profile    int
+	DeclaredBy []string
+	// ImportedBy names the files that carry `import` lines: a bot in
+	// several files needs the release that reads them (parser.ImportSince),
+	// whatever its profile.
+	ImportedBy []string
+	Unread     []string
+}
+
+// UsesImport reports whether any source of the bundle imports.
+func (r SyntaxRequirements) UsesImport() bool { return len(r.ImportedBy) > 0 }
+
+// Describe names what the sources use, for a diagnostic: "dsl profile 2
+// (main.bot)", "`import` (main.bot)", or both.
+func (r SyntaxRequirements) Describe() string {
+	var parts []string
+	if r.Profile >= 2 {
+		parts = append(parts, fmt.Sprintf("dsl profile %d (%s)", r.Profile, strings.Join(r.DeclaredBy, ", ")))
+	}
+	if r.UsesImport() {
+		parts = append(parts, fmt.Sprintf("`import` (%s)", strings.Join(r.ImportedBy, ", ")))
+	}
+	return strings.Join(parts, " and ")
 }
 
 // ProfileFloor is what a manifest's `requires.iterion` says about the
@@ -181,24 +228,39 @@ type ProfileFloor struct {
 	Need string
 	// Declared is the manifest's requires.iterion, trimmed; "" when absent.
 	Declared string
-	// OK: below profile 2 always; otherwise a declared floor that is ordered
-	// at or above Need (or any declared floor, when Need is unknown).
+	// Reason names what asks for the floor: "dsl profile 2", "import".
+	Reason string
+	// OK: nothing asks for a floor; otherwise a declared floor that is
+	// ordered at or above Need (or any declared floor, when Need is unknown).
 	OK bool
 }
 
-// CheckProfileFloor holds a manifest's engine floor against the profile its
-// sources are written in — one predicate for the author's `validate` (C252)
-// and the deployment's push admission (409), so the two never read a floor
-// two different ways. A floor's PRESENCE is not enough: `>= 0.0.1` on a
-// profile-2 bundle admits every runner that cannot read it, which is
-// exactly what the floor exists to refuse.
-func CheckProfileFloor(m *Manifest, profile int) ProfileFloor {
-	pf := ProfileFloor{Profile: profile}
-	if profile < 2 {
+// CheckSyntaxFloor holds a manifest's engine floor against what its sources
+// use — a syntax profile above 1, `import` — one predicate for the author's
+// `validate` (C252) and the deployment's push admission (409), so the two
+// never read a floor two different ways. A floor's PRESENCE is not enough:
+// `>= 0.0.1` on such a bundle admits every runner that cannot read it, which
+// is exactly what the floor exists to refuse.
+func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
+	pf := ProfileFloor{Profile: req.Profile}
+	type need struct{ release, reason string }
+	var needs []need
+	if req.Profile >= 2 {
+		needs = append(needs, need{parser.ProfileSince[req.Profile], fmt.Sprintf("dsl profile %d", req.Profile)})
+	}
+	if req.UsesImport() {
+		needs = append(needs, need{parser.ImportSince, "import"})
+	}
+	if len(needs) == 0 {
 		pf.OK = true
 		return pf
 	}
-	pf.Need = parser.ProfileSince[profile]
+	// The highest release among what the sources use is the floor asked for.
+	for _, n := range needs {
+		if pf.Reason == "" || laterRelease(n.release, pf.Need) {
+			pf.Need, pf.Reason = n.release, n.reason
+		}
+	}
 	if m != nil && m.Requires != nil {
 		pf.Declared = strings.TrimSpace(m.Requires.Iterion)
 	}
@@ -209,11 +271,30 @@ func CheckProfileFloor(m *Manifest, profile int) ProfileFloor {
 	if err != nil {
 		return pf
 	}
-	need, ok := numericVersionParts(pf.Need)
+	needParts, ok := numericVersionParts(pf.Need)
 	if !ok {
 		pf.OK = true // no release on record: a declared floor is what can be asked
 		return pf
 	}
-	pf.OK = compareVersionParts(c.Min, need) >= 0
+	pf.OK = compareVersionParts(c.Min, needParts) >= 0
 	return pf
+}
+
+// laterRelease reports whether a orders after b; a release not on record
+// (unorderable) is earlier than any that is.
+func laterRelease(a, b string) bool {
+	pa, okA := numericVersionParts(a)
+	pb, okB := numericVersionParts(b)
+	if !okA {
+		return false
+	}
+	if !okB {
+		return true
+	}
+	return compareVersionParts(pa, pb) > 0
+}
+
+// CheckProfileFloor is CheckSyntaxFloor for a profile alone.
+func CheckProfileFloor(m *Manifest, profile int) ProfileFloor {
+	return CheckSyntaxFloor(m, SyntaxRequirements{Profile: profile})
 }

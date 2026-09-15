@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 const validateUnitMain = "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
@@ -147,6 +148,37 @@ func TestRunValidate_NamesAFragmentValidatedAlone(t *testing.T) {
 	for _, d := range res.Diagnostics {
 		if strings.Contains(d.Message, "fragment") {
 			t.Fatalf("a loose file was called a fragment: %+v", d)
+		}
+	}
+}
+
+// TestRunValidate_ABundleThatImportsAsksForItsFloor: a bundle in several
+// files is told (C252) that its manifest must declare the release that
+// reads `import`; once it does, nothing is said.
+func TestRunValidate_ABundleThatImportsAsksForItsFloor(t *testing.T) {
+	dir := t.TempDir()
+	writeValidateUnit(t, dir, map[string]string{"main.bot": validateUnitMain, "lib/nodes.bot": validateUnitNodes, "manifest.yaml": "name: demo\n"})
+	res, err := runValidateDiagnosticsJSON(t, dir)
+	if err != nil || !res.Valid {
+		t.Fatalf("validate a two-file bundle: valid=%v err=%v %+v", res.Valid, err, res.Diagnostics)
+	}
+	var floor bool
+	for _, d := range res.Diagnostics {
+		if d.Code == "C252" && strings.Contains(d.Message, "`import` (main.bot)") {
+			floor = true
+		}
+	}
+	if !floor {
+		t.Fatalf("no C252 for a bundle that imports without a floor: %+v", res.Diagnostics)
+	}
+	writeValidateUnit(t, dir, map[string]string{"manifest.yaml": "name: demo\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n"})
+	res, err = runValidateDiagnosticsJSON(t, dir)
+	if err != nil || !res.Valid {
+		t.Fatalf("validate with the floor: valid=%v err=%v", res.Valid, err)
+	}
+	for _, d := range res.Diagnostics {
+		if d.Code == "C252" {
+			t.Fatalf("C252 drawn with the floor declared: %+v", d)
 		}
 	}
 }
