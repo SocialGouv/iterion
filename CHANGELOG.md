@@ -3,6 +3,66 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.10](https://github.com/SocialGouv/iterion/compare/v3.146.9...v3.146.10) (2026-09-15)
+
+### Bug Fixes
+
+* **mcp:** preserve safe stdio startup diagnostics ([#1210](https://github.com/SocialGouv/iterion/issues/1210)) ([17cdcc6](https://github.com/SocialGouv/iterion/commit/17cdcc6102438837cdb0d93ec09396fc38963570))
+
+## [3.146.9](https://github.com/SocialGouv/iterion/compare/v3.146.8...v3.146.9) (2026-09-15)
+
+### Bug Fixes
+
+* **forge:** preserve existing bot avatars on reconnect ([#1196](https://github.com/SocialGouv/iterion/issues/1196)) ([9cdcef8](https://github.com/SocialGouv/iterion/commit/9cdcef87c932d84f889731c854aef3fe3ee82ccd))
+
+## [3.146.8](https://github.com/SocialGouv/iterion/compare/v3.146.7...v3.146.8) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** the scope guard must be a whitelist, not a list of failures ([#1253](https://github.com/SocialGouv/iterion/issues/1253)) ([84b9cd8](https://github.com/SocialGouv/iterion/commit/84b9cd8577801d8862ccc2979db685df88fb375c)), references [#1246](https://github.com/SocialGouv/iterion/issues/1246)
+
+    <details><summary>why</summary>
+
+    Review finding Ra43054 on #1246, and it is right.
+
+    </details>
+
+## [3.146.7](https://github.com/SocialGouv/iterion/compare/v3.146.6...v3.146.7) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is bound to its path only when it is the file it names and parses clean; fragments are written before the mains ([#1250](https://github.com/SocialGouv/iterion/issues/1250)) ([243efe9](https://github.com/SocialGouv/iterion/commit/243efe9c38a6bab51042f4512a832dbb6a360acb)), references [#1248](https://github.com/SocialGouv/iterion/issues/1248)
+
+    <details><summary>why</summary>
+
+    Third slice behind #1241: Revi's medium and question on #1248, and a local adversarial round on this diff before it reaches the gate.
+
+    </details>
+
+## [3.146.6](https://github.com/SocialGouv/iterion/compare/v3.146.5...v3.146.6) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** zero findings out of zero files read is not an approval ([#1246](https://github.com/SocialGouv/iterion/issues/1246)) ([9406931](https://github.com/SocialGouv/iterion/commit/9406931dad7d347844c799d94a8030b8e6c4dd5d))
+
+    <details><summary>why</summary>
+
+    Found by running the merged bot against a real PR before pushing it to production — the validation the platform override was being held for.
+
+    </details>
+
+## [3.146.5](https://github.com/SocialGouv/iterion/compare/v3.146.4...v3.146.5) (2026-09-15)
+
+### Bug Fixes
+
+* **bots,server,studio:** an example is served whole, published atomically, and the studio keeps the unit it binds ([#1248](https://github.com/SocialGouv/iterion/issues/1248)) ([2ddbfe5](https://github.com/SocialGouv/iterion/commit/2ddbfe59478818e78835e1e65302058f5b2d9962)), references [#1241](https://github.com/SocialGouv/iterion/issues/1241)
+
+    <details><summary>why</summary>
+
+    Follow-up of the embed fix: Revi's second verdict on #1241 and a local adversarial re-attack of the same commit.
+
+    </details>
+
 ## [3.146.4](https://github.com/SocialGouv/iterion/compare/v3.146.3...v3.146.4) (2026-09-15)
 
 ### Bug Fixes

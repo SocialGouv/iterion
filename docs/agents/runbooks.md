@@ -32,6 +32,9 @@ worked. A five-minute write-up now saves the next session (or the next dev)
 the hours this one spent.
 
 **Operational runbook index** (the discovery entry point — extend it):
+- [docs/connector-identities.md](../connector-identities.md) — connector
+  regeneration identity locks, authored renames, retired names and recovery
+  after an interrupted package replacement.
 - [docs/cloud-llm-credentials.md](../cloud-llm-credentials.md) — provisioning
   a cloud run's LLM credential (BYOK vs Anthropic OAuth-forfait vs OpenAI
   ChatGPT-forfait, the CGU guard, `ITERION_OPENAI_USE_OAUTH`, the
@@ -291,7 +294,8 @@ the hours this one spent.
   dedicated Forgejo/GitLab account (`iterion remote forge connections
   avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
   App (no logo API; the studio hands over the file + the settings page).
-  Read it when a bot posts with a default avatar, or before touching a logo.
+  Read it when a bot posts with a default avatar, a reconnect preserves a custom
+  avatar, or automatic avatar inspection fails; explicit applies remain replacements.
 - [docs/bot-bundle-snapshots.md](../bot-bundle-snapshots.md) — cloud launches
   freeze workflow, resources and sibling subbots through the server authority;
   queue v13, bounded immutable snapshot transport, strict runner resolution and

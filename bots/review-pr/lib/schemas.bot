@@ -132,6 +132,10 @@ schema pr_gate_output:
 
 schema publish_input:
   review_scope: string
+  ## diff_precheck's file count, carried to the gate. `-1` is its ignorance
+  ## sentinel — the scope could not be computed, so no code was read — and the
+  ## gate fails closed on it. Distinct from `0`, which is a real answer.
+  scope_files: json
   ## Engine telemetry is mapped at publication, never supplied by the LLM.
   ai_run_tokens: json
   ai_reviewer_claude_model: json

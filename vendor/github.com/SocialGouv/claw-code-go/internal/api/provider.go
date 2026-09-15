@@ -53,6 +53,9 @@ type ProviderConfig struct {
 	// CLI's auth.json (`tokens.account_id`) and sent verbatim in the
 	// `ChatGPT-Account-ID` header — without it the backend rejects the call.
 	OpenAIChatGPTAccountID string
+	// CodexAuthFile, when set, makes the OpenAI client re-read Codex's OAuth
+	// access token and account ID for each request. Codex owns this file.
+	CodexAuthFile string
 
 	// OpenAIClientVersion is the version string sent in both the `version:`
 	// HTTP header and the User-Agent when the OpenAI provider operates in
@@ -79,6 +82,19 @@ type ProviderConfig struct {
 // APIClient is the interface all provider clients must implement.
 type APIClient interface {
 	StreamResponse(ctx context.Context, req CreateMessageRequest) (<-chan StreamEvent, error)
+}
+
+// GeneratedImage is an image returned by a provider's separate image endpoint.
+// Data is bounded by the provider and must be validated before persistence.
+type GeneratedImage struct {
+	Data          []byte
+	RevisedPrompt string
+}
+
+// ImageGenerator is an optional provider capability. Text-only providers do
+// not need to implement it.
+type ImageGenerator interface {
+	GenerateImage(ctx context.Context, prompt string) (GeneratedImage, error)
 }
 
 // Provider is the interface all AI providers must implement.

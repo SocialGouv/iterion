@@ -143,11 +143,11 @@ export function useDocumentFileOps({
           pushRecent(result.path);
           markSaved();
         } else {
-          // Productised bots live at <WorkDir>/bots/<name>; the shared
-          // helper binds that path (so Save works and the Run button
-          // enables instead of "Save the workflow first") and keeps the
-          // example's source + diagnostics. Same path as RecentFilesPanel
-          // and CanvasEmpty.
+          // The shared helper binds the path the server names for a file
+          // inside the workspace, else bots/<name> (so Save works and the
+          // Run button enables instead of "Save the workflow first"), and
+          // keeps the example's source + diagnostics. Same path as
+          // RecentFilesPanel and CanvasEmpty.
           await openExampleIntoStore(path, {
             setDocument,
             setDiagnostics,

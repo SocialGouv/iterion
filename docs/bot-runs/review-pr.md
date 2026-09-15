@@ -135,8 +135,75 @@ investigation.
 The `[high]`s are the ones worth remembering: a review of a review-scope fix
 caught the fix turning a *wrong* review into a *silently empty* one — twice.
 
+### The validation round found the hole the fix left open (run `01a0a4ea`)
+
+Ran the MERGED bot inline (`iterion remote runs launch <file.bot>`) against a
+real PR, on the production default path (claude_code / claude-sonnet-5), so the
+fix could be exercised without pushing the platform override. The measurement:
+
+```
+base_is_current: false   base_sha: "main"   changed_files: -1   reviewed_sha: ""
+```
+
+The cloud workspace held **no git checkout at all** — `rev-parse HEAD` returned
+nothing. The fix behaved exactly as designed: it did not collapse to HEAD, did
+not report an empty diff, emitted the ignorance sentinel and routed to the
+reviewers. And the reviewers were honest, with zero invented findings:
+
+> "The review workspace /tmp/iterion contains no checkout at all … no diff could
+> be read and therefore no code was reviewed"
+
+**But that message rides `questions`, which is a NON-BLOCKING channel by
+design** — and `pr_gate` counts findings, not scope. Zero findings out of zero
+files read would have posted `success`. The reviewers became honest; the
+deterministic gate did not. Closed here: `changed_files: -1` now fails the gate
+closed with a note naming the reason, on the exact precedent already in that
+node (an unparseable finding set blocks rather than reporting green by
+omission). `0` stays a real answer.
+
+The wiring was **inert on the first attempt**, and a repo guard caught it:
+`{{outputs.…}}` is not substituted inside a tool node's command body — only
+`input`/`vars`/`secrets`/`run.id` are — so the value would have reached the
+shell as literal text. `TestCatalogToolCommandsResolveTheirRefs` failed with
+exactly that sentence. Worth noting that the behavioural test did **not** catch
+it, because it substitutes the ref itself: the two guards cover different
+halves, and only together do they cover the feature.
+
+### And the round after that: the guard failed OPEN (`Ra43054`)
+
+The scope guard shipped as `SCOPE_FILES == '-1'` — a **blacklist**. Revi caught
+that it leaves `blocking = 0` on every other way the value fails to arrive: an
+unsubstituted template render (*precisely* what the first wiring of that
+mapping produced), `null`, `<nil>`, `None`, empty, prose. Each of those silently
+reinstates the exact defect the change closes, and they are not hypothetical —
+`ai_value`, twenty lines below in the same command, exists to filter those same
+renders out of the sibling `AI_*` mappings.
+
+Inverted to a whitelist, on the house idiom already next door (`ai_tokens`'
+`try: int(...)` + sign check): a **non-negative count** is the only shape that
+means the scope was answered; everything else fails closed. Measured under
+mutation — restoring the blacklist lets **six of the seven shapes through**,
+and only the literal `-1` is still caught.
+
+It also turned a pre-existing fixture red, correctly:
+`TestReviewPRConcisePublication` substitutes *every* `{{…}}` ref, so the new
+mapping arrived empty and blocked. Its cases all describe reviews that DID read
+code, so the fixture was completed with a real count rather than the guard
+weakened.
+
 ### Lessons for next run
 
+- **Write an ignorance guard as a whitelist.** A blacklist of failure shapes is
+  a list of the ones you thought of; the value only has to arrive in a shape you
+  forgot for the gate to go green on nothing. Accept the one shape that means
+  "answered" and refuse everything else.
+- **Rebuild the local binary after a bundle-layout change, and use a control
+  before blaming your edit.** #1241 split this bot into `lib/nodes.bot` /
+  `lib/prompts.bot` / `lib/schemas.bot` mid-session. A binary built an hour
+  earlier rejected the SPLIT bundle with `E001: unexpected token 'import' at
+  top level` — on the pristine files from `main`, which is how that was told
+  apart from a broken edit in seconds. Validate the untouched version first;
+  the answer is almost always the tool, not the change.
 - **Do not hand-launch a review on a PR that has just opened** — the webhook
   lane reviews it, and the two race. This is the review-side twin of the
   fixer-collision rule in `CLAUDE.md`.
@@ -147,6 +214,38 @@ caught the fix turning a *wrong* review into a *silently empty* one — twice.
 - The local `iterion` binary was at **v3.69.0** against a v3.144.0 tree, which
   is why the repo-targeting flags appeared not to exist at all. Check
   `iterion version` before concluding a flag is missing.
+## 2026-09-14 — #1211: connector identity history, clean review and one independent counterexample
+
+- Status: **first review published, initial CI green** — [review 5194884352](https://github.com/SocialGouv/iterion/pull/1211#pullrequestreview-5194884352),
+  run [01a09eb5-b298-7543-b45a-9de9e37044a7](https://iterion.cloud/runs/01a09eb5-b298-7543-b45a-9de9e37044a7),
+  head `7553c416eb9524e5ab330503e6be11ca9c95d6d1`. All CI checks passed,
+  including test, race, cloud-e2e and both conformance suites.
+- Method: automatic PR-open review, effective `openai/gpt-5.6-sol` through
+  `claw`. High-effort reviewer 873,176 tokens + medium-effort synthesis
+  25,682 = **898,858 accumulated tokens**, about 13m21s active duration.
+  A tool invocation reached its 30-second deadline; subsequent tool and model
+  events confirm that the reviewer continued. A completed review does not
+  assert that every test ran inside its tool deadlines.
+- Result: **0 findings**. The review covered lock ownership, CLI generation,
+  concurrent/error paths, tests, the Forgejo seed and documentation. No Billy
+  run was needed for this verdict; the session checked that no fixer was active
+  before its next push.
+- Independent counterexample: while this head was under review,
+  `TestNewOperationAvoidsAnExistingOverlayPublicName` reproduced a refusal when
+  a new operation proposed a name already owned by an authored overlay. The
+  old name stayed protected, but the newcomer should have received an unused
+  suffix. Revi did **not** report this availability defect. The correction
+  reserves public names during allocation too, without changing existing
+  generated identities; the regression failed before and passes after it.
+- Validation: complete connector/CLI suites passed with `-race` before the
+  first review. After the additional correction, complete identity/CLI race
+  suites passed again, with zero lint issues. The seed preserves the **503
+  actually shipped** Forgejo operations and changes no existing `ops/` bytes;
+  the old 506 count was the initial PoC measurement, corrected on #1209.
+- Lesson: retain adversarial tests and their red-to-green evidence even when
+  an independently published review is green. The final correction is followed
+  by a separate review on its published head; this entry describes the first
+  run only, not that later verdict.
 ## 2026-09-13 — ARC Docker startup gate (#981, infra-apps #56)
 
 - Status: **reviewed, activation pending** — [PR #56](https://github.com/SocialGouv/infra-apps/pull/56), head `6cefd0d18ab526971656fe3af3fde69559e9e516`; run [01a09c85-9579-7738-8516-baa9880e9f4c](https://iterion.cloud/runs/01a09c85-9579-7738-8516-baa9880e9f4c) published a review with no findings.

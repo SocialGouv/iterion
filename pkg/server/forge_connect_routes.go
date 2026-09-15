@@ -166,18 +166,18 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 	}
 	s.auditTenant(r, teamID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": provider, "kind": "pat"})
 	if ident.Kind == forge.AccountKindBot && !s.cfg.DisableForgeBrandAvatar {
-		// A bot identity gets the iterion-bot face the moment it is wired: the
-		// account exists for iterion (a group/project token created for it),
-		// and every comment it will post is signed by that avatar. A failure
+		// A bot with no existing avatar gets the iterion-bot face when wired.
+		// Uploaded/external images survive reconnects; inspection and upload
+		// failures preserve the current image. A failure
 		// is recorded on the connection (AvatarError) and never fails the
 		// connect — the studio names it and offers a retry. The apply owns
 		// bounded contexts of its own, so a slow forge cannot hold the connect
 		// past the apply budget plus the record's (20 s + 10 s).
-		updated, _, err := s.applyBotAvatar(r.Context(), conn, brand.VariantPlain, false)
+		updated, _, err := s.applyBotAvatarMode(r.Context(), conn, brand.VariantPlain, false, true)
 		if err != nil && s.logger != nil {
 			s.logger.Warn("forge connect: iterion-bot avatar not applied on @%s (%s): %v", conn.AccountLogin, conn.Host(), err)
 		}
-		if err == nil {
+		if err == nil && updated.AvatarAppliedAt != nil {
 			// The rebrand nobody asked for is the one that must leave a trace.
 			s.auditTenant(r, teamID, "forge.connection.avatar_applied", "forge_connection", connID,
 				map[string]any{"provider": provider, "variant": string(brand.VariantPlain), "automatic": true})
