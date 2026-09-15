@@ -556,3 +556,78 @@ func TestSwagger2HonoursProduces(t *testing.T) {
 		}
 	})
 }
+
+// TestABodyOnlyOneDecoderSeesIsReportedRatherThanDropped.
+//
+// Operations are built from a generic decode; contracts are derived from a
+// second, exact re-read by a DIFFERENT library. Where the two disagree, the
+// exact pass finds no body and the code that means "the vendor declared none"
+// runs — so the response silently leaves with no contract AND no line in the
+// report, which is the one thing an operator who asked for validation reads.
+//
+// A YAML merge key is the instance that exposed it: the generic pass expands
+// `<<:`, the exact walk keeps a literal "<<" member. The guard does not look
+// for merge keys — it compares the two trees, so any future divergence between
+// the decoders surfaces the same way.
+func TestABodyOnlyOneDecoderSeesIsReportedRatherThanDropped(t *testing.T) {
+	const merged = `
+openapi: "3.0.0"
+info: {title: Probe, version: "1.0"}
+x-shared:
+  ok: &ok
+    description: ok
+    content:
+      application/json:
+        schema:
+          type: object
+          required: [id]
+          properties: {id: {type: integer}}
+paths:
+  /a:
+    get:
+      tags: [item]
+      operationId: itemMerged
+      responses:
+        "200":
+          <<: *ok
+  /b:
+    get:
+      tags: [item]
+      operationId: itemAliased
+      responses:
+        "200": *ok
+`
+	pkg, report := generateWith(t, merged, true)
+
+	byID := map[string]spec.Operation{}
+	for _, op := range pkg.Operations() {
+		byID[op.ID] = op
+	}
+	aliased, ok := byID["probe.item.aliased"]
+	if !ok {
+		t.Fatalf("fixture produced %v, want probe.item.aliased among them", byID)
+	}
+	if aliased.Results[0].ResponseSchemaRef == "" {
+		t.Error("a plain alias reads identically under both decoders and must keep its contract")
+	}
+
+	merged200 := byID["probe.item.merged"]
+	if len(merged200.Results) == 0 {
+		t.Fatal("fixture lost the merged operation entirely")
+	}
+	if ref := merged200.Results[0].ResponseSchemaRef; ref != "" {
+		t.Errorf("ResponseSchemaRef = %q — the exact pass cannot have built a contract it never saw", ref)
+	}
+	var reported *gen.Uncontracted
+	for i := range report.Uncontracted {
+		if report.Uncontracted[i].OperationID == "probe.item.merged" {
+			reported = &report.Uncontracted[i]
+		}
+	}
+	if reported == nil {
+		t.Fatalf("Uncontracted = %+v, want the operation whose body vanished between the two decoders", report.Uncontracted)
+	}
+	if !strings.Contains(reported.Reason, "exact re-read") {
+		t.Errorf("Reason = %q, want it to name the disagreement rather than blame the vendor", reported.Reason)
+	}
+}

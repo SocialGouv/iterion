@@ -188,6 +188,15 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 	if err != nil {
 		return nil, nil, err
 	}
+	// The tree the OPERATIONS were built from, re-read here as the oracle for
+	// what the description actually declares. The two decoders are different
+	// libraries (the generic pass expands YAML merge keys, the exact pass walks
+	// Nodes and does not), so "the exact re-read found no body" and "the vendor
+	// declared none" are different facts that must not be confused.
+	generic, err := decode(data)
+	if err != nil {
+		return nil, nil, err
+	}
 	g := &contractGen{
 		doc: doc, format: format,
 		contracts: map[string]spec.ResponseSchema{},
@@ -196,6 +205,7 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 	}
 	var uncontracted []Uncontracted
 	paths := mapAt(doc, "paths")
+	genericPaths := mapAt(generic, "paths")
 	for fi := range pkg.Ops {
 		ops := pkg.Ops[fi].Operations
 		for oi := range ops {
@@ -203,6 +213,8 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 			item := mapAt(paths, op.HTTP.Path)
 			method := mapAt(item, strings.ToLower(op.HTTP.Method))
 			responses := mapAt(method, "responses")
+			genericMethod := mapAt(mapAt(genericPaths, op.HTTP.Path), strings.ToLower(op.HTTP.Method))
+			genericResponses := mapAt(genericMethod, "responses")
 			for ri := range op.Results {
 				result := &op.Results[ri]
 				// The reader refuses a contract on a status that carries no
@@ -216,6 +228,18 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 					uncontracted = append(uncontracted, Uncontracted{OperationID: op.ID, Status: result.Status, Reason: reason})
 				case name != "":
 					result.ResponseSchemaRef = name
+				case declaresResponseBody(generic, format, genericResponses, result.Status):
+					// contractFor said "the vendor declared no body", and the
+					// tree the operations came from says otherwise. Something in
+					// the description reads differently under the two decoders —
+					// a YAML merge key is one way, and it is not worth
+					// enumerating the others. What matters is that the response
+					// leaves with NO contract, so the operator who asked for
+					// validation must not read a silent gap as a clean bill.
+					uncontracted = append(uncontracted, Uncontracted{
+						OperationID: op.ID, Status: result.Status,
+						Reason: "the exact re-read of the description does not find the body the operation was built from",
+					})
 				}
 			}
 		}
@@ -474,10 +498,18 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 // resolve follows a LOCAL JSON pointer. A remote reference is refused rather
 // than fetched: a parse must not become a network call.
 func (g *contractGen) resolve(ref string) (map[string]any, bool) {
+	return resolveIn(g.doc, ref)
+}
+
+// resolveIn follows one local JSON pointer inside any decoded description. It
+// takes the tree as an argument because the exact re-read and the generic tree
+// must be navigated by the SAME rules for a comparison between them to mean
+// anything.
+func resolveIn(doc map[string]any, ref string) (map[string]any, bool) {
 	if !strings.HasPrefix(ref, "#/") {
 		return nil, false
 	}
-	cur := any(g.doc)
+	cur := any(doc)
 	for _, seg := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
 		m, ok := cur.(map[string]any)
 		if !ok {
@@ -491,6 +523,25 @@ func (g *contractGen) resolve(ref string) (map[string]any, bool) {
 	}
 	out, ok := cur.(map[string]any)
 	return out, ok
+}
+
+// declaresResponseBody reports whether a decoded description shows a body
+// schema for one status. It is contractFor's navigation with the emission
+// removed, so the same question can be asked of either tree.
+func declaresResponseBody(doc map[string]any, format Format, responses map[string]any, status int) bool {
+	rm := mapAt(responses, strconv.Itoa(status))
+	if ref := str(rm, "$ref"); ref != "" {
+		resolved, ok := resolveIn(doc, ref)
+		if !ok {
+			return false
+		}
+		rm = resolved
+	}
+	schema := mapAt(rm, "schema")
+	if format == FormatOpenAPI3 {
+		schema = mapAt(mapAt(mapAt(rm, "content"), "application/json"), "schema")
+	}
+	return len(schema) > 0
 }
 
 func refKind(ref string) string {
