@@ -195,6 +195,15 @@ schema mutation_report:
   ## Held-out mutants that repeat an already-scored, already-published one.
   ## Must be empty: a set the hardening loop can read is not held out.
   holdout_reused: string[]
+  ## Paths not committed when the verdict was taken. Must be empty, because a
+  ## mutant's revert restores HEAD: uncommitted changes are destroyed DURING
+  ## the run, so every figure below them describes a tree that stopped existing
+  ## partway through. The harness has always said exactly that, in a notice —
+  ## "the verdict below describes a tree that never existed" — and nothing read
+  ## it. Declared here so a term can exist at all: C031 refuses an expression
+  ## over an undeclared field, which is why the three held-out debt fields
+  ## stayed unwired for so long.
+  workspace_dirty: string[]
   log_tail: string
 
 schema audit_state:
@@ -2615,6 +2624,35 @@ tool oracle_run:
         return code == 0 and bool(out.strip())
 
 
+    def workspace_dirty_paths(ws):
+        """The paths git reports as NOT committed, sorted.
+
+        A mutant's revert restores HEAD, so anything uncommitted is destroyed
+        DURING the run: a verdict taken on such a tree describes a tree that
+        stopped existing partway through the measurement. Both gates refuse on a
+        non-empty result, which is why this is a function with a bench rather than
+        four lines inside `main()` that nothing could reach.
+
+        Split BEFORE any global strip. `git status --porcelain` writes
+        `XY <path>`, and X is ' ' for an unstaged modification: `strip()` on the
+        whole output eats the leading space of the FIRST line only, which then
+        shifts by one and loses its first character (`build.gradle` ->
+        `uild.gradle`). The later lines, intact, give a list where a single entry
+        is wrong -- and when one file is dirty, it is the only one named.
+
+        KNOWN GAP, named rather than closed: a git that FAILS (no repository, a
+        broken index) reads here as "nothing uncommitted", so the guard disables
+        itself in silence. Refusing instead is defensible and is a different
+        change with its own blast radius -- every caller of this harness would
+        have to be a git worktree, which today is a premise rather than a check.
+        """
+        p = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            return []
+        return sorted(l[3:] for l in p.stdout.splitlines() if l.strip())
+
+
     def holdout_committed_entries(gm_dir):
         """The NAMES under mutants/holdout/ that git tracks.
 
@@ -2763,7 +2801,21 @@ tool oracle_run:
                     if os.path.isdir(os.path.join(root, c))])
 
 
-    def sealed_but_ephemeral(committed_before, sealed_now):
+    def uncommitted_holdout_entries(gm_dir):
+        """The names under mutants/holdout/ that git does NOT track.
+
+        The counterpart of `holdout_committed_entries`, and the one the ephemeral
+        notice needs: the seal declines PER SET, so "is anything here committed?"
+        stopped being the same question as "is MY set committed?" the day a run
+        could stand beside a successor an earlier cycle left.
+        """
+        src = os.path.join(gm_dir, "mutants", "holdout")
+        if not os.path.isdir(src):
+            return set()
+        return set(os.listdir(src)) - holdout_committed_entries(gm_dir)
+
+
+    def sealed_but_ephemeral(had_uncommitted, sealed_now):
         """True when a held-out set left the tree WITHOUT a committed copy.
 
         Sealing out of the tree is what makes the seal mechanical; it is also what
@@ -2772,8 +2824,17 @@ tool oracle_run:
         pod — takes the set with it, and the next gate reports 0/0 for a set that
         was drawn. A committed set is the exception: it is left in place, which is
         the only home that crosses a run boundary.
+
+        The first argument asks whether an UNCOMMITTED set was there to be sealed,
+        not whether the directory held anything committed. Those were the same
+        question while the seal declined directory-wide; once it declines per set,
+        a run can hold both at once — a successor an earlier cycle committed, and
+        its own fresh draw — and the directory-wide reading answers for the wrong
+        one. It reported "a committed copy exists" on the strength of the
+        SUCCESSOR, and this notice, the only warning a run gets that its own set
+        will die with its workspace, went silent for every net carrying one.
         """
-        return bool(sealed_now) and not committed_before
+        return bool(sealed_now) and bool(had_uncommitted)
 
 
     def load_mutants(gm_dir, holdout, sealed_dir=None):
@@ -3744,7 +3805,8 @@ tool oracle_run:
 
 
     def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
-                                  withheld=(), in_the_set=(), deferred=None):
+                                  withheld=(), in_the_set=(), deferred=None,
+                                  lane_deferred=()):
         """Which byte-identical classes are NOT discharged by measured separators.
 
         `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
@@ -3780,10 +3842,10 @@ tool oracle_run:
         # mutant that exists. Strictest AND honest: a caller that forgets the sink
         # can only get a HARSHER verdict, never a softer one, and never a lying one.
         if deferred is None:
-            in_the_set = list(in_the_set) + list(withheld)
-            withheld = set()
+            in_the_set = list(in_the_set) + list(withheld) + list(lane_deferred)
+            withheld, lane_deferred = set(), set()
         else:
-            withheld = set(withheld)
+            withheld, lane_deferred = set(withheld), set(lane_deferred)
         decls = duplicate_group_decls(corpus)
         conflicts = duplicate_group_conflicts(corpus)
         observed = {tuple(sorted(g)) for g in duplicate_refs}
@@ -3827,6 +3889,25 @@ tool oracle_run:
                                  "verdicts this pass reserves — not scored here, and not scorable "
                                  "here. Neither proved nor refuted until the final gate scores "
                                  "them."})
+                continue
+            # LANE-DEFERRED is a third state, and folding it into either of the two
+            # below would be false. A separator whose declared targets are ALL
+            # renounced on THIS lane comes back `lane_excluded`: it is not invalid
+            # (nothing about it is broken), and it is not merely unreached (no pass
+            # on this lane will ever score it). Refusing its class here would hand a
+            # convergence term a permanent red that no product work can lift, on the
+            # very lane the declaration exists to unblock — the defect this renders
+            # elsewhere, re-created at the last site that reads the corpus.
+            if missing and all(m in withheld | lane_deferred for m in missing):
+                deferred.append({"ids": list(g), "separated_by": list(seps),
+                                 "withheld": sorted(m for m in missing if m in withheld),
+                                 "lane_deferred": sorted(m for m in missing if m in lane_deferred),
+                                 "why":
+                                 "every unscored separator is DEFERRED on this lane: its declared "
+                                 "targets are all renounced by a `lane_exclusions` declaration, so "
+                                 "it is neither scored nor scorable HERE. The class is neither "
+                                 "proved nor refuted on this lane; its proof lives on the lane that "
+                                 "renounces nothing."})
                 continue
             if missing:
                 # THREE reasons, and they send the campaign to three different
@@ -3910,6 +3991,87 @@ tool oracle_run:
                 "control — but the claim is discharged by a mutant that moves part of the "
                 "group and leaves the rest still, declared in `duplicate_groups` and checked "
                 "here: %s" % ("; ".join(head), json.dumps(unproven, ensure_ascii=False)))
+
+
+    def lane_exclusion_decls(corpus):
+        """The `lane_exclusions` block, validated as data. Returns (decls, problems).
+
+        corpus.json may carry `lane_exclusions` — a list of DECLARED, arbitrated
+        renunciations of ONE observation on ONE lane of a multi-environment net:
+
+            [{"entry": "042", "config": "config-b.json", "arbitration": "ARB-7",
+              "decided_by": "...", "ts": "...", "cause": "..."}]
+
+        What such a declaration is NOT: an entry deletion (the corpus keeps the
+        entry, every lane keeps capturing it) and a canonicalisation rule (that
+        would blind the renounced aspect on BOTH lanes, wider than the decision).
+        What it IS: on the lane named in `config`, the entry stops CONFRONTING its
+        reference — the negative control does not count it, a mutant is not judged
+        undetected for leaving it still, and it is never a member of a control
+        sample. On every other lane, and in record mode, the observation stands
+        exactly as recorded, witness reference included.
+
+        The shape is checked wherever the corpus is read for a verdict, because a
+        declared exclusion that no code honours is a waiver with extra steps — and
+        a MALFORMED one is a named refusal, never a silent drop: dropped, it would
+        read as "this lane never renounced anything" and send the reader to write
+        a declaration that already exists.
+        """
+        raw = corpus.get("lane_exclusions")
+        if raw is None:
+            return [], []
+        if not isinstance(raw, list):
+            return [], ["`lane_exclusions` must be a list of declarations, got %s"
+                        % type(raw).__name__]
+        problems, seen = [], set()
+        known = {e["id"] for e in corpus["entries"]}
+        for i, x in enumerate(raw):
+            where = "lane_exclusions[%d]" % i
+            if not isinstance(x, dict):
+                problems.append("%s is not an object" % where)
+                continue
+            entry, cfg = x.get("entry"), x.get("config")
+            if not isinstance(entry, str) or not entry.strip():
+                problems.append("%s carries no `entry` id" % where)
+            elif entry not in known:
+                problems.append("%s names entry %r, which the corpus does not "
+                                "declare — an exclusion of nothing proves nothing"
+                                % (where, entry))
+            if not isinstance(cfg, str) or not cfg.strip():
+                problems.append("%s carries no `config` — an exclusion is scoped "
+                                "to ONE lane, named as the config file the judge "
+                                "reads" % where)
+            if not isinstance(x.get("cause"), str) or not x.get("cause", "").strip():
+                problems.append("%s carries no written `cause` — an exclusion is "
+                                "a decision, and a decision has a reason" % where)
+            # ONLY over two strings. A wrong-typed field already carries its own
+            # named problem above, and keying on it would raise `unhashable type`
+            # on a list or a dict — a traceback out of a PREFLIGHT, where this
+            # function's docstring promises a named refusal. A crash is a red that
+            # proves nothing about the declaration.
+            if isinstance(entry, str) and isinstance(cfg, str):
+                key = (entry, cfg)
+                if key in seen:
+                    problems.append("%s declares (entry %r, config %r) twice"
+                                    % (where, entry, cfg))
+                seen.add(key)
+        return raw, problems
+
+
+    def lane_exclusion_ids(corpus, cfg_name):
+        """Entry ids renounced on THE lane being judged; every other lane is untouched.
+
+        Keyed on the config FILE the verdict carries (`config` in the report), so
+        a set committed under one lane can never leak into the other's verdict —
+        the same rule that keeps `seal_committed` per environment.
+        """
+        decls, problems = lane_exclusion_decls(corpus)
+        if problems:
+            # Unreadable declarations renounce nothing: strictest, and never lying.
+            return set()
+        return {d["entry"] for d in decls
+                if isinstance(d, dict) and d.get("config") == cfg_name
+                and isinstance(d.get("entry"), str) and d["entry"]}
 
 
     def control_ids(corpus, targets, seed):
@@ -4006,8 +4168,20 @@ tool oracle_run:
         return dict(base, valid=True), "mutated"
 
 
-    def score_mutant(meta, config, corpus, canon, refs, ws, seed):
-        """Apply → capture → compare → revert. Returns a per-mutant verdict dict."""
+    def score_mutant(meta, config, corpus, canon, refs, ws, seed, excluded=()):
+        """Apply → capture → compare → revert. Returns a per-mutant verdict dict.
+
+        `excluded` carries the entries a `lane_exclusions` declaration renounces
+        on THE lane being judged. There the mutant's contract shrinks BY
+        DECLARATION: a renounced entry cannot be required to move (its reference
+        describes another engine's rendering of the junction-table order), cannot
+        serve as a control (it never reproduces its reference on this lane), and
+        is not captured for comparison at all. When EVERY declared target is
+        renounced the mutant measures nothing here — it is skipped, flagged
+        `lane_excluded`, and counted neither in the score nor among the invalid:
+        a verdict it cannot earn on either side. On the witness lane the set is
+        empty and this is the code path it always was.
+        """
         verdict, state = probe_mutation(meta, ws)
         if state == "failed":
             return verdict
@@ -4016,6 +4190,22 @@ tool oracle_run:
             return verdict
 
         targets = verdict["targets_declared"]
+        renounced_here = [t for t in targets if t in set(excluded)]
+        targets = [t for t in targets if t not in set(excluded)]
+        if not targets:
+            code, out = revert_mutant(meta, ws)
+            if meta.get("needs_restart", True):
+                app_restart(config, ws)
+            # A failed revert still leaves the tree not-known-to-be-at-baseline —
+            # `leftover_on_record` will hold the scoring, exactly as for any other
+            # mutant — but the verdict itself is a deferral, not an INVALID. And it
+            # is NOT valid: the blind-lane pass would otherwise read its silence as
+            # a target that did not move.
+            return dict(verdict, valid=False, lane_excluded=True,
+                        revert_clean=code == 0,
+                        reason="every declared target (%s) is renounced on this "
+                               "lane by `lane_exclusions` — not scored here"
+                               % ", ".join(renounced_here))
 
         if meta.get("needs_restart", True):
             app_restart(config, ws)
@@ -4035,9 +4225,10 @@ tool oracle_run:
         # with a control that does not exist and silenced that refusal. A
         # declaration naming an id the corpus does not have is refused where it
         # belongs — as a class nothing observes — not by inflating a count here.
-        sample = control_ids(corpus, set(targets), seed)
+        sample = control_ids(corpus, set(targets) | set(excluded), seed)
         corpus_ids = {e["id"] for e in corpus["entries"]}
-        pinned = (separator_group_ids(corpus, meta.get("id")) & corpus_ids) - set(targets)
+        pinned = ((separator_group_ids(corpus, meta.get("id")) & corpus_ids)
+                  - set(targets) - set(excluded))
         if pinned:
             sample = sorted(set(sample) | pinned)
         captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
@@ -4122,7 +4313,7 @@ tool oracle_run:
         return verdict
 
 
-    def score_noop(config, corpus, canon, refs, ws, seed):
+    def score_noop(config, corpus, canon, refs, ws, seed, excluded=()):
         """The negative control, built BY THE HARNESS so the agent cannot shape it.
 
         Nothing is mutated. Every comparator must stay silent. A comparator that
@@ -4146,8 +4337,16 @@ tool oracle_run:
 
         Whole-corpus costs one extra pass of plain requests against an application
         that is already up, which is nothing next to a reference nobody checks.
+
+        `excluded` — the entries a `lane_exclusions` declaration renounces on THE
+        lane being judged — is still captured (the corpus does not shrink), but it
+        is not CONFRONTED with its reference here: its reference describes another
+        engine's rendering, and counting it would make the negative control fail
+        BY CONSTRUCTION on this lane, red for a reason no product work could ever
+        lift. The declaration lives in corpus.json, arbitrated; the entry's
+        reference stays enforced on every lane the declaration does not name.
         """
-        ids = [e["id"] for e in corpus["entries"]]
+        ids = [e["id"] for e in corpus["entries"] if e["id"] not in set(excluded)]
         app_restart(config, ws)
         captured = capture(config, corpus, canon)
         noisy = diverged(refs, captured, ids)
@@ -4411,7 +4610,8 @@ tool oracle_run:
                     (i in self.moved) if self.applied else (i in self.unstable)) else "")
                     for i in ids}
 
-        def score(targets, sample, moved, unstable=(), revert_code=0, dup_groups=None):
+        def score(targets, sample, moved, unstable=(), revert_code=0, dup_groups=None,
+                  excluded=()):
             ids = ["%03d" % n for n in range(1, 13)]
             refs = {i: "ref-" + i for i in ids}
             corpus = {"entries": [{"id": i, "surface": "http"} for i in ids]}
@@ -4421,6 +4621,7 @@ tool oracle_run:
                     "archetype": "value_change", "targets": list(targets), "needs_restart": False}
             w = World(refs, moved, unstable)
             n = [0]
+            pooled = []
 
             def tree(_ws):
                 # Deux empreintes distinctes de part et d'autre de l'application :
@@ -4436,14 +4637,18 @@ tool oracle_run:
                 w.applied = False
                 return revert_code, ("" if revert_code == 0 else "boom")
 
+            def sample_(_c, targets_, _s):
+                pooled.append(set(targets_ or ()))
+                return list(sample)
+
             g.update(apply_mutant=apply_, revert_mutant=revert_, tree_fingerprint=tree,
                      data_fingerprint=lambda _m, _w: None, app_restart=lambda _c, _w: None,
-                     capture=w.capture, control_ids=lambda _c, _t, _s: list(sample))
-            return score_mutant(meta, {}, corpus, None, refs, "/dev/null", 0)
+                     capture=w.capture, control_ids=sample_)
+            return score_mutant(meta, {}, corpus, None, refs, "/dev/null", 0, excluded), pooled
 
         try:
             # 1. Un mutant qui ne bouge QUE ses cibles.
-            v = score(["001"], ["005", "006"], ["001"])
+            v, pooled = score(["001"], ["005", "006"], ["001"])
             check("cible bougee -> detecte", v["detected"], True)
             check("aucun collateral", v["collateral"], [])
             check("aucun temoin instable", v.get("unstable_controls"), None)
@@ -4451,27 +4656,111 @@ tool oracle_run:
 
             # 2. Rayon d'action SOUS-DECLARE : le temoin revient quand le mutant
             #    part, donc c'est bien le mutant qui l'avait bouge.
-            v = score(["001"], ["005", "006"], ["001", "005"])
+            v, pooled = score(["001"], ["005", "006"], ["001", "005"])
             check("collateral reel nomme", v["collateral"], ["005"])
             check("collateral reel non dit instable", v.get("unstable_controls"), None)
             check("revert propre malgre le collateral", v["revert_clean"], True)
 
             # 3. LA DISCRIMINATION : un temoin qui differe AUSSI sans le mutant.
-            v = score(["001"], ["005", "006"], ["001", "005"], unstable=["005"])
+            v, pooled = score(["001"], ["005", "006"], ["001", "005"], unstable=["005"])
             check("temoin instable nomme", v.get("unstable_controls"), ["005"])
             check("et retire du collateral", v["collateral"], [])
             check("le mutant reste detecte", v["detected"], True)
             check("revert toujours propre", v["revert_clean"], True)
 
             # 4. Les deux a la fois, sans se confondre.
-            v = score(["001"], ["005", "006"], ["001", "005", "006"], unstable=["006"])
+            v, pooled = score(["001"], ["005", "006"], ["001", "005", "006"], unstable=["006"])
             check("collateral reel garde", v["collateral"], ["005"])
             check("instable separe", v.get("unstable_controls"), ["006"])
 
             # 5. Un revert casse n'est pas masque par la discrimination.
-            v = score(["001"], ["005"], ["001", "005"], revert_code=3)
+            v, pooled = score(["001"], ["005"], ["001", "005"], revert_code=3)
             check("revert casse -> revert_clean faux", v["revert_clean"], False)
             check("et la cause est dite", "revert.sh exited 3" in (v.get("reason") or ""), True)
+
+            # 5b. LES EXCLUSIONS DE LANE — une renonciation DECLAREE dans le
+            #     corpus, CONSUMEE par le code. Sur la lane qui renonce, l'entree
+            #     ne confronte plus sa reference : le mutant n'y est pas juge
+            #     aveugle pour l'avoir laissee immobile, l'entree n'entre plus dans
+            #     l'echantillon de controle, et un mutant SANS cible restante y est
+            #     DIFFERE — ni valide ni invalide, il n'y a pas ete juge. La lane
+            #     temoin (excluded vide) suit le chemin d'avant, mot pour mot.
+            v, pooled = score(["001", "052"], ["005", "006"], ["001"], excluded={"052"})
+            check("renonciation : la cible restante suffit a detecter", v["detected"], True)
+            check("renonciation : la cible renoncee n'est pas une lane aveugle",
+                  v.get("undetected_targets"), [])
+            check("renonciation : l'entree quitte le puits par le MEME argument que "
+                  "les cibles (le harnais la retire de la pool, pas du monde)",
+                  pooled[0] if pooled else None, {"001", "052"})
+            v, pooled = score(["052"], ["005"], [], excluded={"052"})
+            check("toutes les cibles renoncees -> differe",
+                  (v.get("lane_excluded"), v.get("valid")), (True, False))
+            check("le differe est dit, avec ses cibles",
+                  "renounced on this lane" in (v.get("reason") or ""), True)
+            check("le puits de controle n'echantillonne jamais une entree renoncee",
+                  "052" in control_ids({"entries": [{"id": "%03d" % n} for n in range(1, 13)]},
+                                       {"001", "052"}, 0), False)
+            # Un revert qui echoue reste un revert qui echoue, differe ou non :
+            # l'arbre n'est pas connu pour etre revenu a la baseline.
+            v, pooled = score(["052"], ["005"], [], revert_code=3, excluded={"052"})
+            check("toutes cibles renoncees + revert casse -> revert_clean faux",
+                  v.get("revert_clean"), False)
+
+            # 5c. Le controle nul : la derive PERMANENTE d'une entree renoncee ne
+            #     rend plus le controle bavard SUR LA LANE QUI RENONCE — capturée
+            #     encore, confrontee plus. Sans l'exclusion, elle bavarderait, et
+            #     ce rouge-la serait par construction : aucun travail produit ne
+            #     peut le lever.
+            ids_n = ["%03d" % n for n in range(1, 12)] + ["052"]
+            refs_n = {i: "ref-" + i for i in ids_n}
+            corpus_n = {"entries": [{"id": i, "surface": "http"} for i in ids_n]}
+            w_n = World(refs_n, (), unstable=("052",))
+            g.update(capture=w_n.capture, app_restart=lambda _c, _w: None)
+            n_ = score_noop({}, corpus_n, None, refs_n, "/dev/null", 0)
+            check("sans exclusion : la derive permanente rend le controle bavard",
+                  (n_["silent"], n_["noisy_entries"]), (False, ["052"]))
+            n_ = score_noop({}, corpus_n, None, refs_n, "/dev/null", 0, excluded={"052"})
+            check("renonciation declaree : le controle reste silencieux",
+                  (n_["silent"], n_["noisy_entries"]), (True, []))
+            g.update(capture=World(refs_n, ()).capture)
+
+            # 5d. La forme de la declaration : un refus NOMME, jamais une ligne
+            #     morte. Une declaration que personne ne peut lire ne renonce rien.
+            def decls_of(lane_exclusions, entries=("052",)):
+                corpus_d = {"entries": [{"id": i} for i in entries],
+                            "lane_exclusions": lane_exclusions}
+                return lane_exclusion_decls(corpus_d)
+
+            check("absente -> aucune declaration, aucun probleme",
+                  lane_exclusion_decls({"entries": [{"id": "052"}]}), ([], []))
+            check("non-liste -> probleme nomme", len(decls_of("052")[1]), 1)
+            check("sans entree -> probleme nomme", len(decls_of([{"config": "c.json", "cause": "x"}])[1]), 1)
+            check("entree inconnue -> probleme nomme",
+                  len(decls_of([{"entry": "099", "config": "c.json", "cause": "x"}], entries=("052",))[1]), 1)
+            check("sans lane -> probleme nomme", len(decls_of([{"entry": "052", "cause": "x"}])[1]), 1)
+            check("sans cause ecrite -> probleme nomme",
+                  len(decls_of([{"entry": "052", "config": "c.json"}])[1]), 1)
+            # Un champ MAL TYPE doit sortir par le refus nomme, pas par un
+            # traceback : `key = (entry, cfg)` sur une liste levait `unhashable
+            # type` au milieu d'un preflight. Un plantage est un rouge qui ne prouve
+            # rien sur la declaration.
+            check("entree non-chaine -> probleme nomme, pas de plantage",
+                  len(decls_of([{"entry": ["052"], "config": "c.json", "cause": "x"}])[1]), 1)
+            check("lane non-chaine -> probleme nomme, pas de plantage",
+                  len(decls_of([{"entry": "052", "config": {"a": 1}, "cause": "x"}])[1]), 1)
+            check("declaree deux fois -> probleme nomme",
+                  len(decls_of([{"entry": "052", "config": "c.json", "cause": "x"},
+                                {"entry": "052", "config": "c.json", "cause": "y"}])[1]), 1)
+            check("declaration complete -> aucun probleme",
+                  decls_of([{"entry": "052", "config": "config-pg.json",
+                             "arbitration": "A-X", "cause": "l'ordre des lignes"}])[1], [])
+            corpus_l = {"entries": [{"id": "052"}],
+                        "lane_exclusions": [{"entry": "052", "config": "config-pg.json",
+                                             "cause": "l'ordre des lignes"}]}
+            check("l'exclusion vaut sur LA lane nommee",
+                  lane_exclusion_ids(corpus_l, "config-pg.json"), {"052"})
+            check("et ne vaut PAS sur les autres, temoin compris",
+                  lane_exclusion_ids(corpus_l, "config.json"), set())
 
             # 6. Validite mecanique : un apply qui ne change rien est INVALIDE,
             #    jamais « non detecte » — il ne peut ni gonfler ni diluer le score.
@@ -4950,14 +5239,79 @@ tool oracle_run:
                    sorted(os.listdir(sealed_mix)) if os.path.isdir(sealed_mix) else []],
                   [True, True, False, ["t02"]])
 
+            # L'ARBRE JUGE DOIT ETRE L'ARBRE. Le revert d'un mutant restaure HEAD,
+            # donc tout ce qui n'est pas commite est DETRUIT pendant le run : le
+            # verdict decrit alors un arbre qui a cesse d'exister en cours de
+            # mesure. Le harnais le disait deja, mot pour mot, dans une notice --
+            # et rien ne la lisait. Les deux portes refusent maintenant sur le
+            # champ ; voici le banc qui prouve que le champ se remplit.
+            wrepo = os.path.join(sroot, "workspace")
+            os.makedirs(wrepo)
+            with open(os.path.join(wrepo, "a.txt"), "w", encoding="utf-8") as f:
+                f.write("un\n")
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+                fixture_git(wrepo, *args)
+            propre = workspace_dirty_paths(wrepo)
+            with open(os.path.join(wrepo, "a.txt"), "w", encoding="utf-8") as f:
+                f.write("deux\n")                 # modification NON indexee : X = ' '
+            with open(os.path.join(wrepo, "b.txt"), "w", encoding="utf-8") as f:
+                f.write("neuf\n")                 # non suivi : XY = '??'
+            check("arbre commite -> aucun chemin sale ; arbre sale -> les deux nommes",
+                  [propre, workspace_dirty_paths(wrepo)],
+                  [[], ["a.txt", "b.txt"]])
+            # La regression que le decoupage evite, epinglee sur le cas qui la
+            # revele : UN SEUL fichier modifie non indexe. `git status --porcelain`
+            # ecrit ' M a.txt' ; un strip() global mangerait l'espace de tete et
+            # rendrait 'a.txt' ampute de son premier caractere -- et comme c'est le
+            # seul nomme, le diagnostic entier serait faux.
+            solo = os.path.join(sroot, "workspace-solo")
+            os.makedirs(solo)
+            with open(os.path.join(solo, "build.gradle"), "w", encoding="utf-8") as f:
+                f.write("un\n")
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+                fixture_git(solo, *args)
+            with open(os.path.join(solo, "build.gradle"), "w", encoding="utf-8") as f:
+                f.write("deux\n")
+            check("un seul fichier modifie -> son nom est entier, pas ampute",
+                  workspace_dirty_paths(solo), ["build.gradle"])
+
             # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
             # sont pas la meme, et aucune n'est un echec : ce sont des etats que
             # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
             # est l'endroit ou les dettes se cachent.
             check("jeu frais scelle hors de l'arbre -> ephemere ; jeu committe -> non",
-                  [sealed_but_ephemeral(False, True), sealed_but_ephemeral(True, True),
-                   sealed_but_ephemeral(False, False)],
+                  [sealed_but_ephemeral(True, True), sealed_but_ephemeral(False, True),
+                   sealed_but_ephemeral(True, False)],
                   [True, False, False])
+            # LE MELANGE, la regression que ce predicat portait depuis que le
+            # sceau renonce PAR JEU : un successeur COMMITE a cote du jeu FRAIS de
+            # ce run. La lecture par repertoire repondait « une copie commitee
+            # existe » sur la foi du SUCCESSEUR, et l'avertissement -- le seul que
+            # le run recoit pour dire que son propre jeu mourra avec son espace de
+            # travail -- se taisait pour tout net portant un successeur.
+            wm = os.path.join(sroot, "ephemere-melange")
+            gmd_wm = mk_holdout(wm)                   # t01, qui sera COMMITE
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "successor")):
+                fixture_git(wm, *args)
+            frais = os.path.join(gmd_wm, "mutants", "holdout", "t02")
+            os.makedirs(frais)                        # t02, FRAIS et non suivi
+            with open(os.path.join(frais, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+            check("melange : le successeur commite ne masque plus le jeu frais ephemere",
+                  [sorted(holdout_committed_entries(gmd_wm)),
+                   sorted(uncommitted_holdout_entries(gmd_wm)),
+                   sealed_but_ephemeral(uncommitted_holdout_entries(gmd_wm), True)],
+                  [["t01"], ["t02"], True])
+            # Et l'inverse, qui doit rester muet : SEUL un successeur commite est
+            # la, ce run n'a rien tire, donc rien n'est devenu ephemere.
+            ws = os.path.join(sroot, "ephemere-successeur-seul")
+            gmd_ws = mk_holdout(ws)
+            for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "successor")):
+                fixture_git(ws, *args)
+            check("successeur seul : aucun jeu frais, donc aucun avertissement",
+                  [sorted(uncommitted_holdout_entries(gmd_ws)),
+                   sealed_but_ephemeral(uncommitted_holdout_entries(gmd_ws), True)],
+                  [[], False])
             adir = os.path.join(sroot, "audited", ".golden-master")
             for cyc, name in (("01a0-un", "m1"), ("01a0-un", "m2"), ("01a0-deux", "m3")):
                 d = os.path.join(adir, "mutants", "audit", cyc, name)
@@ -6613,12 +6967,12 @@ tool oracle_run:
         # n'existe pas. Un membre du groupe hors de l'echantillon deterministe
         # pourrait bouger sans etre vu, et la porte conclurait "sous-ensemble strict,
         # groupe prouve" sur une separation qui n'a plus lieu.
-        v_pin = score(["001"], ["005"], ["001", "009"],
+        v_pin, _pooled = score(["001"], ["005"], ["001", "009"],
                       dup_groups=[{"ids": ["001", "009"], "separated_by": "t"}])
         check("un membre du groupe hors echantillon est quand meme controle",
               v_pin["collateral"], ["009"])
         # Et rien n'est epingle pour un mutant qui ne separe aucun groupe.
-        v_nopin = score(["001"], ["005"], ["001", "009"],
+        v_nopin, _pooled = score(["001"], ["005"], ["001", "009"],
                         dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
         check("aucun epinglage pour un mutant qui ne separe rien",
               v_nopin["collateral"], [])
@@ -6631,8 +6985,8 @@ tool oracle_run:
         # interrogee sur un id qu'elle n'a pas — et un banc qui plante dit qu'il
         # s'est passe quelque chose sans dire quoi.
         try:
-            _vg = score(["001"], [], ["001"],
-                        dup_groups=[{"ids": ["001", "fantome"], "separated_by": "t"}])
+            _vg, _pooled_g = score(["001"], [], ["001"],
+                                   dup_groups=[{"ids": ["001", "fantome"], "separated_by": "t"}])
             _ghost = [_vg["control_covered"], _vg["collateral"]]
         except Exception as e:                              # noqa: BLE001 - c'est le test
             _ghost = "%s: %s" % (type(e).__name__, e)
@@ -6723,6 +7077,28 @@ tool oracle_run:
                   [{"id": "held-sep", "valid": True, "targets_declared": ["013"],
                     "undetected_targets": [], "collateral": []}])],
               [])
+        # Un separateur DIFFERE par la lane : ses cibles declarees sont toutes
+        # renoncees ici, donc il revient `lane_excluded` et ne figure pas parmi les
+        # verdicts scores. Sa classe doit tomber dans le puits DIFFERE — jamais dans
+        # le champ que la porte lit. Sinon la lane que la declaration existe pour
+        # debloquer recolte un rouge permanent qu'aucun travail produit ne leve.
+        _corp_ld = {"entries": [], "duplicate_groups": [
+            {"ids": ["012", "013"], "separated_by": "lane-sep"}]}
+        _defer_ld = []
+        check("un separateur differe par la lane ne refuse pas sa classe",
+              [x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], _corp_ld, [], False, (), ["lane-sep"],
+                  _defer_ld, ["lane-sep"])],
+              [])
+        check("et il est DIFFERE, nomme comme tel",
+              [(x["ids"], x["lane_deferred"]) for x in _defer_ld],
+              [(["012", "013"], ["lane-sep"])])
+        # Et la falsification du cablage : sans la liste, la MEME classe est refusee.
+        # Un banc qui passerait aussi bien avec et sans ne prouverait rien.
+        check("sans la liste des differes, la classe est refusee",
+              [x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], _corp_ld, [], False, (), ["lane-sep"], [])],
+              [["012", "013"]])
         # ...et l'AUTRE moitie de ce contrat : ce que ce separateur tenu a l'ecart a
         # deplace doit atteindre les memes termes de porte qu'un separateur visible.
         # Le meme verdict etait un rouge dur quand il etait visible (`collateral == 0`
@@ -7068,6 +7444,14 @@ tool oracle_run:
                   "holdout_awaiting_gate": False,
                   "holdout_spent_unreplaced": False, "holdout_spent_cycles": 0,
                   "holdout_sealed_uncommitted": False,
+                  # Les chemins non commites au moment ou le verdict se prend. Un
+                  # CHAMP, pas une notice : la notice existait deja et disait tout
+                  # -- « the verdict below describes a tree that never existed » --
+                  # sans qu'aucune conjonction ne la lise, et un rite a convergé
+                  # sur exactement cet etat. Le harnais condamne ce motif ailleurs
+                  # dans ce meme fichier : « a notice string is where debts go to
+                  # hide ».
+                  "workspace_dirty": [],
                   "pending_rebaselines": [],
                   "pending_extensions": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
@@ -7078,6 +7462,12 @@ tool oracle_run:
                   # pas un verdict. Il existe pour qu'un selfcheck ne lise pas
                   # PROUVE ce qu'il n'a fait que ne pas pouvoir mesurer.
                   "duplicate_groups_deferred": [],
+                  # Les renonciations de lane, CONSUMEES : les observations que
+                  # `lane_exclusions` retire du verdict de CETTE lane (l'entree y
+                  # reste capturee et sa reference du temoin reste enforcee
+                  # ailleurs), et les mutants differes faute de cible restante.
+                  "lane_exclusions_applied": [],
+                  "lane_exclusions_deferred": [],
                   "runner_replayable": False,
                   "holdout_reused": [],
                   "log_tail": ""}
@@ -7099,6 +7489,37 @@ tool oracle_run:
             config = json.load(f)
         with open(os.path.join(gm_dir, "corpus.json"), encoding="utf-8") as f:
             corpus = json.load(f)
+
+        # A DECLARED lane renunciation is CONSUMED here, as data, before a boot
+        # pays for it. `lane_exclusions` in corpus.json names, per declaration,
+        # the entry, the lane (the config file being judged) and the written
+        # cause — an arbitrated decision the corpus carries so that every reader
+        # of the corpus reads the decision. From here it flows into the negative
+        # control and into every mutant verdict on THIS lane; on any other lane,
+        # and in record mode, the set is empty and the observation stands as
+        # recorded. A malformed declaration is refused before anything runs: a
+        # renunciation nobody can parse must not decay into a renunciation
+        # nobody honours.
+        lane_decls, lane_problems = lane_exclusion_decls(corpus)
+        if lane_problems:
+            bail("corpus.json carries %d malformed `lane_exclusions` declaration(s): %s. "
+                 "A declared exclusion is a decision the code honours, not a sentence "
+                 "in a report — and a malformed one is named, never dropped in silence."
+                 % (len(lane_problems), "; ".join(lane_problems)))
+        excluded_ids = lane_exclusion_ids(corpus, cfg_name)
+        report["lane_exclusions_applied"] = sorted(excluded_ids)
+        report["lane_exclusions_deferred"] = []
+        if excluded_ids:
+            reasons = "; ".join(
+                "%s (%s)" % (d["entry"], (d.get("arbitration") or "sans reference d'arbitrage"))
+                for d in lane_decls
+                if isinstance(d, dict) and d.get("config") == cfg_name
+                and d.get("entry") in excluded_ids)
+            note(report, "lane_exclusions: %d observation(s) renounced on THIS lane (%s) — "
+                 "still captured, still recorded, still enforced on every other lane, but "
+                 "not confronted with their reference here [%s]. The corpus does not shrink: "
+                 "this is a declared renunciation, not a deletion."
+                 % (len(excluded_ids), ", ".join(sorted(excluded_ids)), reasons))
 
         # The net's declared standard. 2 = routes-era nets; 3 adds the feature
         # inventory. A net keeps its declared standard until its owner raises it
@@ -7183,22 +7604,17 @@ tool oracle_run:
             note(report, text)
 
         if mode != "record":
-            dirty = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
-                                   capture_output=True, text=True)
-            if dirty.returncode == 0 and dirty.stdout.strip():
-                # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
-                # `XY <chemin>`, et X vaut ' ' pour une modification non indexee :
-                # strip() sur la sortie entiere mange alors l'espace de tete de la
-                # PREMIERE ligne seulement, qui se decale d'un cran et perd son
-                # premier caractere (`build.gradle` -> `uild.gradle`). Les suivantes,
-                # intactes, donnent une liste ou une seule entree est fausse — et
-                # quand un seul fichier est sale, c'est la seule nommee.
-                paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
+            paths = workspace_dirty_paths(ws)
+            if paths:
+                # Le champ porte la liste ENTIERE ; la notice n'en nomme que douze.
+                # Une porte qui refuse doit pouvoir dire sur quoi, et un compte
+                # tronque a douze ferait mentir le diagnostic des le treizieme.
+                report["workspace_dirty"] = paths
                 note(report, (
                     "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                     "these changes are destroyed during the run and the verdict below describes "
                     "a tree that never existed. Commit, then gate."
-                    % (len(paths), ", ".join(sorted(paths)[:12]))))
+                    % (len(paths), ", ".join(paths[:12]))))
 
         visible = load_mutants(gm_dir, holdout=False)
 
@@ -7262,7 +7678,10 @@ tool oracle_run:
 
         if mode != "record":
             try:
-                committed_before = holdout_committed_in_tree(gm_dir)
+                # Read BEFORE the seal, and per SET: what matters is whether an
+                # UNCOMMITTED set was there to be relocated, not whether the
+                # directory happened to hold something committed as well.
+                uncommitted_before = uncommitted_holdout_entries(gm_dir)
                 sealed_now = seal_holdout(gm_dir, sealed_dir)
                 awaiting = holdout_committed_in_tree(gm_dir) and \
                     not seal_committed_opted_in(gm_dir)
@@ -7274,7 +7693,7 @@ tool oracle_run:
             # set along, and the next gate reports 0/0 for a set that was drawn.
             # Said here, once, at the moment the set leaves the tree — the only
             # moment anyone can still commit it.
-            if sealed_but_ephemeral(committed_before, sealed_now):
+            if sealed_but_ephemeral(uncommitted_before, sealed_now):
                 report["holdout_sealed_uncommitted"] = True
                 note(report, "the held-out set was sealed OUT of the tree into %s and is "
                              "NOT committed: it survives exactly as long as that directory "
@@ -7542,7 +7961,7 @@ tool oracle_run:
                      "canonicalise these before any mutation figure means anything"
                      % (stab["ab_drift"][:8], stab["bc_drift"][:8]))
 
-            noop = score_noop(config, corpus, canon, refs, ws, 0)
+            noop = score_noop(config, corpus, canon, refs, ws, 0, excluded_ids)
             report["noop_silent"] = noop["silent"]
 
             # GM_MUTANTS en mode porte — restreindre le PARCOURS, jamais le verdict.
@@ -7582,7 +8001,7 @@ tool oracle_run:
             for seed, meta in enumerate(visible):
                 if only and meta["id"] not in only:
                     continue
-                v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
+                v = score_mutant(meta, config, corpus, canon, refs, ws, seed, excluded_ids)
                 verdicts.append(v)
                 if v.get("valid"):
                     if not v.get("detected"):
@@ -7609,7 +8028,7 @@ tool oracle_run:
             held = []
             if mode != "selfcheck" and stopped is None:
                 for i, m in enumerate(held_meta):
-                    v = score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
+                    v = score_mutant(m, config, corpus, canon, refs, ws, 1000 + i, excluded_ids)
                     held.append(v)
                     if scoring_must_stop(v, ws):
                         stopped = v
@@ -7621,7 +8040,15 @@ tool oracle_run:
                      "from the counts; a leftover, if any, is on record for the next gate."
                      % (stopped.get("id"), stopped.get("reason") or "its revert did not restore the baseline"))
 
-            valid = [v for v in verdicts if v.get("valid")]
+            # LES EXCLUSIONS DE LANE, EN CLAIR ET STRUCTURES. Un mutant dont la
+            # declARATION entiere est renoncee sur LA lane jugee n'y mesure rien :
+            # il n'y est ni valide ni invalide — il n'y a pas ete juge — et le
+            # compter d'un cote ou de l'autre ferait du chiffre un terme qu'il
+            # n'est pas. Rapporte, jamais gate : la lane temoin garde sa traverse.
+            report["lane_exclusions_deferred"] = sorted(
+                v["id"] for v in verdicts if v.get("lane_excluded"))
+            scored = [v for v in verdicts if not v.get("lane_excluded")]
+            valid = [v for v in scored if v.get("valid")]
             detected = [v for v in valid if v.get("detected")]
             # LES INVALIDES, EN CLAIR ET STRUCTURES. Ils etaient deja dits, en texte
             # libre au milieu du log. Un mutant devient invalide pour deux raisons
@@ -7631,9 +8058,14 @@ tool oracle_run:
             # reparable ; le distinguer demande de pouvoir le LIRE, pas de le
             # deviner dans une phrase.
             report["invalid"] = [{"id": v["id"], "reason": v.get("reason", "")}
-                                 for v in verdicts if not v.get("valid")]
+                                 for v in verdicts
+                                 if not v.get("valid") and not v.get("lane_excluded")]
             report.update(
-                total=len(verdicts),
+                # Le total est le nombre de mutants JUGES sur cette lane : un
+                # mutant differe (`lane_exclusions_deferred`) n'y est ni valide ni
+                # invalide, et gonfler le total d'un non-jugement lirait comme une
+                # validite manquante.
+                total=len(scored),
                 valid=len(valid),
                 detected=len(detected),
                 score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
@@ -7709,7 +8141,10 @@ tool oracle_run:
                         "configuration) — c'est ce qui separe un filet instable d'un etat "
                         "qui a derive :\n%s" % noop["state_probe"])
             for v in verdicts:
-                if not v.get("valid"):
+                # Un mutant DIFFERE par `lane_exclusions` n'est pas invalide : il
+                # n'a pas ete juge sur cette lane, et le dire invalide rouvrirait
+                # le rouge que la declaration arbitree vient de fermer.
+                if not v.get("valid") and not v.get("lane_excluded"):
                     problems.append("mutant %s is INVALID: %s" % (v["id"], v.get("reason", "")))
             if blind:
                 problems.append("BLIND LANES — references that do NOT move for a change they "
@@ -7780,9 +8215,15 @@ tool oracle_run:
             # Rien n'est retenu a la porte finale (`withheld_ids` y est vide), donc
             # cette voie ne peut pas adoucir le verdict qui decide.
             deferred = []
+            # Les separateurs DIFFERES par la lane : leurs cibles declarees sont
+            # toutes renoncees ici, donc `scored` les a ecartes. Sans cette liste,
+            # leur classe retombait sur « dans le jeu mais pas scoree », un refus
+            # qu'aucun travail produit ne leve — sur la lane meme que la
+            # declaration existe pour debloquer.
+            lane_deferred_ids = [v.get("id") for v in verdicts if v.get("lane_excluded")]
             unproven = unproven_duplicate_groups(
-                report["duplicate_refs"], corpus, list(verdicts) + list(held),
-                bool(only), withheld_ids, in_the_set, deferred)
+                report["duplicate_refs"], corpus, list(scored) + list(held),
+                bool(only), withheld_ids, in_the_set, deferred, lane_deferred_ids)
             problems.extend(duplicate_groups_shape_problems(corpus))
             report["duplicate_groups_unproven"] = unproven
             report["duplicate_groups_deferred"] = deferred
@@ -7993,7 +8434,43 @@ compute oracle_gate:
     ## defect was an unproved class went green while every docstring in the
     ## harness claimed the gate checked it. A proof obligation nothing refuses is
     ## a waiver with extra steps.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    ##
+    ## `holdout_total > 0` is the FLOOR under the held-out term, and it is a
+    ## TERM rather than a nicety because `holdout_detected == holdout_total` is
+    ## satisfied by `0 == 0`: an EMPTY held-out set passes the gate's strongest
+    ## clause by having nothing to say. The harness distinguishes three ways to
+    ## arrive there and writes a field for each — `holdout_spent_unreplaced`,
+    ## `holdout_awaiting_gate`, `holdout_sealed_uncommitted` — and none of the
+    ## three is read by anything: they are not declared in `schema
+    ## oracle_output`, so C031 makes a term over them impossible to write at
+    ## all. Measured on a live campaign and recorded in the harness's own
+    ## comment: thirteen spent cycles, no set redrawn, every landing reporting
+    ## `held-out detected 0/0` through a clause that was vacuously true.
+    ##
+    ## The floor sits HERE, on the rite's own convergence gate, because the rite
+    ## is who OWES the next set — drawing, sealing and scoring them is its
+    ## whole job. It is deliberately absent from RUNNER_VERDICT_PY, which a
+    ## lot's verify runs: a lot cannot discharge a debt only a rite can pay, and
+    ## a floor there would refuse trees whose defect is somewhere else entirely.
+    ## That asymmetry is stated on the runner's `ok`, where it is visible to
+    ## whoever reads the weaker of the two gates.
+    ##
+    ## `workspace_dirty` carries NO such asymmetry, and that is the point: it is
+    ## a term on BOTH gates. The held-out floor is a debt, owed by one party and
+    ## payable by one party. An uncommitted tree is not a debt — it voids the
+    ## MEASUREMENT, identically for whoever takes it. A mutant's revert restores
+    ## HEAD, so uncommitted changes are destroyed mid-run and every figure
+    ## describes a tree that stopped existing partway through. A lot's verify
+    ## reading green on that tree is exactly as worthless as a rite's.
+    ##
+    ## Measured before proposing, on the last four rites: `01a08f18` clean,
+    ## `01a09459` clean, `01a091a0` other cause, `01a0a3a8` DIRTY — and
+    ## `01a0a3a8` CONVERGED. Two of the three that converged had a clean tree,
+    ## so this term refuses no legitimate run; it fires on the pathological case
+    ## and on that alone. The check itself is taken BEFORE `seal_holdout` moves
+    ## anything, so a gate that opted into `seal_committed` is not refused by
+    ## the uncommitted deletions its own seal leaves behind.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && length(outputs.oracle_run.workspace_dirty) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_total > 0 && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -8050,7 +8527,33 @@ tool emit_runner:
         # spent, published set from being replayed as if it were fresh -- and
         # the standalone entry point is what CI and humans run.
         "    and r.get(\"runner_replayable\") and not r.get(\"holdout_reused\")\n"
+        # `workspace_dirty` belongs on BOTH gates, with no asymmetry — unlike
+        # the held-out floor below. That floor is a DEBT: one party owes the
+        # next set, one party can pay. An uncommitted tree is not a debt, it
+        # voids the MEASUREMENT, and it voids it identically for whoever takes
+        # it. Mutant reverts restore HEAD, so uncommitted changes are destroyed
+        # mid-run and every figure above describes a tree that stopped existing
+        # partway through. A lot's verify reading green on that tree is exactly
+        # as worthless as a rite's, and this entry point is what CI runs.
+        "    and not r.get(\"workspace_dirty\")\n"
         "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
+        # THE ONE TERM THIS VERDICT DOES NOT CARRY, stated so it is a decision
+        # and not an oversight: the graph gate also requires `holdout_total > 0`
+        # — the floor that stops `0 == 0` from satisfying the line above — and
+        # this one does not. The split follows who can DISCHARGE the debt. A
+        # rite draws, seals and scores held-out sets, so an empty one is its own
+        # failure and its gate refuses. This entry point is what a lot's verify
+        # and CI run, on a net they did not build: a floor here would turn every
+        # later lot red for a set only a rite can redraw, refusing trees whose
+        # defect is somewhere else entirely. The state is not silent, it is
+        # reported below by name.
+        #
+        # That makes this verdict knowingly weaker than the graph gate on
+        # exactly one term. The parity check in bots/ compares the two on the
+        # FIELDS they read, and `holdout_total` is read here, so it cannot see
+        # this difference: the bench that pins it is the one asserting the floor
+        # is in the conjunction.
+        #
         # A notice is never fatal, but it must never be silent either: the one
         # that matters here says the held-out figure is 0/0 because the set was
         # spent and published, and a CI job reading only an exit code would

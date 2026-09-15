@@ -349,7 +349,14 @@ export async function listExamples(): Promise<string[]> {
 
 export async function loadExample(
   name: string,
-): Promise<{ source: string; document: IterDocument; diagnostics: string[] }> {
+): Promise<{
+  source: string;
+  document: IterDocument;
+  diagnostics: string[];
+  /** Set when the example is a bot in several files on disk: the document
+   *  is the merged unit. An embedded one is served as one flat program. */
+  unit?: UnitInfo;
+}> {
   // Encode each path segment but keep the slashes so subdirectory
   // examples (e.g. "feature_dev/main.bot") route correctly.
   const encoded = name.split("/").map(encodeURIComponent).join("/");
@@ -425,9 +432,11 @@ export async function openFile(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
     const source = bundle.files?.[bs.rel] ?? "";
-    if (bs.rel === "main.bot" && importsFragments(source)) {
-      // The bundle's main in several files: the unit is parsed from the
-      // whole files map, so the fragments under lib/ are in the document.
+    if (bs.rel.endsWith(".bot") && importsFragments(source)) {
+      // A workflow in several files — the bundle's main, or a companion
+      // workflow of its own: the unit is parsed from the whole files map
+      // with that file as its main, so the fragments its imports reach
+      // are in the document.
       const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
       return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit };
     }

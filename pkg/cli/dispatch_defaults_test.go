@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // skipIfCatalogueEmpty skips a test when the embedded catalogue is
@@ -69,6 +70,29 @@ func TestBuildDefaultConfig_ValidatesAndExtractsCatalogue(t *testing.T) {
 		if _, err := botregistry.ResolveBotPath(name, cfg.Bots.Paths); err != nil {
 			t.Fatalf("assignee_dispatch[%s] does not resolve via discovery: %v", name, err)
 		}
+	}
+	// Every extracted bot is the whole program: a bot in several files
+	// lands with the fragments its main imports. The witness is one such
+	// bot in the catalogue — without it the check could not bite.
+	mains, err := filepath.Glob(filepath.Join(storeDir, "dispatcher", "bots", "*", "main.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	several := 0
+	for _, m := range mains {
+		u := unit.LoadDir(m)
+		if u.HasErrors() {
+			for _, d := range u.Diagnostics {
+				t.Errorf("%s: %s", m, d.Error())
+			}
+			continue
+		}
+		if len(u.Files) > 1 {
+			several++
+		}
+	}
+	if several == 0 {
+		t.Fatal("no extracted bot is in several files: the catalogue is stale (run `devbox run -- task templates:dispatch-bots`) or the witness is gone")
 	}
 }
 

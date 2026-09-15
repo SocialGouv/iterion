@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Exercise the actual publisher: concise prose must not suppress findings,
@@ -106,11 +104,7 @@ func TestReviewPRConcisePublication(t *testing.T) {
 
 // Scope wiring must handle skipped branches and glance just like telemetry.
 func TestReviewPRConciseScope(t *testing.T) {
-	src, err := os.ReadFile("review-pr/main.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed := parser.Parse("review-pr/main.bot", string(src))
+	parsed := parseBotUnit("review-pr/main.bot")
 	if parsed.File == nil {
 		t.Fatal("parse")
 	}

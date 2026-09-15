@@ -1,11 +1,9 @@
 package bots
 
 import (
-	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestVerifyProbeLoopIterationWiring guards the cost-saving verify_probe
@@ -36,11 +34,7 @@ func TestVerifyProbeLoopIterationWiring(t *testing.T) {
 	for _, rel := range bots {
 		rel := rel
 		t.Run(rel, func(t *testing.T) {
-			src, err := os.ReadFile(rel)
-			if err != nil {
-				t.Fatalf("read: %v", err)
-			}
-			pr := parser.Parse(rel, string(src))
+			pr := parseBotUnit(rel)
 			if pr.File == nil {
 				t.Fatalf("parse produced no File")
 			}

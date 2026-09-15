@@ -153,6 +153,7 @@ export function useDocumentFileOps({
             setDiagnostics,
             setCurrentSource,
             setCurrentFilePath,
+            setUnit,
             markSaved,
           });
         }

@@ -7,7 +7,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestReviewHandoffIsDeclaredBySomeone guards the failure mode a declarative
@@ -107,12 +106,7 @@ func TestProducedNodesExist(t *testing.T) {
 func compileBot(t *testing.T, name string) *ir.Workflow {
 	t.Helper()
 	path := filepath.Join(botsDir(t), name, "main.bot")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Errorf("%s: main.bot is unreadable: %v", name, err)
-		return nil
-	}
-	pr := parser.Parse(path, string(src))
+	pr := parseBotUnit(path)
 	if pr.File == nil {
 		t.Errorf("%s: main.bot does not parse", name)
 		return nil
