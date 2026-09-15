@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"sort"
@@ -186,8 +187,11 @@ func RunValidate(path string, p *Printer) error {
 	if abs, err := filepath.Abs(path); err == nil {
 		parsePath = abs
 	}
-	pr := parser.Parse(parsePath, string(src))
-	for _, d := range pr.Diagnostics {
+	// The unit: this file as its main, the fragments its imports reach
+	// read beside it — a bot in several files is validated as the program
+	// it is, each file's diagnostics at its own path.
+	u := unit.LoadDirWithMain(parsePath, parsePath, src)
+	for _, d := range u.Diagnostics {
 		result.ParseDiagnostics = append(result.ParseDiagnostics, d.Error())
 		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
 			Source:   "parse",
@@ -207,9 +211,13 @@ func RunValidate(path string, p *Printer) error {
 	// The profile the file is read in must be a choice (C144): a headerless
 	// file that profile 2 would read otherwise is told so, with the counts.
 	// An explicit `dsl: 1` IS the choice, and is told nothing.
-	if pr.File != nil && pr.File.Profile == 0 && len(pr.ProfileReads) > 0 {
+	// Each file of the unit reads under its own profile, so each is told.
+	for _, f := range u.Files {
+		if f.AST == nil || f.AST.Profile != 0 || len(f.ProfileReads) == 0 {
+			continue
+		}
 		escapes, paragraphs := 0, 0
-		for _, r := range pr.ProfileReads {
+		for _, r := range f.ProfileReads {
 			if r.Kind == "escape" {
 				escapes++
 			} else {
@@ -220,37 +228,51 @@ func RunValidate(path string, p *Printer) error {
 			Source:   "parse",
 			Code:     string(ir.DiagProfileOneMatters),
 			Severity: "warning",
-			File:     parsePath,
-			Line:     pr.ProfileReads[0].Line,
+			File:     f.Name,
+			Line:     f.ProfileReads[0].Line,
 			Message: fmt.Sprintf("no `dsl:` header: read as profile 1, and profile 2 would read this file otherwise — %d quoted literal(s) hold a backslash, %d blank line(s) sit inside prompt bodies (first at line %d)",
-				escapes, paragraphs, pr.ProfileReads[0].Line),
+				escapes, paragraphs, f.ProfileReads[0].Line),
 			Hint: ir.HintFor(ir.DiagProfileOneMatters),
 		})
 	}
 
 	// Bundle prompts must merge into the AST before ir.Compile validates
 	// node-level prompt references.
-	if bundleHandle != nil && pr.File != nil {
-		if err := runview.MergeBundlePrompts(pr.File, bundleHandle); err != nil {
+	if bundleHandle != nil && u.Merged != nil {
+		if err := runview.MergeBundlePrompts(u.Merged, bundleHandle); err != nil {
 			return fmt.Errorf("bundle: merge prompts: %w", err)
 		}
 	}
 
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
+	if u.Merged == nil || len(u.Merged.Workflows) == 0 {
 		result.Valid = false
+		why := "no workflow found"
+		// A file under lib/ is a fragment: a piece of the bot whose main
+		// imports it, and it holds no workflow by design. Validated alone
+		// it can only fail; the remedy is the main.
+		if filepath.Base(filepath.Dir(parsePath)) == unit.FragmentDir {
+			why = "no workflow found: " + filepath.Base(parsePath) + " is a fragment under " + unit.FragmentDir + "/, validated through the main that imports it"
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "parse",
+				Severity: "error",
+				File:     parsePath,
+				Message:  why,
+				Hint:     "run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + filepath.Base(parsePath) + "\"`)",
+			})
+		}
 		sortValidateDiagnostics(result.Diagnostics)
 		if p.Format == OutputJSON {
 			p.JSON(result)
 		} else {
 			p.Header("Validate: " + path)
 			printDiagnostics(p, result.Diagnostics)
-			p.Line("  result: INVALID (no workflow found)")
+			p.Line("  result: INVALID (" + why + ")")
 		}
 		return validationFailed(p)
 	}
 
 	// Compile (includes static validation).
-	cr := ir.Compile(pr.File)
+	cr := ir.Compile(u.Merged)
 	for _, d := range cr.Diagnostics {
 		result.CompileDiagnostics = append(result.CompileDiagnostics, d.Error())
 		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
@@ -289,7 +311,7 @@ func RunValidate(path string, p *Printer) error {
 	// workflow (var maps, forge secret, capabilities, per-bot-memory name
 	// stability). Only runs for bundles; plain .bot files have no manifest.
 	if bundleHandle != nil && cr.Workflow != nil {
-		syntaxProfile, profileDeclaredBy, profileUnread := bundle.MaxSyntaxProfileDir(bundleHandle.Dir)
+		syntax := bundle.MaxSyntaxRequirementsDir(bundleHandle.Dir)
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
@@ -302,11 +324,12 @@ func RunValidate(path string, p *Printer) error {
 			// author's local half of the guard the push admission and the
 			// runner apply on a deployment.
 			EngineBuild: appinfo.FullVersion(),
-			// The syntax profile of the executable sources (C252): a profile
-			// above 1 asks for a declared floor.
-			SyntaxProfile:     syntaxProfile,
-			ProfileDeclaredBy: profileDeclaredBy,
-			ProfileUnread:     profileUnread,
+			// What the executable sources use (C252): a profile above 1, or
+			// `import`, asks for a declared floor.
+			SyntaxProfile:     syntax.Profile,
+			ProfileDeclaredBy: syntax.DeclaredBy,
+			ProfileUnread:     syntax.Unread,
+			ImportedBy:        syntax.ImportedBy,
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())

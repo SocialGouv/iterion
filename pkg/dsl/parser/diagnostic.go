@@ -34,6 +34,12 @@ const (
 	DiagMisplacedHeader    DiagCode = "E041" // the header is not the first declaration, or appears twice
 	DiagDirectiveInProfile DiagCode = "E042" // the profile-1 strict-escape directive in a file of profile 2 or later
 	DiagRemovedInProfile   DiagCode = "E043" // a property the file's profile removed (`project_root:` from profile 2)
+
+	// Import errors (the multi-file unit, ADR-098 §3)
+	DiagMisplacedImport  DiagCode = "E044" // an `import` after the file's first declaration
+	DiagBadImportPath    DiagCode = "E045" // an import path that is not a quoted, relative, slash-separated `.bot` path into lib/
+	DiagImportUnreadable DiagCode = "E046" // an imported fragment that cannot be read: missing, or beyond what the unit may read
+	DiagImportCycle      DiagCode = "E047" // a fragment that imports itself, through however many files
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -56,9 +62,13 @@ var hints = map[DiagCode]string{
 	DiagElseWithWhen:        "An edge is either guarded (`when`) or the fallback (`else`), never both.",
 	DiagClauseBeforeArrow:   "In a chain `a -> b -> c …` the clauses apply to the LAST segment only; to guard, loop or map an earlier one, write that segment as its own edge line.",
 	DiagUnknownProfile:      "Write `dsl: 2`, or omit the header for profile 1. A file written for a newer profile needs a newer engine: keep it off older builds with `requires: { iterion: \">= <version>\" }` in the bundle manifest.",
-	DiagMisplacedHeader:     "Move the `dsl:` line above every declaration — after the leading comments, before the first block or node — and keep a single one.",
+	DiagMisplacedHeader:     "Move the `dsl:` line above every import and every declaration — after the leading comments, before the first `import`, block or node — and keep a single one.",
 	DiagDirectiveInProfile:  "Profile 2 reads standard escapes in every quoted string by default: delete the `strict-escape` directive (a backslash that must stay literal is written `\\\\`).",
 	DiagRemovedInProfile:    "Keep the file in profile 1 (drop the `dsl: 2` header), or redesign the memory scope: `visibility:` is a different axis (C171), not a drop-in replacement for `project_root:`.",
+	DiagMisplacedImport:     "Move the `import` lines to the head of the file — after the `dsl:` header and the leading comments, before the first block or node.",
+	DiagBadImportPath:       "Write `import \"lib/<name>.bot\"`: a quoted, relative, slash-separated path to a `.bot` fragment under the bot's `lib/` directory, one import per line.",
+	DiagImportUnreadable:    "Create the fragment under the bot's `lib/` directory, or fix the path; a symlink, an absolute path or a path leaving the bot's directory is never read.",
+	DiagImportCycle:         "A fragment may not import a file that imports it back: move the shared declarations into a third fragment both import.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is
