@@ -325,16 +325,17 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// the server had posted before, which is empty in exactly the two
 	// situations this repair exists for — a bot whose publish step never
 	// succeeds, and a rollout that restarts every replica.
+	//
+	// A run whose launch pinned the gate off owes no verdict either — painting
+	// a synthetic failure over its silence would manufacture the very deadlock
+	// the pin exists to avoid (see runGateDisabled). Both halves live in
+	// runOwesGateVerdict, which the grant reaper reads too: the credential this
+	// repair needs is kept exactly as long as this predicate says a repair may
+	// still happen.
+	if !runOwesGateVerdict(run) {
+		return nil
+	}
 	gateCtx := runInputString(run, "gate_context")
-	if gateCtx == "" {
-		return nil
-	}
-	// A run whose launch pinned the gate off owes no verdict — painting a
-	// synthetic failure over its silence would manufacture the very deadlock
-	// the pin exists to avoid (see runGateDisabled).
-	if runGateDisabled(run) {
-		return nil
-	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {

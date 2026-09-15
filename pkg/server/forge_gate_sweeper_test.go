@@ -39,7 +39,7 @@ func TestGateSweep_ReconcilesARunWhoseEventWasLost(t *testing.T) {
 	lister := &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: runID}}}
 
 	// No event was ever delivered for this run.
-	s.sweepGates(context.Background(), lister, time.Now().UTC(), gateSweepLookback)
+	s.sweepGates(context.Background(), lister, time.Now().UTC(), gateSweepLookback, time.Time{})
 
 	if gc.setCalls != 1 {
 		t.Fatalf("posted %d statuses, want 1 — a dropped outcome event leaves the PR blocked forever", gc.setCalls)
@@ -64,7 +64,7 @@ func TestGateSweep_IsIdempotentWithTheEventPath(t *testing.T) {
 	gc.statuses = []forge.CommitStatus{gc.last}
 	before := gc.setCalls
 
-	s.sweepGates(context.Background(), &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: runID}}}, time.Now().UTC(), gateSweepLookback)
+	s.sweepGates(context.Background(), &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: runID}}}, time.Now().UTC(), gateSweepLookback, time.Time{})
 
 	if gc.setCalls != before {
 		t.Fatalf("posted %d more statuses, want 0 — the sweep must not double-post behind the event path", gc.setCalls-before)
@@ -83,7 +83,7 @@ func TestGateSweep_WindowIsBoundedOnBothSides(t *testing.T) {
 	lister := &fakeGateSweepLister{}
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 
-	s.sweepGates(context.Background(), lister, now, gateSweepLookback)
+	s.sweepGates(context.Background(), lister, now, gateSweepLookback, time.Time{})
 
 	if lister.calls != 1 {
 		t.Fatalf("scanned %d times, want 1", lister.calls)
@@ -196,7 +196,7 @@ func TestGateSweep_PagesTheWindowInsteadOfStarvingOldCandidates(t *testing.T) {
 		UpdatedAt: now.Add(-gateSweepGrace - time.Duration(gateSweepBatch+1)*time.Second),
 	})
 
-	s.sweepGates(context.Background(), lister, now, gateSweepLookback)
+	s.sweepGates(context.Background(), lister, now, gateSweepLookback, time.Time{})
 
 	if len(lister.requests) < 2 {
 		t.Fatalf("scanned %d page(s) — a full page must advance the cursor, or the oldest candidate is never examined", len(lister.requests))
@@ -217,7 +217,7 @@ func TestGateSweep_StopsWhenTheCursorCannotAdvance(t *testing.T) {
 		stuck.refs = append(stuck.refs, mongostore.NotifiableRunRef{ID: "no-timestamp"})
 	}
 
-	s.sweepGates(context.Background(), stuck, now, gateSweepLookback)
+	s.sweepGates(context.Background(), stuck, now, gateSweepLookback, time.Time{})
 
 	if stuck.calls != 1 {
 		t.Fatalf("scanned %d times, want 1 — a stalled cursor re-scanned the same rows", stuck.calls)
@@ -229,5 +229,5 @@ func TestGateSweep_StopsWhenTheCursorCannotAdvance(t *testing.T) {
 // being a net at all.
 func TestGateSweep_SurvivesAScanError(t *testing.T) {
 	s, _ := gateReconcileFixture(t, gatingInputs(), &listingGateClient{})
-	s.sweepGates(context.Background(), &fakeGateSweepLister{err: errors.New("mongo down")}, time.Now().UTC(), gateSweepLookback)
+	s.sweepGates(context.Background(), &fakeGateSweepLister{err: errors.New("mongo down")}, time.Now().UTC(), gateSweepLookback, time.Time{})
 }
