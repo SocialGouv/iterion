@@ -83,6 +83,38 @@ fallback: an untyped `-> fail` still writes `FAIL_NODE` /
 `resumable: true` writes its code on `failed_resumable` instead of
 `failed`; the code says WHY, never whether the run may continue.
 
+`end_reason` is the second typed lifecycle field, persisted beside
+`failure_code`: the machine-readable WHY a run *ended*, as opposed to how it
+failed. It carries on the same statuses and is cleared by the same transitions,
+so a resumed run never keeps claiming why it once ended. It exists because
+`error` cannot be that protocol — the cancel path wraps it as
+`<message> (was <status>: <prior>)`, and the run list, the board cards and the
+merge-gate synthetic status all quote it, so a rewording would silently disarm
+a reader that string-matched on it. The vocabulary
+([`store.RunEndReason`](../pkg/store/run.go)) is closed:
+
+| `end_reason` | Meaning | `error` text it derives |
+|---|---|---|
+| `operator` | A human asked for the run to stop. | `cancelled by user` |
+| `pr_closed` | The stop-on-close lane ended the run because its pull request was closed or merged. | `pull request closed or merged — nothing left to review` |
+| `pr_requeued` | The merge queue took the pull request back, so the auto-heal run has nothing left to carry. | `pull request re-entered the merge queue — the heal has nothing left to carry` |
+| `superseded` | A newer delivery for the same subject replaced this run. | `superseded by a newer delivery for the same subject` |
+
+The `error` text is DERIVED from the reason (`RunEndReason.Message`), so a
+writer states the reason alone and the two can never disagree. Absent/empty
+means UNKNOWN and reads as a bare `cancelled`: an automated stop that cannot
+name itself must not sign an operator's name to its own decision. For a run
+cancelled before the field existed the message is the only carrier there is, so
+read the pair through `store.EndedBecausePRClosed` rather than either half
+alone — the prose is a migration carrier, never the protocol.
+
+`pr_closed` is **enforced, not informational**: runner admission drops every
+redelivery for such a run — including one carrying an explicit resume — because
+nothing the review would say can matter now and continuing burns provider quota
+on a diff no one will merge. A resume that looks ignored on a closed PR is that
+rule, not a lost message. The field is also on the HTTP API, as `end_reason` on
+the run summary and run header schemas.
+
 `outcome_seq` counts the run's terminal EPISODES: it increments on every
 TRANSITION into `finished` / `failed` / `failed_resumable` / `cancelled`
 (never on a same-status rewrite — a drain's re-flip or the publisher's

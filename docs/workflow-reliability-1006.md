@@ -49,6 +49,12 @@ stopped immediately, and a resume continues the existing budget rather than
 starting a new loop. Executors must keep correction side-effect free; publish
 and external-effect nodes remain behind the validation boundary.
 
+The seam is shipped, but nothing in the tree triggers it yet: no production
+path both enables output validation and supplies an `OutputCorrector`, so the
+budget is inert on a stock build. It is not a rollback lever either —
+[pilot, compatibility and rollback](#pilot-compatibility-and-rollback-tranche-g)
+spells out what that means for an operator.
+
 ## Coordinated retries and circuit breaker (tranche E)
 
 Cloud runners retain the per-run retry budget, but usage-window failures also

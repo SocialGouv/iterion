@@ -172,10 +172,17 @@ The exact support and credential matrix is [backends.md](backends.md).
 
 ## Worktrees and sandboxes
 
-`worktree: auto` creates a Git worktree before execution. Successful committed
-results are protected with a persistent branch; landing is controlled by the
-CLI or studio merge policy. A failed run keeps its worktree for inspection and
-resume.
+Worktree isolation is **on by default**, like sandboxing below it: a workflow
+that does not declare `worktree:` compiles to `worktree: auto`, so no bot
+dirties the operator's live checkout. Opt out with `worktree: none`; any other
+value is a compile error (C142).
+
+`worktree: auto` creates a Git worktree before execution. When the workspace is
+not a Git repository the runtime degrades to in-place and records
+`worktree=false` on the run rather than leaving consumers to chase a phantom
+path. Successful committed results are protected with a persistent branch;
+landing is controlled by the CLI or studio merge policy. A failed run keeps its
+worktree for inspection and resume.
 
 Sandboxing is a separate execution adapter under
 [`pkg/sandbox`](../pkg/sandbox/), on by default at the product entry points
