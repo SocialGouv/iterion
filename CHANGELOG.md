@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.2](https://github.com/SocialGouv/iterion/compare/v3.146.1...v3.146.2) (2026-09-15)
+
+### Bug Fixes
+
+* **studio,server:** a companion workflow that imports opens as its unit, a fragment edit reloads the open document, a lost provenance is refused ([#1235](https://github.com/SocialGouv/iterion/issues/1235)) ([b790871](https://github.com/SocialGouv/iterion/commit/b790871e32d35c45fc2d4d16d3df7de3a0368cc5)), references [#1225](https://github.com/SocialGouv/iterion/issues/1225) [#1164](https://github.com/SocialGouv/iterion/issues/1164) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    Revi's second verdict on PR #1225, after the queue had admitted it.
+
+    </details>
+
 ## [3.146.1](https://github.com/SocialGouv/iterion/compare/v3.146.0...v3.146.1) (2026-09-15)
 
 ### Bug Fixes
