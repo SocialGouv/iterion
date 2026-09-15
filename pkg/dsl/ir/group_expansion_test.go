@@ -279,6 +279,41 @@ func TestGroupPromptIncludesAreSpecializedBeforeValidation(t *testing.T) {
 	}
 }
 
+// TestAnUnresolvableIncludeIsRefusedOncePerDeclaration.
+//
+// A prompt whose source cannot be resolved — a transported prompt with no
+// file, or a relative path — refuses its {{include}} for a reason that
+// belongs to the DECLARATION and cannot differ between the group instances
+// binding it. The budget refusals beside it already stop at the first
+// (`blown` is sticky: "thousands more would name nothing new"); this one
+// must too, or a group of N members lands N identical diagnostics on one
+// span and buries whatever else the compile found.
+func TestAnUnresolvableIncludeIsRefusedOncePerDeclaration(t *testing.T) {
+	const instances = 5
+	var src strings.Builder
+	src.WriteString("prompt p:\n  {{include \"rules.md\"}} {{params.label}}\ngroup g(label):\n  agent a:\n    model: \"test-model\"\n    system: p\n")
+	for i := 0; i < instances; i++ {
+		fmt.Fprintf(&src, "use g as g%d with {label: \"%d\"}\n", i, i)
+	}
+	src.WriteString("workflow w:\n  entry: g0.a\n  g0.a -> done\n")
+	// A RELATIVE source path: no include resolves beside it.
+	parsed := parser.Parse("t.bot", src.String())
+	for _, d := range parsed.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			t.Fatalf("parse error: %s", d.Error())
+		}
+	}
+	refusals := 0
+	for _, d := range Compile(parsed.File).Diagnostics {
+		if d.Code == DiagBadPromptInclude {
+			refusals++
+		}
+	}
+	if refusals != 1 {
+		t.Fatalf("DiagBadPromptInclude × %d, want 1 — one declaration whose source cannot resolve, bound by %d instances", refusals, instances)
+	}
+}
+
 func TestGroupPromptIncludesShareTheFileBudget(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("label {{params.label}}"), 0o600); err != nil {

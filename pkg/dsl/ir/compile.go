@@ -139,6 +139,11 @@ type compiler struct {
 	mcp                  map[string]*MCPServer
 	groupPromptTemplates map[string]bool
 	promptIncludeBudget  includeBudget
+	// unresolvedPromptSource is every declaration whose {{include}} could not
+	// be resolved. A declaration's source does not change between the group
+	// instances that bind it, so the refusal is reported once rather than
+	// once per instance on the same span.
+	unresolvedPromptSource map[*ast.PromptDecl]bool
 	// edgeSpans remembers where each compiled edge was declared, so a
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
