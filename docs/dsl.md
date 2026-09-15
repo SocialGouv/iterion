@@ -273,6 +273,8 @@ compute collect:
 
 The collector fires exactly once, after every branch has settled — `wait_all` fails the run when any branch failed, `best_effort` runs with the survivors and lists the failures as `_failed_branches` (and on the `join_ready` event). Neither mode fires on the first arrival. Without `await:`, the collector is the first node with more than one distinct predecessor; a fan-out target that a `condition` router also reaches directly is still a branch head, not the collector, while a trunk edge bypassing the fan-out into a node below the heads (`plan -> collect else`) does elect that node.
 
+For a `best_effort` collector, incoming `with` mappings behind failed nodes form a fallback floor. In `fan_out_each`, each item's recorded execution and route choices are examined separately: one item's `when` decision cannot decide for an item that failed before routing. The resulting candidate edges are combined at the collector. Equal mappings survive; conflicting values for the same key remain absent; mappings from successful incoming edges take precedence. This floor survives checkpoint/resume. It does not synthesize per-item outputs, and a route rejected by every item contributes nothing.
+
 Routers are fan-out sources and never declare `await`. See [routers](routers.md) and [composition/iteration/sub-bots](groups-iteration-subbots.md).
 
 ## Human interaction

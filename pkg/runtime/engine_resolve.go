@@ -239,9 +239,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 //
 // Two invariants keep it from reopening #484:
 //
-//   - Only an OUTPUT-LESS source contributes (settledFloorEligible). An edge
-//     whose source ran is left to the passes below, where routing's recorded
-//     selection still decides between exclusive siblings.
+//   - A floor edge's source produced no output in the branch whose walk
+//     admitted it. Routing prunes that branch's rejected alternatives;
+//     a fan_out_each sibling cannot decide for an item that never routed.
 //   - It is a FLOOR — applied before both passes, so a live edge and the
 //     back-edge overlay both win on a shared key.
 //
@@ -314,8 +314,9 @@ func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFl
 		if !settledFloorEligible(edge, floor) {
 			continue
 		}
-		// The source produced nothing, so `{{input.*}}` on this edge has no
-		// namespace to read: an explicit empty map, never the caller's
+		// The branch that admitted this edge produced no source output, so
+		// `{{input.*}}` has no namespace to read: an explicit empty map,
+		// never the caller's
 		// runInputs, which would silently promote a run-level payload into
 		// the source-output namespace (#479). Every floor edge therefore
 		// resolves in the SAME scope, which is what makes the template
