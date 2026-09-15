@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -135,10 +136,18 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// the workflow source + bundle without re-supplying.
 	child.FilePath = parent.FilePath
 	child.WorkflowHash = parent.WorkflowHash
+	// … and the source it executed, file by file, so `rewind --auto` on
+	// the child diffs against what the child actually runs.
+	child.WorkflowSource = parent.WorkflowSource
+	child.WorkflowSources = slices.Clone(parent.WorkflowSources)
 	child.ArtifactCompatibilityRevision = parent.ArtifactCompatibilityRevision
 	child.Preset = parent.Preset
 	child.BundleHash = parent.BundleHash
 	child.BundlePath = parent.BundlePath
+	child.BundleName = parent.BundleName
+	child.BundleVersion = parent.BundleVersion
+	child.BundleWorkflow = parent.BundleWorkflow
+	child.BundleDisplayName = parent.BundleDisplayName
 	child.LaunchEnv = parent.LaunchEnv
 	child.IterionVersion = parent.IterionVersion
 	child.TenantID = parent.TenantID

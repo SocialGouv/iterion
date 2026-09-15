@@ -1,0 +1,378 @@
+package tool
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+)
+
+// Keep a read result below the 256 KiB transport/sink boundary used by a few
+// agent providers. The continuation marker is part of the result, so a large
+// file can never look complete merely because a downstream clipped its tail.
+const workspaceReadMaxBytes = 240 * 1024
+
+// A regular file past this size is not something to page through 240 KiB
+// at a time, and counting its lines for the continuation marker would
+// stream it all through the agent's turn. Refuse it with an actionable
+// error — grep and glob still reach it.
+const workspaceReadMaxFileBytes = 64 * 1024 * 1024
+
+func workspaceReadFileTool() api.Tool {
+	t := clawtools.ReadFileTool()
+	t.Description = "Read a file inside the active workspace. Credential files and internal run stores are excluded. " +
+		"Large files are returned in explicit line chunks; " +
+		"when the result is partial, call it again with the next start_line printed in the marker."
+	t.InputSchema.Properties["start_line"] = api.Property{
+		Type:        "integer",
+		Description: "1-based first line to return (optional, defaults to 1)",
+	}
+	t.InputSchema.Properties["line_count"] = api.Property{
+		Type:        "integer",
+		Description: "Maximum number of lines to return (optional; the byte safety cap still applies)",
+	}
+	return t
+}
+
+func workspaceGrepTool() api.Tool {
+	t := clawtools.GrepTool()
+	t.Name = "workspace_grep"
+	t.Description = "Search file contents inside the active workspace. Credential files and internal run stores are excluded. " +
+		"The path is optional; an omitted or empty path searches the active workspace root. " +
+		"Use this to discover source and project artifacts by content, then read the matching files."
+	// The handler has an explicit active-workspace default for the optional
+	// path. Keep the public schema in agreement so providers do not reject the
+	// same call before it reaches the handler.
+	t.InputSchema.Required = []string{"pattern"}
+	return t
+}
+
+func diagnosticShellTool() api.Tool {
+	t := clawtools.BashTool()
+	t.Name = "diagnostic_shell"
+	t.Description = "Run an exceptional diagnostic shell command after explicit operator approval. " +
+		"Use only when workspace read/search and host run tools cannot answer the question; prefer bounded read-only commands."
+	return t
+}
+
+func executeWorkspaceReadFile(input map[string]any, workspace string) (string, error) {
+	rawPath, ok := input["path"].(string)
+	if !ok || strings.TrimSpace(rawPath) == "" {
+		return "", fmt.Errorf("read_file: 'path' input is required and must be a string")
+	}
+	// Same boundary as workspace_grep and glob: the path is resolved and
+	// contained inside the active workspace, and a credential file is
+	// refused. Without this an absolute path skipped the join entirely and
+	// only got filepath.Clean, so the model could read ~/.ssh/id_rsa or
+	// ~/.iterion/secrets.json through the one read tool that had no guard.
+	path, err := resolveWorkspacePath(workspace, rawPath)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	if sensitiveWorkspacePath(rawPath) || sensitiveWorkspacePath(path) {
+		return "", fmt.Errorf("read_file: %q is excluded as a credential or secret file", rawPath)
+	}
+
+	start, err := positiveIntInput(input, "start_line", 1)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	lineCount, err := nonNegativeIntInput(input, "line_count")
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+
+	lines, total, err := workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	if total == 0 {
+		return "", nil
+	}
+	if start > total {
+		return "", fmt.Errorf("start_line %d is past end of file (%d lines)", start, total)
+	}
+
+	var out strings.Builder
+	end := start - 1
+	byteLimited := false
+	for i, line := range lines {
+		if lineCount > 0 && i >= lineCount {
+			break
+		}
+		if out.Len()+len(line) > workspaceReadMaxBytes {
+			byteLimited = true
+			if out.Len() == 0 {
+				room := workspaceReadMaxBytes
+				for room > 0 && room < len(line) && !utf8.RuneStart(line[room]) {
+					room--
+				}
+				out.WriteString(line[:room])
+				return out.String() + fmt.Sprintf("\n\n[read_file partial: line %d exceeds the %d-byte chunk cap; reformat or search this file instead]", start, workspaceReadMaxBytes), nil
+			}
+			break
+		}
+		out.WriteString(line)
+		end = start + i
+	}
+
+	partial := end < total
+	if partial {
+		reason := "line_count reached"
+		if byteLimited {
+			reason = "byte cap reached"
+		}
+		fmt.Fprintf(&out, "\n\n[read_file partial: lines %d-%d of %d; %s; continue with path %q and start_line %d]",
+			start, end, total, reason, rawPath, end+1)
+	}
+	return out.String(), nil
+}
+
+// workspaceFileWindow streams path once and returns the lines from `start`
+// on — retaining at most maxBytes+1 bytes overall, and at most maxBytes+1
+// bytes of any single line — together with the file's total line count.
+// Lines keep their trailing newline.
+//
+// The retention rule is what makes the caller's chunk cap bound the READ
+// and not merely the output: os.ReadFile used to pull the whole file into
+// memory first, so a large file in the workspace cost the host process its
+// address space on a single model tool call. Retaining one line PAST the
+// cap is deliberate — it is what lets the caller distinguish "byte cap
+// reached" from "that was the whole file".
+func workspaceFileWindow(workspace, path string, start, maxBytes int) ([]string, int, error) {
+	f, err := openWorkspaceFile(workspace, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if info.Size() > workspaceReadMaxFileBytes {
+		return nil, 0, fmt.Errorf("%q is %d bytes, past the %d-byte read ceiling; search it with grep instead", filepath.Base(path), info.Size(), workspaceReadMaxFileBytes)
+	}
+	// The descriptor can grow after Stat. Bound total scan work as well as
+	// retained output, including requests whose start_line is far away.
+	limited := &io.LimitedReader{R: f, N: workspaceReadMaxFileBytes + 1}
+	reader := bufio.NewReaderSize(limited, 64*1024)
+	var window []string
+	retained, total := 0, 0
+	for {
+		line, readErr := readLineCapped(reader, maxBytes+1)
+		if limited.N == 0 {
+			return nil, 0, fmt.Errorf("file grew past the %d-byte read ceiling", workspaceReadMaxFileBytes)
+		}
+		if readErr != nil && readErr != io.EOF {
+			return nil, 0, readErr
+		}
+		if line != "" {
+			total++
+			if total >= start && retained <= maxBytes {
+				window = append(window, line)
+				retained += len(line)
+			}
+		}
+		if readErr == io.EOF {
+			return window, total, nil
+		}
+	}
+}
+
+// readLineCapped reads one '\n'-terminated line (delimiter included),
+// retaining at most limit bytes of it and discarding the rest — the
+// caller's own chunk cap would have cut an over-long line anyway, and
+// keeping it whole is how one pathological line grows the process.
+func readLineCapped(r *bufio.Reader, limit int) (string, error) {
+	var b strings.Builder
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if room := limit - b.Len(); room > 0 {
+			if room > len(chunk) {
+				room = len(chunk)
+			}
+			b.Write(chunk[:room])
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return b.String(), err
+	}
+}
+
+// workspacePathInput applies the workspace-scoped path contract shared by
+// grep and glob: an omitted or exactly empty path means the active workspace
+// root. Whitespace-only values remain invalid instead of being silently
+// trimmed into a root request.
+func workspacePathInput(input map[string]any, toolName string) (string, error) {
+	rawPath := "."
+	supplied, ok := input["path"]
+	if !ok {
+		return rawPath, nil
+	}
+	path, ok := supplied.(string)
+	if !ok {
+		return "", fmt.Errorf("%s: 'path' must be a string when provided", toolName)
+	}
+	if path == "" {
+		return rawPath, nil
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("%s: 'path' must be a non-empty string when provided", toolName)
+	}
+	return path, nil
+}
+
+// openWorkspaceFile checks aliases before opening and verifies the opened
+// identity. Internal symlinks remain readable only after canonical policy
+// checks; descriptor traversal refuses any links substituted after resolution.
+func openWorkspaceFile(workspace, raw string) (*os.File, error) {
+	path, err := resolveWorkspacePath(workspace, raw)
+	if err != nil {
+		return nil, err
+	}
+	if sensitiveWorkspacePath(raw) || sensitiveWorkspacePath(path) {
+		return nil, fmt.Errorf("path is a protected credential or secret file")
+	}
+	root, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return nil, err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("path is outside workspace")
+	}
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", filepath.Base(path))
+	}
+	f, err := openWorkspaceFileAt(root, strings.Split(rel, string(filepath.Separator)))
+	if err != nil {
+		return nil, err
+	}
+	after, err := f.Stat()
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("workspace file changed or is not a regular file")
+	}
+	return f, nil
+}
+
+func resolveWorkspacePath(workspace, raw string) (string, error) {
+	if strings.TrimSpace(workspace) == "" {
+		return "", fmt.Errorf("active workspace is required")
+	}
+	path := raw
+	if !filepath.IsAbs(path) && workspace != "" {
+		path = filepath.Join(workspace, path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return "", err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q is outside workspace", raw)
+	}
+	return resolved, nil
+}
+
+func sensitiveWorkspacePath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	base := filepath.Base(clean)
+	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".netrc" || base == ".git-credentials" || base == "cli-auth.json" {
+		return true
+	}
+	if strings.Contains(base, "id_rsa") || strings.Contains(base, "id_ed25519") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".pem", ".key", ".p12":
+		return true
+	}
+	for _, fragment := range []string{
+		"/.ssh/", "/.aws/", "/.gnupg/", "/.docker/config.json",
+		"/.claude/.credentials.json", "/.codex/auth.json",
+		"/.iterion/secrets.json", "/.iterion/secrets.key",
+	} {
+		if strings.Contains("/"+clean, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func ignoredSearchDir(name string) bool {
+	switch name {
+	case ".git", ".iterion", ".venv", "node_modules", "vendor":
+		return true
+	default:
+		return false
+	}
+}
+
+func positiveIntInput(input map[string]any, key string, def int) (int, error) {
+	v, ok := input[key]
+	if !ok {
+		return def, nil
+	}
+	n, ok := jsonNumberAsInt(v)
+	if !ok || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return n, nil
+}
+
+func nonNegativeIntInput(input map[string]any, key string) (int, error) {
+	v, ok := input[key]
+	if !ok {
+		return 0, nil
+	}
+	n, ok := jsonNumberAsInt(v)
+	if !ok || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+	return n, nil
+}
+
+func jsonNumberAsInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		if n != float64(int(n)) {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}

@@ -12,6 +12,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -35,22 +35,17 @@ import (
 func compileFixture(t *testing.T, name string) *ir.Workflow {
 	t.Helper()
 	path := resolveFixturePath(t, name)
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
+	// The fixture's unit: the file and the fragments its imports reach,
+	// beside it — a bot in several files compiles as the program it is.
+	u := unit.LoadDir(path)
+	for _, d := range u.Diagnostics {
+		t.Logf("parse diagnostic: %s", d.Error())
 	}
-
-	pr := parser.Parse(name, string(src))
-	if len(pr.Diagnostics) > 0 {
-		for _, d := range pr.Diagnostics {
-			t.Logf("parse diagnostic: %s", d.Error())
-		}
-	}
-	if pr.File == nil {
+	if u.Merged == nil {
 		t.Fatalf("parse returned nil AST for %s", name)
 	}
 
-	cr := ir.Compile(pr.File)
+	cr := ir.Compile(u.Merged)
 	if cr.HasErrors() {
 		for _, d := range cr.Diagnostics {
 			t.Logf("compile diagnostic: %s", d.Error())
@@ -126,6 +121,29 @@ func newScenarioExecutor() *scenarioExecutor {
 }
 
 func (e *scenarioExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
+	// The scenario executor bypasses the real model-output validator. Keep old
+	// Copi scenarios focused on their routing subject by supplying the neutral,
+	// complete scope classification that a conforming backend must emit. Tests
+	// for missing/type/enum failures call model.ValidateOutput directly.
+	if nodeID == "copi" {
+		original := fn
+		fn = func(input map[string]any) (map[string]any, error) {
+			output, err := original(input)
+			if output == nil || err != nil {
+				return output, err
+			}
+			if _, ok := output["emitted_scope_exclusions"]; !ok {
+				output["emitted_scope_exclusions"] = []any{}
+			}
+			if _, ok := output["proposal_scope_status"]; !ok {
+				output["proposal_scope_status"] = "complete"
+			}
+			if _, ok := output["proposal_scope_categories"]; !ok {
+				output["proposal_scope_categories"] = []any{}
+			}
+			return output, nil
+		}
+	}
 	e.handlers[nodeID] = fn
 }
 
@@ -140,6 +158,23 @@ func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[st
 	// Default: return empty output with a _tokens marker for metrics.
 	return map[string]any{"_tokens": 10, "_cost_usd": 0.001}, nil
 }
+
+// Persist-session seams make the E2E executor behave like a backend whose
+// opaque session can survive a checkpoint. Tests still choose the session id
+// in their handler output; the payload itself is intentionally inert.
+func (e *scenarioExecutor) SessionResumeCapability(ir.Node) (string, bool) {
+	return "claw", true
+}
+
+func (e *scenarioExecutor) PackSession(_ context.Context, _, sessionID string) ([]byte, error) {
+	return []byte("e2e-session:" + sessionID), nil
+}
+
+func (e *scenarioExecutor) UnpackSession(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (e *scenarioExecutor) HasSession(context.Context, string, string) bool { return true }
 
 func (e *scenarioExecutor) callCount(nodeID string) int {
 	e.mu.Lock()

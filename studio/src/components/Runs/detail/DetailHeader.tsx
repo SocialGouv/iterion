@@ -3,6 +3,8 @@ import { useLocation } from "wouter";
 
 import type { ExecutionState, RunEvent } from "@/api/runs";
 import { CopyButton, IconButton, StatusBadge } from "@/components/ui";
+import { referenceDragProps } from "@/lib/chatDock/dragReference";
+import { mintReference } from "@/lib/chatDock/routeReference";
 import {
   formatContextUsage,
   formatDurationBetween,
@@ -42,6 +44,9 @@ export function DetailHeader({
 }) {
   const [, setLocation] = useLocation();
   const nodeLabel = useNodeLabel();
+  const label = nodeLabel(exec.ir_node_id);
+  const referenceId = `${runId}/${exec.ir_node_id}`;
+  const reference = mintReference("node", referenceId, label);
   const duration = formatDurationBetween(exec.started_at, exec.finished_at);
   const {
     costUsd,
@@ -71,11 +76,22 @@ export function DetailHeader({
             <StatusBadge status={exec.status} />
             <NodeKindIcon kind={exec.kind} />
             <h2 className="text-sm font-semibold truncate" title={exec.ir_node_id}>
-              {nodeLabel(exec.ir_node_id)}
+              {label}
               <span className="ml-2 font-mono font-normal text-micro text-fg-subtle">
                 {exec.ir_node_id}
               </span>
             </h2>
+            {reference?.ref === `node/${referenceId}` && (
+              <span
+                {...referenceDragProps("node", referenceId, label)}
+                role="img"
+                aria-label="Drag node to assistant"
+                title="Drag node to assistant"
+                className="cursor-grab select-none text-fg-subtle hover:text-fg-default active:cursor-grabbing"
+              >
+                ⠿
+              </span>
+            )}
             {onToggleFollowLive && (
               <FollowLivePill
                 followLive={!!followLive}

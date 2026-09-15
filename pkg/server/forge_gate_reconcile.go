@@ -288,7 +288,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 			s.logger.Warn(msg, args...)
 		case s.gateSweepIsLastPass(run):
 			s.logger.Warn(msg+" — this was the last sweep pass inside the "+
-				gateSweepLookback.String()+" window: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
+				gateSweepHorizon.String()+" horizon: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
 		default:
 			s.logger.Debug(msg, args...)
 		}
@@ -325,16 +325,17 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// the server had posted before, which is empty in exactly the two
 	// situations this repair exists for — a bot whose publish step never
 	// succeeds, and a rollout that restarts every replica.
+	//
+	// A run whose launch pinned the gate off owes no verdict either — painting
+	// a synthetic failure over its silence would manufacture the very deadlock
+	// the pin exists to avoid (see runGateDisabled). Both halves live in
+	// runOwesGateVerdict, which the grant reaper reads too: the credential this
+	// repair needs is kept exactly as long as this predicate says a repair may
+	// still happen.
+	if !runOwesGateVerdict(run) {
+		return nil
+	}
 	gateCtx := runInputString(run, "gate_context")
-	if gateCtx == "" {
-		return nil
-	}
-	// A run whose launch pinned the gate off owes no verdict — painting a
-	// synthetic failure over its silence would manufacture the very deadlock
-	// the pin exists to avoid (see runGateDisabled).
-	if runGateDisabled(run) {
-		return nil
-	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
@@ -448,7 +449,24 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// Nothing on the head: this run owes the answer.
 
 	case !isGateInFlight(gate) && !isSyntheticGateInterruption(gate.Description):
-		return nil // a real verdict — never overwrite one
+		// A real verdict — never overwrite one. When it is THIS run's own, the
+		// run has already said everything it had to say, and that is the only
+		// moment the grant is PROVABLY without a reader: not "the run ended"
+		// (a repair may still owe a verdict, which is why a gating run keeps
+		// forgePublishGateGrace) but "the verdict this run owed is posted".
+		//
+		// Worth the narrowness. The grant is a forge-write bearer held by an
+		// agent that reads untrusted pull-request content and can post a
+		// review AND a commit status — including a green one on the required
+		// check. Keeping it live for the whole horizon on every gating run,
+		// rather than on the few a repair may still reach, is 128× more window
+		// than the job needs. Deliberately NOT extended to a verdict posted by
+		// ANOTHER run: a repo's gate context is shared between bots, so that
+		// would revoke the grant of a run still on its way to publishing.
+		if gateStatusSpeaksFor(gate, runURL) {
+			s.forgePublishTokens.Revoke(token)
+		}
+		return nil
 
 	case isGateInFlight(gate):
 		// A CLAIM is not an answer, so a run that died still holding its OWN

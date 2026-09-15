@@ -121,6 +121,28 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Watcher resource limits
+        # Read-only evidence for #1198. inotify EMFILE can be a process FD
+        # ceiling or a UID-wide instance ceiling shared by runner pods.
+        run: |
+          python3 - <<'PYWATCH'
+          import json, os, pathlib, resource
+          def read(path):
+              try:
+                  return pathlib.Path(path).read_text().strip()
+              except OSError:
+                  return "unavailable"
+          print(json.dumps({
+              "real_uid": os.getuid(),
+              "nofile": resource.getrlimit(resource.RLIMIT_NOFILE),
+              "max_user_instances": read("/proc/sys/fs/inotify/max_user_instances"),
+              "max_user_watches": read("/proc/sys/fs/inotify/max_user_watches"),
+              "uid_map": read("/proc/self/uid_map"),
+              "cpu_max": read("/sys/fs/cgroup/cpu.max"),
+              "cpu_count": os.cpu_count(),
+          }, sort_keys=True))
+          PYWATCH
+
       # The modernize bot-level tests execute the bot's real plan_read /
       # lot_verify / mark_done scripts, which read the programme contract
       # through yq. Without it on PATH they SKIP — and a skipped guard test is
@@ -394,7 +416,7 @@ jobs:
             ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
-            ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
+            ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/...
 
       - name: Mongo diagnostics on failure

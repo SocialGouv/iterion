@@ -565,13 +565,13 @@ func (s *Server) forgeConnRepoNames(ctx context.Context, conn forge.Connection) 
 // GitHubAppMinter, used to narrow the managed forge token at provision time.
 // Returns an error when no github app is available for the connection (the
 // orchestrator treats that as best-effort and keeps the prior token).
-func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (string, error) {
+func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (forge.RefreshedToken, error) {
 	if conn.Kind != forge.KindGitHubApp {
-		return "", fmt.Errorf("forge: not a github_app connection")
+		return forge.RefreshedToken{}, fmt.Errorf("forge: not a github_app connection")
 	}
 	cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
 	if err != nil {
-		return "", err
+		return forge.RefreshedToken{}, err
 	}
 	// Fail closed: if the provisioned repo set can't be determined (transient
 	// store error), do NOT fall back to a whole-installation token. The
@@ -579,16 +579,16 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	// (narrower) token rather than widening scope.
 	repos, err := s.forgeMintRepoNames(ctx, conn)
 	if err != nil {
-		return "", fmt.Errorf("forge: cannot determine provisioned repos for least-privilege token: %w", err)
+		return forge.RefreshedToken{}, fmt.Errorf("forge: cannot determine provisioned repos for least-privilege token: %w", err)
 	}
 	perms := forgegithub.RuntimePermissionsFor(conn.GrantedPermissions)
-	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
+	out, err := forgegithub.MintInstallationTokenWithPermissions(ctx, s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
 		&forgegithub.InstallationTokenOptions{Repositories: repos, Permissions: perms})
-	if err == nil {
-		forgegithub.RecordRuntimePermissions(conn.InstallationID, perms)
+	if err == nil && out.TokenProof != nil {
+		forgegithub.RecordRuntimePermissions(conn.InstallationID, out.TokenProof.Permissions)
 	}
-	return tok, err
+	return out, err
 }
 
 // forgeLogWarn is the orchestrator's non-blocking-anomaly seam, wired to the

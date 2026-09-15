@@ -1,0 +1,55 @@
+name: ARC CI runner image
+
+on:
+  pull_request:
+    paths:
+      - 'ci/arc-runner/**'
+      - '.github/workflows/ci-runner-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ci/arc-runner/**'
+      - '.github/workflows/ci-runner-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-runner-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Choose an immutable image version
+        shell: bash
+        run: |
+          echo "CI_RUNNER_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/iterion-ci-runner:1.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+      - name: Build the runner image
+        run: docker build --pull --tag "$CI_RUNNER_IMAGE" --label "org.opencontainers.image.revision=$GITHUB_SHA" ci/arc-runner
+      - name: Prove cgo and race work as the runner user
+        run: bash ci/arc-runner/verify.sh "$CI_RUNNER_IMAGE"
+      - name: Login to GHCR after validation
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the exact validated image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$CI_RUNNER_IMAGE"
+          docker image inspect "$CI_RUNNER_IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
+          echo "Published: $CI_RUNNER_IMAGE" >> "$GITHUB_STEP_SUMMARY"

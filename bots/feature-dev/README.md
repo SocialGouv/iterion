@@ -17,6 +17,8 @@ on GitLab — the issue-label → PR lineage).
 | Var | Required | Description |
 |---|---|---|
 | `feature_prompt` | yes | High-level description of the feature, with a clear done-state |
+| `failure_context` | no | Host-attested failed-run envelope for cross-project delegation |
+| `delegation_instructions` | no | Operator-approved scope for the delegated worker |
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` (the run's worktree — do not override) |
 | `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
 | `max_passes` | no | Continuation-loop cap (default 8) |
@@ -106,4 +108,13 @@ iterion run bots/feature-dev/main.bot \
   --var feature_prompt='Add a /healthz endpoint that returns build info'
 ```
 
-See [main.bot](main.bot) for the full DSL.
+See [main.bot](main.bot) and [lib/](lib/) for the full DSL.
+
+## Layout — a bot in several files
+
+`main.bot` holds the header, the vars, the secrets, the supervisor and the workflow; the
+rest lives beside it under `lib/` and is reached through the `import` lines at the head of
+the main — `lib/schemas.bot` (the schemas), `lib/prompts.bot` (the prompts), `lib/nodes.bot`
+(the nodes). The four files are ONE program: `iterion validate`, `run`, the studio and a
+remote launch read the unit; the manifest's `requires.iterion` names the release that reads
+`import`. See docs/dsl.md, "import — a bot in several files".

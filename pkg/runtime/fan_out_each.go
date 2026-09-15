@@ -154,7 +154,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		// invocation WOULD have fired.
 		seeds := settledSeedsForTemplate(tmplEdge, nil)
 		e.clearConvergedOutputs(rs, convergence, seeds)
-		rs.setSettledFloor(convergence, settledEdgesInto(e.workflow, seeds, convergence, evidenceFromBranches(nil)))
+		rs.setSettledFloor(convergence, settledTemplateEdgesInto(e.workflow, tmplEdge, convergence, nil))
 		return convergence, nil
 	}
 
@@ -370,7 +370,8 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 
-	next, err := e.processConvergence(rs, convergenceNodeID, results, settledSeedsForTemplate(tmplEdge, results))
+	floor := settledTemplateEdgesInto(e.workflow, tmplEdge, convergenceNodeID, results)
+	next, err := e.processConvergence(rs, convergenceNodeID, results, settledSeedsForTemplate(tmplEdge, results), floor)
 	if err == nil {
 		rs.parallel = nil
 	}

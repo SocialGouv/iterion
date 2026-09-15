@@ -184,7 +184,9 @@ func TestConvergenceFreshnessRespectsInvocationScope(t *testing.T) {
 				{branchID: "a", outputs: map[string]map[string]any{"a": {"partial": "discard failed branch"}}, err: errors.New("tail failed")},
 				{branchID: "b", outputs: map[string]map[string]any{"b": {"fresh": true}}, selectedIncoming: map[string][]store.IncomingEdge{"join": {{From: "b", To: "join"}}}},
 			}
-			if _, err := eng.processConvergence(rs, "join", results, []string{"a", "b"}); err != nil {
+			// No settled floor: this exercises the output view an invocation
+			// REPLACES, which is independent of the evidence it leaves behind.
+			if _, err := eng.processConvergence(rs, "join", results, []string{"a", "b"}, nil); err != nil {
 				t.Fatal(err)
 			}
 			for _, id := range []string{"a", "tail", "untaken"} {

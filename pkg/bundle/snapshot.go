@@ -51,6 +51,14 @@ func (s *Snapshot) AddDir(name, dir string) error {
 		if walkErr != nil {
 			return walkErr
 		}
+		// Operator-owned runtime storage may itself be a symlink. Exclude
+		// that path segment before following or inspecting its contents.
+		if entry.Name() == ".iterion" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("bundle snapshot: symlink %s is not portable", p)
 		}

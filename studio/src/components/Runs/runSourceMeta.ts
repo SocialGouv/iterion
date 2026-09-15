@@ -1,5 +1,6 @@
 import {
   ClockIcon,
+  ChatBubbleIcon,
   LightningBoltIcon,
   PersonIcon,
   RocketIcon,
@@ -22,6 +23,7 @@ type RadixIcon = typeof PersonIcon;
 // (fork / shard) follow. The "all" pseudo-value is rendered separately.
 export const SOURCE_KIND_ORDER: ReadonlyArray<RunSourceKind> = [
   "manual",
+  "studio_chat",
   "webhook",
   "schedule",
   "dispatcher",
@@ -49,6 +51,12 @@ export const SOURCE_META: Record<RunSourceKind, SourceMeta> = {
     description: "Launched by an operator (CLI, studio, or REST).",
     Icon: PersonIcon,
     variant: "neutral",
+  },
+  studio_chat: {
+    label: "Assistant",
+    description: "Launched from a Studio assistant conversation.",
+    Icon: ChatBubbleIcon,
+    variant: "accent",
   },
   // Inbound HTTP webhook (forge events, GitLab/GitHub, etc.) — the
   // service event spine in cloud mode.
@@ -108,6 +116,7 @@ export function normalizeSourceKind(raw: string | undefined | null): RunSourceKi
     case "fork":
     case "shard":
     case "manual":
+    case "studio_chat":
       return raw;
     default:
       return "manual";

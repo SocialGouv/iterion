@@ -304,6 +304,22 @@ type RunStore interface {
 	Capabilities() Capabilities
 }
 
+// RunBudgetOverridesPatcher is the narrow atomic seam used when a paused
+// conversational run activates a monotonic budget policy between turns. It
+// avoids a LoadRun+SaveRun full-document replacement racing a status/checkpoint
+// update. Older/wrapped stores may omit it; callers that already own LockRun
+// can safely fall back to SaveRun.
+type RunBudgetOverridesPatcher interface {
+	PatchRunBudgetOverrides(ctx context.Context, runID string, overrides *RunBudgetOverrides) error
+}
+
+func AsRunBudgetOverridesPatcher(s RunStore) RunBudgetOverridesPatcher {
+	if p, ok := s.(RunBudgetOverridesPatcher); ok {
+		return p
+	}
+	return nil
+}
+
 // QueuedAttemptStore is the optional atomic guard used when a queue delivery
 // is about to terminally fail a run before the runner has claimed it. Status
 // alone is not enough to identify that delivery: an operator resume creates a

@@ -109,6 +109,9 @@ const (
 
 // Generate parses a vendor description and produces a connector package.
 //
+// It proposes names without history. Regeneration of a published package must
+// reconcile them with identity.Lock before applying overlays, as the CLI does.
+//
 // The result is checked with spec.Package.ValidateGenerated, not the complete
 // Validate: a generated package is one HALF of a connector, and the pieces
 // only an overlay can supply — an auth scheme a vendor documents in prose, a

@@ -127,6 +127,19 @@ tasks:
       - corepack pnpm install --prefer-offline
       - ./node_modules/.bin/playwright install chromium
 
+  demo:copi:
+    desc: Present Copi creating, launching, watching and recovering a run in a headed browser
+    dir: studio
+    deps: [build]
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - node e2e/guard.mjs
+      - |
+        ITERION_COPI_DEMO=1 \
+          ITERION_E2E_DEMO_DELAY_MS="${ITERION_E2E_DEMO_DELAY_MS:-1200}" \
+          ./node_modules/.bin/playwright test e2e/specs/assistant-demo.spec.ts \
+          --project=chromium --headed --workers=1
+
   test:goldens:
     desc: Run bot golden replay tests (schema + invariant checks on recorded LLM fixtures; no API keys)
     cmds:
@@ -507,7 +520,7 @@ tasks:
       - task: dsl:check
 
   dsl:gen:
-    desc: Regenerate the DSL property reference + the grammar tables + the skills' property section from the parser's registry (pkg/dsl/spec)
+    desc: Regenerate DSL docs, skills and Monaco vocabulary from the parser and property registry
     cmds:
       - go run -mod=vendor ./cmd/iterion dsl spec --write
 

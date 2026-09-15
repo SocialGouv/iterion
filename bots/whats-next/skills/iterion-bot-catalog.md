@@ -72,6 +72,7 @@ Walk top-to-bottom; first match wins.
 | If the work sounds like… | → `assignee` |
 |---|---|
 | "where should this project go next?", "long-term vision", "architectural direction", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) AND the project is mature/stable | `evolve` |
+| "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature-dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
 | "build a new app from scratch", "greenfield from a prompt" — no existing codebase to extend | `app-dev` |
@@ -187,6 +188,21 @@ before you walk the table on a new roadmap item.
 - Tie-break: "is there an open PR / unmerged branch they want
   reviewed?" → `branch-improve-loop`. "is the work
   workspace-wide / no specific branch?" → `whole-improve-loop`.
+
+### `copilot` (Copi) vs `whats-next` (Nexie) vs `feature-dev` (Featurly)
+
+- `copilot` / Copi is the **engine assistant**. Its subject is iterion
+  itself — the DSL, the Cxxx diagnostics, run/resume/sandbox/backends,
+  how to read a run store. It has no direct write tool, but it owns repairs
+  exposed by Studio's authoring bridge: the host previews, validates and
+  applies its bounded proposals under the operator's policy.
+- `whats-next` / Nexie is the **tactical orchestrator** for the *target
+  repo*: what to work on this week, which bot to stamp, the board.
+- `feature-dev` / Featurly is the **worker** that authors and lands a
+  missing bot in the repo.
+- Tie-break: "what is C083 / why did run 019f… fail / draft this
+  workflow for me to check" → Copi. "what should we do this week?" →
+  Nexie (usually not a card). "build the bot and commit it" → Featurly.
 
 ### `evolve` (Evoly) vs `whats-next` (Nexie) — altitude
 
@@ -337,6 +353,7 @@ dispatcher routes on it), never the persona.
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
 | Campy | `campaign` |
+| Copi | `copilot` |
 | Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
@@ -530,7 +547,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `delivery_reserve_floor_minutes` (int), `delivery_reserve_ratio` (float), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `delivery_reserve_floor_minutes` (int), `delivery_reserve_ratio` (float), `forge_delivery_preflight_url` (string), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `campaign` — Campy
@@ -568,6 +585,54 @@ with blocked lots requalified against the final tree.
   authority over it is measuring whether it advances.
 - **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
+
+### `copilot` — Copi
+
+Conversational iterion assistant. Terra (GPT-5.6) is the visible entry and
+executor in a standing chat loop. It handles simple requests directly; for
+complex work it asks a private Sol (GPT-5.6) reflection node for a plan.
+Both GPT agents can fall back to Claude Opus while retaining their context. A
+fresh judge debates that plan, using Claude Opus then Kimi K3 then Grok when
+needed, before Terra verifies and carries it out. If execution finds a real
+blocker, Terra returns it to that same private planning loop. The subject is
+iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
+semantics, backends, bundles and convergence doctrine. Three
+postures the operator can switch mid-conversation — info (explain
+and orient), design (draft a workflow, which the run compiles with
+`iterion validate` before the reply is shown), debug (diagnose a
+run from its real events).
+Read-only by default: native Bash, Grep, Write, Edit and WebFetch stay
+denied. Copi gets a workspace-bounded, credential-filtered content search
+and paginated reads whose continuation markers make large-file clipping
+explicit. When file/run evidence cannot reach a live source of truth such
+as Postgres, a separate diagnostic shell alias pauses for approval of the
+exact command; it is never prefix-allow-listed. Run evidence comes through
+the host-owned, capability-gated `runs.read` tools, never through guessed
+store paths. For the active bot it may return
+bounded exact replacements for companion files explicitly declared in that
+bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
+them under the operator's action policy. Copi itself still has no write
+tool. Every turn ends
+at a budget-free chat pause — the session stays reachable for days,
+and a rolling context_brief carries the conversation across server
+restarts, redeploys and cloud pod changes. Only an explicit "close"
+ends the session. You only read Terra's final answer: plans and judge
+critiques are private. Reflected work is bounded, so a blocked execution
+cannot silently spin forever.
+
+- **Use when**:
+  Use to ask questions about iterion itself, from anywhere: what a
+  diagnostic code means, why a run paused or failed, how to write or
+  fix a .bot, which bot to reach for, how backends/sandbox/resume
+  behave. Also the drafting partner for a new bot — it writes the
+  workflow and a deterministic node compiles it before you read the
+  answer, so a draft is never presented as working on the agent's
+  word alone. It advises about whatever workspace it is pointed at;
+  it never edits or commits directly; the Studio-owned authoring bridge is the
+  only write path it may request.
+- **Triggers**: copi, copilot
+- **Vars**: `initial_message` (string), `mode` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Path**: `bots/copilot/main.bot`
 
 ### `dep-update-guard` — Vetty
 
@@ -786,7 +851,7 @@ pull request (PR; merge request on GitLab).
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `delegation_instructions` (string), `failure_context` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini

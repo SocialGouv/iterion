@@ -34,10 +34,11 @@ func TestResume_BareSpecInvokesSourceFiller(t *testing.T) {
 
 	// The run's hash matches the STORED source; the persisted FilePath
 	// deliberately does not exist on this "pod".
-	_, wantHash, _, err := compileForLaunch("", fillerBotSrc, "")
+	_, wantSources, _, err := compileForLaunch("", fillerBotSrc, "")
 	if err != nil {
 		t.Fatalf("compile stored source: %v", err)
 	}
+	wantHash := wantSources.Hash
 	if err := st.SaveRun(ctx, &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            "run-filler",
@@ -103,10 +104,11 @@ func TestResume_ResolvedSpecSkipsFiller(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	ctx := context.Background()
-	_, wantHash, _, err := compileForLaunch("", fillerBotSrc, "")
+	_, wantSources, _, err := compileForLaunch("", fillerBotSrc, "")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
+	wantHash := wantSources.Hash
 	if err := st.SaveRun(ctx, &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            "run-resolved",

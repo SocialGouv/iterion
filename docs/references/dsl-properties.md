@@ -1,5 +1,11 @@
 # Iterion `.bot` property reference
 
+The same `iterion dsl spec --write` command generates Monaco's lexical
+keywords and properties per kind in
+[`iterDsl.generated.ts`](../../studio/src/lib/iterDsl.generated.ts).
+The lexer supplies its keyword table; this registry supplies the properties.
+`task dsl:check` verifies that module alongside this reference.
+
 Every declaration kind, node kind and block of the DSL, with the properties
 each accepts, the shape of every value and one line on what it means. This
 page is **generated** from the parser's property registry
@@ -214,6 +220,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `system` | ident | Prompt declaration used as the system prompt |
 | `user` | ident | Prompt declaration used as the user message |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
+| `session_slot` | ident | Named durable session slot; requires session: persist |
 | `tools` | tool list | Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
@@ -260,6 +267,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `system` | ident | Prompt declaration used as the system prompt |
 | `user` | ident | Prompt declaration used as the user message |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
+| `session_slot` | ident | Named durable session slot; requires session: persist |
 | `tools` | tool list | Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |

@@ -73,6 +73,14 @@ func ValidateResumeWorkflowHash(runID, persistedHash, currentHash string, force 
 // failed-resumable runs, execution restarts from the node after the last
 // successfully completed one (re-executing the failed node).
 func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]any) error {
+	return e.ResumeWithHostInputs(ctx, runID, answers, nil)
+}
+
+// ResumeWithHostInputs resumes a run while carrying host-attested, ephemeral
+// fields into the paused human node's downstream output. Host inputs are not
+// persisted as human answers or artifacts; callers must be able to derive
+// them again from the durable run record on every resume.
+func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) error {
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -86,7 +94,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	// Preserve the established source-change classification before the
 	// artifact guard reports derivative publish/schema mismatches. Dispatchers
 	// use this typed error to park the run for an explicit forced resume.
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(ctx, r); err != nil {
 		return err
 	}
 	// Engine.Resume is also a public execution boundary (the CLI calls it
@@ -165,7 +173,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
-		return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
+		return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		// paused_operator resumes via the same machinery as cancelled
 		// runs: checkpoint preserved, no pending interaction, restart
@@ -186,7 +194,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		// pre-first-node failure (e.g. a runner-side clone-prep error) left
 		// no checkpoint at all.
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
-			return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
+			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	default:
@@ -197,26 +205,32 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // checkWorkflowHash validates that the workflow source has not changed since
 // the run was started. When forceResume is set, a mismatch is logged as a
 // warning instead of causing an error.
-func (e *Engine) checkWorkflowHash(r *store.Run) error {
-	err := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, e.forceResume)
-	// A run launched before its bundle's prompts entered the digest recorded
-	// the bare main.bot's; accept it — and, below, the artifacts it
-	// published under that revision — without rewriting the run, which
-	// would race every other writer of the document outside the claim.
-	if err != nil && e.bundle != nil && LegacyBareDigestMatches(r, e.bundle.IterPath) {
-		e.legacyDigestAccepted = true
-		if e.logger != nil {
-			e.logger.Warn(
-				"run %q recorded the bare digest of %s (%s) from before its bundle's prompts entered the workflow digest; accepted against the bundle's (%s) — nothing in the source changed, and the artifacts it published under that revision are accepted with it",
-				r.ID,
-				e.bundle.IterPath,
-				shortWorkflowHash(r.WorkflowHash),
-				shortWorkflowHash(e.workflowHash),
-			)
-		}
-		return nil
+func (e *Engine) checkWorkflowHash(ctx context.Context, r *store.Run) error {
+	workflowChanged := r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash
+	workflowErr := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, false)
+	_, bundleErr := ResolveResumeBundleWorkflow(r, e.bundle, e.filePath, false)
+	// Accept legacy bare-source digests only when the bundle identity still
+	// matches; a shared dependency change must retain its explicit force gate.
+	legacyPath := e.filePath
+	if legacyPath == "" && e.bundle != nil {
+		legacyPath = e.bundle.IterPath
 	}
-	if err == nil && e.forceResume && r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash {
+	if workflowErr != nil && bundleErr == nil && e.bundle != nil && LegacyBareDigestMatches(r, legacyPath) {
+		e.legacyDigestAccepted = true
+		workflowErr = nil
+		workflowChanged = false
+		if e.logger != nil {
+			e.logger.Warn("run %q recorded a legacy bare-source digest; accepting unchanged workflow with its bundle resources", r.ID)
+		}
+	}
+	if !e.forceResume {
+		if workflowErr != nil {
+			return workflowErr
+		}
+		return bundleErr
+	}
+	bundleChanged := bundleErr != nil
+	if workflowChanged {
 		if e.logger != nil {
 			e.logger.Warn(
 				"workflow source has changed since run %q was started (expected %s, got %s); resuming anyway (--force)",
@@ -226,7 +240,23 @@ func (e *Engine) checkWorkflowHash(r *store.Run) error {
 			)
 		}
 	}
-	return err
+	if workflowChanged || bundleChanged {
+		data := map[string]any{
+			"workflow_changed": workflowChanged,
+			"bundle_changed":   bundleChanged,
+			"previous_hash":    r.WorkflowHash,
+			"current_hash":     e.workflowHash,
+		}
+		if bundleErr != nil {
+			data["bundle_reason"] = bundleErr.Error()
+		}
+		if e.store != nil {
+			if err := e.emit(ctx, r.ID, store.EventRunResumeOverride, "", data); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func shortWorkflowHash(hash string) string {
@@ -836,6 +866,10 @@ func (e *Engine) rebuildArtifactsWithRevisions(ctx context.Context, runID string
 // resumeFromPause resumes a paused run by recording human answers and
 // continuing execution from the node after the human checkpoint.
 func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any, prepared ...*resumeArtifactState) error {
+	return e.resumeFromPauseWithHostInputs(ctx, r, answers, nil, prepared...)
+}
+
+func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run, answers, hostInputs map[string]any, prepared ...*resumeArtifactState) error {
 	runID := r.ID
 	if r.Checkpoint == nil {
 		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
@@ -932,7 +966,14 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	if outputs == nil {
 		outputs = make(map[string]map[string]any)
 	}
-	outputs[humanNodeID] = answers
+	nodeOutput := cloneResumeInputs(answers)
+	if nodeOutput == nil {
+		nodeOutput = make(map[string]any)
+	}
+	for key, value := range hostInputs {
+		nodeOutput[key] = value
+	}
+	outputs[humanNodeID] = nodeOutput
 
 	// Persist artifact if the human node has publish, then mark it finished.
 	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
@@ -1037,7 +1078,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	e.markPreNodeBoundary(rs, humanNodeID)
 
 	// Select edge from the human node to find the next node.
-	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, answers)
+	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, nodeOutput)
 	if err != nil {
 		return e.failRunErrWithCheckpoint(rs, humanNodeID, err)
 	}
@@ -1180,6 +1221,17 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 	return loopErr
 }
 
+func cloneResumeInputs(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
 // recordHumanAnswers loads the pending interaction (falling back to the
 // checkpoint's embedded questions if the on-disk file is missing), stamps
 // the operator's answers + AnsweredAt, writes the interaction back, and
@@ -1307,6 +1359,12 @@ func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Che
 // restart_node}, so the trace names the retry. nil data keeps the plain
 // human-pause shape.
 func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any, allowed ...store.RunStatus) error {
+	if e.expectedResumeStatus != "" {
+		if e.expectedResumeStatus == store.RunStatusCancelled {
+			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", r.ID)
+		}
+		allowed = []store.RunStatus{e.expectedResumeStatus}
+	}
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
@@ -1326,6 +1384,18 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 // without the stamp the first one needs.
 func (e *Engine) markResumed(ctx context.Context, runID string, data map[string]any) error {
 	e.stampEffectiveBudget(ctx, runID)
+	if e.resumeReceiptID != "" {
+		if data == nil {
+			data = map[string]any{}
+		} else {
+			copy := make(map[string]any, len(data)+1)
+			for key, value := range data {
+				copy[key] = value
+			}
+			data = copy
+		}
+		data["receipt_id"] = e.resumeReceiptID
+	}
 	return e.emit(ctx, runID, store.EventRunResumed, "", data)
 }
 
@@ -1750,8 +1820,15 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 // flip already applied (see Resume's queued case — routed here only when a
 // checkpoint exists). The CAS still rejects double claims.
 func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *store.Checkpoint, restartNodeID string) error {
+	allowed := []store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued}
+	if e.expectedResumeStatus != "" {
+		if e.expectedResumeStatus == store.RunStatusCancelled {
+			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", runID)
+		}
+		allowed = []store.RunStatus{e.expectedResumeStatus}
+	}
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
-		[]store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued})
+		allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
@@ -2451,10 +2528,15 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 		return e.handleAwaitEscalation(ctx, rs, nodeID, node, ni, depth)
 	}
 	switch nodeInteraction(node) {
-	case ir.InteractionHuman, ir.InteractionAsync:
+	case ir.InteractionHuman, ir.InteractionAsync, ir.InteractionHumanOrHost:
 		// interaction: async only changes the NON-blocking tools; a
 		// blocking ask_user from such a node is a deliberate hard stop,
 		// identical to interaction: human.
+		//
+		// human_or_host declares an ADDITIONAL source for the gate's answer
+		// (the host), never a different pause. Leaving it out here would
+		// send it to the default arm and fail the run on the one path — a
+		// mid-turn ask_user — where the mode must change nothing at all.
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:
@@ -2526,11 +2608,11 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // answers merged into the node input. It uses the delegate's session ID
 // for session continuity so the backend can resume where it left off.
 //
-// When the prior interaction came from the native ask_user tool, the
-// question text is also relayed via reserved keys so the executor can
-// prepend a "[PRIOR INTERACTION]" block to the user prompt — without
-// this, claw's stateless re-invocation would lose the question and the
-// LLM might call ask_user with the same question again.
+// The prior interaction is also relayed via reserved keys so the executor can
+// prepend it to the user prompt. Native ask_user gets its historical scalar
+// framing; arbitrary `_interaction_questions` maps need the same continuity,
+// otherwise their answers exist in the checkpoint/input but are invisible to
+// a prompt that did not explicitly reference the model-chosen field names.
 func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int) error {
 	// CLOSE the stop window before re-invoking. This path does not go
 	// through markPreNodeBoundary — the node never re-enters the dispatch
@@ -2554,6 +2636,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		if a, ok := answers[delegate.AskUserQuestionKey]; ok {
 			nodeInput[delegate.PriorAskUserAnswerKey] = a
 		}
+	} else {
+		nodeInput[delegate.PriorInteractionQuestionsKey] = ni.Questions
+		nodeInput[delegate.PriorInteractionAnswersKey] = answers
 	}
 
 	// Tool-permission approval: when the pause carried a permission marker,
@@ -3073,17 +3158,20 @@ func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounte
 // forced resume also persists its artifact-compatibility acknowledgement for
 // the target revision; an ordinary unchanged resume still touches nothing.
 func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
-	src := e.resolveWorkflowSource()
+	src, files := e.recordedSources()
 	if r == nil {
 		return
 	}
-	sourceChanged := src != "" && src != r.WorkflowSource
+	sourceChanged := src != "" && (src != r.WorkflowSource || !sameSourceFiles(files, r.WorkflowSources))
 	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""
 	if !sourceChanged && !recordArtifactCompatibility {
 		return
 	}
 	if sourceChanged {
 		r.WorkflowSource = src
+		// The unit's files follow the main, or go with it: a bot that is
+		// one file again records none.
+		r.WorkflowSources = files
 		if e.workflowHash != "" {
 			r.WorkflowHash = e.workflowHash
 		}
@@ -3097,6 +3185,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		// fail safely while still allowing later resumes at the accepted hash.
 		if src == "" && r.WorkflowHash != e.workflowHash {
 			r.WorkflowSource = ""
+			r.WorkflowSources = nil
 		}
 		r.WorkflowHash = e.workflowHash
 		r.ArtifactCompatibilityRevision = e.workflowHash
@@ -3121,6 +3210,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		return
 	}
 	fresh.WorkflowSource = r.WorkflowSource
+	fresh.WorkflowSources = r.WorkflowSources
 	fresh.WorkflowHash = r.WorkflowHash
 	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
 	// Preserve every execution-context field from the freshly loaded record.

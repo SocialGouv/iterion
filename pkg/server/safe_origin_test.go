@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,41 @@ func TestProjectMutationsRejectCrossOrigin(t *testing.T) {
 	for _, h := range handlers {
 		t.Run(h.name, func(t *testing.T) {
 			r := httptest.NewRequest(h.method, h.path, nil)
+			r.Host = "iterion.example.com"
+			r.Header.Set("Origin", "https://evil.example")
+			r.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			h.fn(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s: cross-origin status = %d; want %d (requireSafeOrigin guard missing?)",
+					h.name, w.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+// TestAssistantWatchMutationsRejectCrossOrigin is the same guard for the
+// durable assistant-watch/mission handlers. A watch arms a link that later
+// force-resumes an assistant run and spends LLM budget; decodeJSONCapped
+// does not check Content-Type, so a text/plain POST is a CORS simple
+// request and reaches the handler with no preflight. The create and stop
+// handlers shipped without the gate their mission siblings already had.
+func TestAssistantWatchMutationsRejectCrossOrigin(t *testing.T) {
+	s := &Server{cfg: Config{Port: 4891}}
+	handlers := []struct {
+		name   string
+		method string
+		path   string
+		fn     func(http.ResponseWriter, *http.Request)
+	}{
+		{"create watch", http.MethodPost, "/api/runs/x/assistant-watches", s.handleCreateAssistantWatch},
+		{"stop watch", http.MethodDelete, "/api/assistant-watches/x", s.handleStopAssistantWatch},
+		{"create mission", http.MethodPost, "/api/runs/x/assistant-missions", s.handleCreateAssistantMission},
+		{"stop mission", http.MethodPost, "/api/runs/x/assistant-missions/y/stop", s.handleStopAssistantMission},
+	}
+	for _, h := range handlers {
+		t.Run(h.name, func(t *testing.T) {
+			r := httptest.NewRequest(h.method, h.path, strings.NewReader(`{}`))
 			r.Host = "iterion.example.com"
 			r.Header.Set("Origin", "https://evil.example")
 			r.Header.Set("Content-Type", "text/plain")

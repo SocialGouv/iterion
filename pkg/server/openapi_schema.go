@@ -5,8 +5,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/modelcatalog"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
@@ -35,6 +37,15 @@ func routeSchemas() map[string]routeOp {
 		// Auth + identity.
 		"POST /api/auth/login": {request: loginReq{}, response: AuthMeResponse{}},
 		"GET /api/auth/me":     {response: AuthMeResponse{}},
+
+		// OAuth metadata projections exclude provider UUIDs and sealed secrets.
+		"GET /api/me/oauth/connections":         {response: oauthConnectionsView{}},
+		"GET /api/teams/{id}/oauth/connections": {response: oauthConnectionsView{}},
+		"GET /api/orgs/{id}/oauth/connections":  {response: oauthConnectionsView{}},
+		"GET /api/admin/llm/oauth/connections":  {response: oauthConnectionsView{}},
+		"POST /api/teams/{id}/credentials/preview": {
+			request: runview.CredentialPreviewRequest{}, response: runview.CredentialPreview{},
+		},
 
 		// Personal access tokens (the CLI mints/lists these).
 		"POST /api/me/tokens": {
@@ -132,6 +143,19 @@ func routeSchemas() map[string]routeOp {
 			}{},
 		},
 		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{}},
+		"POST /api/runs/preview-cost": {
+			request:  previewCostRequest{},
+			response: previewCostResponse{},
+		},
+
+		// Model registry — known x usable x capabilities x pricing. Typed so
+		// the studio's picker (and every LaunchView node row) reads the same
+		// shape the CLI prints.
+		"GET /api/models":                  {response: modelcatalog.Catalog{}},
+		"GET /api/v1/preferences/model":    {response: modelPrefResponse{}},
+		"PUT /api/v1/preferences/model":    {request: modelPrefRequest{}, response: modelPrefResponse{}},
+		"DELETE /api/v1/preferences/model": {response: modelPrefResponse{}},
+		"GET /api/backends/detect":         {response: detect.Report{}},
 
 		// Model capabilities — the limits and published prices a model
 		// picker captions its selection with.

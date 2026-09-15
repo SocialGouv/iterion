@@ -1,8 +1,21 @@
-# Revi → Billy on this repo — the operating habit
+# Revi → Billy on this repo — PAUSED, and how to run a deliberate pass
+
+> **Paused since 2026-09-15.** `/billy` is no longer the default answer to a
+> red gate on this repo, and the zero-touch lane is **off**. A fixer campaign
+> is a whole-session claude_code agent whose verify gate re-runs the full
+> build+test (~10 min a pass), drawn from the shared forfait / platform
+> credential — too expensive until the team spends its own BYOK key. Findings
+> are the developer's to fix, through the local loop:
+> [agents/review-and-merge.md](agents/review-and-merge.md) +
+> [agents/adversarial-review-loop.md](agents/adversarial-review-loop.md).
+>
+> **This file stays current and worth reading** — for a pass someone chooses
+> to pay for (`/billy` still answers), and for re-arming the lane. Where it
+> says "the habit", read "the habit when Billy is armed".
 
 When Revi (`bots/review-pr`) reviews a pull request of **this repository** and
-leaves findings, the habit is to **comment `/billy` on the PR** and let the
-fixer work — not to hand-fix the findings in an interactive session. iterion is
+leaves findings, an armed Billy is invoked by **commenting `/billy` on the
+PR** rather than hand-fixing in an interactive session. iterion is
 a code factory; its own PRs are the first place its review→fix loop must earn
 its keep. Every `/billy` run here is a dogfood run: monitor it, fix the
 frictions it surfaces (bot or engine), and write the bilan.
@@ -33,21 +46,34 @@ repo (`min_replier_role` on the command — verified live via the forge
 permission API, not from the payload).
 
 There is deliberately **no PR-open auto-launch for Billy**: opening a PR only
-ever auto-REVIEWS it (Revi). Billy runs on a deliberate command — and, since
-2026-08-28, on a **red gate**: the zero-touch lane (`auto_fix_on_gate_failure`
-— a red gate launches the fixer by itself,
-[merge-gate.md#autofix](merge-gate.md#autofix)) is **enabled on this repo**,
-the manual habit having proven smooth. A red `revi/review` relaunches the
-fixer without a comment, bounded by the lane's own brakes (one attempt per
-head sha, five unattended passes per PR, the hold label). `/billy` remains
-the way to start a pass when the gate is green or the lane's passes are
-spent. One gotcha when flipping the flag: the `repo-bots` PATCH requires the
-FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is").
+ever auto-REVIEWS it (Revi). Billy runs on a deliberate command — that is now
+the ONLY way he runs here. The zero-touch lane (`auto_fix_on_gate_failure` —
+a red gate launches the fixer by itself,
+[merge-gate.md#autofix](merge-gate.md#autofix)) was enabled on this repo from
+2026-08-28 and is **off since 2026-09-15**: it was spending a full campaign on
+the shared credential with nobody typing a command. Re-arming it, and the
+`repo-bots` PATCH that does it, is in
+[agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused). One
+gotcha when flipping the flag either way: the `repo-bots` PATCH requires the
+FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is"),
+and an omitted `auto_fix_on_gate_failure` means "leave the current choice
+alone" — it has to be written explicitly.
 
-**Corollary of the lane**: before hand-fixing a red PR, check no fixer run is
-already in flight on it (`iterion remote runs list` or the gate's `pending`
-link) — a manual push while the fixer works recreates the mid-run-push
-collision the session discipline below warns about.
+**Corollary, whatever the lane is set to**: before hand-fixing a red or ejected
+PR, check no fixer run is already in flight on it — a manual push while the
+fixer works recreates the mid-run-push collision the session discipline below
+warns about. **`iterion remote runs list` is that check.** The PR's own
+statuses are per-lane and none covers every fixer, so none replaces it: the
+gate's `pending` link covers a reviewer and the zero-touch fixer,
+`iterion/fix-in-flight` covers the auto-heal, and a `/billy` pass shows nothing
+at all until its first commit
+([merge-gate.md](merge-gate.md#what-is-not-wired)).
+
+Turning the lane off does not retire the check: the **merge-queue auto-heal**
+dispatches the same brancher bot with no comment when the queue ejects a PR
+**for a healable reason**, and it never reads `auto_fix_on_gate_failure`
+([merge-gate.md](merge-gate.md#auto-heal-and-when-it-stands-down)). A heal in
+flight force-pushes the branch.
 
 ## <a name="what-the-command-seeds"></a>What the command seeds — you type nothing else
 
@@ -137,15 +163,17 @@ The webhook tail resolves everything from the PR and the repo integration:
   admin's own status write on the head (same context, "approved by
   @user: reason" in the description, the comment as `target_url`) or the
   admin merge-queue bypass.
-- **"Don't hand-fix" assumes Billy can run.** When the *weekly* cap is
-  hard-blocking, the reset can be days out and the habit has no path: fix the
-  findings yourself, say so on the PR against their finding ids, and write the
-  bilan for the launches that failed. Same when he burns his duration cap
-  without banking a commit — on a repo whose verify gate re-runs the whole
-  build+test (~10 min a pass here), 2h30 buys few passes, so a run sitting at
-  `running` with nothing pushed is worth cancelling rather than waiting out
-  (measured 2026-08-30: 2h31 for zero commits, see
-  [bot-runs/branch-improve-loop.md](bot-runs/branch-improve-loop.md)).
+- **A deliberate pass still needs Billy to be able to run.** When the *weekly*
+  cap is hard-blocking, the reset can be days out and the pass has no path:
+  fix the findings yourself, say so on the PR against their finding ids, and
+  write the bilan for the launches that failed. Same when he burns his
+  duration cap without banking a commit — on a repo whose verify gate re-runs
+  the whole build+test (~10 min a pass here), 2h30 buys few passes, so a run
+  sitting at `running` with nothing pushed is worth cancelling rather than
+  waiting out (measured 2026-08-30: 2h31 for zero commits, see
+  [bot-runs/branch-improve-loop.md](bot-runs/branch-improve-loop.md)). That
+  cost profile is also why the pass is no longer the default — see the pause
+  note at the top.
 
 ## Dogfood duty
 
@@ -159,3 +187,41 @@ loop on ourselves.
 The 2026-09-03 run on the watchdog PR (#646) is the reference for the
 banked-chain delivery and the weekly-cap wall:
 [bot-runs/branch-improve-loop.md](bot-runs/branch-improve-loop.md).
+
+
+## Workflow delivery permission preflight (#999)
+
+Billy 1.8 checks the branch before any planning or campaign analysis. A
+GitHub diff touching `.github/workflows/` (including rename sources,
+intermediate changes subsequently reverted, staged changes and untracked
+files) requires proof that the runtime token carries `workflows:write` and
+`contents:write`. Other diffs proceed normally. GitLab merge requests are
+outside this GitHub permission check.
+
+The App mint response supplies the actual permission set. The server stores
+it with the sealed managed token, its full SHA256 identity and expiry;
+rotation replaces both together. The installation grant and the diagnostic
+last-minted-per-installation cache never authorize the check. The run sends
+only its token digest to the read-only, repository/team/host-scoped
+`POST /api/v1/forge/delivery-preflight` callback under its existing run grant.
+No permission is added to the App automatically.
+
+A missing, expired, rotated or narrower proof refuses the run with
+`FORGE_PERMISSION_DENIED` before analysis. The operator can deliberately
+approve delivery permissions on the App, refresh its managed token and
+launch a new run. Classic PAT/OAuth tokens can instead prove `workflow` plus
+repository scopes through the actual token's GitHub `/user` response.
+Fine-grained PATs and external App tokens without managed mint evidence
+remain unverified; their permission cannot be inferred from token syntax.
+A missing callback on an older server fails closed for workflow changes;
+ordinary code changes retain their path. This uses existing bot variables
+and a deterministic tool, so no queue-version change is required.
+
+The check is an admission snapshot, not a guarantee against later credential
+revocation or newly authored workflow files. A later push/bank refusal still
+requires the bank failure alert tracked in #885 (PR #1194).
+
+Proof: `TestFixerWorkflowDiffRefusesBeforeAnalysis` runs the compiled catalog
+workflow and real shell tools while counting forbidden analysis calls;
+`TestForgeDeliveryPreflightUsesActualTokenProof` covers the callback's scope
+and token binding. No live App permission was changed during validation.

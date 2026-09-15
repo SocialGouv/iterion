@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -710,12 +711,10 @@ func TestChainAdvancesOnUnclassifiedDespiteFilter(t *testing.T) {
 	}
 }
 
-// TestChainEvictsNodeSessionOnFallThrough: the in-process claw session
-// store is keyed (runID, nodeID) with NO provider fingerprint and
-// captures a FAILED attempt's messages, so carrying it across a
-// fall-through replays one provider's signed thinking blocks into
-// another — a 400 at best, a mangled conversation at worst.
-func TestChainEvictsNodeSessionOnFallThrough(t *testing.T) {
+// TestChainRollsBackSessionOnFallThrough: a failed route must not erase the
+// last-good conversation. The fallback sees the baseline, while any partial
+// state captured by the failed route is discarded by the rollback helper.
+func TestChainRollsBackSessionOnFallThrough(t *testing.T) {
 	const runID, nodeID = "run-1", "review"
 	sessions := newNodeSessionStore()
 	sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`))
@@ -732,15 +731,14 @@ func TestChainEvictsNodeSessionOnFallThrough(t *testing.T) {
 	if _, err := e.dispatchChain(ctx, nodeID, chain, "claude-opus-5", build); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if snap := sessions.LoadSnapshot(runID, nodeID); snap != nil {
-		t.Errorf("the failed element's conversation survived the fall-through: %s", snap)
+	if snap := sessions.LoadSnapshot(runID, nodeID); !strings.Contains(string(snap), `"role":"assistant"`) {
+		t.Errorf("the last-good conversation was not preserved: %s", snap)
 	}
 }
 
-// A remembered fall-through is still a route change. A prior failed attempt
-// of this node may have left provider-specific messages in the session store,
-// even though the cooled primary is not called during this dispatch.
-func TestChainEvictsNodeSessionOnCooldownFallThrough(t *testing.T) {
+// A cooled route executes no provider call and therefore must leave the
+// last-good conversation untouched for the fallback.
+func TestChainPreservesSessionOnCooldownFallThrough(t *testing.T) {
 	const runID, nodeID = "run-1", "review"
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
@@ -785,8 +783,8 @@ func TestChainEvictsNodeSessionOnCooldownFallThrough(t *testing.T) {
 	if got := len(head.tasks); got != 1 {
 		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
 	}
-	if snap := sessions.LoadSnapshot(runID, nodeID); snap != nil {
-		t.Errorf("the prior attempt's conversation survived the cooldown route change: %s", snap)
+	if snap := sessions.LoadSnapshot(runID, nodeID); !strings.Contains(string(snap), `"role":"assistant"`) {
+		t.Errorf("the last-good conversation was not preserved: %s", snap)
 	}
 }
 

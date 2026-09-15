@@ -73,7 +73,7 @@ func GrantFromAnswer(answer, tool string, input map[string]any) (rule string, ap
 }
 
 // GrantsFrom normalizes whatever the runtime put under GrantInputKey
-// into the list of allow rules it stands for.
+// into the list of trusted grants it stands for.
 //
 // Three shapes reach here. A []string is the current form: every grant
 // the run has earned, so an `allow always` answered at one pause still

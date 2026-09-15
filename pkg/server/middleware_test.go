@@ -50,8 +50,11 @@ func TestIsPublicPathRunTokenSurfaces(t *testing.T) {
 		want bool
 	}{
 		{"/api/v1/forge/publish-review", true},
+		{"/api/v1/forge/delivery-preflight", true},
+		{"/api/v1/forge/delivery-preflightX", false},
 		{"/api/v1/mcp/board", true},
 		{"/api/v1/mcp/board/tools", true},
+		{"/api/v1/mcp/runs", true},
 		{"/api/v1/forge/publish-reviewX", false}, // exact match only
 		{"/api/v1/native", false},                // stays JWT-gated
 		{"/api/runs", false},

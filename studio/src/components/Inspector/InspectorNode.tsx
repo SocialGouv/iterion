@@ -29,6 +29,7 @@ import { CheckboxField, CommittedTextField, NodeFormHeader, SelectFieldWithCreat
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import NodeRunsChip from "./NodeRunsChip";
+import ProvenanceChip from "@/components/shared/ProvenanceChip";
 import { Button, IconButton } from "@/components/ui";
 import { TrashIcon } from "@radix-ui/react-icons";
 
@@ -58,6 +59,7 @@ type NodeMatch =
 
 export default function InspectorNode({ nodeId }: { nodeId: string }) {
   const document = useDocumentStore((s) => s.document);
+  const unit = useDocumentStore((s) => s.unit);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const renameNode = useDocumentStore((s) => s.renameNode);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
@@ -136,6 +138,7 @@ export default function InspectorNode({ nodeId }: { nodeId: string }) {
         onRename={handleRename}
         onDelete={() => setConfirmDelete(true)}
       />
+      {unit && match.decl.file ? <ProvenanceChip file={match.decl.file} /> : null}
       <NodeRunsChip nodeId={nodeId} />
       <div className="flex-1 overflow-y-auto p-3">
         <NodeForm match={match} />

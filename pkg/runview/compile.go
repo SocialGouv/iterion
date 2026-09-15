@@ -3,6 +3,7 @@ package runview
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"os"
@@ -12,32 +13,97 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
-// computeWorkflowHash hashes the workflow source bytes together with
-// any bundle resources whose content materially affects the compiled
-// workflow. Used by `iterion resume`'s change-detection: if the hash
-// changes between original run and resume, the operator must pass
-// --force.
-//
-// Without bundle inclusion, a bundle upgrade that swaps a prompt body
-// produces the same hash as the original run — silently changing what
-// the agent reads on resume.
-func computeWorkflowHash(src []byte, b *bundle.Bundle, _ *ast.File) string {
+// ErrInlineImport is the refusal of an inline source that imports: text
+// handed over without the directory it came from — an upload, a document
+// with no bundle behind it — names fragments that did not travel with it,
+// and compiling the main alone would be compiling a program with pieces
+// missing. The file itself launches from its directory, where the
+// fragments are read beside it.
+var ErrInlineImport = errors.New("an inline source cannot import: its fragments did not travel with it (launch the .bot from its directory, where lib/ is read beside it)")
+
+// CompiledSource is what a compile read, for the run to record and a
+// resume to compare: the identity of the source and the files it was
+// made of.
+type CompiledSource struct {
+	// Hash is the workflow identity: the main's bytes, the bundle's
+	// prompts/*.md and presets/*.md, then — only when the unit has them —
+	// its fragments and the files its {{include}} markers read. A
+	// single-file bot without includes hashes exactly as it always has, so
+	// no recorded run compares differently.
+	Hash string
+	// Main is the main's key in Files.
+	Main string
+	// Files maps each file of the unit, by slash path from its root, to
+	// its text.
+	Files map[string]string
+	// Included lists the files the {{include}} markers read, by slash path
+	// from the unit's root (absolute when outside it), sorted.
+	Included []string
+}
+
+// workflowIdentity folds the unit's source into one digest, in an order
+// that keeps every identity recorded so far: the main's bytes first, the
+// bundle's resource directories next (a prompt body or a preset's vars
+// change what the agent reads, so a bundle upgrade must invalidate a
+// resume — `iterion resume` refuses a changed identity without --force),
+// and only then the fragments the main imports and the include closure
+// the compiler read, each framed by its path, sorted — so a fragment or
+// an included file edited under a parked run is a source change the
+// resume gate sees.
+func workflowIdentity(u *unit.Unit, b *bundle.Bundle, includedFiles []string) (string, []string, error) {
 	h := sha256.New()
-	h.Write(src)
+	h.Write(u.Files[0].Source)
 	if b != nil {
-		// Bundle resources whose content changes what the agent reads — a
-		// prompt body or a preset's bias/vars — must invalidate the resume
-		// hash, same as the .bot source. Each is a directory of *.md files.
 		hashBundleResourceDir(h, b.PromptsDir, "\x00bundle.prompt:")
 		hashBundleResourceDir(h, b.PresetsDir, "\x00bundle.preset:")
 	}
-	sum := h.Sum(nil)
-	return hex.EncodeToString(sum)
+	fragments := append([]unit.File(nil), u.Files[1:]...)
+	sort.Slice(fragments, func(i, j int) bool { return fragments[i].Rel < fragments[j].Rel })
+	for _, f := range fragments {
+		h.Write([]byte("\x00unit.file:"))
+		h.Write([]byte(f.Rel))
+		h.Write([]byte{0})
+		h.Write(f.Source)
+	}
+	included := make([]string, 0, len(includedFiles))
+	bodies := make(map[string][]byte, len(includedFiles))
+	for _, full := range includedFiles {
+		body, err := os.ReadFile(full)
+		if err != nil {
+			return "", nil, fmt.Errorf("cannot read included file %s: %w", full, err)
+		}
+		rel := includeRel(u.Root, full)
+		included = append(included, rel)
+		bodies[rel] = body
+	}
+	sort.Strings(included)
+	for _, rel := range included {
+		h.Write([]byte("\x00include:"))
+		h.Write([]byte(rel))
+		h.Write([]byte{0})
+		h.Write(bodies[rel])
+	}
+	return hex.EncodeToString(h.Sum(nil)), included, nil
+}
+
+// includeRel names an included file by its slash path from the unit's
+// root, and by its absolute path when it lies outside — an include
+// resolves beside the file that declares it, so only a unit with no root
+// on disk gets there.
+func includeRel(root, full string) string {
+	if root == "" {
+		return filepath.ToSlash(full)
+	}
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(full)
+	}
+	return filepath.ToSlash(rel)
 }
 
 // hashBundleResourceDir folds every *.md file under dir into h, in sorted
@@ -101,6 +167,26 @@ func CompileBundleWorkflow(path string, b *bundle.Bundle) (*ir.Workflow, string,
 	return compileWith(path, "", true, b)
 }
 
+// CompileSubbotWorkflow compiles a resolved child with its bundle context.
+// bot:// supplies the bundle directly; local workflow paths are promoted when
+// they live anywhere inside a directory bundle, including workflows/ exports.
+func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Workflow, string, *bundle.Bundle, error) {
+	b := resolvedBundle
+	if b == nil {
+		var err error
+		b, err = bundle.OpenForWorkflow(path)
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+	if b != nil {
+		wf, hash, err := CompileBundleWorkflow(path, b)
+		return wf, hash, b, err
+	}
+	wf, hash, err := CompileWorkflowWithHash(path)
+	return wf, hash, nil, err
+}
+
 // CompileWorkflowFromSource is the cloud-mode entry point: the workflow
 // content is supplied verbatim (uploaded by the studio SPA). Path is
 // retained as a logical label for diagnostics + MCP relative-path
@@ -134,20 +220,62 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // the path the operator named. The bundle the compile used is returned
 // (nil for inline source without one, or a loose file) so the launch
 // hands the engine the same handle it compiled against.
-func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, string, *bundle.Bundle, error) {
+func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
 	if bundleDir != "" {
 		b, err := bundle.OpenDir(bundleDir)
 		if err != nil {
-			return nil, "", nil, fmt.Errorf("open stored bot bundle: %w", err)
+			return nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		wf, hash, err := compileWith(path, source, true, b)
-		return wf, hash, b, err
+		wf, cs, err := compileUnit(path, source, true, b)
+		return wf, cs, b, err
 	}
 	if source != "" {
-		wf, hash, err := CompileWorkflowFromSource(path, source)
-		return wf, hash, nil, err
+		wf, cs, err := compileUnit(path, source, true, nil)
+		return wf, cs, nil, err
 	}
-	return CompileWorkflowPath(path)
+	b, err := bundleForPath(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	wf, cs, err := compileUnit(path, "", true, b)
+	return wf, cs, b, err
+}
+
+// insideDir reports whether path lies under dir (both absolute), symlinks
+// resolved on both sides when they can be.
+func insideDir(path, dir string) bool {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// hasFragmentDir reports whether a lib/ directory sits beside path.
+func hasFragmentDir(path string) bool {
+	info, err := os.Stat(filepath.Join(filepath.Dir(path), unit.FragmentDir))
+	return err == nil && info.IsDir()
+}
+
+// bundleForPath is the bundle a path-driven compile reads a workflow
+// against: its bundle when it is a bundle's main.bot, else the nearest
+// enclosing directory bundle of a workflow that lives inside one
+// (workflows/ exports), else nil for a loose file.
+func bundleForPath(path string) (*bundle.Bundle, error) {
+	b, err := ResolveBundleFromFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	if b == nil && filepath.Base(path) != bundle.MainBotFile {
+		b, err = bundle.OpenForWorkflow(path)
+		if err != nil {
+			return nil, fmt.Errorf("open workflow bundle: %w", err)
+		}
+	}
+	return b, nil
 }
 
 // ResolveBundleFromFilePath inspects filePath and, when it is the
@@ -184,17 +312,21 @@ func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 }
 
 func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
-	var src []byte
-	if inline != "" {
-		src = []byte(inline)
-	} else {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return nil, "", fmt.Errorf("cannot read file: %w", err)
-		}
-		src = body
+	wf, cs, err := compileUnit(path, inline, withHash, b)
+	if err != nil {
+		return nil, "", err
 	}
+	return wf, cs.Hash, nil
+}
 
+// compileUnit loads the unit the source belongs to, compiles its merged
+// program and reports what it read. A path is a unit on disk: the file
+// and the fragments its imports reach, read beside it. Inline text with a
+// bundle behind it — the studio launching a document — is that bundle's
+// unit with the document as its main, the fragments read beside the
+// bundle's main. Inline text alone is a unit of one file, and one that
+// imports is refused (ErrInlineImport): its fragments did not travel.
+func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
 	parserPath := path
 	if parserPath == "" {
 		parserPath = "<inline>"
@@ -204,51 +336,86 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 		// name — and the CLI hands the path over as typed.
 		parserPath = abs
 	}
-	pr := parser.Parse(parserPath, string(src))
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			return nil, "", fmt.Errorf("parse error: %s", d.Error())
+	var u *unit.Unit
+	switch {
+	case inline != "" && b != nil:
+		u = unit.LoadDirWithMain(b.IterPath, parserPath, []byte(inline))
+	case b != nil && !insideDir(parserPath, b.Dir) && !hasFragmentDir(parserPath):
+		// A copy of the bundle's main outside the bundle — the store's
+		// materialised copy a studio run records and resumes from — is
+		// that bundle's main: its fragments live beside the ORIGINAL. A
+		// file with a lib/ of its own beside it is a unit of its own,
+		// wherever its bundle is.
+		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot read file: %w", err)
+		}
+		u = unit.LoadDirWithMain(b.IterPath, parserPath, src)
+	case inline != "":
+		u = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
+		if len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
+			return nil, nil, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
+		}
+	default:
+		u = unit.LoadDir(parserPath)
+		if len(u.Files) == 0 {
+			// The main itself was not read: the error names the file the
+			// caller asked for, wrapped, as it always has.
+			if _, err := os.ReadFile(parserPath); err != nil {
+				return nil, nil, fmt.Errorf("cannot read file: %w", err)
+			}
 		}
 	}
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return nil, "", fmt.Errorf("no workflow found in %s", parserPath)
+	for _, d := range u.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
+		}
+	}
+	file := u.Merged
+	if file == nil || len(file.Workflows) == 0 {
+		return nil, nil, fmt.Errorf("no workflow found in %s", parserPath)
 	}
 
 	// Bundle prompts must merge into the AST before ir.Compile so the
 	// validator sees them when resolving node-level prompt references.
 	if b != nil {
-		if err := MergeBundlePrompts(pr.File, b); err != nil {
-			return nil, "", err
+		if err := MergeBundlePrompts(file, b); err != nil {
+			return nil, nil, err
 		}
 	}
 
-	// Compute the workflow hash AFTER the bundle merge so bundle prompt
-	// changes invalidate `iterion resume`'s change-detection. Hashing
-	// just the .bot source bytes (the previous behaviour) let a bundle
-	// upgrade swap the prompt body without bumping the hash, defeating
-	// the whole point of the gate.
-	hash := ""
-	if withHash {
-		hash = computeWorkflowHash(src, b, pr.File)
-	}
-
-	cr := ir.Compile(pr.File)
+	cr := ir.Compile(file)
 	if cr.HasErrors() {
 		for _, d := range cr.Diagnostics {
 			if d.Severity == ir.SeverityError {
-				return nil, "", fmt.Errorf("compile error: %s", d.Error())
+				return nil, nil, fmt.Errorf("compile error: %s", d.Error())
 			}
 		}
+	}
+	cs := &CompiledSource{Main: u.Main, Files: make(map[string]string, len(u.Files))}
+	for _, f := range u.Files {
+		cs.Files[f.Rel] = string(f.Source)
+	}
+	// The identity is taken after the compile — the include closure is what
+	// the compiler read — and after the bundle merge, so a bundle upgrade
+	// that swaps a prompt body invalidates `iterion resume`'s change
+	// detection as surely as an edit to the .bot does.
+	if withHash {
+		hash, included, err := workflowIdentity(u, b, cr.IncludedFiles)
+		if err != nil {
+			return nil, nil, err
+		}
+		cs.Hash, cs.Included = hash, included
 	}
 	mcpDir := "."
 	if path != "" {
 		mcpDir = filepath.Dir(path)
 	}
 	if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir); err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 
-	return cr.Workflow, hash, nil
+	return cr.Workflow, cs, nil
 }
 
 // BundleNameForPath is the declared id of the bundle a workflow path belongs
@@ -277,12 +444,12 @@ func BundleNameForPath(filePath string) string {
 // rewind, the export, a recipe's file — goes through it, so a run
 // launched on one surface resumes on another without `--force`.
 func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
-	b, err := ResolveBundleFromFilePath(path)
+	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(b.IterPath, b)
+		wf, hash, err := CompileBundleWorkflow(path, b)
 		return wf, hash, b, err
 	}
 	wf, hash, err := CompileWorkflowWithHash(path)

@@ -1,9 +1,12 @@
 package usagecap
 
 import (
+	"cmp"
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // Store shares what one process learned about a credential's usage windows
@@ -56,9 +59,10 @@ func keyFingerprintSuffix(credFP string) string {
 // ScopePlatform, and merging THOSE is not a compromise but the point — they
 // really are one subscription.
 //
-// credFP, when known, is the audit fingerprint of the credential itself
-// (secrets.FingerprintSHA256). It is what makes the meter follow the
-// CREDENTIAL and not the slot: a rotated token opens a fresh key, so a
+// credFP, when known, is the audit fingerprint of the credential or verified
+// provider account. It makes the meter follow the account rather than its
+// slot: replacing an account opens a fresh key, while a verified account's
+// token rotation keeps its key. Therefore a
 // seven-day reading recorded against the old account — legitimately fresh
 // until its own reset instant — cannot park runs that no longer draw on
 // it. Mesure : une clé neuve posée sur une team est restée bloquée des
@@ -72,6 +76,12 @@ func Key(backend, scope, credFP string) string {
 	}
 	if scope == "" {
 		scope = ScopePlatform
+	}
+	// Provider-verified identity follows the subscription, including when
+	// the same seat is connected independently on several Iterion tenants.
+	// Labels and legacy blob hashes retain their original scoped semantics.
+	if secrets.IsAccountFingerprint(strings.TrimSpace(credFP)) {
+		scope = "account"
 	}
 	k := backend + "|" + scope
 	if fp := strings.TrimSpace(credFP); fp != "" {
@@ -170,11 +180,68 @@ func (s *MemStore) Latest(_ context.Context, key string) ([]Reading, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	byWindow := s.data[key]
+	if backend, fp, ok := accountKeyParts(key); ok {
+		byWindow = map[Window]Reading{}
+		for candidate, readings := range s.data {
+			cb, cfp, valid := accountKeyParts(candidate)
+			if valid && cb == backend && cfp == fp {
+				for _, r := range readings {
+					mergeAccountReading(byWindow, r)
+				}
+			}
+		}
+	}
 	out := make([]Reading, 0, len(byWindow))
 	for _, r := range byWindow {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// accountKeyParts also recognizes scoped keys written by an older runner
+// during rollout. New readers see those observations without rewriting them.
+func accountKeyParts(key string) (backend, fp string, ok bool) {
+	backend, _, found := strings.Cut(key, "|")
+	i := strings.LastIndex(key, "|fp:")
+	if !found || i < 0 {
+		return "", "", false
+	}
+	fp = key[i+4:]
+	return backend, fp, secrets.IsAccountFingerprint(fp)
+}
+
+func mergeAccountReading(readings map[Window]Reading, next Reading) {
+	prev, had := readings[next.Window]
+	if !had || next.ObservedAt.After(prev.ObservedAt) {
+		readings[next.Window] = next
+		return
+	}
+	if next.ObservedAt.Equal(prev.ObservedAt) && preferTiedAccountReading(next, prev) {
+		readings[next.Window] = next
+	}
+}
+
+// Replica observations can share an exact timestamp. Use a total order so
+// neither Mongo cursor order nor Go map order decides whether a run is blocked.
+// A refusal wins, then the higher usage/streak. Otherwise equal observations
+// retain the latest reset; choosing the first reset could reopen a refused
+// account even though an equally recent observation still closes its window.
+func preferTiedAccountReading(next, prev Reading) bool {
+	if nr, pr := next.Status == StatusRejected, prev.Status == StatusRejected; nr != pr {
+		return nr
+	}
+	for _, order := range []int{
+		cmp.Compare(next.Utilization, prev.Utilization),
+		cmp.Compare(next.Refusals, prev.Refusals),
+		next.ResetsAt.Compare(prev.ResetsAt),
+		cmp.Compare(next.Status, prev.Status),
+		cmp.Compare(next.Source, prev.Source),
+	} {
+		if order != 0 {
+			return order > 0
+		}
+	}
+	return false
 }
 
 // DeleteByFingerprint drops every key carrying the credential's fp segment.

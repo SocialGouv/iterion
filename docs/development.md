@@ -21,6 +21,15 @@ direnv allow
 
 The repository also ships `.devcontainer/` for VS Code/Codespaces. Task automatically reads a root `.env` when present; it is gitignored and intended for local credential/config overrides.
 
+**pnpm via corepack:** the `studio/` workspace is locked to a specific
+pnpm version through `package.json`'s `packageManager` field. The
+Taskfile invokes pnpm as `corepack pnpm …` so the version is
+auto-dispatched without polluting the host install. Corepack ships
+with the `nodejs_24` package devbox already provides — no extra
+install. Don't run `corepack enable` inside devbox: the Nix store is
+read-only, the global symlink fails, and you don't need it (`corepack
+pnpm` works without enable).
+
 ## Build and checks
 
 ```bash

@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { isValidElement, memo, type ReactNode } from "react";
 import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -9,6 +9,11 @@ interface Props {
   // regular run view, and `lg` is reserved for text the operator must read
   // before making a human-review decision.
   size?: "sm" | "md" | "lg";
+  // Fold long fenced code blocks behind a disclosure, leaving the prose in
+  // full. For conversation surfaces, where an agent that pastes a whole `.bot`
+  // buries the sentence that explains it — the code is evidence the operator
+  // can open, not the message.
+  collapsibleCode?: boolean;
 }
 
 // Module-scoped so the reference is stable across renders.
@@ -67,12 +72,7 @@ const COMPONENTS: Components = {
       </code>
     );
   },
-  pre: ({ node: _node, ...props }) => (
-    <pre
-      className="my-2 px-2 py-1.5 rounded bg-surface-2 text-micro font-mono overflow-x-auto"
-      {...props}
-    />
-  ),
+  pre: ({ node: _node, ...props }) => <pre className={PRE_CLASS} {...props} />,
   a: ({ node: _node, ...props }) => (
     <a
       className="text-accent-text underline underline-offset-2 hover:opacity-80"
@@ -107,6 +107,52 @@ const COMPONENTS: Components = {
   ),
 };
 
+// Short blocks stay open: a two-line snippet behind a disclosure costs a click
+// to read three words, which is worse than the wall it was meant to prevent.
+const COLLAPSE_CODE_MIN_LINES = 5;
+
+function textFromChildren(children: ReactNode): string {
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(textFromChildren).join("");
+  if (isValidElement<{ children?: ReactNode }>(children)) {
+    return textFromChildren(children.props.children);
+  }
+  return "";
+}
+
+const PRE_CLASS =
+  "my-2 px-2 py-1.5 rounded bg-surface-2 text-micro font-mono overflow-x-auto";
+
+// A fenced block the operator opens when they want it. `<details>` rather than
+// component state: it keeps its own open/closed, survives re-render on every
+// event tick, and is keyboard- and screen-reader-native for free.
+function CollapsibleCode({ children }: { children?: ReactNode }) {
+  const text = textFromChildren(children);
+  const lines = text.replace(/\n$/, "").split("\n").length;
+  if (lines < COLLAPSE_CODE_MIN_LINES) {
+    return <pre className={PRE_CLASS}>{children}</pre>;
+  }
+  return (
+    <details className="my-2 rounded border border-border-subtle bg-surface-2">
+      <summary className="cursor-pointer select-none px-2 py-1 text-micro text-fg-muted hover:text-fg-default">
+        Code — {lines} lines
+      </summary>
+      <pre className="px-2 pb-1.5 text-micro font-mono overflow-x-auto">
+        {children}
+      </pre>
+    </details>
+  );
+}
+
+// Two module-scoped tables rather than one built per render: react-markdown
+// keys its parse cache on the components identity, so a fresh literal would
+// reparse every tick.
+const COMPONENTS_COLLAPSIBLE: Components = {
+  ...COMPONENTS,
+  pre: ({ node: _node, children }) => <CollapsibleCode>{children}</CollapsibleCode>,
+};
+
 const REMARK_PLUGINS = [remarkGfm];
 // rehype-highlight (highlight.js, synchronous) tags fenced code blocks
 // with `hljs language-xxx` + `hljs-*` token spans. The colours are
@@ -127,7 +173,7 @@ const REHYPE_PLUGINS: Options["rehypePlugins"] = [
 // the props are a plain (value, size) pair, so the shallow compare is
 // exact. Without it react-markdown re-parses every visible prompt/output
 // card on each event tick of a streaming run.
-function MarkdownText({ value, size = "md" }: Props) {
+function MarkdownText({ value, size = "md", collapsibleCode = false }: Props) {
   const base =
     size === "sm"
       ? "text-micro"
@@ -143,7 +189,7 @@ function MarkdownText({ value, size = "md" }: Props) {
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
-        components={COMPONENTS}
+        components={collapsibleCode ? COMPONENTS_COLLAPSIBLE : COMPONENTS}
       >
         {value}
       </ReactMarkdown>

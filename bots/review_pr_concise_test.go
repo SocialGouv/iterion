@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Exercise the actual publisher: concise prose must not suppress findings,
@@ -59,7 +57,11 @@ func TestReviewPRConcisePublication(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"published": true, "comments_posted": len(got.Comments)})
 			}))
 			defer srv.Close()
-			refs := map[string]string{"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test", "input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono", "vars.gate_enabled": "true", "vars.gate_severity": "high"}
+			// scope_files is what says the review had a diff to read at all: an
+			// absent or unparseable count fails the gate closed, so every case
+			// here — each of which describes a review that DID read code — has
+			// to carry a real one or it would block for the wrong reason.
+			refs := map[string]string{"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test", "input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono", "vars.gate_enabled": "true", "vars.gate_severity": "high", "input.scope_files": "3"}
 			for k, v := range tc.refs {
 				refs[k] = v
 			}
@@ -106,11 +108,7 @@ func TestReviewPRConcisePublication(t *testing.T) {
 
 // Scope wiring must handle skipped branches and glance just like telemetry.
 func TestReviewPRConciseScope(t *testing.T) {
-	src, err := os.ReadFile("review-pr/main.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed := parser.Parse("review-pr/main.bot", string(src))
+	parsed := parseBotUnit("review-pr/main.bot")
 	if parsed.File == nil {
 		t.Fatal("parse")
 	}

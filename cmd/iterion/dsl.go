@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 	"github.com/spf13/cobra"
 )
@@ -34,13 +35,14 @@ var dslSpecCmd = &cobra.Command{
 		"the full reference (default), the compact `skill` section, or the table of\n" +
 		"one kind (`--region 'table agent'`) — or, with --write, regenerate every\n" +
 		"committed generated region in place (docs/references/dsl-properties.md,\n" +
-		"docs/references/dsl-grammar.md, SKILL.md, the whats-next DSL quickref).\n\n" +
+		"docs/references/dsl-grammar.md, SKILL.md, the whats-next DSL quickref)\n" +
+		"and the Monaco editor's keyword/property module.\n\n" +
 		"The registry is held to the parser by a conformance test in both\n" +
 		"directions, so what this prints is what the parser accepts.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if dslSpecWrite {
-			changed, err := spec.Regenerate(dslSpecRoot)
+			changed, err := spec.Regenerate(dslSpecRoot, parser.Keywords())
 			for _, f := range changed {
 				fmt.Fprintf(os.Stderr, "wrote %s\n", f)
 			}

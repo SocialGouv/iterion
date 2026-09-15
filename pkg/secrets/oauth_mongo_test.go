@@ -70,6 +70,35 @@ func TestMongoOAuth_EmptyLabelClearsThroughUpsert(t *testing.T) {
 	}
 }
 
+func TestMongoOAuth_AccountIdentitySurvivesRefreshAndClearsOnSwap(t *testing.T) {
+	s, ctx := mongoOAuthStore(t)
+	checked := time.Now().UTC().Truncate(time.Millisecond)
+	rec := OAuthRecord{UserID: "identified", Kind: OAuthKindClaudeCode, Rank: 1,
+		SealedPayload: []byte("sealed-v1"), AccountID: accountA, AccountOrganizationID: organizationA,
+		AccountEmail: "person@example.org", AccountCheckedAt: &checked, AccountError: "old warning",
+		Fingerprint: (OAuthAccount{ID: accountA, OrganizationID: organizationA}).Fingerprint()}
+	if err := s.Upsert(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	id := OAuthRecordID(rec.UserID, rec.Kind, rec.Rank)
+	if err := s.UpdateTokens(ctx, id, OAuthTokenUpdate{SealedPayload: []byte("sealed-v2")}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListByUser(ctx, rec.UserID)
+	if err != nil || len(rows) != 1 || rows[0].AccountID != accountA || rows[0].AccountEmail != rec.AccountEmail || rows[0].Fingerprint != rec.Fingerprint || rows[0].AccountCheckedAt == nil || !rows[0].AccountCheckedAt.Equal(checked) {
+		t.Fatalf("refresh changed account identity: %+v %v", rows, err)
+	}
+	// A different credential with no verified profile must clear every old
+	// identity field through BSON $set, including its optional timestamp.
+	if err := s.Upsert(ctx, OAuthRecord{UserID: rec.UserID, Kind: rec.Kind, Rank: rec.Rank, SealedPayload: []byte("new-unknown-account"), Fingerprint: "legacy-hash"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ListByUser(ctx, rec.UserID)
+	if err != nil || len(rows) != 1 || rows[0].AccountID != "" || rows[0].AccountOrganizationID != "" || rows[0].AccountEmail != "" || rows[0].AccountCheckedAt != nil || rows[0].AccountError != "" {
+		t.Fatalf("unknown account inherited profile metadata: %+v %v", rows, err)
+	}
+}
+
 // A rename touches two keys and nothing else: the sealed payload and the
 // fingerprint stay whatever the last connect/refresh wrote, even when the
 // caller's copy of the record is stale.
@@ -318,4 +347,14 @@ func TestMongoOAuth_CoolDownSurvivesAndUnfencedWritesLeaveItAlone(t *testing.T) 
 	if got.RefreshNotBefore == nil || !got.RefreshNotBefore.Equal(cool) {
 		t.Fatalf("cool-down after an unfenced write = %v, want it untouched", got.RefreshNotBefore)
 	}
+}
+
+func TestMongoOAuth_RefreshAccountIdentityAtomic(t *testing.T) {
+	store, ctx := mongoOAuthStore(t)
+	oauthAccountUpdateConformance(t, store, ctx)
+}
+
+func TestMongoOAuth_ClaimRejectsReplacedSnapshot(t *testing.T) {
+	store, ctx := mongoOAuthStore(t)
+	oauthSnapshotClaimConformance(t, store, ctx)
 }

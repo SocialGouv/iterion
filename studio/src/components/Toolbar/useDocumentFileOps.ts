@@ -15,17 +15,23 @@
 import { useCallback, useState } from "react";
 
 import * as api from "@/api/client";
-import { useDocumentStore } from "@/store/document";
+import {
+  useDocumentStore,
+  useDocumentStoreInstance,
+} from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
+import { useDocumentSaveAs } from "@/components/DocumentSaveAs/useDocumentSaveAs";
 import { createEmptyDocument } from "@/lib/defaults";
 import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import { errorMessage, toastError } from "@/lib/errorHints";
 import { openExampleIntoStore } from "@/lib/openExample";
+import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
+import type { DocumentSaveAsController } from "@/components/DocumentSaveAs/useDocumentSaveAs";
 
 export interface UseDocumentFileOpsArgs {
   // Promise-based confirm from useConfirm() — the hook needs it for the
@@ -40,13 +46,8 @@ export interface UseDocumentFileOpsResult {
   // Loading flag for the open/import path. Surfaced as the spinner
   // pill in the toolbar.
   loading: boolean;
-  // Save-As dialog state — the file-name input draft plus its open
-  // flag. Lifted into the hook because handleSave and
-  // handleSaveAsRequest both seed it; the Toolbar renders the Dialog.
-  showSaveDialog: boolean;
-  setShowSaveDialog: (open: boolean) => void;
-  saveFileName: string;
-  setSaveFileName: (name: string) => void;
+  // Shared Save As controller used by both the toolbar and Copi offers.
+  saveAs: DocumentSaveAsController;
   // Two-step confirm for the workflow-remove IconButton. Kept here
   // because handleRemoveWorkflow is the only place that consumes it.
   confirmRemoveWorkflow: boolean;
@@ -58,7 +59,6 @@ export interface UseDocumentFileOpsResult {
   handleValidate: () => Promise<void>;
   handleSave: () => Promise<void>;
   handleSaveAsRequest: () => void;
-  handleSaveAs: () => Promise<void>;
   handleDownload: () => Promise<void>;
   handleCopySource: () => Promise<void>;
   handleAddWorkflow: () => void;
@@ -71,11 +71,14 @@ export function useDocumentFileOps({
   // Document/UI/recents stores — selected one-at-a-time so the hook
   // only re-runs when the slices it actually depends on change.
   const setDocument = useDocumentStore((s) => s.setDocument);
+  const documentStore = useDocumentStoreInstance();
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  const unit = useDocumentStore((s) => s.unit);
+  const setUnit = useDocumentStore((s) => s.setUnit);
   const markSaved = useDocumentStore((s) => s.markSaved);
   const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   // In cloud there is no writable filesystem: only a team-authored bot (opened
@@ -83,10 +86,13 @@ export function useDocumentFileOps({
   // catalog bot at /opt/iterion/bots, a deep link — is read-only; saving it
   // would 500 with "permission denied". Such a bot must be forked first
   // ("Duplicate & edit"). Local mode always writes to disk.
+  const sharedBundle = isSharedBundleFilePath(currentFilePath);
   const readOnly =
-    isCloud && !!currentFilePath && api.parseBotSourceEditorPath(currentFilePath) === null;
-  const READ_ONLY_MSG =
-    "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
+    sharedBundle ||
+    (isCloud && !!currentFilePath && api.parseBotSourceEditorPath(currentFilePath) === null);
+  const READ_ONLY_MSG = sharedBundle
+    ? "This workflow comes from a locked shared bundle. Edit its source bundle, update bots.lock, then run iterion bots sync."
+    : "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
   const isDirty = useDocumentStore((s) => s.isDirty);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
@@ -96,10 +102,9 @@ export function useDocumentFileOps({
   const openDiagnosticsPanel = useUIStore((s) => s.openDiagnosticsPanel);
   const pushRecent = useRecentsStore((s) => s.pushRecent);
   const removeRecent = useRecentsStore((s) => s.removeRecent);
+  const saveAs = useDocumentSaveAs();
 
   const [loading, setLoading] = useState(false);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [saveFileName, setSaveFileName] = useState("");
   const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
 
   const confirmDiscard = useCallback(async () => {
@@ -134,19 +139,21 @@ export function useDocumentFileOps({
           setDiagnostics(result.diagnostics);
           setCurrentFilePath(result.path);
           setCurrentSource(result.source);
+          setUnit(result.unit ?? null);
           pushRecent(result.path);
           markSaved();
         } else {
-          // Productised bots live at <WorkDir>/bots/<name>; the shared
-          // helper binds that path (so Save works and the Run button
-          // enables instead of "Save the workflow first") and keeps the
-          // example's source + diagnostics. Same path as RecentFilesPanel
-          // and CanvasEmpty.
+          // The shared helper binds the path the server names for a file
+          // inside the workspace, else bots/<name> (so Save works and the
+          // Run button enables instead of "Save the workflow first"), and
+          // keeps the example's source + diagnostics. Same path as
+          // RecentFilesPanel and CanvasEmpty.
           await openExampleIntoStore(path, {
             setDocument,
             setDiagnostics,
             setCurrentSource,
             setCurrentFilePath,
+            setUnit,
             markSaved,
           });
         }
@@ -175,6 +182,7 @@ export function useDocumentFileOps({
       setDiagnostics,
       setCurrentFilePath,
       setCurrentSource,
+      setUnit,
       markSaved,
       confirmDiscard,
       pushRecent,
@@ -251,8 +259,11 @@ export function useDocumentFileOps({
     }
     if (currentFilePath) {
       try {
-        const result = await api.saveFile(currentFilePath, document);
+        // A bot in several files presents the revision it was opened at,
+        // and keeps the one the save returns.
+        const result = await api.saveFile(currentFilePath, document, unit ? { revision: unit.revision } : undefined);
         setCurrentSource(result.source);
+        if (unit) setUnit({ ...unit, revision: result.revision ?? unit.revision });
         markSaved();
         addToast("Saved successfully", "success");
         pushRecent(currentFilePath);
@@ -261,19 +272,21 @@ export function useDocumentFileOps({
         addToast("Save failed", "error");
       }
     } else {
-      const name = document.workflows?.[0]?.name || "workflow";
-      setSaveFileName(`${name}.bot`);
-      setShowSaveDialog(true);
+      saveAs.requestSaveAs({ store: documentStore });
     }
   }, [
     document,
     currentFilePath,
     setCurrentSource,
+    unit,
+    setUnit,
     markSaved,
     addToast,
     pushRecent,
     readOnly,
     READ_ONLY_MSG,
+    saveAs,
+    documentStore,
   ]);
 
   // Always opens the Save As dialog regardless of whether a file path
@@ -281,50 +294,8 @@ export function useDocumentFileOps({
   // current path when one exists.
   const handleSaveAsRequest = useCallback(() => {
     if (!document) return;
-    const fallback = document.workflows?.[0]?.name || "workflow";
-    const seed = currentFilePath
-      ? currentFilePath.split("/").pop() || `${fallback}.bot`
-      : `${fallback}.bot`;
-    setSaveFileName(seed);
-    setShowSaveDialog(true);
-  }, [document, currentFilePath]);
-
-  const handleSaveAs = useCallback(async () => {
-    if (!document || !saveFileName) return;
-    if (isCloud) {
-      // Save As targets a filesystem path, which cloud can't write. Route bot
-      // creation through the Bots page (/bots/new) or "Duplicate & edit".
-      addToast(
-        "Save As isn't available in cloud — create a bot from the Bots page, or Duplicate & edit an existing one.",
-        "warning",
-      );
-      setShowSaveDialog(false);
-      return;
-    }
-    const fileName = saveFileName.endsWith(".bot") ? saveFileName : `${saveFileName}.bot`;
-    try {
-      const result = await api.saveFile(fileName, document);
-      setCurrentFilePath(result.path);
-      setCurrentSource(result.source);
-      markSaved();
-      pushRecent(result.path);
-      addToast("Saved successfully", "success");
-      setShowSaveDialog(false);
-    } catch (err) {
-      console.error("Save failed:", err);
-      addToast("Save failed", "error");
-    }
-  }, [
-    document,
-    saveFileName,
-    setCurrentFilePath,
-    setCurrentSource,
-    markSaved,
-    pushRecent,
-    addToast,
-    isCloud,
-    setShowSaveDialog,
-  ]);
+    saveAs.requestSaveAs({ store: documentStore });
+  }, [document, documentStore, saveAs]);
 
   const handleDownload = useCallback(async () => {
     if (!document) return;
@@ -371,10 +342,7 @@ export function useDocumentFileOps({
   return {
     readOnly,
     loading,
-    showSaveDialog,
-    setShowSaveDialog,
-    saveFileName,
-    setSaveFileName,
+    saveAs,
     confirmRemoveWorkflow,
     setConfirmRemoveWorkflow,
     handleNew,
@@ -383,7 +351,6 @@ export function useDocumentFileOps({
     handleValidate,
     handleSave,
     handleSaveAsRequest,
-    handleSaveAs,
     handleDownload,
     handleCopySource,
     handleAddWorkflow,

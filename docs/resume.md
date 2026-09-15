@@ -185,6 +185,14 @@ recorded (rewriting the document outside the engine's claim would race its
 other writers), so the acceptance is logged on every resume of such a run.
 Any other mismatch stays a refusal.
 
+A forced source edit revalidates a convergence node's settled incoming edges
+against the current graph. If the node executes and publishes again after an
+artifact-supplying edge was removed, its new artifact contract records only
+the dependencies it now consumes. The old immutable revision keeps the
+dependencies it actually consumed before the edit. This works under `enforce`;
+`--force` still requires valid persisted producer identities and required
+historical dependencies.
+
 `--answer` is repeatable and carries strings; the runtime coerces them to the
 paused node's output schema. `--answers-file` preserves JSON types. Explicit
 flags override keys loaded from the file. A `file`-typed field is answered
@@ -302,6 +310,16 @@ with updated workflow (force)** retry. Force is useful after repairing the
 workflow, but it is an operator assertion that stored outputs, node IDs,
 schemas, and the new graph are still compatible.
 
+The hash covers everything the run's program was made of: the main file's
+bytes, a bundle's `prompts/*.md` and `presets/*.md`, then — only when the
+unit has them — the fragments its `import` lines reach (see
+[dsl.md](dsl.md)) and the files its prompts' `{{include}}` markers read,
+nested ones too. A single-file bot without includes hashes exactly as it
+always has. A fragment or an included file edited while a run is parked is
+therefore a source change the gate refuses without `--force`; a run of a bot
+that uses `{{include}}`, launched before the include closure entered the hash,
+compares differently once and resumes with `--force` that one time.
+
 `--file` defaults to the persisted `FilePath`. Bundle runs also persist their
 bundle path; resume reopens a `.botz` or bundle directory so prompts, skills,
 attachments, recipes, and the selected preset are restored. If the original
@@ -392,6 +410,13 @@ iterion rewind --run-id RUN_ID --node implement
 now, and rewinds to the earliest node the edit affects — so the loop is *edit,
 rewind, resume*, with nothing to translate by hand. It prints what it detected,
 so you can confirm it understood the change before resuming.
+
+A bot in several files (`import "lib/x.bot"`) records every file of its unit
+on the run (`workflow_sources`, beside `workflow_source` for the main), so an
+edit in a fragment is seen like one in the main. A run of such a bot that
+recorded its main alone — launched before the unit's files were recorded, or
+over the 1 MiB cap — is refused rather than diffed on the main, and asks for
+`--node`.
 
 Detection is declaration-granular and resolves indirection:
 
@@ -484,10 +509,14 @@ This applies only to a recorded deliberate reclamation; an unexpectedly
 missing checkout or a broken git link still raises an error. Resumable
 failures keep their worktree in place.
 
-The run is parked in `cancelled`. That is the one resumable status a cloud
-runner treats as "explicit resume required"; `failed_resumable` and
-`paused_operator` are auto-resumed on queue redelivery, which would race the
-operator's edit and execute the stale workflow.
+After a successful rewind, the run is parked in `paused_operator`, not
+`cancelled`: it is ready at the chosen checkpoint and has not been abandoned.
+It also carries an internal **explicit-resume-required** marker. A cloud runner
+therefore drops any old launch delivery instead of auto-resuming it; only a
+real Resume request may continue. That request carries the normal source hash
+check (`--force` after an edit). A genuine automatic Resume request from a
+separate recovery path is still allowed, but the same hash check prevents it
+from executing an edited workflow without force.
 
 Rewind resolves "downstream" against the workflow source **as it is now**,
 which is why it performs no hash check — you rewind precisely because you

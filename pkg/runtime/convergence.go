@@ -15,10 +15,11 @@ import (
 // convergence node's input from multi-edge with-mappings, and returns
 // the convergence node ID for the main loop to continue execution.
 //
-// seeds are the nodes this invocation actually entered — the provenance of
-// the settled floor recorded for the join. The caller computes them because
-// the two fan-out shapes differ (see settledSeedsPerEdge / ForTemplate).
-func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult, seeds []string) (string, error) {
+// seeds and floor are both computed by the caller, and for the same reason:
+// a template replay knows its per-item edges and evidence, whereas fan_out_all
+// branches have distinct targets. seeds names the region whose output view this
+// invocation replaces; floor is the settled evidence it leaves behind.
+func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult, seeds []string, floor []store.IncomingEdge) (string, error) {
 	convNode, ok := e.workflow.Nodes[convergenceNodeID]
 	if !ok {
 		return "", &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: convergenceNodeID, Message: fmt.Sprintf("convergence node %q not found", convergenceNodeID)}
@@ -186,7 +187,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		e.logger.Warn("failed to emit convergence_ready: %v", err)
 	}
 
-	e.mergeJoinIncoming(rs, convergenceNodeID, results, seeds)
+	e.mergeJoinIncoming(rs, convergenceNodeID, results, floor)
 
 	// Return the convergence node ID — the main loop will execute it normally.
 	return convergenceNodeID, nil

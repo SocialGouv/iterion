@@ -1,7 +1,10 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.7.0
+version: 1.8.0
+## 1.8.0 — deterministic workflow delivery preflight before plan/campaign.
+## The current runtime token must prove workflows:write; installation grants
+## are not evidence. Missing proof refuses typed before any analysis.
 ## 1.7.0 — the delivery tail asks whether the pull request is still there,
 ## and never loses what it cannot land. A fixer kept working half an hour
 ## past the squash-merge of its pull request, pushed six commits onto the

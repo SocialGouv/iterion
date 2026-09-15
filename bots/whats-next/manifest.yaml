@@ -41,3 +41,37 @@ dispatch_vars:
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [initial_message]
+
+## Nexie is a CONVERSATIONAL bot: the studio hosts her in the assistant
+## dock rather than launching her through the generic run form. This block
+## IS the studio's chat registry — before it, the surface was a const in
+## studio/src/lib/whats-next/firstClassBots.ts with her id hard-coded, and
+## a second chat bot needed a studio release to get a chat window.
+chat:
+  seed_var: initial_message
+  nodes:
+    ## Plumbing: the compute nodes that seed and project the loop.
+    seed: {kind: silent}
+    gate: {kind: silent}
+    ## The working turn — a collapsible progress banner.
+    nexie: {kind: banner, label: "Nexie is working"}
+    ## The chat pause. No `prompt` on purpose: Nexie's reply IS the node's
+    ## runtime-resolved `instructions:`, and a constant here would mask it.
+    chat: {kind: human, text_field: message}
+  launcher:
+    prompt: "What do you want to look at?"
+    description: "Pick a starting point or type your own — this is just the first message of the conversation."
+    submit_label: "Start the conversation"
+    presets:
+      - value: "Fais le point sur le board et recommande la prochaine action."
+        label: "What's next? (board + recommendation)"
+        description: "Board state, quick wins, Nexie's pick."
+      - value: "Quels tickets sont dispatchables maintenant ? Analyse et recommande lesquels pousser, puis attends ma confirmation."
+        label: "Dispatch existing board items"
+        description: "Shortlist + recommendation before anything moves."
+      - value: "Surveye le repo et propose une roadmap courte (long terme / court terme / prochaine action) avec les bots à utiliser."
+        label: "Survey the repo & propose a roadmap"
+        description: "Read-only survey, then a structured proposal."
+      - value: "Passe le backlog en revue : lesquels sont encore pertinents par rapport au code actuel ? Propose un nettoyage."
+        label: "Clean up the board"
+        description: "Relevance check against code + git history."

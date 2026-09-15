@@ -18,7 +18,6 @@ package bundlelint
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -44,6 +43,31 @@ const (
 	// DiagArgsVarUnknown: an invocation args_var names a var the workflow does
 	// not declare, so the trigger's free-text payload is dropped.
 	DiagArgsVarUnknown Code = "C204"
+	// DiagChatNodeUnknown: a chat.nodes key names no compiled workflow node,
+	// so the studio cannot associate the manifest renderer with the run event.
+	DiagChatNodeUnknown Code = "C205"
+	// DiagChatNodeKindMismatch: a manifest human turn points at a workflow
+	// node that cannot pause for an operator answer.
+	DiagChatNodeKindMismatch Code = "C206"
+	// DiagChatFieldInvalid: a summary/text/approved field is missing from the
+	// corresponding output schema or has a type the chat surface cannot send.
+	DiagChatFieldInvalid Code = "C207"
+	// DiagChatSeedVarInvalid: chat.seed_var is absent or not string-compatible.
+	DiagChatSeedVarInvalid Code = "C208"
+	// DiagChatLauncherVarInvalid: a launcher_vars entry is absent or not
+	// string-compatible (the launcher submits string values).
+	DiagChatLauncherVarInvalid Code = "C209"
+	// DiagChatHostEventModeMismatch: the manifest's host_event_field and the
+	// workflow node's `interaction: human_or_host` disagree. The two halves
+	// declare one thing — "this gate also accepts a host-attested answer" —
+	// and only this package can see both: the IR compiler never reads a
+	// manifest, and the manifest loader never sees the compiled graph.
+	//
+	// The severe direction is a node declaring the mode with no field to
+	// receive on: the gate then advertises a standby nothing can ever
+	// deliver, which is exactly the inert-declared-gate class the fallback
+	// chain refuses under C176.
+	DiagChatHostEventModeMismatch Code = "C212"
 
 	// DiagForgeSecretUnknown: the forge secret name the bot expects to be
 	// bound has no matching declaration in the main.bot secrets: block.
@@ -203,6 +227,10 @@ type Input struct {
 	// ProfileUnread names the subbot children the walk could not read
 	// (bundle.MaxSyntaxProfile's third result).
 	ProfileUnread []string
+	// ImportedBy names the sources that carry `import` lines
+	// (bundle.MaxSyntaxRequirements): a bot in several files asks for the
+	// release that reads them, whatever its profile (C252).
+	ImportedBy []string
 }
 
 // SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
@@ -225,10 +253,11 @@ func CheckConsistency(in Input) []Diag {
 	// The profile checks read the manifest but do not need one: a bundle
 	// known by its skills/ alone, written in profile 2, is asked for the
 	// manifest that would carry its floor.
-	checkProfileFloor(&diags, m, in.SyntaxProfile, in.ProfileDeclaredBy, in.EngineBuild)
+	checkSyntaxFloor(&diags, m, bundle.SyntaxRequirements{Profile: in.SyntaxProfile, DeclaredBy: in.ProfileDeclaredBy, ImportedBy: in.ImportedBy}, in.EngineBuild)
 	checkProfileUnread(&diags, in.ProfileUnread)
 	if m != nil {
 		checkVarMaps(&diags, m, in.Workflow)
+		checkChatSurface(&diags, m, in.Workflow)
 		checkForgeSecret(&diags, m, in.Workflow)
 		checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
 		checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
@@ -243,6 +272,117 @@ func CheckConsistency(in Input) []Diag {
 		return diags[i].Field < diags[j].Field
 	})
 	return diags
+}
+
+// checkChatSurface joins the manifest's presentation contract to the compiled
+// workflow. pkg/bundle can validate only the shape of chat:, while the DSL
+// compiler can validate only main.bot; a stale name between them otherwise
+// ships a dock that looks interactive but cannot route an answer.
+func checkChatSurface(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow) {
+	if m.Chat == nil || w == nil {
+		return
+	}
+	for _, id := range sortedChatNodeIDs(m.Chat.Nodes) {
+		decl := m.Chat.Nodes[id]
+		fieldBase := "chat.nodes." + id
+		node, ok := w.Nodes[id]
+		if !ok {
+			*diags = append(*diags, Diag{
+				Code: DiagChatNodeUnknown, Severity: SeverityError, Field: fieldBase,
+				Message: fmt.Sprintf("node %q does not exist in the compiled workflow; the chat renderer would never match its run events", id),
+				Hint:    "rename the manifest key to a workflow node id or restore the node in main.bot",
+			})
+			continue
+		}
+		if decl.Kind == bundle.ChatNodeHuman && node.NodeKind() != ir.NodeHuman {
+			*diags = append(*diags, Diag{
+				Code: DiagChatNodeKindMismatch, Severity: SeverityError, Field: fieldBase + ".kind",
+				Message: fmt.Sprintf("manifest declares an operator turn, but workflow node %q is %s and cannot collect a human answer", id, node.NodeKind()),
+				Hint:    "point the chat human entry at a human node or change kind to banner/silent",
+			})
+			continue
+		}
+
+		if decl.SummaryField != "" {
+			checkChatSchemaField(diags, w, node, decl.SummaryField, fieldBase+".summary_field", ir.FieldTypeString)
+		}
+		if decl.TextField != "" {
+			checkChatSchemaField(diags, w, node, decl.TextField, fieldBase+".text_field", ir.FieldTypeString)
+		}
+		if decl.ApprovedField != "" {
+			checkChatSchemaField(diags, w, node, decl.ApprovedField, fieldBase+".approved_field", ir.FieldTypeBool)
+		}
+		if decl.HostEventField != "" {
+			checkChatSchemaField(diags, w, node, decl.HostEventField, fieldBase+".host_event_field", ir.FieldTypeJSON)
+		}
+		checkHostEventMode(diags, node, decl, id, fieldBase)
+	}
+
+	if name := m.Chat.SeedVar; name != "" {
+		checkChatVar(diags, w, name, "chat.seed_var", DiagChatSeedVarInvalid)
+	}
+	for i, v := range m.Chat.LauncherVars {
+		checkChatVar(diags, w, v.Name, fmt.Sprintf("chat.launcher_vars[%d].name", i), DiagChatLauncherVarInvalid)
+	}
+}
+
+func checkChatSchemaField(diags *[]Diag, w *ir.Workflow, node ir.Node, name, field string, want ir.FieldType) {
+	schemaName := ir.NodeOutputSchema(node)
+	schema := w.Schemas[schemaName]
+	if schema == nil {
+		*diags = append(*diags, Diag{
+			Code: DiagChatFieldInvalid, Severity: SeverityError, Field: field,
+			Message: fmt.Sprintf("field %q has no compiled output schema on node %q to land in", name, node.NodeID()),
+			Hint:    "declare an output schema on the node and add the field with type " + want.String(),
+		})
+		return
+	}
+	for _, f := range schema.Fields {
+		if f.Name != name {
+			continue
+		}
+		if f.Type != want {
+			*diags = append(*diags, Diag{
+				Code: DiagChatFieldInvalid, Severity: SeverityError, Field: field,
+				Message: fmt.Sprintf("field %q in output schema %q is %s; this chat field requires %s", name, schemaName, f.Type, want),
+				Hint:    "change the schema field type or point the manifest at a compatible field",
+			})
+		}
+		return
+	}
+	*diags = append(*diags, Diag{
+		Code: DiagChatFieldInvalid, Severity: SeverityError, Field: field,
+		Message: fmt.Sprintf("field %q does not exist in output schema %q of node %q", name, schemaName, node.NodeID()),
+		Hint:    "fix the manifest field name or add it to the node's output schema",
+	})
+}
+
+func checkChatVar(diags *[]Diag, w *ir.Workflow, name, field string, code Code) {
+	v, ok := w.Vars[name]
+	if !ok {
+		*diags = append(*diags, Diag{
+			Code: code, Severity: SeverityError, Field: field,
+			Message: fmt.Sprintf("variable %q is not declared by the workflow; the launcher value would be discarded", name),
+			Hint:    "declare it as a string in the workflow vars: block or fix the manifest name",
+		})
+		return
+	}
+	if v.Type != ir.VarString {
+		*diags = append(*diags, Diag{
+			Code: code, Severity: SeverityError, Field: field,
+			Message: fmt.Sprintf("variable %q is %s, but the chat launcher submits a string", name, v.Type),
+			Hint:    "change the workflow variable to string or remove it from the chat launcher",
+		})
+	}
+}
+
+func sortedChatNodeIDs(nodes map[string]bundle.ChatNode) []string {
+	ids := make([]string, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // varDeclared reports whether the workflow declares a var by this name.
@@ -525,31 +665,32 @@ func sameStringSet(a, b []string) bool {
 // (pkg/server) and at the launch (pkg/runner) — three surfaces, one predicate
 // in pkg/bundle, so an author, an operator and a pod cannot read the same
 // manifest three different ways.
-// checkProfileFloor holds the manifest's engine floor against the profile
-// the bundle's sources are written in (C252): a profile above 1 needs a
+// checkSyntaxFloor holds the manifest's engine floor against what the
+// bundle's sources use (C252): a profile above 1, or `import`, needs a
 // declared `requires.iterion` at or above the release that reads it
-// (bundle.CheckProfileFloor, the predicate the push admission shares) — a
+// (bundle.CheckSyntaxFloor, the predicate the push admission shares) — a
 // floor declared but lower leaves every runner between the two admitting a
 // bundle it cannot parse. The remedy names that release, or this build when
-// the profile has none on record.
-func checkProfileFloor(diags *[]Diag, m *bundle.Manifest, profile int, declaredBy []string, build string) {
-	pf := bundle.CheckProfileFloor(m, profile)
+// the release has none on record.
+func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequirements, build string) {
+	pf := bundle.CheckSyntaxFloor(m, req)
 	if pf.OK {
 		return
 	}
 	floor := pf.Need
 	if floor == "" {
-		floor = "<the release that reads profile " + strconv.Itoa(profile) + ">"
+		floor = "<the release that reads " + pf.Reason + ">"
 		if v := strings.TrimPrefix(strings.SplitN(build, "+", 2)[0], "v"); v != "" {
 			if _, ok := bundle.CompareVersions(v, "0"); ok {
 				floor = v
 			}
 		}
 	}
-	msg := fmt.Sprintf("the bundle is written in dsl profile %d (%s) but declares no engine floor: a runner older than the profile re-parses a subbot child as text and fails at that parse", profile, strings.Join(declaredBy, ", "))
-	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest — `iterion dsl migrate` writes it — so such a runner refuses the bundle at admission instead", floor)
+	uses := req.Describe()
+	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: a runner older than the release that reads it re-parses a subbot child, or a fragment, as text and fails at that parse", uses)
+	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest, so such a runner refuses the bundle at admission instead", floor)
 	if pf.Declared != "" {
-		msg = fmt.Sprintf("the bundle is written in dsl profile %d (%s) but requires.iterion %q does not reach %s, the release that reads the profile: a runner between the two re-parses a subbot child as text and fails at that parse", profile, strings.Join(declaredBy, ", "), pf.Declared, floor)
+		msg = fmt.Sprintf("the bundle uses %s but requires.iterion %q does not reach %s, the release that reads it: a runner between the two re-parses a subbot child, or a fragment, as text and fails at that parse", uses, pf.Declared, floor)
 		hint = fmt.Sprintf("raise it to `requires: { iterion: \">= %s\" }`", floor)
 	}
 	*diags = append(*diags, Diag{Code: DiagProfileNeedsFloor, Severity: SeverityWarning, Field: "requires.iterion", Message: msg, Hint: hint})
@@ -588,6 +729,36 @@ func checkEngineRequirement(diags *[]Diag, m *bundle.Manifest, build string) {
 			Code: DiagEngineRequirementUnchecked, Severity: SeverityWarning,
 			Field: "requires.iterion", Message: reason,
 			Hint: "validate with a released build (or one built through `task build`, which injects the version) to check the requirement",
+		})
+	}
+}
+
+// checkHostEventMode cross-checks the two halves of a host-event gate: the
+// manifest field the host writes into, and the DSL mode that declares the
+// gate accepts it at all.
+//
+// A gate is only usable when both are present, but the two absences are not
+// equally bad. A field with no mode WORKS — that is how the surface shipped,
+// before the mode existed — so it is a warning nudging the author to make the
+// capability visible in the .bot. A mode with no field is DEAD: the run parks
+// on a gate advertising a standby, and nothing will ever be able to wake it.
+func checkHostEventMode(diags *[]Diag, node ir.Node, decl bundle.ChatNode, id, fieldBase string) {
+	if decl.Kind != bundle.ChatNodeHuman {
+		return
+	}
+	declaresMode := ir.NodeInteraction(node) == ir.InteractionHumanOrHost
+	switch {
+	case declaresMode && decl.HostEventField == "":
+		*diags = append(*diags, Diag{
+			Code: DiagChatHostEventModeMismatch, Severity: SeverityError, Field: fieldBase + ".host_event_field",
+			Message: fmt.Sprintf("workflow node %q declares interaction: human_or_host but the manifest gives it no host_event_field — nothing can ever deliver a host event to this gate", id),
+			Hint:    "add host_event_field to the chat node (its output schema needs a matching json field), or drop interaction: human_or_host",
+		})
+	case !declaresMode && decl.HostEventField != "":
+		*diags = append(*diags, Diag{
+			Code: DiagChatHostEventModeMismatch, Severity: SeverityWarning, Field: fieldBase + ".host_event_field",
+			Message: fmt.Sprintf("the manifest declares host_event_field on %q but the workflow node does not declare interaction: human_or_host — the gate works, but reading main.bot gives no hint that anything other than the operator can resume it", id),
+			Hint:    "set interaction: human_or_host on the human node so the capability is visible in the graph",
 		})
 	}
 }

@@ -23,13 +23,18 @@ flowchart LR
 A file may contain these top-level declarations:
 
 ```text
+import "lib/<file>.bot"   (at the head, after dsl:, before every declaration)
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
 agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: today's grammar, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one that is not the first declaration is E041.
+**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: today's grammar, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one below a declaration — or below an `import` — is E041: the lexer took its profile off the first significant line, and read the whole file as profile 1.
+
+**Names and keys are unique.** A node id is unique across every node kind (C041 — `emit`, `wait` and `await_answers` included), a prompt, a schema, a cursor or a group among its own kind, and a key of `vars:`, `presets:`, `attachments:` or `secrets:` appears once in its block (E010) — in one file as across two: a duplicate key used to shadow the other in silence.
+
+**A bot in several files.** A file may open — after `dsl:` and the comments, before its first declaration — with `import "lib/<file>.bot"` lines, one per fragment. A path is relative to the file that imports it and must resolve under the bot's `lib/` directory, next to the main (no absolute path, no `..`, no symlink); a fragment may import its siblings by bare name, and a file is read once however many files import it. The unit — the main and every fragment its imports reach — compiles as ONE program: the declarations of every kind are appended in the order the files are reached, `vars:`/`presets:`/`attachments:`/`secrets:` merge by key, and a name declared in two files, or a key declared twice anywhere, is refused naming both places (E010); a fragment holds no `workflow`, and two workflows in a unit are refused too. Each file keeps its own `dsl:` header (and its own C144). An `import` after a declaration is E044, a path outside `lib/` or malformed E045, a fragment missing or unreadable E046, a cycle E047; a file that imports, compiled alone (a document, an upload), is refused by name (C030). See [`import` under reuse](#import--a-bot-in-several-files) for what every surface does with the unit.
 
 Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first); a `use` of an empty group draws C141. A block header — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:` — may stand bare the same way and declares an empty block, kept as the author wrote it: a nested one ends at its parent's dedent or before a blank line and a sibling; a top-level one, having no dedent to end it, needs the blank line (or the end of the file). What an empty block means is the compiler's call: an empty `mcp:` wires nothing (a tool name it cannot resolve stays the error it was), a bare `sandbox:` is the inline block form, which C044 refuses until it carries an `image:` or `build:`. Two things do not follow the rule: `fallbacks:` must name at least one route (a bare header is refused, by name — a chain with no route is not a chain, and a route with no name has no written form either: the studio refuses it at save), and a property spelled the same in a block and in its parent (`user:` in a sandbox and on an agent), written at the parent's level after a blank line, is the parent's — the blank line is the author's signal, as for declarations. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, `|` block scalars, and one plain bare word (`backend: claw`) where the grammar expects a string; a value that is not one word (`20m`, `gpt-5.5`) keeps its quotes. A list is written inline (`tools: [bash, grep]`) or as one `- item` per line indented under the property, comment lines allowed between items; both read as the same list, and `[]` is the empty list's only form. A `with { n: 3, ok: true }` map reads a number or a bool as the string it spells.
 
@@ -280,6 +285,8 @@ During execution, each branch still receives its immutable input snapshot,
 so deliberate feedback from the preceding pass remains possible. Published
 `artifacts.*` keep their separate last-published value and version history;
 use that namespace explicitly when a consumer needs the last known result.
+
+For a `best_effort` collector, incoming `with` mappings behind failed nodes form a fallback floor. In `fan_out_each`, each item's recorded execution and route choices are examined separately: one item's `when` decision cannot decide for an item that failed before routing. The resulting candidate edges are combined at the collector. Equal mappings survive; conflicting values for the same key remain absent; mappings from successful incoming edges take precedence. This floor survives checkpoint/resume. It does not synthesize per-item outputs, and a route rejected by every item contributes nothing.
 
 Routers are fan-out sources and never declare `await`. See [routers](routers.md) and [composition/iteration/sub-bots](groups-iteration-subbots.md).
 
@@ -586,6 +593,32 @@ workflow grouped:
 ```
 
 External workflow edges address expanded nodes as `<prefix>.<node>`.
+
+### `import` — a bot in several files
+
+Groups reuse a cluster inside a file; `import` splits one program across files, so each fragment is edited alone and the main keeps the graph:
+
+```text
+my-bot/
+├── main.bot           # dsl: 2, the imports, the workflow (and the vars, when it has any)
+├── lib/
+│   ├── schemas.bot    # a fragment: schemas
+│   └── nodes.bot      # a fragment: prompts and nodes (may `import "schemas.bot"` itself)
+└── manifest.yaml      # requires: { iterion: ">= 3.145.0" } — the release that reads import
+```
+
+```text
+# main.bot
+dsl: 2
+import "lib/schemas.bot"
+import "lib/nodes.bot"
+
+workflow w:
+  entry: worker
+  worker -> done
+```
+
+Every surface reads the unit, never the main alone: `iterion validate main.bot` (a fragment validated alone says where it is validated), `run`, `resume`, `fork`, `rewind --auto`, the dispatcher, the studio (which opens the merged document with each declaration's file on it and saves each declaration back where it came from — a new one to the main), the cloud editor, the bot registry (the launch form's vars come from the whole unit), the catalog, and the recipes embedded in the binary — `iterion run feature-dev/main.bot` from any directory writes the whole bot to its cache, and the studio's Examples list serves an embedded bot in several files as one flat program. A remote launch uploads the program written out as one file; the cloud snapshot freezes `lib/` with the rest, and a subbot declared in a fragment resolves like one declared in the main. The run's identity covers every file of the unit and every `{{include}}` its prompts read, so a fragment edited under a parked run is a source change (`iterion resume` refuses it without `--force`), and the run records every file it executed (`workflow_sources`) for `rewind --auto` to diff. A bundle that imports declares the engine floor that reads it (`requires: { iterion: ">= 3.145.0" }`): `validate` asks for it (C252), a push refuses without (409). `iterion bots create <slug> --template library` scaffolds the shape.
 
 ### `subbot`
 

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -19,32 +22,113 @@ import (
 // disables `rewind --auto` for that run, nothing else.
 const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
 
-// resolveWorkflowSource returns the .bot text to persist on the run:
-// the explicitly supplied source when the caller had it in hand (cloud
-// launches receive it uploaded), else a best-effort read of filePath.
+// recordedSources returns the .bot text to persist on the run and, for a
+// bot in several files, every file of its unit, main first — decided
+// TOGETHER, never the main without its fragments: a unit run recorded
+// main-only is one `rewind --auto` can only refuse. In order: the files
+// the launch compiled, when the launcher handed them over (a studio run's
+// FilePath is the store's copy of its main, beside which no fragment
+// lives); the text the caller supplied (an upload has no unit beside it);
+// else the unit beside filePath, or the file alone when it is not a unit
+// that loads. A single file records its main alone. One cap holds the
+// whole: past it, nothing is recorded.
 //
 // Best-effort by design — this only powers `rewind --auto`'s ability to
 // name the changed node. A source we cannot read or that busts the cap
 // leaves the run auto-targetable=false and `--node` unaffected.
-func (e *Engine) resolveWorkflowSource() string {
+func (e *Engine) recordedSources() (string, []store.WorkflowSourceFile) {
+	if e.compiledFiles != nil {
+		return sourcesOf(e.compiledMain, e.compiledFiles)
+	}
 	if e.workflowSource != "" {
 		if len(e.workflowSource) > maxPersistedWorkflowSource {
-			return ""
+			return "", nil
 		}
-		return e.workflowSource
+		return e.workflowSource, nil
 	}
 	if e.filePath == "" {
-		return ""
+		return "", nil
 	}
-	info, err := os.Stat(e.filePath)
-	if err != nil || info.Size() > maxPersistedWorkflowSource {
-		return ""
+	u := unit.LoadDir(e.filePath)
+	if len(u.Files) == 0 || u.HasErrors() {
+		info, err := os.Stat(e.filePath)
+		if err != nil || info.Size() > maxPersistedWorkflowSource {
+			return "", nil
+		}
+		b, err := os.ReadFile(e.filePath)
+		if err != nil {
+			return "", nil
+		}
+		return string(b), nil
 	}
-	b, err := os.ReadFile(e.filePath)
+	files := make(map[string]string, len(u.Files))
+	for _, f := range u.Files {
+		files[f.Rel] = string(f.Source)
+	}
+	return sourcesOf(u.Main, files)
+}
+
+// sameSourceFiles reports whether two recorded file lists hold the same
+// files with the same text, whatever their order: a run recorded before
+// the files were sorted compares by content, not by position.
+func sameSourceFiles(a, b []store.WorkflowSourceFile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sa := append([]store.WorkflowSourceFile(nil), a...)
+	sb := append([]store.WorkflowSourceFile(nil), b...)
+	sort.Slice(sa, func(i, j int) bool { return sa[i].Path < sa[j].Path })
+	sort.Slice(sb, func(i, j int) bool { return sb[i].Path < sb[j].Path })
+	return slices.Equal(sa, sb)
+}
+
+// sourcesOf orders a unit's files main first, the rest by path, under one
+// cap for the whole; a unit of one file records its main alone.
+func sourcesOf(main string, files map[string]string) (string, []store.WorkflowSourceFile) {
+	src, ok := files[main]
+	if !ok {
+		return "", nil
+	}
+	total := len(src)
+	rels := make([]string, 0, len(files))
+	for rel, text := range files {
+		if rel != main {
+			rels = append(rels, rel)
+			total += len(text)
+		}
+	}
+	if total > maxPersistedWorkflowSource {
+		return "", nil
+	}
+	if len(rels) == 0 {
+		return src, nil
+	}
+	sort.Strings(rels)
+	out := make([]store.WorkflowSourceFile, 0, len(files))
+	out = append(out, store.WorkflowSourceFile{Path: main, Text: src})
+	for _, rel := range rels {
+		out = append(out, store.WorkflowSourceFile{Path: rel, Text: files[rel]})
+	}
+	return src, out
+}
+
+func (e *Engine) inferredBotOrigin() *store.BotOrigin {
+	if e.filePath == "" {
+		return nil
+	}
+	p, err := gitlib.Describe(e.filePath)
 	if err != nil {
-		return ""
+		return nil
 	}
-	return string(b)
+	rel, err := filepath.Rel(p.RepoRoot, e.filePath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		rel = filepath.Base(e.filePath)
+	}
+	pkg := strings.Split(filepath.ToSlash(rel), "/")[0]
+	return &store.BotOrigin{
+		Kind: "git", RepoRoot: p.RepoRoot, Commit: p.Commit, TreeHash: p.TreeHash,
+		WorkflowPath: filepath.ToSlash(rel), Package: pkg, Dirty: p.Dirty,
+	}
 }
 
 // Run executes the workflow. It creates a run, walks the graph from the
@@ -65,6 +149,9 @@ func (e *Engine) resolveWorkflowSource() string {
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
+	if e.botOrigin == nil {
+		e.botOrigin = e.inferredBotOrigin()
+	}
 	run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
 		return err
@@ -172,7 +259,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			// it grows. Best-effort and never fatal — see boundWorktreePool.
 			e.boundWorktreePool(ctx, e.store.Root())
 
-			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
+			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.worktreeBaseCommit, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
 				return e.setupErr(ctx, fmt.Errorf("runtime: worktree setup: %w", wtErr))
@@ -306,16 +393,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
-		e.routingPolicy != nil || e.budgetAsk != nil {
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
 		if e.filePath != "" {
 			run.FilePath = e.filePath
 		}
-		if src := e.resolveWorkflowSource(); src != "" {
+		if src, files := e.recordedSources(); src != "" {
 			run.WorkflowSource = src
+			run.WorkflowSources = files
 		}
 		if e.parentRunID != "" {
 			run.ParentRunID = e.parentRunID
@@ -333,11 +421,23 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.preset != "" {
 			run.Preset = e.preset
 		}
-		// Persist the workflow-declared tool-permission mode so the studio
-		// RunHeader can badge a gated run (off|ask|deny). This is the bot's
-		// declared posture; a run-level --permission override refines it per
-		// node but isn't reflected here.
-		run.PermissionMode = e.workflow.Permission
+		// Persisted so every resume re-applies it. This matters more than
+		// Preset does: a conversational bot resumes on EVERY turn, so a
+		// launch-only list would quietly disappear after the first reply.
+		if len(e.extraSkills) > 0 {
+			run.ExtraSkills = e.extraSkills
+		}
+		// Keep the operator's strongest-precedence gate choice durable. On a
+		// cloud attempt the publisher has already stamped it; on a local launch
+		// the engine option does. A resume with no new option must preserve it.
+		if e.permissionOverride != "" {
+			run.PermissionOverride = e.permissionOverride
+		}
+		if run.PermissionOverride != "" {
+			run.PermissionMode = run.PermissionOverride
+		} else {
+			run.PermissionMode = e.workflow.Permission
+		}
 		// Guard on len>0 so a resume (which never re-supplies overrides)
 		// preserves the value persisted at the original launch instead of
 		// clobbering it with nil.
@@ -348,6 +448,10 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// launch, a resume never re-supplies it.
 		if e.routingPolicy != nil {
 			run.RoutingPolicy = e.routingPolicy
+		}
+		if e.budgetOverrides != nil {
+			copy := *e.budgetOverrides
+			run.BudgetOverrides = &copy
 		}
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
@@ -369,7 +473,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			run.BundlePath = e.bundle.SourcePath
 			if e.bundle.Manifest != nil {
 				run.BundleName = e.bundle.Manifest.Name
+				run.BundleVersion = e.bundle.Manifest.Version
 				run.BundleDisplayName = e.bundle.Manifest.DisplayName
+				if rel, relErr := filepath.Rel(e.bundle.Dir, e.filePath); relErr == nil {
+					rel = filepath.ToSlash(rel)
+					for _, exp := range e.bundle.Manifest.Exports.Workflows {
+						if exp.Path == rel {
+							run.BundleWorkflow = exp.ID
+							break
+						}
+					}
+				}
 			}
 		}
 		if e.source != nil {
@@ -377,6 +491,14 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			// through the run record.
 			src := *e.source
 			run.Source = &src
+		}
+		if e.botOrigin != nil {
+			origin := *e.botOrigin
+			run.BotOrigin = &origin
+		}
+		if e.delegation != nil {
+			delegation := *e.delegation
+			run.Delegation = &delegation
 		}
 		if e.callbackURL != "" {
 			run.CallbackURL = e.callbackURL
@@ -606,6 +728,18 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// once, after the last of them has run.
 	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
+	// Say, on the run's own record, that this run carried skills its .bot
+	// does not mention. Without it the addition is invisible state changing
+	// how the bot answers, and a bug report against the run is
+	// irreproducible. Best-effort: losing the note must not lose the run.
+	if len(e.extraSkills) > 0 {
+		if err := e.emit(ctx, runID, store.EventSkillsInjected, "", map[string]any{
+			"skills": append([]string(nil), e.extraSkills...),
+			"origin": e.extraSkillsOrigin,
+		}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: skills_injected event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -648,7 +782,7 @@ func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error
 // is there — but a shadowed entry is NOT owned: that content is the target
 // repository's, and a backend passing skills explicitly must not hand it over.
 func (e *Engine) applyLibrarySkills() []string {
-	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
+	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)

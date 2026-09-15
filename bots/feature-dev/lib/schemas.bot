@@ -1,0 +1,101 @@
+## ─── Schemas ────────────────────────────────────────────────────
+
+## campaign's input: the deterministic gate's failure log from the PREVIOUS
+## pass (empty on the first pass and on a green-but-more-work continuation).
+schema campaign_input:
+  fail_log: string
+  ## Plan-phase hand-off (empty when the phase is off / skipped / on
+  ## continuation passes — git is the durable state there).
+  plan: string
+  plan_critique: string
+  plan_responses: string
+  ## Who authored the plan and whether a cross-model peer challenged it:
+  ## a literal stamp set on each hand-off edge, empty when no plan ran.
+  plan_provenance: string
+
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
+## keys convergence on. feature_complete is the done-oracle (a fresh re-read
+## of the feature prompt finds every requirement shipped); the rest is
+## observability.
+schema campaign_output:
+  feature_complete: bool
+  commits_this_pass: int
+  work_remaining: string
+  needs_human: bool
+  human_note: string
+  summary: string
+
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
+
+## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `skipped` is true only when no verify script was produced
+## (treated as pass but surfaced loudly, never a silent façade).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
+
+## verify_probe output — deterministic "is a usable verify.sh already prepared?"
+## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
+## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## verify_probe input — the continuation-loop iteration, mapped on the
+## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
+## tool command (only input/vars/run do), so the iteration is passed in as node
+## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
+schema verify_probe_input:
+  iteration: int
+
+schema verify_probe_state:
+  fresh: bool
+  reason: string
+
+## gate is the deterministic continuation decision. converged = the tree is
+## green AND the campaign reported the feature fully shipped AND the
+## adversarial review is clean. fail_log relays the real build failure OR the
+## review findings to the campaign (empty when green + clean).
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+## review is the in-loop adversarial self-review (ADR: push the downstream
+## review INTO the loop so the PR ships pre-refined). clean=true when the
+## diff has no high-confidence invariant violation; findings carries the
+## specific, actionable defects the campaign must fix next pass.
+schema review_input:
+  base_ref: string
+  build_passed: bool
+  prior_findings: string
+
+schema review_output:
+  clean: bool
+  findings: string
+
+schema mr_gate_output:
+  open_mr: bool
+
+## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
+## LLM agent) is only ever entered when a push credential actually exists.
+schema forge_auth_state:
+  available: bool
+  reason: string
+
+schema finalize_mr_input:
+  workspace_dir: string
+  mr_branch: string
+  mr_base: string
+  source_issue_ref: string
+  scope_notes: string
+
+schema finalize_mr_output:
+  opened: bool
+  url: string
+  branch: string
+  back_linked: bool
+  skipped_reason: string
+  summary: string
+
