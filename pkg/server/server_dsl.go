@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -504,28 +505,58 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 
 	// Try on-disk first (lets a project's <ExamplesDir>/<name>
 	// override an embedded recipe of the same basename), then fall
-	// back to the binary-embedded recipe set (examples/embed.go).
-	var data []byte
+	// back to the binary-embedded recipe set (bots/embed.go).
 	if dir := s.cfg.ExamplesDir; dir != "" {
-		if d, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name))); err == nil {
-			data = d
+		abs := filepath.Join(dir, filepath.FromSlash(name))
+		if data, err := os.ReadFile(abs); err == nil {
+			s.serveDiskExample(w, name, abs, data)
+			return
 		}
 	}
-	if data == nil {
-		if d, ok := bots.Get(name); ok {
-			data = d
-		}
+	src, ok, err := embeddedRecipe(name)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%v", err)
+		return
 	}
-	if data == nil {
+	if !ok {
 		httpError(w, http.StatusNotFound, "example not found: %s", name)
 		return
 	}
+	writeExample(w, name, src, "", "")
+}
 
-	// Parse and return the document + source.
-	pr := parser.Parse(name, string(data))
+// exampleResponse is what /api/examples/{name} answers for one program:
+// its text and document, the diagnostics, and — for a file inside the
+// working directory that parses — the path the studio opens and saves it
+// by with the disk path /api/files/open confirms for it. Bindable is false
+// when the file does not parse: the studio then binds no path at all, so a
+// save asks where instead of landing on the file as the author wrote it —
+// its bots/<name> fallback would name that very file in the default layout.
+type exampleResponse struct {
+	Source            string          `json:"source"`
+	Document          json.RawMessage `json:"document"`
+	Diagnostics       []string        `json:"diagnostics,omitempty"`
+	Path              string          `json:"path,omitempty"`
+	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	Bindable          bool            `json:"bindable"`
+}
+
+// writeExample answers with one program's document and text — a bot in
+// one file, or the flat program an embedded bot or one outside the working
+// directory is served as — and, for a file inside the working directory,
+// the path the studio opens and saves it by (empty otherwise).
+func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
+	pr := parser.Parse(name, source)
 	var diags []string
+	bindable := true
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
+		// A file that does not parse is never bound to its path: the
+		// document the parser salvaged is not the file, and a save of it
+		// would replace what the author wrote with what the parser kept.
+		if d.Severity == parser.SeverityError {
+			rel, confirmed, bindable = "", "", false
+		}
 	}
 
 	if pr.File == nil {
@@ -539,13 +570,115 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, struct {
-		Source      string          `json:"source"`
-		Document    json.RawMessage `json:"document"`
-		Diagnostics []string        `json:"diagnostics,omitempty"`
-	}{
-		Source:      string(data),
-		Document:    json.RawMessage(docJSON),
-		Diagnostics: diags,
+	writeJSON(w, exampleResponse{
+		Source:            source,
+		Document:          json.RawMessage(docJSON),
+		Diagnostics:       diags,
+		Path:              rel,
+		ConfirmedDiskPath: confirmed,
+		Bindable:          bindable,
 	})
+}
+
+// serveDiskExample answers for a bot found under ExamplesDir. A bot in one
+// file is its text, with its path when it lies inside the working
+// directory. A bot in several files INSIDE the working directory
+// opens as its unit, the way /api/files/open opens it — the merged document
+// with each declaration's file, the unit's files and revision, the path the
+// studio opens and saves it by — since the studio binds the path it is
+// handed and edits the files behind it. One that lives elsewhere (a catalog
+// root outside the working directory, as in cloud mode) is served as one
+// flat program, like an embedded bot: the text the studio launches inline
+// and may save as a new file. A unit that does not load is told through its
+// diagnostics, never served as its main alone.
+func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data []byte) {
+	u := unit.LoadDirWithMain(abs, abs, data)
+	if len(u.Files) == 0 || u.Files[0].AST == nil || len(u.Files[0].AST.Imports) == 0 {
+		// A bot in one file inside the working directory names its real
+		// path too, so the studio opens and saves the file it was handed
+		// rather than a copy under bots/.
+		rel, confirmed, _ := s.workDirRelative(abs, name)
+		writeExample(w, name, string(data), rel, confirmed)
+		return
+	}
+	var diags []string
+	for _, d := range u.Diagnostics {
+		diags = append(diags, d.Error())
+	}
+	if u.Merged == nil {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	if u.HasErrors() {
+		// A unit that does not load is never bound to its files: the studio
+		// gets the main's text and the program the loader salvaged, with the
+		// diagnostics, no path or unit, and the word that nothing is to be
+		// bound — a save of it asks where, never lands on the files as the
+		// author wrote them.
+		docJSON, err := ast.MarshalFile(u.Merged)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+			return
+		}
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags})
+		return
+	}
+	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {
+		docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+			return
+		}
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel)})
+		return
+	}
+	flat, err := flatProgram(name, u.Merged)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeExample(w, name, flat, "", "")
+}
+
+// workDirRelative is abs — the file the example name designates under
+// ExamplesDir — as the path the studio opens and saves it by, slash-
+// separated and relative to the working directory, with the path
+// /api/files/open confirms for it, when abs lies inside the working
+// directory. ok is false when there is no working directory, when abs is
+// outside it, or when abs resolves to another file than the one the name
+// designates: a catalog file that is a symlink into the working directory
+// would otherwise have the studio open and save that other file under the
+// example's name.
+func (s *Server) workDirRelative(abs, name string) (rel, confirmed string, ok bool) {
+	s.stateMu.RLock()
+	workDir, examplesDir := s.cfg.WorkDir, s.cfg.ExamplesDir
+	s.stateMu.RUnlock()
+	if workDir == "" || examplesDir == "" {
+		return "", "", false
+	}
+	base, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", "", false
+	}
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", "", false
+	}
+	absReal, err := filepath.EvalSymlinks(abs)
+	if err != nil || !pathContains(baseReal, absReal) {
+		return "", "", false
+	}
+	examplesReal, err := filepath.EvalSymlinks(examplesDir)
+	if err != nil || absReal != filepath.Join(examplesReal, filepath.FromSlash(name)) {
+		return "", "", false
+	}
+	r, err := filepath.Rel(baseReal, absReal)
+	if err != nil {
+		return "", "", false
+	}
+	confirmed, err = s.safePath(r)
+	if err != nil {
+		return "", "", false
+	}
+	return filepath.ToSlash(r), confirmed, true
 }

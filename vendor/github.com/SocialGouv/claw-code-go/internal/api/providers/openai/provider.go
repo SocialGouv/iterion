@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
 	"github.com/SocialGouv/claw-code-go/internal/api/providers/openaiwire"
+	"github.com/SocialGouv/claw-code-go/internal/auth"
 	"github.com/SocialGouv/claw-code-go/internal/strutil"
 )
 
@@ -53,6 +54,17 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAPIKey }
 // version, ChatGPT-Account-ID) that backend requires. Otherwise the legacy
 // API-key flow against api.openai.com (or cfg.BaseURL) is used.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
+	if cfg.CodexAuthFile != "" {
+		if cfg.APIKey != "" || cfg.OAuthToken != "" || cfg.OpenAIChatGPTAccountID != "" {
+			return nil, fmt.Errorf("OpenAI provider: Codex auth file cannot be combined with explicit credentials")
+		}
+		credentials, err := auth.LoadCodexCredentials(cfg.CodexAuthFile)
+		if err != nil {
+			return nil, err
+		}
+		cfg.OAuthToken = credentials.AccessToken
+		cfg.OpenAIChatGPTAccountID = credentials.AccountID
+	}
 	authMode := AuthModeAPIKey
 	if cfg.OAuthToken != "" && cfg.OpenAIChatGPTAccountID != "" {
 		authMode = AuthModeChatGPTOAuth
@@ -96,9 +108,11 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		Model:            model,
 		MaxTokens:        cfg.MaxTokens,
 		ChatGPTAccountID: cfg.OpenAIChatGPTAccountID,
+		CodexAuthFile:    cfg.CodexAuthFile,
 		ClientVersion:    clientVersion,
 		Identity:         identity,
 		HTTPClient:       api.NewStreamingHTTPClient(),
+		ImageHTTPClient:  newImageHTTPClient(),
 	}, nil
 }
 
@@ -113,9 +127,11 @@ type Client struct {
 	Model            string
 	MaxTokens        int
 	ChatGPTAccountID string       // only used in AuthModeChatGPTOAuth
+	CodexAuthFile    string       // optional read-only, per-request credential source
 	ClientVersion    string       // only used in AuthModeChatGPTOAuth
 	Identity         api.Identity // resolved at NewClient (override → env → mode default)
 	HTTPClient       *http.Client
+	ImageHTTPClient  *http.Client // separate header timeout for non-streamed image generation
 }
 
 // ----- Request types ---------------------------------------------------------
@@ -218,7 +234,9 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	if err != nil {
 		return nil, fmt.Errorf("openai: create request: %w", err)
 	}
-	c.setAuthHeaders(httpReq)
+	if err := c.setAuthHeaders(httpReq); err != nil {
+		return nil, err
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	c.Identity.Apply(httpReq.Header)
@@ -305,15 +323,24 @@ func (c *Client) shouldRequestStreamUsage() bool {
 // the masquerading headers required by the ChatGPT-Codex backend) onto req.
 // Callers still set Content-Type, Accept, and any per-endpoint headers, then
 // finish with c.Identity.Apply.
-func (c *Client) setAuthHeaders(req *http.Request) {
+func (c *Client) setAuthHeaders(req *http.Request) error {
 	if c.AuthMode == AuthModeChatGPTOAuth {
-		req.Header.Set("Authorization", "Bearer "+c.OAuthToken)
-		req.Header.Set("ChatGPT-Account-ID", c.ChatGPTAccountID)
+		token, accountID := c.OAuthToken, c.ChatGPTAccountID
+		if c.CodexAuthFile != "" {
+			credentials, err := auth.LoadCodexCredentials(c.CodexAuthFile)
+			if err != nil {
+				return err
+			}
+			token, accountID = credentials.AccessToken, credentials.AccountID
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("ChatGPT-Account-ID", accountID)
 		req.Header.Set("originator", chatgptOriginator)
 		req.Header.Set("version", c.ClientVersion)
-		return
+		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	return nil
 }
 
 // responsesEndpoint returns the full URL to POST to for the /responses

@@ -25,6 +25,7 @@ export default function CanvasEmpty() {
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  const setUnit = useDocumentStore((s) => s.setUnit);
   const markSaved = useDocumentStore((s) => s.markSaved);
   const toggleLibraryPanel = useUIStore((s) => s.toggleLibraryPanel);
   const libraryExpanded = useUIStore((s) => s.libraryExpanded);
@@ -40,14 +41,16 @@ export default function CanvasEmpty() {
 
   const handleLoadExample = async (name: string) => {
     try {
-      // Shared helper: load + bind bots/<name> (so Run enables) + keep the
-      // example's source/diagnostics + markSaved. Same path as
-      // RecentFilesPanel and Toolbar.handlePickFile.
+      // Shared helper: load + bind the path the server names, else
+      // bots/<name> (so Run enables) + keep the example's
+      // source/diagnostics + markSaved. Same path as RecentFilesPanel and
+      // Toolbar.handlePickFile.
       await openExampleIntoStore(name, {
         setDocument,
         setDiagnostics,
         setCurrentSource,
         setCurrentFilePath,
+        setUnit,
         markSaved,
       });
       setExamplesOpen(false);

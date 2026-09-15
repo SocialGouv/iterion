@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/fswatch"
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -36,7 +37,7 @@ func NewConfigWatcher(path string, logger *iterlog.Logger) (*ConfigWatcher, erro
 	if err != nil {
 		return nil, err
 	}
-	fw, err := fsnotify.NewWatcher()
+	fw, err := fswatch.NewWatcher()
 	if err != nil {
 		return nil, err
 	}

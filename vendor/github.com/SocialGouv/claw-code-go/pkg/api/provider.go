@@ -15,6 +15,9 @@ const ChatGPTClientVersion = api.ChatGPTClientVersion
 // APIClient is the interface all provider clients must implement.
 type APIClient = api.APIClient
 
+type GeneratedImage = api.GeneratedImage
+type ImageGenerator = api.ImageGenerator
+
 // Provider is the interface all AI providers must implement.
 type Provider = api.Provider
 

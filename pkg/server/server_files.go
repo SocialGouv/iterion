@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/SocialGouv/iterion/bots"
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -584,8 +583,13 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// remainder (e.g. "feature_dev/main.bot") against the embed.
 		for _, prefix := range []string{"bots/", "examples/"} {
 			if rest := strings.TrimPrefix(req.Path, prefix); rest != req.Path {
-				if embedded, ok := bots.Get(rest); ok {
-					data = embedded
+				src, ok, embedErr := embeddedRecipe(rest)
+				if embedErr != nil {
+					httpError(w, http.StatusInternalServerError, "%v", embedErr)
+					return
+				}
+				if ok {
+					data = []byte(src)
 					err = nil
 				}
 				break

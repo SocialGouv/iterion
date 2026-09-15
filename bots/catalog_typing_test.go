@@ -1,12 +1,10 @@
 package bots
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // phase2TypingCodes are the static cross-node typing diagnostics. No shipped
@@ -41,12 +39,7 @@ func TestCatalogBotsNoTypingRegressions(t *testing.T) {
 
 	checked := 0
 	for _, path := range targets {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("%s: read: %v", path, err)
-			continue
-		}
-		pr := parser.Parse(path, string(src))
+		pr := parseBotUnit(path)
 		if pr.File == nil {
 			continue
 		}

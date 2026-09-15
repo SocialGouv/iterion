@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -141,8 +142,17 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 		}
 		parts[f.Rel] = skel
 	}
-	owner := func(span ast.Span) (*ast.File, error) {
+	// A declaration the unit already holds in a FRAGMENT that comes back
+	// with no provenance did not appear in the editor: the client dropped
+	// the file it came from, and routing it to the main would move it out
+	// of its fragment in silence. A name no fragment holds is new, and
+	// goes to the main.
+	held := fragmentOwners(u)
+	owner := func(span ast.Span, key string) (*ast.File, error) {
 		if span.Start.File == "" {
+			if rel, ok := held[key]; ok {
+				return nil, fmt.Errorf("the document lost the provenance of %s, which lives in %s: reopen the file (the editor dropped the file it came from)", describeKey(key), rel)
+			}
 			return parts[u.Main], nil
 		}
 		p, ok := parts[span.Start.File]
@@ -164,7 +174,7 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 			for j := 0; j < fv.Len(); j++ {
 				el := fv.Index(j)
 				span, _ := spanOf(el)
-				p, err := owner(span)
+				p, err := owner(span, declKey(field.Name, el))
 				if err != nil {
 					return nil, err
 				}
@@ -183,7 +193,7 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 			entries := entriesOf(fv.Elem())
 			if !entries.IsValid() || entries.Len() == 0 {
 				blockSpan, _ := spanOf(fv)
-				p, err := owner(blockSpan)
+				p, err := owner(blockSpan, "")
 				if err != nil {
 					return nil, err
 				}
@@ -193,7 +203,7 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 			for j := 0; j < entries.Len(); j++ {
 				el := entries.Index(j)
 				span, _ := spanOf(el)
-				q, err := owner(span)
+				q, err := owner(span, declKey(field.Name, el))
 				if err != nil {
 					return nil, err
 				}
@@ -318,6 +328,73 @@ func restoreSubbotSources(parts map[string]*ast.File, u *unit.Unit) {
 			part.Subbots[i] = &cp
 		}
 	}
+}
+
+// declKey names a declaration or a block entry by its kind (the ast.File
+// field) and its name — its Name field, or the Prefix of a `use` — "" for
+// an element with neither (a comment).
+func declKey(field string, el reflect.Value) string {
+	for el.IsValid() && el.Kind() == reflect.Pointer {
+		if el.IsNil() {
+			return ""
+		}
+		el = el.Elem()
+	}
+	if !el.IsValid() || el.Kind() != reflect.Struct {
+		return ""
+	}
+	name := el.FieldByName("Name")
+	if !name.IsValid() || name.Kind() != reflect.String {
+		name = el.FieldByName("Prefix")
+	}
+	if !name.IsValid() || name.Kind() != reflect.String || name.String() == "" {
+		return ""
+	}
+	return field + "\x00" + name.String()
+}
+
+// describeKey renders a declKey for a message: `agent "worker"`.
+func describeKey(key string) string {
+	field, name, _ := strings.Cut(key, "\x00")
+	return strings.ToLower(strings.TrimSuffix(field, "s")) + " " + strconv.Quote(name)
+}
+
+// fragmentOwners maps every named declaration and block entry a FRAGMENT
+// of the unit holds, by declKey, to that fragment.
+func fragmentOwners(u *unit.Unit) map[string]string {
+	out := map[string]string{}
+	for _, f := range u.Files {
+		if f.Rel == u.Main || f.AST == nil {
+			continue
+		}
+		fv := reflect.ValueOf(f.AST).Elem()
+		for i := 0; i < fv.NumField(); i++ {
+			field := fv.Type().Field(i)
+			v := fv.Field(i)
+			switch v.Kind() {
+			case reflect.Slice:
+				for j := 0; j < v.Len(); j++ {
+					if key := declKey(field.Name, v.Index(j)); key != "" {
+						out[key] = f.Rel
+					}
+				}
+			case reflect.Pointer:
+				if v.IsNil() {
+					continue
+				}
+				entries := entriesOf(v.Elem())
+				if !entries.IsValid() {
+					continue
+				}
+				for j := 0; j < entries.Len(); j++ {
+					if key := declKey(field.Name, entries.Index(j)); key != "" {
+						out[key] = f.Rel
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 func ensureBlock(field reflect.Value, t reflect.Type) {

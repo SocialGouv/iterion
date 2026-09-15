@@ -1,12 +1,10 @@
 package bots
 
 import (
-	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestReviewPRTierExpand pins the review-tier resolution (native:685 /
@@ -16,11 +14,7 @@ import (
 // value on any of the underlying vars must win over the tier — the tier is
 // a PRESET, never a cage.
 func TestReviewPRTierExpand(t *testing.T) {
-	src, err := os.ReadFile("review-pr/main.bot")
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	pr := parser.Parse("review-pr/main.bot", string(src))
+	pr := parseBotUnit("review-pr/main.bot")
 	if pr.File == nil {
 		t.Fatal("parse produced no File")
 	}

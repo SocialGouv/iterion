@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/fswatch"
 	"github.com/fsnotify/fsnotify"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -79,7 +80,7 @@ func tailFile(path string, done <-chan struct{}, drain func(offset int64) int64,
 	// the watch loop below tolerates a missing file.
 	waitForFile(path, done, 5*time.Second)
 
-	watcher, watcherErr := fsnotify.NewWatcher()
+	watcher, watcherErr := fswatch.NewWatcher()
 	if watcherErr != nil {
 		logger.Warn("runstream: tail %s: fsnotify unavailable, falling back to polling: %v", path, watcherErr)
 		tailFilePolling(path, done, drain)
