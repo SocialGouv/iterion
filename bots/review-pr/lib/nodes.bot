@@ -258,7 +258,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} SCOPE_FILES={{input.scope_files}} python3 -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -508,6 +508,10 @@ payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': 
 # reports a posted gate, and a NameError in this deterministic final step
 # would cost the whole review.
 gate_ctx = str(os.environ.get('GATE_CONTEXT', '')).strip() or 'revi/review'
+# diff_precheck's ignorance sentinel, carried all the way to the gate: -1 means
+# the scope could not be computed, which is a different thing from a branch that
+# changed nothing, and the two must not land on the same status.
+scope_unresolved = str(os.environ.get('SCOPE_FILES', '')).strip() == '-1'
 gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
@@ -518,8 +522,14 @@ if gate_enabled:
     # (most severe) always blocks -- fail closed.
     floor = sev_rank.get(gate_sev, 1)
     # A gate fails CLOSED: an unparseable finding set can't be evaluated, so it
-    # blocks rather than reporting a green status by omission.
-    if findings_parse_failed:
+    # blocks rather than reporting a green status by omission. The same is true
+    # one step earlier -- a scope that never resolved means no code was read at
+    # all, and zero findings out of zero files read is not an approval. Measured
+    # 2026-09-15: a cloud run whose workspace held no checkout produced 0
+    # findings and the reviewers said so in questions, which is a NON-BLOCKING
+    # channel by design, so the gate would have gone green on a pull request
+    # nobody had opened.
+    if scope_unresolved or findings_parse_failed:
         blocking = 1
     else:
         blocking = 0
@@ -545,7 +555,9 @@ if gate_enabled:
     # Never let the status describe an unreadable review as a real blocking
     # finding: that message sent an operator hunting for a finding that was
     # never published. The note field overrides the server description.
-    if findings_parse_failed:
+    if scope_unresolved:
+        payload['gate']['note'] = 'no diff could be read, so no code was reviewed - gate fails closed; re-run once the workspace carries a checkout'
+    elif findings_parse_failed:
         payload['gate']['note'] = 'review output unreadable (findings were not machine-readable) - gate fails closed; re-run /revi'
     elif recovered_from_reviewers:
         payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s) recovered from the reviewers (merge step degraded)'

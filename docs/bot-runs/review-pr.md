@@ -135,8 +135,49 @@ investigation.
 The `[high]`s are the ones worth remembering: a review of a review-scope fix
 caught the fix turning a *wrong* review into a *silently empty* one — twice.
 
+### The validation round found the hole the fix left open (run `01a0a4ea`)
+
+Ran the MERGED bot inline (`iterion remote runs launch <file.bot>`) against a
+real PR, on the production default path (claude_code / claude-sonnet-5), so the
+fix could be exercised without pushing the platform override. The measurement:
+
+```
+base_is_current: false   base_sha: "main"   changed_files: -1   reviewed_sha: ""
+```
+
+The cloud workspace held **no git checkout at all** — `rev-parse HEAD` returned
+nothing. The fix behaved exactly as designed: it did not collapse to HEAD, did
+not report an empty diff, emitted the ignorance sentinel and routed to the
+reviewers. And the reviewers were honest, with zero invented findings:
+
+> "The review workspace /tmp/iterion contains no checkout at all … no diff could
+> be read and therefore no code was reviewed"
+
+**But that message rides `questions`, which is a NON-BLOCKING channel by
+design** — and `pr_gate` counts findings, not scope. Zero findings out of zero
+files read would have posted `success`. The reviewers became honest; the
+deterministic gate did not. Closed here: `changed_files: -1` now fails the gate
+closed with a note naming the reason, on the exact precedent already in that
+node (an unparseable finding set blocks rather than reporting green by
+omission). `0` stays a real answer.
+
+The wiring was **inert on the first attempt**, and a repo guard caught it:
+`{{outputs.…}}` is not substituted inside a tool node's command body — only
+`input`/`vars`/`secrets`/`run.id` are — so the value would have reached the
+shell as literal text. `TestCatalogToolCommandsResolveTheirRefs` failed with
+exactly that sentence. Worth noting that the behavioural test did **not** catch
+it, because it substitutes the ref itself: the two guards cover different
+halves, and only together do they cover the feature.
+
 ### Lessons for next run
 
+- **Rebuild the local binary after a bundle-layout change, and use a control
+  before blaming your edit.** #1241 split this bot into `lib/nodes.bot` /
+  `lib/prompts.bot` / `lib/schemas.bot` mid-session. A binary built an hour
+  earlier rejected the SPLIT bundle with `E001: unexpected token 'import' at
+  top level` — on the pristine files from `main`, which is how that was told
+  apart from a broken edit in seconds. Validate the untouched version first;
+  the answer is almost always the tool, not the change.
 - **Do not hand-launch a review on a PR that has just opened** — the webhook
   lane reviews it, and the two race. This is the review-side twin of the
   fixer-collision rule in `CLAUDE.md`.
