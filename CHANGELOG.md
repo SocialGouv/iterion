@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.145.1](https://github.com/SocialGouv/iterion/compare/v3.145.0...v3.145.1) (2026-09-15)
+
+### Bug Fixes
+
+* **golden-master:** the seal declines per SET, never per directory ([#1149](https://github.com/SocialGouv/iterion/issues/1149)) ([6ceb323](https://github.com/SocialGouv/iterion/commit/6ceb32386d8672b3fa60a52b64f9cccd9c0cf64e))
+
+    <details><summary>why</summary>
+
+    seal_holdout relocates the held-out set so the hardening loop cannot read it -- the seal was a sentence in a skill until it was made mechanical. A COMMITTED set is deliberately exempt: it awaits its own gate, and moving tracked files would leave uncommitted deletions a finalize refuses to merge while burning that set's single scoring on a gate that does not own it.
+
+    </details>
+
 ## [3.145.0](https://github.com/SocialGouv/iterion/compare/v3.144.1...v3.145.0) (2026-09-15)
 
 ### Features
