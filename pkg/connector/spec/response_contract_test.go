@@ -2,6 +2,7 @@ package spec
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -117,6 +118,139 @@ func TestAContractCannotNameANumberNoRunDelivers(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheTraversalBudgetBoundsONEContractNotTheWholePackage.
+//
+// The budget exists to stop a pathological SHAPE — a contract that expands
+// without end — and a counter shared by every top-level contract does not
+// measure that. It measures how many contracts a package has, which the
+// document size cap already bounds, and the two limits contradict: the package
+// may hold 1024 contracts while the shared budget affords about ten nodes
+// each. A description that is merely LARGE then fails to generate, blaming
+// whichever contract sorted first.
+func TestTheTraversalBudgetBoundsONEContractNotTheWholePackage(t *testing.T) {
+	ordinary := func(properties int) ResponseSchema {
+		s := ResponseSchema{Type: "object", Properties: map[string]ResponseSchema{}}
+		for i := range properties {
+			s.Properties["p"+strconv.Itoa(i)] = ResponseSchema{Type: "string"}
+		}
+		return s
+	}
+
+	t.Run("many ordinary contracts are admitted", func(t *testing.T) {
+		// 500 × 26 nodes ≈ 13000: no single contract is anywhere near the
+		// ceiling, and their SUM is over it.
+		p, _ := responsePackage(ordinary(25))
+		for i := range 500 {
+			name := "c" + strconv.Itoa(i)
+			p.ResponseSchemas[name] = ordinary(25)
+			p.Ops[0].Operations[0].Results = append(p.Ops[0].Operations[0].Results,
+				ResultCase{Status: 200, ResponseSchemaRef: name})
+		}
+		if err := p.ValidateResponseContracts(); err != nil {
+			t.Fatalf("a package of ordinary contracts was refused for being numerous: %v", err)
+		}
+	})
+
+	t.Run("one runaway contract is still refused", func(t *testing.T) {
+		// The guard must keep biting where it means something: a single shape
+		// whose own expansion passes the ceiling.
+		runaway := ResponseSchema{Type: "object", Properties: map[string]ResponseSchema{}}
+		for i := range 1000 {
+			runaway.Properties["g"+strconv.Itoa(i)] = ordinary(20)
+		}
+		p, _ := responsePackage(runaway)
+		err := p.ValidateResponseContracts()
+		if err == nil {
+			t.Fatal("a contract expanding past the ceiling must still be refused")
+		}
+		if !strings.Contains(err.Error(), "traversal limit") {
+			t.Errorf("err = %v, want the traversal limit named", err)
+		}
+	})
+}
+
+// TestAnOrdinaryPageIsNotRefusedForBeingLarge.
+//
+// The transport already bounds a body at 32 MiB and decodes it whole before
+// this walk begins, so a fixed node ceiling here does not protect memory — it
+// only refuses pages the vendor was allowed to send. A 2000-row page of sixty
+// fields is an ordinary list response, and it was refused at row 1639; on a
+// mutation that is a parked run rather than a failure a workflow can branch on.
+//
+// The budget now comes from the body's own length, which a JSON tree cannot
+// exceed in nodes. It still terminates a walk whose cost is NOT linear in the
+// body — the enum scan, which pays per member per value.
+func TestAnOrdinaryPageIsNotRefusedForBeingLarge(t *testing.T) {
+	t.Run("a large ordinary page validates", func(t *testing.T) {
+		row := ResponseSchema{Type: "object", Properties: map[string]ResponseSchema{}}
+		for i := range 60 {
+			row.Properties["f"+strconv.Itoa(i)] = ResponseSchema{Type: "string"}
+		}
+		p, op := responsePackage(ResponseSchema{Type: "array", Items: &row})
+		if err := p.ValidateResponseContracts(); err != nil {
+			t.Fatalf("preflight: %v", err)
+		}
+		var page strings.Builder
+		page.WriteByte('[')
+		for r := range 2000 {
+			if r > 0 {
+				page.WriteByte(',')
+			}
+			page.WriteByte('{')
+			for i := range 60 {
+				if i > 0 {
+					page.WriteByte(',')
+				}
+				page.WriteString(`"f` + strconv.Itoa(i) + `":"v"`)
+			}
+			page.WriteByte('}')
+		}
+		page.WriteByte(']')
+		checked, err := p.ValidateResponse(op, 200, []byte(page.String()))
+		if !checked {
+			t.Fatal("the contract was not applied at all")
+		}
+		if err != nil {
+			t.Fatalf("an ordinary %d-byte page was refused: %v", page.Len(), err)
+		}
+	})
+
+	t.Run("the backstop still stops a walk that is not linear in the body", func(t *testing.T) {
+		// Each value is compared against every enum member, so cost is
+		// values × members while the body grows by two bytes per value.
+		members := make([]json.RawMessage, 1024)
+		for i := range members {
+			members[i] = json.RawMessage(strconv.Itoa(i + 1000000))
+		}
+		p, op := responsePackage(ResponseSchema{
+			Type:  "array",
+			Items: &ResponseSchema{Enum: members},
+		})
+		if err := p.ValidateResponseContracts(); err != nil {
+			t.Fatalf("preflight: %v", err)
+		}
+		// The LAST member, so every value scans the whole list instead of
+		// matching early or failing on the first comparison.
+		last := strconv.Itoa(1000000 + len(members) - 1)
+		var body strings.Builder
+		body.WriteByte('[')
+		for i := range 1000 {
+			if i > 0 {
+				body.WriteByte(',')
+			}
+			body.WriteString(last)
+		}
+		body.WriteByte(']')
+		_, err := p.ValidateResponse(op, 200, []byte(body.String()))
+		if err == nil {
+			t.Fatal("a walk costing values × enum members must still be stopped")
+		}
+		if !strings.Contains(err.Error(), "traversal limit") {
+			t.Errorf("err = %v, want the traversal limit named", err)
+		}
+	})
 }
 
 func TestResponseContractIsExplicitAndStatusSpecific(t *testing.T) {

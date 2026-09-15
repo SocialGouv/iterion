@@ -29,7 +29,15 @@ type ResponseSchema struct {
 }
 
 const (
-	maxContractDepth  = 64
+	maxContractDepth = 64
+	// maxContractNodes bounds ONE top-level contract's expansion, and is reset
+	// for each. A counter shared by the whole package would not measure the
+	// thing it exists to stop — a shape that expands without end — it would
+	// measure how MANY contracts a package holds, which the document size cap
+	// already bounds. The two limits would also contradict: maxContractList
+	// admits 1024 contracts, so a shared 10000 affords about ten nodes each,
+	// and an ordinary 25-property contract costs twenty-six. A merely large
+	// description would fail to load, naming whichever contract sorted first.
 	maxContractNodes  = 10000
 	maxContractList   = 1024
 	maxResponseVisits = 100000
@@ -69,7 +77,9 @@ func (p *Package) ValidateResponseContracts(extra ...Operation) error {
 	if len(p.ResponseSchemas) > maxContractList {
 		return fmt.Errorf("too many response contracts (maximum %d)", maxContractList)
 	}
-	visits := 0
+	// checked is shared so a component reached from several contracts is walked
+	// once; the budget is not, so a package pays per contract for its own shape
+	// and never for its siblings'.
 	checked := map[string]bool{}
 	for _, name := range responseKeys(p.ResponseSchemas) {
 		if checked[name] {
@@ -78,6 +88,7 @@ func (p *Package) ValidateResponseContracts(extra ...Operation) error {
 		if len(name) == 0 || len(name) > 512 {
 			return fmt.Errorf("response contract name is empty or too long")
 		}
+		visits := 0
 		if err := p.checkResponseSchema(p.ResponseSchemas[name], 0, 0, map[string]int{name: 0}, checked, &visits); err != nil {
 			return fmt.Errorf("response contract %q: %w", name, err)
 		}
@@ -203,8 +214,17 @@ func (p *Package) ValidateResponse(op Operation, status int, body []byte) (check
 	if err != nil {
 		return true, fmt.Errorf("response contract requires one valid JSON value")
 	}
-	visits := 0
-	if err := p.validateResponseValue(schema, data, "$", 0, &visits); err != nil {
+	// The walk is bounded by the body the transport ALREADY admitted: a JSON
+	// tree cannot hold more nodes than it has bytes, so this can never refuse a
+	// page the vendor was allowed to send. A fixed ceiling did: measured, an
+	// ordinary 2000-row page of sixty fields (1.2 MB) was refused at row 1639,
+	// and on a mutation that is a parked run rather than a failure a workflow
+	// can branch on. maxResponseVisits stays as the floor for small bodies.
+	budget := len(body)
+	if budget < maxResponseVisits {
+		budget = maxResponseVisits
+	}
+	if err := p.validateResponseValue(schema, data, "$", 0, &budget); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -232,9 +252,15 @@ func responseViolation(path, reason string) error {
 	return fmt.Errorf("response contract at %q: %s", path, reason)
 }
 
-func (p *Package) validateResponseValue(s ResponseSchema, value any, path string, depth int, visits *int) error {
-	*visits++
-	if depth > maxContractDepth || *visits > maxResponseVisits {
+// validateResponseValue walks the contract and the decoded body together.
+//
+// budget is a REMAINING count, derived by the caller from the body the
+// transport already admitted, so this walk cannot refuse a page the vendor was
+// allowed to send. It is a termination backstop for a contract shape that
+// revisits value nodes, not a limit on how much a vendor may return.
+func (p *Package) validateResponseValue(s ResponseSchema, value any, path string, depth int, budget *int) error {
+	*budget--
+	if depth > maxContractDepth || *budget < 0 {
 		return responseViolation(path, "validation traversal limit exceeded")
 	}
 	if s.Ref != "" {
@@ -242,7 +268,7 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		if !ok {
 			return responseViolation(path, "contract reference is missing")
 		}
-		return p.validateResponseValue(target, value, path, depth+1, visits)
+		return p.validateResponseValue(target, value, path, depth+1, budget)
 	}
 	// A declared null on a nullable schema skips the type check; everything
 	// else has to match the declared type.
@@ -287,8 +313,8 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		}
 		found := false
 		for _, raw := range s.Enum {
-			*visits++
-			if *visits > maxResponseVisits {
+			*budget--
+			if *budget < 0 {
 				return responseViolation(path, "validation traversal limit exceeded")
 			}
 			member, err := decodeResponseJSON(raw)
@@ -313,7 +339,7 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		}
 		for _, name := range responseKeys(s.Properties) {
 			if member, exists := object[name]; exists {
-				if err := p.validateResponseValue(s.Properties[name], member, path+"."+name, depth+1, visits); err != nil {
+				if err := p.validateResponseValue(s.Properties[name], member, path+"."+name, depth+1, budget); err != nil {
 					return err
 				}
 			}
@@ -321,7 +347,7 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 	}
 	if array, ok := value.([]any); ok && s.Items != nil {
 		for i, member := range array {
-			if err := p.validateResponseValue(*s.Items, member, path+"["+strconv.Itoa(i)+"]", depth+1, visits); err != nil {
+			if err := p.validateResponseValue(*s.Items, member, path+"["+strconv.Itoa(i)+"]", depth+1, budget); err != nil {
 				return err
 			}
 		}
