@@ -349,7 +349,14 @@ export async function listExamples(): Promise<string[]> {
 
 export async function loadExample(
   name: string,
-): Promise<{ source: string; document: IterDocument; diagnostics: string[] }> {
+): Promise<{
+  source: string;
+  document: IterDocument;
+  diagnostics: string[];
+  /** Set when the example is a bot in several files on disk: the document
+   *  is the merged unit. An embedded one is served as one flat program. */
+  unit?: UnitInfo;
+}> {
   // Encode each path segment but keep the slashes so subdirectory
   // examples (e.g. "feature_dev/main.bot") route correctly.
   const encoded = name.split("/").map(encodeURIComponent).join("/");

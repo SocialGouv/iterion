@@ -1,14 +1,13 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
 
 func readCopilotContractFile(t *testing.T, path string) string {
 	t.Helper()
-	raw, err := os.ReadFile(path)
+	raw, err := botUnitSource(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
