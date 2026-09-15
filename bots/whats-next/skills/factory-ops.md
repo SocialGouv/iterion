@@ -147,3 +147,14 @@ App delivery permissions deliberately, refresh the token and relaunch.
 Installation grants alone do not prove the narrower token's capabilities.
 Do not schedule repeated analysis attempts against the same missing proof.
 See [Revi/Billy delivery preflight](../../../docs/revi-billy-loop.md).
+
+## Child resources differ from the parent
+
+When a subbot cannot read its skills/tools, or its parent sees child resources
+later, consult [Child bundle resources](../../../docs/groups-iteration-subbots.md#child-bundle-resources).
+Check the child's `FilePath`/`BundlePath` and `sandbox_devbox_provisioned`
+event (`target`, `bin_dirs`, `errors`). A workflow inside a bundle, including
+`step.bot` beside `main.bot`, inherits that bundle; a standalone file outside
+one has no bundle resources. Shared-workspace resources are borrowed for each
+active pass and restored on return, including pauses; child devbox PATH never replaces the
+parent's. A restoration error names a retained backup to inspect.

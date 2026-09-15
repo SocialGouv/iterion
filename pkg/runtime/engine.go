@@ -159,6 +159,7 @@ type varsSetter interface{ SetVars(map[string]any) }
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
+	resourceScope            *runResourceScope
 	workflow                 *ir.Workflow
 	store                    store.RunStore
 	executor                 NodeExecutor

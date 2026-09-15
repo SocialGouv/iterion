@@ -802,7 +802,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	execCtx := e.templateContext(ctx, rs, branchScope)
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)

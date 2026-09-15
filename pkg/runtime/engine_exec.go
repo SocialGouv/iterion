@@ -146,17 +146,19 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
 			return true, true, "", emErr
 		}
-		// Best-effort status flip — the run logically succeeded the
-		// moment we reached DoneNode, so a transient store-side
-		// failure on the final status write must not flip a
-		// successful run to "failed" (which would also skip
-		// worktree finalize and orphan any commits the run
-		// produced). Log and continue; run_finished still fires
-		// below so observers see the terminal event.
-		if usErr := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); usErr != nil && e.logger != nil {
-			e.logger.Warn("runtime: failed to persist run %s as finished: %v (run reached DoneNode — treating as success)", rs.runID, usErr)
+		// A child is not successful until its BORROWED resources are restored, so
+		// reattach/polling callers never observe a prematurely finished child.
+		// Testing the scope's existence alone deferred this for every run
+		// carrying a bundle, contributions or a subbot node: for those the
+		// `finished` write and `run_finished` moved into the cleanup that runs
+		// after sandbox teardown, so a completed run reported `running` through
+		// container stop and workspace export — and an eviction in that window
+		// left a run that reached DoneNode permanently unfinished in the store.
+		if e.resourceScope != nil && e.resourceScope.borrowed {
+			e.resourceScope.reachedDone = true
+			return true, true, "", nil
 		}
-		return true, true, "", e.emit(rs.ctx, rs.runID, store.EventRunFinished, "", nil)
+		return true, true, "", e.publishRunFinished(rs.ctx, rs.runID)
 
 	case *ir.FailNode:
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
@@ -429,7 +431,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 
 	execStart := time.Now()
-	output, execErr := e.executor.Execute(spanCtx, node, nodeInput)
+	output, execErr := e.executeWithResources(spanCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if execErr != nil {
 		span.RecordError(execErr)
@@ -1258,4 +1260,13 @@ func isSpecialDispatch(node ir.Node) bool {
 		return true
 	}
 	return false
+}
+
+// Preserve the ordinary terminal write policy while allowing resource scopes
+// to delay that terminal publication until their cleanup succeeds.
+func (e *Engine) publishRunFinished(ctx context.Context, runID string) error {
+	if usErr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFinished, ""); usErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: failed to persist run %s as finished: %v (run reached DoneNode — treating as success)", runID, usErr)
+	}
+	return e.emit(ctx, runID, store.EventRunFinished, "", nil)
 }

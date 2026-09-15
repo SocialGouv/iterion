@@ -677,11 +677,11 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		childOpts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
+			runtime.WithBundle(childBundle),
 			runtime.WithExecutionContext(childContext),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
-			runtime.WithBundle(childBundle),
 			// The child executes in the parent's sandbox when the parent has
 			// one — the same tree, on every driver, on this host as on the
 			// runner and the studio.

@@ -300,6 +300,7 @@ the hours this one spent.
   App (no logo API; the studio hands over the file + the settings page).
   Read it when a bot posts with a default avatar, a reconnect preserves a custom
   avatar, or automatic avatar inspection fails; explicit applies remain replacements.
+- [docs/groups-iteration-subbots.md#child-bundle-resources](../groups-iteration-subbots.md#child-bundle-resources) — child skills/devbox missing or leaking into a parent: bundle identity, borrowed resource restoration, nested resumes and scoped PATH.
 - [docs/bot-bundle-snapshots.md](../bot-bundle-snapshots.md) — cloud launches
   freeze workflow, resources and sibling subbots through the server authority;
   queue v13, bounded immutable snapshot transport, strict runner resolution and

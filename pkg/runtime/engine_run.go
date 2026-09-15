@@ -280,6 +280,17 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		}
 	}
 
+	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, e.parentRunID != "" && !worktreeActive)
+	if resourceErr != nil {
+		e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
+		return resourceErr
+	}
+	defer func() {
+		if cleanupErr := resourceCleanup(); cleanupErr != nil {
+			err = errors.Join(cleanupErr, err)
+		}
+	}()
+
 	if err := e.runPersistWorkspace(ctx, runID, run, worktreeActive, wtCtx); err != nil {
 		return err
 	}
@@ -301,6 +312,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		return e.setupErr(ctx, fmt.Errorf("runtime: sandbox: %w", sbErr))
 	}
 	defer sandboxCleanup()
+	e.resourcesReady()
 
 	// Carry the run's named-loop iteration bounds on run_started so the
 	// runview snapshot can render a run-level "real loops" indicator
@@ -810,6 +822,7 @@ func (e *Engine) applyLibrarySkills() []string {
 // for the run, and returning early would leave a reused executor advertising the
 // previous run's skills — paths in another workspace entirely.
 func (e *Engine) applyMirroredSkills(owned []string) {
+	e.rememberResourceSkills(owned)
 	type mirroredSkillSetter interface{ SetMirroredSkills([]string) }
 	if s, ok := e.executor.(mirroredSkillSetter); ok {
 		s.SetMirroredSkills(owned)
