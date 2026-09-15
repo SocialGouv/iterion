@@ -54,11 +54,15 @@
 ## tag is absent.
 ##
 ## Scope discipline (matches the loop bots): reviewers diff the
-## WORKING TREE against the merge-base of `base_ref` and HEAD —
-## `git diff $(git merge-base base_ref HEAD)` — so both committed and
-## uncommitted branch changes are reviewed. To review ONLY the
-## uncommitted working tree, run with `--var base_ref=HEAD` (then the
-## merge-base is HEAD and the diff is HEAD-vs-working-tree).
+## WORKING TREE against the branch point, so both committed and
+## uncommitted branch changes are reviewed. That base is resolved ONCE by
+## `diff_precheck` — which refreshes `base_ref` from the remote first, then
+## takes the merge-base — and published as `base_sha`; every consumer reads
+## that sha instead of recomputing one from a ref name, because a checkout
+## reused across runs carries a stale `base_ref` and the merge-base against
+## it lands below the branch point. To review ONLY the uncommitted working
+## tree, run with `--var base_ref=HEAD` (nothing is fetched, the merge-base
+## is HEAD, and the diff is HEAD-vs-working-tree).
 ##
 ## Read-only safety: no node mutates source. reviewer_claude is
 ## `readonly: true`; reviewer_gpt is given only read tools (bash,
@@ -459,16 +463,32 @@ prompt review_system:
   only output is a structured list of findings — fixing is another
   bot's job.
 
-  REVIEW SCOPE (crucial):
+  REVIEW SCOPE (crucial). The base is `{{outputs.diff_precheck.base_sha}}`,
+  already resolved and refreshed for you. Use THAT sha — do not recompute a
+  merge-base from a ref name: a checkout reused across runs carries a stale
+  `{{vars.base_ref}}`, and the merge-base against it lands below the branch
+  point, silently pulling every file merged since into your scope.
   1. Enumerate the changed files with
-     `git -C {{vars.workspace_dir}} diff --name-only $(git -C {{vars.workspace_dir}} merge-base {{vars.base_ref}} HEAD)`.
-     This is the working-tree diff against the merge-base of
-     `{{vars.base_ref}}` and HEAD — it captures the changes the branch
-     introduced (committed AND uncommitted). That diff is your scope.
+     `git -C {{vars.workspace_dir}} diff --name-only {{outputs.diff_precheck.base_sha}}`.
+     This is the working-tree diff against the branch point — it captures
+     the changes the branch introduced (committed AND uncommitted). That
+     diff is your scope.
   2. Read the actual diff with
-     `git -C {{vars.workspace_dir}} diff $(git -C {{vars.workspace_dir}} merge-base {{vars.base_ref}} HEAD)`.
+     `git -C {{vars.workspace_dir}} diff {{outputs.diff_precheck.base_sha}}`.
      On a large diff, read `--stat` first and prioritise the
      highest-impact hunks; never let context overflow silently.
+  2b. `{{outputs.diff_precheck.base_is_current}}` says whether that base
+     came from the remote. When it is false, EITHER the base could not be
+     refreshed (no remote, no network) — your scope may then be wider than
+     what the branch introduced, so say so in `summary` and do not report a
+     finding on a file you cannot tie to this branch's work — OR the base
+     did not resolve at all, which `{{outputs.diff_precheck.changed_files}}`
+     reports as `-1`.
+  2c. An UNRESOLVED scope is never "nothing changed". If the diff command
+     fails, or returns no files while `changed_files` is `-1`, you have no
+     scope: say exactly that in `summary` and emit no findings — do not let
+     an empty diff read as a clean review, because that is what turns a
+     broken base into a green gate on a pull request nobody read.
   3. You MAY read surrounding code (callers, conventions, the host
      package) to judge how the change integrates, but you MUST only
      report issues in the CHANGED lines/files. Pre-existing issues the
@@ -957,6 +977,16 @@ schema diff_precheck_output:
   ## computed against a tree that has since changed (a resume after the branch
   ## advanced) — a stale-review guard, not a new gate.
   reviewed_sha: string
+  ## base_sha: the resolved merge-base the scope is taken from. Published so
+  ## the reviewers diff against the SAME base this node counted — recomputing
+  ## `merge-base base_ref HEAD` in a prompt would put the two halves on
+  ## different bases the moment the local ref is stale, which is the one case
+  ## that matters.
+  base_sha: string
+  ## base_is_current: whether that base came from the remote. False means the
+  ## scope rests on whatever the local checkout last knew, so the review is
+  ## not authoritative about what the branch introduced.
+  base_is_current: bool
 
 ## REVIEW TIERS (#685). The concrete, resolved values `tier_expand`
 ## derives from `review_tier` + the sentinel-default knobs — see the vars'
@@ -1081,27 +1111,80 @@ schema publish_health_output:
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
-## EFFICIENCY guard (deterministic, no LLM): compute the review diff
-## (working tree vs the merge-base of base_ref + HEAD — the same diff the
-## reviewers audit). If it is empty there is nothing to review, so
-## short-circuit past both LLM reviewers + emit and finish fast. Only skips
-## when the merge-base resolves AND the diff is empty; on any ambiguity
-## (e.g. base_ref absent) it runs the reviewers — never wrongly skips a
-## real review.
+## EFFICIENCY guard (deterministic, no LLM) AND the scope's single source of
+## truth: resolve the base once, then compute the review diff against it —
+## the same diff the reviewers audit, because they are handed the same sha.
+## If it is empty there is nothing to review, so short-circuit past both LLM
+## reviewers + emit and finish fast. Only skips when the merge-base resolves
+## AND the diff is empty; on any ambiguity (e.g. base_ref absent) it runs
+## the reviewers — never wrongly skips a real review.
 tool diff_precheck:
-  ## Carries reviewed_sha, the revision the findings anchor to.
+  ## Carries reviewed_sha, the revision the findings anchor to, and
+  ## base_sha — the ONE resolved base every consumer diffs against.
+  ##
+  ## The base is refreshed from the remote before the merge-base is taken.
+  ## A checkout reused across runs carries whatever `base_ref` meant when it
+  ## was made, and merge-base against a stale base lands BELOW the branch
+  ## point: the diff then contains every file merged into the base since,
+  ## and the review reports on code the branch never touched, as if it had.
+  ## Measured 2026-09-15: a review scoped itself onto five files of a pull
+  ## request merged three days earlier and emitted a blocking finding with
+  ## no line in the real diff to anchor to.
+  ##
+  ## Refreshing is best-effort by design — no remote, no network and an
+  ## opaque `base_ref` are all legitimate — so a failure degrades to the
+  ## local ref and says so through base_is_current rather than failing the
+  ## run. That degradation only holds if the call RETURNS, hence the bounded
+  ## timeout and GIT_TERMINAL_PROMPT=0: a remote that blackholes packets or
+  ## asks for credentials would otherwise park the workflow's entry node
+  ## until max_duration, and a review that never reaches its publish step
+  ## leaves the required check `pending` for good. `base_ref: HEAD` (the
+  ## review-uncommitted-only mode) is never fetched; there is nothing to
+  ## refresh.
+  ##
+  ## EVERY way of not knowing the scope emits the same sentinel —
+  ## `is_empty: false` with `changed_files: -1` — because the two ways of
+  ## reading "no files" are a whole review apart: "the branch changed
+  ## nothing", which legitimately skips the reviewers, and "the question
+  ## could not be answered", which must never skip them. A git call that
+  ## fails or times out returns empty stdout, so a result parsed without
+  ## checking its return code is indistinguishable from an empty diff, and
+  ## short-circuits to a green gate on a pull request nobody read.
+  ##
+  ## The unresolved paths: the merge-base does not resolve (unrelated
+  ## histories, a shallow clone, an unresolvable base_ref), or the diff
+  ## itself fails. In both, base_sha is the base that was TRIED, never HEAD
+  ## — the reviewers diff against base_sha, and a diff against HEAD is empty
+  ## on a clean checkout, so HEAD would hand them silence instead of an
+  ## error. base_is_current is forced false so the prompt's
+  ## unresolved-scope rule fires.
   publish: reviewed_revision
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
 import os, subprocess, json
 os.chdir(os.environ['WS'])
+def git(*a):
+    try:
+        return subprocess.run(['git', *a], capture_output=True, text=True, timeout=120, env=dict(os.environ, GIT_TERMINAL_PROMPT='0'))
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(['git', *a], 1, '', 'timed out')
 base = os.environ.get('BASE', 'main')
-head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
-mb = subprocess.run(['git', 'merge-base', base, 'HEAD'], capture_output=True, text=True).stdout.strip()
+head = git('rev-parse', 'HEAD').stdout.strip()
+base_is_current = False
+if base != 'HEAD' and git('fetch', '--quiet', 'origin', base).returncode == 0:
+    fetched = git('rev-parse', 'FETCH_HEAD')
+    if fetched.returncode == 0 and fetched.stdout.strip():
+        base = fetched.stdout.strip()
+        base_is_current = True
+def unresolved(b):
+    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': b, 'base_is_current': False})); raise SystemExit(0)
+mb = git('merge-base', base, 'HEAD').stdout.strip()
 if not mb:
-    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head})); raise SystemExit(0)
-out = subprocess.run(['git', 'diff', '--name-only', mb], capture_output=True, text=True).stdout.strip()
-files = [f for f in out.splitlines() if f.strip()]
-print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head}))
+    unresolved(base)
+diff = git('diff', '--name-only', mb)
+if diff.returncode != 0:
+    unresolved(mb)
+files = [f for f in diff.stdout.strip().splitlines() if f.strip()]
+print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head, 'base_sha': mb, 'base_is_current': base_is_current}))
 "`
   output: diff_precheck_output
 
