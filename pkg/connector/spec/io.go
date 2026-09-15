@@ -1,7 +1,10 @@
 package spec
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 const (
 	ConnectorFile = "connector.yaml"
 	SchemasFile   = "schemas.yaml"
+	ResponsesFile = "responses.json"
 	OpsDir        = "ops"
 )
 
@@ -23,6 +27,9 @@ const (
 // produces byte-identical output and a diff shows only real change. That is
 // what makes a generated package reviewable in a PR rather than a blob.
 func Write(dir string, p *Package) error {
+	if err := p.ValidateResponseContracts(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, OpsDir), 0o755); err != nil {
 		return fmt.Errorf("spec: create %s: %w", dir, err)
 	}
@@ -30,10 +37,25 @@ func Write(dir string, p *Package) error {
 		return err
 	}
 	if len(p.Schemas) > 0 {
-		sf := schemasDoc{SchemaVersion: SchemaVersion, Connector: p.Connector.ID, Schemas: p.Schemas}
+		sf := schemasDoc{SchemaVersion: p.Connector.SchemaVersion, Connector: p.Connector.ID, Schemas: p.Schemas}
 		if err := writeYAML(filepath.Join(dir, SchemasFile), sf); err != nil {
 			return err
 		}
+	}
+	if len(p.ResponseSchemas) > 0 {
+		rf := responsesDoc{SchemaVersion: ResponseContractsVersion, Connector: p.Connector.ID, Schemas: p.ResponseSchemas}
+		body, err := json.MarshalIndent(rf, "", "  ")
+		if err != nil {
+			return fmt.Errorf("spec: encode %s: %w", ResponsesFile, err)
+		}
+		if len(body) > maxResponseContractBytes {
+			return fmt.Errorf("spec: %s exceeds the contract size limit", ResponsesFile)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ResponsesFile), append(body, '\n'), 0o644); err != nil {
+			return fmt.Errorf("spec: write %s: %w", ResponsesFile, err)
+		}
+	} else if err := os.Remove(filepath.Join(dir, ResponsesFile)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("spec: remove obsolete %s: %w", ResponsesFile, err)
 	}
 	for _, f := range p.Ops {
 		name := f.Domain
@@ -54,6 +76,14 @@ type schemasDoc struct {
 	Connector     string            `yaml:"connector"`
 	Schemas       map[string]Schema `yaml:"schemas"`
 }
+
+type responsesDoc struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Connector     string                    `json:"connector"`
+	Schemas       map[string]ResponseSchema `json:"schemas"`
+}
+
+const maxResponseContractBytes = 4 << 20
 
 func writeYAML(path string, v any) error {
 	body, err := yaml.Marshal(v)
@@ -144,6 +174,9 @@ func read(dir string) (*Package, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("spec: read %s: %w", SchemasFile, err)
 	}
+	if err := readResponseContracts(dir, p); err != nil {
+		return nil, err
+	}
 
 	opsDir := filepath.Join(dir, OpsDir)
 	entries, err := os.ReadDir(opsDir)
@@ -177,6 +210,45 @@ func read(dir string) (*Package, error) {
 		p.Ops = append(p.Ops, f)
 	}
 	return p, nil
+}
+
+func readResponseContracts(dir string, p *Package) error {
+	f, err := os.Open(filepath.Join(dir, ResponsesFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("spec: read %s: %w", ResponsesFile, err)
+	}
+	defer func() { _ = f.Close() }()
+	body, err := io.ReadAll(io.LimitReader(f, maxResponseContractBytes+1))
+	if err != nil {
+		return fmt.Errorf("spec: read %s: %w", ResponsesFile, err)
+	}
+	if len(body) > maxResponseContractBytes {
+		return fmt.Errorf("spec: %s exceeds the contract size limit", ResponsesFile)
+	}
+	// Probe the version before strict fields, just like every other document.
+	if err := checkDocVersion(ResponsesFile, body); err != nil {
+		return err
+	}
+	var rf responsesDoc
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rf); err != nil {
+		return fmt.Errorf("spec: parse %s: %w", ResponsesFile, err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("spec: %s must contain one JSON document", ResponsesFile)
+	}
+	if rf.SchemaVersion != ResponseContractsVersion || p.Connector.SchemaVersion < ResponseContractsVersion {
+		return fmt.Errorf("spec: %s requires package and document schema_version %d", ResponsesFile, ResponseContractsVersion)
+	}
+	if err := checkDocConnector(ResponsesFile, rf.Connector, p.Connector.ID); err != nil {
+		return err
+	}
+	p.ResponseSchemas = rf.Schemas
+	return nil
 }
 
 // checkDocVersion runs the tolerant version pre-pass on EVERY document, not
@@ -244,7 +316,7 @@ func Measure(dir string) (Size, error) {
 		switch {
 		case filepath.Base(path) == ConnectorFile:
 			out.Connector += info.Size()
-		case filepath.Base(path) == SchemasFile:
+		case filepath.Base(path) == SchemasFile || filepath.Base(path) == ResponsesFile:
 			out.Schemas += info.Size()
 		default:
 			out.Ops += info.Size()

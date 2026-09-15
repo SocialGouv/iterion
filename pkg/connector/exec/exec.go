@@ -285,6 +285,22 @@ func (e *Error) Retryable(op spec.Operation, params map[string]any) bool {
 	if e.NotSent {
 		return true
 	}
+	// A 2xx the vendor actually sent PROVES the mutation happened; only the
+	// reading of its answer failed. An idempotency key buys a second chance at
+	// work that may not have happened — not a repeat of work that certainly
+	// did, and a body that broke its contract or would not decode breaks it
+	// identically on the next attempt.
+	//
+	// Scope, exactly: only an answer the vendor SENT as a success. The 5xx and
+	// transport cases stay retryable under a key, because there the mutation
+	// may never have happened and the key is what makes the second chance
+	// safe; a 302/303 is that same "may have", and keeps it too. The Ambiguous
+	// term carries the rest of the precision — a 2xx the vendor sent to report
+	// its OWN failure (Slack's `ok:false`) is deliberately never marked, so it
+	// keeps the retry a key has always licensed.
+	if e.Ambiguous && e.Status >= 200 && e.Status < 300 {
+		return false
+	}
 	// A mutation may only be repeated when THIS call carried a key that makes
 	// it idempotent. Rate limiting is the exception: a 429 means the request
 	// was REFUSED, not performed, so repeating it cannot duplicate anything.

@@ -54,6 +54,15 @@ import (
 // File is the overlay file name inside a connector package directory.
 const File = "overlay.yaml"
 
+// SchemaVersion is the overlay document's OWN format version.
+//
+// Separate from the connector package's on purpose: overlay.yaml has its own
+// fields and its own history, and borrowing the package constant meant a
+// package-format bump silently widened what an overlay may declare. A version
+// this file has no meaning for must reach the "upgrade iterion" diagnosis, not
+// the strict decoder's "unknown field".
+const SchemaVersion = 1
+
 // Overlay is a parsed overlay.yaml.
 type Overlay struct {
 	SchemaVersion int `yaml:"schema_version"`
@@ -173,8 +182,8 @@ func Parse(body []byte) (*Overlay, error) {
 	if err := yaml.Unmarshal(body, &probe); err != nil {
 		return nil, fmt.Errorf("overlay: %s is not valid YAML: %w", File, err)
 	}
-	if probe.SchemaVersion > spec.SchemaVersion {
-		return nil, fmt.Errorf("overlay: %s declares schema_version %d, newer than supported %d (upgrade iterion)", File, probe.SchemaVersion, spec.SchemaVersion)
+	if probe.SchemaVersion > SchemaVersion {
+		return nil, fmt.Errorf("overlay: %s declares schema_version %d, newer than supported %d (upgrade iterion)", File, probe.SchemaVersion, SchemaVersion)
 	}
 	var ov Overlay
 	if err := yaml.UnmarshalStrict(body, &ov); err != nil {

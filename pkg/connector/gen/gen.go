@@ -31,6 +31,9 @@ import (
 
 // Options drives one generation.
 type Options struct {
+	// ValidateResponses opts into explicit response contracts and package
+	// format v2. The default keeps existing v1 packages unchanged.
+	ValidateResponses bool
 	// ConnectorID is the package slug and the first segment of every derived
 	// operation id. Required — it is a naming decision, not something to
 	// derive from a vendor's title.
@@ -59,6 +62,13 @@ type Options struct {
 	OperatorSuppliedBaseURL bool
 	// Now is injectable so a generated package is byte-reproducible in tests.
 	Now func() time.Time
+}
+
+func (o Options) schemaVersion() int {
+	if o.ValidateResponses {
+		return spec.ResponseContractsVersion
+	}
+	return spec.LegacySchemaVersion
 }
 
 func (o *Options) defaults() {
@@ -142,7 +152,7 @@ func Generate(data []byte, opts Options) (*spec.Package, *Report, error) {
 
 	pkg := &spec.Package{
 		Connector: spec.Connector{
-			SchemaVersion: spec.SchemaVersion,
+			SchemaVersion: opts.schemaVersion(),
 			ID:            opts.ConnectorID,
 			DisplayName:   str(mapAt(doc, "info"), "title"),
 			Description:   firstLine(str(mapAt(doc, "info"), "description")),
