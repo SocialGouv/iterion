@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.149.4](https://github.com/SocialGouv/iterion/compare/v3.149.3...v3.149.4) (2026-09-15)
+
+### Bug Fixes
+
+* **runner:** retry final bank pushes and expose bank_failed ([#1194](https://github.com/SocialGouv/iterion/issues/1194)) ([6775622](https://github.com/SocialGouv/iterion/commit/67756229065bfbd6c76283518820a0085bfa1f03))
+
+    <details><summary>why</summary>
+
+    gitOpTimeout bounds one git subprocess, never the sequence. The push retry multiplies four network ops, and a run launched without --timeout carries no deadline for the live path to sit under, so the bank could pin a runner pod for attempts x ops x gitOpTimeout. bankContext now applies bankBudget on both arms, and still honours an operator who disabled per-op bounds.
+
+    </details>
+
 ## [3.149.3](https://github.com/SocialGouv/iterion/compare/v3.149.2...v3.149.3) (2026-09-15)
 
 ### Bug Fixes
