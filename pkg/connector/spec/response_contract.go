@@ -270,6 +270,11 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 			return responseViolation(path, "expected "+s.Type)
 		}
 	}
+	// Deliberately NOT relaxed by Nullable: an enum is the exhaustive list of
+	// what this field may hold, null included when the vendor allows it. A
+	// contract that permits null alongside an enum says so by listing null as
+	// a member — which is what the generator emits. Relaxing it here instead
+	// would make `enum: ["ok"]` silently accept null on every nullable field.
 	if s.Enum != nil {
 		id, err := scalarIdentity(value)
 		if err != nil {

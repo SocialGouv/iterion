@@ -335,3 +335,175 @@ func TestContractsSurviveTheRoundTripToDisk(t *testing.T) {
 		t.Error("the contract stopped discriminating after the round trip")
 	}
 }
+
+// oneOp wraps a response schema into a description with exactly one operation.
+func oneOp(schema, components string) string {
+	return `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/items": {"get": {"tags": ["item"], "operationId": "itemList",
+    "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": ` + schema + `}}}}}}}` +
+		components + `
+}`
+}
+
+// TestAFailedComponentTakesItsHalfBuiltSiblingsWithIt.
+//
+// A component that failed on an unrepresentable keyword still left behind the
+// components it had already built. When one of those referenced the failed one
+// — A → B → A, which is what `Issue.user` / `User.issues` is — the map held a
+// DANGLING reference, ValidateGenerated refused the whole package, and
+// `connectors gen --validate-responses` exited 1 with a message blaming the
+// generator. Whether it happened depended on the ALPHABETICAL order of the
+// properties: the failing one sorting after the referencing one was the
+// difference between a clean report and a dead command. (Revi/rva finding 1.)
+func TestAFailedComponentTakesItsHalfBuiltSiblingsWithIt(t *testing.T) {
+	// `zz` sorts AFTER `b`, so B is built before A fails — the ordering that
+	// used to strand the reference.
+	body := oneOp(`{"$ref": "#/components/schemas/A"}`, `,
+  "components": {"schemas": {
+    "A": {"type": "object", "properties": {"b": {"$ref": "#/components/schemas/B"}, "zz": {"type": "string", "minLength": 1}}},
+    "B": {"type": "object", "properties": {"a": {"$ref": "#/components/schemas/A"}}}
+  }}`)
+
+	pkg, report := generateWith(t, body, true)
+	if len(report.Uncontracted) != 1 || !strings.Contains(report.Uncontracted[0].Reason, "minLength") {
+		t.Fatalf("Uncontracted = %+v, want one limitation naming minLength", report.Uncontracted)
+	}
+	if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
+		t.Errorf("the response got contract %q from a build that failed", ref)
+	}
+	if len(pkg.ResponseSchemas) != 0 {
+		t.Errorf("contracts = %v, want none: a failed build must leave the map as it found it", pkg.ResponseSchemas)
+	}
+	// The package the generator hands back must satisfy its own reader.
+	if err := pkg.ValidateResponseContracts(); err != nil {
+		t.Fatalf("the generator emitted a package its own reader refuses: %v", err)
+	}
+}
+
+// TestTwoSchemasCannotShareOneContractName.
+//
+// Contracts were keyed by the LAST SEGMENT of the $ref, and `component()`
+// returned an already-built name without ever comparing the resolved target.
+// A description carrying both #/definitions/Thing and #/components/schemas/Thing
+// — an ordinary residue of a Swagger 2 → OAS 3 conversion — merged two
+// different shapes under one contract, with no warning, and refused at runtime
+// the body the vendor documents for whichever operation lost.
+func TestTwoSchemasCannotShareOneContractName(t *testing.T) {
+	body := `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {
+    "/a": {"get": {"tags": ["item"], "operationId": "itemGetA",
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}}}}}},
+    "/b": {"get": {"tags": ["item"], "operationId": "itemGetB",
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/definitions/Thing"}}}}}}}
+  },
+  "components": {"schemas": {"Thing": {"type": "object", "required": ["modern_only"], "properties": {"modern_only": {"type": "string"}}}}},
+  "definitions": {"Thing": {"type": "object", "required": ["legacy_only"], "properties": {"legacy_only": {"type": "string"}}}}
+}`
+	pkg, report := generateWith(t, body, true)
+
+	var collided bool
+	for _, u := range report.Uncontracted {
+		if strings.Contains(u.Reason, "share the contract name") {
+			collided = true
+		}
+	}
+	if !collided {
+		t.Fatalf("Uncontracted = %+v, want the name collision reported rather than merged", report.Uncontracted)
+	}
+	// Whatever survived must describe ONE shape: no operation may reference a
+	// contract built from a different schema than its own.
+	for _, op := range pkg.Operations() {
+		for _, res := range op.Results {
+			if res.ResponseSchemaRef == "" {
+				continue
+			}
+			c := pkg.ResponseSchemas[res.ResponseSchemaRef]
+			want := "modern_only"
+			if strings.HasSuffix(op.ID, "get_b") {
+				want = "legacy_only"
+			}
+			if len(c.Required) != 1 || c.Required[0] != want {
+				t.Errorf("%s references contract %q requiring %v, want %q — two shapes merged", op.ID, res.ResponseSchemaRef, c.Required, want)
+			}
+		}
+	}
+}
+
+// TestWriteOnlyIsHonouredThroughAReference: a `password` property is routinely
+// a reference to a component that carries the writeOnly, and testing the
+// property node alone saw nothing — so `password` went into required, and the
+// vendor, which by definition never sends it back, failed EVERY call.
+func TestWriteOnlyIsHonouredThroughAReference(t *testing.T) {
+	body := oneOp(`{"$ref": "#/components/schemas/User"}`, `,
+  "components": {"schemas": {
+    "User": {"type": "object", "required": ["id", "password"], "properties": {"id": {"type": "string"}, "password": {"$ref": "#/components/schemas/Password"}}},
+    "Password": {"type": "string", "writeOnly": true}
+  }}`)
+
+	pkg, _ := generateWith(t, body, true)
+	user, ok := pkg.ResponseSchemas["User"]
+	if !ok {
+		t.Fatalf("contracts = %v, want one named User", pkg.ResponseSchemas)
+	}
+	if len(user.Required) != 1 || user.Required[0] != "id" {
+		t.Fatalf("required = %v, want only id — the vendor never sends a writeOnly field back", user.Required)
+	}
+	op := onlyOp(t, pkg)
+	if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":"u1"}`)); err != nil {
+		t.Errorf("the body the vendor actually sends was refused: %v", err)
+	}
+}
+
+// TestANullableEnumListsNull: the reader applies an enum to a null like any
+// other value — deliberately, so `enum: ["ok"]` cannot silently accept null.
+// The generator therefore has to say null is permitted in the only place the
+// reader looks. `{type: string, enum: [...], nullable: true}` is the commonest
+// shape in the wild; without this every documented null was refused.
+func TestANullableEnumListsNull(t *testing.T) {
+	body := oneOp(`{"type": "object", "properties": {"state": {"type": "string", "enum": ["open", "closed"], "nullable": true}}}`, ``)
+	pkg, _ := generateWith(t, body, true)
+	op := onlyOp(t, pkg)
+
+	for _, tc := range []struct {
+		body   string
+		accept bool
+	}{
+		{`{"state":null}`, true},
+		{`{"state":"open"}`, true},
+		{`{"state":"other"}`, false},
+	} {
+		_, err := pkg.ValidateResponse(op, 200, []byte(tc.body))
+		if accepted := err == nil; accepted != tc.accept {
+			t.Errorf("%s accepted=%v, want %v (err=%v)", tc.body, accepted, tc.accept, err)
+		}
+	}
+}
+
+// TestSpecExtensionsDoNotStopAContract.
+//
+// An `x-` key is non-normative BY DEFINITION in the OpenAPI specification, so
+// ignoring it is one rule read off the spec rather than one more spelling on a
+// list. Measured on the repository's reference description: 335 of 339 refused
+// responses were refused for `x-go-package` alone, a go-swagger metadata tag
+// that constrains nothing.
+func TestSpecExtensionsDoNotStopAContract(t *testing.T) {
+	body := oneOp(`{"type": "object", "x-go-package": "code.gitea.io/gitea/modules/structs", "properties": {"id": {"type": "integer", "x-go-name": "ID"}}}`, ``)
+	pkg, report := generateWith(t, body, true)
+	if len(report.Uncontracted) != 0 {
+		t.Fatalf("Uncontracted = %+v, want none: a spec extension carries no validation semantics", report.Uncontracted)
+	}
+	ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef
+	if ref == "" {
+		t.Fatal("a schema whose only unknown keys are spec extensions got no contract")
+	}
+	// And the contract still discriminates — ignoring x- must not mean ignoring
+	// the schema.
+	op := onlyOp(t, pkg)
+	if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":"not-an-integer"}`)); err == nil {
+		t.Error("the contract stopped checking anything")
+	}
+}

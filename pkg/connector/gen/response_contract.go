@@ -147,9 +147,37 @@ type contractGen struct {
 	doc       map[string]any
 	format    Format
 	contracts map[string]spec.ResponseSchema
+	// origin remembers the $ref each contract name was built from. The name is
+	// the reference's LAST SEGMENT, which is not unique: a description carrying
+	// both #/definitions/Thing and #/components/schemas/Thing — an ordinary
+	// residue of a Swagger 2 → OAS 3 conversion — would otherwise merge two
+	// different shapes under one contract, silently, and refuse the body the
+	// vendor documents for whichever operation lost.
+	origin map[string]string
 	// pending names a component whose contract is being built, so a recursive
 	// schema terminates instead of re-entering itself.
 	pending map[string]bool
+	// staged lists the component contracts published during the CURRENT
+	// top-level build, so a failure can take them back out.
+	//
+	// Without it a component that failed on an unrepresentable keyword still
+	// left behind the components it had already built, and any of those holding
+	// a reference back to it (A → B → A, which is what `Issue.user` /
+	// `User.issues` is) left a DANGLING reference in the map. ValidateGenerated
+	// then failed the whole generation as "generated package is invalid" — a
+	// message that blames the generator and tells the operator nothing — and
+	// whether it happened depended on the alphabetical order of the properties.
+	staged []string
+}
+
+// rollback removes the contracts published during a build that then failed, so
+// a partial shape never outlives the attempt that produced it.
+func (g *contractGen) rollback() {
+	for _, name := range g.staged {
+		delete(g.contracts, name)
+		delete(g.origin, name)
+	}
+	g.staged = g.staged[:0]
 }
 
 // attachResponseContracts derives a v2 contract for every success response it
@@ -160,7 +188,12 @@ func attachResponseContracts(data []byte, format Format, pkg *spec.Package) (map
 	if err != nil {
 		return nil, nil, err
 	}
-	g := &contractGen{doc: doc, format: format, contracts: map[string]spec.ResponseSchema{}, pending: map[string]bool{}}
+	g := &contractGen{
+		doc: doc, format: format,
+		contracts: map[string]spec.ResponseSchema{},
+		origin:    map[string]string{},
+		pending:   map[string]bool{},
+	}
 	var uncontracted []Uncontracted
 	paths := mapAt(doc, "paths")
 	for fi := range pkg.Ops {
@@ -224,11 +257,16 @@ func (g *contractGen) contractFor(opID string, status int, responses map[string]
 	// A response that is exactly a reference borrows the component's contract
 	// rather than wrapping it: one contract per shape keeps responses.json a
 	// diff a reviewer can read.
+	// Every exit below goes through one of these two: a build that fails must
+	// leave the map exactly as it found it.
+	g.staged = g.staged[:0]
 	if ref := str(schema, "$ref"); ref != "" && onlyDescriptiveSiblings(schema) {
 		name, err := g.component(ref, 0)
 		if err != nil {
+			g.rollback()
 			return "", err.Error()
 		}
+		g.staged = g.staged[:0]
 		return name, ""
 	}
 	name := opID + "#" + strconv.Itoa(status)
@@ -237,9 +275,11 @@ func (g *contractGen) contractFor(opID string, status int, responses map[string]
 	}
 	built, err := g.schema(schema, 0)
 	if err != nil {
+		g.rollback()
 		return "", err.Error()
 	}
 	g.contracts[name] = built
+	g.staged = g.staged[:0]
 	return name, ""
 }
 
@@ -254,21 +294,33 @@ func (g *contractGen) component(ref string, depth int) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("the schema reference %q names nothing", ref)
 	}
-	if _, done := g.contracts[name]; done {
-		return name, nil
-	}
-	if g.pending[name] {
+	// The name is only the last segment, so "already built" has to be checked
+	// against the reference it was built FROM. Two sections holding the same
+	// segment are two shapes, and reusing the first for the second refuses a
+	// body the vendor documents — silently, since nothing in the package
+	// records that a merge happened.
+	if prev, known := g.origin[name]; known {
+		if prev != ref {
+			return "", fmt.Errorf("two schemas would share the contract name %q (%s and %s); a contract name must identify one shape", name, prev, ref)
+		}
+		if _, done := g.contracts[name]; done {
+			return name, nil
+		}
 		// Already being built higher in this walk: the reference closes a
 		// recursive shape, which the vocabulary represents natively.
 		return name, nil
 	}
+	g.origin[name] = ref
 	g.pending[name] = true
 	built, err := g.schema(resolved, depth+1)
 	delete(g.pending, name)
 	if err != nil {
+		// The caller rolls the staged names back; this one never landed.
+		delete(g.origin, name)
 		return "", err
 	}
 	g.contracts[name] = built
+	g.staged = append(g.staged, name)
 	return name, nil
 }
 
@@ -280,7 +332,7 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 		return out, fmt.Errorf("the schema nests deeper than %d levels", maxContractDepth)
 	}
 	for _, key := range sortedKeys(node) {
-		if !contractKeys[key] {
+		if !contractKeys[key] && !isSpecExtension(key) {
 			return out, fmt.Errorf("the schema uses %q, which a response contract does not represent", key)
 		}
 	}
@@ -330,12 +382,26 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 		if !ok || len(members) == 0 {
 			return out, fmt.Errorf("the schema declares an enum that is not a non-empty list")
 		}
+		nullListed := false
 		for _, member := range members {
+			if member == nil {
+				nullListed = true
+			}
 			encoded, err := encodeScalar(member)
 			if err != nil {
 				return out, err
 			}
 			out.Enum = append(out.Enum, encoded)
+		}
+		// An enum is the exhaustive list of what the field may hold, and the
+		// reader applies it to a null like any other value — deliberately, so
+		// `enum: ["ok"]` cannot silently accept null. A vendor writing
+		// `{type: string, enum: [open, closed], nullable: true}` — the
+		// commonest shape in the wild, shipped by GitHub, Stripe and Forgejo —
+		// means null IS permitted, so the contract has to say it in the only
+		// place the reader looks.
+		if out.Nullable && !nullListed {
+			out.Enum = append(out.Enum, json.RawMessage("null"))
 		}
 	}
 
@@ -362,8 +428,12 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 		// `writeOnly` means the vendor sends this field in a REQUEST and never
 		// in a response. Copying it into the contract's required list would
 		// demand a field the vendor must not send — a contract that refuses
-		// every valid answer.
-		if boolAt(mapAt(properties, name), "writeOnly") {
+		// EVERY valid answer for that operation.
+		//
+		// Read through one `$ref`: a `password` property is routinely written
+		// as a reference to a component that carries the writeOnly, and testing
+		// the property node alone sees nothing there.
+		if g.writeOnlyProperty(mapAt(properties, name)) {
 			continue
 		}
 		out.Required = append(out.Required, name)
@@ -414,10 +484,49 @@ func refKind(ref string) string {
 	return "remote reference (" + ref + ")"
 }
 
+// writeOnlyProperty reports whether a property is response-absent, following a
+// local reference once.
+//
+// One indirection is the whole of it: a `$ref` whose target is itself a `$ref`
+// is a shape this vocabulary refuses anyway, so there is nothing further to
+// chase — and a bounded read cannot loop on a cyclic description.
+func (g *contractGen) writeOnlyProperty(node map[string]any) bool {
+	if boolAt(node, "writeOnly") {
+		return true
+	}
+	if ref := str(node, "$ref"); ref != "" {
+		if target, ok := g.resolve(ref); ok {
+			return boolAt(target, "writeOnly")
+		}
+	}
+	return false
+}
+
+// isSpecExtension reports whether a key is an OpenAPI specification extension.
+//
+// Those are NON-NORMATIVE by definition — the specification reserves the `x-`
+// prefix for data it promises carries no meaning to a consumer — so ignoring
+// them is one rule read off the spec, not one more spelling on a list that
+// grows every time another generator is met. That distinction is the whole
+// reason this is safe to ignore where `allOf` is not: `allOf` constrains and we
+// cannot represent it; `x-go-package` constrains nothing, anywhere, ever.
+//
+// Measured on the repository's reference description (Forgejo, swagger 2):
+// 335 of 339 refused responses were refused for `x-go-package` alone, a
+// go-swagger metadata tag. Without this the feature produced six usable
+// contracts out of 521 declared results.
+//
+// An extension this generator DOES model — `x-nullable`, Swagger 2's spelling
+// of `nullable` — is listed in contractKeys and is read before this ever runs.
+func isSpecExtension(key string) bool { return strings.HasPrefix(key, "x-") }
+
 // onlyDescriptiveSiblings reports whether a `$ref` node carries nothing that
 // would change what the reference means.
 func onlyDescriptiveSiblings(node map[string]any) bool {
 	for key := range node {
+		if isSpecExtension(key) {
+			continue
+		}
 		switch key {
 		case "$ref", "description", "title", "summary", "example", "examples",
 			"externalDocs", "xml", "deprecated", "readOnly", "writeOnly":
