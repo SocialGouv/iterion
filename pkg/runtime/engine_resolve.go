@@ -212,9 +212,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	// re-entry carry them too — a re-entry is a fresh Execute, not a
 	// re-invocation, and without this the operator re-authorizes the same
 	// tool every time a repair loop re-enters the node. Per node on
-	// purpose: Evaluate ranks allow rules above the mode default, so
-	// lending one node's grant to another would beat a `permission: deny`
-	// the other node declared for itself.
+	// purpose: an explicit operator grant overrides the normal ask/default
+	// path, so lending one node's grant to another would let a different node
+	// execute an action the node intended to require an approval for.
 	if sc.rs != nil && len(sc.rs.permissionGrants[nodeID]) > 0 {
 		result[permission.RunGrantsInputKey] = append([]string(nil), sc.rs.permissionGrants[nodeID]...)
 	}
@@ -967,7 +967,14 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	for name, v := range e.workflow.Vars {
 		if v.HasDefault {
 			if s, ok := v.Default.(string); ok {
-				vars[name] = os.Expand(s, expandFn)
+				// ExpandWithDefault, not os.Expand: the stdlib treats the
+				// whole `VAR:-fallback` as a variable name, so a default
+				// written `${VAR:-x}` — the idiom the DSL uses everywhere
+				// else, and which command:/model:/timeout: all honour —
+				// resolved to the EMPTY STRING here. Silently: the var just
+				// became empty and the failure surfaced much later, wherever
+				// it was consumed.
+				vars[name] = ir.ExpandWithDefault(s, expandFn)
 			} else {
 				vars[name] = v.Default
 			}
@@ -1046,6 +1053,19 @@ func (e *Engine) varExpandFn() func(string) string {
 				return e.containerWorkspace
 			}
 			return e.workDir
+		}
+		if key == "BUNDLE_DIR" {
+			// A bundle is mounted read-only at the runtime's canonical sandbox
+			// path. Outside a sandbox, expose its resolved host directory. Plain
+			// .bot runs deliberately expand to empty: they have no bundle root
+			// and must not accidentally treat the process cwd as one.
+			if e.bundle == nil || e.bundle.Dir == "" {
+				return ""
+			}
+			if e.containerWorkspace != "" {
+				return "/run/iterion/bundle"
+			}
+			return e.bundle.Dir
 		}
 		if key == "PROJECT_MEMORY_DIR" {
 			// Project-rooted memory directory, keyed off the run's

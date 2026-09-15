@@ -20,7 +20,13 @@ describe("normalizeSourceKind", () => {
   it("keeps schedule distinct from manual", () => {
     expect(normalizeSourceKind("schedule")).toBe("schedule");
     expect(runSourceKind({ source_kind: "schedule" })).toBe("schedule");
+    expect(runSourceKind({ source_kind: "studio_chat" })).toBe("studio_chat");
     expect(metaForSource("schedule").label).toBe("Schedule");
+  });
+
+  it("keeps Studio chat distinct from manual launches", () => {
+    expect(metaForSource("studio_chat").label).toBe("Assistant");
+    expect(normalizeSourceKind("studio_chat")).toBe("studio_chat");
   });
 
   it("falls back to manual for empty and unknown values", () => {

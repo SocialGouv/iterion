@@ -78,6 +78,53 @@ well-formed-but-absent name (compiles stay portable — CI without the library
 passes), and the runtime logs a warning and skips it. A malformed name (path
 separator, leading dot, empty) warns at compile time as **C199**.
 
+## Adding a skill to a run you did not author
+
+A bot's `skills:` list is its author's. To bring your OWN skill to a run —
+a house authoring standard, a domain playbook — without editing someone
+else's bundle:
+
+```sh
+iterion skill add bot-authoring --from ~/standards/bot-authoring.md
+iterion run bots/copilot/main.bot --skill bot-authoring      # this run
+export ITERION_SKILLS=bot-authoring                          # every run, this machine
+```
+
+Four properties, each deliberate:
+
+- **Additive, never a filter.** The run's list is UNIONED with the
+  workflow's; nothing an operator passes can remove a skill the bot's
+  author declared. Flag and env are likewise unioned with each other — a
+  machine-wide standard and a per-run addition are both things you asked
+  for, so neither silently replaces the other.
+- **Not posture-aware, on purpose.** It is tempting to bind skills to a
+  bot's mode (design / debug / …). A node's mode is a *bias its own turn
+  may flip*, so filtering the roster by it would lock the agent out of a
+  skill exactly on the turn it discovers it needs one. Emphasis belongs in
+  the bot's prompt; availability does not.
+- **A name that resolves to nothing is a launch ERROR**, listing what the
+  library does hold — unlike the workflow's own reference above, which
+  stays soft. Nobody typed those; you typed this one, and dropping it with
+  a log line is precisely the silent failure that makes a bot look dumber
+  instead of misconfigured.
+- **It survives resume.** Persisted as `extra_skills` on the run and
+  re-applied on every resume. Load-bearing for a conversational bot: the
+  studio dock drives one resume per message, so a launch-only list would
+  be gone by your second reply.
+
+The run says so on its own event stream — a `skills_injected` event naming
+what was added and whether it came from the flag or the env. Without that,
+a run carries knowledge its `.bot` never mentions and a bug report against
+it is irreproducible.
+
+**Cloud runs cannot carry these yet.** The launch surfaces that would set
+them (studio Launch modal / HTTP API) are not wired, so the list is a
+CLI-and-local-studio-resume feature today. When that surface lands, the
+cloud half is one union: the run's extras join `collectWorkflowSkillRefs`
+in `pkg/server/cloudpublisher/contributions.go`, whose payload already
+ships each library skill's *content* to the pod (`queue.LibrarySkillFile`)
+because a runner pod has no library on disk.
+
 ### Precedence on name collision
 
 `bundle > plugin > library > hand-authored`. The library mirrors **last**, so a

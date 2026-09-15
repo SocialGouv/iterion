@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 
@@ -43,6 +44,7 @@ export default function BotsView() {
   const bots = useBotsStore((s) => s.bots);
   const loading = useBotsStore((s) => s.loading);
   const botsError = useBotsStore((s) => s.error);
+  const discoveryErrors = useBotsStore((s) => s.discoveryErrors);
   const fetchBots = useBotsStore((s) => s.fetch);
   const refetch = useBotsStore((s) => s.refetch);
   const addToast = useUIStore((s) => s.addToast);
@@ -211,6 +213,20 @@ export default function BotsView() {
           {botsError}
         </InlineBanner>
       )}
+      {discoveryErrors.length > 0 && (
+        <InlineBanner
+          tone="warning"
+          title={`${discoveryErrors.length} bot${discoveryErrors.length === 1 ? "" : "s"} skipped — malformed bundle`}
+        >
+          <ul className="list-disc pl-4">
+            {discoveryErrors.map((d, i) => (
+              <li key={`${i}-${d.path}`}>
+                <code>{d.path}</code>: {d.error}
+              </li>
+            ))}
+          </ul>
+        </InlineBanner>
+      )}
       {triggersError && (
         <InlineBanner tone="warning" title="Couldn't load trigger counts">
           {triggersError}
@@ -296,7 +312,9 @@ function BotCard({
   const kinds = [...new Set((bot.invocations ?? []).map((i) => i.kind))];
   const presetCount = bot.presets?.entries?.length ?? 0;
   return (
-    <li className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong">
+    <li
+      className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
+    >
       <button
         type="button"
         onClick={onOpen}
@@ -304,6 +322,17 @@ function BotCard({
         title={`Open ${label}'s bot page`}
       >
         <div className="flex w-full items-center gap-2">
+          {/* Scope dragging to a grip so paths and labels remain natively
+              selectable/copyable. The reference uses the workspace-relative
+              path because that is what an assistant can actually read. */}
+          <span
+            className="shrink-0 cursor-grab select-none text-fg-muted"
+            aria-label={`Drag ${label} onto the assistant`}
+            title="Drag onto the assistant to ask about this bot"
+            {...referenceDragProps("bot", bot.rel_path || bot.name, label)}
+          >
+            ⋮⋮
+          </span>
           <span className="shrink-0 text-lg leading-none" aria-hidden="true">
             {identity.emoji}
           </span>

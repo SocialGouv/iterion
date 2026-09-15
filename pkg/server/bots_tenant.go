@@ -32,14 +32,17 @@ type botEntryView struct {
 // team > platform > catalog, matching launch resolution. Catalog and platform
 // entries are read-only in the studio (platform bots are managed through the
 // admin API/CLI); team entries are editable. Outside cloud / without an active
-// team it returns catalog + platform, all read-only.
-func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
+// team it returns catalog + platform, all read-only. The second return carries
+// one diagnostic per skipped malformed source so the list endpoint can expose
+// partial discovery instead of letting a bad bundle vanish silently.
+func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, []botregistry.DiscoveryError, error) {
 	var catalog []botregistry.EntryWithSchema
+	var diags []botregistry.DiscoveryError
 	if len(s.effectivePaths()) > 0 {
 		var err error
-		catalog, err = botregistry.ListWithSchema(s.botListOptions())
+		catalog, diags, err = botregistry.ListWithSchemaDiagnostics(s.botListOptions())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	byName := make(map[string]botEntryView, len(catalog))
@@ -53,15 +56,20 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
 		}
 	}
 	add(catalog, false, "catalog")
-	add(s.platformBotEntries(), false, "platform")
+	if set := s.platformBotSetCached(); set != nil {
+		add(set.entries, false, "platform")
+		diags = append(diags, set.diagnostics...)
+	}
 	if id, _ := auth.FromContext(ctx); id.TeamID != "" {
-		add(s.storedBotEntries(ctx, id.TeamID), true, "tenant")
+		tenantEntries, tenantDiags := s.storedBotEntriesWithDiagnostics(ctx, id.TeamID)
+		add(tenantEntries, true, "tenant")
+		diags = append(diags, tenantDiags...)
 	}
 	out := make([]botEntryView, 0, len(order))
 	for _, name := range order {
 		out = append(out, byName[name])
 	}
-	return out, nil
+	return out, diags, nil
 }
 
 // tenantBotEntries returns the caller team's authored bot bundle entries.
@@ -77,27 +85,35 @@ func (s *Server) tenantBotEntries(ctx context.Context) []botregistry.EntryWithSc
 // metadata. Returns nil (never an error) when there is no store or nothing
 // to materialize: a broken stored bundle must not blank the whole gallery.
 func (s *Server) storedBotEntries(ctx context.Context, tenantID string) []botregistry.EntryWithSchema {
+	entries, _ := s.storedBotEntriesWithDiagnostics(ctx, tenantID)
+	return entries
+}
+
+// storedBotEntriesWithDiagnostics is storedBotEntries plus its partial-result
+// channel. The diagnostic paths are stable store slugs, never temporary server
+// paths, so they are safe to expose through the bots API.
+func (s *Server) storedBotEntriesWithDiagnostics(ctx context.Context, tenantID string) ([]botregistry.EntryWithSchema, []botregistry.DiscoveryError) {
 	if s.botSources == nil || tenantID == "" {
-		return nil
+		return nil, nil
 	}
 	list, err := s.botSources.ListByTenant(store.WithTenant(ctx, tenantID), tenantID)
 	if err != nil || len(list) == 0 {
-		return nil
+		return nil, nil
 	}
-	return s.materializeBotEntries(list)
+	return s.materializeBotEntriesWithDiagnostics(list)
 }
 
-// materializeBotEntries writes stored bundles to a temp tree and runs the
-// same botregistry.ListWithSchema discovery over them, so a stored bot's
-// metadata + vars schema are extracted identically to a catalog bot's — no
-// parallel schema code.
-func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry.EntryWithSchema {
+// materializeBotEntriesWithDiagnostics writes stored bundles to a temp tree
+// and runs the same botregistry discovery over them, so a stored bot's metadata
+// and vars schema are extracted without parallel schema code. Malformed rows
+// are skipped and returned through the diagnostics channel.
+func (s *Server) materializeBotEntriesWithDiagnostics(list []botsource.BotSource) ([]botregistry.EntryWithSchema, []botregistry.DiscoveryError) {
 	if len(list) == 0 {
-		return nil
+		return nil, nil
 	}
 	root, err := os.MkdirTemp("", "iterion-stored-bots-*")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer func() {
 		// The temp root is unique per call: its schema-cache entries can
@@ -114,9 +130,9 @@ func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry
 		}
 	}
 
-	entries, err := botregistry.ListWithSchema(botregistry.ListOptions{Paths: []string{root}})
+	entries, diags, err := botregistry.ListWithSchemaDiagnostics(botregistry.ListOptions{Paths: []string{root}})
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	// A stored bot's identity is its SLUG (the store key), not the workflow name
 	// a loose main.bot would otherwise be discovered under. The slug is the dir
@@ -131,7 +147,22 @@ func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry
 		}
 		entries[i].Path = ""
 	}
-	return entries
+	// Same identity mapping for the diagnostics: the temp-root path is
+	// meaningless to the operator (and a server-filesystem leak); the slug
+	// names the bot they saved. Scrub the temp root out of the diagnostic
+	// string too — LoadManifest embeds the full manifest path in it. A diag
+	// pointing AT the temp root itself (walk error on the directory the
+	// process just created) has no slug: fall back to a generic label.
+	for i := range diags {
+		if slug := slugFromMaterializedPath(root, diags[i].Path); slug != "" {
+			diags[i].Path = slug
+		} else {
+			diags[i].Path = "stored-bot-store"
+		}
+		diags[i].Error = strings.ReplaceAll(diags[i].Error, root+string(filepath.Separator), "")
+		diags[i].Error = strings.ReplaceAll(diags[i].Error, root, "<store>")
+	}
+	return entries, diags
 }
 
 // slugFromMaterializedPath extracts "<slug>" — the first path segment under

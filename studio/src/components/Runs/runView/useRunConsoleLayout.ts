@@ -15,12 +15,9 @@ import {
 } from "@/lib/localStorageFlag";
 
 import { type BrowserDock } from "../BrowserPane";
-import { type ChatDock } from "../FloatingChatPanel";
 import {
   BOTTOM_TABS,
   BOTTOM_TAB_KEY,
-  CHAT_DOCKS,
-  CHAT_DOCK_KEY,
   DETAIL_COLLAPSED_KEY,
   EVENTLOG_COLLAPSED_KEY,
   readBrowserDock,
@@ -41,15 +38,13 @@ export interface RunConsoleLayout {
   handleSetBottomTab: (tab: BottomTab) => void;
   bottomTabPinned: boolean;
   setBottomTabPinned: Dispatch<SetStateAction<boolean>>;
-  chatDock: ChatDock;
-  setChatDock: (next: ChatDock) => void;
   resetLayout: () => void;
 }
 
-// Owns the run console's persisted layout/dock dials — browser dock,
-// detail + event-log collapse, the bottom tab and its "pinned" flag, and
-// the chat dock — lifted verbatim out of RunView. This is pure
-// UI-persistence state (localStorage-backed); the cross-cutting effects
+// Owns the run console's persisted layout dials — browser dock, detail +
+// event-log collapse, the bottom tab and its "pinned" flag. Steering is a
+// permanent right dock and therefore has no persisted presentation state.
+// This is pure UI-persistence state (localStorage-backed); the cross-cutting effects
 // that *react* to run data (auto-reveal Browser on first preview_url, the
 // "Show event log" token, the browserDock→bottomTab redirect) stay in
 // RunView and drive the raw setters this hook exposes.
@@ -75,13 +70,6 @@ export function useRunConsoleLayout(): RunConsoleLayout {
   const [bottomTab, setBottomTab] = useState<BottomTab>(() =>
     readEnumFlag(BOTTOM_TAB_KEY, BOTTOM_TABS, "logs"),
   );
-  const [chatDock, setChatDockState] = useState<ChatDock>(() =>
-    readEnumFlag(CHAT_DOCK_KEY, CHAT_DOCKS, "closed") as ChatDock,
-  );
-  const setChatDock = useCallback((next: ChatDock) => {
-    setChatDockState(next);
-    writeStringFlag(CHAT_DOCK_KEY, next);
-  }, []);
   // Tracks whether the user has manually changed the bottom tab during
   // this run view, so we don't yank the tab back to "browser" on every
   // new preview_url event after they explicitly picked another panel.
@@ -121,8 +109,7 @@ export function useRunConsoleLayout(): RunConsoleLayout {
     setBottomTab("logs");
     setBottomTabPinned(false);
     removeFlag(BOTTOM_TAB_KEY);
-    setChatDock("closed");
-  }, [setBrowserDock, setChatDock]);
+  }, [setBrowserDock]);
 
   return {
     browserDock,
@@ -137,8 +124,6 @@ export function useRunConsoleLayout(): RunConsoleLayout {
     handleSetBottomTab,
     bottomTabPinned,
     setBottomTabPinned,
-    chatDock,
-    setChatDock,
     resetLayout,
   };
 }

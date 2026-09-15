@@ -73,6 +73,10 @@ export interface FirstClassBot {
   // Launch var receiving the launcher form's answer text (and the
   // always-on composer's re-seed text). whats-next → "initial_message".
   seedVar?: string;
+  editor?: {
+    context: boolean;
+    proposals: boolean;
+  };
   nodeMap: Readonly<Record<string, WhatsNextNodeMapEntry>>;
 }
 

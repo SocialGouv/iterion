@@ -34,7 +34,7 @@ func TestMirrorLibrarySkills_MirrorsAndHints(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	hints, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil)
+	hints, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestMirrorLibrarySkills_ShadowedIsHintedButNotOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hints, owned, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil)
+	hints, owned, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMirrorLibrarySkills_ShadowedIsHintedButNotOwned(t *testing.T) {
 func TestMirrorLibrarySkills_UnknownRefSkipped(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	workDir := t.TempDir()
-	hints, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"nope"}, nil), nil, nil)
+	hints, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"nope"}, nil), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestMirrorLibrarySkills_UnknownRefSkipped(t *testing.T) {
 }
 
 func TestMirrorLibrarySkills_NoRefsNoOp(t *testing.T) {
-	hints, _, err := mirrorLibrarySkills(t.TempDir(), "", wfWithSkills(nil, nil), nil, nil)
+	hints, _, err := mirrorLibrarySkills(t.TempDir(), "", wfWithSkills(nil, nil), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}

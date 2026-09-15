@@ -46,7 +46,7 @@ func TestAdminBotsPush_RefusesAProfileTwoBundleWithoutAFloor(t *testing.T) {
 	}
 
 	w = adminBotsPutQuery(s, admin, "needy2", "force=1", pushProfileBundle(""))
-	if w.Code/100 != 2 || !strings.Contains(w.Body.String(), "FORCED past the profile-floor guard") {
+	if w.Code/100 != 2 || !strings.Contains(w.Body.String(), "FORCED past the syntax-floor guard") {
 		t.Fatalf("forced push = %d %s", w.Code, w.Body.String())
 	}
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
@@ -7,6 +7,7 @@ import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 
 import HumanChatTurn from "./HumanChatTurn";
+import { OperatorBubble } from "./OperatorBubble";
 import NodeBanner from "./NodeBanner";
 
 interface Props {
@@ -36,6 +37,19 @@ interface Props {
   // assistant bubble — Nexie's reply — must stay in the flow), but
   // its own textarea/buttons are suppressed.
   composerHandlesId?: string;
+  // True when this view has mounted its footer answer region. The region may
+  // be a text composer, approval controls, option chips, or ResumeFooter;
+  // every variant owns the pending gate and therefore suppresses all inline
+  // forms in the transcript.
+  footerOwnsPendingInput?: boolean;
+  // Rendered inside the LAST turn's assistant bubble. For something that turn
+  // produced — an offer the assistant just made. Below the bubble it reads as
+  // chrome and gets missed; inside it, it reads as part of what was said.
+  bubbleSlot?: ReactNode;
+  // The run snapshot is authoritative even when an event replay has not yet
+  // reconstructed its current node_started event. Keep the operator informed
+  // during that gap with a transcript-native thinking status.
+  showRunningStatus?: boolean;
 }
 
 export default function ChatTranscript({
@@ -44,6 +58,9 @@ export default function ChatTranscript({
   onHumanSubmit,
   busyMessageId = null,
   composerHandlesId,
+  footerOwnsPendingInput = false,
+  bubbleSlot,
+  showRunningStatus = false,
 }: Props) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -68,7 +85,7 @@ export default function ChatTranscript({
   useEffect(() => {
     if (!atBottomRef.current) return;
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, composerHandlesId]);
+  }, [messages.length, composerHandlesId, footerOwnsPendingInput]);
 
   // ResizeObserver on the scroll container catches in-place height
   // changes that the deps array misses: the textarea growing as the
@@ -111,6 +128,28 @@ export default function ChatTranscript({
     return messages.filter((m) => !hiddenIds.has(m.id));
   }, [messages]);
 
+  // bubbleSlot normally renders on a human-question row. Anchoring it to the
+  // last visible message dropped the CTA whenever a banner or narration
+  // landed after the question, or the moment the operator answered
+  // (AnsweredTurn used to ignore the slot). Last hostable row, answered
+  // or not (R98e430). A chat checkpoint can also have no reconstructed
+  // question at all; in that case the parent may still have a host action
+  // offer to show, so the neutral fallback below keeps it visible after the
+  // last transcript message.
+  const lastHostableId = [...visible]
+    .reverse()
+    .find((m) => m.kind === "human-question")?.id;
+  const hasRunningBanner = visible.some(
+    (m) => m.kind === "banner" && m.status === "running",
+  );
+  // A human question wins over the snapshot's stale running state: the event
+  // stream can reach the question just before the paused snapshot arrives.
+  const hasPendingHumanQuestion = visible.some(
+    (m) => m.kind === "human-question" && m.status === "pending",
+  );
+  const showFallbackThinking =
+    showRunningStatus && !hasRunningBanner && !hasPendingHumanQuestion;
+
   return (
     <div
       ref={scrollContainerRef}
@@ -121,16 +160,38 @@ export default function ChatTranscript({
         <MessageRow
           key={m.id}
           message={m}
+          bubbleSlot={m.id === lastHostableId ? bubbleSlot : undefined}
           bot={bot}
           onHumanSubmit={onHumanSubmit}
           busy={m.kind === "human-question" && busyMessageId === m.id}
-          inputHidden={m.id === composerHandlesId}
+          inputHidden={
+            m.kind === "human-question" && m.status === "pending"
+              ? footerOwnsPendingInput ||
+                (composerHandlesId != null && m.id !== composerHandlesId)
+              : m.id === composerHandlesId
+          }
         />
       ))}
-      {messages.length === 0 && (
+      {!lastHostableId && bubbleSlot && (
+        <div className="mt-3">{bubbleSlot}</div>
+      )}
+      {messages.length === 0 && !showFallbackThinking && (
         <p className="text-body text-fg-subtle italic">
-          The conversation will start as soon as Nexie's first turn begins.
+          The conversation will start as soon as the first turn begins.
         </p>
+      )}
+      {showFallbackThinking && (
+        <div role="status" aria-live="polite">
+          <NodeBanner
+            message={{
+              kind: "banner",
+              id: "run-status:running",
+              nodeId: "",
+              label: `${bot?.label ?? "Assistant"} is thinking`,
+              status: "running",
+            }}
+          />
+        </div>
       )}
       <div ref={endRef} />
     </div>
@@ -143,12 +204,14 @@ function MessageRow({
   onHumanSubmit,
   busy,
   inputHidden,
+  bubbleSlot,
 }: {
   message: WhatsNextMessage;
   bot?: FirstClassBot;
   onHumanSubmit?: Props["onHumanSubmit"];
   busy: boolean;
   inputHidden: boolean;
+  bubbleSlot?: ReactNode;
 }) {
   switch (message.kind) {
     case "banner":
@@ -158,6 +221,8 @@ function MessageRow({
       return (
         <HumanChatTurn
           message={message}
+          persona={bot?.label ?? ""}
+          bubbleSlot={bubbleSlot}
           form={form}
           inputHidden={inputHidden}
           onSubmit={
@@ -175,6 +240,13 @@ function MessageRow({
       return <UserMessageRow message={message} />;
     case "assistant-text":
       return <NarrationRow message={message} />;
+    case "host-event":
+      return (
+        <div className="mx-auto rounded-full border border-warning/35 bg-warning-soft px-3 py-1 text-micro text-warning-fg">
+          Watched run <span className="font-mono">{message.targetRunId}</span>{" "}
+          failed — automatic {message.mode} turn
+        </div>
+      );
   }
 }
 
@@ -206,51 +278,56 @@ function UserMessageRow({
 }: {
   message: Extract<WhatsNextMessage, { kind: "user-message" }>;
 }) {
-  const { label, tone, hint } = userStatusMeta(message.status);
+  const meta = userStatusMeta(message.status);
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[85%] rounded-lg border border-info/30 bg-info-soft/50 px-3 py-2">
-        <div className="text-body text-fg-default">
-          <MarkdownText value={message.text} size="sm" />
-        </div>
-        <div className="mt-1 flex items-center justify-end gap-1.5">
+    <OperatorBubble
+      text={message.text}
+      // A settled message is just a message. The chip only earns its place
+      // while the message is still in flight or has failed — which is exactly
+      // when the operator needs to know it has not landed.
+      badge={
+        meta.transient ? (
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-caption font-medium ${tone}`}
-            title={hint}
+            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-caption font-medium ${meta.tone}`}
+            title={meta.hint}
           >
-            {label}
+            {meta.label}
           </span>
-        </div>
-      </div>
-    </div>
+        ) : null
+      }
+    />
   );
 }
 
 function userStatusMeta(
   status: Extract<WhatsNextMessage, { kind: "user-message" }>["status"],
-): { label: string; tone: string; hint: string } {
+): { label: string; tone: string; hint: string; transient: boolean } {
   switch (status) {
     case "queued":
       return {
         label: "Queued",
+        transient: true,
         tone: "bg-warning-soft text-warning-fg",
         hint: "Waiting for the agent's next turn. The agent has not seen it yet.",
       };
     case "delivered":
       return {
         label: "In agent's context",
+        transient: true,
         tone: "bg-info-soft text-info-fg",
         hint: "Injected into the agent's conversation. The next LLM turn will read it — but the agent has not processed it yet.",
       };
     case "consumed":
       return {
         label: "Read by agent",
+        transient: false,
         tone: "bg-success-soft text-success-fg",
         hint: "The agent finished a turn that included this message. Note: this does not mean the agent acted on it — only that it had the chance to.",
       };
     case "cancelled":
       return {
         label: "Cancelled",
+        transient: true,
         tone: "bg-surface-2 text-fg-muted",
         hint: "Removed before delivery.",
       };
@@ -264,6 +341,7 @@ function userStatusMeta(
         label: String(_exhaustive),
         tone: "bg-surface-2 text-fg-muted",
         hint: "",
+        transient: true,
       };
     }
   }

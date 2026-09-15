@@ -101,3 +101,26 @@ func TestSnapshotRejectsUnsafeOrPartialTrees(t *testing.T) {
 		t.Fatal("missing parent accepted")
 	}
 }
+
+func TestSnapshotExcludesNestedRuntimeStorageSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte("workflow root:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(dir, "scripts")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(nested, ".iterion")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	snapshot := Snapshot{Root: "root"}
+	if err := snapshot.AddDir("root", dir); err != nil {
+		t.Fatal(err)
+	}
+	for path := range snapshot.Files {
+		if strings.Contains(path, ".iterion") {
+			t.Fatalf("runtime storage was snapshotted: %s", path)
+		}
+	}
+}

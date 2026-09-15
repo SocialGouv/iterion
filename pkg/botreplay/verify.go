@@ -50,6 +50,21 @@ func VerifyRequiredNonEmpty(f *Fixture, fields []string) error {
 	return nil
 }
 
+func VerifyRequiredSubstrings(f *Fixture, required map[string][]string) error {
+	for field, needles := range required {
+		value, ok := f.Output[field].(string)
+		if !ok {
+			return fmt.Errorf("field %q is not a string", field)
+		}
+		for _, needle := range needles {
+			if !strings.Contains(value, needle) {
+				return fmt.Errorf("field %q does not contain %q", field, needle)
+			}
+		}
+	}
+	return nil
+}
+
 func isEmptyValue(v any) bool {
 	switch t := v.(type) {
 	case nil:

@@ -3,6 +3,9 @@ package runview
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/store"
+	"os"
 	"sort"
 	"strings"
 
@@ -27,6 +30,13 @@ var ErrRewindNoChange = errors.New("runview: rewind: no change affects a node th
 // to. Callers map it to 400 and name the candidates.
 var ErrRewindAmbiguous = errors.New("runview: rewind: the edit affects independent branches")
 
+// ErrRewindUnitSourcesIncomplete is returned when --auto meets a run of a
+// bot in several files that recorded its main alone — launched before
+// the unit's files were recorded, or over the cap. Diffing the main
+// alone would miss an edit in a fragment and rewind to the wrong node,
+// or nowhere; the operator names the node instead.
+var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run recorded its main file but not the fragments it imports — name the node with --node")
+
 // DeclChange is one differing top-level declaration between the source a
 // run executed and the source on disk now.
 type DeclChange struct {
@@ -44,9 +54,12 @@ type DeclChange struct {
 
 func (c DeclChange) String() string { return c.Kind + " " + c.Name + " (" + c.Change + ")" }
 
-// resolveAutoPivot diffs the source a run executed against the source on
-// disk now, and returns the node to rewind to: the earliest node the run
-// actually executed that the edit affects.
+// resolveAutoPivotForRun diffs the unit a run executed — recorded file by
+// file at launch — against the unit at sourcePath now, and returns the node
+// to rewind to: the earliest node the run actually executed that the edit
+// affects. An edit in a fragment is seen like one in the main; a run of a
+// bot in several files that recorded its main alone is refused rather than
+// diffed on the main, where the fragment's edit would be invisible.
 //
 // This is what makes the bot-development loop one step instead of two —
 // "I changed the prompt of implement" no longer has to be translated by
@@ -58,19 +71,57 @@ func (c DeclChange) String() string { return c.Kind + " " + c.Name + " (" + c.Ch
 // re-executing a node that did not need it, while a false negative would
 // test the new configuration against stale downstream state — the exact
 // failure this feature exists to prevent.
-func resolveAutoPivot(oldSrc, newSrc string, wf *ir.Workflow, executed map[string]bool) (string, []DeclChange, error) {
-	if strings.TrimSpace(oldSrc) == "" {
+func resolveAutoPivotForRun(run *store.Run, sourcePath string, wf *ir.Workflow, executed map[string]bool) (string, []DeclChange, error) {
+	if strings.TrimSpace(run.WorkflowSource) == "" {
 		return "", nil, ErrRewindNoSourceRecorded
 	}
-	oldFile, err := parseForDiff(oldSrc, "<recorded>")
-	if err != nil {
-		return "", nil, fmt.Errorf("parse the source this run executed: %w", err)
+	var oldFile *ast.File
+	if len(run.WorkflowSources) > 0 {
+		files := make(map[string]string, len(run.WorkflowSources))
+		for _, f := range run.WorkflowSources {
+			files[f.Path] = f.Text
+		}
+		u := unit.LoadMap(files, run.WorkflowSources[0].Path)
+		if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
+			return "", nil, fmt.Errorf("parse the source this run executed: %s", d)
+		}
+		oldFile = u.Merged
+	} else {
+		f, err := parseForDiff(run.WorkflowSource, "<recorded>")
+		if err != nil {
+			return "", nil, fmt.Errorf("parse the source this run executed: %w", err)
+		}
+		if len(f.Imports) > 0 {
+			return "", nil, ErrRewindUnitSourcesIncomplete
+		}
+		oldFile = f
 	}
-	newFile, err := parseForDiff(newSrc, "<current>")
-	if err != nil {
-		return "", nil, fmt.Errorf("parse the current source: %w", err)
+	current := unit.LoadDir(sourcePath)
+	if len(current.Files) == 0 {
+		if _, err := os.ReadFile(sourcePath); err != nil {
+			return "", nil, fmt.Errorf("read current workflow source %s: %w", sourcePath, err)
+		}
 	}
+	if d := firstErrorDiagnostic(current.Diagnostics); d != "" {
+		return "", nil, fmt.Errorf("parse the current source: %s", d)
+	}
+	if oldFile == nil || current.Merged == nil {
+		return "", nil, fmt.Errorf("parse the current source: no workflow found")
+	}
+	return resolveAutoPivotFiles(oldFile, current.Merged, wf, executed)
+}
 
+func firstErrorDiagnostic(diags []parser.Diagnostic) string {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return d.Error()
+		}
+	}
+	return ""
+}
+
+// resolveAutoPivotFiles diffs the two programs and names the pivot.
+func resolveAutoPivotFiles(oldFile, newFile *ast.File, wf *ir.Workflow, executed map[string]bool) (string, []DeclChange, error) {
 	changes := diffDecls(declFingerprints(oldFile), declFingerprints(newFile))
 	if len(changes) == 0 {
 		return "", nil, fmt.Errorf("%w: the workflow source is unchanged", ErrRewindNoChange)

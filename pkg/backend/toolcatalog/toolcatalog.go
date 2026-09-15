@@ -59,6 +59,20 @@ func IsBuiltin(name string) bool {
 	return clawBuiltins[strings.TrimSpace(name)]
 }
 
+// IsClawOnlyAlias reports whether name is an Iterion alias that is registered
+// only in Claw's in-process tool registry. These aliases have no native CLI
+// spelling, so a Kimi/Grok external permission hook can never receive a call
+// matching an ask rule for one. Keep this intentionally tiny: every unknown,
+// MCP or native-looking name is conservatively treated as reachable.
+func IsClawOnlyAlias(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "workspace_grep", "diagnostic_shell":
+		return true
+	default:
+		return false
+	}
+}
+
 // Builtins returns the catalog as a sorted slice — for diagnostics, docs and
 // the conformance test. The returned slice is a copy.
 func Builtins() []string {
@@ -152,6 +166,10 @@ var internalMCPShorthands = map[string]bool{
 	// mcp.iterion_watch.* — RegisterClawWatchTools
 	"subscribe":   true,
 	"unsubscribe": true,
+	// mcp.iterion_runs.* — runops.ToolsFor(runs.read)
+	"run_events": true,
+	"run_get":    true,
+	"runs_list":  true,
 }
 
 // Suggest returns the built-in that most plausibly replaces an unresolvable
@@ -250,9 +268,15 @@ var clawBuiltins = map[string]bool{
 	"write_file": true,
 	"glob":       true,
 	"grep":       true,
-	"file_edit":  true,
-	"web_fetch":  true,
-	"bash":       true,
+	// RegisterClawWorkspaceDiagnostics (conditional) — read-only exploration
+	// + approval-bound shell aliases used by Copi. Separate names let a
+	// workflow grant them without granting native Grep or Bash to other
+	// nodes/backends in the same workflow.
+	"workspace_grep":   true,
+	"diagnostic_shell": true,
+	"file_edit":        true,
+	"web_fetch":        true,
+	"bash":             true,
 
 	// RegisterClawSimple — process-level utilities.
 	"send_user_message": true,

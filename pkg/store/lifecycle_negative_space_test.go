@@ -276,7 +276,7 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	// -- pkg/runtime: claim-CAS / routing sets (transition gates, not
 	// external eligibility — see CanOperatorResume's doc).
 	"pkg/runtime/run_failure.go :: FailedResumable+PausedOperator+PausedWaitingHuman+Running": {[]string{"handleContextDoneWithCheckpoint"}, "engine ctx-cancel CAS: CanBeCancelled minus queued — a queued doc is a NEWER attempt this engine does not own"},
-	"pkg/runtime/resume.go :: Cancelled+FailedResumable+PausedOperator":                       {[]string{"Resume"}, "Resume dispatch: failure-shaped statuses route to resumeFromFailure"},
+	"pkg/runtime/resume.go :: Cancelled+FailedResumable+PausedOperator":                       {[]string{"ResumeWithHostInputs"}, "Resume dispatch: failure-shaped statuses route to resumeFromFailure"},
 	"pkg/runtime/resume.go :: Cancelled+FailedResumable+PausedOperator+Queued":                {[]string{"claimForFailureResume"}, "failure-resume claim: CanOperatorResume minus the answers path plus queued (cloud pre-flip)"},
 	"pkg/runtime/worktree.go :: Cancelled+Failed+Finished":                                    {[]string{"RecoverFinalize"}, "finalize gate: only fully-stopped shapes; failed_resumable waits for resume-or-cancel"},
 

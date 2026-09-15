@@ -2,7 +2,9 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -53,6 +55,87 @@ func TestNodeSessionStore_LoadSaveEvict(t *testing.T) {
 	s.save("run", "n2", nil)
 	if got := s.load("run", "n2"); got != nil {
 		t.Fatalf("save(nil) did not evict: got %v", got)
+	}
+}
+
+func TestClawPersistEnvelope_RoundTripNamedSlot(t *testing.T) {
+	source := &ClawExecutor{sessions: newNodeSessionStore()}
+	messages := []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "remember correction A"}}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "correction A recorded"}}},
+	}
+	source.sessions.save("run-1", "assistant_conversation", messages)
+	blob := source.packClawSession("run-1", "assistant_conversation", "session-1", "claw:openai")
+	if len(blob) == 0 || len(blob) > clawPersistHardBlobBytes {
+		t.Fatalf("packed blob length=%d", len(blob))
+	}
+	target := &ClawExecutor{sessions: newNodeSessionStore()}
+	ctx := WithRunID(context.Background(), "run-1")
+	if err := target.UnpackSession(ctx, "claw", "session-1", blob); err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	got := target.sessions.load("run-1", "assistant_conversation")
+	if len(got) != len(messages) || got[0].Content[0].Text != "remember correction A" {
+		t.Fatalf("round-trip messages=%#v", got)
+	}
+}
+
+func TestClawPersistEnvelope_CompactsLargeToolResultsForReplay(t *testing.T) {
+	const runID, slot, sessionID = "run-large-tool-results", "assistant_conversation", "session-large-tool-results"
+	largeResult := strings.Repeat("tool output that token estimation must not replay verbatim\n", 1_300)
+	messages := []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "inspect the current workflow"}}},
+		toolUseMessage("large-1"),
+		{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: "large-1", Content: largeResult}.ToContentBlock()}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "continue with the evidence"}}},
+		toolUseMessage("large-2"),
+		{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: "large-2", Content: largeResult}.ToContentBlock()}},
+		toolUseMessage("large-3"),
+		{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: "large-3", Content: largeResult}.ToContentBlock()}},
+	}
+	if _, compacted := forceCompactToTokens(messages, clawPersistTargetTokens, clawPersistRecent); compacted {
+		t.Fatal("precondition: token-only compaction unexpectedly handled nested tool results")
+	}
+
+	source := &ClawExecutor{sessions: newNodeSessionStore()}
+	source.sessions.save(runID, slot, messages)
+	legacyBlob, err := marshalClawPersistEnvelope(slot, sessionID, "claw:openai", messages)
+	if err != nil {
+		t.Fatalf("marshal legacy envelope: %v", err)
+	}
+	if len(legacyBlob) <= clawPersistReplayBlobBytes || len(legacyBlob) > clawPersistHardBlobBytes {
+		t.Fatalf("legacy envelope length=%d, want %d..%d", len(legacyBlob), clawPersistReplayBlobBytes+1, clawPersistHardBlobBytes)
+	}
+	blob := source.packClawSession(runID, slot, sessionID, "claw:openai")
+	if len(blob) == 0 || len(blob) > clawPersistReplayBlobBytes {
+		t.Fatalf("packed replay length=%d, want 1..%d", len(blob), clawPersistReplayBlobBytes)
+	}
+	var envelope clawPersistEnvelope
+	if err := json.Unmarshal(blob, &envelope); err != nil {
+		t.Fatalf("decode packed envelope: %v", err)
+	}
+	if err := validateToolPairs(envelope.Messages); err != nil {
+		t.Fatalf("compacted replay has invalid tool pairs: %v", err)
+	}
+	if len(envelope.Messages) >= len(messages) {
+		t.Fatalf("large replay did not compact: %d messages", len(envelope.Messages))
+	}
+
+	target := &ClawExecutor{sessions: newNodeSessionStore()}
+	ctx := WithRunID(context.Background(), runID)
+	if err := target.UnpackSession(ctx, "claw", sessionID, legacyBlob); err != nil {
+		t.Fatalf("unpack legacy oversized replay: %v", err)
+	}
+	got := target.sessions.load(runID, slot)
+	if len(got) == 0 {
+		t.Fatal("compacted replay was not restored")
+	}
+	replayedBlob, err := marshalClawPersistEnvelope(slot, sessionID, "claw:openai", got)
+	if err != nil {
+		t.Fatalf("marshal restored replay: %v", err)
+	}
+	if len(replayedBlob) > clawPersistReplayBlobBytes {
+		t.Fatalf("restored legacy replay length=%d, want <=%d", len(replayedBlob), clawPersistReplayBlobBytes)
 	}
 }
 

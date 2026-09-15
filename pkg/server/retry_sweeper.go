@@ -181,7 +181,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		}
 	}
 
-	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "")
+	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "", run)
 	if err != nil {
 		adm.rollback(s.logger)
 		if errors.Is(err, errResumeResolveTransient) {

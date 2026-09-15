@@ -23,6 +23,11 @@ func TestIsRateLimitMessage(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "Claude usage credits notice (live Copi review)",
+			text: "You're out of usage credits. Switch to another model, or manage usage credits at claude.ai/settings/usage?from=cc_cli_limit_message, to continue.",
+			want: true,
+		},
+		{
 			name: "anthropic forfait SESSION limit (real-world, run 019f2247)",
 			text: "You've hit your session limit · resets 10:30am (UTC)",
 			want: true,

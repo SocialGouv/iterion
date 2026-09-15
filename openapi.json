@@ -95,6 +95,38 @@
         ],
         "type": "object"
       },
+      "BackendStatus": {
+        "properties": {
+          "auth": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "available",
+          "auth",
+          "sources"
+        ],
+        "type": "object"
+      },
       "BackendUsage": {
         "properties": {
           "backend": {
@@ -415,6 +447,47 @@
         "required": [
           "branch_id",
           "start_node_id"
+        ],
+        "type": "object"
+      },
+      "Catalog": {
+        "properties": {
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/BackendStatus"
+            },
+            "type": "array"
+          },
+          "invalid_specs": {
+            "items": {
+              "$ref": "#/components/schemas/InvalidSpec"
+            },
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "type": "array"
+          },
+          "reachability": {
+            "type": "string"
+          },
+          "recommended_spec": {
+            "type": "string"
+          },
+          "refresh_error": {
+            "type": "string"
+          },
+          "refreshed": {
+            "type": "boolean"
+          },
+          "resolved_default_backend": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "models"
         ],
         "type": "object"
       },
@@ -980,6 +1053,89 @@
         ],
         "type": "object"
       },
+      "Entry": {
+        "properties": {
+          "backends": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "credential_provider": {
+            "type": "string"
+          },
+          "credential_source": {
+            "type": "string"
+          },
+          "input_cost_per_m": {
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_cost_per_m": {
+            "type": "number"
+          },
+          "price_known": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reachability": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "recommended": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "temperature": {
+            "type": "boolean"
+          },
+          "tool_call": {
+            "type": "boolean"
+          },
+          "ultracode_capable": {
+            "type": "boolean"
+          },
+          "unusable_reason": {
+            "type": "string"
+          },
+          "usable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "spec",
+          "provider",
+          "model",
+          "credential_provider",
+          "source",
+          "context_window",
+          "reasoning",
+          "tool_call",
+          "temperature",
+          "ultracode_capable",
+          "price_known",
+          "usable",
+          "reachability"
+        ],
+        "type": "object"
+      },
       "ExecutionContext": {
         "properties": {
           "business_stores": {
@@ -1296,6 +1452,21 @@
         "required": [
           "from",
           "to"
+        ],
+        "type": "object"
+      },
+      "InvalidSpec": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "spec",
+          "reason"
         ],
         "type": "object"
       },
@@ -1915,6 +2086,9 @@
       },
       "PipelineBoardPendingReview": {
         "properties": {
+          "batch_key": {
+            "type": "string"
+          },
           "bot_id": {
             "type": "string"
           },
@@ -2047,6 +2221,34 @@
         ],
         "type": "object"
       },
+      "ProviderStatus": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "overridden_sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          },
+          "suggested_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "available",
+          "source"
+        ],
+        "type": "object"
+      },
       "RepoSummary": {
         "properties": {
           "can_admin": {
@@ -2072,6 +2274,38 @@
           "full_name",
           "private",
           "can_admin"
+        ],
+        "type": "object"
+      },
+      "Report": {
+        "properties": {
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/BackendStatus"
+            },
+            "type": "array"
+          },
+          "preference_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderStatus"
+            },
+            "type": "array"
+          },
+          "resolved_default": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preference_order",
+          "resolved_default",
+          "backends",
+          "providers"
         ],
         "type": "object"
       },
@@ -2312,6 +2546,9 @@
           "queue_position": {
             "type": "integer"
           },
+          "rewindable": {
+            "type": "boolean"
+          },
           "routing_policy": {
             "$ref": "#/components/schemas/RoutingPolicy"
           },
@@ -2399,6 +2636,9 @@
           "backend": {
             "type": "string"
           },
+          "effort": {
+            "type": "string"
+          },
           "model": {
             "type": "string"
           },
@@ -2460,6 +2700,12 @@
       },
       "RunSource": {
         "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
           "issue_id": {
             "type": "string"
           },
@@ -2572,6 +2818,9 @@
           },
           "shard_label": {
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RunSource"
           },
           "source_kind": {
             "type": "string"
@@ -3582,6 +3831,50 @@
         ],
         "type": "object"
       },
+      "modelPrefRequest": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "modelPrefResponse": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "set": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "set"
+        ],
+        "type": "object"
+      },
       "orgView": {
         "properties": {
           "created_at": {
@@ -3857,6 +4150,166 @@
         ],
         "type": "object"
       },
+      "previewBackendOption": {
+        "properties": {
+          "unavailable_reason": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "previewCostNode": {
+        "properties": {
+          "cost_max_usd": {
+            "type": "number"
+          },
+          "cost_min_usd": {
+            "type": "number"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "tokens_in": {
+            "type": "integer"
+          },
+          "tokens_out": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "kind",
+          "tokens_in",
+          "tokens_out",
+          "cost_min_usd",
+          "cost_max_usd"
+        ],
+        "type": "object"
+      },
+      "previewCostRequest": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "backend_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "previewCostResponse": {
+        "properties": {
+          "backend_options": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/previewBackendOption"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "cost_max_usd": {
+            "type": "number"
+          },
+          "cost_min_usd": {
+            "type": "number"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/previewEffectiveSettings"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/previewCostNode"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tokens_max": {
+            "type": "integer"
+          },
+          "tokens_min": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokens_min",
+          "tokens_max",
+          "cost_min_usd",
+          "cost_max_usd",
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "previewEffectiveKnob": {
+        "properties": {
+          "effective": {
+            "type": "string"
+          },
+          "node_pinned": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective",
+          "source"
+        ],
+        "type": "object"
+      },
+      "previewEffectiveSettings": {
+        "properties": {
+          "auto_memory": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
+          "backend": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
+          "compress": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
+          "permission": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          }
+        },
+        "required": [
+          "compress",
+          "auto_memory",
+          "permission",
+          "backend"
+        ],
+        "type": "object"
+      },
       "setOrgStatusReq": {
         "properties": {
           "reason": {
@@ -3926,7 +4379,7 @@
     }
   },
   "info": {
-    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route. Note: the /api/v1/native, /api/v1/dispatcher and /api/v1/mcp/board sub-trees are served but registered on a separate mux, so they are intentionally not catalogued here.",
+    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route. Note: the /api/v1/native, /api/v1/dispatcher and /api/v1/mcp/{board,runs} sub-trees are served but registered on a separate mux, so they are intentionally not catalogued here.",
     "title": "iterion API",
     "version": "current"
   },
@@ -4869,6 +5322,30 @@
         ]
       }
     },
+    "/api/assistant-watches/{watchID}": {
+      "delete": {
+        "operationId": "deleteAssistantWatchesByWatchID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/assistant-watches/{watchID}",
+        "tags": [
+          "assistant-watches"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "watchID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/auth/desktop/exchange": {
       "post": {
         "operationId": "postAuthDesktopExchange",
@@ -5175,8 +5652,15 @@
       "get": {
         "operationId": "getBackendsDetect",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/backends/detect",
@@ -5306,6 +5790,20 @@
           }
         },
         "summary": "GET /api/files",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/api/files/dependency": {
+      "post": {
+        "operationId": "postFilesDependency",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/files/dependency",
         "tags": [
           "files"
         ]
@@ -6146,6 +6644,27 @@
         "summary": "GET /api/model-capabilities",
         "tags": [
           "model-capabilities"
+        ]
+      }
+    },
+    "/api/models": {
+      "get": {
+        "operationId": "getModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/models",
+        "tags": [
+          "models"
         ]
       }
     },
@@ -7270,9 +7789,26 @@
     "/api/runs/preview-cost": {
       "post": {
         "operationId": "postRunsPreviewCost",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/previewCostRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/previewCostResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/runs/preview-cost",
@@ -7513,6 +8049,166 @@
           }
         }
       ]
+    },
+    "/api/runs/{id}/assistant-missions": {
+      "get": {
+        "operationId": "getRunsByIdAssistantMissions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-missions",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAssistantMissions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/assistant-missions",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/assistant-missions/{missionID}": {
+      "get": {
+        "operationId": "getRunsByIdAssistantMissionsByMissionID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-missions/{missionID}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "missionID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/assistant-missions/{missionID}/stop": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "missionID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAssistantMissionsByMissionIDStop",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/assistant-missions/{missionID}/stop",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/assistant-watch-health": {
+      "get": {
+        "operationId": "getRunsByIdAssistantWatchHealth",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-watch-health",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/assistant-watches": {
+      "get": {
+        "operationId": "getRunsByIdAssistantWatches",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/assistant-watches",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAssistantWatches",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/assistant-watches",
+        "tags": [
+          "runs"
+        ]
+      }
     },
     "/api/runs/{id}/attachments/{name}": {
       "get": {
@@ -8010,6 +8706,30 @@
           }
         },
         "summary": "POST /api/runs/{id}/fork",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/host-event": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdHostEvent",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/host-event",
         "tags": [
           "runs"
         ]
@@ -8826,6 +9546,30 @@
           "runs"
         ]
       }
+    },
+    "/api/runs/{id}/watching": {
+      "get": {
+        "operationId": "getRunsByIdWatching",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/watching",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/runs/{id}/workflow": {
       "get": {
@@ -11109,6 +11853,118 @@
         ]
       }
     },
+    "/api/v1/assistant/authoring/commit": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringCommit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/commit",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/authoring/git-commit": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringGitCommit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/git-commit",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/authoring/git-push": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringGitPush",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/git-push",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/authoring/preview": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/preview",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/authoring/snapshot": {
+      "post": {
+        "operationId": "postV1AssistantAuthoringSnapshot",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/authoring/snapshot",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/context/resolve": {
+      "post": {
+        "operationId": "postV1AssistantContextResolve",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/context/resolve",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/dependencies/bots-localize": {
+      "post": {
+        "operationId": "postV1AssistantDependenciesBotsLocalize",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/dependencies/bots-localize",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/dependencies/bots-update": {
+      "post": {
+        "operationId": "postV1AssistantDependenciesBotsUpdate",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/assistant/dependencies/bots-update",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
     "/api/v1/bots": {
       "get": {
         "operationId": "getV1Bots",
@@ -12070,6 +12926,75 @@
         "summary": "POST /api/v1/plugins/{name}/lifecycle/{phase}",
         "tags": [
           "plugins"
+        ]
+      }
+    },
+    "/api/v1/preferences/model": {
+      "delete": {
+        "operationId": "deleteV1PreferencesModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelPrefResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/v1/preferences/model",
+        "tags": [
+          "preferences"
+        ]
+      },
+      "get": {
+        "operationId": "getV1PreferencesModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelPrefResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/v1/preferences/model",
+        "tags": [
+          "preferences"
+        ]
+      },
+      "put": {
+        "operationId": "putV1PreferencesModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/modelPrefRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelPrefResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/v1/preferences/model",
+        "tags": [
+          "preferences"
         ]
       }
     },

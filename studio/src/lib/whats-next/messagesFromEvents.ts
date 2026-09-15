@@ -46,7 +46,12 @@ function makeResolver(bot: FirstClassBot): NodeKindResolver {
   return {
     kind(nodeId) {
       const entry = bot.nodeMap[nodeId];
-      if (!entry) return "silent"; // unmapped nodes never produce messages
+      // The manifest contract says an unmapped node degrades to an ordinary
+      // progress event. Banner is that representation in the chat fold: it
+      // keeps a newly-added tool/judge visible until the bundle gives it a
+      // deliberate label or marks it silent. Hiding it made the supposedly
+      // safe default fail closed and left long reviewer calls looking stuck.
+      if (!entry) return "banner";
       switch (entry.kind) {
         case "banner":
           return "banner";

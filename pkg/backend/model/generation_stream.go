@@ -42,6 +42,34 @@ var ErrToolInputTooLarge = errors.New("aggregateStream: tool_use input exceeded 
 // accumulated content exceeded maxTextBlockSize.
 var ErrTextBlockTooLarge = errors.New("aggregateStream: text/thinking block exceeded max size")
 
+// StreamIdlePhase identifies whether a provider fell silent before or after
+// sending at least one event. It makes operational failures actionable without
+// confusing them with a parent node/run deadline.
+type StreamIdlePhase string
+
+const (
+	StreamIdleCold StreamIdlePhase = "cold"
+	StreamIdleHot  StreamIdlePhase = "hot"
+)
+
+// StreamIdleError is emitted only by Iterion's Claw stream watchdog. It is
+// intentionally distinct from context.DeadlineExceeded: the former is safe to
+// retry with a fresh provider request, whereas a parent run/node deadline is
+// not.
+type StreamIdleError struct {
+	Phase StreamIdlePhase
+	Idle  time.Duration
+}
+
+func (e *StreamIdleError) Error() string {
+	return fmt.Sprintf("claw stream idle for %s in %s phase", e.Idle, e.Phase)
+}
+
+func isStreamIdleError(err error) bool {
+	var idle *StreamIdleError
+	return errors.As(err, &idle)
+}
+
 // ---------------------------------------------------------------------------
 // Stream aggregation
 // ---------------------------------------------------------------------------
@@ -98,10 +126,53 @@ func (bs *blockState) growText(delta string) error {
 // branch and silently leaked the connection on tool-input-too-large or
 // EventError early returns.
 func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedResponse {
+	return aggregateStreamWithIdleWatchdog(ctx, ch, 0, 0)
+}
+
+// aggregateStreamWithIdleWatchdog aggregates a provider response while
+// enforcing silence limits. The timer starts in the cold phase and switches to
+// the hot phase after the first provider event; every later event, including a
+// ping, resets the hot timer. A zero tier disables that tier. This is not a
+// whole-request deadline, so a healthy long stream keeps running indefinitely
+// as long as it remains observable.
+func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEvent, coldTimeout, hotTimeout time.Duration) aggregatedResponse {
 	var res aggregatedResponse
 	blocks := make(map[int]*blockState)
 	drained := false
 	sawStop := false
+	phase := StreamIdleCold
+	var timer *time.Timer
+	var timerC <-chan time.Time
+
+	resetTimer := func(d time.Duration) {
+		if timer != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
+		if d <= 0 {
+			timerC = nil
+			return
+		}
+		if timer == nil {
+			timer = time.NewTimer(d)
+		} else {
+			timer.Reset(d)
+		}
+		timerC = timer.C
+	}
+	resetTimer(coldTimeout)
+	defer func() {
+		if timer != nil && !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
 	defer func() {
 		if drained {
 			return
@@ -116,6 +187,13 @@ func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedR
 		select {
 		case <-ctx.Done():
 			res.err = ctx.Err()
+			return res
+		case <-timerC:
+			idle := coldTimeout
+			if phase == StreamIdleHot {
+				idle = hotTimeout
+			}
+			res.err = &StreamIdleError{Phase: phase, Idle: idle}
 			return res
 		case event, ok := <-ch:
 			if !ok {
@@ -148,6 +226,13 @@ func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedR
 					}
 				}
 				return res
+			}
+
+			if phase == StreamIdleCold {
+				phase = StreamIdleHot
+				resetTimer(hotTimeout)
+			} else {
+				resetTimer(hotTimeout)
 			}
 
 			switch event.Type {

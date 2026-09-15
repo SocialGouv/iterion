@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export ITERION_WORKSPACE_COMPAT=1
+if [ -n "${ITERION_WORKSPACE_MANAGER_LIB:-}" ]; then
+    lib="$ITERION_WORKSPACE_MANAGER_LIB"
+else
+    script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+    if [ -f "$script_dir/iterion_workspacectl.py" ]; then
+        lib="$script_dir/iterion_workspacectl.py"
+    else
+        data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+        lib="$data_home/iterion-workspace-manager/iterion_workspacectl.py"
+    fi
+fi
+
+if [ ! -f "$lib" ]; then
+    printf 'iterion-instances: shared workspace backend not found: %s\n' "$lib" >&2
+    exit 1
+fi
+
+exec python3 "$lib" "$@"

@@ -21,7 +21,7 @@ import (
 // fillerBotSrc, with a checkpoint so a resume has somewhere to restart.
 func seedResumableRun(t *testing.T, st store.RunStore, runID string) {
 	t.Helper()
-	_, hash, _, err := compileForLaunch("", fillerBotSrc, "")
+	_, compiled, _, err := compileForLaunch("", fillerBotSrc, "")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -29,7 +29,7 @@ func seedResumableRun(t *testing.T, st store.RunStore, runID string) {
 		FormatVersion: store.RunFormatVersion,
 		ID:            runID,
 		WorkflowName:  "main",
-		WorkflowHash:  hash,
+		WorkflowHash:  compiled.Hash,
 		FilePath:      "/opt/iterion/bots/stored-bot/main.bot",
 		Status:        store.RunStatusPausedOperator,
 		Checkpoint:    &store.Checkpoint{NodeID: "work"},

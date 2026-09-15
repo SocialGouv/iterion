@@ -257,6 +257,103 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}
 }
 
+func TestRemoteRunsMissionCommandsUseTargetScopedAPI(t *testing.T) {
+	var seen []string
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/api/runs/target/assistant-missions" && r.Method == http.MethodPost {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["invocation_key"] != "goal:stable" || body["watch_id"] != "watch-1" || body["ttl_seconds"] != float64(600) {
+				t.Errorf("mission start body = %#v", body)
+			}
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+	ctx := context.Background()
+	if err := cli.RemoteRunsMissionStart(ctx, c, p, "target", cli.RemoteRunsMissionStartOptions{InvocationKey: "goal:stable", WatchID: "watch-1", Actions: []string{"run.rewind"}, TTLSeconds: 600, MaxActions: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.RemoteRunsMissionList(ctx, c, p, "target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.RemoteRunsMissionGet(ctx, c, p, "target", "mission-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.RemoteRunsMissionStop(ctx, c, p, "target", "mission-1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"POST /api/runs/target/assistant-missions",
+		"GET /api/runs/target/assistant-missions",
+		"GET /api/runs/target/assistant-missions/mission-1",
+		"POST /api/runs/target/assistant-missions/mission-1/stop",
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("mission API calls = %v, want %v", seen, want)
+	}
+}
+
+// A repo-scoped bot (a reviewer, a fixer) is written to read a checkout. The
+// server clones one when the launch names it, so the three fields have to reach
+// the request — and have to stay ABSENT otherwise, since an empty repo_url on a
+// local-mode server is refused rather than ignored.
+func TestRemoteRunsLaunch_AimsTheRunAtARepository(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts cli.RemoteRunsLaunchOptions
+		want map[string]any
+	}{
+		{
+			name: "a repo-targeted launch carries all three",
+			opts: cli.RemoteRunsLaunchOptions{
+				BotID:        "review-pr",
+				RepoURL:      "https://github.com/acme/widgets",
+				RepoRef:      "refs/pull/7/head",
+				ConnectionID: "conn_42",
+			},
+			want: map[string]any{
+				"repo_url":      "https://github.com/acme/widgets",
+				"repo_ref":      "refs/pull/7/head",
+				"connection_id": "conn_42",
+			},
+		},
+		{
+			name: "a launch that names no repo sends no repo key at all",
+			opts: cli.RemoteRunsLaunchOptions{BotID: "review-pr"},
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				fmt.Fprint(w, `{"run_id":"r1","status":"running"}`)
+			}))
+			p, _ := remotePrinter(cli.OutputHuman)
+			if err := cli.RemoteRunsLaunch(context.Background(), c, p, tc.opts); err != nil {
+				t.Fatalf("launch: %v", err)
+			}
+			for _, k := range []string{"repo_url", "repo_ref", "connection_id"} {
+				want, expected := tc.want[k]
+				switch {
+				case expected && got[k] != want:
+					t.Errorf("%s = %v, want %v", k, got[k], want)
+				case !expected:
+					if _, present := got[k]; present {
+						t.Errorf("%s = %v, want it absent — an empty value is not the same as unset to the server", k, got[k])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRemoteRunsFollow_CursorAndTerminal(t *testing.T) {
 	page := 0
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

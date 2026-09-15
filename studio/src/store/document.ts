@@ -19,6 +19,7 @@ import type {
   MCPServerDecl,
   Edge,
   Comment,
+  UnitInfo,
 } from "@/api/types";
 import type { DiagnosticIssue } from "@/api/client";
 import { createEmptyDocument, getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
@@ -62,6 +63,10 @@ interface DocumentState {
   // Cached so cloud-mode launch/resume can pass it inline. Updated on
   // openFile / saveFile / parseSource; null otherwise.
   currentSource: string | null;
+  // The unit the document was opened from, for a bot in several files
+  // (its files and the revision a save must present); null otherwise.
+  // Dropped whenever the current file changes: a unit belongs to a file.
+  unit: UnitInfo | null;
   _generation: number;
   _savedGeneration: number;
 
@@ -74,6 +79,7 @@ interface DocumentState {
   setDiagnostics: (d: string[], w?: string[], issues?: DiagnosticIssue[]) => void;
   setCurrentFilePath: (path: string | null) => void;
   setCurrentSource: (source: string | null) => void;
+  setUnit: (unit: UnitInfo | null) => void;
   markSaved: () => void;
   isDirty: () => boolean;
 
@@ -229,6 +235,7 @@ export function createDocumentStore() {
   issues: [],
   currentFilePath: null,
   currentSource: null,
+  unit: null,
   _generation: 0,
   _savedGeneration: 0,
   _history: [],
@@ -244,8 +251,9 @@ export function createDocumentStore() {
       warnings: warnings ?? [],
       issues: issues ?? [],
     }),
-  setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
+  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
+  setUnit: (unit) => set({ unit }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   isDirty: () => {
     const s = get();
@@ -755,6 +763,14 @@ export function getOrCreateDocumentStore(tabId: string): DocumentStore {
     REGISTRY.set(tabId, store);
   }
   return store;
+}
+
+// Read-only registry lookup for cross-cutting UI capabilities (the assistant
+// editor bridge). Unlike getOrCreateDocumentStore it never manufactures an
+// empty document for a stale/restored tab id: absence means there is no live
+// editor session to bind an action to.
+export function getDocumentStore(tabId: string): DocumentStore | undefined {
+  return REGISTRY.get(tabId);
 }
 
 export function disposeDocumentStore(tabId: string): void {

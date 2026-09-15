@@ -708,6 +708,18 @@ function processEvent(
       const current = out[idx];
       if (!current || current.kind !== "human-question") break;
       const answers = evt.data?.answers ?? null;
+      const hostEvent = answers
+        ? Object.values(answers).find(
+            (value): value is Record<string, unknown> =>
+              Boolean(
+                value &&
+                  typeof value === "object" &&
+                  !Array.isArray(value) &&
+                  (value as Record<string, unknown>).kind ===
+                    "assistant-watch-event",
+              ),
+          )
+        : undefined;
       // Extraction strategy: resolver-supplied override wins (whats-next
       // uses bot-declared textField/approvedField), else fall back to
       // a generic "longest string + approved bool" pass. Both are
@@ -737,6 +749,22 @@ function processEvent(
         userReply: text || current.userReply,
         outcome: answers ?? current.outcome,
       };
+      if (hostEvent) {
+        const target =
+          hostEvent.target_run && typeof hostEvent.target_run === "object"
+            ? (hostEvent.target_run as Record<string, unknown>)
+            : {};
+        out.push({
+          kind: "host-event",
+          id: `host-event:${evt.seq}`,
+          event: "run.failed",
+          targetRunId:
+            typeof target.id === "string" ? target.id : "unknown",
+          targetStatus:
+            typeof target.status === "string" ? target.status : undefined,
+          mode: hostEvent.mode === "propose" ? "propose" : "diagnose",
+        });
+      }
       if (latestPendingHumanKey === key) latestPendingHumanKey = null;
       break;
     }

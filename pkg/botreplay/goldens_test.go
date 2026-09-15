@@ -62,6 +62,9 @@ func TestGoldens(t *testing.T) {
 					t.Errorf("required fields: %v", err)
 				}
 			}
+			if err := VerifyRequiredSubstrings(f, s.RequiredSubstrings); err != nil {
+				t.Errorf("factual anchors: %v", err)
+			}
 			if s.CheckAssignees {
 				if err := VerifyNoHallucinatedAssignees(f, valid); err != nil {
 					t.Errorf("assignees: %v", err)

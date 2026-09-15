@@ -77,6 +77,7 @@ first bilan for a bot lands.
 | Obsy | `instrument` | observability instrumentation (Sentry/GlitchTip errors + JSON logs; opt-in tracing) | [instrument.md](instrument.md) |
 | Adry | `adr-cartograph` | ADR cartographer + completeness audit (idempotent) | [adr-cartograph.md](adr-cartograph.md) |
 | Vetty | `dep-update-guard` | Dependabot/Renovate PR guard (audit + align + deterministic verify) | [dep-update-guard.md](dep-update-guard.md) |
+| Copi | `copilot` | conversational iterion assistant (read-only; optional cross-review) | [copilot.md](copilot.md) |
 | Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |
 | Ally | `ultra11y` | engine-backed WCAG 2.2 AA / RGAA audit + PR diff mode (read-only) | [ultra11y.md](ultra11y.md) |
 | Vigie | `feed-watch` | feed watch + LLM digest to chat (Huginn-style veille) | [feed-watch.md](feed-watch.md) |
