@@ -32,7 +32,7 @@ func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 		"pkg/dsl/unparse/verify.go":  "Verify re-parses the one file it wrote",
 		"pkg/runview/rewind_auto.go": "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
 		"pkg/server/cost_preview.go": "previews an uploaded document, the flattened unit (lot 3, remote launch)",
-		"pkg/server/server_dsl.go":   "the studio's parse endpoint and the embedded example hand the EDITOR a document; the unit is compiled at launch and validate",
+		"pkg/server/server_dsl.go":   "the studio's parse endpoint hands the EDITOR a document from text, and the example loader parses the one program it serves — a bot in several files it reads as its unit (on disk) or serves flat (embedded)",
 		"pkg/server/server_files.go": "the save guard normalises the document being saved",
 	}
 	root := filepath.Join("..", "..", "..")

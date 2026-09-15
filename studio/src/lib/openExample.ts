@@ -1,5 +1,5 @@
 import * as api from "@/api/client";
-import type { IterDocument } from "@/api/types";
+import type { IterDocument, UnitInfo } from "@/api/types";
 
 /**
  * The slice of a document store needed to load a bot / bundled example into
@@ -12,6 +12,9 @@ export interface ExampleTargetStore {
   setDiagnostics: (diagnostics: string[]) => void;
   setCurrentSource: (source: string | null) => void;
   setCurrentFilePath: (path: string | null) => void;
+  /** A bot in several files binds its unit: the document is the merged
+   *  program, its source view is read-only, a save presents the revision. */
+  setUnit: (unit: UnitInfo | null) => void;
   markSaved: () => void;
 }
 
@@ -34,6 +37,7 @@ export async function openExampleIntoStore(name: string, store: ExampleTargetSto
   store.setDocument(result.document);
   store.setDiagnostics(result.diagnostics);
   store.setCurrentSource(result.source);
+  store.setUnit(result.unit ?? null);
   store.setCurrentFilePath(`bots/${name}`);
   store.markSaved();
   return result;
