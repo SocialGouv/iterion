@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -285,7 +286,9 @@ func Scaffold(dir string, s Spec) (Result, error) {
 		return Result{}, err
 	}
 	for _, rel := range sortedAnnexes(annexes) {
-		if strings.HasSuffix(rel, ".bot") {
+		// A fragment under lib/ is compiled through the main that imports
+		// it, above; a child .bot the shape ships is its own program.
+		if strings.HasSuffix(rel, ".bot") && !strings.HasPrefix(rel, unit.FragmentDir+"/") {
 			// No annexes: a subbot child is compiled as a bare file at
 			// launch (runview/subbot.go, CompileWorkflowWithHash on the
 			// child path — only main.bot is promoted to its bundle), so the

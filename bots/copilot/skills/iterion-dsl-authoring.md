@@ -13,6 +13,7 @@ validates without any API call — exit 0 or it isn't done.
 Top-level blocks, in any order:
 
 ```
+import "lib/x.bot" # a bot in several files: fragments under lib/, ONE program (E010 on a name twice)
 vars:              # typed inputs with defaults
 prompt <name>:     # indented text body
 schema <name>:     # typed fields

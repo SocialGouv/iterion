@@ -52,6 +52,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `verified-action` | entry gates (unset or TAKEN `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
+| `library` | the vars and the graph in `main.bot`, the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
 
 `blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
 render the single-agent workflow (one adaptive agent carrying the mission).
@@ -224,6 +225,17 @@ shipped bots, so they are written here:
   line; `a -> b -> c` is two edges with the clauses on the last one; a plain
   bare word is a string value (`backend: claw`); `with { n: 3 }` reads `3`
   as text. Every one of these holds in both profiles.
+- **A bot in several files is one program.** `import "lib/x.bot"` lines sit
+  at the head of the main (after `dsl:`, before any declaration); every
+  fragment lives under `lib/` beside the main, may import a sibling by bare
+  name, and holds no `workflow`. The unit compiles as one text: a name
+  declared in two files is refused by name (E010); `validate`, `run`, the
+  studio and the cloud editor read the whole unit, a remote launch uploads
+  it written out as one file, and a fragment validated alone says where it
+  is validated. The run's identity covers every file, so a fragment edited
+  under a parked run is a source change (`--force`). A bundle that imports
+  declares `requires: { iterion: ">= 3.145.0" }` (C252 asks, a push refuses
+  without). `iterion bots create <slug> --template library` is the shape.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
   `-> fail` target carries no code. The engine's own codes are reserved
   (C248 names them: `BUDGET_EXCEEDED`, `TIMEOUT`, … — the list is
