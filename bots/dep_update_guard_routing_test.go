@@ -1,13 +1,11 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestDepUpdateGuardVerdictRouting asserts the WIRING, not the strings.
@@ -23,11 +21,7 @@ import (
 // from the commit agent's own account of its work, and that each branch stamps
 // the verdict matching what it observed.
 func TestDepUpdateGuardVerdictRouting(t *testing.T) {
-	src, err := os.ReadFile("dep-update-guard/main.bot")
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	pr := parser.Parse("dep-update-guard/main.bot", string(src))
+	pr := parseBotUnit("dep-update-guard/main.bot")
 	if pr.File == nil {
 		t.Fatal("parse produced no File")
 	}
@@ -140,11 +134,7 @@ func TestDepUpdateGuardVerdictRouting(t *testing.T) {
 // The gate read the second meaning, went green, and the bump merged without
 // its fix.
 func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
-	src, err := os.ReadFile("dep-update-guard/main.bot")
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	cr := ir.Compile(parser.Parse("dep-update-guard/main.bot", string(src)).File)
+	cr := ir.Compile(parseBotUnit("dep-update-guard/main.bot").File)
 	if cr.Workflow == nil {
 		t.Fatal("compile produced no Workflow")
 	}

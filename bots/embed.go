@@ -5,11 +5,15 @@
 // Lookup order at launch time (see pkg/server.resolveWorkflowPath):
 //  1. resolve the requested path against the server WorkDir;
 //  2. on miss, if the path is a bare basename matching an embedded
-//     recipe, materialise the embedded content into the run store
+//     recipe, materialise the embedded bot into the run store
 //     and use that path.
 //
-// Only the curated single-file bot recipes are embedded. Companion .md
-// design journals and large non-recipe assets are intentionally
+// An embedded bot is its main.bot and, for a bot in several files, the
+// lib/ fragments its main imports: Materialize writes them together, so
+// a materialised main is the program it is in the tree. A manifest is
+// not embedded — the engine floor it would declare is met by
+// construction, the binary that carries the bot being the one that reads
+// it. Companion .md design journals and large non-recipe assets are
 // excluded to keep the binary slim. Bundle directories (`<name>/main.bot`
 // + manifest + skills + prompts + attachments) are NOT embedded either —
 // they have to be loaded by explicit path (`iterion run bots/<name>/`
@@ -20,21 +24,28 @@
 package bots
 
 import (
+	"bytes"
 	"embed"
 	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
 	"sort"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // The three productised bots (feature_dev, whole_improve_loop,
-// branch_improve_loop) each ship as a single-file bundle: only
-// `<name>/main.bot` is embedded — their manifest.yaml + README.md
-// are stripped to keep the binary slim. Larger bundles
+// branch_improve_loop) ship embedded: `<name>/main.bot`, plus `<name>/lib`
+// for a bot in several files (feature-dev). Their manifest.yaml +
+// README.md are stripped to keep the binary slim. Larger bundles
 // (whats-next, docs-refresh, sec-audit-*, secured-renovacy, review-pr)
 // carry skills/prompts/attachments alongside main.bot and are
 // deliberately NOT embedded; they have to be loaded by explicit path
 // (`iterion run bots/<name>/` or against the packed `.botz`).
 //
-//go:embed feature-dev/main.bot whole-improve-loop/main.bot branch-improve-loop/main.bot
+//go:embed feature-dev/main.bot feature-dev/lib whole-improve-loop/main.bot branch-improve-loop/main.bot
 var Files embed.FS
 
 // Get returns the contents of the embedded example with the given
@@ -49,16 +60,111 @@ func Get(name string) ([]byte, bool) {
 }
 
 // List returns the relative paths (within the embed FS) of all embedded
-// workflow recipes, sorted alphabetically.
+// workflow recipes, sorted alphabetically. A fragment — a file under a
+// bot's lib/ directory — is a piece of a recipe, not one, and is not
+// listed.
 func List() []string {
 	var out []string
-	_ = fs.WalkDir(Files, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	_ = fs.WalkDir(Files, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
 			return nil
 		}
-		out = append(out, path)
+		if d.IsDir() {
+			if d.Name() == unit.FragmentDir && strings.Contains(p, "/") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		out = append(out, p)
 		return nil
 	})
 	sort.Strings(out)
 	return out
+}
+
+// botFiles lists the embedded files of the bot that owns name — every
+// file under name's directory, sorted, name last — with the directory.
+// name must be an embedded FILE: a miss, or a directory, is
+// fs.ErrNotExist.
+func botFiles(name string) (dir string, paths []string, err error) {
+	name = path.Clean(filepath.ToSlash(name))
+	info, err := fs.Stat(Files, name)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.IsDir() {
+		return "", nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	dir = path.Dir(name)
+	err = fs.WalkDir(Files, dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && p != name {
+			paths = append(paths, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	sort.Strings(paths)
+	return dir, append(paths, name), nil
+}
+
+// Sources returns the embedded bot that owns name as a files map keyed by
+// slash path relative to the bot's directory ("main.bot", "lib/nodes.bot"),
+// with name's own key — the shape unit.LoadMap reads. ok is false when
+// name is not an embedded file.
+func Sources(name string) (files map[string]string, main string, ok bool) {
+	dir, paths, err := botFiles(name)
+	if err != nil {
+		return nil, "", false
+	}
+	files = make(map[string]string, len(paths))
+	for _, p := range paths {
+		data, err := Files.ReadFile(p)
+		if err != nil {
+			return nil, "", false
+		}
+		files[strings.TrimPrefix(p, dir+"/")] = string(data)
+	}
+	return files, strings.TrimPrefix(paths[len(paths)-1], dir+"/"), true
+}
+
+// Materialize writes the bot that owns name — every embedded file under
+// name's directory, so a bot in several files lands with the fragments
+// its main imports — under root, and returns the on-disk path of name.
+// A file whose cached bytes already match is left alone; the fragments
+// are written before the main, so a main on disk never wants for one.
+// name must be an embedded FILE: a miss, or a directory, is
+// fs.ErrNotExist, and nothing is written.
+func Materialize(root, name string) (string, error) {
+	_, paths, err := botFiles(name)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range paths {
+		data, err := Files.ReadFile(p)
+		if err != nil {
+			return "", err
+		}
+		if err := writeIfChanged(filepath.Join(root, filepath.FromSlash(p)), data); err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(root, filepath.FromSlash(paths[len(paths)-1])), nil
+}
+
+// writeIfChanged writes data at dst unless the file already holds it.
+// Bytes are compared, not lengths: a same-length edit would otherwise be
+// served from the stale copy forever.
+func writeIfChanged(dst string, data []byte) error {
+	if existing, err := os.ReadFile(dst); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
 }
