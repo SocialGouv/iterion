@@ -512,6 +512,48 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 		}
 	})
 
+	// The ORIGINAL member of the class, and the one the first fix walked past:
+	// a 2xx whose BODY is read short. The status arrived, so the vendor acted —
+	// but the error built there carried Status 0, which made it
+	// indistinguishable from a call that never left, and the answered-2xx rule
+	// could not see the very case it was written for. Measured before the fix:
+	// six POSTs, each answered 201, plus a recovery replay — and it was the
+	// IDEMPOTENCY KEY that unlocked them.
+	t.Run("a 2xx read short is performed exactly once, key or not", func(t *testing.T) {
+		for _, keyed := range []bool{true, false} {
+			var calls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				// Promise more than is written: the server closes the
+				// connection short and the client fails reading the body,
+				// with the 201 already in hand.
+				w.Header().Set("Content-Length", "4096")
+				w.WriteHeader(201)
+				_, _ = w.Write([]byte(`{"id":`))
+			}))
+			defer srv.Close()
+
+			pkg, op := mutatingPackage(srv.URL)
+			if keyed {
+				op.IdempotencyKeyParam = "body"
+			}
+			pkg.Ops[0].Operations[0] = op
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment",
+				Connection: "main", RetryPolicy: "5",
+				Params: []ir.ActionParam{{Key: "body", Value: "ship it"}},
+			}
+			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
+			if _, err := e.Execute(context.Background(), node, nil); err == nil {
+				t.Fatalf("keyed=%v: a body that could not be read must fail the node", keyed)
+			}
+			if n := calls.Load(); n != 1 {
+				t.Errorf("keyed=%v: the vendor was called %d times and answered 201 each time — the mutation was CONFIRMED by the status, whatever the body did", keyed, n)
+			}
+		}
+	})
+
 	// A response that breaks its declared contract is the SAME certainty as a
 	// lost answer read backwards: the vendor answered, so the write happened,
 	// and only its answer is unusable. The two rows differ by one thing — an

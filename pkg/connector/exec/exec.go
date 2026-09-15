@@ -381,7 +381,17 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 		// ambiguous case: the vendor may well have performed it — and the
 		// status having arrived is itself proof the request was sent, so no
 		// cause reaching here can downgrade it.
-		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, readErr, cred)}, nil
+		//
+		// The status has to be carried ONTO the error, not merely onto the
+		// Result. Both readers judge the *Error: a transport error left at
+		// Status 0 is indistinguishable from one where nothing was ever sent,
+		// so the answered-2xx rule below could not see the very case it was
+		// written for — a 201 read short, with an idempotency key, was
+		// repeated by the node and then replayed again by recovery.
+		terr := e.transportError(op, params, readErr, cred)
+		terr.Status = resp.StatusCode
+		markAmbiguous(op, terr, resp.StatusCode)
+		return Result{Status: resp.StatusCode, Err: terr}, nil
 	}
 	res := e.readResponse(pkg, op, resp, body)
 	res.Requests = 1
