@@ -175,16 +175,19 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 			if fv.IsNil() {
 				continue
 			}
-			// The block itself goes where its header was written, so an
-			// empty block keeps its owner; each entry goes where it was.
-			blockSpan, _ := spanOf(fv)
-			p, err := owner(blockSpan)
-			if err != nil {
-				return nil, err
-			}
-			ensureBlock(reflect.ValueOf(p).Elem().Field(i), fv.Type())
+			// Each entry goes where it was, and a block exists in a file
+			// because an entry of it does. A block emptied of every entry
+			// keeps its header where the header was written — what the
+			// writer puts on a single file too — never a bare header in
+			// a file whose entries all live elsewhere.
 			entries := entriesOf(fv.Elem())
-			if !entries.IsValid() {
+			if !entries.IsValid() || entries.Len() == 0 {
+				blockSpan, _ := spanOf(fv)
+				p, err := owner(blockSpan)
+				if err != nil {
+					return nil, err
+				}
+				ensureBlock(reflect.ValueOf(p).Elem().Field(i), fv.Type())
 				continue
 			}
 			for j := 0; j < entries.Len(); j++ {
@@ -201,7 +204,41 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 			}
 		}
 	}
+	restoreSubbotSources(parts, u)
 	return parts, nil
+}
+
+// restoreSubbotSources puts a subbot's `source:` back as its file wrote
+// it. The merged document carries every fragment's subbot with a
+// ROOT-relative source (unit.CanonicalSubbotSource — what every host
+// resolves), while the fragment writes it relative to its own directory:
+// the canonical form written back verbatim would move the child one lib/
+// deeper at every save. A source the fragment already wrote is kept byte
+// for byte; one the editor changed is written in the fragment's own
+// terms. The main's subbots travel as written and stay so.
+func restoreSubbotSources(parts map[string]*ast.File, u *unit.Unit) {
+	for _, f := range u.Files {
+		part := parts[f.Rel]
+		if part == nil || f.AST == nil || f.Rel == u.Main {
+			continue
+		}
+		written := make(map[string]string, len(f.AST.Subbots))
+		for _, sb := range f.AST.Subbots {
+			written[sb.Name] = sb.Source
+		}
+		for i, sb := range part.Subbots {
+			source := unit.AuthoredSubbotSource(f.Rel, sb.Source)
+			if w, ok := written[sb.Name]; ok && unit.CanonicalSubbotSource(f.Rel, w) == sb.Source {
+				source = w
+			}
+			if source == sb.Source {
+				continue
+			}
+			cp := *sb
+			cp.Source = source
+			part.Subbots[i] = &cp
+		}
+	}
 }
 
 func ensureBlock(field reflect.Value, t reflect.Type) {
@@ -313,7 +350,7 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	for _, f := range staged {
 		previews = append(previews, authoringPreviewFile{Scope: "unit", Path: f.rel, Operation: "update", Before: string(f.before), After: f.after})
 	}
-	if _, err := s.publishAuthoringLocal(r.Context(), locks, previews); err != nil {
+	if _, err := s.publishAuthoringLocal(r.Context(), locks, previews, false); err != nil {
 		var conflict authoringConflictError
 		if errors.As(err, &conflict) {
 			httpError(w, http.StatusConflict, "%v", err)
@@ -395,7 +432,12 @@ var authoringStepHook func(string) error
 // every candidate is prepared before any byte is exposed, then each is
 // published in turn, and a failure rolls the published ones back. The
 // recovery records name what was retained; nothing is replayed by itself.
-func (s *Server) publishAuthoringLocal(ctx context.Context, locks []*authoringLocalLock, previews []authoringPreviewFile) ([]authoringRecovery, error) {
+// retain keeps each transaction's journal and displaced original once it
+// published — what the assistant's commit returns to the dock as the
+// recovery of the version it replaced. A save from the editor has no
+// reader for them: it drops them, or every save would leave a copy of
+// every version ever saved in the bot's own directory.
+func (s *Server) publishAuthoringLocal(ctx context.Context, locks []*authoringLocalLock, previews []authoringPreviewFile, retain bool) ([]authoringRecovery, error) {
 	var ignore func(string)
 	s.stateMu.RLock()
 	if s.watcher != nil {
@@ -444,6 +486,19 @@ func (s *Server) publishAuthoringLocal(ctx context.Context, locks []*authoringLo
 			return failure(fmt.Errorf("write %s:%s failed: %w; earlier files were rolled back", tx.preview.Scope, tx.preview.Path, err))
 		}
 	}
+	// Every file is published: the journals and the displaced originals
+	// are for the recovery of a write that did not finish, and one that
+	// finished leaves nothing to recover — not a copy of every version
+	// ever saved, in the bot's own directory. A record that will not go
+	// is left where it is and named; the files are written either way.
+	if retain {
+		return recovery(), nil
+	}
+	for _, tx := range transactions {
+		if err := tx.complete(); err != nil {
+			s.logger.Warn("authoring: a finished write of %s keeps its record: %v", tx.preview.Path, err)
+		}
+	}
 	return recovery(), nil
 }
 
@@ -464,6 +519,10 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
 	main := req.Main
 	if main == "" {
 		main = "main.bot"
+	}
+	if !workflowfile.IsWorkflowFile(main) {
+		httpError(w, http.StatusBadRequest, "main %q is not a workflow file: a unit is read from a .bot", main)
+		return
 	}
 	u := unit.LoadMap(req.Files, main)
 	var diags []string
@@ -492,9 +551,25 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 	if main == "" {
 		main = "main.bot"
 	}
+	if !workflowfile.IsWorkflowFile(main) {
+		httpError(w, http.StatusBadRequest, "main %q is not a workflow file: a unit is written back from a .bot", main)
+		return
+	}
 	u := unit.LoadMap(req.Files, main)
 	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
 		httpError(w, http.StatusUnprocessableEntity, "the bundle's files do not load as one unit (%s): fix them before saving", d)
+		return
+	}
+	// The revision the document was opened at, against the files as they
+	// are now: a fragment a colleague changed since would otherwise come
+	// back rewritten with this document's stale text, and the bundle's
+	// version CAS covers only the fetch-to-write window.
+	if req.Revision == "" {
+		httpError(w, http.StatusUnprocessableEntity, "the document names no revision for a bot in several files: reopen the bot (an older client saves a single file)")
+		return
+	}
+	if req.Revision != u.Digest {
+		httpError(w, http.StatusConflict, "the files of the bot changed since the document was opened: reopen it and redo the edit")
 		return
 	}
 	if u.Merged == nil {
@@ -527,5 +602,14 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 	if t, ok := out[main]; ok {
 		source = t
 	}
-	writeJSON(w, unparseResponse{Source: source, Files: out})
+	// The revision the bundle has once the rewritten files are patched in:
+	// what the next save presents.
+	patched := make(map[string]string, len(req.Files))
+	for rel, text := range req.Files {
+		patched[rel] = text
+	}
+	for rel, text := range out {
+		patched[rel] = text
+	}
+	writeJSON(w, unparseResponse{Source: source, Files: out, Revision: unit.LoadMap(patched, main).Digest})
 }

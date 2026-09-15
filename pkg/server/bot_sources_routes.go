@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -345,6 +346,22 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.botSourceError(w, r, err)
 		return
 	}
+	// A delete mutates the bundle as a put does, and is held to the same
+	// two guards: the bundle still compiles without the file — a fragment
+	// an import reaches is load-bearing at parse time — and its manifest
+	// still declares the floor its sources need.
+	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile without %s: %s", path, strings.Join(diags, "; "))
+		return
+	}
+	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	if !ok {
+		return
+	}
+	if engineWarning != "" {
+		s.writeBotSource(w, r, tenantID, userID, bs, engineWarning)
+		return
+	}
 	s.writeBotSource(w, r, tenantID, userID, bs)
 }
 
@@ -545,14 +562,33 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 	var diags []string
 	paths := []string{botsource.MainBotFile}
 	seen := map[string]bool{botsource.MainBotFile: true}
-	for _, rel := range modified {
-		rel = filepath.ToSlash(filepath.Clean(rel))
-		if !strings.HasSuffix(strings.ToLower(rel), ".bot") || seen[rel] {
-			continue
+	add := func(rel string) {
+		if seen[rel] {
+			return
 		}
 		seen[rel] = true
 		paths = append(paths, rel)
 	}
+	for _, rel := range modified {
+		rel = filepath.ToSlash(filepath.Clean(rel))
+		if !strings.HasSuffix(strings.ToLower(rel), ".bot") {
+			continue
+		}
+		if strings.HasPrefix(rel, unit.FragmentDir+"/") {
+			// A fragment is validated through the workflows that import it,
+			// and any workflow of the bundle may: every one of them is
+			// recompiled, or a fragment only a sibling imports is checked
+			// by nobody.
+			for name := range files {
+				if !strings.Contains(name, "/") && strings.HasSuffix(strings.ToLower(name), ".bot") {
+					add(name)
+				}
+			}
+			continue
+		}
+		add(rel)
+	}
+	sort.Strings(paths[1:])
 	b, _ := bundle.OpenDir(dir)
 	for _, rel := range paths {
 		// A fragment under lib/ holds no workflow by design: it is validated
@@ -565,7 +601,9 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 		u := unit.LoadDir(path)
 		for _, d := range u.Diagnostics {
 			if d.Severity == parser.SeverityError {
-				diags = append(diags, rel+": "+d.Error())
+				// The unit was read from a temporary directory the editor
+				// never sees: a diagnostic names the file as the bundle holds it.
+				diags = append(diags, rel+": "+strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), ""))
 			}
 		}
 		if u.Merged == nil || len(u.Merged.Workflows) == 0 {

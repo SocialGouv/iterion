@@ -68,6 +68,7 @@ func TestUnparseWithFilesReturnsOnlyTheRewrittenFiles(t *testing.T) {
 	rec := postDSL(t, s.handleParse, "/api/parse", map[string]any{"files": files, "main": "main.bot"})
 	var opened struct {
 		Document json.RawMessage `json:"document"`
+		Unit     *unitInfo       `json:"unit"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &opened); err != nil {
 		t.Fatal(err)
@@ -75,7 +76,7 @@ func TestUnparseWithFilesReturnsOnlyTheRewrittenFiles(t *testing.T) {
 	edited := editDocument(t, opened.Document, func(m map[string]any) {
 		agentsOf(m)[0].(map[string]any)["model"] = "anthropic/claude-opus-5"
 	})
-	rec = postDSL(t, s.handleUnparse, "/api/unparse", map[string]any{"document": edited, "files": files, "main": "main.bot"})
+	rec = postDSL(t, s.handleUnparse, "/api/unparse", map[string]any{"document": edited, "files": files, "main": "main.bot", "revision": opened.Unit.Revision})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unparse: %d %s", rec.Code, rec.Body.String())
 	}
@@ -93,7 +94,7 @@ func TestUnparseWithFilesReturnsOnlyTheRewrittenFiles(t *testing.T) {
 		t.Fatalf("source %q, want the main untouched", out.Source)
 	}
 	stripped := editDocument(t, opened.Document, func(m map[string]any) { dropKey(m, "file") })
-	rec = postDSL(t, s.handleUnparse, "/api/unparse", map[string]any{"document": stripped, "files": files, "main": "main.bot"})
+	rec = postDSL(t, s.handleUnparse, "/api/unparse", map[string]any{"document": stripped, "files": files, "main": "main.bot", "revision": opened.Unit.Revision})
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("no provenance: %d %s", rec.Code, rec.Body.String())
 	}

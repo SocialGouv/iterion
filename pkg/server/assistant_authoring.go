@@ -1085,7 +1085,7 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 	// Prepare every candidate before exposing any bytes. Publication moves the
 	// current inode into recovery and checks that actual displaced object;
 	// no read-then-unconditional-overwrite remains at the live destination.
-	rec, err := s.publishAuthoringLocal(r.Context(), locks, previews)
+	rec, err := s.publishAuthoringLocal(r.Context(), locks, previews, true)
 	return 0, rec, err
 }
 

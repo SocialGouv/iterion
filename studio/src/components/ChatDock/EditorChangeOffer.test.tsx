@@ -117,6 +117,23 @@ describe("EditorChangeOffer", () => {
     expect(api.parseSource).not.toHaveBeenCalled();
   });
 
+  it("refuses to apply a proposal to a bot in several files", async () => {
+    const { store } = await liveProposal();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    expect((apply as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/in several files/i)).toBeTruthy();
+    expect(api.parseSource).not.toHaveBeenCalled();
+  });
+
   it("refuses to apply a proposal to a materialized shared bundle", async () => {
     await liveProposal(".botz/shared-planner/main.bot");
 

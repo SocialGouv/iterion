@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 
 export default function SourceView() {
   const document = useDocumentStore((s) => s.document);
+  const unit = useDocumentStore((s) => s.unit);
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const setDocument = useDocumentStore((s) => s.setDocument);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
@@ -60,9 +61,15 @@ export default function SourceView() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-2 py-1 bg-surface-1 border-b border-border-default shrink-0">
-        <span className="text-xs text-fg-subtle">.bot Source</span>
+        <span className="text-xs text-fg-subtle">
+          {unit ? `Merged program of ${unit.files.length} files` : ".bot Source"}
+        </span>
         <div className="flex gap-2">
-          {!editing ? (
+          {unit ? (
+            <span className="text-xs text-fg-subtle" data-testid="source-view-unit-note">
+              Read-only: a bot in several files is edited file by file — open each file from the files drawer, or use the canvas.
+            </span>
+          ) : !editing ? (
             <Button
               variant="ghost"
               size="sm"

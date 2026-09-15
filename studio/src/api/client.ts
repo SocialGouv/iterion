@@ -283,17 +283,21 @@ export async function parseUnit(
 
 /** unparseUnit writes a document of a bot in several files back into them,
  *  by provenance, and returns the files whose program changed — only
- *  those, to patch into the bundle. */
+ *  those, to patch into the bundle — and the revision the bundle has once
+ *  they are. `revision` is the one the document was opened at: the server
+ *  refuses (409) a bundle whose files moved since, so a fragment a
+ *  colleague changed is never rewritten with this document's text. */
 export async function unparseUnit(
   document: IterDocument,
   files: Record<string, string>,
   main: string,
-): Promise<{ source: string; files: Record<string, string> }> {
-  const res = await request<{ source: string; files?: Record<string, string> }>("/unparse", {
+  revision: string,
+): Promise<{ source: string; files: Record<string, string>; revision?: string }> {
+  const res = await request<{ source: string; files?: Record<string, string>; revision?: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document, files, main }),
+    body: JSON.stringify({ document, files, main, revision }),
   });
-  return { source: res.source, files: res.files ?? {} };
+  return { source: res.source, files: res.files ?? {}, revision: res.revision };
 }
 
 /** validate compiles the document server-side. `path` is the workspace
@@ -454,13 +458,13 @@ export async function saveFile(
       // the whole bundle the store holds, and written as ONE versioned
       // PUT, so manifest, prompts, skills and every other file survive and
       // a concurrent editor is a conflict, never a silent overwrite.
-      const rewritten = await unparseUnit(document, current.files ?? {}, "main.bot");
+      const rewritten = await unparseUnit(document, current.files ?? {}, "main.bot", options?.revision ?? "");
       const files = { ...(current.files ?? {}), ...rewritten.files };
       await apiRequest(
         `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
         { method: "PUT", body: JSON.stringify({ files, version: current.version }) },
       );
-      return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort() };
+      return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort(), revision: rewritten.revision };
     }
     const source = await unparse(document);
     await apiRequest(

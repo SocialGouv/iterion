@@ -74,17 +74,20 @@ type unparseRequest struct {
 	Document json.RawMessage `json:"document"`
 	// Files and Main, when given, are the bot in several files the
 	// document was opened from: the response then holds every file the
-	// document rewrites, by path, and only those.
-	Files map[string]string `json:"files,omitempty"`
-	Main  string            `json:"main,omitempty"`
+	// document rewrites, by path, and only those. Revision is the unit's
+	// revision the document was opened at, which must be the files' now.
+	Files    map[string]string `json:"files,omitempty"`
+	Main     string            `json:"main,omitempty"`
+	Revision string            `json:"revision,omitempty"`
 }
 
 type unparseResponse struct {
 	Source string `json:"source"`
 	// Files holds the rewritten files of a bot in several files, by path
 	// from the bundle's root; a file whose program did not change is
-	// absent.
-	Files map[string]string `json:"files,omitempty"`
+	// absent. Revision is the unit's revision once they are patched in.
+	Files    map[string]string `json:"files,omitempty"`
+	Revision string            `json:"revision,omitempty"`
 }
 
 type validateRequest struct {

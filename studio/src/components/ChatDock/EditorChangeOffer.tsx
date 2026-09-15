@@ -89,7 +89,11 @@ export default function EditorChangeOffer({
   const readOnly =
     isSharedBundleFilePath(path) ||
     (!!path && isCloud && api.parseBotSourceEditorPath(path) === null);
-  const unavailable = targetStale || !onEditor || readOnly;
+  // A bot in several files: the editor holds the merged program with each
+  // declaration's file, and a proposal is one text — it could only be
+  // folded into the main, which the save refuses.
+  const unitBound = !!resolved?.store.getState().unit;
+  const unavailable = targetStale || !onEditor || readOnly || unitBound;
   const hasDraft = !!proposal.source;
   // Intent is model-reported but never grants authority: it can only select
   // the operator's preconfigured branch. Unknown/legacy intent is non-explicit
@@ -416,6 +420,7 @@ export default function EditorChangeOffer({
     : "Apply changes only the live buffer; you can undo or save afterwards.";
   if (action === "saved") detail = path ?? "Saved";
   else if (needsReturn) detail = "Return to the captured editor tab to review or run this action.";
+  else if (unitBound) detail = "This bot is in several files: a proposed source cannot be split back into them. Edit each file from the files drawer.";
   else if (readOnly) detail = "This locked shared bundle is read-only in the consumer project.";
   else if (!revisionMatches) detail = "The document changed since this proposal was created.";
   else if (saveOnly && saveDecision === "deny") detail = "Saving assistant changes is disabled in Settings → Assistant.";
