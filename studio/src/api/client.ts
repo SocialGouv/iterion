@@ -1,4 +1,4 @@
-import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse } from "./types";
+import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 
 const BASE_URL = apiBase();
@@ -254,12 +254,54 @@ export async function parseSource(
   });
 }
 
-export async function unparse(document: IterDocument): Promise<string> {
+/** unparse renders a document as .bot source. `flatten` renders the merged
+ *  program of a bot in several files for DISPLAY only: the server refuses
+ *  to render such a document as one file otherwise, since a save of that
+ *  text would fold every file into the main. */
+export async function unparse(document: IterDocument, options?: { flatten?: boolean }): Promise<string> {
   const res = await request<{ source: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document }),
+    body: JSON.stringify(options?.flatten ? { document, flatten: true } : { document }),
   });
   return res.source;
+}
+
+/** A bot in several files has an `import "lib/x.bot"` line at the head of
+ *  its main. */
+export function importsFragments(source: string): boolean {
+  return /^import\s+"/m.test(source);
+}
+
+/** parseUnit parses a bot in several files, given as a bundle's files map,
+ *  as its unit: one document whose every declaration names its file, and
+ *  the unit's revision. */
+export async function parseUnit(
+  files: Record<string, string>,
+  main: string,
+): Promise<{ document: IterDocument; diagnostics: string[]; unit?: UnitInfo }> {
+  return request("/parse", {
+    method: "POST",
+    body: JSON.stringify({ files, main }),
+  });
+}
+
+/** unparseUnit writes a document of a bot in several files back into them,
+ *  by provenance, and returns the files whose program changed — only
+ *  those, to patch into the bundle — and the revision the bundle has once
+ *  they are. `revision` is the one the document was opened at: the server
+ *  refuses (409) a bundle whose files moved since, so a fragment a
+ *  colleague changed is never rewritten with this document's text. */
+export async function unparseUnit(
+  document: IterDocument,
+  files: Record<string, string>,
+  main: string,
+  revision: string,
+): Promise<{ source: string; files: Record<string, string>; revision?: string }> {
+  const res = await request<{ source: string; files?: Record<string, string>; revision?: string }>("/unparse", {
+    method: "POST",
+    body: JSON.stringify({ document, files, main, revision }),
+  });
+  return { source: res.source, files: res.files ?? {}, revision: res.revision };
 }
 
 /** validate compiles the document server-side. `path` is the workspace
@@ -373,6 +415,9 @@ export async function openFile(
   diagnostics: string[];
   path: string;
   confirmed_disk_path?: string;
+  /** Set when the file is the main of a bot in several files: the document
+   *  is the merged unit, and a save must present `unit.revision`. */
+  unit?: UnitInfo;
 }> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
@@ -380,6 +425,12 @@ export async function openFile(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
     const source = bundle.files?.[bs.rel] ?? "";
+    if (bs.rel === "main.bot" && importsFragments(source)) {
+      // The bundle's main in several files: the unit is parsed from the
+      // whole files map, so the fragments under lib/ are in the document.
+      const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
+      return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit };
+    }
     const parsed = await parseSource(source);
     return { source, document: parsed.document, diagnostics: parsed.diagnostics, path };
   }
@@ -392,20 +443,37 @@ export async function openFile(
 export async function saveFile(
   path: string,
   document: IterDocument,
-  options?: { createOnly?: boolean },
+  options?: { createOnly?: boolean; revision?: string },
 ): Promise<SaveFileResponse> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
     if (options?.createOnly) {
       throw new Error("Save As is not available for a cloud bot source.");
     }
-    const source = await unparse(document);
     // Carry the botsource CAS token. The old per-file editor write omitted it,
     // so two tabs could silently overwrite one another even though the store
     // already supported optimistic concurrency.
     const current = await apiRequest<BotSourceFilesResponse>(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
+    if (options?.revision !== undefined) {
+      // A bot in several files — the document was opened as its unit and
+      // carries the revision it was opened at, which decides the path:
+      // never the stored text at save time, which may have moved. It is
+      // written back file by file
+      // — only the files whose program changed come back — patched into
+      // the whole bundle the store holds, and written as ONE versioned
+      // PUT, so manifest, prompts, skills and every other file survive and
+      // a concurrent editor is a conflict, never a silent overwrite.
+      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision);
+      const files = { ...(current.files ?? {}), ...rewritten.files };
+      await apiRequest(
+        `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+        { method: "PUT", body: JSON.stringify({ files, version: current.version }) },
+      );
+      return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort(), revision: rewritten.revision };
+    }
+    const source = await unparse(document);
     await apiRequest(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
       { method: "PUT", body: JSON.stringify({ content: source, version: current.version }) },
@@ -418,6 +486,7 @@ export async function saveFile(
       path,
       document,
       ...(options?.createOnly ? { create_only: true } : {}),
+      ...(options?.revision ? { revision: options.revision } : {}),
     }),
   });
 }

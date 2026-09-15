@@ -159,3 +159,42 @@ func TestSnapshotChildUsesServerAuthorityAndRefusesMissingChild(t *testing.T) {
 		t.Fatalf("missing child = %v", err)
 	}
 }
+
+// A child declared in a fragment the main imports is frozen with the
+// collection, like a child the main declares: the snapshot reads each
+// workflow as its unit.
+func TestSnapshotFollowsAChildDeclaredInAFragment(t *testing.T) {
+	s, root := snapshotFixture(t)
+	if err := os.MkdirAll(filepath.Join(root, "parent", "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "parent", "main.bot"), []byte("import \"lib/child.bot\"\n\nworkflow parent:\n  entry: child\n  child -> done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Relative to the fragment: two levels up to the collection.
+	if err := os.WriteFile(filepath.Join(root, "parent", "lib", "child.bot"), []byte("subbot child:\n  source: \"../../child/main.bot\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lb, err := s.resolveBotSource(context.Background(), "", "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lb.Cleanup()
+	snap, err := bundle.DecodeSnapshot(lb.Ref.Snapshot, lb.Ref.SnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"child/main.bot", "parent/lib/child.bot"} {
+		if _, ok := snap.Files[want]; !ok {
+			t.Fatalf("%s was not captured; files: %v", want, snapshotKeys(snap))
+		}
+	}
+}
+
+func snapshotKeys(snap *bundle.Snapshot) []string {
+	keys := make([]string, 0, len(snap.Files))
+	for k := range snap.Files {
+		keys = append(keys, k)
+	}
+	return keys
+}
