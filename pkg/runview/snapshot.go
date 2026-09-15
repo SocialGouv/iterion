@@ -189,9 +189,10 @@ type RunHeader struct {
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The studio uses these to
 	// surface the persistent branch and FF status in the run header.
-	FinalCommit      string `json:"final_commit,omitempty"`
-	FinalBranch      string `json:"final_branch,omitempty"`
-	FinalBranchError string `json:"final_branch_error,omitempty"`
+	FinalCommit      string          `json:"final_commit,omitempty"`
+	FinalBranch      string          `json:"final_branch,omitempty"`
+	FinalBranchError string          `json:"final_branch_error,omitempty"`
+	BankState        store.BankState `json:"bank_state,omitempty"`
 	// WorkspaceCheckpoint is the last successful checkpoint push observed in
 	// the persisted timeline. It is not a completed delivery bank.
 	WorkspaceCheckpoint *WorkspaceCheckpoint `json:"workspace_checkpoint,omitempty"`
@@ -1559,6 +1560,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		FinalCommit:          r.FinalCommit,
 		FinalBranch:          r.FinalBranch,
 		FinalBranchError:     r.FinalBranchError,
+		BankState:            r.BankState(),
 		RoutingPolicy:        r.RoutingPolicy,
 		OutcomeSeq:           r.OutcomeSeq,
 		ContinuationState:    r.ContinuationState,

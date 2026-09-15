@@ -967,18 +967,26 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 // force-push from a lease that may have moved. Keep any new deadline
 // below executeRun's.
 //
-// The detached ctx gets its OWN aggregate deadline: per-op gitOpTimeout
-// bounds each git subprocess but not the sequence — the bank issues up
-// to four network ops (ls-remote, fetch, archive push, push), and a
-// wedged forge must not pin a pod for 4×op-timeout past the deadline
-// the operator set precisely to cap the run. When the operator disabled
-// per-op bounds (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"),
-// that choice is honoured here too.
+// BOTH arms get an aggregate deadline: per-op gitOpTimeout bounds each
+// git subprocess but not the sequence — the bank issues up to four
+// network ops (ls-remote, fetch, archive push, push) and retries the
+// push, and a wedged forge must not pin a pod for attempts×ops×op-timeout.
+// The live arm needs it just as much as the detached one: a run launched
+// without --timeout carries NO deadline, so the run ctx bounds nothing
+// there. The two arms bound DIFFERENT things and so carry different
+// horizons — see liveBankBudget. When the operator disabled per-op bounds
+// (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"), that choice is
+// honoured on both.
 func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	cause := context.Cause(ctx)
 	switch {
 	case cause == nil:
-		return ctx, func() {}, true // live ctx — nothing to detach
+		// Live ctx — nothing to detach, but still to bound.
+		if gitOpTimeout > 0 {
+			bounded, cancel := context.WithTimeout(ctx, liveBankBudget())
+			return bounded, cancel, true
+		}
+		return ctx, func() {}, true
 	case errors.Is(cause, context.DeadlineExceeded):
 		detached := context.WithoutCancel(ctx)
 		if gitOpTimeout > 0 {
@@ -991,10 +999,26 @@ func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool
 	}
 }
 
-// bankBudget bounds the whole post-deadline bank sequence. Generous
-// against the nominal case (seconds) and small against the run
-// deadlines it may outlive (hours).
+// bankBudget bounds the bank sequence of a run whose deadline ALREADY
+// passed. Generous against the nominal case (seconds) and deliberately
+// small against the deadlines it outlives (hours): the operator set that
+// deadline precisely to cap the run, and this is the grace period past it.
 const bankBudget = 10 * time.Minute
+
+// liveBankBudget bounds the same sequence for a run still inside its
+// deadline, or carrying none at all. It DERIVES from gitOpTimeout rather
+// than standing beside it: an aggregate below the per-op bound would kill
+// an operation the operator explicitly allowed — and pushBankWithRetry
+// treats a dead ctx as final, so that push would lose its retry too.
+// Two op-ceilings leave room for one full retry while keeping
+// ITERION_RUNNER_BANK_ATTEMPTS from multiplying the pin, so raising
+// ITERION_RUNNER_GIT_TIMEOUT still extends the bank with it.
+func liveBankBudget() time.Duration {
+	if derived := 2 * gitOpTimeout; derived > bankBudget {
+		return derived
+	}
+	return bankBudget
+}
 
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log

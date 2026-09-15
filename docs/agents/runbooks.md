@@ -110,6 +110,7 @@ the hours this one spent.
   against a 20-job organisation cap, and the trap that promoting an advisory
   job to required without deleting its `merge_group` skip produces a silent
   FALSE GREEN rather than a stalled queue.
+- [docs/resume.md#when-the-final-bank-push-fails](../resume.md#when-the-final-bank-push-fails) — final-bank retries, `bank_state`, failure events and recovery evidence.
 - [Revi's positive/negative audit](../bot-runs/review-pr.md#2026-09-14--falsifiable-claw--gpt-review-proof-1203)
   — when a clean GPT/Claw review looks suspicious: verify actual source/tool
   events, seeded-defect detection, exact-head inline publication and the clean

@@ -273,6 +273,57 @@ against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
 worked example — it compares `align.applied` with the branch head and blocks on
 a contradiction). Git is the durable state; an uncommitted working tree is not.
 
+### When the final bank push fails
+
+The workflow outcome and delivery of its commits are separate. Run detail
+(`run.bank_state`) and list (`bank_state`) responses expose `banked` when
+`final_branch` and `final_commit` are recorded, or `bank_failed` when
+`final_branch_error` is present. The field is omitted while no bank outcome
+is established, including runs with no work to bank. It is derived from those
+existing fields, so old runs need no migration. A finished workflow stays
+`finished` even if its bank fails. Run outcome trigger payloads carry the same
+bank state and final fields when known; merge routing escalates a bank failure.
+
+The runner makes two push attempts by default, waiting two seconds before
+retrying. `ITERION_RUNNER_BANK_ATTEMPTS=1` disables retries;
+`ITERION_RUNNER_BANK_RETRY_DELAY` accepts a Go duration (including `0`). The
+retry re-reads the remote branch: an already-pushed head is success after a
+lost acknowledgement, a changed head passes the existing richer-chain checks,
+and an unreadable remote stops the retry rather than dropping its lease. A head
+that has NOT moved was already archived and compared on the first attempt, so
+the retry skips straight to its push instead of re-fetching and re-archiving it.
+Even observed absence is protected by a lease on the second push. Cancellation
+interrupts the wait. Each git operation keeps its existing
+`ITERION_RUNNER_GIT_TIMEOUT` bound (15 minutes by default); a shorter caller
+deadline is identified separately in the error.
+
+The bank sequence as a whole is bounded too, so a wedged forge cannot pin a
+runner pod for attempts × operations × the per-op ceiling. A run past its own
+deadline gets a fixed 10-minute grace period; a run still inside its deadline —
+or launched without `--timeout`, which has none — gets twice
+`ITERION_RUNNER_GIT_TIMEOUT`, so the aggregate never pre-empts an operation the
+per-op setting allows and raising that setting extends the bank with it.
+Setting `ITERION_RUNNER_GIT_TIMEOUT` to `0` or less keeps git operations
+unbounded and leaves the sequence unbounded as well.
+
+Inspect `run_bank_retry` for the failed attempt, planned delay, redacted git
+error, `failure_kind` (`timeout`, `cancelled`, `process_exit`, or `git_error`),
+and exit code when available. Once retries are exhausted and no earlier banked
+pair exists, `run_bank_failed` records the final cause and attempt count;
+`recorded=false` means the run-document write failed too. Integrity refusals
+also emit `run_bank_failed` when no previous bank is available. An earlier
+valid pair stays intact: a later refused attempt remains visible through
+`run_bank_refused`. Document-read failures and operator cancellations retain
+that existing refusal event, since the runner cannot establish a new bank state.
+
+For recovery, inspect the run's final fields and timeline, then verify any
+remote ref against its recorded commit. A local `final_commit` accompanied
+by `bank_failed` is not proof that the commit reached the forge. Check the
+workspace-checkpoint hint below if the final bank has no branch. An exit code
+alone (including `12`) does not identify the historical root cause: use the
+recorded stderr and timeout/cancellation classification before retrying. No
+bank failure automatically re-executes the workflow or authorizes a merge.
+
 ### Recovering a workspace checkpoint after a pod dies
 
 A copy-based sandbox can push a workspace checkpoint before teardown even if

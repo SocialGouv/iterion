@@ -271,6 +271,7 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
+		BankState:         r.BankState(),
 		MergedInto:        r.MergedInto,
 		MergedCommit:      r.MergedCommit,
 		MergeStrategy:     r.MergeStrategy,

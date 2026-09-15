@@ -414,6 +414,8 @@ export type PassthroughEventType =
   | "run_redelivery_deferred"
   | "run_retry_skipped"
   | "run_delivery_exhausted"
+  | "run_bank_retry"
+  | "run_bank_failed"
   | "run_bank_refused"
   | "run_bank_superseded"
   | "run_bank_attempt"
