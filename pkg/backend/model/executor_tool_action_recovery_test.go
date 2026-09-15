@@ -511,6 +511,58 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 			t.Errorf("the vendor was called %d times; a mutation whose outcome is unknown must be performed EXACTLY ONCE, whatever `retry:` says", n)
 		}
 	})
+
+	// A response that breaks its declared contract is the SAME certainty as a
+	// lost answer read backwards: the vendor answered, so the write happened,
+	// and only its answer is unusable. The two rows differ by one thing — an
+	// idempotency key the vendor actually received — because a key is precisely
+	// what used to license the repeat, and the whole point is that here it must
+	// not. `retry: 5` is in both, so a regression shows up as a count, not a
+	// verdict.
+	for _, tc := range []struct {
+		name  string
+		keyed bool
+	}{
+		{"with an idempotency key the vendor received", true},
+		{"with no key at all", false},
+	} {
+		t.Run("a 2xx breaking its contract is performed exactly once, "+tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(201)
+				_, _ = w.Write([]byte(`{"id":"not-an-integer"}`))
+			}))
+			defer srv.Close()
+
+			pkg, op := mutatingPackage(srv.URL)
+			op.Results = []spec.ResultCase{{Status: 201, ResponseSchemaRef: "Created"}}
+			pkg.ResponseSchemas = map[string]spec.ResponseSchema{
+				"Created": {Type: "object", Required: []string{"id"}, Properties: map[string]spec.ResponseSchema{"id": {Type: "integer"}}},
+			}
+			if tc.keyed {
+				op.IdempotencyKeyParam = "body"
+			}
+			pkg.Ops[0].Operations[0] = op
+			if err := pkg.ValidateResponseContracts(); err != nil {
+				t.Fatalf("the fixture is not a package a launch would accept: %v", err)
+			}
+
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment",
+				Connection: "main", RetryPolicy: "5",
+				Params: []ir.ActionParam{{Key: "body", Value: "ship it"}},
+			}
+			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, exec.MarkGuarded(srv.Client())))
+			if _, err := e.Execute(context.Background(), node, nil); err == nil {
+				t.Fatal("a body that breaks its contract must fail the node")
+			}
+			if n := calls.Load(); n != 1 {
+				t.Errorf("the vendor was called %d times; the mutation was CONFIRMED by the 201, so repeating it duplicates the write", n)
+			}
+		})
+	}
 }
 
 // TestTheENGINENeverRetriesAnUndecidedMutation covers the CLASS, not the one
