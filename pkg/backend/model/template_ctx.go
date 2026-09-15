@@ -1,6 +1,9 @@
 package model
 
-import "context"
+import (
+	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+)
 
 // TemplateData carries runtime state needed to resolve prompt template
 // references in the `outputs.*`, `loop.*`, `artifacts.*`, and `run.*`
@@ -13,6 +16,10 @@ import "context"
 type TemplateData struct {
 	// Outputs is the per-node output map. Keys are node IDs.
 	Outputs map[string]map[string]any
+
+	// Nodes identifies declared nodes even before they have produced output.
+	// A missing r1.gate must never resolve through a nested value on r1.
+	Nodes map[string]ir.Node
 
 	// LoopCounters is the current iteration count per loop name
 	// (1-indexed once incremented by the engine).

@@ -71,8 +71,8 @@ func (c *compiler) validateHistoryRefs(w *Workflow) {
 			return
 		}
 		// outputs.<node>.history pattern: Path = [node, "history"]
-		if len(ref.Path) >= 2 && ref.Path[len(ref.Path)-1] == "history" {
-			nodeID := ref.Path[0]
+		nodeID, fields := outputNodePath(w, ref.Path)
+		if len(fields) > 0 && fields[len(fields)-1] == "history" {
 			if _, ok := w.Nodes[nodeID]; !ok {
 				return // unknown node already reported by other checks
 			}

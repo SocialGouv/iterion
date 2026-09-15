@@ -44,10 +44,15 @@ workflow w:
   r1.check -> done when approved
 ```
 
-- Params are substituted into tool `command`/`script`, router `over`, compute
-  expressions, edge `when`/`as`/`with` — the template-bearing fields. Prompt
-  *references* (names) are not parameter targets; parametrise prompt **text**
-  via the bound values flowing through `with`.
+- Params are substituted once into every string property, including nested
+  blocks and lists. Named and inline prompts whose text depends on an instance
+  receive a private specialization; a consumer outside the group keeps the
+  original prompt. Source declarations and other instances are not mutated.
+- A reference to a member, such as `outputs.gate.value` in a compute expression
+  or `{{outputs.gate.value}}` in a prompt, becomes `outputs.r1.gate.value` for
+  `use ... as r1`. External references, expression string literals and plain
+  prose keep their spelling. Values supplied by `with` are inserted verbatim,
+  after local references are bound, without another substitution pass.
 - Two `use`s of the same group must use distinct prefixes; a colliding
   `prefix.node` id is caught by the standard duplicate-node check.
 - Diagnostics: **C116** (unknown group), **C117** (unknown/missing param).

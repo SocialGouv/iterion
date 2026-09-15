@@ -132,11 +132,13 @@ type compiler struct {
 	file  *ast.File
 	diags []Diagnostic
 	// includedFiles is the include closure compilePrompts read.
-	includedFiles []string
-	nodes         map[string]Node
-	schemas       map[string]*Schema
-	prompts       map[string]*Prompt
-	mcp           map[string]*MCPServer
+	includedFiles        []string
+	nodes                map[string]Node
+	schemas              map[string]*Schema
+	prompts              map[string]*Prompt
+	mcp                  map[string]*MCPServer
+	groupPromptTemplates map[string]bool
+	promptIncludeBudget  includeBudget
 	// edgeSpans remembers where each compiled edge was declared, so a
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
@@ -549,6 +551,7 @@ func detachForCompile(f *ast.File) *ast.File {
 		return nil
 	}
 	cp := *f
+	cp.Prompts = append([]*ast.PromptDecl(nil), f.Prompts...)
 	cp.Agents = append([]*ast.AgentDecl(nil), f.Agents...)
 	cp.Judges = append([]*ast.JudgeDecl(nil), f.Judges...)
 	cp.Routers = append([]*ast.RouterDecl(nil), f.Routers...)
@@ -915,7 +918,6 @@ func (c *compiler) canAutoResolveBackend() bool {
 
 func (c *compiler) compilePrompts() {
 	seen := make(map[string]*ast.PromptDecl, len(c.file.Prompts))
-	budget := &includeBudget{} // one per file: a budget per prompt multiplies by the prompt count
 	for _, p := range c.file.Prompts {
 		if first := seen[p.Name]; first != nil {
 			if p.Inline && first.Inline && p.Body == first.Body {
@@ -933,33 +935,12 @@ func (c *compiler) compilePrompts() {
 			continue
 		}
 		seen[p.Name] = p
-		// Expand {{include "..."}} markers once, at compile time, before
-		// ParseRefs sees the body — the injected file content becomes part
-		// of the resolved prompt (auditable, no runtime file reads).
-		// Resolve relative to the directory of the file that declares the
-		// prompt, carried on the declaration's span: the .bot source, or
-		// the bundle's prompts/ for a merged prompts/*.md. A prompt whose
-		// recorded source is not a file on this host — none at all (the
-		// JSON transport), or a synthetic name such as "<inline>" — has
-		// nothing to resolve against: its marker is refused, never looked
-		// up in the process working directory, which filepath.Dir of a
-		// synthetic name would be — on a runner, the pod's own.
-		body := p.Body
-		var incErrs []error
-		if HasPromptInclude(body) {
-			if dir, err := promptSourceDir(p.Span.Start.File); err != nil {
-				incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: %v", err)}
-				// One error per cause: the marker is not a template
-				// reference, and left in the body it would be reported a
-				// second time as one.
-				body = promptIncludeRe.ReplaceAllString(body, "")
-			} else {
-				body, incErrs = expandPromptIncludes(body, dir, budget)
-			}
+		// A group's prompt template is not a prompt of this file: it is bound
+		// per instance, later, with that instance's parameters.
+		if c.groupPromptTemplates[p.Name] {
+			continue
 		}
-		for _, e := range incErrs {
-			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
-		}
+		body := c.expandPromptBody(p)
 		refs, err := ParseRefs(body)
 		if err != nil {
 			c.errorfAtSpan(DiagBadTemplateRef, p.Span, "prompt %q: %v", p.Name, err)
@@ -970,7 +951,10 @@ func (c *compiler) compilePrompts() {
 			TemplateRefs: refs,
 		}
 	}
-	c.includedFiles = budget.includedFiles()
+	// The budget lives on the compiler — one per file, as the local one it
+	// replaces was — so the include closure is read off the same accounting
+	// that enforced it.
+	c.includedFiles = c.promptIncludeBudget.includedFiles()
 }
 
 // ---------------------------------------------------------------------------
