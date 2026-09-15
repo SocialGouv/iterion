@@ -41,7 +41,8 @@ summary plus the gotchas that cost a session each.
 
 **Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`, `emit`, `wait`, `await_answers`), `workflow <name>:`
 
-**`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section above + [docs/plugins.md](../plugins.md).
+**`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section in
+[backends-and-execution.md](backends-and-execution.md) + [docs/plugins.md](../plugins.md).
 
 **`auto_memory:` field** (`on|off`) — the backends' own auto-memory
 (`MEMORY.md`) on the `workflow` block and on `agent`/`judge` nodes. **Off by

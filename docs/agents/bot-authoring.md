@@ -272,7 +272,8 @@ Violations:
    stack-specific knowledge — how to detect the stack, which
    scanners/commands to run, how to read the results.
 2. An adaptive agent node (claude_code or claw, agentic base restored —
-   see "System-prompt composition" above) reads the matching skill and
+   see "System-prompt composition" in
+   [backends-and-execution.md](backends-and-execution.md)) reads the matching skill and
    runs the right commands for the repo in front of it.
 3. A **deterministic gate** (a `tool`/`compute` node, no LLM) verifies
    coverage: the always-on floor must have produced output, and every

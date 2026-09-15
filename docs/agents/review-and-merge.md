@@ -1,6 +1,7 @@
 # Before merge — the required loop, and how a change reaches `main`
 
-Every change lands through a pull request whose `revi/review` gate is green.
+Every change lands through a pull request whose `revi/review` gate is green
+(the one documented exception is the admin queue bypass for a hotfix, below).
 The loop is:
 
 **local adversarial round → fix → re-attack the fix → push → `/revi` → green**
@@ -71,6 +72,15 @@ through the local loop, and nothing spends a campaign on its own.
 The mechanics and the paid-for gotchas are unchanged and still worth reading
 before a deliberate pass: [../revi-billy-loop.md](../revi-billy-loop.md).
 
+**Revi's own review summary still ends with `Correction : /billy`.** That line
+is the catalog bot's generic advice to any repo it reviews
+([../../bots/review-pr/main.bot](../../bots/review-pr/main.bot)), published
+whenever a review has findings — and on this repo it does not apply. It is
+deliberately not special-cased: a bot that names one repository stops being
+repo-agnostic (`bots/catalog_universality_test.go`). Deriving the line from the
+repo's own configuration is the durable fix, and it is a bot change, not a doc
+change.
+
 ### Re-arm when this repo's team spends its own BYOK key
 
 Condition: the team's runs resolve **its own** provider key rather than the
@@ -80,10 +90,13 @@ shared tier — see [../byok.md](../byok.md) and
 ```sh
 # Identity first: an outbound forge action is not retractable.
 gh api user --jq .login          # expected: devthejo
-iterion remote status
+iterion remote status            # instance + account (it does NOT print a team)
 
-# 1. Read the integration: its id AND its COMPLETE bot_ids list.
-iterion remote api GET /api/teams/<team-id>/forge/repo-bots
+# 1. Read the integration. The bare form takes NO argument and resolves the
+#    active team itself — which is how you learn the team id, since nothing
+#    above prints one. Note `tenant_id` (= <team-id>), `id`, and the COMPLETE
+#    `bot_ids` list.
+iterion remote forge repo-bots --json
 
 # 2. Flip the lane. `bot_ids` is REQUIRED and must be complete (omitting it
 #    is a 400, not "keep as is"); `auto_fix_on_gate_failure` omitted means
@@ -91,14 +104,20 @@ iterion remote api GET /api/teams/<team-id>/forge/repo-bots
 iterion remote api PATCH /api/teams/<team-id>/forge/repo-bots/<integration-id> \
   --data '{"bot_ids":[<complete list read back at step 1>],
            "auto_fix_on_gate_failure":true}'
+#    A `202` carrying `pending_approval: true` is NOT a failure and NOT a
+#    success: turning the lane ON is an automation EXPANSION, so an org that
+#    requires provisioning approval parks it for an admin and applies nothing
+#    yet. The read-back below then still shows the key absent — queued, not
+#    refused. Only a 200 means it landed.
 
 # 3. Read it back — the PATCH response does NOT echo the field.
-iterion remote api GET /api/teams/<team-id>/forge/repo-bots
+iterion remote forge repo-bots --json
 ```
 
 The typed CLI has no update verb: `iterion remote forge repo-bots` offers
-`list | preview | create | delete` only
-([../../cmd/iterion/remote_webhooks.go](../../cmd/iterion/remote_webhooks.go)),
+`preview | create | delete`, and lists with no argument at all
+([../../cmd/iterion/remote_webhooks.go](../../cmd/iterion/remote_webhooks.go) —
+`list` is not a verb, it falls through to the usage error),
 so the PATCH goes through the `remote api` escape hatch. The server route is
 `PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`
 ([../../pkg/server/forge_provisioning_routes.go](../../pkg/server/forge_provisioning_routes.go)).

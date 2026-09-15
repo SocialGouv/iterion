@@ -71,7 +71,8 @@ of every session, before picking work.
 
 ## Before merge — the required loop
 
-Every change lands through a pull request whose `revi/review` gate is green.
+Every change lands through a pull request whose `revi/review` gate is green
+(admins may bypass the queue for a hotfix — see review-and-merge.md).
 The loop is **local adversarial round → fix → re-attack the fix → push →
 `/revi` → green**. Protocol:
 [docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);
@@ -168,7 +169,7 @@ iterion rewind --run-id <id> [--auto]    # Re-anchor on an earlier node, then re
 iterion studio [--port] [--dir]          # Visual editor + board + run console
 ```
 
-Global flags: `--json`, `--help`. Full command map:
+Global flags: `--json`, `--help`. Command map:
 [docs/cli-reference.md](docs/cli-reference.md). Piloting a cloud instance
 (`iterion remote login|runs|board|admin|…`, and the `remote api` escape hatch):
 [docs/cloud-cli.md](docs/cloud-cli.md).

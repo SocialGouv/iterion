@@ -6,9 +6,13 @@ other harness driven by an operator) follows it. **Automated bot runs**
 (iterion-launched campaign/review/fixer bots executing on this repo) are out
 of scope: they follow their own mission contract and MUST NOT attempt the
 board rituals below — no claiming, no ticket creation; their `.bot` mission
-is their ticket. The full engineering reference (architecture, build, DSL,
-conventions) lives in [CLAUDE.md](CLAUDE.md) — read it before touching code;
-this file only carries the work-tracking contract, so it stays cheap to inject.
+is their ticket. [CLAUDE.md](CLAUDE.md) is the router — project stance, the
+before-merge contract, build commands — and it routes to the engineering
+reference, which lives one level down in the doctrine tree at
+[docs/agents/](docs/agents/README.md) (architecture, DSL, backends, bot
+authoring, testing, runbooks), read on demand. Read CLAUDE.md before touching
+code, and open the tree page your task names; this file only carries the
+work-tracking contract, so it stays cheap to inject.
 
 ## Work tracking & session methodology — the GitHub board
 
@@ -50,9 +54,9 @@ session ends. A ticket that says In progress with nobody on it is a bug
 in the board — fix it when you see it.
 
 **Before merge, the review loop is required.** A change reaches `main`
-through a PR whose `revi/review` gate is green, and the gate is not the
-first reviewer: run a **local adversarial round on the diff before
-pushing** — a subagent whose posture is to break the change, with every
+through a PR whose `revi/review` gate is green (admins may bypass the
+queue for a hotfix), and the gate is not the first reviewer: run a **local
+adversarial round on the diff before pushing** — a subagent whose posture is to break the change, with every
 finding *and every fix it proposes* verified before a line is written.
 The gate closes the loop; a sterile local round only means "time to
 push". Findings are the developer's to fix, by hand or through another

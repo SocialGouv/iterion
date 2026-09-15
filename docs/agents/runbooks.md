@@ -15,9 +15,12 @@ gotcha, a "why is prod doing X"), that discovery MUST land back in the repo so
 the next occurrence is instant. Don't leave it in a chat transcript. Wire it
 across the three surfaces by role:
 
-- **This CLAUDE.md** — the *reflex* itself (this section) + a one-line pointer in the
-  **operational runbook index** below. This file is always read first, so it's
-  the discovery entry point.
+- **This page** — the *reflex* itself (this section) + the "read it when" line
+  in the **operational runbook index** below, added in the same change as the
+  runbook. This is the discovery entry point, and
+  [CLAUDE.md](../../CLAUDE.md) routes here. The router itself takes at most
+  *one line*, and only when an agent would never find the runbook otherwise —
+  a paragraph added there belongs in the tree instead.
 - **`docs/`** — the *content*: one focused runbook per topic (the how + the
   gotchas + the cookbook). Link it from the index.
 - **A skill** (`bots/whats-next/skills/…` or a project skill) — the *discovery
