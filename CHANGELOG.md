@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.144.1](https://github.com/SocialGouv/iterion/compare/v3.144.0...v3.144.1) (2026-09-15)
+
+### Bug Fixes
+
+* **server:** the merge-gate net must outlive the outage it exists for ([#1224](https://github.com/SocialGouv/iterion/issues/1224)) ([1f30ed3](https://github.com/SocialGouv/iterion/commit/1f30ed3fca566a412b5f806944e5f12c7544aab8))
+
+    <details><summary>why</summary>
+
+    A dead gating run was reachable by the reconciler's net for 60 minutes. The outage class that net exists for is a provider usage window, and a weekly one shuts for DAYS — so the net closed while the thing it guards against was still happening.
+
+    </details>
+
 ## [3.144.0](https://github.com/SocialGouv/iterion/compare/v3.143.0...v3.144.0) (2026-09-14)
 
 ### Features
