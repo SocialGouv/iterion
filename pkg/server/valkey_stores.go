@@ -214,6 +214,27 @@ func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 	}
 }
 
+// reanchorIn re-anchors the key's TTL on now+d in either direction. Plain
+// EXPIRE rather than the ExpireLT above, because the whole point is the case
+// expireIn cannot serve: a run that reached terminal long after launch needs
+// its grant pushed OUT to the repair window, not clamped to whatever remains
+// of a TTL stamped at launch. Redis refuses EXPIRE on a key that is gone, so
+// a grant already reaped is never resurrected. Best-effort like Revoke.
+func (s *valkeyForgePublishTokenStore) reanchorIn(token string, d time.Duration) {
+	if d > forgePublishPostRunGrace {
+		d = forgePublishPostRunGrace
+	}
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	if err := s.rdb.Expire(ctx, forgePublishTokenKeyPrefix+token, d).Err(); err != nil && s.logger != nil {
+		prefix := token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		s.logger.Warn("forge publish: re-anchor token %s… to %s: %v (best-effort — the launch-stamped TTL stands, so the gate net can only abstain past it)", prefix, d, err)
+	}
+}
+
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()

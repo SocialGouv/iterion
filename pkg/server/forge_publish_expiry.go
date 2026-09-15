@@ -23,21 +23,49 @@ import (
 // to close. Refusing before the launch leaves no claim to release.
 var errForgePublishGrantUnavailable = errors.New("forge publish grant unavailable")
 
-// forgePublishPostRunGrace is how long a grant outlives the run it was minted
-// for.
+// forgePublishPostRunGrace is how long the grant of a run that CLAIMED a
+// required check outlives it.
 //
-// It is not zero because the run's death is exactly when the grant is needed
-// most: the merge-gate reconciler reads it to post the synthetic verdict a
-// dead review owes, and its net — the sweep — re-offers the same run until
-// gateSweepHorizon afterwards. Revoking on the outcome event would race the
-// repair and silence it ("its publish grant is expired or revoked").
+// It is not zero because such a run's death is exactly when the grant is
+// needed most: the merge-gate reconciler reads it to post the synthetic
+// verdict a dead review owes, and its net — the sweep — re-offers the same run
+// until gateSweepHorizon afterwards. Revoking on the outcome event would race
+// the repair and silence it ("its publish grant is expired or revoked").
 //
 // Derived from that horizon rather than restated, because the two are one
 // decision: a grant that dies first turns every later pass of the net into a
 // guaranteed abstain, which reads exactly like a net that is still trying.
 //
 // Past that window nothing revisits the run, so the grant has no reader left.
+//
+// It is applied by RE-ANCHORING, not by shortening. The expiry a grant is born
+// with is measured from LAUNCH and the window above is measured from TERMINAL,
+// and those are up to retrypolicy.DefaultMaxWait apart for precisely the runs
+// this whole net exists for — one parked on a provider usage window. See
+// ForgePublishTokenStore.reanchorIn.
 const forgePublishPostRunGrace = gateSweepHorizon + 30*time.Minute
+
+// forgePublishDeadRunGrace is how long EVERY OTHER dead run's grant lives —
+// the overwhelming majority, since the server mints a grant for any bot
+// launched with a pr_url while only the ones that also claimed a gate context
+// owe a required check anything.
+//
+// A run that claims no gate has no reader past the outcome event: both lanes
+// that read a dead run's grant stand down on it before touching the token
+// (runClaimsGate is weaker than either). So the horizon buys it nothing and
+// costs two things it should not — a crashed run's forge-WRITE credential
+// stays usable for days instead of minutes, against a TTL that justifies
+// itself as "short enough that a leaked token from a crashed run expires on
+// its own"; and terminal eviction stops trimming the registry, which is the
+// invariant forgePublishMaxTokens is explicitly sized against ("the steady
+// state near 'gating launches in flight' instead of 'gating launches per
+// TTL'"). On the in-memory backend that second one is not a leak but a
+// REFUSAL: a saturated registry turns the next launch away.
+//
+// The fast lookback plus the same margin, which is what the grace was before
+// the horizon existed: nothing reads it, and one ordinary sweep window is a
+// generous allowance for an event processed late.
+const forgePublishDeadRunGrace = gateSweepLookback + 30*time.Minute
 
 // forgePublishExpiryName is the eventbus subscriber name (the NATS queue
 // group), so one replica shortens each grant.
@@ -123,6 +151,17 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 		// the reconciler already treats it as dead.
 		return nil
 	}
-	s.forgePublishTokens.expireIn(token, forgePublishPostRunGrace)
+	// Two directions, one predicate. A run that claimed a required check has a
+	// reader for its grant until the sweep's horizon, measured from HERE — so
+	// its expiry is re-anchored on this instant, which for a long-parked run
+	// means pushing it OUT past a launch-stamped one that would otherwise have
+	// died mid-window. Everything else is retired on the spot: nothing will
+	// read it, and the shorten-only expireIn is the right primitive for a
+	// grant that owes nothing.
+	if runClaimsGate(run) {
+		s.forgePublishTokens.reanchorIn(token, forgePublishPostRunGrace)
+		return nil
+	}
+	s.forgePublishTokens.expireIn(token, forgePublishDeadRunGrace)
 	return nil
 }

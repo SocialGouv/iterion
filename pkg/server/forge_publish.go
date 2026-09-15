@@ -57,10 +57,19 @@ const forgePublishDefaultTTL = retrypolicy.DefaultMaxWait + 24*time.Hour
 //
 // It scales with the TTL because Register evicts only EXPIRED entries before
 // checking the cap: the ceiling is "live grants", and a grant lives at most
-// one TTL. The terminal-outcome eviction is what keeps the steady state near
-// "gating launches in flight" instead of "gating launches per TTL", but a
-// deployment whose runs all park on a quota window still accumulates, so the
-// cap keeps the TTL's shape.
+// one TTL. The terminal-outcome eviction is what keeps the steady state well
+// under "grants minted per TTL", but a deployment whose runs all park on a
+// quota window still accumulates, so the cap keeps the TTL's shape.
+//
+// What that steady state is, precisely, once the eviction has done its work:
+// launches in flight, plus runs parked on a quota window (they keep the full
+// TTL, something will come back for them), plus the runs that CLAIMED a
+// required check and died within gateSweepHorizon — those keep their grant
+// for as long as the merge-gate sweep can still offer them, because a grant
+// that expired first would make the net abstain silently. Only the last term
+// is horizon-shaped, and it is bounded by the gating launches of one horizon
+// rather than by every launch of one TTL: a run that claims no gate is
+// retired at forgePublishDeadRunGrace.
 //
 // Saturation is no longer silent: Register's error refuses the launch
 // (errForgePublishGrantUnavailable) rather than starting a run that claims the
@@ -156,6 +165,23 @@ type ForgePublishTokenStore interface {
 	// outliving its run without being revoked outright — the merge-gate
 	// repair still needs to read it for its own window after the run dies.
 	expireIn(token string, d time.Duration)
+	// reanchorIn re-anchors a live grant's expiry on now+d in EITHER
+	// direction, and does nothing for an unknown or already-dead token.
+	//
+	// It exists for one asymmetry expireIn structurally cannot cross: an
+	// expiry is stamped at LAUNCH (Register), while the net that reads the
+	// grant after the run dies is anchored on the run's TERMINAL instant
+	// (the sweep's candidacy is updated_at + gateSweepHorizon). A run parked
+	// on a provider usage window reaches terminal up to
+	// retrypolicy.DefaultMaxWait after launch, and for it "terminal + the
+	// repair window" falls LATER than the launch-stamped expiry — so
+	// expireIn, which returns early unless the target is earlier, is a
+	// no-op, and the grant dies while the net is still offering the run.
+	// Every pass in between can then only abstain.
+	//
+	// Bounded by forgePublishPostRunGrace inside each implementation, so no
+	// caller can hand a grant an unbounded life.
+	reanchorIn(token string, d time.Duration)
 	lookup(token string) (ForgePublishGrant, bool)
 }
 
@@ -204,6 +230,25 @@ func (r *ForgePublishTokenRegistry) expireIn(token string, d time.Duration) {
 	defer r.mu.Unlock()
 	g, ok := r.tokens[token]
 	if !ok || !at.Before(g.ExpiresAt) {
+		return
+	}
+	g.ExpiresAt = at
+	r.tokens[token] = g
+}
+
+// reanchorIn moves the grant's expiry to now+d in either direction. An
+// already-expired entry is never resurrected: lookup treats it as gone from
+// its expiry instant, and Register only sweeps it out later, so the map is
+// not the authority on whether a grant is alive.
+func (r *ForgePublishTokenRegistry) reanchorIn(token string, d time.Duration) {
+	if d > forgePublishPostRunGrace {
+		d = forgePublishPostRunGrace
+	}
+	at := r.now().Add(d)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.tokens[token]
+	if !ok || r.now().After(g.ExpiresAt) {
 		return
 	}
 	g.ExpiresAt = at

@@ -597,6 +597,28 @@ func runGateDisabled(run *store.Run) bool {
 	return false
 }
 
+// runClaimsGate reports whether a run claimed a required check and may still
+// owe it a verdict once it dies — the population whose publish grant has a
+// READER after the run is over (this reconciler, and the auto-fix lane).
+//
+// It is deliberately the WEAKEST of the three gate predicates in this package:
+// it drops every live read the readers add on top (the grant lookup, the
+// tenant proof, the repo scope, an open pull request, a head that has not
+// moved) and keeps only the launch-time fields. That direction is the safe
+// one, and the asymmetry is the point: a false positive costs a dead grant a
+// longer life, a false negative retires a grant the repair still needs and
+// turns the check it owes into a permanent `pending`. So when in doubt, keep
+// the grant. TestRunClaimsGateIsWeakerThanEveryReader pins the relation.
+func runClaimsGate(run *store.Run) bool {
+	if run == nil {
+		return false
+	}
+	return runInputString(run, forgePublishVarToken) != "" &&
+		runInputString(run, "pr_url") != "" &&
+		runInputString(run, "gate_context") != "" &&
+		!runGateDisabled(run)
+}
+
 func runInputString(run *store.Run, key string) string {
 	if run == nil || run.Inputs == nil {
 		return ""

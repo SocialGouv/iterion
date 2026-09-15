@@ -36,6 +36,17 @@ func TestTheSweepHorizonOutlivesAProviderUsageWindow(t *testing.T) {
 // and abstains with "its publish grant is expired or revoked" without one. A
 // grant that dies before the horizon turns every later pass into a guaranteed
 // abstain — a net that reads, from the outside, exactly like one still trying.
+//
+// NECESSARY, NOT SUFFICIENT — and the difference cost this branch its central
+// claim for a while. Two durations can sit in the right order and still
+// describe grants that die mid-window, because they are measured from
+// DIFFERENT instants: the grant's expiry from LAUNCH (Register), the sweep's
+// candidacy from the run's TERMINAL updated_at. For a run parked a week on a
+// usage window those are a week apart, and this comparison cannot see it.
+// What actually holds the coupling up is the re-anchoring in
+// expireForgePublishGrantForRun, pinned by walking a clock across both
+// instants in TestAGrantOutlivesTheHorizonEvenWhenTheRunParkedForAWeekFirst.
+// This one stays because it fails faster and names the constant that drifted.
 func TestThePublishGrantOutlivesTheSweepHorizon(t *testing.T) {
 	if forgePublishPostRunGrace <= gateSweepHorizon {
 		t.Fatalf("grant lives %s after the run but the net keeps offering it until %s — the passes in between can only abstain",
@@ -45,6 +56,13 @@ func TestThePublishGrantOutlivesTheSweepHorizon(t *testing.T) {
 	// or the grant is revoked by the other end before its own grace expires.
 	if forgePublishPostRunGrace > forgePublishDefaultTTL {
 		t.Errorf("post-run grace %s exceeds the grant's own TTL %s", forgePublishPostRunGrace, forgePublishDefaultTTL)
+	}
+	// The horizon-long life is for the runs that CLAIMED a check. Everything
+	// else is retired on the ordinary window, which is what keeps terminal
+	// eviction doing the job forgePublishMaxTokens is sized against.
+	if forgePublishDeadRunGrace >= forgePublishPostRunGrace {
+		t.Errorf("a dead run that claims no gate keeps its grant for %s, as long as one that owes a verdict — then nothing is evicted early and the registry's cap is really 'grants per TTL'",
+			forgePublishDeadRunGrace)
 	}
 }
 
