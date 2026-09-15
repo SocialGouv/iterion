@@ -26,6 +26,9 @@ export interface IterDocument {
   subbots?: SubbotDecl[];
   /** Named `fail <name>:` terminals (typed code/message, optional resumable). */
   fails?: FailDecl[];
+  /** `contract <name>:` declarations — the bot's public face (ADR-099); a
+   *  workflow names the one it keeps by `contract`. */
+  contracts?: ContractDecl[];
   workflows: WorkflowDecl[];
   comments: Comment[];
 }
@@ -657,6 +660,8 @@ export interface WorkflowDecl {
   vars?: VarsBlock;
   attachments?: AttachmentsBlock;
   entry: string;
+  /** The public contract this workflow keeps: a top-level ContractDecl's name. */
+  contract?: string;
   default_backend?: string;
   tool_policy?: string[];
   mcp?: MCPConfigDecl;
@@ -795,3 +800,64 @@ export interface ProjectSwitchedEvent {
 }
 
 export type ServerWsEvent = FileEvent | ProjectSwitchedEvent;
+
+/** A `contract <name>:` declaration — the bot's public face (ADR-099):
+ *  what it takes, produces and delivers, its deterministic checks and its
+ *  visible effects. Mirrors pkg/dsl/ast/jsonenc_contract.go. */
+export interface ContractDecl {
+  /** Provenance: the file this came from, in a document of a bot in
+   *  several files. Read-only: the save writes the declaration back to
+   *  that file, and a new one to the main. */
+  file?: string;
+  name: string;
+  display_name?: string;
+  responsibility?: string;
+  /** Public contract version, 1 or more; absent = 1. */
+  version?: number;
+  inputs?: PortDecl[];
+  outputs?: PortDecl[];
+  criteria?: CriterionDecl[];
+  effects?: PublicEffect[];
+}
+
+/** One named typed port of a contract. */
+export interface PortDecl {
+  name: string;
+  /** A builtin or a declared schema's name, with `[]` suffixes. */
+  type: string;
+  description?: string;
+  /** Absent = required. */
+  required?: boolean;
+  nullable?: boolean;
+  /** One JSON value, canonical on the wire (compact, keys in order); absent
+   *  = no default, null = an explicit null. No signed number, no exponent:
+   *  the .bot text cannot write them and the save refuses them by name. */
+  default?: unknown;
+  min_items?: number;
+  max_items?: number;
+  /** An output's producer: `node.field` for a value, `node` for a file. */
+  from?: string;
+  /** The port's `file:` block (keyed file_spec: `file` is the provenance key). */
+  file_spec?: PortFileDecl;
+}
+
+export interface PortFileDecl {
+  media_type?: string;
+  min_bytes?: number;
+  schema?: string;
+}
+
+/** A deterministic check on a port: a registered evaluator with JSON parameters. */
+export interface CriterionDecl {
+  name: string;
+  kind?: string;
+  /** `input.<name>` or `output.<name>`. */
+  port?: string;
+  params?: unknown;
+}
+
+export interface PublicEffect {
+  name: string;
+  description?: string;
+  paid?: boolean;
+}

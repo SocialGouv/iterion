@@ -1703,6 +1703,9 @@ func rejectNilElements(v reflect.Value, path string) error {
 			}
 		}
 	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return nil // a JSON value carried as bytes holds no element to refuse
+		}
 		for i := 0; i < v.Len(); i++ {
 			e := v.Index(i)
 			at := fmt.Sprintf("%s[%d]", path, i)
