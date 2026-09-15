@@ -2,13 +2,17 @@
 
 This page covers the two **manual audit** bundles — CLI-launched,
 whole-tree or `diff_base`-scoped, reporting to the kanban board. For
-the **push-driven** supply-chain shields that gate every PR/push —
+the **diff-scoped supply-chain shields** —
 [`supply-shield`](../bots/supply-shield/) (Shieldy, malware axis) and
-[`supply-shield-cve`](../bots/supply-shield-cve/) (Vulny, CVE axis),
-diff-scoped by default and reporting back onto the forge (sticky
-comment + inline reviews + SARIF) — see their run bilans
+[`supply-shield-cve`](../bots/supply-shield-cve/) (Vulny, CVE axis) —
+launched on demand by slash command (`/shield`, `/cve`; scope `any`, so
+they run on a pull request or on a branch) or from the board, and
+reporting back onto the forge (sticky comment + inline reviews + SARIF
+code-scanning upload) as well as onto the board — see their run bilans
 ([supply-shield.md](bot-runs/supply-shield.md),
-[supply-shield-cve.md](bot-runs/supply-shield-cve.md)).
+[supply-shield-cve.md](bot-runs/supply-shield-cve.md)). Automatic
+PR-open/synchronize and push-to-main triggering is a planned follow-on:
+neither manifest declares a forge-event invocation today.
 
 Iterion ships two complementary manual audit bundles. They share a
 threat-model vocabulary, kanban label conventions, and FP-memory
@@ -229,7 +233,7 @@ ever landing on disk; the audit-bundle catches what slipped through
   override, Node 22 requirement, on-demand harness invocation
 - [`bots/sec-audit-source/README.md`](../bots/sec-audit-source/README.md)
 - [`bots/sec-audit-deps/README.md`](../bots/sec-audit-deps/README.md)
-- [`bots/supply-shield/README.md`](../bots/supply-shield/README.md) · [`bots/supply-shield-cve/README.md`](../bots/supply-shield-cve/README.md) — the push-driven diff-scoped supply-chain shields
+- [`bots/supply-shield/README.md`](../bots/supply-shield/README.md) · [`bots/supply-shield-cve/README.md`](../bots/supply-shield-cve/README.md) — the diff-scoped supply-chain shields
 - [`docs/bundles.md`](bundles.md) — bundle layout + runtime resolution
 - [`docs/native-tracker.md`](native-tracker.md) — the kanban board
   where findings land

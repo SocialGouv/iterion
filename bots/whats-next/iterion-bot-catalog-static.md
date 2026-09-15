@@ -73,6 +73,7 @@ Walk top-to-bottom; first match wins.
 |---|---|
 | "where should this project go next?", "long-term vision", "architectural direction", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) AND the project is mature/stable | `evolve` |
 | "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
+| "run it as a structured delivery project", "I want to approve each phase", "brief → PRD → architecture → build → QA with me in the loop" — a multi-persona pipeline that PAUSES for a human gate between every phase | `bmady` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature-dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
 | "build a new app from scratch", "greenfield from a prompt" — no existing codebase to extend | `app-dev` |
@@ -158,6 +159,20 @@ before you walk the table on a new roadmap item.
   bar to reach.
 - Tie-break: "could a user notice the difference without reading
   the diff?" Yes → `feature-dev`. No → `whole-improve-loop`.
+
+### `feature-dev` (Featurly) vs `bmady` (Bmady) — autonomy vs phase gates
+
+- Both end in committed code. `feature-dev` runs the whole thing
+  autonomously and hands back a PR; the operator reads the result.
+- `bmady` runs the BMAD pipeline — Analyst → PM → Architect → Dev →
+  QA — and PAUSES on a human collaboration gate between every phase
+  (elicitation, document approve/reject, story multi-select,
+  ship/changes/hold sign-off). A dispatched `bmady` issue therefore
+  sits waiting for the operator, by design.
+- Tie-break: "does the operator want to approve the plan before any
+  code is written?" Yes → `bmady`. No → `feature-dev`. When the
+  roadmap item says nothing about steering, the gates are pure
+  latency: default to `feature-dev`.
 
 ### `sec-audit-*` (DETECTION) vs `whole-improve-loop` (FIX-loop on a security axis) vs `secured-renovacy` (MUTATION on deps)
 

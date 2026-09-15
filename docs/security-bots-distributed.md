@@ -78,14 +78,15 @@ One new hidden subcommand: `iterion __scan-shards`.
 iterion __scan-shards \
     --parent-run-id=<id> \
     --workflow=<path-to-bundle> \
-    --files-json=<path-or-stdin> \
-    --shard-size=<files-per-shard> \
-    --base-vars-json=<json-blob> \
     --store-dir=<dir> \
-    --max-concurrency=<n> \
-    [--mode=auto|cloud|local] \
-    [--poll-interval=2s] \
-    [--timeout=2h]
+    [--files-json=<path>|-]          # default: - (stdin)
+    [--shard-size=<files-per-shard>] # default: 100
+    [--base-vars-json=<json-blob>]   # default: {}
+    [--max-concurrency=<n>]          # default: 4
+    [--shard-var=<var-name>]         # default: security_shard_files
+    [--mode=auto|cloud|local]        # default: auto
+    [--poll-interval=<dur>]          # default: 2s
+    [--timeout=<dur>]                # default: 2h
 ```
 
 Behavior:
@@ -102,25 +103,42 @@ Behavior:
    - In `local` mode: fork N subprocesses
      (`iterion run <workflow> --var security_shard_files=... --parent-run-id=...`),
      respecting `--max-concurrency`.
-   - In `auto` mode: cloud if `ITERION_QUEUE_NATS_URL` is set, else
-     local.
+   - In `auto` mode: cloud when **either** `ITERION_QUEUE_NATS_URL`
+     or `ITERION_SERVER_URL` is set, else local. Cloud dispatch
+     itself needs `ITERION_SERVER_URL` (it POSTs to
+     `<server>/api/v1/runs/launch`); with only
+     `ITERION_QUEUE_NATS_URL` exported, `auto` still resolves to
+     cloud and every shard fails with `ITERION_SERVER_URL not set;
+     cloud mode requires the server endpoint`. Export both, or force
+     `--mode=local`.
 
 3. **Wait**. Poll the run store every `poll-interval` for each
-   child's status. Collect terminal statuses. Fail-fast on
-   `failed` (unless `--continue-on-failure`).
+   child's status until every shard is terminal or `--timeout`
+   elapses (a child still running past the deadline is reported
+   `timed_out`). There is **no** fail-fast: every shard is always
+   waited on, and each non-`finished` shard contributes one
+   `shard <i> (<run-id>) status=<s> err=<e>` line to the report's
+   `errors[]`.
 
 4. **Aggregate**. Emit a JSON envelope:
    ```json
    {
      "parent_run_id": "...",
+     "workflow": "bots/sec-audit-source/main.bot",
+     "mode": "local",
      "shard_count": 8,
+     "shard_size": 50,
+     "files_total": 371,
      "shards": [
-       {"shard_index": 0, "run_id": "...", "status": "finished",
-        "files_audited": [...], "issues_created": [...]},
+       {"plan": {"shard_index": 0, "run_id": "...",
+                 "files": ["pkg/a/x.go", "..."],
+                 "shard_label": "shard 1/8"},
+        "status": "finished",
+        "started_at": "...", "finished_at": "..."},
        ...
      ],
-     "merged_issues_created": [...],
-     "errors": []
+     "errors": ["shard 3 (<run-id>) status=failed err=..."],
+     "duration_secs": 812.4
    }
    ```
 
@@ -278,8 +296,9 @@ The `triage` prompt + schema accept `file_filter` and DROP every
 candidate whose `file` is not in the list before downstream.
 
 ✅ Step 5 — Cloud-mode publishing: `iterion __scan-shards
---mode=cloud` (or auto when `ITERION_SERVER_URL` is set) POSTs to
-the server's `/api/v1/runs/launch` endpoint per shard, passing
+--mode=cloud` (or `auto` when either `ITERION_QUEUE_NATS_URL` or
+`ITERION_SERVER_URL` is set) POSTs to the server's
+`/api/v1/runs/launch` endpoint per shard, passing
 `parent_run_id`, `shard_index`, `shard_count`, `shard_label`. The
 server (cloudpublisher) persists those on the queued Run AND on
 the published RunMessage. The existing runner pool drains the
@@ -291,10 +310,13 @@ or event-driven aggregation — polling matches the local path.
 The persisted fields are in place; the SPA still renders shards
 as plain peer runs until a future iteration groups them.
 
-## How to use the primitive today (manual integration)
+## Using the primitive outside the sec-audit-source bundle
 
-Until step 4 lands, an operator can invoke `iterion __scan-shards`
-directly from a tool node (or from a wrapper script):
+`bots/sec-audit-source` already drives the fan-out for you
+(`--var shard_size=<n>`, `--var shard_concurrency=<n>` — see Step 4
+above). Any *other* bundle, or a bare shell, can invoke
+`iterion __scan-shards` directly from a tool node or a wrapper
+script:
 
 ```bash
 # Build a JSON array of files to shard:
