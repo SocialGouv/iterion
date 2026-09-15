@@ -112,3 +112,36 @@ func acceptedFields(dst any) string {
 	sort.Strings(names)
 	return strings.Join(names, ", ")
 }
+
+// AddVary appends fields to the response's Vary header instead of replacing it,
+// skipping any token already present.
+//
+// `Header().Set("Vary", …)` is the trap this exists to close. A handler that
+// owns one Vary token silently discards whatever a middleware upstream put
+// there, and the loss is invisible: the response still looks right, it is just
+// cacheable across a dimension it actually varies on, so a shared cache can
+// serve one client's representation to another. Measured in this tree — the
+// CORS branches set `Vary: Origin` over a middleware's own token.
+//
+// Appending is idempotent, so a handler reached twice in one request does not
+// repeat a token, and callers never have to know what ran before them.
+func AddVary(w http.ResponseWriter, fields ...string) {
+	present := map[string]bool{}
+	for _, header := range w.Header().Values("Vary") {
+		for _, token := range strings.Split(header, ",") {
+			present[strings.ToLower(strings.TrimSpace(token))] = true
+		}
+	}
+	missing := make([]string, 0, len(fields))
+	for _, field := range fields {
+		key := strings.ToLower(strings.TrimSpace(field))
+		if key == "" || present[key] {
+			continue
+		}
+		present[key] = true
+		missing = append(missing, field)
+	}
+	if len(missing) > 0 {
+		w.Header().Add("Vary", strings.Join(missing, ", "))
+	}
+}
