@@ -109,11 +109,19 @@ func (s *Server) attachForgePublishGrantExpiry(bus eventbus.Bus) (func(), error)
 	})
 }
 
-// expireForgePublishGrantForRun shortens the publish grant of a run that has
-// nothing left to publish. It is the eviction the TTL alone could not do: the
-// TTL is sized for the longest usage-window retry (~10 days), so without this
-// every grant a deployment ever minted stays live for that long, and the
-// in-memory registry's cap is really "gating launches per TTL".
+// expireForgePublishGrantForRun re-anchors the publish grant of a run that has
+// ended on the run's death, in whichever direction that instant falls. It is
+// the eviction the TTL alone could not do: the TTL is sized for the longest
+// usage-window retry (~10 days), so without this every grant a deployment ever
+// minted stays live for that long, and the in-memory registry's cap is really
+// "grants per TTL".
+//
+// "Whichever direction" is the part that is easy to get wrong, and this lane
+// got it wrong once: the TTL is measured from LAUNCH and the repair window
+// from TERMINAL, so for a run parked on a usage window the target falls PAST
+// the existing expiry and a shorten-only write is a no-op — the grant then
+// dies with days of the net's reach still to run, and every remaining pass
+// abstains in silence. See forgePublishPostRunGrace and reanchorIn.
 //
 // Two shapes keep their grant at full length, because something WILL come back
 // and post their own verdict:
@@ -123,7 +131,7 @@ func (s *Server) attachForgePublishGrantExpiry(bus eventbus.Bus) (func(), error)
 //     before the outcome event fires). "Abandoned" is defined by the retry
 //     machinery, not re-derived here: the sweeper enforces the policy's
 //     max_wait, unsets retry_after when it gives up, and REPUBLISHES the run
-//     outcome — so this handler runs again on the abandon and shortens the
+//     outcome — so this handler runs again on the abandon and re-anchors the
 //     grant then.
 //
 // Every other terminal shape is dead: budget exceeded, retries exhausted, a
