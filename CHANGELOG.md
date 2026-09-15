@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.146.1](https://github.com/SocialGouv/iterion/compare/v3.146.0...v3.146.1) (2026-09-15)
+
+### Bug Fixes
+
+* **review-pr:** resolve the review base once, and refresh it first ([#1230](https://github.com/SocialGouv/iterion/issues/1230)) ([25794cd](https://github.com/SocialGouv/iterion/commit/25794cddd1f68cc2c974633fe8e61c7d137871d0)), references [#1224](https://github.com/SocialGouv/iterion/issues/1224) [#1224](https://github.com/SocialGouv/iterion/issues/1224)
+
+    <details><summary>why</summary>
+
+    A review took its scope from `git merge-base <base_ref> HEAD` on the local checkout. A workspace reused across runs carries whatever `base_ref` meant when it was made, and a merge-base against a stale base lands BELOW the branch point — so every file merged into the base since falls into the diff, and the review reports on code the branch never touched as if it had.
+
+    </details>
+
 ## [3.146.0](https://github.com/SocialGouv/iterion/compare/v3.145.1...v3.146.0) (2026-09-15)
 
 ### Features
