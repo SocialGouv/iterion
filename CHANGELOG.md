@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.149.3](https://github.com/SocialGouv/iterion/compare/v3.149.2...v3.149.3) (2026-09-15)
+
+### Bug Fixes
+
+* **tools:** `interaction:` must not strip an unrestricted node's native tools ([#1278](https://github.com/SocialGouv/iterion/issues/1278)) ([ccaf8e2](https://github.com/SocialGouv/iterion/commit/ccaf8e2e4c2c01d317b85a9e05968f76a666a485))
+
+    <details><summary>why</summary>
+
+    `assembleEffectiveTools` promoted `ask_user` into a node's tool list whenever `interaction:` was set, unconditionally. Every sibling append in the same function is guarded by `len(effectiveTools) > 0` — board tools, runs tools, ultracode orchestration, claw's todo_write — each carrying the same comment: "Empty tools: means no restriction". The interaction branch was the only unguarded one of the class.
+
+    </details>
+
 ## [3.149.2](https://github.com/SocialGouv/iterion/compare/v3.149.1...v3.149.2) (2026-09-15)
 
 ### Bug Fixes
