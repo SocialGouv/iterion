@@ -518,8 +518,10 @@ func dryRunFailed(p *Printer, why string) error {
 
 // annotateEdits attaches to each compile diagnostic the mechanical remedy
 // it carries (pkg/dsl/fix), planned on its file's own bytes. One edit fixes
-// every quoted reference of a literal at once and rides the first
-// diagnostic of that literal.
+// every quoted reference of a literal at once and rides every diagnostic
+// it remedies — the one whose message names the edit's property and one of
+// its references, never the next free one: a node's command and its
+// postcondition each carry their own.
 func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic) {
 	for _, f := range u.Files {
 		var mine []ir.Diagnostic
@@ -534,11 +536,14 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic) 
 		edits, _ := fix.PlanFor(f.Name, f.Source, mine)
 		for i := range edits {
 			e := edits[i]
-			for j := range result.Diagnostics {
-				vd := &result.Diagnostics[j]
-				if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name {
-					vd.Edit = &e
-					break
+			for _, ref := range e.Refs {
+				for j := range result.Diagnostics {
+					vd := &result.Diagnostics[j]
+					if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name &&
+						strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+						vd.Edit = &e
+						break
+					}
 				}
 			}
 		}

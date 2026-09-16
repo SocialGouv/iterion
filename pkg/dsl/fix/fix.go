@@ -25,8 +25,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
-// Edit is the mechanical rewrite one diagnostic carries: the text of one
-// place of the file — a string literal — before and after.
+// Edit is the mechanical rewrite a diagnostic carries: the text of one
+// place of the file — a string literal — before and after. One edit fixes
+// every quoted reference of its literal, so it rides every diagnostic of
+// that literal it remedies.
 type Edit struct {
 	Code   ir.DiagCode `json:"code"`
 	Node   string      `json:"node,omitempty"`
@@ -34,11 +36,12 @@ type Edit struct {
 	Column int         `json:"column"`
 	From   string      `json:"from"`
 	To     string      `json:"to"`
-	// prop is the property the literal belongs to (`command`,
-	// `postcondition`); refs are the references whose quotes the edit
-	// removes.
-	prop       string
-	refs       []string
+	// Property is the property the literal belongs to (`command`,
+	// `postcondition`); Refs are the references whose quotes the edit
+	// removes — together they name the diagnostics the edit remedies, the
+	// ones whose message says `<property>: <ref> sits inside quotes`.
+	Property   string   `json:"property"`
+	Refs       []string `json:"refs"`
 	start, end int
 }
 
@@ -101,7 +104,7 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 			if e == nil {
 				t := toks[ti]
 				start, end := runeToByte[t.Offset], runeToByte[t.End]
-				e = &Edit{Code: d.Code, Node: d.NodeID, Line: t.Line, Column: t.Column, From: norm.Text[start:end], To: norm.Text[start:end], prop: prop, start: start, end: end}
+				e = &Edit{Code: d.Code, Node: d.NodeID, Line: t.Line, Column: t.Column, From: norm.Text[start:end], To: norm.Text[start:end], Property: prop, start: start, end: end}
 				byToken[ti] = e
 			}
 			// The diagnostic names the property and the reference — a
@@ -113,7 +116,7 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 				}
 				if to, ok := unquoted(e.To, ref); ok {
 					e.To = to
-					e.refs = append(e.refs, ref)
+					e.Refs = append(e.Refs, ref)
 					placed = true
 					break
 				}
@@ -218,9 +221,9 @@ func Bytes(name string, src []byte) (*Result, error) {
 		want[i] = diagKey(d)
 	}
 	for _, e := range edits {
-		for _, ref := range e.refs {
+		for _, ref := range e.Refs {
 			for i, d := range mine {
-				if want[i] != "" && d.Code == e.Code && d.NodeID == e.Node && strings.Contains(d.Message, e.prop+": "+ref+" sits inside quotes") {
+				if want[i] != "" && d.Code == e.Code && d.NodeID == e.Node && strings.Contains(d.Message, e.Property+": "+ref+" sits inside quotes") {
 					want[i] = ""
 					break
 				}
