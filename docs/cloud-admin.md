@@ -280,14 +280,21 @@ fails with `not configured` — users will re-paste blobs on expiry.
 
 ## 8. Rotating the master key
 
-Rotating `ITERION_SECRETS_KEY` invalidates every sealed BYOK + OAuth
-record. The clean path:
+Rotating `ITERION_SECRETS_KEY` invalidates every sealed record — BYOK
+keys, generic secrets, OAuth blobs and in-flight OAuth connects, forge
+connections, per-tenant forge OAuth apps, org SSO client secrets, webhook
+HMAC secrets and run bundles. The clean path:
 
 1. Generate the new key.
 2. Have all users re-paste their API keys + OAuth blobs.
 3. Roll the new key into the server + runner Secret simultaneously.
-4. Drop the `api_keys`, `oauth_credentials` and `run_secrets`
-   collections (or wait for users to overwrite their entries).
+4. Drop every collection holding a sealed blob — `api_keys`,
+   `generic_secrets`, `oauth_credentials`, `oauth_pending`, `run_secrets`,
+   `forge_connections`, `forge_oauth_apps`, `org_sso_providers` — plus the
+   `webhook_configs.hmac_secret_sealed` field (or wait for users to
+   overwrite their entries). [secrets-reference.md → The sealing
+   model](secrets-reference.md#the-sealing-model) holds the authoritative
+   AAD table; any family skipped here survives as unreadable ciphertext.
 
 Phase G in the public roadmap will add envelope encryption (master
 key in KMS, per-tenant DEKs) so rotation is a single MongoDB
