@@ -18,11 +18,29 @@ import (
 // reads-and-clears the cancel. Under -race the unguarded version reports a
 // plain data race on both fields; the interleaving it stands for drops a
 // cancel and leaks a coordinator.
+// quietMissionStore hands out no work, which is all this test needs: it
+// asserts on two FIELDS under -race and never on stored bytes.
+//
+// A filesystem here bought nothing and cost a cleanup race. t.TempDir()'s
+// RemoveAll ran while coordinators were still unwinding, and "directory not
+// empty" failed the test on a MERGE-QUEUE ref — which ejects a green pull
+// request with no red check anywhere on it, so nobody sees why it stopped
+// merging. No directory, no such failure, whatever the timing.
+type quietMissionStore struct{ assistantmission.Store }
+
+func (quietMissionStore) ListReconcileCandidates(context.Context, string, time.Time, int) ([]assistantmission.Mission, error) {
+	return nil, nil
+}
+
+// Never reached: the loop touches watches only after claiming a mission, and
+// this store offers none. The embedded nil panics loudly if that stops being
+// true, rather than quietly inventing a watch.
+type quietWatchStore struct{ runwatch.Store }
+
 func TestRestartAssistantMissionsIsRaceFree(t *testing.T) {
-	dir := t.TempDir()
 	s := &Server{}
-	missions := assistantmission.NewFSStore(dir)
-	watches := runwatch.NewFSStore(dir)
+	missions := quietMissionStore{}
+	watches := quietWatchStore{}
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})

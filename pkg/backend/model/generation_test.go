@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -1170,24 +1171,71 @@ func TestGenerateTextDirect_ColdWatchdogBoundsBlockingStreamStartup(t *testing.T
 	}
 }
 
+// The fragile direction of a timer test is "does NOT fire": time.Sleep
+// guarantees a floor and no ceiling, so one scheduling hiccup between two
+// pings makes the watchdog right and the test wrong. Its neighbours assert
+// that a watchdog DOES fire, where overshoot only strengthens the claim.
+//
+// synctest gives this one a virtual clock, so the 15 ms between pings is
+// exactly 15 ms whatever the runner is doing. The function under test is
+// untouched — real timer, real channel, real aggregation.
 func TestAggregateStreamWithIdleWatchdog_EventsResetHotTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ch := make(chan api.StreamEvent)
+		go func() {
+			defer close(ch)
+			for range 4 {
+				time.Sleep(15 * time.Millisecond)
+				ch <- api.StreamEvent{Type: api.EventPing}
+			}
+			for _, event := range textEvents("still healthy", 1, 1) {
+				ch <- event
+			}
+		}()
+		agg := aggregateStreamWithIdleWatchdog(context.Background(), ch, 30*time.Millisecond, 30*time.Millisecond)
+		if agg.err != nil {
+			t.Fatalf("aggregate error = %v, want active stream to remain healthy", agg.err)
+		}
+		if agg.text != "still healthy" {
+			t.Errorf("text = %q, want still healthy", agg.text)
+		}
+	})
+}
+
+// And the watchdog still bites: a silence wider than the hot timeout must be
+// caught. Without this, making the watchdog inert would leave the test above
+// green — only the cold phase had a firing test, so a stream that went quiet
+// mid-answer could have hung with nothing to say so.
+//
+// This one stays on the REAL clock, deliberately. Sleep guarantees a floor, so
+// an overloaded runner only sleeps longer and the watchdog fires harder: the
+// direction that is robust is the one that does not need a virtual clock.
+//
+// The COLD tier is disabled (0), and that is not tidiness: it is armed the
+// instant aggregation starts, before the producer goroutine has been
+// scheduled to send anything, so a saturated runner would fire it and this
+// test would assert on the wrong phase — a "must not fire" assertion on the
+// real clock, the very shape removed from its sibling above. The first event
+// flips to hot and arms hotTimeout whatever the cold tier was.
+func TestAggregateStreamWithIdleWatchdog_ASilenceLongerThanTheHotTimeoutFires(t *testing.T) {
 	ch := make(chan api.StreamEvent)
+	produced := make(chan struct{})
 	go func() {
+		defer close(produced)
 		defer close(ch)
-		for range 4 {
-			time.Sleep(15 * time.Millisecond)
-			ch <- api.StreamEvent{Type: api.EventPing}
-		}
-		for _, event := range textEvents("still healthy", 1, 1) {
-			ch <- event
-		}
+		ch <- api.StreamEvent{Type: api.EventPing}
+		time.Sleep(200 * time.Millisecond) // ten hot timeouts, in the safe direction
 	}()
-	agg := aggregateStreamWithIdleWatchdog(context.Background(), ch, 30*time.Millisecond, 30*time.Millisecond)
-	if agg.err != nil {
-		t.Fatalf("aggregate error = %v, want active stream to remain healthy", agg.err)
+
+	agg := aggregateStreamWithIdleWatchdog(context.Background(), ch, 0, 20*time.Millisecond)
+	var idle *StreamIdleError
+	if !errors.As(agg.err, &idle) || idle.Phase != StreamIdleHot {
+		t.Fatalf("aggregate error = %v, want a hot StreamIdleError", agg.err)
 	}
-	if agg.text != "still healthy" {
-		t.Errorf("text = %q, want still healthy", agg.text)
+	select {
+	case <-produced:
+	case <-time.After(5 * time.Second):
+		t.Error("the producer outlived the test: its drain never released")
 	}
 }
 
