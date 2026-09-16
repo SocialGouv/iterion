@@ -132,3 +132,30 @@ func TestPlanForAnnotatesDiagnostics(t *testing.T) {
 		t.Fatalf("edit %+v", edits[0])
 	}
 }
+
+// A tool inside a group is instantiated by `use` under a name the source
+// has not: its C137 is left to the author, said as a group member — never
+// "not found".
+func TestAGroupMemberIsSaidAsSuch(t *testing.T) {
+	src := `dsl: 2
+
+vars:
+  base: string = "main"
+
+group g:
+  tool assess:
+    command: "git checkout '{{vars.base}}'"
+
+use g as u1
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: u1.assess
+  u1.assess -> done
+`
+	edits, left := PlanFor("g.bot", []byte(src), c137(t, src))
+	if len(edits) != 0 || len(left) != 1 || left[0].Node != "u1.assess" || !strings.Contains(left[0].Why, "group") {
+		t.Fatalf("edits %+v left %+v", edits, left)
+	}
+}

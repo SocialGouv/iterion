@@ -46,8 +46,9 @@ syntax check must hold text to the interpreter that will read it (F13).
    because a value may carry `{{…}}` of its own and that is the value.
 5. **The report never decides `valid`.** `validate --exec` runs only on a
    program that compiles, and its findings say what the first paid run would
-   have met; `clean` is the report's verdict, the exit code is the
-   compiler's.
+   have met; `clean` is the report's verdict; the exit code is the
+   compiler's — or, when a dry run was asked for and could not run, the
+   dry run's own inability, said in `exec_error`.
 6. **Alongside, the compiler names the two deaths it can see** — C145, a
    bounded loop with no exit at its cap; C146, a division into an `int`
    field outside `floor()`/`round()` — and the runtime names the loop death

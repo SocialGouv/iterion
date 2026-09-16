@@ -14,6 +14,8 @@ package fix
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -73,6 +75,13 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 	byToken := map[int]*Edit{} // token index → the edit merging every ref of that literal
 	for _, d := range diags {
 		if d.Code != ir.DiagQuotedCommandRef {
+			continue
+		}
+		// A member of a group, instantiated by `use`: its literal lives once
+		// under `group <g>:` and serves every use — not rewritten yet, said
+		// as such rather than searched for under a name the source has not.
+		if strings.Contains(d.NodeID, ".") {
+			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: "a member of a group instantiated by `use`: the literal lives once under `group <name>:` and serves every use — not rewritten mechanically yet, remove the quotes there by hand"})
 			continue
 		}
 		// The node's `command:` first, its `postcondition:` next: the
@@ -171,23 +180,28 @@ func literalToken(toks []parser.Token, node, prop string) int {
 	return -1
 }
 
-// Bytes fixes one file's bytes: name is the file's path — the unit it
-// belongs to is read beside it (a main's fragments through its imports),
-// the program compiled whole, and the diagnostics remedied are this file's
-// own. A fragment fixed alone is read as its own unit: its remedies apply,
-// the rest is the main's.
+// Bytes fixes one file's bytes: name is the file's path. The unit it
+// belongs to is read from the bot's main — a fragment under lib/ through
+// the main.bot that imports it, a main with its fragments — the program is
+// compiled whole, and the diagnostics remedied are this file's own: the
+// edits land on its bytes, the rest of the unit is the other files'.
 func Bytes(name string, src []byte) (*Result, error) {
 	res := &Result{Name: name, Original: src, Fixed: src}
 	norm := rewrite.Normalize(src)
-	before := unit.LoadDirWithMain(name, name, src)
+	mainPath, rel := unitOf(name)
+	before := unit.LoadDirStaged(mainPath, map[string][]byte{rel: src})
 	if errs := parseErrors(before.Diagnostics); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %s does not parse — fix it first: %s", ErrRefused, name, strings.Join(errs, "; "))
 	}
 	if before.Merged == nil {
 		return nil, fmt.Errorf("%w: %s carries no program", ErrRefused, name)
 	}
+	own, ok := fileNamed(before, rel)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s is not read by its bot's main (%s): nothing of it compiles", ErrRefused, name, mainPath)
+	}
 	cr := ir.Compile(before.Merged)
-	mine := ownDiagnostics(cr.Diagnostics, name)
+	mine := ownDiagnostics(cr.Diagnostics, own)
 	edits, left := PlanFor(name, src, mine)
 	res.Left = left
 	// The diagnostics the edits remove: ONE per reference unquoted — the
@@ -229,7 +243,7 @@ func Bytes(name string, src []byte) (*Result, error) {
 
 	// The proof: the fixed text parses, and the unit compiles to the same
 	// diagnostics of this file minus the ones fixed — nothing else moved.
-	after := unit.LoadDirWithMain(name, name, res.Fixed)
+	after := unit.LoadDirStaged(mainPath, map[string][]byte{rel: res.Fixed})
 	if errs := parseErrors(after.Diagnostics); len(errs) > 0 || after.Merged == nil {
 		return nil, fmt.Errorf("%w: the fixed %s does not parse (a defect of the fix, not of the file): %s", ErrRefused, name, strings.Join(errs, "; "))
 	}
@@ -239,7 +253,7 @@ func Bytes(name string, src []byte) (*Result, error) {
 			remaining = append(remaining, k)
 		}
 	}
-	for _, d := range ownDiagnostics(ir.Compile(after.Merged).Diagnostics, name) {
+	for _, d := range ownDiagnostics(ir.Compile(after.Merged).Diagnostics, own) {
 		got = append(got, diagKey(d))
 	}
 	if why := proven(remaining, got); why != "" {
@@ -261,8 +275,45 @@ func proven(want, got []string) string {
 	return firstDifference(want, got)
 }
 
+// unitOf is the main a file's unit is read from, and the file's slash path
+// under that main's directory: a fragment below a lib/ ancestor whose root
+// holds a main.bot belongs to that bot; any other file is its own main.
+func unitOf(name string) (mainPath, rel string) {
+	abs, err := filepath.Abs(name)
+	if err != nil {
+		abs = name
+	}
+	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+		if filepath.Base(dir) == unit.FragmentDir {
+			root := filepath.Dir(dir)
+			main := filepath.Join(root, "main.bot")
+			if _, err := os.Stat(main); err == nil {
+				if r, err := filepath.Rel(root, abs); err == nil {
+					return main, filepath.ToSlash(r)
+				}
+			}
+			break
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return abs, filepath.Base(abs)
+}
+
+// fileNamed is the name the unit gave the file at rel — the one its
+// diagnostics carry — and whether the unit read it at all.
+func fileNamed(u *unit.Unit, rel string) (string, bool) {
+	for _, f := range u.Files {
+		if f.Rel == rel {
+			return f.Name, true
+		}
+	}
+	return "", false
+}
+
 // ownDiagnostics are the diagnostics attributed to the file named — the
-// ones its text can remedy; a global one (no file) and a fragment's are
+// ones its text can remedy; a global one (no file) and another file's are
 // the unit's.
 func ownDiagnostics(diags []ir.Diagnostic, name string) []ir.Diagnostic {
 	var out []ir.Diagnostic

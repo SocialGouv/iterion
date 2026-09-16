@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/fix"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // FixOptions drive `iterion fix`.
@@ -49,6 +52,7 @@ func RunFix(opts FixOptions) (FixResult, error) {
 	if err != nil {
 		return res, err
 	}
+	files = unitFiles(files)
 	for _, path := range files {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -77,6 +81,39 @@ func RunFix(opts FixOptions) (FixResult, error) {
 		return res, ErrFixRefused
 	}
 	return res, nil
+}
+
+// unitFiles adds to files the fragments of every main among them: fixing a
+// bot fixes its unit, each file on its own bytes. A fragment already listed
+// (a walked bundle) is not listed twice.
+func unitFiles(files []string) []string {
+	seen := map[string]bool{}
+	for _, f := range files {
+		if abs, err := filepath.Abs(f); err == nil {
+			seen[abs] = true
+		}
+	}
+	out := append([]string(nil), files...)
+	for _, f := range files {
+		u := unit.LoadDir(f)
+		if u == nil || len(u.Files) < 2 || u.Files[0].Rel != filepath.Base(f) {
+			continue // not a main with fragments
+		}
+		for _, fr := range u.Files[1:] {
+			if seen[fr.Name] {
+				continue
+			}
+			seen[fr.Name] = true
+			p := fr.Name
+			if cwd, err := os.Getwd(); err == nil {
+				if r, err := filepath.Rel(cwd, fr.Name); err == nil && !strings.HasPrefix(r, "..") {
+					p = r
+				}
+			}
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func reportFix(opts FixOptions, res FixResult) {

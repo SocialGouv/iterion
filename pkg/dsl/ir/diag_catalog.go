@@ -122,7 +122,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagReviewNeedsWorktree:    {"Review without worktree", "Add `worktree: auto` to the workflow (the review gate merges the run's worktree), or drop `interaction: review`."},
 	DiagReviewURLUnknownRef:    {"Review URL unknown ref", "Point `review_url` at a declared node's output, or remove it."},
 	DiagInvalidCompress:        {"Invalid compress value", "Use `on`, `off` or `ultra`."},
-	DiagQuotedCommandRef:       {"Tool command quotes a ref the runtime already quotes", "Remove the quotes around `{{ref}}` in the command — the runtime shell-escapes every ref; build optional flags with `${VAR:+--flag \"$VAR\"}` from a bare `VAR={{ref}}`."},
+	DiagQuotedCommandRef:       {"Tool command quotes a ref the runtime already quotes", "Remove the quotes around `{{ref}}` in the command or the postcondition — the runtime shell-escapes every ref; build optional flags with `${VAR:+--flag \"$VAR\"}` from a bare `VAR={{ref}}`."},
 	DiagInvalidAutoMemory:      {"Invalid auto_memory value", "Use `on` or `off`, or drop the field to inherit."},
 	DiagAutoMemoryNotSupported: {"auto_memory on an unsupported backend", "Use `claude_code`, `claw` or `pi`, or drop `auto_memory:`."},
 	DiagInvalidLoopBudgetGuard: {"Invalid loop_budget_guard value", "Use `on` or `off`, or drop the field to inherit."},

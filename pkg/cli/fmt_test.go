@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
@@ -121,27 +120,12 @@ func TestFmtRefusesWhatItCannotRewriteAndFormatsTheRest(t *testing.T) {
 	}
 }
 
-// The text is proven before it is written: a document the writer cannot
-// carry as the same program — here a prompt body whose first line sits
-// deeper than a later one, which no text can hold and the parser never
-// produces — is refused, not written.
-func TestFmtProvesTheTextBeforeWriting(t *testing.T) {
-	deep := &ast.File{Prompts: []*ast.PromptDecl{{Name: "deep", Body: "    first, deeper\nsecond, shallower"}}}
-	if text, err := provenText(deep); err == nil {
-		t.Fatalf("a body no text can carry was written:\n%s", text)
-	}
-	sound := &ast.File{Prompts: []*ast.PromptDecl{{Name: "sound", Body: "first\n  second, deeper"}}}
-	if _, err := provenText(sound); err != nil {
-		t.Fatalf("a sound body was refused: %v", err)
-	}
-}
-
 // A bundle directory is walked: the main and its lib/ fragment are each
-// formatted on their own text; a comment before the first declaration —
-// after an import line — is a leading one.
+// formatted on their own text; a comment before the import line leads the
+// file and stays first.
 func TestFmtWalksABundleAndItsFragments(t *testing.T) {
 	inTempWorkspace(t)
-	main := writeBot(t, "b/main.bot", "import \"lib/s.bot\"\n## after the import, still leading\n\n\nagent check:\n  model: \"m\"\n  output: verdict\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: check\n  check -> done\n")
+	main := writeBot(t, "b/main.bot", "## before the import: a leading comment\nimport \"lib/s.bot\"\n\n\nagent check:\n  model: \"m\"\n  output: verdict\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: check\n  check -> done\n")
 	frag := writeBot(t, "b/lib/s.bot", "\n\nschema verdict:\n  ok: bool\n")
 	res, err := RunFmt(FmtOptions{Paths: []string{"b"}})
 	if err != nil {
@@ -151,12 +135,13 @@ func TestFmtWalksABundleAndItsFragments(t *testing.T) {
 		t.Fatalf("outcome %+v", res.Files)
 	}
 	got, _ := os.ReadFile(main)
-	if !strings.HasPrefix(string(got), "## after the import, still leading\n") || !strings.Contains(string(got), "import \"lib/s.bot\"\n") {
+	if !strings.HasPrefix(string(got), "## before the import: a leading comment\n") || !strings.Contains(string(got), "import \"lib/s.bot\"\n") {
 		t.Fatalf("the main lost its head:\n%s", got)
 	}
 }
 
-// An archive is not formatted in place: refused by name, not parsed as text.
+// An archive is not a workflow file: named, it is an error, never parsed as
+// text; met in a walk, it is passed over like any other file.
 func TestFmtRefusesAnArchive(t *testing.T) {
 	inTempWorkspace(t)
 	var buf bytes.Buffer
@@ -167,8 +152,15 @@ func TestFmtRefusesAnArchive(t *testing.T) {
 	if err := os.WriteFile("x.botz", buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := RunFmt(FmtOptions{Paths: []string{"x.botz"}})
-	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "archive") {
-		t.Fatalf("%v %+v", err, res)
+	if _, err := RunFmt(FmtOptions{Paths: []string{"x.botz"}}); err == nil || !strings.Contains(err.Error(), "not a workflow file") {
+		t.Fatalf("naming an archive: %v", err)
+	}
+	writeBot(t, "w/one.bot", looseBot)
+	if err := os.WriteFile("w/pkg.botz", buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := RunFmt(FmtOptions{Paths: []string{"w"}})
+	if err != nil || len(res.Files) != 1 || res.Files[0].Path != "w/one.bot" {
+		t.Fatalf("a walk met an archive: %v %+v", err, res)
 	}
 }

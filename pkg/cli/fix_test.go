@@ -94,3 +94,27 @@ func TestValidateCarriesTheEditOnTheDiagnostic(t *testing.T) {
 		t.Fatalf("no C137 diagnostic carries its edit:\n%s", out.String())
 	}
 }
+
+// A C137 in a fragment is fixed whether the main, the fragment or the
+// bundle directory is named: the unit is read from the bot's main, and
+// fixing a bot fixes its unit.
+func TestFixReachesAFragmentThroughItsMain(t *testing.T) {
+	inTempWorkspace(t)
+	frag := "vars:\n  base: string = \"main\"\n\ntool doit:\n  command: \"test -n '{{vars.base}}'\"\n"
+	mainText := "import \"lib/tools.bot\"\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: doit\n  doit -> done\n"
+	for _, named := range []string{"b/main.bot", "b/lib/tools.bot", "b"} {
+		writeBot(t, "b/main.bot", mainText)
+		fragPath := writeBot(t, "b/lib/tools.bot", frag)
+		res, err := RunFix(FixOptions{Paths: []string{named}})
+		if err != nil {
+			t.Fatalf("%s: %v %+v", named, err, res)
+		}
+		got, _ := os.ReadFile(fragPath)
+		if !strings.Contains(string(got), "command: \"test -n {{vars.base}}\"") {
+			t.Fatalf("%s named: the fragment's quotes stayed:\n%s\n%+v", named, got, res.Files)
+		}
+		if mainNow, _ := os.ReadFile("b/main.bot"); string(mainNow) != mainText {
+			t.Fatalf("%s named: the main was rewritten", named)
+		}
+	}
+}
