@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.152.4](https://github.com/SocialGouv/iterion/compare/v3.152.3...v3.152.4) (2026-09-16)
+
+### Bug Fixes
+
+* **sec-audit-source:** say when a deep scan cannot be shown to have covered the tree ([#1321](https://github.com/SocialGouv/iterion/issues/1321)) ([badbacb](https://github.com/SocialGouv/iterion/commit/badbacb487d54c3fe79bdf7968b8d604e635bf40))
+
+    <details><summary>why</summary>
+
+    A deepsec pass that was capped, or cut short, exports the findings it did produce, exits through the same path as a complete pass, and leaves finding_count looking healthy — on a busy tree a truncated pass outnumbers a complete pass on a clean one. Nothing said which one you were reading, so a partial audit could be transmitted to a product team as a full one. That is the defect this closes, and it is the same class that cost the pilot five reports built on 13% of a repository.
+
+    </details>
+
 ## [3.152.3](https://github.com/SocialGouv/iterion/compare/v3.152.2...v3.152.3) (2026-09-16)
 
 ### Bug Fixes
