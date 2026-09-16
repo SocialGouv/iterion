@@ -108,9 +108,13 @@ space between orgs (or environments).
 The local (desktop/CLI) filesystem store under `~/.iterion/` is managed
 with `iterion memory export|import|du`. A space is addressed by
 `--visibility` (`bot|project|cross_project|user|org|global`, **default
-`bot`** — note the REST default is `project`) + `--name`, with `--project`
-(defaults to the current directory) for `bot`/`project` spaces and `--bot`
-(required when `--visibility=bot`).
+`bot`** — note the REST default is `project`) + `--name`, plus the qualifiers
+its visibility needs: `--project` (defaults to the current directory) for
+`bot`/`project` spaces, `--bot` (required when `--visibility=bot`), `--user`
+for `user` spaces and `--tenant` for `org`/`cross_project` spaces. The two
+identity qualifiers are optional — an empty one resolves to the segment
+`local`, the single-tenant local store — but both are components of the space
+id, so passing a value addresses a *different* space, not a wider one.
 
 ```bash
 iterion memory du --visibility project              # usage vs quota for a space
@@ -148,7 +152,10 @@ for the workspace-mirror mechanism.
 
 ## `auto_memory:` — the backends' own MEMORY.md
 
-The `memory:` block above is iterion's memory: explicit tools, an authored
+The node-level [`memory:` block](dsl.md#llm-nodes-agent-and-judge) — `enabled`,
+`scope`, `autoload`, `read`/`write`, `pre_compact_inject`, `visibility`, full
+property list in [references/dsl-properties.md](references/dsl-properties.md) —
+is iterion's memory: explicit tools, an authored
 scope, an autoload set. Alongside it, **an agent already keeps a MEMORY.md if you let it** — Claude Code has
 auto-memory of its own (`~/.claude/projects/<cwd>/memory/`), and claw and pi
 maintain one from a prompt section plus their ordinary file tools.
