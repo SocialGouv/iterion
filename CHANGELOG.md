@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.151.0](https://github.com/SocialGouv/iterion/compare/v3.150.2...v3.151.0) (2026-09-16)
+
+### Features
+
+* **dsl:** refuse two edges that disagree about what a foreach iterates (C269) ([#1299](https://github.com/SocialGouv/iterion/issues/1299)) ([38326be](https://github.com/SocialGouv/iterion/commit/38326bea57204895af329fccaeeb7c0b72d5f13f)), closes [#1290](https://github.com/SocialGouv/iterion/issues/1290)
+
+    <details><summary>why</summary>
+
+    compileEdges registers a foreach by name and keeps the FIRST declaration, so a second edge declaring the same name over a different collection or element binding was discarded in silence: the edge carried the name, the name resolved to the other definition, and the run walked a collection its author never wrote. No error, no warning.
+
+    </details>
+
 ## [3.150.2](https://github.com/SocialGouv/iterion/compare/v3.150.1...v3.150.2) (2026-09-16)
 
 ### Bug Fixes
