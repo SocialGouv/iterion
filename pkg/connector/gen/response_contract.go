@@ -299,7 +299,12 @@ func (g *contractGen) contractFor(opID string, status int, responses, method map
 	// Every exit below goes through one of these two: a build that fails must
 	// leave the map exactly as it found it.
 	g.staged = g.staged[:0]
-	if ref := str(schema, "$ref"); ref != "" && onlyDescriptiveSiblings(schema) {
+	// A NULLABLE reference is not borrowable: the component says what the shape
+	// is, not that the body may be absent, so borrowing it would drop exactly
+	// the permission the description granted. It falls through and gets a
+	// contract of its own carrying both.
+	nullableRef, plainRef := refSiblings(schema)
+	if ref := str(schema, "$ref"); ref != "" && plainRef && !nullableRef {
 		name, err := g.component(ref, 0)
 		if err != nil {
 			g.rollback()
@@ -413,14 +418,15 @@ func (g *contractGen) schema(node map[string]any, depth int) (spec.ResponseSchem
 		}
 	}
 	if ref := str(node, "$ref"); ref != "" {
-		if !onlyDescriptiveSiblings(node) {
+		nullable, ok := refSiblings(node)
+		if !ok {
 			return out, fmt.Errorf("the schema constrains a $ref with siblings, which a contract cannot carry")
 		}
 		name, err := g.component(ref, depth)
 		if err != nil {
 			return out, err
 		}
-		return spec.ResponseSchema{Ref: name}, nil
+		return spec.ResponseSchema{Ref: name, Nullable: nullable}, nil
 	}
 
 	switch t := node["type"].(type) {
@@ -688,19 +694,27 @@ func anyJSONMedia(produces []any) bool {
 // of `nullable` — is listed in contractKeys and is read before this ever runs.
 func isSpecExtension(key string) bool { return strings.HasPrefix(key, "x-") }
 
-// onlyDescriptiveSiblings reports whether a `$ref` node carries nothing that
-// would change what the reference means.
-func onlyDescriptiveSiblings(node map[string]any) bool {
+// refSiblings reads what a `$ref` node carries beside the reference: whether
+// it declares the reference nullable, and whether everything else it carries
+// leaves the reference's meaning alone.
+//
+// Nullability is the ONE sibling a reference may carry. It does not constrain
+// the referenced shape — it says the slot may hold no shape at all — and
+// go-swagger services write exactly that for an absent relation: Forgejo
+// sends `null` for `assignee`, `milestone` and `merged_by` on every
+// unassigned issue. Refusing it made a contract generated from a real
+// description refuse the answers that description's service actually sends.
+//
+// `x-nullable` is Swagger 2's spelling of `nullable`, and this generator
+// MODELS it rather than ignoring it as a non-normative extension: dropping it
+// would refuse the null the vendor documented, and would make the two
+// dialects disagree about one shape.
+func refSiblings(node map[string]any) (nullable, ok bool) {
 	for key := range node {
-		// `x-nullable` is Swagger 2's spelling of `nullable`, and this
-		// generator MODELS it rather than ignoring it. Skipping it here as a
-		// non-normative extension would drop the null the vendor documented
-		// while the OAS 3 spelling beside the same `$ref` is refused — the two
-		// dialects would disagree about one shape. Reported as uncontracted,
-		// like `nullable`, because a reference carries no siblings: the
-		// vocabulary cannot say "this reference may also be null".
-		if key == "x-nullable" {
-			return false
+		switch key {
+		case "nullable", "x-nullable":
+			nullable = nullable || boolAt(node, key)
+			continue
 		}
 		if isSpecExtension(key) {
 			continue
@@ -709,10 +723,10 @@ func onlyDescriptiveSiblings(node map[string]any) bool {
 		case "$ref", "description", "title", "summary", "example", "examples",
 			"externalDocs", "xml", "deprecated", "readOnly", "writeOnly":
 		default:
-			return false
+			return nullable, false
 		}
 	}
-	return true
+	return nullable, true
 }
 
 func isContractType(t string) bool {
