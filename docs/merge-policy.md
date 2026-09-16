@@ -22,9 +22,11 @@ green.
   wall clock, 19 of them waiting for a first slot, while five entries built in
   parallel. The queue is tuned against that cap — `max_entries_to_build: 2`
   (at most two entries under CI at once, instead of five) and
-  `min_entries_to_merge: 3` (merges land in batches of 3-5, so the workflows
-  that fire on every push to `main` — Runner Image, Trivy, Sandbox, Brew Tap —
-  run once per batch). A lone PR still merges after
+  `min_entries_to_merge: 3` (merges land in batches of 3-5, so the image and
+  scan workflows that fire on every push to `main` — Container Image and
+  Trivy directly, Runner Image and the Sandbox finalize chained on the
+  container build's completion — run once per batch; Brew Tap Update hangs off
+  a completed Release, not off a merge). A lone PR still merges after
   `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
@@ -38,8 +40,9 @@ green.
   there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
 
-  > **Promoting a check to required is a two-file change.** The four advisory
-  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck` — carry
+  > **Promoting a check to required is a two-file change.** The six advisory
+  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `desktop-vet-linux`,
+  > `desktop-vet-cross`, `govulncheck` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
   > a job that cannot block a merge should not hold a runner slot the queue
   > needs. Adding one to this ruleset **without deleting its skip** is worse
@@ -68,9 +71,16 @@ green.
   > required.
 - **Three required checks run on self-hosted runners** — `test`,
   `vendor-check` and `golangci` route to the organisation's `arc-runners`
-  scale set on `merge_group`, because the 20-job cap above is what makes a
-  cycle slow. That scale set is **outside this repository**, and it was dead
-  and unnoticed for over a year before 2026-09-08.
+  scale set, because the 20-job cap above is what makes a queue cycle slow.
+  The routing is **not** scoped to the queue: the expression carries no
+  `merge_group` term and diverts back to GitHub-hosted only for
+  `CI_SELF_HOSTED=off`, fork pull requests and dependency-bot pull requests,
+  so ordinary pull-request and `main` builds run there too — as do four of
+  the six advisory jobs above (`nats-conformance`, `helm-lint`,
+  `desktop-vet-cross`, `govulncheck`). A dead scale set therefore stalls the
+  checks on every ordinary pull request, not just on queue entries. That
+  scale set is **outside this repository**, and it was dead and unnoticed for
+  over a year before 2026-09-08.
 
   > **If nobody can merge and the checks never report, this is the first thing
   > to try.** Set the repository variable **`CI_SELF_HOSTED` to `off`**

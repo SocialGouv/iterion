@@ -17,9 +17,12 @@ A bilan is durable, reviewable in a PR, and shows up in `git log`. It is one of
 | **Board issues** | native kanban (`.iterion/`, gitignored) | open tasks / findings to act on | until closed |
 | **Bilans (this dir)** | `docs/bot-runs/<bot>.md` (committed) | durable lessons the next operator must read before launching the bot | forever, in git history |
 
-Cross-bot lessons (Goodhart, façade patterns, asymptote rules) live in
-[workflow_authoring_pitfalls.md](../workflow_authoring_pitfalls.md), not here —
-this directory is **per-bot**.
+Cross-bot *lessons* (Goodhart, façade patterns, asymptote rules) live in
+[workflow_authoring_pitfalls.md](../workflow_authoring_pitfalls.md), not here.
+This directory holds two kinds of file: one **per-bot bilan** per catalog bot
+(`<bot>.md`, the common case), and a handful of dated **campaign records**
+(`YYYY-MM-DD-<label>-campaign.md`) for the nights a whole wave of bots was run
+at once — see [Campaigns](#campaigns) below.
 
 ## Bilan template
 
@@ -37,14 +40,26 @@ Append one dated section per run to `docs/bot-runs/<bot>.md` (newest first):
 - Lessons for next run: what to change (vars, prompt, scanner, skill)
 ```
 
-The run artifacts (`.iterion/runs/<id>/`) are gitignored, so the bilan is the
-only committed trace. Regenerate the full chronological run report any time with:
+The run artifacts (`.iterion/runs/<id>/`) are gitignored, so what this directory
+commits is the only durable trace. Regenerate the full chronological run report
+any time with:
 
 ```sh
 iterion report --run-id <id> --output /tmp/<bot>-<id>.md
 ```
 
 and cite the run-id in the bilan so it can be reconstructed.
+
+### Evidence sidecars (`evidence/`)
+
+When a bilan makes a claim a reader should be able to check rather than trust —
+a falsifiable verdict, a measured count, a "caught X / missed Y" ledger — commit
+the supporting excerpt as a small JSON file under
+`docs/bot-runs/evidence/<label>.json` and link it inline from the bilan. The
+worked example is [`evidence/revi-1203.json`](evidence/revi-1203.json), linked
+from [review-pr.md](review-pr.md). Keep it **compact**: selected events pulled
+from the run's `events.jsonl`, never the whole stream, and never anything
+carrying a secret or a customer identifier.
 
 ## Index
 
@@ -69,8 +84,8 @@ first bilan for a bot lands.
 | Revi (converse) | `revi-converse` | conversational PR follow-up | [revi-converse.md](revi-converse.md) |
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |
 | Depsy | `sec-audit-deps` | supply-chain SCA audit (real Trivy CVE floor; other malware/ecosystem signals remain partial) | [sec-audit-deps.md](sec-audit-deps.md) |
-| Shieldy | `supply-shield` | global supply-chain MALWARE shield (diff-scoped, PR/push-driven) | [supply-shield.md](supply-shield.md) |
-| Vulny | `supply-shield-cve` | global supply-chain CVE shield (diff-scoped, PR/push-driven) | [supply-shield-cve.md](supply-shield-cve.md) |
+| Shieldy | `supply-shield` | global supply-chain MALWARE shield (diff-scoped; `/shield` or board launch) | [supply-shield.md](supply-shield.md) |
+| Vulny | `supply-shield-cve` | global supply-chain CVE shield (diff-scoped; `/cve` or board launch) | [supply-shield-cve.md](supply-shield-cve.md) |
 | Renovacy | `secured-renovacy` | dependency upgrade pipeline | [secured-renovacy.md](secured-renovacy.md) |
 | Bmady | `bmady` | BMAD multi-persona human-gated delivery | [bmady.md](bmady.md) |
 | Devy | `devbox-setup` | devbox.json bootstrap | [devbox-setup.md](devbox-setup.md) |
@@ -90,3 +105,20 @@ first bilan for a bot lands.
 | Themis | `arbitrate` | doctrine-bound judge for the divergence cases a programme leaves blocked | _not yet_ |
 | Envy | `review-env` | live review environment — deploys the current commit, hands back a real https URL | _not yet_ |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |
+
+## Campaigns
+
+A **campaign record** is the consolidated trace of a run that spanned the whole
+catalog rather than one bot: the fleet-wide dogfood nights and the provider
+re-test waves. Per-bot detail stays in the bilan above; the campaign file is
+what says *what the wave as a whole proved, and what it cost*. Name it
+`YYYY-MM-DD-<label>-campaign.md` and add a row here when one lands.
+
+`campaign.md` (no date prefix) is **not** a campaign record — it is the per-bot
+bilan for Campy / `campaign`, indexed in the table above.
+
+| Date | Campaign | Scope |
+|---|---|---|
+| 2026-06-24 | [Fleet dogfood campaign](2026-06-24-fleet-dogfood-campaign.md) | every catalog bot in one night, on iterion itself — each must reach a terminal state, produce quality, and not over-consume |
+| 2026-06-23 | [Catalog re-test campaign + Verified Action delivery](2026-06-23-retest-campaign.md) | re-test every catalog bot on the first-class lane (Anthropic opus / OpenAI gpt-5.5 forfait), fixing on failure; plus the ADR-044 "Verified Action" build |
+| 2026-06-23 | [GLM-5.2 dogfood campaign](2026-06-23-glm-dogfood-campaign.md) | Wave 1 + Wave 2 + integration on a z.ai/GLM-5.2 + Anthropic-forfait stack — the evidence [ADR-043 provider/model support tiers](../adr/043-provider-model-support-tiers.md) cites |

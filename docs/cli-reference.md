@@ -11,8 +11,11 @@ This page maps every public top-level command in the current binary and document
 | `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
 | `clean` | Reclaim disk by deleting run worktrees whose work has landed. |
 | `completion` | Generate Bash, Zsh, Fish, or PowerShell completion. |
+| `connections` | Authenticate this machine to a connector: store, list, and remove credentials. |
+| `connectors` | Generate and validate connector packages from a vendor API description. |
 | `diagram` | Render a workflow as Mermaid. |
 | `dispatch` | Poll a tracker and launch an eligible bot per issue. |
+| `dsl` | Inspect the `.bot` DSL itself and migrate files between syntax profiles. |
 | `fork` | Fork a run at a prior LLM turn. |
 | `import` | Convert a Claude Code workflow script into a draft `.bot`. |
 | `inspect` | Inspect local runs, executions, events, traces, tools, artifacts, and logs. |
@@ -23,6 +26,7 @@ This page maps every public top-level command in the current binary and document
 | `models` | Inspect resolved model capabilities and their source. |
 | `openapi` | Generate this build's OpenAPI 3.1 document offline. |
 | `plugin` | Install/configure/enable/run runtime plugins. |
+| `reliability` | Inspect and roll back the staged workflow-reliability rollout (read-only). |
 | `remote` | Authenticate to and drive a remote/cloud Iterion server. |
 | `report` | Generate a chronological run report. |
 | `resume` | Resume a paused, cancelled, or resumable failed run. |
@@ -55,7 +59,7 @@ iterion validate workflow.bot
 iterion validate bundle.botz --json
 ```
 
-Accepted inputs are `.bot`, `.botz`, and bundle directories. A bare `main.bot` whose parent is a bundle (an iterion `manifest.yaml`/`.yml` — one carrying iterion's own keys, `schema_version` first — or a `skills/` beside it; a `prompts/` alone marks nothing, and neither does a manifest of another tool, a common filename) is validated as that bundle — its `prompts/*.md` in scope, its manifest cross-checked — the same promotion `run` and `resume` apply, so `iterion validate bots/x/main.bot` and `iterion validate bots/x` give one verdict — including on a bundle that does not open (a `manifest.yaml` that does not decode), which both forms refuse by name rather than validating the bare file. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C249, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. A bare `main.bot` whose parent is a bundle (an iterion `manifest.yaml`/`.yml` — one carrying iterion's own keys, `schema_version` first — or a `skills/` beside it; a `prompts/` alone marks nothing, and neither does a manifest of another tool, a common filename) is validated as that bundle — its `prompts/*.md` in scope, its manifest cross-checked — the same promotion `run` and `resume` apply, so `iterion validate bots/x/main.bot` and `iterion validate bots/x` give one verdict — including on a bundle that does not open (a `manifest.yaml` that does not decode), which both forms refuse by name rather than validating the bare file. Validation reports sparse DSL diagnostics in C001–C199 plus the async/parallel/fail band C240–C249 and the connector-`action:` band C260–C268, and bundle checks in C200–C234 and C250–C253; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
 Every finding is printed with its source position when the stage could attribute one — `file:line:column: error [C019]: …`, the node's or edge's own line for a compile diagnostic — and a `fix:` line beneath it, the one-line remedy from the compiler's catalogue. `--json` carries the same findings as `diagnostics`, one object each: `source` (`parse` | `compile` | `bundle`), `code`, `severity`, `file` / `line` / `column`, `message`, `hint`, `node_id`, `edge_id`. The older `parse_diagnostics` / `compile_diagnostics` / `bundle_diagnostics` string lists remain. The MCP `local_validate` tool returns this same JSON, so an agent's write → validate → fix loop reads positions and fixes, not prose.
 
@@ -122,6 +126,7 @@ Inputs and execution:
 | `--log-level error\|warn\|info\|debug\|trace` | Logging verbosity. |
 | `--no-interactive` | Return at a human pause instead of prompting on the TTY. |
 | `--skip-mcp-health` | Warn instead of aborting when a declared MCP server fails startup health. |
+| `--skill <name>` | Add a skill-library skill to this run on top of whatever the bot declares; repeatable. Also settable machine-wide with `ITERION_SKILLS=a,b`. Manage the library with [`iterion skill`](#iterion-skill). |
 | `--auto-resume <n>` | Retry eligible `failed_resumable` causes with capped backoff. |
 
 Launch-time graph overrides:
@@ -130,6 +135,7 @@ Launch-time graph overrides:
 |---|---|
 | `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
 | `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are in the default auto-selection order; Codex, `pi`, Kimi and Grok are explicit opt-ins. |
+| `--effort-for selector=effort` | Per-node/-group `reasoning_effort` override; repeatable. Same selector rules as `--model`, and a bare effort targets every LLM node (`low`, `medium`, `high`, `xhigh`, `max`, `ultracode`). Wins over the node's DSL `reasoning_effort:` **and** over a dynamic `_reasoning_effort` edge mapping. |
 | `--fallback <backend>:<model>` | Run-level fallback route taken when an agent node's primary fails, e.g. `claw:openai/gpt-5.5`. Applies only to agent nodes that declare no `fallbacks:` of their own, never to judges, and uses the default trigger set (`usage_window`, `unavailable`) — author a `fallbacks:` block for anything finer. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md). |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
 | `--loop-budget-guard on\|off` | Decline a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path with the work it banked instead of dying mid-iteration. Empty inherits the workflow `loop_budget_guard:` then `ITERION_LOOP_BUDGET_GUARD`; default on. |
@@ -192,7 +198,7 @@ iterion resume --run-id RUN --answers-file answers.json
 iterion resume --run-id RUN --answer music=@./theme.mp3   # file field → staged as an attachment
 ```
 
-`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the four run-shape toggles `--auto-memory`, `--repo-devbox`, `--loop-budget-guard` and `--supervisors`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
+`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend/effort overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the four run-shape toggles `--auto-memory`, `--repo-devbox`, `--loop-budget-guard` and `--supervisors`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
 
 ### `iterion fork`
 
@@ -218,9 +224,12 @@ there. Same run id — use `fork` when you want the original left intact.
 rewinds to the earliest affected node — the bot-development loop in one step.
 `--node` accepts any node with a recorded output (including `tool` and
 `compute`, unlike fork's turn anchor); `--file` overrides the source the graph
-is read from. Budget accounting, loop counters, and `events.jsonl` are
-preserved; artifacts the dropped nodes published get a superseding `rewound`
-marker version.
+is read from. `--force` accepts retained artifacts whose contract metadata
+comes from the revision being repaired; `--auto` acknowledges that itself,
+since detecting a source edit is its purpose, and either way the resume that
+follows needs its own `--force`. Budget accounting, loop counters, and
+`events.jsonl` are preserved; artifacts the dropped nodes published get a
+superseding `rewound` marker version.
 
 A successful rewind leaves the run in `paused_operator` at that checkpoint.
 It does not execute anything until an explicit `resume`; stale cloud launch
@@ -456,7 +465,7 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--dest <dir>` | Parent directory for the bundle, resolved against `--workdir` (default `bots`). |
 | `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
 | `--model`, `--backend` | Pin instead of auto-detection. |
-| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
+| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action`, `library` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 
@@ -505,6 +514,48 @@ iterion skill list
 
 See [skills library](skills-library.md).
 
+### `iterion connectors`
+
+Subcommands are `gen` and `validate`. A connector package is the declarative API
+description a `tool` node's [`action:` recipe](dsl.md#tool) calls.
+
+```bash
+iterion connectors gen --spec https://vendor.example/openapi.json --id vendorx
+iterion connectors gen --spec ./openapi.yaml --id vendorx --self-hosted --validate-responses
+iterion connectors validate connectors/vendorx
+```
+
+`gen` writes a package from a vendor's OpenAPI 3.x or Swagger 2.0 description.
+`--spec` names that description (a path or an `https` URL) and `--id` the
+connector slug — the package name and the first segment of every operation id.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--out` | `connectors/<id>` | Package directory to write. |
+| `--package-version` | `0.1.0` | Package semver to stamp. |
+| `--license` | empty | The licence the *description* carries, recorded verbatim in the package provenance. |
+| `--redistributable` | `false` | Assert the generated operations may ship in iterion's own catalog. |
+| `--self-hosted` | `false` | The product is commonly self-hosted, so a connection supplies its own instance URL. |
+| `--keep-overlay` | `true` | Re-apply the package's existing `overlay.yaml`, failing if it no longer matches. |
+| `--validate-responses` | `false` | Derive explicit response contracts and validate vendor answers against them (package format v2). |
+
+**Response contracts (package format v2).** Off by default. `schemas.yaml` is a
+descriptive, lossy projection of the vendor's types, so enforcing it would refuse
+bodies vendors legitimately send; `--validate-responses` therefore derives a
+*separate* authority into `responses.json`, referenced explicitly per result
+case, and stamps `schema_version: 2`. Nothing is validated unless a status names
+a contract. Two consequences: a v2 package does not load on an older iterion
+(`schema_version 2 newer than supported 1 (upgrade iterion)`), and regenerating
+the same package **without** the flag drops it back to format 1 and removes
+`responses.json` — pass the flag on every regeneration of a package you want
+contracts on.
+
+`validate <package-dir>` applies the package's overlay to a copy and runs the
+complete check, so it reports on the same package a launch resolves. `gen`
+maintains `identity.lock.yaml` beside `connector.yaml` so operation and auth ids
+survive regeneration. See [connector identities](connector-identities.md) and
+[ADR-098](adr/098-connector-catalog.md).
+
 ### `iterion models` and `iterion openapi`
 
 ```bash
@@ -532,9 +583,10 @@ iterion models pricing --check          # non-zero exit on drift, for CI
 iterion studio --dir . --port 4891
 iterion studio --bots-path ./bots --no-browser
 iterion studio --workspace --port 4891
+iterion studio --recovery-passive --dir .
 ```
 
-The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so use it only on trusted networks. Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
+The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so it is refused at startup unless `ITERION_STUDIO_INSECURE_NONLOOPBACK=1` accepts the risk (see [browser security](browser-security.md#the-studio-refuses-an-unauthenticated-non-loopback-bind)). Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
 
 `--workspace` imports projects from the legacy `instances.conf`, pins each
 project to its existing run store, and hosts the registered local runtimes in
@@ -547,6 +599,34 @@ host-bound `workspace.handoff.complete` receipt. The workspace host persists
 the correlation and retries delivery to the originating Copi conversation;
 the notification does not switch the visible project.
 `GET /readyz` reports ready only when every pinned runtime is available.
+
+A project's environment is the studio process environment with the project's
+dotenv layered on top. `--workspace` registers `<project-root>/.env` as that
+dotenv automatically when the file exists, and persists the path as `env_file`
+in the projects registry. It is evaluated in a throwaway
+`bash --noprofile --norc` child running `set -a; . <file>; set +a; env -0`, so
+shell expansion and `export`-free assignments behave as they did under the
+legacy instance manager, and the result is passed to that project's runtime
+only — never installed process-wide.
+
+A project dotenv may not change the variables that decide where the host itself
+reads and writes: `HOME`, `ITERION_HOME`, `XDG_CONFIG_HOME`,
+`ITERION_PROJECTS_CONFIG`, `ITERION_INSTANCES_CONFIG`, `ITERION_INSTANCES_STATE`,
+`ITERION_STUDIO_INSECURE_NONLOOPBACK`, `BIND`, and `PORT`. A file that does is
+refused with `project env <path> may not override reserved variable <NAME>` and
+the workspace does not start — set those in the studio process environment or
+through a CLI flag instead.
+
+`--recovery-passive` starts a deliberately inert console for a supervised
+recovery. The HTTP surface, the assistant chat and explicit run actions stay
+live, but the server starts **no** autonomous worker: no dispatcher, no
+triggers, no assistant watch sweep, no admission/reconciliation loop, no
+notification delivery and no cleanup reaper. The project is not registered in
+the recents list either. It must bind a loopback address — anything else is
+refused with `recovery-passive studio must bind a loopback address` — and the
+mode is advertised to the SPA as `server_info.recovery_passive`. Use it to ask
+the assistant for a repair proposal before normal automation is allowed to
+observe the same store again; it is not a quieter way to run a normal studio.
 
 ### `iterion dispatch`
 
@@ -583,12 +663,13 @@ See [scheduling](scheduling.md), including sub-minute keepalive behavior.
 
 ### `iterion issue`
 
-Subcommands are `create`, `list`, `show`, `move`, `update`, `close`, `board`, and `import`.
+Subcommands are `create`, `list`, `show`, `move`, `update`, `close`, `board`, and `import`. `board` itself takes `init` (initialize — or replace — the kanban board) and `show` (print the current board configuration).
 
 ```bash
 iterion issue create --title "Fix auth" --label backend --priority 10
 iterion issue list --state todo --unclaimed
 iterion issue move ISSUE --to doing
+iterion issue board init
 iterion issue board show
 FORGE_TOKEN=... iterion issue import --forge forgejo \
   --repo owner/name --base-url https://forge.example --token-env FORGE_TOKEN
@@ -614,13 +695,36 @@ iterion runner --config cloud.yaml
 iterion server webpush-keys        # mint a VAPID keypair for Web Push
 ```
 
-`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
+`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. Unlike `iterion studio` it binds every interface by default: `--bind` defaults to `0.0.0.0` (the cloud-pod default) and `--port` to `4891`, so on a workstation pass `--bind 127.0.0.1` explicitly to keep the API on loopback. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
+
+### `iterion reliability`
+
+```bash
+iterion reliability report                  # fleet baseline over the resolved store
+iterion reliability report --run-id <id>    # one run's compatibility report
+iterion reliability rollback                # print the rollback plan
+```
+
+The read-only operator surface over the staged workflow-reliability rollout.
+`report` prints the rollout mode this environment actually resolves —
+`ITERION_RELIABILITY_MODE`, falling back to the older
+`ITERION_EXECUTION_CONTEXT_POLICY` — and the retry-circuit threshold and
+cooldown, then either a fleet baseline over the store or, with `--run-id`, one
+run's compatibility report (legacy or contract context, admission recorded,
+nodes published, rollback-safe or not). `--store-dir` overrides the store it
+reads; the default is the managed store for the working directory.
+
+Nothing here writes. Reporting on a legacy run never upgrades its policy, and
+`rollback` only prints the plan — which variable to set and what evidence to
+keep — because those variables are read where the launch surfaces run (a pod
+spec, a service unit, a shell), which a one-shot CLI process cannot reach. See
+[workflow reliability](workflow-reliability-1006.md).
 
 ## State, knowledge, and supervision
 
 ### `iterion secret`
 
-Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed. `set` shape-checks the value at ingestion against the kind read off it (token / JSON / PEM), or the one `--kind` names; `--kind raw` stores it unchecked.
+Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed, and never come from a flag: `set` reads the value from the TTY prompt, from stdin, or from the environment variable `--from-env` names. `set` shape-checks the value at ingestion against the kind read off it (token / JSON / PEM), or the one `--kind` names; `--kind raw` stores it unchecked.
 
 ```bash
 iterion secret set GITHUB_TOKEN
@@ -630,6 +734,37 @@ iterion secret list
 ```
 
 See [secrets](secrets.md).
+
+### `iterion connections`
+
+Subcommands are `add`, `list`, and `rm`. A connector package says *what* a vendor
+offers; a connection says which instance, with whose credential, and what it may
+be used for. A `.bot` names one by alias on `connection:`. The command-level
+`--store-dir` selects a non-default run store.
+
+```bash
+FORGE_TOKEN=... iterion connections add --connector forgejo --alias main \
+  --base-url https://forge.example --token-env FORGE_TOKEN
+iterion connections list
+iterion connections rm forgejo main
+```
+
+`add` takes `--connector` (the connector package id, e.g. `forgejo`), `--alias`
+(the name a `.bot` writes on `connection:`, default `main`), `--base-url` (the
+instance to authenticate to — required for a self-hosted connector, otherwise the
+package's own), `--scheme` (which of the package's auth schemes the credential
+satisfies, required when the package declares several), `--token-env` (the
+environment variable holding the credential), repeatable `--capability`, and
+`--name` (display name). `rm` takes the connector and the alias positionally.
+
+The credential is read from an environment variable, never from a flag, and is
+sealed with the same local key as [`iterion secret`](#iterion-secret) before it
+reaches the store. Capabilities are the grant: `action` alone is the default —
+deterministic `tool … action:` nodes where the workflow decides every call;
+adding `agent` lets a model choose calls through the MCP facade, a wider grant
+and therefore never the default. See
+[`iterion connectors`](#iterion-connectors) and
+[ADR-098](adr/098-connector-catalog.md).
 
 ### `iterion memory`
 
@@ -687,7 +822,7 @@ iterion remote runs mission stop TARGET MISSION
 
 `--invocation` is the stable idempotency key; it defaults to `goal:TARGET`.
 `--assistant` can resolve the one exact active watch when `--watch` is omitted.
-All four commands support the remote command's normal `--output json` mode.
+All four commands honour the global `--json` flag for structured output.
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 

@@ -15,7 +15,8 @@ seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ do
                     └── conversation_loop(1000) ── chat (human)
 ```
 
-- **nexie** — `claude_code` + `${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}`,
+- **nexie** — `claude_code` + `${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}`
+  at `${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-ultracode}` reasoning effort,
   `board.read` only; writes are typed `assistant_actions` executed by the
   Studio under the operator's global policies,
   bundled skills via the native Skill tool, `interaction: human` so it

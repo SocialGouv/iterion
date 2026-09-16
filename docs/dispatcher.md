@@ -236,9 +236,31 @@ logs + continues without aborting the dispatch.
 Each tick (`polling.interval_ms`, default 30s):
 
 1. **Reconcile stalled.** For every in-flight run, if
-   `time.Since(LastEventAt) > stall.timeout_ms`, cancel its context.
-   The worker goroutine then returns and the actor schedules a retry.
-   Set `stall.timeout_ms: 0` to disable.
+   `time.Since(LastEventAt) > stall.timeout_ms`, **interrupt** it
+   (`runtime.ErrRunInterrupted` → `failed_resumable`, auto-resumed)
+   rather than cancel it — the run did nothing an operator decided
+   against. The worker goroutine then returns and the actor schedules a
+   retry; a worker that has still not returned one
+   `ITERION_DISPATCHER_STALL_REAP_GRACE` later (default 60s) has its
+   slot force-reaped, so dispatcher concurrency stays healthy. Set
+   `stall.timeout_ms: 0` to disable the watchdog entirely.
+
+   Two silences are **not** stalls and are skipped automatically,
+   whatever `stall.timeout_ms` says. A run still in its
+   `claimed → running` setup has not started, so it is never reaped on
+   its claim-time watermark (ADR-028 Step 4). And a run whose store
+   records a **blocking human wait** is exempt: `store.HasBlockingHumanWait`
+   follows `SubbotChildren` down to a paused descendant or an active
+   descendant sync point, so a parent sitting in
+   `runview.AwaitSubbotTerminal` — polling its child and emitting
+   nothing — is spared. That exemption is checked only before the
+   **first** interrupt: once the ladder has started the run is being torn
+   down, and a late park must not pin the slot for good. Each park
+   episode is bracketed by two info lines ("… awaits human input — exempt
+   from the stall watchdog until it is answered", then "… no longer has a
+   recorded human wait"), so an exemption never reads as a hung watchdog;
+   a store that cannot be opened fails closed and grants no exemption.
+   Full model: [docs/stall-human-waits.md](stall-human-waits.md).
 2. **Refresh tracker states.** Ask the tracker for the current state
    of every running issue. If the state moved out of the eligible
    set (operator closed the GitHub issue, dragged the native card to
@@ -407,6 +429,36 @@ the ticket back into that state. Closing a ticket that is already sitting in
 the give-up's state changes nothing, so the three close surfaces — the pipeline
 board's Close, `iterion issue close`, and the board tool `close_issue` — clear
 the stamp explicitly.
+
+## Daily spend cap (`limits.max_cost_per_day_usd`)
+
+`agent.max_attempts` bounds one ticket; `limits.max_cost_per_day_usd` bounds
+the whole daemon. It caps cumulative LLM spend across every dispatcher run
+for a **UTC calendar day**:
+
+```yaml
+limits:
+  max_cost_per_day_usd: 25.0   # 0 — the default — disables the cap
+```
+
+The gate runs on every tick, after the reconcile sweeps and before any new
+dispatch: once the day's spend reaches the cap the dispatcher **stops
+launching new work**, and each run already in flight pauses itself at its
+next node boundary — `paused_operator` with the `run_paused` reason
+`cost_cap_daily`, so the card parks in `awaiting_input` like any other soft
+pause and the run picks up again through the normal resume path. Both sides
+read one shared ledger at `<store-dir>/spend/<YYYY-MM-DD>.json`, keyed per
+run and summed monotonically, so restarts and resumes cannot double-count.
+
+The limit is re-read from the hot-reloadable config on every tick, so raising
+it takes effect on the next one. The dashboard snapshot carries the status as
+`cost_cap` (`date`, `spent_usd`, `limit_usd`, `exceeded`, `override_active`);
+`exceeded` is `spent >= limit` **and** no override. To unblock a day without
+editing the YAML, grant the day's override — `POST /api/v1/limits/cost/override`,
+with `GET /api/v1/limits/cost` reporting the status
+([cloud-rest-api.md](cloud-rest-api.md)); the ledger is keyed per UTC day, so
+it resets on its own at the next one. Rationale:
+[ADR-009](adr/009-daily-spend-cap.md).
 
 ## Workspace lifecycle
 
@@ -611,8 +663,9 @@ route a brand-new workflow per ticket you add it to `assignee_workflows:`
 
 Vars: `assignee_dispatch[issue.assignee].vars` (or `dispatch.vars`
 as fallback) are rendered first, then `BotArgs` is merged on top.
-See [pkg/dispatcher/loop.go](../pkg/dispatcher/loop.go)
-(`buildSpec`, lines 276-296) for the merge, and
+See [pkg/dispatcher/loop.go](../pkg/dispatcher/loop.go) (`buildSpec` — it
+derives the routing key, picks that key's `assignee_dispatch` entry, then
+merges `BotArgs` over the rendered vars) for the merge, and
 [pkg/dispatcher/routing_runner.go](../pkg/dispatcher/routing_runner.go)
 for the stock assignee workflow selection.
 
@@ -739,6 +792,7 @@ The dispatcher watches `iterion.dispatcher.yaml` via fsnotify with a
 | `dispatch.vars`                                | applied next dispatch                |
 | `workspace.persist`                            | applied next dispatch; resumed runs preserve their original workspace shape |
 | `stall.timeout_ms`                             | applied next tick                    |
+| `limits.max_cost_per_day_usd`                  | applied next tick                    |
 | `workflow:`, `tracker.kind:`, `workspace.root` | warn-only; require restart           |
 | `tracker.*` credentials                        | warn-only; require restart           |
 
@@ -902,7 +956,7 @@ tracker:
     token: $GITLAB_TOKEN
     include_labels: [ready]
     exclude_labels: [blocked]
-    claimed_label: iterion-claimed   # required
+    claimed_label: iterion-claimed   # default
     state_mapping:
       ready:       { labels_include: [ready] }
       in_progress: { labels_include: [claimed] }
@@ -920,14 +974,32 @@ when `server.port` is set — pass `iterion dispatch --no-server`.
 
 | Endpoint                                            | Method | Description                              |
 |-----------------------------------------------------|--------|------------------------------------------|
-| `/api/v1/dispatcher/state`                           | GET    | Live snapshot (running, retries, slots). |
-| `/api/v1/dispatcher/refresh`                         | POST   | Force an immediate tick.                 |
-| `/api/v1/dispatcher/reload`                          | POST   | Re-parse the YAML config.                |
-| `/api/v1/dispatcher/issues/{id}`                     | GET    | Per-issue dispatcher view.                |
-| `/api/v1/dispatcher/issues/{id}/cancel`              | POST   | Cancel an in-flight run.                 |
-| `/api/v1/dispatcher/ws`                              | WS     | Snapshot stream (push on each tick).     |
+| `/api/v1/dispatcher/status`                         | GET    | Daemon lifecycle status.                 |
+| `/api/v1/dispatcher/config`                         | GET    | The running config.                      |
+| `/api/v1/dispatcher/config`                         | PUT    | Replace it (the studio's config card).   |
+| `/api/v1/dispatcher/defaults/apply`                 | POST   | Build the host's zero-config default, save it and start, in one call — the studio's auto-configure button. 409 when a config already exists; 501 under `iterion dispatch`, which injects no defaults builder.|
+| `/api/v1/dispatcher/start`                          | POST   | Start the daemon.                        |
+| `/api/v1/dispatcher/stop`                           | POST   | Stop it.                                 |
+| `/api/v1/dispatcher/pause`                          | POST   | Stop claiming new work. The tick still reconciles stalls, running states and parked cards; in-flight runs are untouched.|
+| `/api/v1/dispatcher/resume`                         | POST   | Resume dispatching.                      |
+| `/api/v1/dispatcher/state`                          | GET    | Live snapshot (running, retries, slots, `cost_cap`).|
+| `/api/v1/dispatcher/refresh`                        | POST   | Force an immediate tick.                 |
+| `/api/v1/dispatcher/reload`                         | POST   | Re-parse the YAML config.                |
+| `/api/v1/dispatcher/issues/{id}`                    | GET    | Per-issue dispatcher view.               |
+| `/api/v1/dispatcher/issues/{id}/cancel`             | POST   | Cancel an in-flight run.                 |
+| `/api/v1/dispatcher/ws`                             | WS     | Snapshot stream (push on each tick).     |
 | `/api/v1/native/*`                                  | —      | Kanban store CRUD (when native is wired).|
 | `/api/server/info`                                  | GET    | SPA bootstrap (flags `dispatcher_enabled`, `native_tracker_enabled`). |
+
+The lifecycle half — `status`, `config`, `defaults/apply`, `start`, `stop`,
+`pause`, `resume` — is served by the dispatcher **Manager**
+([pkg/dispatcher/manager.go](../pkg/dispatcher/manager.go)); the rest by the
+running dispatcher itself ([pkg/dispatcher/http.go](../pkg/dispatcher/http.go)).
+Both `iterion dispatch` and the studio mount the Manager, so the whole table is
+served either way — the studio wraps every route in its `requireAuth`.
+`iterion remote dispatcher status|state|start|stop|pause|resume|refresh|reload`
+(plus `config`, `issue <id>`, `cancel <issue-id>`) drives the same endpoints on
+a cloud instance — see [cloud-cli.md](cloud-cli.md#command-tree).
 
 ## Single-instance safety
 
@@ -1086,4 +1158,10 @@ reopen, so the column editor cannot become the way around a refusal.
 - Persistent retry queue (restart survives in-flight backoff timers).
 - Multi-turn continuation (Symphony's single-thread agent loop).
 - Cross-tracker fan-in (one dispatcher watching GitHub + Linear at once).
-- Bi-directional sync (mirror GitHub → native, work locally, push back).
+- Bi-directional sync beyond a bound board's `Status` field — mirroring
+  card edits back onto the GitHub *issue* (body, labels, assignees), and
+  creating a card for a project item the issue sync never fetched (the
+  project pass only hydrates cards that already exist). Column ↔ state
+  sync itself ships: see [Board mode — states from a Projects v2
+  board](#board-mode--states-from-a-projects-v2-board-adr-097) and
+  [github-board-sync.md](github-board-sync.md).

@@ -44,6 +44,12 @@ ITERION_PROMETHEUS_ADDR=:9464 iterion run bots/whats-next/main.bot
 curl -s localhost:9464/metrics | grep iterion_
 ```
 
+Binding is **fail-soft** by default: if the address is taken or malformed the
+run logs one `prometheus: serve …` error line and carries on with no
+`/metrics` endpoint. Set `ITERION_PROMETHEUS_REQUIRED=1` (`true` / `yes` /
+`on` also count) to bind the address up front instead, so a misconfiguration
+fails the command rather than leaving the dashboard silently empty.
+
 Tear down:
 
 ```bash
@@ -64,17 +70,26 @@ docker compose down -v
 
 ## Required telemetry fields
 
-The dashboard expects the OTLP exporter to set these attributes /
-metrics on each event:
+Every panel above reads a **Prometheus** series registered by the run's own
+exporter (`NewPrometheusExporter`, `pkg/benchmark/prometheus.go`) and served
+on `ITERION_PROMETHEUS_ADDR`'s `/metrics`. The OTLP exporter is the other
+plane — per-event traces and log aggregation, not metrics — so a collector
+pointed at iterion **without** `ITERION_PROMETHEUS_ADDR` leaves the dashboard
+empty.
 
-- `node_id` (string) — workflow node ID
-- `model` (string) — full model spec (e.g. `anthropic/claude-sonnet-4-6`)
-- `run_id` (string) — iterion run identifier
-- `tool` (string) — tool name on `tool_call` events
-- Counter metrics: `iterion_node_cost_usd_total`, `iterion_node_tokens_total`,
-  `iterion_llm_retry_total`, `iterion_llm_request_total`, `iterion_tool_call_total`
-- Histogram metric: `iterion_node_duration_ms`
-- Gauge metric: `iterion_parallel_branches`
+| Metric | Type | Labels |
+|---|---|---|
+| `iterion_node_cost_usd_total` | counter | `node_id`, `run_id` |
+| `iterion_node_tokens_total` | counter | `node_id`, `run_id`, `model` |
+| `iterion_llm_request_total` | counter | `node_id`, `model` |
+| `iterion_llm_retry_total` | counter | `node_id`, `model` |
+| `iterion_tool_call_total` | counter | `node_id`, `tool` |
+| `iterion_node_duration_ms` | histogram (buckets 50 ms → 300 s) | `node_id` |
+| `iterion_parallel_branches` | gauge | *(none)* |
+
+`node_id` is the workflow node ID, `run_id` the iterion run identifier, `model`
+the full model spec (e.g. `anthropic/claude-sonnet-4-6`), and `tool` the tool
+name on a tool-call event.
 
 ## Backend coverage
 

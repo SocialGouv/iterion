@@ -62,6 +62,7 @@ in `main.bot` and git history.
 | `rechallenge_after_days` | `0` | >0 files rechallenge issues for older ADRs |
 | `diff_since` | `""` | Incremental prioritisation hint |
 | `audit_cache_path` | `.adr-cartograph-cache.json` | Inter-run cache (gitignore it) |
+| `bundle_self_path` | `""` | Prefix excluded from the cache footprint and from the survey — set to `bots/adr-cartograph` when running Adry against the iterion repo itself |
 | `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
 | `max_passes` | `6` | Continuation-loop cap |
 

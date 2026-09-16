@@ -425,9 +425,20 @@ they really are one subscription.
 The key names the CREDENTIAL, not the slot it sits in:
 
 ```
-claude_code|tenant:<id>              # legacy, still valid, expires in place
-claude_code|tenant:<id>|fp:aaaa1111  # the meter of ONE credential
+claude_code|tenant:<id>                        # legacy, still valid, expires in place
+claude_code|tenant:<id>|fp:aaaa1111            # ONE team credential
+claude_code|org:<org-id>|fp:aaaa1111           # an org key lent to its audience — one
+                                               #   ledger for every borrowing team
+claude_code|platform|fp:aaaa1111               # the deployment's own credential
+claude_code|local|fp:aaaa1111                  # a single-process CLI/studio run
+claude_code|account|fp:account:anthropic:<id>  # a PROVIDER-VERIFIED account
 ```
+
+The scope is what keeps one tenant's subscription from blocking another's —
+except for `account`, where merging is the point. A verified account
+fingerprint (`account:anthropic:…`) **replaces** whatever scope the caller
+passed, because the same seat really is one subscription no matter how many
+tenants connected it.
 
 `fp:` is the audit fingerprint of the credential the run actually spends,
 stamped when a human connects it and preserved across the automatic token
@@ -444,15 +455,26 @@ has a 14-day TTL), and nothing needs migrating. This applies to every tier
 — a tenant's forfait, a pool donor's lent subscription, and the
 deployment's own platform forfait, where the meter is fleet-wide.
 
-Two boundaries worth knowing:
+Three boundaries worth knowing:
 
-- **Re-connecting the SAME Anthropic subscription also opens a fresh
-  meter.** A `credentials.json` carries no account id, so iterion cannot
-  tell "the same subscription again" from "a different one" (Codex's
-  `auth.json` does carry `account_id`, and is metered per account). The
-  reflex of re-pasting credentials when a token *looks* broken therefore
-  forgets what was measured. It fails open — one run rediscovers the wall
-  and republishes it — and the mid-run guard is the backstop.
+- **Re-connecting a VERIFIED Anthropic subscription keeps its meter.** On
+  every connect and every refresh iterion reads the account behind the
+  token at `https://api.anthropic.com/api/oauth/profile`
+  (`ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL`) and stamps a verified
+  account fingerprint `account:anthropic:<id>`. It is rotation-stable and
+  shared, so the key switches to the `account` scope and every connection
+  of the same seat — personal, team, org, pool donor, platform — reads and
+  writes ONE meter. Re-pasting credentials no longer forgets what was
+  measured. Codex's `auth.json` carries `account_id` and has always been
+  metered per account.
+- **A credential the profile endpoint definitively refuses still gets a
+  per-blob meter.** A `401`/`403`, or a token carrying no `user:profile`
+  scope (a bare `claude setup-token`), disowns the account and falls the
+  record back to `SubscriptionFingerprint` — the hash of the credential
+  blob, which changes on every rotation. For those, re-connecting the same
+  subscription does open a fresh meter. It fails open — one run
+  rediscovers the wall and republishes it — and the mid-run guard is the
+  backstop.
 - **A local CLI/studio run is metered per machine, not per credential.**
   Rotating your own credential inside a long-lived `iterion studio`
   process keeps reading the replaced account's window until it resets;

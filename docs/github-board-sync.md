@@ -13,9 +13,6 @@ Methodology this serves: [AGENTS.md](../AGENTS.md).
 | | direction | who writes it |
 |---|---|---|
 | Title, body, labels, assignees, open/closed | GitHub issue → card | the **issue sync**: `iterion remote forge integrations sync <id>` on cloud, `iterion issue import` on a local store |
-| **`Status`** | **both ways** | the project pass |
-
-| Title, body, labels, assignees, open/closed | GitHub issue → card | `iterion issue import` |
 | **`Status`** | **both ways** | the project pass, plus the per-move [projection effect](#how-fast-a-native-move-reaches-the-board) on the native → board side |
 | `Area` / `Mode` / `Priority` | board → card labels | the project pass |
 | everything else on the board | — | nothing |

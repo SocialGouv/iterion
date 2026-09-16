@@ -18,6 +18,9 @@ app EVOLVES it (brownfield detection) instead of re-scaffolding.
 | `app_prompt` | autonomous: yes | Natural-language brief of the app to build (interview mode may start empty) |
 | `mode` | no | `autonomous` (default — free first draft) or `interview` (spec-first conversation → committed SPEC.md → campaign) |
 | `draft_review` | no | Pause after convergence for ship / request_changes / hold (default true; headless paths set false) |
+| `plan_phase` | no | `on` (default) authors a build plan after the spec hand-off; `off` skips planning altogether — the campaign plans in stride |
+| `plan_review` | no | Gates ONLY the peer review of that plan: `auto` (default) resolves to on at launch iff a SECOND model family is credentialed, `on` forces it |
+| `plan_review_policy` | no | What a mid-run peer failure does: `skip` (default — proceed unreviewed, loudly stamped) or `wait` (park `failed_resumable` until the window reopens) |
 | `stack` | no | Open stack hint (`nextjs-dsfr`, `django`, …); empty = infer from the brief |
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` — do not override |
 | `baseline` | no | Pre-existing failures to SKIP (meaningful on brownfield re-runs) |
@@ -32,7 +35,15 @@ app EVOLVES it (brownfield detection) instead of re-scaffolding.
 route ─ interview ─▶ interviewer ⇄ interview_chat   (Nexie loop, session
   │                       │ spec_ready               continuity; SPEC.md
   │                       ▼                          committed on disk)
-  └─ autonomous ────▶ campaign → verify_probe → (verify_build) → verify_run → review → gate
+  └─ autonomous ────▶ plan_topology ─ plan_phase=off ───────────────────┐
+                        │ on                                            │
+                        ▼                                               │
+                      plan → plan_review_topology ─ no 2nd family ──────┤
+                        │ peer available                                │
+                        ▼                                               │
+                      plan_review → plan_gate → plan_revise ────────────┤
+                        ▼◀──────────────────────────────────────────────┘
+                      campaign → verify_probe → (verify_build) → verify_run → review → gate
                           ▲  ▲                                                     │
                           │  └── continuation_loop(max_passes), fail_log ──────────┘
                           │                                                        │ converged
@@ -98,9 +109,11 @@ Preset: `--preset nextjs-dsfr` biases stack + skeleton and loads the
 
 `interview-playbook` (the adaptive questioning method + SPEC.md format),
 `greenfield-bootstrap` (scaffold/skeleton/DoD discipline — the
-stack-specific knowledge lives HERE, never in the DSL), plus byte-shared
-copies of feature-dev's `verify-build`, `code-review-invariants`,
-`forge-mr-create`, and `rgaa-dsfr` (for the nextjs-dsfr preset).
+stack-specific knowledge lives HERE, never in the DSL), byte-identical
+copies of feature-dev's `verify-build` and `forge-mr-create`, an app-dev
+variant of `code-review-invariants` (trimmed for greenfield — NOT the
+same file as feature-dev's), and `rgaa-dsfr` (shared byte-for-byte with
+`rgaa-audit` and `whole-improve-loop`, loaded by the nextjs-dsfr preset).
 
 ## Plan phase (cross-model pair review, ADR-091)
 

@@ -94,8 +94,9 @@ and claimed by a runner.
 4. **Validate** — structural and semantic passes check reachability, cycles and
    loop fuel, routing, convergence, capabilities, templates, sandbox settings,
    and backend constraints before execution. DSL diagnostics occupy C001–C199
-   plus the async-interaction band C240–C242; bundle consistency checks occupy
-   C200–C234.
+   plus the async/parallel/fail band C240–C249 and the connector-`action:` band
+   C260–C268; the bundle and manifest consistency checks in `pkg/bundlelint`
+   occupy C200–C234 and C250–C253.
 
 The compiler returns diagnostics rather than hiding repairs. The authoritative
 catalogue is [references/diagnostics.md](references/diagnostics.md); the language
@@ -160,7 +161,7 @@ It resolves launch overrides and node/workflow defaults, then dispatches to:
 
 - `claw`, the in-process multi-provider client with native Iterion tools;
 - `claude_code`, the recommended external CLI agent for implementation work;
-- the generic CLI-agent seam used by Kimi Code and Grok Build;
+- the generic CLI-agent seam used by pi, Kimi Code, and Grok Build;
 - the Codex CLI delegate through the pinned Agent SDK.
 
 MCP servers, board capabilities, tool policies, permission checks, secret
@@ -172,10 +173,17 @@ The exact support and credential matrix is [backends.md](backends.md).
 
 ## Worktrees and sandboxes
 
-`worktree: auto` creates a Git worktree before execution. Successful committed
-results are protected with a persistent branch; landing is controlled by the
-CLI or studio merge policy. A failed run keeps its worktree for inspection and
-resume.
+Worktree isolation is **on by default**, like sandboxing below it: a workflow
+that does not declare `worktree:` compiles to `worktree: auto`, so no bot
+dirties the operator's live checkout. Opt out with `worktree: none`; any other
+value is a compile error (C142).
+
+`worktree: auto` creates a Git worktree before execution. When the workspace is
+not a Git repository the runtime degrades to in-place and records
+`worktree=false` on the run rather than leaving consumers to chase a phantom
+path. Successful committed results are protected with a persistent branch;
+landing is controlled by the CLI or studio merge policy. A failed run keeps its
+worktree for inspection and resume.
 
 Sandboxing is a separate execution adapter under
 [`pkg/sandbox`](../pkg/sandbox/), on by default at the product entry points

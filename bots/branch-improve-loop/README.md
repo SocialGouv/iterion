@@ -69,9 +69,15 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ review ──▶ 
 
 (`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
 `verify_build`; the mr tail forks to `finalize_mr` (open PR) or the PR
-push-back lane — see below. Ahead of the loop, the diagram elides the
-deterministic `workspace_probe` entry precondition and the plan phase —
-both described under their own headings below.)
+push-back lane — see below. Ahead of the loop, the diagram elides four
+deterministic pre-flights: `workspace_probe` (the entry precondition),
+`delivery_probe` (the forge-permission proof), the plan phase, and
+`delivery_reserve` → `delivery_deadline` (the working-window stamp).
+Inside the loop it elides two typed refusals: `decline_probe` →
+`campaign_declined` (a campaign that declines the work, honoured only when
+it left the repository exactly as it found it) and `publish_verdict` →
+`pr_superseded` (the pull request ended under the run). Each of the
+pre-flights is described under its own heading below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
   runs `git add -N .` then reads the branch diff, builds a living todo list of
@@ -184,6 +190,10 @@ while remaining universal: the agent writes the repo's own build/test into
 | `pr_url` | `""` | The PR Billy is hardening, as a forge URL. When set, `publish_verdict` posts Billy's review verdict as a comment ON that PR. Empty = skip. |
 | `gate_enabled` / `gate_context` | `true` / `revi/review` | Merge gate: `publish_verdict` also posts a commit status under `gate_context` on the PR head this run produced. The context is the check NAME — a required check applies to every PR, so a repo where several bots gate different PRs gives them ONE shared context, pinned per repo on the integration `launch_vars`. |
 | `forge_publish_url` / `forge_publish_token` | `""` | The deterministic forge-publish grant, **injected by the iterion server** at launch when the run's team has a forge connection covering `pr_url`'s repo. The run itself never holds a posting credential. |
+| `forge_pr_state_url` / `forge_delivery_preflight_url` | `""` | Read-only endpoints injected by the same server grant: the PR-state probe `publish_verdict` reads to detect a head that moved under the run (`pr_superseded`), and the pre-flight `delivery_probe` calls to prove the runtime token can actually push and post. Empty — a local run, or no connection covering the repo — means the question cannot be asked, which is never read as a closure. |
+| `delivery_reserve_ratio` / `delivery_reserve_floor_minutes` | `0.15` / `10` | Size the delivery reserve carved out of the duration cap in force — see below. |
+| `plan_phase` / `plan_review` / `plan_review_policy` | `on` / `auto` / `skip` | The plan phase and its cross-model peer review — see below. |
+| `plan_budget_ratio` / `plan_large_diff_lines` | `0.3` / `1500` | Share of the cap the plan phase may spend before `plan_budget_gate` cuts it short, and the added-line threshold above which the phase reads a `git diff --stat` footprint + per-file hunks instead of the full unified diff and skips `plan_revise`. |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/branch-improve-loop` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). |
 
 ## Run
@@ -228,7 +238,7 @@ launched with no cost cap never refuses on cost.
 
 The refusal is the named `plan_exhausted` fail node: `failure_code =
 PLAN_BUDGET_EXHAUSTED` and an `error` naming what was used against what
-was allowed, both on the RUN — `iterion runs list`, the studio, the
+was allowed, both on the RUN — `iterion inspect`, the studio, the
 merge-gate notice and the alert sinks read them. It is **resumable**: the
 checkpoint anchors on `plan_budget_gate`, so
 
@@ -242,6 +252,41 @@ re-evaluates the guard against the new caps and takes the `campaign` edge
 `plan_budget_ratio` on the resume works the same way. Nothing picks the
 refusal up by itself (not `--auto-resume`, not the cloud retry): a
 deliberate refusal only changes verdict when an operator changes an input.
+
+## Delivery pre-flight, reserve and deadline
+
+Three deterministic nodes sit between the workspace precondition and the
+campaign. None of them spends an LLM call.
+
+**`delivery_probe`** proves the capability of the token that will deliver this
+branch before any analysis is paid for. A permission advertised on the
+installation is not evidence about its narrower runtime token, so the probe
+asks `forge_delivery_preflight_url` directly; unknown is a typed refusal, not
+an optimistic start. A token that could never push or post ends the run on
+`delivery_permission_denied` with `FORGE_PERMISSION_DENIED`.
+
+**`delivery_reserve` → `delivery_deadline`** size the working window. Three
+production runs ended within two seconds of their duration cap (9001s/9000s,
+2h30m01s/2h30m, 9001.86s/9000s) having pushed no commit: the campaign had
+spent the whole window and the delivery tail — verify gate, in-loop review,
+push onto the PR, verdict comment, merge-gate status — was never scheduled.
+`delivery_reserve` is therefore the single choke point every entry into
+`campaign` passes through, and it carves a reserve out of the cap **in force**
+(`run.max_duration_seconds`, after any `--max-duration` override, the recipe
+and the platform ceiling):
+
+```
+reserve = min( max(delivery_reserve_floor_minutes x 60,
+                   cap x delivery_reserve_ratio),
+               cap / 2 )
+```
+
+The `cap / 2` clamp is the arithmetic guarantee that the campaign keeps at
+least half the run however the two knobs are set; a cap of `0` is unbounded,
+so the reserve is `0` too. `delivery_deadline` turns what is left into a
+wall-clock instant and stamps it into the campaign prompt as a hard
+`STOP WORKING AT (UTC)` — something the agent can observe, not a budget
+number it has to reason about.
 
 ## Precondition (`workspace_probe`)
 

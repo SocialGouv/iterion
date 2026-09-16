@@ -42,7 +42,7 @@ schedules:
       label_source: sec-audit-self
     description: Weekly SAST self-audit  # optional; emitted as a crontab comment
     disabled: false                      # keep in the manifest, leave out of the crontab
-    overlap: skip                        # optional: skip (default) | allow | keepalive — see "Overlap policy"
+    overlap: skip                        # optional: skip (default) | allow | keepalive (no supersede here) — see "Overlap policy"
     max_concurrent: 0                    # optional, with overlap: allow — cap on live runs (0 = unlimited)
     guard: ""                            # optional pre-launch sh -lc gate — see "Guard command"
     guard_timeout: "30s"                 # optional guard subprocess timeout
@@ -63,7 +63,7 @@ to that workspace store.
 | `iterion schedule list [--json]` | List manifest entries. |
 | `iterion schedule remove <name>` | Delete an entry from the manifest. |
 | `iterion schedule run <name> [--dry-run]` | Execute one entry now — what cron invokes. Applies the overlap policy and the guard before launching. `--dry-run` prints the resolved `iterion run` command without executing. |
-| `iterion schedule audit [--name X] [--surface host-cron\|trigger\|cloud] [--since 24h] [--tail 50] [--json]` | Show the tick-decision history: every fired / skipped / guard outcome with its reason — the deterministic answer to "why didn't my scheduled bot fire last night?". |
+| `iterion schedule audit [--name X] [--surface host-cron\|trigger\|cloud] [--since 24h] [--tail 50] [--json]` | Show the tick-decision history — one of `fired` / `skipped_overlap` / `guard_blocked` / `guard_error` / `launch_failed` per tick, with its reason. The deterministic answer to "why didn't my scheduled bot fire last night?". |
 | `iterion schedule install [--print] [--tz UTC]` | Sync the manifest into the host crontab. `--print` renders the block to stdout without touching the crontab (works even where `crontab` is absent). |
 | `iterion schedule uninstall` | Remove the iterion-managed block from the host crontab (manifest left intact). |
 
@@ -166,6 +166,44 @@ Overlap counting keys on run provenance: schedule-launched runs are
 stamped `source.kind: schedule` + `source.schedule_id` in `run.json`,
 which also makes them attributable in the studio and queryable via the
 store.
+
+**Where `supersede` is — and is not — available.** `pkg/schedgate`
+defines a fourth policy, `overlap: supersede` (cancel the live runs and
+launch the newer work). It is **refused at write time on both schedule
+surfaces**: a `schedules.yaml` entry and a cloud schedule row are both
+validated with `ValidateReapable(policy, canReap=false)`, because
+neither tick can cancel anything — the host-cron tick drops the gate's
+`ReapRunIDs`, and in cloud the NATS lease is the liveness authority. You
+get `schedgate: overlap=supersede is not supported on this surface (it
+cannot cancel a live run); use skip or allow` instead of a policy that
+silently degrades to `allow`. `supersede` *is* legal on the two
+event-driven surfaces that can reap — **trigger subscriptions**
+(`POST /api/v1/triggers`, evaluated by the in-process
+`trigger.Scheduler`, which calls `gate.Reap`) and **webhook configs**
+([webhooks.md](webhooks.md#other-config-keys-settable-through-the-crud-api),
+where it pairs with `review_on_sync`). On a schedule, `keepalive` is the
+at-most-one-live policy you want instead.
+
+### The five tick decisions
+
+Every tick writes exactly one decision onto its audit record
+([pkg/schedgate/tick_record.go](../pkg/schedgate/tick_record.go)). The
+values are stable — operators grep the JSONL:
+
+| Decision | Meaning |
+|---|---|
+| `fired` | Overlap and guard passed and the launch returned no error. |
+| `skipped_overlap` | A live run of the same schedule held the slot; `blocking_run_id` names it. |
+| `guard_blocked` | The guard exited non-zero — "nothing to do". `guard_exit` and `stderr_tail` are on the record. |
+| `guard_error` | The guard failed to *execute* (spawn error, timeout), so there is no `guard_exit` at all and `error` says why. Deliberately distinct from `guard_blocked`, so "the guard said no" never masks "the guard is broken". |
+| `launch_failed` | Overlap and guard passed but the launch itself errored. **The slot is spent** — there is no in-tick retry, the next cron slot is the retry. Recording it distinctly is what keeps a `fired` audit from claiming a run that never started. |
+
+`launch_failed` is the one worth looking for first when a schedule looks
+silent but its guard is fine: a bot path that no longer resolves, an
+expired `forge_token`, an org launch-gate denial. The mapping lives in
+one place — `schedgate.LaunchDecision(err)` — so the three
+scheduled-launch surfaces (`host-cron`, `trigger`, `cloud`) cannot drift
+on it.
 
 ## Always-on agents — `overlap: keepalive`
 
@@ -381,8 +419,19 @@ you have accepted their loss.
 
 ## Notes & limits
 
-- **Cron expressions are passed through verbatim.** `iterion` only
-  checks the field count (5); range validity is the host cron's job.
+- **Cron validation differs by surface.** In the **host-crontab
+  manifest** the expression is passed through verbatim: `iterion` only
+  checks the field count (`validateCronExpr` in
+  [pkg/cli/schedule.go](../pkg/cli/schedule.go) refuses anything that is
+  not 5 fields), and range validity is the host cron's job. The **cloud
+  schedule row** (`POST /api/teams/{id}/schedules`, the studio Schedules
+  tab) and the **resident in-process scheduler** (schedule-kind trigger
+  subscriptions) instead parse with `robfig/cron/v3` `ParseStandard`:
+  an out-of-range field is refused at write time (`cloudsched: invalid
+  cron …`, HTTP 400), and the descriptor forms `@hourly` / `@daily` /
+  `@weekly` / `@every 5m` are accepted — none of which the 5-field
+  manifest check will take. Moving an expression between the two is
+  therefore not always a copy-paste.
 - **Host cron only.** `schedule install`/`uninstall` shell out to
   `crontab`. On a host without it (e.g. a minimal container, Windows),
   use `schedule install --print` and wire the block into whatever

@@ -133,10 +133,10 @@ auto-spawned, observes the run, and is torn down when the run ends. The
 `watches:` ids must name agent or judge nodes (a warning `C190` fires
 otherwise — both kinds execute through the same model executor and pick
 up steering at their next turn),
-and `system:` must reference a declared prompt (`C193`). Monitors aren't
-declared in the DSL — the supervisor bot registers the patterns it cares
-about at runtime; use the CLI `--monitor` flag to pre-seed them when
-attaching externally.
+and `system:` must reference a declared prompt (`C193`). Monitors can be
+pre-seeded in the DSL through `monitors:` (above), and the supervisor bot
+can register more at runtime; when attaching externally instead, use
+`iterion supervise --monitor` to pre-seed them.
 
 ### Disabling declared supervisors (kill switch)
 
@@ -241,12 +241,15 @@ One-time setup per repo — install the drain hook into the target repo's
 Claude Code settings:
 
 ```sh
-iterion supervise install-hook --cwd /path/to/repo   # writes .claude/settings.local.json
+iterion supervise install-hook --cwd /path/to/repo             # writes .claude/settings.local.json
+iterion supervise install-hook --cwd /path/to/repo --project   # writes the shared .claude/settings.json
 ```
 
 This adds a `Stop` + `PostToolUse` command hook that runs
 `iterion __claude-hook-drain`. It is non-destructive (existing hooks and
-keys are preserved) and idempotent; remove it with `uninstall-hook`. The
+keys are preserved) and idempotent; `--project` targets the checked-in
+`.claude/settings.json` so the whole team inherits the drain hook, and
+`uninstall-hook` (same two flags) removes it. The
 hook must be present **before** the `claude` session starts (Claude Code
 reads hooks at session start).
 

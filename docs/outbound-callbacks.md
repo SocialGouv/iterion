@@ -99,9 +99,13 @@ The receiver recomputes `HMAC_SHA256(secret, raw_body)` over the bytes it
 received (before JSON parsing) and compares — constant-time — against the
 header. A mismatch means a forged or tampered request; reject it. The
 helper that produces and checks this is
-[`notify.Sign` / `notify.Verify`](../pkg/notify/sign.go) (the same
-primitive a future native inbound webhook would use to authenticate
-trigger requests).
+[`notify.Sign` / `notify.Verify`](../pkg/notify/sign.go), and it is the
+**outbound** primitive only. Native inbound webhooks shipped with their own
+scheme — a per-webhook `iwh_` secret sealed at rest and verified by
+`webhooks.VerifyHMACSignature` against the forge's own header
+(`X-Hub-Signature-256`, `X-Forgejo-Signature`, `X-Iterion-Webhook-Signature`)
+— so `ITERION_COMPLETION_WEBHOOK_SECRET` governs nothing on the inbound
+side. See [webhooks.md](webhooks.md#auth-modes--token-vs-hmac).
 
 When the secret is empty (default) iterion sends **no** signature header.
 A receiver should then either run only on a trusted private network or

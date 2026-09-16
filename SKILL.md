@@ -73,7 +73,8 @@ Top-level declarations may appear in any order:
 ```text
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
-agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
+agent, judge, router, human, tool, compute, emit, wait, await_answers,
+subbot, fail,
 group, use, workflow
 ```
 
@@ -445,9 +446,10 @@ iterion diagram workflow.bot --view full
 iterion run workflow.bot --var key=value
 ```
 
-Validation emits sparse DSL codes in C001–C199 plus the async-interaction band
-C240–C242, C243 (`session: persist` in a fan-out body), and C244 (loop in a
-parallel-branch body); bundle codes in C200–C234. Do not assume the numeric ranges are
+Validation emits sparse DSL codes in C001–C199 plus the async/parallel/fail
+band C240–C249 (async interaction C240–C242, `session: persist` in a fan-out
+body C243, loop in a parallel-branch body C244) and the connector-`action:`
+band C260–C268; bundle codes in C200–C234 and C250–C253. Do not assume the numeric ranges are
 contiguous. For bundles, also check
 [`docs/bundles.md`](docs/bundles.md). For current CLI flags, use
 `iterion <command> --help` and [`docs/cli-reference.md`](docs/cli-reference.md).

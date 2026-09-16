@@ -14,12 +14,13 @@ feature list. For exact productions, use
 | Inputs and reuse | top-level or workflow `vars` / `attachments`; top-level `presets` / `secrets`; workflow `resources`; compile-time `group` / `use` |
 | Prompt and shape | `prompt` with bounded relative `include`, flat `schema`, cursor declarations |
 | LLM execution | `agent`, `judge`, model/backend/provider selection, prompts, sessions, tools, permissions, skills, MCP, memory, cursors, compaction, reasoning/timeout limits |
-| Deterministic execution | `tool`, Verified Action policy/recovery, `compute`, event `emit`, bounded event `wait` |
+| Deterministic execution | `tool` running a shell `command:`, a `script:`, or a connector `action:`; Verified Action policy/recovery; `compute`; event `emit`; bounded event `wait`; and the typed terminal `fail` with its `code:` / `message:` / `resumable:` |
 | Human control | `human` with `none`, `human`, `llm`, `llm_or_human`, or `review` interaction and review/merge fields |
+| Async human input | `await_answers` parks a branch until every pending `ask_user_async` question of its `from:` node — or of the whole run — is answered; the `timeout:` is mandatory (C241) |
 | Routing | `router` modes `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, and `llm` |
 | Nested execution | `subbot` child runs, variable mapping, resource leases, and `isolated` workspace-safety assertion |
 | Concurrent observation | `supervisor` declarations with watched nodes, cooldown, evaluation cap, model, and system prompt |
-| Workflow | one `workflow` per file, entry, edges, defaults, permissions/capabilities/skills/MCP, budget, resources, interaction, worktree, compression, sandbox |
+| Workflow | one `workflow` per file, entry, edges, defaults, permissions/capabilities/skills/MCP, budget, resources, interaction, worktree, compression, sandbox, and the on/off safety controls `loop_budget_guard`, `repo_devbox` and `workspace_checkpoint` |
 
 Supported scalar/schema types are `string`, `bool`, `int`, `float`, `json`,
 and `string[]`; string declarations may carry an enum constraint.

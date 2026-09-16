@@ -64,12 +64,31 @@ Normalized event vocabulary (mapped to the forge's native names by
 |---|---|---|---|
 | `pull_request` | `merge_request` | `pull_request` | `pull_request` |
 | `pull_request_comment` | `note` | `issue_comment` | `issue_comment` |
+| `pull_request_review_comment` | `note` | `pull_request_review_comment` | — (not wired) |
+| `issue_labeled` | `issues` | `issues` | `issues` |
 
-(GitLab's native names `merge_request` / `note` are translated a second
-time — to the boolean request-body fields `merge_requests_events` /
-`note_events` — inside the GitLab admin client when the hook is created.)
+(GitLab's native names `merge_request` / `note` / `issues` are translated a
+second time — to the boolean request-body fields `merge_requests_events` /
+`note_events` / `issues_events` — inside the GitLab admin client when the hook
+is created.)
 
-Unknown events / scope keys / levels fail manifest parsing
+`pull_request_review_comment` is the comments **inside** PR review threads, and
+feeds the reply-to-a-suggestion conversational lane
+([forge-conversations.md](forge-conversations.md)). It is deliberately not part
+of `pull_request_comment`: one submitted review fires one delivery per inline
+comment, each charged against the webhook rate bucket and the org monthly quota
+before any handler filters it, so only a bot that actually consumes
+review-thread replies should make its repos pay that volume. Forgejo is not
+wired — its dispatch never routes the event.
+
+`issue_labeled` subscribes the repo hook to the forge-native `issues` event:
+labelling an issue launches an implementer bot that opens a PR back-linked to
+the issue. The integration's `label_allowlist` (below) is what decides which
+freshly-applied label dispatches it. The GitLab inbound half is not wired yet.
+
+The accepted set is closed — `KnownForgeEvents` in
+[pkg/bundle/manifest.go](../pkg/bundle/manifest.go). Unknown events / scope keys
+/ levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
 
 Enabling **several** bots on one repo (a reviewer + a dependency guard)

@@ -155,6 +155,7 @@ Status legend: ✅ implemented · 🚧 planned.
 | claw backend + tools + MCP + vision + long-context | `TestLive_Lite_Claw*`, `TestLive_ClawToolCoverage` | ✅ |
 | Router (llm mode) | `TestLive_Feat_RouterLLM` | ✅ |
 | Permission gate (deny + ask) | `TestLive_Feat_Permission_Deny`, `_Ask` | ✅ |
+| Permission gate through a CLI backend's native PreToolUse hook (deny-only) | `TestLive_Feat_Permission_Deny_Grok`, `_Kimi` | ✅ |
 | Ultracode | `TestLive_Feat_Ultracode` | ✅ |
 | Supervisors | `TestLive_Feat_Supervisor` | ✅ |
 | Cursors | `TestLive_Feat_Cursors` | ✅ |
@@ -170,7 +171,8 @@ Status legend: ✅ implemented · 🚧 planned.
 | Dispatcher | `e2e/dispatcher_test.go`, `board_dispatcher_test.go` (deterministic) | ✅ |
 | Webhooks | `pkg/webhooks/*_test.go` (parsers) + server stubs (deterministic) | ✅ |
 | Schedule (trigger → run) | `TestLive_Feat_Schedule` | ✅ |
-| Bundles / Expr-Compute / Codex | skills+bundle bots / `ExhaustiveDSLCoverage` / dual-model (covered) | ✅ |
+| Bundles / Expr-Compute | skills+bundle bots / `ExhaustiveDSLCoverage` | ✅ |
+| Codex delegate + native `web_search` | `TestLive_Feat_CodexWebSearch` | ✅ |
 
 ## Cost discipline
 

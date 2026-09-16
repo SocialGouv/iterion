@@ -292,8 +292,26 @@ have fired.
 this way is read from what the invocation DID — the nodes its branches entered
 and the edges they recorded firing — never from the graph alone. A route
 routing turned down is not walked, so an `else` nobody took cannot arrive
-through a node that never executed; and a node that ran two invocations ago
-still has an output on the run, which is not evidence it ran in this one.
+through a node that never executed; and a node that ran two invocations ago is
+not evidence it ran in this one.
+
+**A second invocation replaces the region's output view.** When a fan-out is
+entered again — a loop back around it, a router dispatched a second time —
+convergence invalidates `outputs.*` for the region this invocation owns before
+merging the fresh branch results. A branch that failed, a node the routes never
+reached and an empty `fan_out_each` therefore contribute no current output:
+the preceding pass's value resolves to `nil` at the collector and in every
+direct `outputs.<node>` reference downstream, including after pause/resume. The
+region is walked forward from the branches actually **launched** — an `llm`
+router with `multi: true` selects a subset, and only that subset seeds the walk
+— stops at the collector, and never crosses a bounded back-edge; untaken routes
+inside it are cleared too, since they produced no current value either. Outputs
+*outside* the invocation are untouched, each branch still receives its
+immutable input snapshot (so deliberate feedback from the preceding pass stays
+possible), and published `artifacts.*` keep their separate last-published value
+and version history — name that namespace explicitly when a consumer needs the
+last known result. Older runtimes could silently reuse a previous verdict after
+the current branch failed; they no longer do.
 
 **Which node is the collector.** A node that declares `await:` is the collector for the branches that reach it. Without the annotation, the engine elects the first node (breadth-first from the router's targets) that has more than one distinct predecessor, bounded back-edges excluded. For the router's **direct targets** — the branch heads — only predecessors inside the fan-out count (the router itself, or a node it reaches): the mono/dual topology, where a `condition` router reaches the same reviewer directly *or* through a `fan_out_all` router, gives that reviewer two predecessors, and it is still an ordinary branch head, not the collector. Below the heads every predecessor counts, including a trunk edge that bypasses the fan-out (`plan -> collect else` for the no-items case) — that bypass is what makes `collect` the implicit collector of a linear `fan_out_each` template. Declare `await:` on the intended collector rather than relying on the implicit election.
 

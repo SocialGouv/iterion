@@ -3,8 +3,8 @@
 How iterion-cloud resolves the LLM provider API keys a run uses. The
 short version: **keys are owned by the org, sealed at rest in Mongo, and
 resolved per-run with a precedence chain** (per-webhook override → user
-default → org default → deployment env fallback). Nothing here is a
-global plaintext secret the agent can read.
+default → team default → org tier → pool → platform tier → deployment env
+fallback). Nothing here is a global plaintext secret the agent can read.
 
 This document exists so we don't reverse-engineer the resolver again.
 Every claim is anchored to a file:line; if the code moved, fix the
@@ -18,21 +18,40 @@ flowchart TD
   t1["per-webhook override<br/>(Config.KeyOverrides[provider] → key_id)<br/>← highest"]
   t2["requesting user's default<br/>(ScopeUserID==me, IsDefault)"]
   t3["requesting user's other key<br/>(ScopeUserID==me)"]
-  t4["org default<br/>(ScopeUserID=='', IsDefault)"]
-  t5["org other key<br/>(ScopeUserID=='')"]
-  t6["deployment env fallback<br/>(ANTHROPIC_API_KEY/… on the pod)<br/>← lowest"]
+  t4["team default<br/>(ScopeUserID=='', IsDefault)"]
+  t5["team's other key<br/>(ScopeUserID=='')"]
+  t6["org tier<br/>(secrets.OrgTierTenantID — the parent org's own<br/>keys, for the teams its credential audience admits)"]
+  t7["pool<br/>(a contributor's lent metered key)"]
+  t8["platform tier<br/>(secrets.PlatformTenantID — admin llm api-keys)"]
+  t9["deployment env fallback<br/>(ANTHROPIC_API_KEY/… on the pod)<br/>← lowest"]
   resolver --> t1
   t1 --> t2
   t2 --> t3
   t3 --> t4
   t4 --> t5
   t5 --> t6
+  t6 --> t7
+  t7 --> t8
+  t8 --> t9
 ```
+
+Steps 1–5 are `secrets.Resolve`, which is what the rest of this document
+describes. Steps 6–8 are the cloud publisher's tiers around it, each a
+separate credential store — see
+[credential-pool.md](credential-pool.md#resolution-order-where-the-pool-sits)
+for the full walk and the conditions that skip a tier.
+
+**Terminology.** A key with `scope_user == ""` is **team-wide**; this page
+used to call it "org", which now collides with the genuine *org tier*
+(`orgtier:<org-id>`, step 6) added for orgs that lend one key to several
+product teams. Team-wide is what `secrets.Resolve` sees; the org tier it
+never sees at all.
 
 A run launched by a **webhook** has the synthetic owner `webhook:<id>`
 (no real user), so the user-scoped tiers are empty for it — its chain
-collapses to **per-webhook override → org default → env fallback**.
-That is exactly the "default per org, overridable per webhook" model.
+collapses to **per-webhook override → team default → the shared tiers →
+env fallback**. That is exactly the "default per team, overridable per
+webhook" model.
 
 ## Storage — the `api_keys` Mongo collection
 
@@ -43,8 +62,8 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `_id` | key id (`secrets.NewApiKeyID()`) — what a webhook override references |
 | `tenant_id` | owning org; every store call is tenant-filtered (fail-closed) |
 | `scope_team` | the team the key belongs to |
-| `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
-| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:50-63](../pkg/secrets/byok.go#L50)) |
+| `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **team-wide** |
+| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:114-130](../pkg/secrets/byok.go#L114)) |
 | `name` | human label |
 | `last4` / `fingerprint` | shown in UI; the key itself is never returned. `fingerprint` is `FingerprintSHA256(plaintext)` — the audit identity the run document, the GRANTED log line and the metering bump all key on; indexed (sparse) by `EnsureSchema` |
 | `sealed_secret` | the ciphertext (`SealAPIKey(sealer, keyID, plaintext)`); JSON-hidden (`json:"-"`) |
@@ -58,7 +77,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 - Interface: `ApiKeyStore` (Create/Get/GetOwned/Update/Delete/ListByTeam/ListByUser/MarkUsed/MarkFingerprintUsed/ClearDefault) — [pkg/secrets/byok.go](../pkg/secrets/byok.go). `GetOwned` is the credential pool's cross-tenant read, bounded by ownership; `MarkFingerprintUsed` the runner's metering bump.
 - Ingestion gate: the create and rotate routes refuse (`400`) a value whose shape could not authenticate — [`secrets.ValidateAPIKeyShape`](../pkg/secrets/credential_shape.go): a bearer token with any white-space, control or invisible character for the bearer providers; anything but a JSON object for `bedrock` / `vertex`, whose credential is a document. See the ingestion-gate section of [cloud-llm-credentials.md](cloud-llm-credentials.md).
 - Backings: `MongoApiKeyStore` (prod) + `MemoryApiKeyStore` (tests).
-- Wired in the server at [cmd/iterion/server.go:193](../cmd/iterion/server.go#L193) (`NewMongoApiKeyStore(st.DB())` + `EnsureSchema`), handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
+- Wired in the server at [cmd/iterion/server.go:801](../cmd/iterion/server.go#L801) (`NewMongoApiKeyStore(st.DB())`), its `EnsureSchema` running from the batched schema sequence at [server.go:849](../cmd/iterion/server.go#L849); handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
 
 The plaintext is sealed with the server's `Sealer` before it touches
 Mongo, and is only unsealed transiently inside `resolveAndSealCredentials`
@@ -99,13 +118,15 @@ error leaves the ceiling unapplied for that resolution and is logged.
 
 ## Resolution — `secrets.Resolve`
 
-[pkg/secrets/byok.go:168](../pkg/secrets/byok.go#L168):
+[pkg/secrets/byok.go:300](../pkg/secrets/byok.go#L300):
 
 ```go
 Resolve(ctx, store, teamID, userID string,
         providers []Provider,
         keyOverrides map[Provider]string,   // provider → key_id
-        sealer) (map[Provider]Resolution, error)
+        sealer Sealer,
+        usable func(ApiKey) bool,           // nil ⇒ every visible key is eligible
+) (map[Provider]Resolution, error)
 ```
 
 Two passes over the keys visible from `(teamID, userID)`:
@@ -114,29 +135,46 @@ Two passes over the keys visible from `(teamID, userID)`:
    `keyOverrides`, pin that exact key (must be visible + the right
    provider). This is the per-webhook override hook.
 2. **Pass 2 — priority walk.** For any provider not already pinned, take
-   the first key in `keyRank` order ([byok.go:234](../pkg/secrets/byok.go#L234)):
+   the first key in `keyRank` order ([byok.go:377](../pkg/secrets/byok.go#L377))
+   that `usable` accepts:
 
    | rank | key |
    |---|---|
    | 0 | requesting user's **default** (`scope_user==me && is_default`) |
    | 1 | requesting user's other key |
-   | 2 | org **default** (`scope_user=="" && is_default`) |
-   | 3 | org other key |
+   | 2 | team **default** (`scope_user=="" && is_default`) |
+   | 3 | team's other key |
    | 99 | another user's personal key — **never applies** |
 
-The publisher calls it for `allKnownProviders` ([publisher.go:138](../pkg/server/cloudpublisher/publisher.go#L138)) and seals whatever resolved into the run bundle.
+`Resolve` still returns at most ONE key per provider, but `usable` is what
+turns several keys of one provider into an **ordered fallback chain**: a key
+the predicate refuses is skipped and the walk takes the next visible key of
+that provider instead of handing the run the same dead one. The publisher
+passes a predicate built from the evidence it already holds — keys the
+provider freshly auth-refused, keys whose usage window is closed. It is
+consulted in Pass 2 only (see [the pin rule](#per-webhook-key-override)), and
+`nil` keeps the plain first-match behaviour.
+
+The publisher calls it for `allKnownProviders` and seals whatever resolved into the run bundle.
 
 ## Where the publisher uses it
 
-[pkg/server/cloudpublisher/publisher.go:167](../pkg/server/cloudpublisher/publisher.go#L167)
-`resolveAndSealCredentials`, step 1 ("BYOK API keys",
-[L189](../pkg/server/cloudpublisher/publisher.go#L189)):
+[pkg/server/cloudpublisher/publisher.go:414](../pkg/server/cloudpublisher/publisher.go#L414)
+`resolveAndSealCredentials`, tier 1 (`credentialTierBYOK`,
+[L454](../pkg/server/cloudpublisher/publisher.go#L454)):
 
 ```go
-resolved, _ := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID,
-                               allKnownProviders, nil /* keyOverrides */, p.sealer)
+resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID,
+        allKnownProviders, overrides, p.sealer,
+        p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips))
 for prov, r := range resolved { bundle.APIKeys[prov] = string(r.Plaintext) }
 ```
+
+When the predicate leaves a provider with no key at all, the walk is re-run for
+that provider with `usable = nil` and the result remembered: if no later tier
+fills the wire, the refused key is restored, because a run that makes one
+refused call parks on a durable usage-window retry, while a run published with
+an empty wire fails on a no-credential auth error nothing retries.
 
 The bundle is sealed under a fresh `secrets_ref`; the runner unseals it
 and stamps `bundle.APIKeys` into ctx ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go)).
@@ -157,20 +195,22 @@ sealed BYOK map.
 
 | verb + path | role |
 |---|---|
-| `GET /api/teams/{id}/api-keys` | list org + my keys visible from the team |
-| `POST /api/teams/{id}/api-keys` | create an **org-wide** key |
+| `GET /api/teams/{id}/api-keys` | list team-wide + my keys visible from the team |
+| `POST /api/teams/{id}/api-keys` | create a **team-wide** key |
 | `GET/POST /api/me/api-keys` | list / create a **personal** key |
-| `PATCH /api/teams/{id}/api-keys/{key_id}` | rename / promote to default |
-| `DELETE /api/teams/{id}/api-keys/{key_id}` | revoke |
+| `PATCH /api/teams/{id}/api-keys/{key_id}`<br>`PATCH /api/me/api-keys/{key_id}` | rename, rotate the secret, promote to default, re-cap `max_concurrent_runs` — one handler serves both prefixes |
+| `DELETE /api/teams/{id}/api-keys/{key_id}`<br>`DELETE /api/me/api-keys/{key_id}` | revoke — one handler serves both prefixes |
 
-Create body ([byok_routes.go:132](../pkg/server/byok_routes.go#L132)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true }`. The server seals `secret` and stores only the ciphertext + `last4`.
+The org tier's shared keys are the same four verbs on a third prefix, registered next door ([pkg/server/org_credentials_routes.go:24-27](../pkg/server/org_credentials_routes.go#L24)): `GET`/`POST /api/orgs/{id}/api-keys` and `PATCH`/`DELETE /api/orgs/{id}/api-keys/{key_id}`.
+
+Create body ([byok_routes.go:61-70](../pkg/server/byok_routes.go#L61)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true, "max_concurrent_runs": 0 }`. The server seals `secret` and stores only the ciphertext + `last4`; `max_concurrent_runs` is optional and `0` means uncapped ([what counts](#concurrency-ceiling--what-counts)).
 
 Studio UI: Settings → API Keys ([studio/src/views/SettingsDialog/ApiKeysTab.tsx](../studio/src/views/SettingsDialog/ApiKeysTab.tsx), [studio/src/api/byok.ts](../studio/src/api/byok.ts)). Cloud accounts use the sibling [account API-key page](../studio/src/views/account/ApiKeys.tsx).
 
 ## Per-webhook key override
 
 **Goal:** a webhook can pin a *specific* key per provider, overriding the
-org default — and you can have several webhooks for the same bot, each on
+team default — and you can have several webhooks for the same bot, each on
 a different key (e.g. billing/quota separation per integration).
 
 **Built** — engine + wiring. `Resolve`'s `keyOverrides` (Pass 1) is the

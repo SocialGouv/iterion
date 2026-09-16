@@ -378,6 +378,9 @@ binary. The vault path is derived from the run's store directory.
 - [docs/workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md)
   — Goodhart's law in workflow design. PII filtering is complementary
   to anti-façade scanning: filter removes data, scanner removes lies.
-- `pkg/backend/tool/privacy/` — implementation (when shipped).
+- [`pkg/backend/tool/privacy/`](../pkg/backend/tool/privacy/) — the
+  implementation: the detector (`detector/`), the registration of the
+  `privacy_filter` / `privacy_unfilter` tools (`register.go`) and the
+  run-scoped token vault (`vault.go`).
 - [gitleaks](https://github.com/gitleaks/gitleaks) — the project the
   secret-detection ruleset is inspired from.

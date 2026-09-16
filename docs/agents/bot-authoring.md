@@ -27,11 +27,15 @@ refresh for upgrade cases) is documented in
 
 Current bundles and their skills:
 - [bots/whats-next/skills/](../../bots/whats-next/skills/) —
-  10 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  11 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
   `iterion-dsl-quickref`, `iterion-board` (reference for the
   capability-gated board MCP tools on claude_code, claw, and pi RPC),
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-  `priority-elicitation`, `session-continuity` (iterion workspace
+  `operator-arbitrage` (grouped decision blocks with sharp options and a
+  named recommendation, instead of a wall of text), `factory-ops`
+  (dispatching into a live factory without breaking it — store locking,
+  cost caps, base drift, stale binaries — and the evidence-based bilan
+  format), `session-continuity` (iterion workspace
   memory — `memory_read` / `memory_write` / `memory_list` for the
   cross-run knowledge tree under
   `~/.iterion/projects/<key>/memory/<scope>/`), and `dogfood-cycle`
@@ -41,8 +45,10 @@ Current bundles and their skills:
   [docs/references/productive-session-patterns.md](../references/productive-session-patterns.md)).
   Six of the original eight were produced by a dogfood run of claw +
   `openai/gpt-5.5` against this repo; `iterion-board` was added by
-  the board-capabilities work and `session-continuity` by the
-  workspace-memory work — see
+  the board-capabilities work, `session-continuity` by the
+  workspace-memory work, and `operator-arbitrage` + `factory-ops` by
+  the Nexie v3 skills rewrite (ADR-075), which retired
+  `priority-elicitation` — see
   [scripts/adhoc/whats-next-skills-gen.bot](../../scripts/adhoc/whats-next-skills-gen.bot)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).
@@ -196,8 +202,8 @@ reviewer you author must anchor the same way.
 ## Catalog bots are repo-agnostic
 
 Every bot shipped in `bots/` (the catalog `iterion bots list`
-discovers — docs-refresh, feature_dev, whole_improve_loop,
-branch_improve_loop, secured-renovacy, whats-next, sec-audit-*, …) is
+discovers — docs-refresh, feature-dev, whole-improve-loop,
+branch-improve-loop, secured-renovacy, whats-next, sec-audit-*, …) is
 a **general-purpose tool that must run on ANY target repository**, in
 any language, with no knowledge of iterion's own layout baked in.
 docs-refresh aligns *a* repo's docs with *its* code; feature_dev ships

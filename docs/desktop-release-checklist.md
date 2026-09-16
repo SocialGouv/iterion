@@ -32,8 +32,8 @@ If any of these is missing or expired:
 
 ## 4. Release-pipeline dry run (optional but recommended)
 
-- [ ] On a feature branch, run `gh workflow run desktop-release.yml -f dry_run=true` (if the workflow supports it) or use a `desktop-vX.Y.Z-rc1` pre-release tag.
-- [ ] Verify all 6 platform jobs succeed (macOS universal, windows/amd64, windows/arm64, linux/amd64, linux/arm64).
+- [ ] Run `gh workflow run desktop-release.yml --ref <branch>` — the workflow declares a bare `workflow_dispatch:` and takes **no inputs**, so `-f dry_run=…` is rejected. A manual dispatch is validation-only by construction: the `publish` job is gated on `github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`, so a dispatched run builds and signs everything but attaches nothing to a Release. The artefacts stay downloadable from the run's "Artifacts" panel for inspection.
+- [ ] Verify all 5 platform jobs succeed (macOS universal, windows/amd64, windows/arm64, linux/amd64, linux/arm64). One macOS job now ships a universal `.app` (lipo'd amd64 + arm64), replacing the old two-job macos-13 + macos-14 matrix.
 - [ ] Verify `generate-manifest.sh` produced valid JSON (`jq -e .` against the artefact).
 - [ ] Verify the generated `.sig` files are valid Ed25519 signatures of their corresponding artefacts (sample: download one binary + its `.sig`, run `openssl pkeyutl -verify -pubin -inkey updater_ed25519.pub -rawin -in <artefact> -sigfile <artefact>.sig`).
 
@@ -46,7 +46,7 @@ If any of these is missing or expired:
 
 ## 6. Post-publish verification
 
-- [ ] `gh release view v<X.Y.Z>` shows all expected artefacts (6 binaries × {bundle, .sig} + manifest + manifest.sig + checksum + GPG sigs for Linux).
+- [ ] `gh release view v<X.Y.Z>` shows all expected artefacts (5 platform bundles × {bundle, .sig} + manifest + manifest.sig + checksum + GPG sigs for Linux).
 - [ ] Download and run a binary on each platform that wasn't covered by CI:
   - Open the .zip on a real Apple Silicon Mac → `/Applications/Iterion.app` opens cleanly via Gatekeeper.
   - Run the .exe-installer on a Windows host → SmartScreen accepts (post Authenticode warmup).
@@ -68,7 +68,7 @@ If a release artefact ships a critical bug after publication:
 
 - [ ] **Yank the manifest**: edit the GitHub Release to remove or replace `iterion-desktop-manifest.json` so existing users don't auto-update to the broken version. New users land on a stale version, which is preferred.
 - [ ] **Re-tag a `vX.Y.Z+1` patch release** with the fix and publish; auto-update will lift users off the broken version.
-- [ ] **Revert the brew cask** to the previous good version manually (the cask edits live in the iterion-brew tap repo).
+- [ ] **Revert the brew cask** to the previous good version. The tap lives in *this* repository — `Formula/iterion.rb` and `Cask/iterion-desktop.rb` — rewritten by `scripts/update-brew-tap.sh` and landed by `scripts/brew-tap-pr.sh` on a `chore/brew-tap-<tag>` branch. For a rollback, put the previous `version` + `sha256` back into `Cask/iterion-desktop.rb` and open a PR the same way.
 - [ ] **Communicate**: pin a notice on the GitHub Release describing the issue, recommended action, and patch ETA.
 - [ ] **Post-mortem**: track the regression that escaped CI/QA; add a scenario to [desktop-qa-checklist.md](desktop-qa-checklist.md) so it can't recur.
 
@@ -84,7 +84,7 @@ Rotation procedure:
 
 1. Generate a new keypair: `./scripts/desktop/ed25519-keygen.sh ./new-keys`.
 2. Update `cmd/iterion-desktop/updater.go` `updaterPublicKeyHex` to the new public key (hex-encoded).
-3. Cut a release with **both** the old and new public keys recognised — temporarily widen `verifyManifest` to accept either signature, ship that release, wait until > 95% of installs have updated.
+3. Cut a release with **both** the old and new public keys recognised. There is no single verification helper to widen: `cmd/iterion-desktop/updater.go` decodes `updaterPublicKeyHex` once into `Updater.pubkey` (in `NewUpdater`) and calls `ed25519.Verify(u.pubkey, body, sig)` at **two** sites — the manifest check in `CheckForUpdate` and the artefact check in `DownloadAndApply`. Turn the single key into a list and make both sites accept either key. Ship that release, wait until > 95% of installs have updated.
 4. Cut a follow-up release that drops the old public key.
 5. Update the GitHub secret `UPDATER_ED25519_PRIVATE` to the new key.
 6. Securely destroy the old private key.

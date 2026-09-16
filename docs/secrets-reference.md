@@ -18,7 +18,7 @@ TLS-MITM egress) live in [secrets.md](secrets.md); this page is about
 | **Bot-secret binding** | policy that names a generic secret for a bot | team only | run launch | [pkg/secrets/bindings.go](../pkg/secrets/bindings.go) + ADR [018](adr/018-bot-secret-binding-egress-enforcement.md) |
 | **File secret** (`as: file`) | secret materialised on disk in the sandbox | engine | per-node exec | [pkg/secrets/files.go](../pkg/secrets/files.go) ([engine layers](secrets.md)) |
 | **OAuth-forfait** | Claude Pro / ChatGPT subscription blob | user only | run launch | [pkg/secrets/oauth.go](../pkg/secrets/oauth.go) |
-| **Tokens** | bearer credentials (`iwh_` / `iap_` / `iar_`) | varies | every request | [pkg/webhooks/token.go](../pkg/webhooks/token.go) · [pkg/pat/pat.go](../pkg/pat/pat.go) · [pkg/auth/password_reset.go](../pkg/auth/password_reset.go) |
+| **Tokens** | bearer credentials (`iwh_` / `iap_` / `iar_` / `iws_`) | varies | every request | [pkg/webhooks/token.go](../pkg/webhooks/token.go) · [pkg/pat/pat.go](../pkg/pat/pat.go) · [pkg/auth/password_reset.go](../pkg/auth/password_reset.go) · [pkg/configshare/token.go](../pkg/configshare/token.go) |
 
 ## BYOK LLM keys
 
@@ -166,8 +166,9 @@ only. The `codex` OAuth flow has no equivalent restriction.
 | Prefix | What | Where it lives | Visibility |
 |---|---|---|---|
 | `iwh_…` | Inbound webhook bearer | `webhook_configs.token_hash` | shown once at create / rotate |
-| `iap_…` | Personal access token | `pat.token_hash` | shown once at mint |
+| `iap_…` | Personal access token | `personal_access_tokens.token_hash` | shown once at mint |
 | `iar_…` | Password-reset link | `password_resets.token_hash` | sent by email; 60-minute TTL |
+| `iws_…` | Config-share editor bearer | `config_shares.token_hash` | shown once at create / rotate |
 | (no prefix) | Refresh JWT | `sessions` (hashed) | the `__Host-iterion_refresh` cookie |
 | (no prefix) | Access JWT (HS256) | not stored — signed at issue | the `__Host-iterion_auth` cookie / `Authorization: Bearer` |
 
@@ -176,6 +177,19 @@ All four `i…_` tokens use the same primitive
 `HashRefreshToken`): 32 random bytes URL-safe-encoded, the prefix is
 recognisability for humans. The hash on disk is salted; verification is
 constant-time.
+
+`iwh_` and `iws_` are the two **self-authenticating** surfaces — presented
+as `Authorization: Bearer` with no session behind them. An `iws_` token
+resolves to a synthetic share identity scoped to that one share
+([pkg/server/middleware_configshare.go](../pkg/server/middleware_configshare.go))
+and reaches only the public `/api/config-share/{id}/meta` and
+`…/config` (GET + PATCH) endpoints
+([pkg/server/config_share_routes.go](../pkg/server/config_share_routes.go));
+it never carries a team role. The authenticated editor endpoints under
+`/api/teams/{id}/config-editor/…` take the orthogonal `config_editor`
+capability instead
+([pkg/server/auth_authz.go:canEditConfigShares](../pkg/server/auth_authz.go),
+[ADR-078](adr/078-config-editor-role-sso-team-scoped-access.md)).
 
 The reset and PAT TTLs are platform-level: reset is hard-pinned at
 60 minutes
@@ -203,9 +217,15 @@ intended record so a sealed bundle cannot be silently transplanted:
 |---|---|
 | `api_keys.sealed_secret` | `api_key:<id>` |
 | `generic_secrets.sealed_secret` | `generic_secret:<id>` |
-| `oauth_credentials.sealed_blob` | `oauth:<user>:<kind>` |
+| `oauth_credentials.sealed_payload` | `oauth:<user>:<kind>` |
 | `webhook_configs.hmac_secret_sealed` | `webhook_hmac_secret:<webhook_id>` |
 | `run_secrets.sealed_bundle` | `run_secrets:<run_id>` |
+| `oauth_pending.sealed_verifier` | `oauth_pending:<owner>:<kind>` |
+| `forge_connections.sealed_payload` | `forge_conn:<id>` |
+| `forge_oauth_apps.sealed_secret` | `forge_oauth_app:<id>` |
+| `forge_oauth_apps.sealed_private_key` | `forge_oauth_app_key:<id>` |
+| `org_sso_providers.sealed_secret` | `org_sso_provider:<id>` |
+| `connections[].sealed_payload` (local `connections.json`) | `connection:<id>` |
 
 `ITERION_SECRETS_KEY` is required at boot in cloud mode (`openssl rand
 -base64 32` → exactly 32 raw bytes). Server pods AND runner pods must
@@ -220,9 +240,21 @@ documented in [cloud-admin.md §8](cloud-admin.md):
 1. Generate the new key.
 2. Have all users re-paste their API keys + OAuth blobs through the UI.
 3. Roll the new key into the server + runner Secret simultaneously.
-4. Drop the `api_keys`, `generic_secrets`, `oauth_credentials`,
-   `bot_secret_bindings`, `run_secrets`, `webhook_configs.hmac_secret_sealed`
-   (or wait for users / admins to overwrite their entries).
+4. Drop **every** sealed record. The AAD table above is the exhaustive
+   list — anything left behind is ciphertext nothing can ever open again:
+   `api_keys`, `generic_secrets`, `oauth_credentials`, `oauth_pending`,
+   `run_secrets`, `forge_connections`, `forge_oauth_apps`,
+   `org_sso_providers`, and the `webhook_configs.hmac_secret_sealed`
+   field (or wait for users / admins to overwrite their entries).
+   The last three are the ones an operator forgets: clearing them means
+   re-connecting every forge, re-registering each per-tenant OAuth app
+   (client secret **and** GitHub-App private key, sealed under separate
+   AADs), and re-entering every org SSO client secret.
+   `bot_secret_bindings` holds no ciphertext of its own, but its rows
+   point at `generic_secrets` ids that no longer resolve — clear it too.
+   A local (desktop / CLI) store seals `~/.iterion/secrets.json` and
+   `~/.iterion/connections.json` with the same key; both follow this rule
+   ([secrets.md](secrets.md#storage-master-key-scope)).
 
 Phase G in the public roadmap will add envelope encryption (master key
 in KMS, per-tenant DEKs) so rotation becomes a single update; until

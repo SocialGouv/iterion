@@ -9,9 +9,11 @@ Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alterna
 ## File declarations
 
 ```ebnf
-file = [ dsl_header ] { top_level_decl } ;
+file = [ dsl_header ] { import_decl } { top_level_decl } ;
 
 dsl_header = "dsl" ":" INT NEWLINE ;   (* the syntax profile, on the first significant line; absent = 1 *)
+
+import_decl = "import" STRING NEWLINE ;   (* a `.bot` fragment of the same unit, between the header and the first declaration *)
 
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
@@ -21,6 +23,8 @@ top_level_decl = vars | presets | attachments | secrets | mcp_server
 ```
 
 At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
+
+An `import` path is quoted, relative to the importing file, slash-separated, and must resolve to a `.bot` fragment under the bot's `lib/` directory; every import sits between the `dsl:` header and the first declaration, and imports are additive in every profile. The unit — the main file plus every fragment its imports reach — compiles as one program, so a name declared twice anywhere in it is a duplicate. See [`import` — a bot in several files](../dsl.md#import--a-bot-in-several-files).
 
 ## Lexical values
 
@@ -303,13 +307,29 @@ wait = "wait" IDENT ":" INDENT
          | "timeout:" STRING | "output:" IDENT }
        DEDENT ;
 
+await_answers = "await_answers" IDENT ":" INDENT
+                  { "description:" STRING | "from:" ( IDENT | STRING )
+                  | "timeout:" STRING }
+                DEDENT ;
+
 subbot = "subbot" IDENT ":" INDENT
            { "description:" STRING | "source:" STRING | with_block
            | "output:" IDENT | "needs:" needs_value | "isolated:" BOOL }
          DEDENT ;
 ```
 
-`wait` requires a timeout. A subbot launches the child source as a real nested run.
+`wait` requires a timeout, and so does `await_answers` — the language admits no unbounded silent wait. `await_answers` parks its branch until every pending `ask_user_async` question of the node named by `from:` is answered; with no `from:` it awaits the whole run. A subbot launches the child source as a real nested run.
+
+## Typed terminal failure
+
+```ebnf
+fail = "fail" IDENT ":" INDENT
+         { "description:" STRING | "code:" ( IDENT | STRING )
+         | "message:" STRING | "resumable:" BOOL }
+       DEDENT ;
+```
+
+A `fail` **declaration** is a named terminal failure node, distinct from the bare `fail` reserved edge target below. `code:` is an UPPER_SNAKE identifier, bare or quoted — it is persisted as the run's failure code and read by machines, so a code of another shape, or one that collides with an engine code, is a diagnostic. `message:` is rendered with the usual `{{...}}` references when the node fires. `resumable: true` leaves the run resumable instead of terminally failed; the default is terminal.
 
 ## Groups and uses
 
@@ -574,4 +594,4 @@ Namespace-specific shapes and constraints are detailed in the [DSL guide](../dsl
 
 Syntax-valid files can still fail compilation for duplicate ids, unknown schemas/prompts/nodes, invalid templates, unreachable nodes, non-exhaustive routing, undeclared cycles, router-mode property misuse, unsafe fan-out, bad resource references, capability mismatches, and invalid sandbox/secret/cursor configuration.
 
-Use `iterion validate file.bot`. The authoritative sparse code ranges are DSL C001–C199 (plus the async-interaction band C240–C242) and bundle checks C200–C234; see [diagnostics](diagnostics.md).
+Use `iterion validate file.bot`. It parses first — a file that does not parse reports a parse code (`E001`–`E047`) and nothing else — then compiles and validates. The authoritative sparse code ranges are DSL `C001`–`C199`, the async/parallel/fail band `C240`–`C249`, and the connector-`action:` band `C260`–`C268`; the bundle checks a packaged bot adds live in `C200`–`C212`, `C220`–`C223`, `C230`–`C234` and `C250`–`C253`. The catalogue is the truth — see [diagnostics](diagnostics.md), which `TestDiagCodesAreDocumented` holds to the compiler.

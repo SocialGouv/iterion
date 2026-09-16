@@ -30,6 +30,7 @@ doctrine.
 | `baseline` | no | `""` | Known pre-existing failures to SKIP (empty = cheap stash-check once). |
 | `max_passes` | no | `8` | Continuation-loop cap. |
 | `workspace_dir` | no | `${PROJECT_DIR}` | Workspace root (resolves to the run worktree under `worktree: auto` — do not override). |
+| `scratch_dir` | no | `${PROJECT_SCRATCH_DIR}/test-coverage` | Out-of-tree scratch for the gate's verify script/log (never inside the target worktree). |
 
 When **no** test type is checked and `extra_test_kinds` is empty (the default),
 Testy chooses the types that fit the code and the repo's conventions.

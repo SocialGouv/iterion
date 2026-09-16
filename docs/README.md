@@ -35,7 +35,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [references/dsl-properties.md](references/dsl-properties.md) | Every kind's properties, value shapes and meaning — generated from the parser's registry (`task dsl:gen`), held to the parser by a conformance test. |
 | [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF counterpart. |
 | [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) | Living boundary of the additively evolved V1 grammar and AST. |
-| [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 plus async C240–C242, and bundle checks C200–C234. |
+| [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 plus the async/parallel/fail band C240–C249 and the connector-`action:` band C260–C268, and bundle checks C200–C234 and C250–C253. |
 | [routers.md](routers.md) | Five routing modes, per-item fan-out, and convergence. |
 | [groups-iteration-subbots.md](groups-iteration-subbots.md) | `group`/`use`, edge `foreach`, `fan_out_each`, resources, and nested bots. |
 | [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and all six interaction values, including the node-specific `none` and `async` behavior. |

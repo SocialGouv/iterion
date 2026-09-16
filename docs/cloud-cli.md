@@ -33,6 +33,11 @@ iterion remote login https://… --token iap_…          # existing PAT
 iterion remote login https://… --email e@x --password …  # mints a CLI PAT
 ```
 
+`--password` is optional: with `--email` alone the password is read from
+`ITERION_PASSWORD`, which is what a script should use — a password passed as a
+flag lands in argv and in shell history. With neither, the command refuses
+(`--email requires --password or ITERION_PASSWORD`).
+
 `iterion remote status` shows the logged-in instance + account;
 `iterion remote logout` forgets the credential.
 
@@ -41,6 +46,7 @@ iterion remote login https://… --email e@x --password …  # mints a CLI PAT
 ```sh
 export ITERION_REMOTE_URL=https://iterion.example.com
 export ITERION_REMOTE_TOKEN=iap_…       # fallback: ITERION_TOKEN
+export ITERION_PASSWORD=…               # only for `login --email`, not for the API
 iterion remote runs list --json | jq '.runs[].id'
 ```
 
@@ -64,6 +70,12 @@ revokes the previous CLI token (matched by fingerprint — tokens you
 minted for other purposes are never touched). Org-scoped commands
 (`--org` / `ITERION_REMOTE_ORG` / `orgs switch`) work the same way but
 without re-minting (org scope is path-based).
+
+In env mode (`ITERION_REMOTE_URL` set) both switch verbs are
+**refused** rather than silently ineffective — they write the stored
+credential env mode ignores. Pin scope with `ITERION_REMOTE_TEAM` /
+`ITERION_REMOTE_ORG` instead; for the identity team, fixed at mint
+time, mint a pinned token (`iterion remote tokens create --team <id>`).
 
 ## The launch → follow → inspect recipe
 
@@ -99,11 +111,20 @@ Attachments: `--attach name=./file` uploads via `POST /api/runs/uploads`
 and wires the returned id into the launch. `runs upload <path>` does
 the staging step alone and prints the upload id.
 
+`runs mission` (`start · list · get · stop`) drives the durable assistant
+missions attached to a target run — start or reattach a bounded mission,
+list them, read one with its receipts, stop one without changing its
+watch. Invocation shapes and the `--invocation` idempotency key:
+[cli-reference.md](cli-reference.md#remote-benchmarks-and-utility-commands).
+`runs watch-health <run-id>` reports that watch's health from
+`GET /api/runs/{id}/assistant-watch-health`; `--follow` keeps polling at
+`--interval` (default 5s).
+
 ## Command tree
 
 | Group | Commands |
 |---|---|
-| `runs` | `list · launch · get · events · follow · log · workflow · artifacts · files · commits · cancel · pause · resume · fork · send · merge · conflicts · rename · delete · preview-cost · upload · stats · repos` |
+| `runs` | `list · launch · get · events · follow · log · workflow · artifacts · files · commits · cancel · pause · resume · fork · send · merge · conflicts · rename · delete · preview-cost · upload · stats · repos · mission · watch-health` |
 | `bots` | `list · get · put · overlay · install · upload` |
 | `marketplace` | `list · get · download · submit · install · uninstall · moderation` |
 | `issues` | `list · get · create · update · delete · transition · comment · push · pulls` |
@@ -111,17 +132,18 @@ the staging step alone and prints the upload id.
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
 | `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
-| `teams` | `list · create · switch · members · invitations` |
-| `orgs` | `list · switch · members · invitations · usage · teams` |
+| `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` (`status <active\|suspended\|read_only>` is the team lifecycle — a suspended team launches nothing, a `read_only` one keeps its history readable) |
+| `orgs` | `list · switch · members · invitations · usage · teams · add-member · settings · oauth · credential-audience · approvals` (`oauth [set\|refresh\|delete <kind>]` + `credential-audience` are the org tier — the org's own LLM keys and forfaits, lent to the teams the audience admits; `approvals [approve\|reject <approval-id>]` clears the org's pending approvals — see [cloud-llm-credentials.md](cloud-llm-credentials.md)) |
+| `credentials` | `preview` — read-only observation of the ordered credential chain that would fund a launch, plus the fallback conditions the server sees (`--bot <id>` for a personal launch, `--webhook <id>` for an existing webhook's real launch context, `--team <id>` to target a team). It reserves nothing and verifies nothing with the providers |
 | `me` | `password · sessions-revoke-all · sso-links` |
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
 | `webhooks` | `list · get · create · update · delete · rotate · deliveries` |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
-| `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
+| `audit` / `usage` / `limits` | `audit <team\|org\|admin>` (`--since`, `--limit`, `--org`/`--team`) · org usage — `usage --by-credential` switches to the team's per-credential ledger, each amount typed `metered\|estimate` (`--month YYYY-MM`, `--repo <owner/repo>`) · `limits [cost\|override]`, the override set with `--data` |
 | `memory` | `usage · docs · doc get\|put\|delete · export · import` (`--name` space) |
-| `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
+| `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox · vars · platform-credentials · usage-readings` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox`/`vars` = runtime webhook role bindings, the `sandbox: auto` image, and the DB-backed `${ITERION_X:-default}` bot vars (`set`/`rm`, stored and audited in clear — never a secret), see [platform-bots.md](platform-bots.md); `platform-credentials` = who may draw on the platform tier, enforcement opt-in, see [cloud-llm-credentials.md](cloud-llm-credentials.md#gating-the-platform-tier); `usage-readings clear <fingerprint>` = forget one credential's stored provider-window readings after a reset the ledger could not see, see [usage-caps.md](usage-caps.md)) |
 | `sso` | `providers · domains` (org-scoped) |
 | `plugins` | `list · enable · disable · install · uninstall · config` |
 | `pool` | `status · history · share · pause · resume · withdraw · donors · policy` — lend your own LLM subscription or personal metered key to the shared [credential pool](credential-pool.md), bounded by ceilings you set on `share` (`--max-usd-day/-week`, `--max-runs-day`, `--max-concurrent`, `--from-hour/--to-hour`, `--bots`). `donors` is the operator view of the pool's policy and its lenders; `policy` is the operator write side (`--enabled`, `--name`, audience flags — the audience is replaced whole). |

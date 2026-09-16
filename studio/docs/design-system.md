@@ -14,7 +14,7 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 | Borders | `border-default`, `border-strong`, `border-subtle` | Dividers, card outlines |
 | Accent | `accent`, `accent-hover`, `accent-soft`, `accent-fg` (bg/brand) · `accent-text` (links/icons) | **Decoupled**: `bg-accent` for button/brand backgrounds (white-on = AA); `text-accent-text` for accent-coloured text/links (AA on dark). See visual-identity.md § Primary accent. |
 | Severity | `danger`, `warning`, `success`, `info` (+ `-soft` and `-fg` variants) | Status, validation, badges |
-| Node-kind | `node-agent`, `node-judge`, `node-router`, `node-human`, `node-tool`, `node-compute`, `node-done`, `node-fail`, `node-start`, `node-join`, `node-group` | Canvas borders, form headers, library cards |
+| Node-kind | `node-agent`, `node-judge`, `node-router`, `node-human`, `node-tool`, `node-compute`, `node-subbot`, `node-done`, `node-fail`, `node-start`, `node-join`, `node-group` | Canvas borders, form headers, library cards |
 | Layer | `layer-schemas`, `layer-prompts`, `layer-vars` | Layer overlay + sub-node palette |
 | Selection | `selected`, `sub-tool` | Selected highlights, sub-node tool kind |
 | Library | `library-pattern` | "Pattern" library category (no node-kind equivalent) |
@@ -22,7 +22,7 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 | Type | `text-caption` (10px) / `text-micro` (11px) / `text-body` (12px) / `text-label` (13px) / `text-title` (14px) / `text-display` (16px) / `text-headline` (18px) | Use the generated utility directly — `text-body`, `text-title`, … — **not** `text-[12px]` arbitrary values. `text-headline` is the page-level `<h1>` size (used by `PageHeader`); `text-display` is for emphasised section / card headings. |
 | Elevation | `shadow-sm` / `shadow-md` / `shadow-lg` / `shadow-popover` | Surface depth. Consume via `shadow-[var(--shadow-popover)]`. Light-mode alphas override automatically. |
 | Motion | `motion-fast` (120ms) / `motion-base` (180ms) / `motion-slow` (280ms), `motion-ease` | Transitions, animations |
-| Stacking | `z-canvas` (40, panel chrome) / `z-overlay` (40, modal backdrops) / `z-modal` (50) / `z-confirm` (60, confirm-on-modal + cmd-K) / `z-popover` (70) / `z-tooltip` (80) / `z-toast` (100, also focused skip-link) | Use via `z-[var(--z-modal)]` (Tailwind arbitrary value) or `style={{ zIndex: "var(--z-modal)" }}` |
+| Stacking | `z-canvas` (40, floating chrome inside a canvas/panel) / `z-dock` (50, persistent corner docks — assistant, steering) / `z-overlay` (60, modal backdrops; also cover the persistent docks) / `z-modal` (70, dialogs + full-screen drawers) / `z-confirm` (80, confirm-on-top-of-modal + cmd-K palette) / `z-popover` (90, above modals if nested) / `z-tooltip` (100, always above popovers) / `z-toast` (110, toasts + focused skip-link) | Use via `z-[var(--z-modal)]` (Tailwind arbitrary value) or `style={{ zIndex: "var(--z-modal)" }}` |
 | Scrim | `scrim-modal` / `scrim-popover` / `scrim-soft` | Modal / drawer / popover backdrops. Consume via `bg-scrim-modal`. Replaces ad-hoc `bg-black/N`; light theme softens automatically. |
 
 ### Surface hierarchy
@@ -101,7 +101,7 @@ When a list item must stay a semantic `<li>`/`<button>` (so `Card`'s `<div>` doe
 
 ### Buttons & icon buttons
 
-[`ui/Button.tsx`](../src/components/ui/Button.tsx) — `variant: primary | secondary | ghost | danger`, `size: sm | md`, `loading` prop, leading/trailing icons. Spinner is wired automatically when `loading={true}`.
+[`ui/Button.tsx`](../src/components/ui/Button.tsx) — `variant: primary | secondary | ghost | danger | success`, `size: sm | md`, `loading` prop, leading/trailing icons. Spinner is wired automatically when `loading={true}`.
 
 [`ui/IconButton.tsx`](../src/components/ui/IconButton.tsx) — square icon-only variant for toolbars.
 

@@ -38,3 +38,28 @@ session, against a doctrine it cannot edit.
 
 The accepted decisions still get transcribed into the plan (flags,
 bookmarks) by the contract owner — this judge never holds that pen.
+
+## Variables
+
+| Var | Default | Description |
+|---|---|---|
+| `workspace_dir` | `${PROJECT_DIR}` | The target repository — do not override. |
+| `plan_path` | `.modernize/plan.yaml` | The programme contract (lot statuses + per-lot reports live next to it). |
+| `doctrine_path` | `.modernize/ARBITRAGE.md` | The written doctrine this judge applies; its journal section is where decisions are consigned. |
+| `only_lot` | `""` | Restrict the docket to one lot id. Empty = every pending blocked case. |
+| `budget_per_lot` | `2` | Delegated decisions allowed per lot, counted over the journal's whole history. Past it every further case force-escalates. |
+
+## Run
+
+```bash
+# Judge every pending blocked case in the target repo:
+iterion run bots/arbitrate
+
+# One lot only, with a tighter delegation budget:
+iterion run bots/arbitrate --var only_lot=lot-07 --var budget_per_lot=1
+```
+
+Entry is `case_read` (deterministic docket build), then `docket_gate` →
+`arbitrate_judge` → `consign`. Budget: `max_duration: "45m"`,
+`max_cost_usd: 15`. The optional `forge_token` secret is mounted `as: file`
+for cloud clone/push — a local run keeps host-authenticated git.

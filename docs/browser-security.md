@@ -171,6 +171,25 @@ the allowlist therefore needs a restart — invisible on k8s, where an env chang
 is a rollout anyway, but worth knowing when reaching for it during an incident.
 `ITERION_REQUIRE_ORIGIN=0` is the one that takes effect on the next request.
 
+### A third switch, for WebSocket upgrades only
+
+`ITERION_REQUIRE_ORIGIN` governs the HTTP gate. The upgrade path has its own,
+in the `websocket.Upgrader`'s `CheckOrigin`
+([pkg/server/hub.go](../pkg/server/hub.go)):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ITERION_REQUIRE_WS_ORIGIN` | unset | `1` refuses an upgrade carrying **no** `Origin` header at all. Anything else keeps it allowed. |
+
+An `Origin`-bearing upgrade is unaffected by it: same-origin passes, and
+anything else falls through to `ITERION_ALLOWED_ORIGINS` exactly as the table
+above says. The variable only decides what happens to a request a browser would
+never make — `curl`, `websocat` without `--origin`, a non-browser client. That
+is allowed by default so those callers keep working, which is parity with the
+HTTP gate's own treatment of an absent `Origin`; an operator in a hostile
+environment tightens it to `1`, and accepts that non-browser WebSocket clients
+must then send an `Origin` the allowlist names.
+
 ## Session cookies carry the `__Host-` prefix
 
 A host-only cookie is not one a sibling cannot **write**. Any
@@ -282,6 +301,36 @@ tools, on the host. Binding to loopback is not a defence when the browser is on
 the host. It now wraps its mux in `server.BrowserGuard`, which applies the same
 `originGateAllows` predicate rather than a copy of it. **Any new surface that
 builds its own mux must do the same.**
+
+### The studio refuses an unauthenticated non-loopback bind
+
+The mirror image of the paragraph above. Local mode has no auth at all — it
+trusts the TTY user over loopback — and the origin gate is deliberately not a
+substitute for it: a request with **no** `Origin` is a non-browser caller and is
+let through, so anyone who can reach the port can `curl /api/*` and is handed a
+synthesized super-admin. Launching a bot or tool node from there is host-shell
+RCE.
+
+So `iterion studio` defaults `--bind` to `127.0.0.1`, and when the bind is not
+loopback and auth is off it refuses to start
+([pkg/cli/studio.go](../pkg/cli/studio.go)):
+
+```
+refusing to start an unauthenticated studio on non-loopback bind "0.0.0.0:8080":
+any reachable host gets unauthenticated super-admin (launching a bot/tool node =
+host RCE). Bind 127.0.0.1 (default), or front it with auth and set
+ITERION_STUDIO_INSECURE_NONLOOPBACK=1 to accept the risk
+```
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ITERION_STUDIO_INSECURE_NONLOOPBACK` | unset | `1` downgrades the refusal to a startup warning naming the variable. Anything else keeps the refusal. |
+
+Cloud mode is exempt — it authenticates. The escape hatch is a variable rather
+than a flag on purpose: accepting that exposure is a deployment decision, and a
+variable is greppable in a manifest where a flag buried in a command line is
+not. It is on the `pkg/projectenv` passthrough allowlist, so it survives into a
+project-scoped studio process.
 
 ## Response headers and the CSP
 

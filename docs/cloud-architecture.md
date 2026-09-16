@@ -107,7 +107,8 @@ deploy and **every** workflow fails at "fetch run_secrets" (see
 
 Conventions are pinned in
 [pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go) — every constant
-matches plan §C.2:
+matches plan §C.2 — and, for the steering pair,
+[pkg/queue/nats/steer.go](../pkg/queue/nats/steer.go):
 
 | Resource | Default name | Purpose |
 |---|---|---|
@@ -117,6 +118,20 @@ matches plan §C.2:
 | DLQ subject | `iterion.queue.runs.dlq` | DLQ park subject |
 | KV bucket | `iterion-run-locks` | Distributed lease per run id |
 | Durable consumer | `iterion-runners` | The pull-consumer the runner pool drains |
+| Rollout KV bucket | `iterion-runner-rollout` | Runner-epoch high-water, key `epoch.high-water` (persistent, no TTL) |
+| Cancel subject | `iterion.cancel.<run_id>` | The API pod publishes an empty message; the owning runner stays subscribed for the life of the run |
+| Steer subject | `iterion.steer.<run_id>` | Cross-process run steering (`bump_loop`, `raise_budget`) — a JSON command published by the API pod |
+| Steer ack subject | `iterion.steer.<run_id>.ack.<command_id>` | The runner's reply. Explicit subjects rather than `nc.Request` inboxes, so `nats sub 'iterion.steer.>'` shows both directions |
+
+The last three ride **core NATS**, not JetStream — they are transient by
+design, so a runner that is not subscribed yields a timeout rather than a
+queued message. Both steering subjects carry an `Iterion-Command-Id` header;
+no reply within 5s is `ErrSteerTimeout`, which the API surfaces as
+`engine_stalled` and **504**. If you restrict NATS account permissions by
+subject, the allowlist has to cover `iterion.cancel.>` and `iterion.steer.>`
+alongside `iterion.queue.>` — omit them and publishing keeps working while
+cancel and steering silently time out. (`iterion.events.>`, on the separate
+`ITERION_EVENTS` stream, is the trigger bus, not the work queue.)
 
 Pinned semantics:
 
@@ -166,7 +181,10 @@ even claiming the run, or before its first status write. It scans
 every 60s for `queued` past the redelivery window + margin (~90min with
 the defaults: `MaxDeliver × AckWait` + 10min) or `running > 10min` AND no
 current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
-Bumps `iterion_runs_orphan_recovered_total`.
+Bumps `iterion_runs_orphan_recovered_total`. Every sweep step that could not
+do its job — the scan, the NATS-KV lease probe, the CAS flip — bumps
+`iterion_orphan_sweep_errors_total{stage="scan|lease|flip"}` instead, which is
+what separates a sweeper that is failing from one that is merely idle.
 
 The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
@@ -252,6 +270,7 @@ the FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_auth_password_resets_total{step}` | server | Reset flow (`requested`, `confirmed`) |
 | `iterion_launch_denied_total{reason}` | server | Launch gate refusals |
 | `iterion_runs_orphan_recovered_total` | server | Sweeper flips |
+| `iterion_orphan_sweep_errors_total{stage}` | server | Sweep steps that failed (`scan` / `lease` / `flip`) |
 | `iterion_dlq_depth` | server | Sweeper poll of NATS state |
 
 All from a shared registry in

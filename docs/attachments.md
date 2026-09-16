@@ -172,11 +172,15 @@ server configuration defaults unless an embedder wires explicit
 | `--allow-upload-mime`       | safe defaults        | safe defaults     |
 
 The default MIME allowlist covers `image/{png,jpeg,gif,webp}`,
-`application/{pdf,json,zip,gzip,x-tar}`, `text/{plain,markdown,csv}`,
-`application/yaml`, and `application/octet-stream` (the fallback for
-files whose type can't be sniffed). The `GET /api/server/info` endpoint returns
-the resolved limits so the SPA can surface them before any byte
-leaves the browser.
+`application/{pdf,json,yaml,zip,gzip,x-tar}`, `text/{plain,markdown,csv}`,
+the wildcards `audio/*` and `video/*` (so a human gate can collect a
+soundtrack or a screen recording straight from the operator, instead of
+sending them hunting for the right folder on disk), and
+`application/octet-stream` (the fallback for files whose type can't be
+sniffed). Entries are matched as `type/subtype` with `*` accepted on either
+half, so a custom `--allow-upload-mime` list may use the same wildcard form.
+The `GET /api/server/info` endpoint returns the resolved limits so the SPA
+can surface them before any byte leaves the browser.
 
 Errors are mapped to standard codes:
 

@@ -5,11 +5,16 @@ description: Exact Nygard ADR format used in docs/adr/ — filename convention, 
 
 # ADR format — what an Adry-authored ADR looks like
 
-This skill captures the **exact** Nygard-derived ADR format already in
-use under `docs/adr/`. The format is **not** YAML-frontmatter Nygard;
-this repo uses a markdown bullet-list head followed by H2 sections. When
-authoring or editing, follow this shape verbatim — the
+This skill captures the Nygard-derived ADR format to AUTHOR under
+`docs/adr/`. The format is **not** YAML-frontmatter Nygard; this repo
+uses a markdown bullet-list head followed by H2 sections. When authoring
+or editing, follow this shape verbatim — the
 `completeness-taxonomy.md` review loop checks the structure.
+
+It is the shape to WRITE, not the only shape present: roughly half the
+existing corpus predates it and `scan_adrs` parses those files only
+partially. Read **Legacy and alternate shapes** below before judging an
+older ADR malformed.
 
 Two canonical repository-relative examples to read before authoring are
 `docs/adr/008-bot-golden-replay-framework.md` and
@@ -33,13 +38,21 @@ docs/adr/NNN-kebab-slug.md
 
 ### Duplicate prefix tolerance
 
-The repo historically contains TWO ADRs prefixed `002-*` (a
-non-bug-blocking artifact of two PRs landing the same NNN). When
-`scan_adrs` reports a non-empty `duplicates[]` array, treat it as a
-WARNING only — do not author a third `002-*` to "fix" it, and do not
-renumber existing files (which would break inbound references).
-`next_adr_number` advances past the duplicate; new ADRs use the next
-free integer.
+The repo carries SEVERAL colliding NNN prefixes, not one. Measured on
+2026-09-15 across the 106 files in `docs/adr/`, the collisions are
+`002`, `075`, `076`, `090`, `091`, `093`, `094` and `098` — each the
+non-bug-blocking artifact of two PRs landing the same NNN concurrently,
+and the list grows whenever two branches author an ADR from the same
+`next_adr_number`. Expect `scan_adrs` to report a MULTI-ENTRY
+`duplicates[]` array; treat it as a WARNING only — do not author an
+extra file on a colliding prefix to "fix" it, and do not renumber
+existing files (which would break inbound references).
+`next_adr_number` is `max(NNN) + 1`, so it already sits past every
+collision; new ADRs use that next free integer.
+
+When you CITE an ADR whose number collides, cite the filename slug
+(`docs/adr/098-connector-catalog.md`), not the bare number — "ADR-098"
+alone resolves to two different decisions in this repo.
 
 ## Front-matter — markdown bullet list, NOT YAML
 
@@ -81,6 +94,34 @@ The Code list:
   carry a `(`Symbol`)` or short description.
 - Cite the SMALLEST set of files that embody the decision. A decision
   spanning 30 files cites the 2–4 key seams, not all 30.
+
+### Legacy and alternate shapes — read, tolerate, do NOT "fix"
+
+The bullet-bold head above is the shape to AUTHOR. It is not the only
+shape present. Measured on 2026-09-15 across the 106 files in
+`docs/adr/`:
+
+- 57 carry the canonical `- **Status**:` bullet.
+- 17 carry a plain `- Status: <value> (YYYY-MM-DD)` line — the ADR-066+
+  house style, which folds the date into the status and drops the
+  `Authors` and `Code` bullets entirely.
+- 32 carry no status line at all; the earliest ADRs open straight from
+  the H1 onto `## Context`.
+- 51 H1 titles use `# ADR-NNN — Title` (em dash) rather than
+  `# ADR-NNN: Title` (colon).
+- 49 have no `**Date**` bullet; 58 have no `**Code**` /
+  `**Code context**` bullet.
+
+`scan_adrs`'s `STATUS_RE`, `DATE_RE`, `TITLE_RE` and `CODE_RE`
+(`bots/adr-cartograph/main.bot` lines 626-629) are anchored on the
+bullet-bold, colon-titled shape alone, so each file above comes back
+with an EMPTY `status`, `title`, `date` or `cited_paths`. An empty
+field from `scan_adrs` means "not expressed in a shape the regex
+knows", NOT "this ADR is missing a header". Do not open a gap finding
+on that basis alone, and do not rewrite an existing ADR's head to make
+the regex match — ADRs are point-in-time records. The "at LEAST one
+Code link" rule binds the ADRs you AUTHOR; it is not a defect in the 58
+files that predate it.
 
 ## Required sections (H2)
 

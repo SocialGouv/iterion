@@ -43,8 +43,13 @@ GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
    ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)).
 
 Rotate or revoke at any time: `POST /api/teams/{id}/webhooks/{webhook_id}/rotate`
-returns a fresh plaintext (also shown once) and updates the forge's
-"secret" field is then a manual step.
+returns a fresh plaintext (also shown once) and re-seals the HMAC secret
+under it. Pasting that same plaintext into the forge's "secret" field is
+then a **manual** step — until you do, every delivery fails auth. A webhook
+a forge integration provisioned refuses the rotate with **409**: rotate it
+by disabling and re-enabling the bot in the Integrations tab, which re-mints
+the token and rewrites the forge hook together
+([pkg/server/webhooks_routes.go:handleRotateWebhook](../pkg/server/webhooks_routes.go)).
 
 ## When a forge cannot reach the deployment's public URL
 
@@ -90,14 +95,17 @@ idempotence test used to look at bots and events only, so an instance that
 moved could never repair its own hooks — provisioning answered 200, changed
 nothing, and the deliveries kept going to an address it no longer served.
 
-Two more properties of that endpoint worth knowing:
+Two more properties of the PATCH that *sets* the pin
+(`PATCH /api/teams/{id}/forge/connections/{conn_id}` — what the CLI above
+calls, not the `repo-bots` reconcile) are worth knowing:
 
 - **It refuses a body carrying `webhook_base_url` *and*
-  `security_read_enabled` together (400).** They act on different systems —
-  one pins a URL, the other mints or withdraws a live org token on GitHub —
-  and nothing makes them atomic. Sent together, a failure of the
-  security-read half would drop the URL change while the error named only
-  security-read. Send them as separate requests.
+  `security_read_enabled` together (400).** Those two are its only patchable
+  fields, and they act on different systems — one pins a URL, the other
+  mints or withdraws a live org token on GitHub — and nothing makes them
+  atomic. Sent together, a failure of the security-read half would drop the
+  URL change while the error named only security-read. Send them as separate
+  requests; a body naming neither field is a 400 too.
 - **An `http://` base on a non-loopback host is accepted but warned**: the
   forge then delivers the payload *and* the signature header in the clear.
   An internal-network endpoint is a legitimate thing to pin, so this is a
@@ -212,11 +220,13 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   only on a *freshly-added* label that passes `label_allowlist`, on an OPEN
   issue ([pkg/webhooks/gitlab/issue.go](../pkg/webhooks/gitlab/issue.go)).
 
-Default event allowlist: `{merge_request, note}` — both kinds reach a
-zero-config webhook
+Default event allowlist, per lane: the MR and note lanes default to
+`{merge_request, note}`, the `Issue Hook` lane to `{issues}` — so all three
+kinds reach a zero-config webhook
 ([pkg/webhooks/match.go:MatchEvent](../pkg/webhooks/match.go)).
 Operators who want only the auto-review path list `["merge_request"]`
-explicitly; that disables `/revi` while keeping open/reopen.
+explicitly; that disables `/revi` — and the label lane — while keeping
+open/reopen.
 
 Vars stamped on the run: `pr_url`, `base_ref`, `scope_notes`,
 `post_to_board=false`, `pr_review_mode=inline`, plus `re_review=true` for a
@@ -605,10 +615,22 @@ a key the org-admin has pinned (`handleGenericWebhook` in
 Every webhook carries four selection filters plus a bot-agnostic hold gate
 ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)):
 
-- **`event_allowlist`** — provider-event names allowed; empty defaults
-  to the provider's natural set (GitLab uses `{merge_request, note}`,
-  the others use `{pull_request}`, and the GitHub/Forgejo `issues`
-  path defaults to `{issues}`). A bare `*` matches everything.
+- **`event_allowlist`** — provider-event names allowed. Empty does not mean
+  "the one main event": each handler lane passes its OWN defaults to
+  [`webhooks.MatchEvent`](../pkg/webhooks/match.go), so a zero-config webhook
+  admits every lane its provider dispatches — on GitLab `merge_request` and
+  `note` (`{merge_request, note}`), a note on an issue (`{issue, note}`) and
+  `issues` (`{issues}`); on GitHub `pull_request` (`{pull_request}`),
+  `issues` (`{issues}`), `issue_comment` (`{issue_comment}`) and
+  `pull_request_review_comment` (`{pull_request_review_comment}`); on
+  Forgejo/Gitea `pull_request` and `issue_comment` only (its dispatch routes
+  no other kind). Naming anything explicitly replaces the default for
+  **every** lane at once — which is how an operator narrows a webhook
+  (`["merge_request"]` keeps GitLab auto-review and drops `/revi`). A bare
+  `*` matches everything. The allowlist is not the only gate: a lane whose
+  bot is not enabled on the webhook is filtered regardless, and that — not an
+  allowlist default — is what keeps the GitHub `pull_request_review_comment`
+  lane inert on a repo with no conversational bot.
 - **`label_allowlist`** — for the `issues` (labeled) path only: which
   freshly-applied label fires (e.g. `["implement"]`). Empty = any label;
   case-insensitive; a bare `*` matches everything. No effect on the
@@ -712,17 +734,31 @@ Iterion durably dedupes deliveries via a unique index on
 `ErrDuplicate` and the handler replies 200 with `{status:"duplicate",
 run_id, delivery_id}` ([pkg/server/webhooks_common.go:insertAndLaunchWebhook](../pkg/server/webhooks_common.go)).
 The key space is **path-disjoint** so the same event id can't collide
-across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
-`generic|`), while the GitLab note path stays disjoint via its
-`note:<note_id>` subject segment rather than a prefix:
+across paths — every lane but the GitLab note one carries a literal prefix,
+and that one stays disjoint via its `note:<note_id>` subject segment instead:
 
-| Key prefix | Identifying tuple | Bumps on |
-|---|---|---|
-| `mr\|` | `(tenant, webhook, project_id, mr_iid, head_sha)` | a new push (new head SHA) → fresh launch |
-| _(none)_ | `(tenant, webhook, project_id, note:note_id)` | a new `/revi` comment → fresh launch |
-| `gh\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
-| `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
-| `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
+| Key prefix | Lane | Identifying tuple | Bumps on |
+|---|---|---|---|
+| `mr\|` | GitLab MR auto-review | `(tenant, webhook, project_id, mr_iid, head_sha)` | a new push (new head SHA) → fresh launch |
+| `rereq\|` | GitLab "Re-request review" | that tuple **salted with the MR `updated_at`** | each click → fresh launch |
+| _(none)_ | GitLab note: a command-less reply in a Revi thread | `(tenant, webhook, project_id, note:note_id)` | a new note → fresh launch |
+| `cmd\|` | a `/command` on a comment — GitLab `Note Hook`, GitHub/Forgejo `issue_comment` | `(tenant, webhook, project_id or project_path, note:id / comment:id)` | a new comment → fresh launch |
+| `gl\|issue\|` | GitLab `Issue Hook` (freshly-added label) | `(tenant, webhook, project_id, issue_iid, label)` | a different freshly-added label → fresh launch |
+| `gh\|` / `fj\|` | GitHub / Forgejo PR auto-review | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
+| `gh\|rereq\|` / `fj\|rereq\|` | GitHub / Forgejo "Re-request review" | that tuple **salted with the PR `updated_at`** | each click → fresh launch, except one landing while that head's review is still in flight (see <a href="#re-request-review">above</a>) |
+| `gh\|issue\|` | GitHub `issues` — labeled, or auto-implement-on-open | `(tenant, webhook, project_path, issue_number, trigger)` | a different trigger → fresh launch; re-applying the same label is a replay |
+| `rc\|` | GitHub review-thread reply (converse) | `(tenant, webhook, repo_id, rc:comment_id)` | a new reply comment → fresh launch |
+| `heal\|` | merge-queue auto-heal | `(tenant, webhook, project_path, pr_number, head_sha)` | one attempt per head SHA |
+| `generic\|` | Generic JSON | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
+
+On a webhook carrying a per-bot routing table, the PR fan-out appends
+`|<bot_id>` to the base above before hashing, so two co-enabled bots each
+hold their own claim on one delivery; a legacy config (no `BotRules`) keeps
+the historical bot-less key byte for byte
+([pkg/server/webhooks_common.go:forgeIdemKey](../pkg/server/webhooks_common.go)).
+The merge gate's own launches key outside the webhook config again —
+`autofix|` on `(team, repo, pr_number, head_sha)` and `gaterelaunch|` on the
+same plus the bot ([merge-gate.md](merge-gate.md)).
 
 Terminal (non-launched) rows — `invalid`, `filtered`, `quota_exceeded`,
 `rate_limited`, `launch_error` — get a **random UUID** as their

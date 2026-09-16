@@ -39,8 +39,10 @@ task test              # all Go unit tests
 task test:e2e          # deterministic/stub E2E suite
 task test:goldens      # recorded bot-schema/invariant replays; no credentials
 task studio:check      # ESLint + TypeScript + Vitest
-task check             # lint + unit + goldens + studio:check
+task check             # the seven gates: lint, test, goldens, studio, pi-ext, brand, dsl
 ```
+
+`check`'s last three gates guard generated artefacts rather than behaviour: `pi-ext:check` typechecks the pi extension and rebuilds its embedded asset into a temp file to compare, `brand:check` does the same for every committed copy of `assets/brand/`, and `dsl:check` fails when the committed rendering of the DSL property registry is stale or when the registry and the parser disagree. Regenerate with `task brand:gen` / `task dsl:gen` instead of hand-editing generated output.
 
 Useful narrower gates:
 
@@ -151,15 +153,30 @@ iterion/
 │   ├── cloud-related        # queue, runner, auth, identity, orgusage, forge, webhooks
 │   └── extensions/state     # plugin, skilllib, memory, secrets, marketplace, supervise
 ├── studio/                  # React/Vite/TypeScript UI
+├── pi-extension/            # the pi editor extension, typechecked and
+│                            # asset-diffed by `task pi-ext:check`
 ├── bots/                    # maintained bot catalogue (main.bot + manifest/resources)
 ├── examples/                # focused DSL/integration demonstrations
+├── contrib/                 # reference integrations kept outside the engine:
+│                            # mattermost-clarify (chat adapter over the run-completion
+│                            # webhook), web-search (SearXNG + Firecrawl compose stack)
+├── connectors/forgejo/      # checked-in connector catalog entry
+│                            # (connector/overlay/schemas + ops) — see connectors.md
 ├── e2e/                     # deterministic and build-tagged live E2E tests
 ├── sdks/typescript/         # @iterion/sdk CLI wrapper
 ├── charts/iterion/          # Helm chart and tests
 ├── docker/ + sandbox/       # container images/helpers and sandbox fixtures
+├── ci/arc-runner/           # self-hosted ARC CI runner image (Dockerfile + verify.sh),
+│                            # built and gated by the "ARC CI runner image" workflow
+├── build/                   # desktop packaging inputs (appicon, plists, installer)
+├── Cask/ + Formula/         # Homebrew tap, refreshed by brew-update.yml
+├── assets/brand/            # brand sources; every committed copy is guarded
+│                            # by `task brand:check`
 ├── docs/                    # living guides plus explicitly dated records
-├── scripts/ + tooling/      # generation, release, and verification helpers
-├── internal/httpx/          # module-private HTTP utility
+├── scripts/                 # generation, release, and verification helpers
+├── internal/                # module-private helpers: gittest (MANDATORY for every
+│                            # git subprocess a test spawns — docs/agents/testing.md),
+│                            # httpx, ciguard, fswatch, proctest, subbottest
 ├── third_party/             # checked-in third-party source/assets
 └── vendor/                  # vendored Go modules, including claw-code-go
 ```
@@ -168,7 +185,7 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 
 ## Key contracts
 
-- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL ranges C001–C199 and async C240–C242; bundle checks use C200–C234.
+- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL ranges C001–C199, the async/parallel/fail band C240–C249 and the connector-`action:` band C260–C268; bundle checks use C200–C234 and C250–C253.
 - `pkg/server` registers the HTTP route table that generates `openapi.json`; `task openapi:check` guards the committed spec and studio types.
 - `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
 - Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.

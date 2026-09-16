@@ -18,32 +18,38 @@ list, with the two paths that still launch outside it.
 
 `gateLaunch` returns the **first** failing check, in this exact order:
 
-1. **Org status** — team `EffectiveStatus()` ∈ {`active`}. Suspended
-   and read-only orgs short-circuit here.
+1. **Org status** — the team **and** its parent org must each pass
+   `CanLaunch()`
+   ([pkg/identity/types.go:CanLaunch](../pkg/identity/types.go)) —
+   suspended and read-only refuse at either level, and an org also
+   refuses while `pending_deletion`.
 2. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
    ([CountActiveRunsByTenant](../pkg/server/launch_gate.go)). Active =
    `queued` or `running`.
 3. **Launch rate** — token-bucket `LaunchRatePerMin` per org, rate =
    `perMin/60` per second, burst = `perMin`.
-4. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
-   read from the Mongo `org_usage` counter.
-5. **Monthly run quota** — `AllowRun()` atomically increments the
-   counter and reports `ok=false` if the new total would exceed
-   `MonthlyRunQuota`. This is also the **metering** step — a successful
-   run consumes one slot at this point.
+4. **Both monthly caps, in one round trip** — `AllowRun()`
+   optimistically increments the month's run counter and evaluates
+   `MonthlyRunQuota` and `MonthlyCostCapUSD` against the **same**
+   post-increment `org_usage` document, returning an
+   `orgusage.DenyReason` (`""` / `"runs"` / `"cost"`); a denied call
+   rolls the increment back. The **run quota is evaluated first**, so an
+   org past both caps is told `monthly_run_quota_exceeded`. This is also
+   the **metering** step — a successful run consumes one slot at this
+   point.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
 scoping). Local mode (no identity store) has no gate. The gate
 **fail-opens** on a Mongo / store error so a transient blip doesn't
 wedge every launch — quotas are an operator policy, not a hard security
-boundary. The one nuance: when `AllowRun` errors at step 5 the launch
+boundary. The one nuance: when `AllowRun` errors at step 4 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
 
 ## Which surfaces are gated
 
 Every launch a cloud instance performs passes `gateLaunch` with the
-identity of whoever is launching, meters one monthly run at step 5, and
+identity of whoever is launching, meters one monthly run at step 4, and
 hands the slot back when the run service then refuses the launch (a
 sealing failure, a queue outage, a bot that does not compile — no run
 exists, so nothing was consumed):
@@ -96,8 +102,9 @@ existing deployments.
 
 | Limit | Override field | Platform env var | Denial reason | HTTP |
 |---|---|---|---|---|
+| No workspace | n/a — team membership | n/a | `no_workspace` | 403 |
 | Org suspended / read-only | `Status` | n/a — admin action | `org_suspended` | 403 |
-| Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
+| Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 31`) |
 | Launches per minute | `LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
 | Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
 | Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
@@ -124,6 +131,12 @@ tenant override wins when > 0; else platform default; zero = unlimited).
 The denial reason tokens are stable strings — clients (the studio, SDKs,
 CI scripts) switch on them. The HTTP status codes follow the standard
 "402 = paying issue (resets next month), 429 = retry later" convention.
+`no_workspace` is not a quota: it refuses a signed-in user who belongs to no
+team (the GitHub "submitter" tier), because the gate has no workspace to scope
+the run to. It carries no `reset_at` and no `Retry-After` — the fix is an
+invitation, not a wait — but it shares the denial envelope and the
+`iterion_launch_denied_total{reason=…}` label space, so a client switching
+exhaustively on the token has to handle it.
 
 The env vars are read at boot by
 [cmd/iterion/server.go:orgLimitDefaultsFromEnv](../cmd/iterion/server.go).
@@ -157,7 +170,7 @@ to a UI-driven launch.
 
 | Counter | When it bumps | Where |
 |---|---|---|
-| `org_usage.runs` | At launch admission (step 5 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
+| `org_usage.runs` | At launch admission (step 4 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
 | `org_usage.cost_usd` + tokens | At the end of each runner execution attempt, from that attempt's accumulated LLM events | [pkg/runner/loop_spend.go:recordOrgSpend](../pkg/runner/loop_spend.go) calls `orgusage.AddSpend` |
 | `webhook_deliveries.count` | At webhook admission (after auth + rate) | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
 
@@ -439,6 +452,7 @@ accounting lives in the Mongo counters above.
 | `iterion_auth_password_resets_total` | `step` (`requested` / `confirmed`) | Self-service reset flow |
 | `iterion_dlq_depth` | — | Runs parked on the DLQ (the orphan / max-deliver bridge) |
 | `iterion_runs_orphan_recovered_total` | — | The orphan sweeper's flips to `failed_resumable` |
+| `iterion_orphan_sweep_errors_total` | `stage` (`scan` / `lease` / `flip`) | Orphan-sweeper steps that failed. The companion of the counter above: recovered-flat with errors-flat is health, recovered-flat with errors-growing is the sweeper silently disarmed — a distinction the success counter alone cannot make |
 | `iterion_runs_usage_window_blocked_total` | — | Runs stopped by an exhausted provider quota window |
 | `iterion_runs_retry_scheduled_total` | — | Durable automatic retries armed for a provider reset |
 | `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed`) | Retry-sweeper outcomes for due runs |
@@ -457,3 +471,10 @@ fires:
 
 The thresholds are deliberately conservative starting points — tune
 them per deployment.
+
+One rule the pack does **not** ship but that most deployments want:
+`increase(iterion_orphan_sweep_errors_total[30m]) > 0`. The five above all
+fire on something happening; a sweeper that has stopped working shows up as
+*nothing* happening, and `iterion_runs_orphan_recovered_total` is flat in that
+state exactly as it is when the fleet is healthy. The error counter is what
+tells the two apart.

@@ -18,7 +18,8 @@ where the project should be in a year, and feeds Nexie the work.
    (current → target) plus guardrails.
 4. **Reviews** it with one independent family by default and converges with
    you as the final approver. Set `review_mode=dual` when a second,
-   cross-family perspective is worth the extra reviewer call.
+   cross-family perspective is worth the extra reviewer call; `mono_family`
+   picks which family mono runs (default `claude`).
 5. **Proposes** 3-10 natural evolutions as **dispatch-ready backlog
    tickets** (pre-bound to a bot, self-contained body) plus deep
    plan/decision artifacts in the shared `findings/` inbox. Nexie picks
@@ -27,6 +28,15 @@ where the project should be in a year, and feeds Nexie the work.
 
 Evoly **proposes and architects** — it never edits code or commits.
 Implementation is handed to feature-dev / bmady via Nexie.
+
+## Inputs
+
+| Var | Default | Description |
+|---|---|---|
+| `workspace_dir` | `${PROJECT_DIR}` | The repo to survey — do not override. |
+| `scope_notes` | `""` | Steering hint (objective / horizon / focus). The dispatcher fills it from the issue title + body; an interactive run leaves it empty and Evoly elicits the objective via `ask_user`. |
+| `review_mode` | `mono` | `mono` runs ONE reviewer family, `dual` fans out to both in parallel and cross-confirms, `auto` is resolved at launch from the host's detected credentials and also lands on mono — it only picks the family. |
+| `mono_family` | `claude` | Which family mono runs: `claude` (`review_claude`, `claude_code` backend) or `gpt` (`review_gpt`, `claw` backend). Overwritten by the launch-time resolver when only one family is usable on the host; ignored in `dual`. |
 
 ## Run it
 

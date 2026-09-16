@@ -32,7 +32,8 @@ A bundle can export workflows for another project bundle to call with a
 `bot://` URI. The consumer declares the dependency and exports it uses in its
 manifest, while a project-root `bots.lock` pins the source revision and exact
 bundle content hash. The materialized `.botz/<name>` tree is a generated,
-read-only consumer copy.
+read-only consumer copy. The manifest fields and the lockfile shape are under
+[`exports:` / `dependencies:`](#exports--dependencies--the-shared-subbot-contract).
 
 ```bash
 # Restore all pins after cloning a consumer project.
@@ -46,6 +47,15 @@ Edit the source bundle, never `.botz`. `bots sync` only restores the existing
 pin; it does not discover a newer revision or rewrite the lock. `bots update`
 does both. Local Git sources must be clean unless the operator explicitly uses
 `--allow-dirty`, whose resulting lock is not reproducible by another checkout.
+
+**`bot://` is a local-surface capability.** The `iterion run` CLI, the studio and
+the dispatcher resolve it — they are the three importers of `pkg/subbotsource`.
+The **cloud runner does not**: a pod has neither a project-root `bots.lock` nor a
+`.botz/` tree, and nothing refuses such a run at admission either, so a cloud run
+reaching a `bot://` child fails late, at the node, with a relative-path lookup
+error that never names the dependency. The gap is narrower than it sounds — a
+cloud run *can* execute a plain `subbot` child, since the cloud runner wires a
+`SubbotRunner` too (#743); only the `bot://` scheme stops at the local surfaces.
 
 ## Quick start
 
@@ -134,6 +144,17 @@ attachments:
   logo: branding/logo.png
   spec: docs/spec.pdf
 
+# Optional: the shared-subbot contract (see below). `exports:` publishes
+# workflows for a bot:// URI; `dependencies:` allow-lists the shared bundles
+# this bundle's own workflows may resolve.
+exports:
+  workflows:
+    - id: hierarchy-feature-author
+      path: workflows/author.bot
+dependencies:
+  workflows:
+    - name: shared-planner
+
 # Reserved for future minor extensions (additive). Unknown keys are
 # tolerated under `compat:` so newer bundles don't break older iterion.
 compat:
@@ -209,6 +230,57 @@ minimum across pods) would refuse a run that the pod actually taking it could
 serve. The runner decides against its OWN build, which is exact. What every
 path shares is the manifest decoder: a `requires:` block iterion cannot read
 refuses the bundle wherever it is opened.
+
+### `exports:` / `dependencies:` — the shared-subbot contract
+
+Two more optional fields carry the `bot://` contract of
+[Shared subbot dependencies](#shared-subbot-dependencies) (ADR-094). `exports:`
+is a bundle's public workflow surface; `dependencies:` is the consumer-side
+allow-list — a workflow resolves only a shared bundle its OWN manifest names.
+Both are additive schema-v1 extensions read through the same strict decoder as
+`requires:`, so a build too old to know them refuses the whole manifest rather
+than silently dropping the contract.
+
+```yaml
+# the producing bundle's manifest.yaml
+exports:
+  workflows:
+    - id: hierarchy-feature-author  # the stable id a bot:// URI addresses
+      path: workflows/author.bot    # bundle-relative source
+```
+
+```yaml
+# the consuming bundle's manifest.yaml
+dependencies:
+  workflows:
+    - name: shared-planner          # matching is exact
+```
+
+The manifest declares the **need**; the project-root `bots.lock` fixes its
+**resolution**. No hash ever enters the `.bot`: a `.bot` feeds the resume hash,
+so a pin written inside it would invalidate every in-flight run's resume for a
+change that does not touch the workflow's logic.
+
+```yaml
+# bots.lock — committed and diffed, at the project root (never under .iterion/)
+version: 1
+dependencies:
+  shared-planner:
+    source: https://git.example/shared-planner.git
+    ref: v1.0.0
+    path: bundles/planner           # optional: a subdirectory inside the source
+    bundle_sha256: "<64 lowercase hex chars>"
+```
+
+`version:` is the lockfile schema, **1** today, and `pkg/botlock` refuses any
+other value. A subbot node then addresses the export as
+`source: bot://shared-planner/hierarchy-feature-author`, and `pkg/subbotsource`
+walks the whole chain before it returns a path: the consumer manifest must
+declare the name, `bots.lock` must carry an entry keyed exactly by it,
+`.botz/<name>` must be materialized with a matching `manifest.name`, its content
+hash must equal `bundle_sha256`, and the shared manifest must export that
+workflow id. Any link missing is an explicit error naming
+`iterion bots sync`, never a silent fallback.
 
 ## Determinism
 
@@ -286,7 +358,7 @@ and carries a `bundle.lock` recording the full hash + original archive
 path.
 
 - **Cache hit**: `iterion run my.botz` reuses
-  `~/.cache/iterion/bundles/<hash>/` immediately.
+  `~/.cache/iterion/bundles/<first-2>/<full-hash>/` immediately.
 - **Cache miss / GC**: iterion re-extracts from `BundlePath` recorded
   on the run.
 - **Cache + source both gone**: resume fails with a clear hint
@@ -316,6 +388,10 @@ that would defeat determinism:
 
 - `.git/` — version control noise.
 - `.iterion/` — local run store of past iterion runs.
+- `.devbox/` — the profile of `/nix/store` symlinks `devbox install` writes in
+  the bot's directory when it generates that bundle's own `devbox.lock`.
+  Skipping it is what keeps such a bundle packable at all: those symlinks would
+  otherwise hit the `bundle/pack: symlinks not allowed` refusal below.
 - `__pycache__/`, `*.pyc` — interpreter caches, including those generated by
   executing a materialized bundle tool.
 - `*.botz` — prior builds (avoids accidental nested packaging).

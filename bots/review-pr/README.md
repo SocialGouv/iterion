@@ -21,14 +21,22 @@ extra provider call. A single `converge` step normalises the one or two reviewer
 outputs, merges and de-duplicates findings, and raises the confidence of
 anything both families flagged ("cross-confirmed"). It then writes one issue
 per finding to the iterion native kanban board (labelled `severity:*`,
-`type:*`, `source:revi`) plus a markdown report.
+`type:*`, `source:revi`) plus a markdown report. `review_tier` sits above this knob:
+`audit` **forces dual** whatever `review_mode` says, and `glance` routes to a
+cheaper same-family pair of reviewer nodes.
 
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
-diff_precheck -> topology (condition)
-  ├─ mono/claude -> reviewer_claude   claude_code, read-only
-  ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-5.5, read-only tools
-  └─ dual        -> fan (fan_out_all) -> both reviewers
+diff_precheck -> tier_expand (compute, no LLM: resolves severity_threshold,
+                              max_findings, post_to_board and the effective
+                              review mode from review_tier)
+tier_expand -> topology (condition)
+  ├─ mono, guard tier (DEFAULT) -> reviewer_claude / reviewer_gpt
+  │                                claude-opus-5 / openai/gpt-5.5
+  ├─ mono, glance tier          -> reviewer_claude_glance / reviewer_gpt_glance
+  │                                claude-sonnet-5 / openai/gpt-5.4-mini
+  └─ dual (review_mode=dual, or the audit tier, which forces it)
+                                -> fan (fan_out_all) -> both reviewers
 reviewer_* -> merge_reviews (best_effort) -> converge (merge + dedupe → board + report)
 converge -> pr_gate    deterministic: was a pr_url given?
   ├─ no  -> done
@@ -39,24 +47,42 @@ converge -> pr_gate    deterministic: was a pr_url given?
 
 ## Scope
 
-Reviewers audit `git diff $(git merge-base {{base_ref}} HEAD)` — the
+Reviewers audit `git diff $(git merge-base <base> HEAD)` — the
 **working-tree** diff against the merge-base, so both committed and
-uncommitted branch changes are reviewed. To review **only** the
-uncommitted working tree, run with `--var base_ref=HEAD`.
+uncommitted branch changes are reviewed.
+
+`<base>` is **refreshed from the remote before the merge-base is taken**:
+`diff_precheck` runs `git fetch --quiet origin <base_ref>` and, when that
+succeeds, merge-bases against `FETCH_HEAD` rather than the local ref. A
+workspace reused across runs otherwise carries whatever `base_ref` meant when
+it was made, and a merge-base against a stale base lands *below* the branch
+point — every file merged into the base since would enter the diff and be
+reviewed as if the branch had touched it. The base resolved this way is
+published once as `base_sha` and every consumer reads that sha. If the remote
+is unreachable the local ref is used and `base_is_current: false` is reported,
+so the reviewers say the scope may be wide instead of failing the run.
+
+To review **only** the uncommitted working tree, run with
+`--var base_ref=HEAD` — nothing is fetched in that mode.
 
 ## Inputs
 
 All inputs are workflow `vars` (override with `--var name=value`):
 
+> `review_tier` is a preset, not a cage: every knob it resolves stays
+> individually overridable with its own `--var`, and the deterministic
+> `tier_expand` step records the resolved values in the run.
+
 | Var | Default | Description |
 |---|---|---|
 | `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's workspace). |
 | `base_ref` | `main` | Ref to diff against (`merge-base(base_ref, HEAD)` vs working tree). `HEAD` = uncommitted only. |
+| `review_tier` | `guard` | ONE preset for a repo's criticality / budget policy: `glance` \| `guard` \| `audit`. The deterministic `tier_expand` node resolves the defaults of `severity_threshold`, `max_findings`, `post_to_board` and `review_mode` from it, and it picks the reviewer models — `glance` is frugal (claude-sonnet-5 / gpt-5.4-mini), `guard` is the default and byte-identical to the pre-tier posture, `audit` is exhaustive and forces dual. Pinnable per repo through the integration's `launch_vars`. See [Review tiers](../../docs/merge-gate.md#review-tiers). |
 | `scope_notes` | `""` | Free-text steering passed to the selected reviewer(s). |
 | `prior_pushback` | `""` | What a fixer already did with an EARLIER review of this same PR, per finding id: fixed (with the commit), contested (with its argument), or deferred. Stamped at launch by the engine when such a run exists; empty is the normal case. This is what keeps a review↔fix pair converging instead of oscillating — a contested finding returns only against NEW evidence. It is **not** an instruction to drop it: a wrong argument must be answered, and a finding that is still real still counts against the gate. |
-| `severity_threshold` | `low` | Drop findings below this (low < medium < high < critical). |
-| `max_findings` | `40` | Cap on issues/rows (highest severity first); a capped run says so. |
-| `post_to_board` | `true` | File findings on the native board; `false` = report only. |
+| `severity_threshold` | `auto` | Findings below this severity are never written (low < medium < high < critical). `auto` (the default) lets the tier pick the floor: **medium** on `guard`, `high` on `glance`, `low` on `audit`. Any concrete value is an explicit override that wins over the tier. Keep the EFFECTIVE value at or below `gate_severity`, or the required check stops seeing what it gates on. |
+| `max_findings` | `0` | Cap on issues/rows (highest severity first); a capped run says so. `0` (the default) is a sentinel: the tier picks the cap — **15** on `guard`, 5 on `glance`, 40 on `audit`. Any positive value is an explicit override. |
+| `post_to_board` | `auto` | File findings on the native board — a string enum (`auto` \| `true` \| `false`), not a bool. `auto` (the default) resolves from the tier: `false` on `glance` (a quick signal has no business filing board issues), `true` on `guard`/`audit`. `false` = report only. |
 | `report_path` | `.review-pr/findings.md` | Markdown report destination (gitignorable; not under `.iterion/`). |
 | `pr_url` | `""` | When set, ALSO publish the review onto this PR (see below). Empty = board + report only. |
 | `pr_review_mode` | `inline` | How the PR review is posted: `inline` (per-line comments) or `summary` (one comment). |
@@ -65,6 +91,12 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
 | `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
 | `gate_context` | `revi/review` | Commit-status context; use a shared context when another bot gates different PRs in the same repo. |
+| `ticket_context` | `auto` | Ticket-conformance source: `auto` picks the EXTERNAL tracker when `tracker_api_base` is set, else the FORGE-NATIVE one from `pr_url` (the forge is asked which issues the PR closes — GitLab `closes_issues`, GitHub `closingIssuesReferences` — falling back to a text scan). `off` disables the check; a PR with no ticket is never a finding either way. |
+| `tracker_api_base` | `""` | Base URL of an EXTERNAL tracker API. Setting it selects external mode for `ticket_context`. |
+| `tracker_user` | `""` | Identity used against `tracker_api_base`. |
+| `ticket_refs` | `""` | Explicit ticket references for this review, when neither the forge nor the PR text carries them. |
+| `source_branch` | `""` | The PR's head branch name, injected by the webhook lanes on every PR launch (empty on a bare CLI run); used to recover ticket references embedded in the branch name (`feature/PROJ-123-…`). |
+| `forge_publish_url` / `forge_publish_token` | `""` | Stamped by the SERVER at launch — the endpoint and the ephemeral per-run token `publish_review` posts through. Never set these by hand; see "Publish onto a forge PR" below. |
 
 ## Run
 
@@ -145,16 +177,22 @@ iterion run bots/review-pr/main.bot \
 - **Deterministic merge gate.** With `gate_enabled: true`, the publish node
   counts findings at or above `gate_severity` and asks the server to post
   `gate_context` on the PR head (`success` for zero, `failure` otherwise).
-  The LLM never chooses the gate result. The status is advisory until the repo
+  The LLM never chooses the gate result. The gate **fails closed** on the two
+  shapes where that count means nothing: a scope that never resolved
+  (`diff_precheck` could not read a diff — zero findings out of zero files
+  read is not an approval) and reviewer output that was not machine-readable.
+  Both post `failure` carrying a `note` that replaces the status description,
+  so the check names the real reason instead of pointing at a blocking finding
+  that was never published. The status is advisory until the repo
   requires that context in branch protection; see
   [Merge gate](../../docs/merge-gate.md).
 
 ## Read-only by construction
 
-No node mutates source: `reviewer_claude` is `readonly: true` (Write/Edit
-removed, Read/Grep/Bash kept for `git diff`), and `reviewer_gpt` is given
-only read tools (`bash`, `read_file`, `glob`, `grep` — no
-`write_file`/`file_edit`). The single downstream `converge` step writes
+No node mutates source: `reviewer_claude` and `reviewer_claude_glance` are
+`readonly: true` (Write/Edit removed, Read/Grep/Bash kept for `git diff`), and
+`reviewer_gpt` / `reviewer_gpt_glance` are given only read tools (`bash`,
+`read_file`, `glob`, `grep` — no `write_file`/`file_edit`). The single downstream `converge` step writes
 only the report file and creates board issues over MCP.
 
 See [main.bot](main.bot) for the full DSL.

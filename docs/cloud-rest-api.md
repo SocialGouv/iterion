@@ -84,7 +84,12 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 |---|---|---|---|
 | `GET` | `/api/teams` | member | List the caller's teams |
 | `POST` | `/api/teams` | member | Create a team |
+| `GET` | `/api/teams/{id}` | team member | Read one team (name, org, status) |
+| `PATCH` | `/api/teams/{id}` | team admin | Rename / update the team |
+| `POST` | `/api/teams/{id}/status` | **org** admin | Team lifecycle — `active` / `suspended` / `read_only`. A suspended team launches nothing; a `read_only` one keeps its history readable. Org-level on purpose: a team admin suspending their own team is harmless, resuming one their org suspended is not |
+| `DELETE` | `/api/teams/{id}` | **org** admin | Delete the team. **422** on a personal team (it is deleted with its org, via `DELETE /api/admin/orgs/{id}`); **409** when `{id}` is the caller's active team — switch first |
 | `GET` | `/api/teams/{id}/members` | team member | List members |
+| `PUT` | `/api/teams/{id}/members/{user_id}` | team admin | Place an **existing** account in the team with a role, idempotently — no invitation round trip. Grants no right the caller did not already hold, and will not create the account |
 | `PATCH` | `/api/teams/{id}/members/{user_id}` | team admin | Change role |
 | `DELETE` | `/api/teams/{id}/members/{user_id}` | team admin | Remove a member |
 | `GET` | `/api/teams/{id}/invitations` | team admin | List pending invitations |
@@ -92,6 +97,11 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | `DELETE` | `/api/teams/{id}/invitations/{invite_id}` | team admin | Revoke |
 | `GET` | `/api/orgs/{id}/usage` | org member | Org-member mirror of the admin usage view (see below) |
 | `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log |
+
+Single-team lifecycle and direct membership source:
+[pkg/server/team_lifecycle_routes.go](../pkg/server/team_lifecycle_routes.go).
+CLI: `iterion remote teams update|status|delete|add-member`
+([cloud-cli.md](cloud-cli.md#command-tree)).
 
 ## Organisations — self-serve (org members, teams, SSO)
 
@@ -101,11 +111,15 @@ in-handler — read routes need org **membership** (`canViewOrg`), mutations
 need org **admin/owner** (`canManageOrg`). Sources:
 [pkg/server/orgs_routes.go](../pkg/server/orgs_routes.go),
 [pkg/server/org_sso_routes.go](../pkg/server/org_sso_routes.go),
-[pkg/server/org_sso_domain_routes.go](../pkg/server/org_sso_domain_routes.go).
+[pkg/server/org_sso_domain_routes.go](../pkg/server/org_sso_domain_routes.go),
+[pkg/server/forge_approval_routes.go](../pkg/server/forge_approval_routes.go).
+What the approval queue is for, and the `all` / credential-less scope:
+[ticket-context.md](ticket-context.md#org-governance-controls).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
+| `PUT` | `/api/orgs/{id}/members/{user_id}` | org admin | Place an **existing** account in the org with an org role, idempotently — `PATCH` only updates a membership that already exists |
 | `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
 | `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member |
 | `GET` | `/api/orgs/{id}/invitations` | org admin | List pending org invitations |
@@ -113,6 +127,13 @@ need org **admin/owner** (`canManageOrg`). Sources:
 | `DELETE` | `/api/orgs/{id}/invitations/{invite_id}` | org admin | Revoke |
 | `GET` | `/api/orgs/{id}/teams` | org member | List the org's teams |
 | `POST` | `/api/orgs/{id}/teams` | org admin | Create a team in the org |
+| `PATCH` | `/api/orgs/{id}/teams/{team_id}/caps` | org admin | Set one of the org's teams' usage caps |
+| `GET` | `/api/orgs/{id}/settings` | org member | Org governance settings (`require_provision_approval`, `provision_approval_scope`) |
+| `PATCH` | `/api/orgs/{id}/settings` | org admin | Update them |
+| `GET` | `/api/orgs/{id}/provision-approvals` | org admin | Repo-bot provisioning requests parked by the flag above |
+| `POST` | `/api/orgs/{id}/provision-approvals/{approval_id}/approve` | org admin | Approve — replays the exact request through the orchestrator |
+| `POST` | `/api/orgs/{id}/provision-approvals/{approval_id}/reject` | org admin | Reject — deletes it; nothing was ever created on the forge |
+| `GET` | `/api/teams/{id}/provision-approvals` | team member | The team's own parked requests |
 | `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log |
 | `GET` | `/api/orgs/{id}/sso/providers` | org member | List SSO providers |
 | `POST` | `/api/orgs/{id}/sso/providers` | org admin | Add an SSO provider (OIDC) |
@@ -126,8 +147,11 @@ need org **admin/owner** (`canManageOrg`). Sources:
 
 ## BYOK LLM keys + generic secrets + bindings
 
-User-scoped + team-scoped flavours share the same payload shape. Both
-return metadata only — the plaintext is **write-only**.
+User-scoped, team-scoped and org-scoped flavours share the same payload
+shape. All three return metadata only — the plaintext is
+**write-only**. The org tier is the parent organisation's own keys,
+lent to the teams its credential audience names — model in
+[cloud-llm-credentials.md](cloud-llm-credentials.md#the-org-tier--one-key-several-product-teams).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -139,6 +163,12 @@ return metadata only — the plaintext is **write-only**.
 | `POST` | `/api/me/api-keys` | member | Create personal key |
 | `PATCH` | `/api/me/api-keys/{key_id}` | member | Update |
 | `DELETE` | `/api/me/api-keys/{key_id}` | member | Delete |
+| `GET` | `/api/orgs/{id}/api-keys` | org member | List the org tier's shared BYOK keys |
+| `POST` | `/api/orgs/{id}/api-keys` | org admin | Create |
+| `PATCH` | `/api/orgs/{id}/api-keys/{key_id}` | org admin | Toggle default / rename |
+| `DELETE` | `/api/orgs/{id}/api-keys/{key_id}` | org admin | Delete |
+| `GET` | `/api/orgs/{id}/credential-audience` | org member | Which teams may spend the org tier's credentials |
+| `PATCH` | `/api/orgs/{id}/credential-audience` | org admin | Set that audience |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |
 | `POST` | `/api/teams/{id}/secrets` | team admin | Create |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Update |
@@ -154,6 +184,7 @@ return metadata only — the plaintext is **write-only**.
 
 Sources:
 [pkg/server/byok_routes.go](../pkg/server/byok_routes.go),
+[pkg/server/org_credentials_routes.go](../pkg/server/org_credentials_routes.go),
 [pkg/server/generic_secrets_routes.go](../pkg/server/generic_secrets_routes.go),
 [pkg/server/bot_bindings_routes.go](../pkg/server/bot_bindings_routes.go).
 Full semantics in [secrets-reference.md](secrets-reference.md).
@@ -307,15 +338,28 @@ query parameter to name the account at connect time. The listing exposes
 when it picks a credential (see
 [cloud-llm-credentials.md](cloud-llm-credentials.md#name-the-account-behind-every-credential)).
 
-Every route above has a team-scoped mirror at
-`/api/teams/{id}/oauth/…` (`connections`, `{kind}/authorize/start`,
+Every route above has **three** mirrors, each carrying the same
+sub-paths (`connections`, `{kind}/authorize/start`,
 `{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`,
-`PATCH {kind}`, and `DELETE {kind}`) for a forfait the whole team draws
-on rather than one operator, and a platform mirror at
-`/api/admin/llm/oauth/…` (super-admin).
+`PATCH {kind}`, and `DELETE {kind}`): a team-scoped one at
+`/api/teams/{id}/oauth/…` for a forfait the whole team draws on rather
+than one operator, an org-scoped one at `/api/orgs/{id}/oauth/…` for
+the forfait the org lends to the teams its credential audience names,
+and a platform one at `/api/admin/llm/oauth/…` (super-admin).
+
+At every scope an (owner, kind) pair holds a **chain**, not a single
+record. `?rank=` selects the link: absent means `0`, the primary, so a
+caller written before chains existed sends the byte-identical request;
+`1` and up are the fallbacks, tried in order when the link before them
+cannot serve. It applies to `authorize/complete`, `credentials`,
+`refresh`, `PATCH` and `DELETE` alike, and a non-integer or negative
+value is a **400**. The `connections` listing reports each link's
+`rank`. Model and CLI:
+[cloud-llm-credentials.md](cloud-llm-credentials.md#the-fallback-chain--several-forfaits-behind-one-tier).
 
 Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go),
-[pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go).
+[pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go),
+[pkg/server/org_credentials_routes.go](../pkg/server/org_credentials_routes.go).
 
 ## Credential pool
 
@@ -428,6 +472,7 @@ Read-only views plus the launch / resume mutations the studio drives.
 | `POST` | `/api/runs/{id}/rename` | member | Rename a run |
 | `GET` | `/api/runs/{id}/children` | member | Child (subbot) runs |
 | `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | member | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
+| `GET` | `/api/runs/{id}/workspace-files/{path...}` | member | Raw workspace bytes behind the review panel's image / audio / video players — live workspace first, then the head snapshot of `?gate=N`; `&download=1` forces an attachment ([review-scope.md](review-scope.md#api)) |
 | `GET` | `/api/runs/{id}/session-board` | member | Session-board widgets ([session-board.md](session-board.md)) |
 | `GET` | `/api/runs/{id}/interactions/pending` | member | Unanswered `ask_user_async` questions |
 | `GET`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message/{msgID}` | member | Pending steering messages for the run |
@@ -449,8 +494,8 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs` | super-admin | Create org |
 | `GET` | `/api/admin/orgs/{id}` | super-admin | Read |
 | `PATCH` | `/api/admin/orgs/{id}` | super-admin | Update name / slug / quotas |
-| `DELETE` | `/api/admin/orgs/{id}` | super-admin | Schedule org deletion (reversible until it runs) |
-| `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a scheduled deletion |
+| `DELETE` | `/api/admin/orgs/{id}` | super-admin | **Soft**-delete: sets `status: pending_deletion` and `purge_after = now + 24h`. The org is blocked **immediately** (it reads as suspended everywhere, and no team in it can launch) — the grace window buys a restore, not continued service. **409** when `{id}` is the caller's own active org: switch orgs first, no self-lockout |
+| `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a pending deletion and return the org to `active`. Only meaningful before `purge_after` |
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
 | `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
@@ -470,6 +515,19 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/bots/{slug}/fork` | super-admin | Seed the override from the baked bundle (`{from}`) |
 | `GET/PUT` | `/api/admin/settings/bot-roles` | super-admin | Webhook role→bot bindings (merge semantics; `null` clears a field) |
 | `GET/PUT` | `/api/admin/settings/sandbox` | super-admin | `sandbox: auto` fallback image override |
+| `GET/PUT` | `/api/admin/settings/bot-vars` | super-admin | Platform bot vars — DB-backed overrides for the `${ITERION_X:-default}` expansions in a `.bot` (precedence: setting > pod env > the bot's own default). Infra namespaces and credential-shaped names are refused at write time; values are stored and audited **in clear**, so never a secret. See [platform-bots.md](platform-bots.md) |
+| `GET/PUT` | `/api/admin/settings/platform-credentials` | super-admin | Who may draw on the platform credential tier — the audience plus an **opt-in** `enforce` flag (absent record or `enforce` off admits everyone; enforcing an audience that names nobody is refused). See [cloud-llm-credentials.md](cloud-llm-credentials.md#gating-the-platform-tier) |
+
+The org purge is irreversible and unattended. A nightly sweeper
+([pkg/cloud/orgsweep](../pkg/cloud/orgsweep/sweep.go)) runs at **02:00 UTC**,
+plus one catch-up pass at boot, and for every org whose `purge_after` has
+passed it HARD-deletes all team-scoped data across the cloud Mongo
+collections, then cascades the identity records — teams, memberships,
+invitations and the org itself. It is idempotent and safe across replicas.
+Once it has run there is no restore path and no REST route that brings the
+tenant back; recovery is a Mongo restore ([cloud-backup.md](cloud-backup.md)).
+`GET /api/admin/orgs/{id}` returns `purge_after` (RFC3339) while the deletion
+is pending, so a UI or a script can show the remaining window.
 
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 [pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
@@ -482,7 +540,7 @@ Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 |---|---|---|---|
 | `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
-| `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 reachable under 1s deadline |
+| `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 + Valkey pinged under a 1s deadline each. Only Mongo is critical: the rest report `degraded` in the body and still answer 200 ([probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md)) |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |
 
 ## Non-obvious JSON shapes

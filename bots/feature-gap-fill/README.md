@@ -28,6 +28,10 @@ and the tree is green. git is the durable state.
 | `scope_notes` | no | Free-form extra context (constraints, priorities) |
 | `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
 | `max_passes` | no | Continuation-loop cap (default 8) |
+| `plan_phase` | no | `on` (default) authors the plan before the campaign; `off` skips planning and the campaign plans in stride |
+| `plan_review` | no | Gates ONLY the peer review of that plan: `auto` (default) resolves at launch to on iff a second model family is credentialed, `on` forces it |
+| `plan_review_policy` | no | What a mid-run peer failure does: `skip` (default — proceed unreviewed, loudly stamped) or `wait` (park `failed_resumable` until the usage window reopens) |
+| `scratch_dir` | no | Out-of-tree scratch for the gate's verify script/log; defaults to `${PROJECT_SCRATCH_DIR}/feature-gap-fill` |
 
 A gap spec typically lists:
 - `implemented[]` — files / abstractions already in place (preserve)
@@ -54,7 +58,8 @@ gate → done            (loop exhausted — ship what is banked)
   off` opts out); `plan_review: auto` gates ONLY the cross-model peer
   review (on iff a second model family is credentialed at launch),
   otherwise the campaign gets the author's plan stamped as unreviewed
-  (`plan_provenance`).
+  (`plan_provenance`). `plan_review_policy` picks the mid-run
+  peer-unavailability behaviour: `skip` (default) or `wait`.
 - `campaign` — one adaptive claude_code agent: brief read-only survey of
   the implemented surfaces, living todo of missing items, then locate seam
   → smallest change → build → test → commit (`Bot: feature-gap-fill`

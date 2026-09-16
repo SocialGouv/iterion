@@ -13,6 +13,8 @@ pnpm add @iterion/sdk
 npm install @iterion/sdk
 ```
 
+Requires Node >= 18.17 (the package's `engines` floor).
+
 You also need the `iterion` binary on your machine. Either install it
 ([release page](https://github.com/SocialGouv/iterion/releases)) and
 make sure it is on `PATH`, or set the `ITERION_BIN` environment variable
@@ -76,13 +78,17 @@ const resumed = await iterion.resume({
 The public surface is documented in source under `src/`:
 
 - `IterionClient` — façade with `run`, `resume`, `inspect`, `validate`,
-  `diagram`, `report`, `init`, `version`, `events`, plus store helpers
-  `loadRun`, `loadInteraction`, `loadArtifact`, `listRuns`.
-- `IterionRuntimeError`, `IterionInvocationError`,
-  `IterionBinaryNotFoundError`, `IterionRunPausedSignal` —
-  structured errors.
-- `tailEvents`, `resolveBinary`, `detectPlatform` — exported helpers
-  for advanced use.
+  `diagram`, `report`, `init`, `version`, `events`, `resolveBinary`, plus
+  store helpers `loadRun`, `loadInteraction`, `loadArtifact`, `listRuns`.
+- `IterionError` — the base every other error extends — and its subclasses
+  `IterionRuntimeError`, `IterionInvocationError`,
+  `IterionBinaryNotFoundError`, `IterionStoreParseError`,
+  `IterionRunPausedSignal`; plus `parseRuntimeError(stderr)`, which turns
+  captured stderr into an `IterionRuntimeError` or `null`.
+- `tailEvents`, `resolveBinary`, `detectPlatform`, `partitionAnswers`,
+  `writeAnswersFile` — exported helpers for advanced use.
+- Subpath entry points, to import one slice without the client:
+  `@iterion/sdk/errors`, `@iterion/sdk/events`, `@iterion/sdk/types`.
 
 ## Status
 

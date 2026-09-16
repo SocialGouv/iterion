@@ -99,6 +99,29 @@ against another.
 The browser connect flow is available whenever the OAuth store is wired
 (cloud mode) — the client id is defaulted, so no extra config is needed.
 
+### Utilization cap — `ITERION_FORFAIT_CAP_PCT`
+
+The run-level auto-resume loop (`iterion run --auto-resume N`, or
+`ITERION_AUTO_RESUME`) refuses to relaunch into a forfait window that is
+nearly spent: re-attempting against a wall that will not move for hours only
+burns attempts. Before each retry it reads the account's 5-hour and 7-day
+utilization from Anthropic's OAuth usage endpoint and stops — leaving the run
+`failed_resumable` with a legible message — when **either** window is at or
+above the cap.
+
+| Env var | Purpose |
+| --- | --- |
+| `ITERION_FORFAIT_CAP_PCT` | Utilization percentage at or above which an auto-resume against the forfait is withheld. **Defaults** to `85`. A value `<= 0` disables the check; a malformed value keeps the default. |
+
+The check is best-effort and never blocks on its own failure: no OAuth token,
+an API-key run, an unreachable endpoint or a malformed body all degrade to
+"cannot tell", and the loop then proceeds on attempt count alone
+([pkg/backend/forfait](../pkg/backend/forfait/forfait.go)). The access token is
+read, sent as a Bearer header, and never logged or returned. Raise the cap on a
+dedicated account (`ITERION_FORFAIT_CAP_PCT=90`), lower it on a shared one to
+leave headroom for interactive work. It never gates a first launch — only a
+retry.
+
 ### Storage & isolation
 
 A forfait is an `OAuthRecord` sealed at rest (AES-GCM, AAD-bound to its

@@ -69,9 +69,10 @@ running code.** Bot capabilities that run out-of-process — the `__mcp-board`
 server (board.* tools), the sandboxed `__claw-runner`, the `__mcp-ask-user`
 server — are spawned via `proc.LocateIterionBinary()`. Under `task studio:dev`
 (`go run`) the studio's own `os.Executable()` is a volatile build path, so
-LocateIterionBinary **falls back to the installed `/usr/bin/iterion`** (then
-`/usr/local/bin`, `~/.local/bin`). If that install is older than your working
-tree, agents silently get the **stale** capability set — e.g. a dogfood run saw
+LocateIterionBinary skips that shortcut and **falls back to `$ITERION_BIN`,
+then the standard install paths in order — `/usr/local/bin/iterion`,
+`/usr/bin/iterion`, `~/.local/bin/iterion`**. If that install is older than
+your working tree, agents silently get the **stale** capability set — e.g. a dogfood run saw
 the board MCP advertise only 7 tools (no `set_bot`/`list_labels`) because the
 installed binary predated them, and the agent (correctly) fell back to routing by
 `assignee`. After adding or changing any delegated capability, **reinstall the

@@ -1,9 +1,10 @@
 # Testing patterns — the helpers, and the traps that ejected PRs
 
-How tests are written here, and the four failure modes that cost real merge-queue
-time: a git subprocess that outlives its temp dir, a run whose workspace is the
-operator's own checkout, Mongo conformance that only runs in CI, and a UI suite
-that touches the operator's store.
+How tests are written here, and the five failure modes that cost real merge-queue
+time: a git subprocess that outlives its temp dir, a helper process that outlives
+the suite, a run whose workspace is the operator's own checkout, Mongo
+conformance that only runs in CI, and a UI suite that touches the operator's
+store.
 
 ## Testing Patterns
 
@@ -20,6 +21,23 @@ that touches the operator's store.
   `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
   The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
   sweeps `_test.go` and fails a new site that assembles its own argv.
+- **A suite that spawns processes proves it cleaned them up** —
+  `internal/proctest.NoProcessLeaks` wraps `TestMain`
+  (`os.Exit(proctest.NoProcessLeaks(m.Run))`) and, on Linux, runs the suite as a
+  child subreaper so an orphaned helper stays a descendant instead of escaping
+  to init. After the suite and every `t.Cleanup` callback has returned, a
+  process still alive past a short settle window (500 ms) fails the suite and is
+  reclaimed; one that finishes its exit path inside that window is forgiven and
+  merely counted, so a cleanup that signalled without joining is not reported as
+  a leak. Widen the window on a slow runner with `ITERION_PROCTEST_SETTLE` (a Go
+  duration) rather than editing the guard. Where the kernel exposes neither
+  `/proc/self/task/*/children` nor the subreaper option it prints
+  `proctest: leak guard unavailable (...)` and still runs the suite, preserving
+  its result; on non-Linux it is a pass-through. Wired into `e2e`, `pkg/cli`,
+  `pkg/dispatcher`, `pkg/runner`, `pkg/runtime` and `pkg/runview`. The rest of
+  the contract — the shell and helper sweep, and the failure-path evidence a
+  fixture must leave — is in
+  [docs/test-process-cleanup.md](../test-process-cleanup.md).
 - **A run's workspace must be a repository the TEST owns.** An engine built
   without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
   inside the developer's checkout — so `worktree: auto` (the IR default)
@@ -60,5 +78,24 @@ that touches the operator's store.
   claim — when you add a feature or an e2e test, update the matching row (or
   run Endy scoped to the family). Contract:
   [bots/e2e-coverage/skills/coverage-matrix.md](../../bots/e2e-coverage/skills/coverage-matrix.md).
-- **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios: feature-dev `campaign_feature_complete`, docs-refresh `campaign_docs_aligned`, whats-next `nexie_turn_basic`. See [docs/adr/008-bot-golden-replay-framework.md](../adr/008-bot-golden-replay-framework.md).
+- **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios (11, registered in [pkg/botreplay/scenarios.go](../../pkg/botreplay/scenarios.go)): adr-cartograph `campaign_adrs_aligned`, branch-improve-loop `campaign_branch_clean`, copilot `run_failure_host_context`, docs-refresh `campaign_docs_aligned`, e2e-coverage `campaign_matrix_complete`, feature-dev `campaign_feature_complete`, feature-gap-fill `campaign_gap_closed`, test-coverage `campaign_coverage_complete`, whats-next `nexie_turn_basic` + `nexie_study_synthesis`, whole-improve-loop `campaign_axis_complete`. See [docs/adr/008-bot-golden-replay-framework.md](../adr/008-bot-golden-replay-framework.md).
+- **The four subbot launch surfaces share ONE bundle fixture** —
+  [`internal/subbottest`](../../internal/subbottest/fixture.go). `New(t, kind)`
+  writes a real parent and child `.bot` on disk, each bundle carrying its own
+  `manifest.yaml` and `skills/` resources, and returns the `Parent`, `Child`,
+  `Workspace` and `Store` paths. The parent runs `before -> subbot child ->
+  after` and every node is a shell `tool` asserting what `.claude/skills/`
+  actually holds at that moment — real tools, never a simulated mirror. Three
+  kinds pin bundle resolution: `bundle` (the child is `child/main.bot`, its own
+  bundle), `member` (the child is a `child/step.bot` inside that same bundle)
+  and `bare` (the child is `loose/step.bot` beside a decoy `skills/shared.md`,
+  so its `BundlePath` must come back EMPTY — resource-looking siblings alone do
+  not promote a loose file to a bundle). `Fixture.Assert` then requires the
+  parent run finished, exactly one child run, the child's recorded `BundlePath`
+  and `FilePath`, and the resources left under `<Workspace>/.claude/skills/` to
+  be the PARENT's again — the child's bundle wins only for the duration of the
+  subbot. Driven from `pkg/cli`, `pkg/dispatcher`, `pkg/runner` and
+  `pkg/runview` (`*subbot_bundle_test.go`): a new launch surface adds a fifth
+  caller, not a fifth fixture. The contract it pins is
+  [docs/groups-iteration-subbots.md](../groups-iteration-subbots.md#child-bundle-resources).
 

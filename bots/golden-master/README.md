@@ -171,6 +171,39 @@ are accepted; a re-recorded reference, a touched product file, a changed archety
 while still in the corpus, a deleted mutant, an uncommitted repair and a mutant re-anchored onto
 nothing are each refused, each naming its own cause.
 
+## `extend.bot` — granting an observation point the net does not have yet
+
+The third workflow in this bundle, also meant to be run as a **subbot** from inside a
+modernisation lot's run (`modernize` wires it as `extend`).
+
+A lot whose intent requires observing a surface the net does not cover yet — a new route, a state
+only the modernised code reaches — must not write under the net to get it. It writes a REQUEST in
+the extension ledger, and this bot, the net's own, acts it.
+
+Why an addition may be acted by a bot when a re-baseline may not: an addition is **checkable**. It
+cannot mask an existing divergence; it can only add a constraint. Everything that merely wears an
+addition's name is the masking vector, and is refused mechanically by the harness's own code
+(`GM_MODE=extend-verify`), never by the prompt:
+
+| | |
+|---|---|
+| **ADD** a reference file | a new path under `refs/`, absent at base |
+| **ADD** a corpus entry | every base entry survives equal, the entry is claimed by the request, its observation tuple collides with nothing |
+| **REWRITE / DELETE / RENAME** | never — the delete side of a rename is judged separately and loses; those go to the re-baseline ledger and a human act |
+
+```
+extend_base → extend_campaign → extend_verify → extend_gate → extend_restore → extend_result
+    └─ nothing to act → extend_refused     ⟳ repair_loop(max_passes, default 2)
+```
+
+`extend_base` refuses outright on a dirty tree; one acting pass, then a second only if the first was
+refused — a third pass on the same refusal is an agent arguing with a deterministic check. The bot
+runs inside the lot's own workspace, so anything it can write the lot can write through it: the
+check is the boundary, not the prompt. Its commits carry the engine-set identity
+`golden-master extend <extend@golden-master.iterion>` (`extend_base` sets it, `extend_verify`
+checks it, `extend_restore` puts the previous one back) so the parent's gate can attribute every
+act to its author.
+
 ## `GM_MODE=validate` — mechanical validity without a gate
 
 `probe_mutation` applies a mutant, fingerprints the tree and the data probe, and says

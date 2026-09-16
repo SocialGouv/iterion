@@ -1,9 +1,15 @@
-# Handoff — `feat/assistant-epic` (studio assistant dock + skills)
+# Handoff — studio assistant dock + skills (`feat/assistant-epic`, **MERGED**)
 
-**Branch:** `feat/assistant-epic`, pushed, head `d44102bc`.
-**Worktree:** `.works/assistant-epic` — run everything from there, never from
-the main checkout.
+**Status:** shipped. The branch squash-merged to `main` as `6eea0ce89` —
+*feat: ship the iterion assistant epic (#480)*, 2026-09-13. The head sha and
+the commit table below are historical: the squash rewrote them, so `d44102bc`
+is no longer an ancestor of `main`.
+**Where to work:** `main`, in the ordinary checkout — the
+`.works/assistant-epic` worktree this file was written from is gone.
 **Operator:** Victor. Writes in French; answer in French.
+
+Still live below: §2 (the doctrine — do not re-litigate), §3 (the traps) and
+§5 (open work). §1 and §4 are kept for provenance.
 
 Read `CLAUDE.md` first — it is authoritative and this file does not repeat it.
 
@@ -31,9 +37,9 @@ Two threads that ended up braided:
 
 **Three `wip(iterion): auto-banked …` commits sit underneath** (`752f76a6`,
 `ec7257d7`, `e338a7c9`). Iterion runs banked uncommitted work mid-session.
-They are unreviewed with generated messages. The branch squash-merges through
-the merge queue so they vanish at merge; rewrite them only if the operator
-asks for a clean history before the PR.
+They were unreviewed with generated messages. The branch squash-merged through
+the merge queue, so neither those three nor the five in the table above exist
+on `main`; `6eea0ce89` carries the whole epic.
 
 ---
 
@@ -116,15 +122,16 @@ before it binds the port. It is not hung.
 pointermove without pointerdown (measured). Resize handles must be verified by
 the operator with a real mouse — say so rather than claiming it works.
 
-**`pkg/dsl/ir/compile.go` fails `gofmt`.** Pre-existing, already on `main`,
-deliberately untouched here to keep the diff clean. It will redden `task lint`.
+**~~`pkg/dsl/ir/compile.go` fails `gofmt`.~~** Fixed on `main` since this
+handoff was written — `gofmt -l pkg/dsl/ir/compile.go` prints nothing and the
+file no longer reddens `task lint`. Treat any new gofmt failure there as real.
 
 ---
 
 ## 4. Verify before you claim anything
 
 ```sh
-cd .works/assistant-epic
+cd <repo root>                     # the .works worktree is gone; use main
 go build ./... && go vet ./pkg/... 
 go test ./pkg/runtime/ ./pkg/cli/ ./pkg/store/ ./pkg/runview/ ./bots/
 go test ./e2e/                     # ~3 min
@@ -137,8 +144,8 @@ operator's manual testing and none by tests that "passed" — including one of
 mine that passed against a deleted prompt roster because a `##` comment still
 mentioned the skill. Break the thing, watch the test fail, restore.
 
-The operator's studio runs on **`http://localhost:4899`** from this worktree's
-binary. Live dogfood runs must land in a store the operator can watch — never
+The operator's studio runs on **`http://localhost:4899`** from the checkout's
+own binary. Live dogfood runs must land in a store the operator can watch — never
 a throwaway `--store-dir /tmp/...`.
 
 ---
@@ -202,7 +209,7 @@ dropped when the operator pivoted. CI (`test`, `race`, `cloud-e2e`) and an
 | Page-context strip / eye | `ContextChip.tsx` (`stripSpeaks`), `ContextEye.tsx` |
 | Route → typed reference | `lib/chatDock/routeReference.ts` (`orView` marks `degraded`) |
 | Assistant vs Steering naming | `lib/chatDock/labels.ts` |
-| Run-console steering panel | `studio/src/components/Runs/FloatingChatPanel.tsx` |
+| Run-console steering panel | `studio/src/components/Runs/SteeringPanel.tsx` (+ `runSteering.tsx`) |
 | Copi | `bots/copilot/main.bot` + `bots/copilot/skills/` (5 skills) |
 | Library-skill mirror + union | `pkg/runtime/library_skills.go` |
 | `--skill` / `ITERION_SKILLS` | `pkg/cli/extra_skills.go` |

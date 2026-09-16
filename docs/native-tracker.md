@@ -607,9 +607,19 @@ adapter := native.NewAdapter(s) // satisfies tracker.Tracker
 
 ## Limitations (v1)
 
-- **No bi-directional sync with GitHub / Forgejo.** A single
-  dispatcher instance picks one tracker. Mirroring is on the v2
-  roadmap.
+- **Bi-directional sync exists for GitHub Projects v2 only.** A bound
+  Projects v2 board syncs `Status` **both ways** — board column → native
+  state on the project pass, native state → board column through a
+  per-move projection effect (`EffectKindProjection`) on the trigger
+  outbox — and `Area` / `Mode` / `Priority` land as card labels. Bind it
+  by hand with `iterion issue import --forge github --repo <owner>/<repo>
+  --project <owner>/<number>`, or once per team on cloud
+  (`iterion remote board bind --project <owner>/<number>`); see
+  [github-board-sync.md](github-board-sync.md) and
+  [ADR-097](adr/097-github-projects-v2-board-sync.md). Everything else
+  stays one-way: GitHub *issues* (issue → card only, and the project pass
+  never creates a card), and the Forgejo and GitLab trackers entirely. A
+  single dispatcher instance still picks one tracker.
 - **No persistent retry queue.** Restart loses in-flight backoff
   timers; the next tick re-discovers candidates via the tracker.
 - **Migration on board.json changes is manual.** Renaming a state

@@ -61,11 +61,15 @@ every item pending (`notify -> done when not posted`).
 | `max_items_per_feed` | int | `30` | Freshest-N cap per feed at collect |
 | `allow_private_feeds` | bool | `false` | Relax the SSRF guard — trusted single-tenant / on-prem only |
 | `max_digest_items` | int | `150` | Newest-N cap passed to the LLM; overflow dropped WITH a count in the message |
+| `max_message_chars` | int | `14000` | Per-message budget at delivery; a longer digest is SPLIT into consecutive parts, never cut. A sink's own `max_chars` overrides it |
+| `max_messages` | int | `5` | Ceiling on the parts one digest may occupy — the last then carries the truncation notice; `0` = no ceiling |
 | `scratch_dir` | string | `${PROJECT_SCRATCH_DIR}/feed-watch` | Out-of-tree handoff between collect nodes |
 
 The synthesis model is an env, not a var: `FEED_WATCH_MODEL` (also
 `FEED_WATCH_BACKEND`, default `claude_code`, and `FEED_WATCH_EFFORT`, default
-`medium`).
+`medium`). `synthesize` additionally declares a `gpt_forfait` fallback on
+`usage_window` — backend `claw` on `FEED_WATCH_FALLBACK_MODEL`, default
+`openai/gpt-5.5`.
 
 ## Invocation
 

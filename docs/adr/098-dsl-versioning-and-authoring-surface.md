@@ -6,6 +6,17 @@
   ([docs/philosophy.md](../philosophy.md) §4), issue #1010 (the authoring
   program this ADR governs, lots 0.5 → 5), issues #1012 / #1013 / #1015
   (the transport defects lot 0.5 closes).
+- Number collision: `098` is shared with
+  [098-connector-catalog.md](098-connector-catalog.md), a separate
+  decision proposed 2026-09-10. The two landed days apart from different
+  work streams. Neither is renumbered — merged PRs, commit messages and
+  inbound doc references already say "ADR-098" for both, so a rename would
+  strand them. In the DSL and grammar docs
+  ([docs/grammar/V1_SCOPE.md](../grammar/V1_SCOPE.md),
+  [docs/grammar/iterion_v1.ebnf](../grammar/iterion_v1.ebnf) §§ syntax
+  profile and imports,
+  [docs/comparisons/feature-inventory.md](../comparisons/feature-inventory.md))
+  "ADR-098" means THIS file; in the connector docs it means the other one.
 
 ## Problem
 

@@ -55,6 +55,7 @@ repo:
   allow_create: true    # offer "Create a new repository"
   purpose: "Where the new application will live."
   visibility: private   # default for created repos
+  default_branch: main  # seeds a created repo's default branch
 ```
 
 The Launch form renders it as the **Target repository** section:
@@ -65,6 +66,11 @@ launch until a target is picked. Creation calls
 iterion never updates or deletes forge repositories; GitHub Apps mint a
 per-call `administration:write` token, an opt-in grant requested at App
 creation).
+
+`default_branch` seeds a created repo on GitLab and Forgejo; GitHub
+ignores it by design — on an empty GitHub repo the first push names the
+default branch, and with an auto-initialised README GitHub applies the
+owner's configured default instead.
 
 A repo-targeted launch sends `repo_url` + `connection_id` on
 `POST /api/runs`; the server pins the connection's managed forge token

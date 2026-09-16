@@ -10,11 +10,16 @@ Iterion includes a browser-based visual workflow editor built with React and XYF
 iterion studio                     # Launch on default port (4891), opens browser
 iterion studio --port 8080         # Custom port
 iterion studio --dir ./workflows   # Custom working directory
-iterion studio --bind 0.0.0.0      # Expose on the LAN (default 127.0.0.1)
+iterion studio --bind 0.0.0.0      # Expose on the LAN (needs the env opt-in below)
 iterion studio --bots-path ./bots  # Add a bot discovery path (repeatable; feeds the Launch modal)
 iterion studio --no-browser        # Don't auto-open browser
 iterion studio --no-browser-pane   # Disable the run console's Browser pane
 ```
+
+`--bind` defaults to `127.0.0.1`. The local studio runs with authentication
+disabled, so a non-loopback bind is refused at startup unless
+`ITERION_STUDIO_INSECURE_NONLOOPBACK=1` downgrades the refusal to a warning
+([browser-security.md](browser-security.md#the-studio-refuses-an-unauthenticated-non-loopback-bind)).
 
 See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for the full flag set
 (networking, attachments, bot discovery).
@@ -26,15 +31,19 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
 - **Model + fallback labels on the card** — An agent/judge node names the model spec it will actually use, and the `fallbacks:` routes behind it. A `${VAR:-default}` spec renders its authored default rather than the word "env", so the card distinguishes one deployment's model from another's; a bare `${FOO}` compacts to `$FOO` to fit the node ([studio/src/lib/modelLabel.ts](../studio/src/lib/modelLabel.ts))
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
-- **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph
+- **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph; **Edit → Apply** re-parses the pane back into the graph. A bot in several files is the exception: the pane opens as the merged program of its fragments and stays read-only there — edit each fragment from the bundle file drawer, or on the canvas
 - **Bundle file drawer (cloud team bots)** — Add, edit, save, or delete `manifest.yaml`, skills, prompts, and other bundle files without leaving the editor (`main.bot` is the required entry and cannot be deleted)
-- **Live diagnostics** — Real-time validation errors and warnings as you edit (sparse DSL ranges C001–C199 and async C240–C242; bundle checks C200–C234)
+- **Live diagnostics** — Real-time validation errors and warnings as you edit. The codes occupy sparse bands: DSL/compiler checks use C001–C199 plus C240–C249 (async interaction, `session: persist`, parallel branches, fail codes) and C260–C268 (action nodes, async-capable backends, `session_slot`); bundle checks use C200–C234 and C250–C253. The authoritative list is [references/diagnostics.md](references/diagnostics.md)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
 - **Launch modal** — Fills `vars` and attachments at launch time, with bot/argument discovery driven by `--bots-path` (the modal's bot picker and argument form consume the same catalogue `iterion bots list` emits)
 - **Kanban `/board` view** — Native tracker CRUD with drag-and-drop (gated on `server_info.native_tracker_enabled`; see [native-tracker.md](native-tracker.md))
 - **Pipeline `/pipelines` board** — Global control-center board tracking staged tasks and their in-flight runs, with priority-driven launch (same `server_info.native_tracker_enabled` gate; concurrency capped by `--max-concurrent-pipelines`; see [native-tracker.md](native-tracker.md))
 - **`/dispatcher` dashboard** — Live running + retry tables when `iterion dispatch` is wired (gated on `server_info.dispatcher_enabled`; see [dispatcher.md](dispatcher.md))
+- **Automations `/triggers`** — Event triggers and cron schedules in one view, two tabs: *Automations* and *Schedules*. The nav entry appears when `server_info.triggers_enabled` or in cloud mode; on a server with no schedule store the Schedules tab says so and points at `iterion schedule` on the host crontab instead (see [scheduling.md](scheduling.md))
+- **Plugins `/plugins`** — The plugin registry (embedded builtins + `~/.iterion/plugins`) with enable/disable, install from a git URL or local path, and uninstall; builtins can only be disabled, never removed. Always present — `server_info.plugins_enabled` is unconditionally true — but install/uninstall need a super-admin, which the auth-less local operator is (see [plugins.md](plugins.md))
+- **Skills `/skills`** — CRUD over the host's skill library, the one workflows reach through the DSL `skills:` field; local mode only, backed by `/api/local/skills` (gated on `server_info.skills_enabled`, i.e. `mode != "cloud"`; see [skills-library.md](skills-library.md))
+- **Secrets `/secrets`** — The sealed local secret store (machine-global `~/.iterion/secrets.json` plus an optional per-project override): values are AES-GCM sealed at rest, injected into runs at tool/shell exec time, and never enter the agent's context or any API response. Local mode only, and only with a store + sealer wired (`server_info.secrets_enabled`); backed by `/api/local/secrets` (see [secrets.md](secrets.md))
 - **Browser pane** — Preview URLs, live CDP screencast, and time-travel screenshots tied to a run (see [browser-pane.md](browser-pane.md)). Disable with `--no-browser-pane`.
 - **Run console** — Launch a workflow from the studio and watch events stream live
 - **Assistant dock** — The conversational assistant on *every* route: a corner bubble that opens into a floating panel or a docked right column. It hosts the same session `/whats-next` renders full-width, so navigating neither restarts it nor loses the transcript, and it reports the page you are on as a dismissible context chip (see [assistant-dock.md](assistant-dock.md))
@@ -47,9 +56,15 @@ The **New bot** button on the Bots view opens the guided builder — the
 recommended way to start a bot from nothing. It runs in two phases on a
 single page:
 
-1. **Template gallery** — pick a starting point (`blank`, `daily-digest`,
-   `code-reviewer`, `docs-writer`, `issue-triager`). Each pre-fills the
-   form; every field stays editable afterwards.
+1. **Template gallery** — pick a starting point. The gallery renders whatever
+   `GET /api/v1/bots/templates` serves, which is `botscaffold.Templates()` —
+   fourteen entries today. Five render the single-agent workflow with a
+   different mission (`blank`, `daily-digest`, `code-reviewer`, `docs-writer`,
+   `issue-triager`); the other nine render a complete, commented **shape** —
+   `campaign-loop`, `review-fanout`, `plan-gate-implement`,
+   `scheduled-digest`, `per-ticket-subbots`, `verified-action`,
+   `async-questions`, `multi-file`, `library` (a bot in several files). Each
+   pre-fills the form; every field stays editable afterwards.
 2. **Form → create → test** — name the bot, write its mission, set the
    optional dials (model/backend, worktree, sandbox, permission, budgets,
    a suggested cron), then create it. An embedded test-run pane lets you
@@ -84,7 +99,7 @@ team store.
 
 ### Authoring
 
-**Source view** — the raw `.bot` source mirrored beside the graph, edits in either stay in sync.
+**Source view** — the raw `.bot` source mirrored beside the graph; **Edit → Apply** parses the pane back into the document, so edits in either stay in sync. A bot in several files is the exception: the header reads *Merged program of N files*, the Edit button is replaced by a read-only note, and the save splits the document back to each fragment by provenance — edit them one at a time from the bundle file drawer, or on the canvas.
 
 ![Studio source view — graph and .bot source side by side](images/studio/editor-source.png)
 

@@ -63,10 +63,18 @@ into git. See [workspace-versioning.md](workspace-versioning.md).
 ```
 GET /api/runs/{id}/review/scope[?gate=N]   → range + groups + total_files
 GET /api/runs/{id}/review/diff?path=…[&gate=N]  → one file's before/after
+GET /api/runs/{id}/workspace-files/{path...}[?gate=N][&download=1]
+                                           → raw bytes, for the media players
 ```
 
 Refs / snapshot ids are resolved server-side from the gate number, never taken
 from the caller.
+
+`workspace-files` is the way out of the text-oriented diff: it serves the path
+from the run's live workspace and, when that path is gone — deleted file, or a
+finalized worktree — falls back to the content-addressed object at the head of
+the requested gate, so a paused review still has a player. An allow-listed type
+is served inline (always with `nosniff`); `download=1` forces an attachment.
 
 `available: false` always carries a `reason` in the operator's terms. A panel
 that shows nothing without saying why is worse than no panel.
@@ -81,7 +89,7 @@ mid-flight upgrade does not strand the operator with an empty range.
 |---|---|
 | Paths excluded by `.iterionignore` / `.gitignore` (in-place) | the tracker never captured them |
 | Gitignored files on a **worktree** run | `git add -A` honours ignore rules |
-| Binary / oversized files | flagged, not rendered (5 MiB blob cap on the per-file diff) |
+| Binary / oversized files **in the diff** | flagged, not diffed (5 MiB blob cap on either side) — an image / audio / video path opens in a player served by `workspace-files` instead, with a download link; a deleted one falls back to the text diff |
 | Cloud runs without a surviving store | the runner's clone is recycled and the snapshots die with the pod |
 | A node resumed after failure | its boundary is re-written against the post-failure tree, so the group shows the last attempt |
 

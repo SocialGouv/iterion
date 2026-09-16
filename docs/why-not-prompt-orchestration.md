@@ -29,7 +29,7 @@ The moment you want any of the properties below, prompt-orchestration starts hit
 
 ### 1. Deterministic DAG
 
-The same `.bot` file produces the same graph of nodes and edges every time. The compiler and validators under [`pkg/dsl/ir/`](../pkg/dsl/ir/) turn the AST into an IR and emit sparse DSL diagnostic codes in C001–C199 (plus the async-interaction band C240–C242) for structural problems *before* you spend a token; bundle checks use C200–C234.
+The same `.bot` file produces the same graph of nodes and edges every time. The compiler and validators under [`pkg/dsl/ir/`](../pkg/dsl/ir/) turn the AST into an IR and emit sparse DSL diagnostic codes in C001–C199 (plus the async/parallel/fail band C240–C249 and the connector-`action:` band C260–C268) for structural problems *before* you spend a token; bundle checks use C200–C234 and C250–C253.
 
 With a prompt orchestrator, the topology is re-decided on every run. That's a feature for exploration and a bug for reproducibility — you can't diff "what changed between run 7 and run 8" if both runs invented their own plan.
 
@@ -88,7 +88,7 @@ A prompt orchestrator running on your laptop has the full filesystem and the ful
 ### 10. Backend portability
 
 The same `.bot` can run on the in-process `claw` backend, Claude Code, or the
-explicit Kimi Code and Grok Build CLI-agent backends. `claw` routes among
+explicit pi, Kimi Code and Grok Build CLI-agent backends. `claw` routes among
 provider models; launch-time selectors can retarget node groups without editing
 the source. Codex remains available as a supported explicit CLI backend.
 See [backends.md](backends.md) and [delegation.md](delegation.md).

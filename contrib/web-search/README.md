@@ -59,7 +59,7 @@ curl -s -X POST http://localhost:3002/v1/scrape \
 
 # Enable the iterion plugin (disabled by default) and point it at the local API:
 iterion plugin enable firecrawl
-iterion plugin config firecrawl api_url=http://localhost:3002
+iterion plugin config firecrawl --set api_url=http://localhost:3002
 ```
 
 A claw node then uses `mcp.firecrawl.search` / `mcp.firecrawl.scrape` with

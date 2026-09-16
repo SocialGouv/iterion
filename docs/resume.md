@@ -645,15 +645,18 @@ unreachable. `--restore-scope none` (formerly `--keep-files`) opts out.
 
 A run **without** a worktree cannot use that path at all: its workspace is the
 operator's live checkout, and `git add -A` there would stage their own
-uncommitted work as a side effect of running a bot. That is the default shape
-(17 of 30 catalog bots), so those runs are versioned by iterion itself —
+uncommitted work as a side effect of running a bot. Worktree isolation is the
+default — an unset `worktree:` compiles to `auto` — so that is the minority
+shape: four catalog bots opt out with `worktree: none` (`feed-watch`,
+`vuln-watch`, `copilot`, `whats-next`), and any run whose workspace is not a
+git repository degrades into it. Those runs are versioned by iterion itself —
 see [workspace versioning](workspace-versioning.md). The rewind picks the
 mechanism per run and reports which one ran:
 
 | Run shape | Files restored by |
 |---|---|
-| `worktree: auto` (docs-refresh, feature-dev, wiki-gen…) | per-node git snapshots |
-| in-place (whole-improve-loop, modernize, review-pr…) | `pkg/workspacetrack` |
+| `worktree: auto`, declared or by default (docs-refresh, feature-dev, review-pr, whole-improve-loop, modernize…) | per-node git snapshots |
+| in-place: `worktree: none` (feed-watch, vuln-watch, copilot, whats-next) or a non-git workspace | `pkg/workspacetrack` |
 | paths the ignore rules exclude, oversized files | neither — reported in `files.skip_reason` / `files.restored.skipped` |
 | paths outside the workspace | neither |
 | paths no execution of the run recorded changing (in place, default scope) | neither — reported in `files.left_in_place` |

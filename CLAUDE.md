@@ -138,7 +138,7 @@ devbox run -- task test:live:kanban  # Run kanban board plan/implement/review li
 devbox run -- task test:live:full    # Run exhaustive DSL coverage live test
 devbox run -- task test:race      # Tests with race detector
 devbox run -- task lint           # go fmt + go vet + golangci-lint
-devbox run -- task check          # lint + test
+devbox run -- task check          # 7 gates: lint, test, goldens, studio, pi-ext, brand, dsl
 devbox run -- task clean          # Remove build artifacts
 ```
 

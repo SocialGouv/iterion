@@ -26,7 +26,7 @@ to a runner pool via NATS JetStream. Reading map:
 | **Queue** | NATS JetStream (`pkg/queue/`) | At-least-once delivery, distributed lease coordination |
 | **Run store** | MongoDB + S3-compatible blob (`pkg/store/`) | Replaces the local `.iterion/` filesystem store |
 | **Config** | `pkg/config/` | Reads env vars + YAML for Mongo/NATS/S3/Sandbox/Runner sections |
-| **Metrics** | `pkg/cloud/metrics/` | Prometheus registry exposed on `/metrics` |
+| **Metrics** | `pkg/cloud/metrics/` | Prometheus registry on its OWN listener — `/metrics` on `ITERION_METRICS_PORT` (default `9090`; chart `server.metricsPort` / `runner.metricsPort`), never on the API port. The runner mounts its `/healthz` + `/readyz` on that same listener |
 
 ```yaml
 # values.yaml — minimal example (see charts/iterion/values.yaml for the full schema)
@@ -57,7 +57,7 @@ config:
   The chart is published to GHCR on every release (job `publish-chart` in `.github/workflows/release.yml`); pick a `--version` from the [iterion releases](https://github.com/SocialGouv/iterion/releases). It bundles server + runner Deployments, KEDA-based runner autoscaling on queue depth, and optional sandbox RBAC for per-run pods. To install from a local checkout instead (chart hacking, unreleased fixes), use `helm upgrade --install iterion ./charts/iterion -f values.yaml`.
 - **Local stack** for testing cloud mode end-to-end: `docker compose -f docker-compose.cloud.yml up` brings up Mongo + NATS + MinIO + iterion server + runner — see [`docker/`](../docker/) for init scripts
 - **Container image**: `ghcr.io/socialgouv/iterion:latest` (built by `.github/workflows/image.yml` on every main push and tag; scanned by `.github/workflows/trivy.yml` post-build and weekly — non-blocking, findings land in the repo Security tab)
-- **Health probes**: `GET /healthz` (liveness, always 200 — including through a drain) and `GET /readyz` (503 while draining or when Mongo is unreachable; a NATS/S3/Valkey failure reports `degraded` and still answers 200). The runner serves the same pair on its metrics port. See [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md)
+- **Health probes**: `GET /healthz` (liveness, always 200 — including through a drain) and `GET /readyz` (503 while draining, on a superseded rollout epoch, or when Mongo is unreachable; a NATS/S3/Valkey failure reports `degraded` and still answers 200). The runner serves the same pair on its metrics port. See [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md)
 - **Auth**: JWT/cookie based — `ITERION_JWT_SECRET` signs access tokens issued by login/refresh, `ITERION_SECRETS_KEY` seals credentials, API clients present the access JWT as `Authorization: Bearer`, the `__Host-iterion_auth` cookie, or WS `?t=`, and health/auth bootstrap endpoints are auth-exempt
 
 ---

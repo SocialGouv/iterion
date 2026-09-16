@@ -3,8 +3,14 @@
 **Scope:** workflow engine + editor + cloud + desktop + dispatcher +
 sandbox surface.
 
-**Effective:** end of Sprint-8 (2026-05-17).
-**Branch:** `iterion/prod-readiness`.
+**Effective:** end of Sprint-8 (2026-05-17), audited on the
+since-merged `iterion/prod-readiness` branch.
+
+**Status:** historical record of the v1 readiness audit. The *Pre-cut
+checklist* and the *Watch list* are still maintained; the *Pre-merge
+checklist* is closed and kept for provenance. Entries struck through
+below shipped after the audit. Re-date this file whenever a scorecard
+cell moves.
 
 **Verdict:** ✅ ready to ship a public v1 with the caveats called out
 in the *Watch* column. The full-tree bug-review series (Sprint-3 →
@@ -57,9 +63,10 @@ installs; revisit before broad consumer distribution.
 
 § Sprint-8 Phase-4 vendor bump pulled 4 P2 fixes via a transient
 `replace github.com/SocialGouv/claw-code-go => ../../.works/claw-code-go`
-directive. **Pre-merge action**: push the sibling branch upstream,
-tag, then `go get @tag && go mod vendor` in this branch and drop the
-replace.
+directive. That replace is **gone**: `go.mod` now pins claw by
+pseudo-version and the only `replace` left is the permanent
+`third_party/codex-agent-sdk-go` one. Bump the pin with
+[`scripts/bump-claw.sh`](scripts/bump-claw.sh), never by hand.
 
 ---
 
@@ -90,12 +97,21 @@ hardening commits on this branch:
   job, govulncheck advisory, SBOM (syft, SPDX + CycloneDX),
   cosign keyless signing for binaries + server image + sandbox
   variants + Helm chart OCI artifact.
-- **Repo hygiene** — `CODEOWNERS`, `dependabot.yml`, `SECURITY.md`,
-  Mongo + blob backup/restore runbook.
+- **Repo hygiene** — `CODEOWNERS`, dependency automation (then
+  `dependabot.yml`, since retired in favour of `renovate.json` — see
+  *DEFER* below), `SECURITY.md`, Mongo + blob backup/restore runbook.
 
 ---
 
-## Pre-merge checklist (this branch)
+## Pre-merge checklist — CLOSED (`iterion/prod-readiness`, merged)
+
+Branch-local steps, kept for provenance; they are not a recurring
+gate. One of them no longer describes how the work is done: the
+vendored `claw-code-go` pin is never bumped by hand any more. Use
+[`scripts/bump-claw.sh`](scripts/bump-claw.sh) (CLAUDE.md, *Key
+Dependencies*), which pushes the claw commit, runs `go get @<sha>` +
+tidy + vendor + verify, then commits — a hand-written pseudo-version
+fails `go mod verify` and turns `vendor-check` red on every merge-ref.
 
 - [ ] Push `.works/claw-code-go` branch `iterion-sprint-8-p2`
       upstream, tag (e.g. `v0.1.1`).
@@ -114,8 +130,11 @@ hardening commits on this branch:
 ## Pre-cut checklist (every release)
 
 - [ ] `task lint && task test && task test:e2e` clean locally.
-- [ ] CI: all of `test`, `mongo-conformance`, `cloud-e2e`,
-      `vendor-check`, `helm-lint`, `govulncheck` green.
+- [ ] CI: the six **required** checks green — `test`, `race`,
+      `vendor-check`, `mongo-conformance`, `golangci`, `revi/review` —
+      and no unexplained red in the advisory lanes `nats-conformance`,
+      `cloud-e2e`, `helm-lint`, `govulncheck`, `desktop-vet-linux`,
+      `desktop-vet-cross`.
 - [ ] `task test:live:review` (the cheapest live target) clean on
       whatever provider you can prove credentials for.
 - [ ] Chart version drift gate green (`task chart:check-version`).
@@ -125,8 +144,9 @@ hardening commits on this branch:
       512 KB render ceiling.
 - [ ] Skim `govulncheck` SARIF for new advisories; acknowledge or
       patch before tagging.
-- [ ] If you bumped vendor: confirm no `replace` directives remain
-      in `go.mod`.
+- [ ] If you bumped vendor: confirm no *transient* `replace` remains
+      in `go.mod`. The `third_party/codex-agent-sdk-go` replace is
+      permanent and stays.
 
 ---
 
@@ -136,14 +156,21 @@ hardening commits on this branch:
   ($99/yr) + Windows EV cert ($300+/yr) + macOS CI runner. Manual
   signing acceptable until adoption justifies the cost. The release
   checklist is in [docs/desktop-release-checklist.md](docs/desktop-release-checklist.md).
-- **Renovate** — Dependabot is sufficient for the five ecosystems
-  iterion currently ships; switch cost is low if needed later.
+- ~~**Renovate**~~ — *shipped.* Dependabot was retired in #509
+  (`ci(renovate): author dep PRs as the socialgouv-renovate App`);
+  `.github/dependabot.yml` is gone. Dependency PRs are now authored by
+  the `socialgouv-renovate` App: config in
+  [`renovate.json`](renovate.json), workflow in
+  [`.github/workflows/renovate.yml`](.github/workflows/renovate.yml).
 - **Codecov threshold enforcement** — coverage signal is informative
   pre-1.0; threshold gates produce false PR failures during normal
   refactors. Re-evaluate post-1.0.
-- **Race-detector CI job** — `task test:race` covers local runs
-  cheaply; a dedicated CI lane adds marginal value for the runner
-  budget.
+- ~~**Race-detector CI job**~~ — *shipped.* `race` is a dedicated job
+  in [`.github/workflows/tests.yml`](.github/workflows/tests.yml) and
+  one of the six **required** checks on `main`. It sets
+  `CGO_ENABLED: "1"` over the repo-wide `CGO_ENABLED=0` (`-race`
+  requires cgo) and runs GitHub-hosted, the self-hosted image having
+  no C compiler. `task test:race` remains the local equivalent.
 
 ---
 
@@ -170,10 +197,12 @@ review cadence kicks in.
    sampler but kept `parent_based_always_on` as the default. Producing
    load-test numbers before flipping to a ratio-based default in
    production.
-6. **`pkg/server/cloudpublisher` + `pkg/store/cloud` unit tests** —
-   both currently report 0% coverage; integration paths exercise
-   them, but a regression in the publisher's queue-position
-   aggregation would only surface in cloud-e2e.
+6. **`pkg/server/cloudpublisher` unit tests** — reports 0% coverage;
+   integration paths exercise it, but a regression in the publisher's
+   queue-position aggregation would only surface in cloud-e2e. The
+   companion `pkg/store/cloud` package this item named at Sprint-8 no
+   longer exists under that path — re-scope against the current
+   `pkg/store/` layout before acting on it.
 
 ---
 

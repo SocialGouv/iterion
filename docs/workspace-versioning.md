@@ -11,13 +11,18 @@ can undo that work.
 
 ## Why iterion owns it rather than delegating to git
 
-Per-node git snapshots already exist and are used for runs that declare
-`worktree: auto`. They cannot be generalised:
+Per-node git snapshots already exist and are used for runs that resolve to
+`worktree: auto` — most of them, since that is what an unset `worktree:`
+compiles to. They cannot be generalised:
 
-- **The default run has no worktree.** It executes in place, so the workspace
-  *is* the operator's checkout. Capturing it with `git add -A` would stage
-  their own uncommitted work as a side effect of running a bot. This is not a
-  gap to fill later — it is a reason git cannot be the mechanism there.
+- **An in-place run's workspace is the operator's checkout.** Worktree
+  isolation is the default, so this is the minority shape: a workflow that
+  declares `worktree: none`, and any run whose workspace is not a git
+  repository — the runtime degrades to in-place there and records
+  `worktree=false` on the run rather than chasing a phantom path. Capturing
+  that tree with `git add -A` would stage the operator's own uncommitted work
+  as a side effect of running a bot. This is not a gap to fill later — it is a
+  reason git cannot be the mechanism there.
 - **`.gitignore` is a packaging policy, not a recovery policy.** A repository
   ignores `dist/` because it should not be committed, not because iterion
   should be unable to undo writing it.

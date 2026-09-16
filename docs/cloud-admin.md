@@ -220,14 +220,36 @@ Users register their own credentials through the admin UI; iterion
 seals them at rest with `ITERION_SECRETS_KEY`. There are two
 storage tracks:
 
-1. **API keys** (BYOK): per-team or per-user, optionally flagged
-   `is_default`. Resolution order at run launch: per-run override →
-   user-default → user-other → team-default → team-other → env.
-2. **OAuth-forfait**: per-user only, one record per kind (Claude Code,
-   Codex). The blob is the verbatim `credentials.json` / `auth.json`
-   the official CLI writes locally; iterion never reads its plaintext
-   except to refresh and to materialise it just-in-time in a per-run
-   `tmpfs` mount on the runner.
+1. **API keys** (BYOK): per-user, per-team or per-**org**, optionally
+   flagged `is_default`. Inside that tier a launch walks per-run
+   override → user-default → user-other → team-default → team-other
+   (`secrets.OrderedAPIKeyCandidates` in `pkg/secrets/byok.go`) — and
+   the tier is only the first step of an ordered plan
+   (`pkg/server/cloudpublisher/credential_plan.go`): BYOK → generic
+   secrets → OAuth-forfait (user, then team) → **org tier** (the org's
+   own keys and forfaits, when its credential audience admits the team)
+   → **credential pool** (a contributor's lent subscription, considered
+   only when the run resolved nothing at all) → **platform tier** (the
+   deployment's own DB-backed credentials, skipped when a pool grant was
+   taken) → restore of a key a provider had just refused. The runner
+   pod's ambient env is what is left when every tier comes up empty.
+   Tier by tier:
+   [cloud-llm-credentials.md](cloud-llm-credentials.md#the-one-paragraph-model);
+   `iterion remote credentials preview` prints the effective order for a
+   given launch, reserving nothing and verifying nothing.
+2. **OAuth-forfait** (kinds `claude_code`, `codex`): stored at four
+   scopes — per user (`/api/me/oauth/…`), per team
+   (`/api/teams/{id}/oauth/…`), per org (`/api/orgs/{id}/oauth/…`) and
+   per platform (`/api/admin/llm/oauth/…`, super-admin). Each (owner,
+   kind) pair holds a **chain**, not a single record: every credential
+   carries a `rank`, `0` the primary and `1`+ the fallbacks tried in
+   order when the link before them cannot serve
+   (`pkg/secrets/oauth.go`). The blob is the verbatim
+   `credentials.json` / `auth.json` the official CLI writes locally;
+   iterion never reads its plaintext except to refresh and to
+   materialise it just-in-time in a per-run `tmpfs` mount on the runner.
+   Chain mechanics and the per-scope CLI:
+   [cloud-llm-credentials.md](cloud-llm-credentials.md#the-fallback-chain--several-forfaits-behind-one-tier).
 
 **Subscription-OAuth billing guard.** A Claude Pro/Max OAuth subscription
 *works* on API-direct backends when the token reaches them, but Anthropic bills
@@ -258,14 +280,21 @@ fails with `not configured` — users will re-paste blobs on expiry.
 
 ## 8. Rotating the master key
 
-Rotating `ITERION_SECRETS_KEY` invalidates every sealed BYOK + OAuth
-record. The clean path:
+Rotating `ITERION_SECRETS_KEY` invalidates every sealed record — BYOK
+keys, generic secrets, OAuth blobs and in-flight OAuth connects, forge
+connections, per-tenant forge OAuth apps, org SSO client secrets, webhook
+HMAC secrets and run bundles. The clean path:
 
 1. Generate the new key.
 2. Have all users re-paste their API keys + OAuth blobs.
 3. Roll the new key into the server + runner Secret simultaneously.
-4. Drop the `api_keys`, `oauth_credentials` and `run_secrets`
-   collections (or wait for users to overwrite their entries).
+4. Drop every collection holding a sealed blob — `api_keys`,
+   `generic_secrets`, `oauth_credentials`, `oauth_pending`, `run_secrets`,
+   `forge_connections`, `forge_oauth_apps`, `org_sso_providers` — plus the
+   `webhook_configs.hmac_secret_sealed` field (or wait for users to
+   overwrite their entries). [secrets-reference.md → The sealing
+   model](secrets-reference.md#the-sealing-model) holds the authoritative
+   AAD table; any family skipped here survives as unreadable ciphertext.
 
 Phase G in the public roadmap will add envelope encryption (master
 key in KMS, per-tenant DEKs) so rotation is a single MongoDB
