@@ -930,7 +930,7 @@ Checks (each `pass` / `warn` / `fail`):
 
 | Check | What it verifies | Failure means |
 | ----- | ---------------- | ------------- |
-| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman, or `--sandbox-driver=noop` to bypass — **downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
+| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman, or turn the sandbox off — `--sandbox none` (the doctor takes the same flag as `iterion run`), `ITERION_SANDBOX_DEFAULT=none`, or `sandbox: none` in the workflow; the run will NOT be isolated. **Downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
 | **spec valid** | `Spec.Validate` (image XOR build, inline needs image, absolute `workspace_folder`, valid network mode/inherit, valid `host_state`) | fix the `sandbox:` block |
 | **docker daemon** | the daemon answers `version --format {{.Server.Version}}` | start Docker Desktop / `systemctl start docker` |
 | **spec safety** | no `source=` bind of `docker.sock`, `/proc`, `/sys`, or host credentials; no flag injection on image/user/workdir; no env-var name/value injection | remove/fix the offending bind, arg, or env var |
