@@ -6,6 +6,7 @@ import * as api from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
 import { touchesOpenUnit } from "@/hooks/unitFiles";
 import type { ServerWsEvent } from "@/api/types";
+import { applyOpenedFile } from "@/lib/openedFile";
 
 const RELOAD_DEBOUNCE_MS = 500;
 
@@ -65,12 +66,12 @@ export function useFileWatcher() {
               .then((result) => {
                 const s = docStoreRef.current.getState();
                 if (s.currentFilePath !== path) return;
-                s.setDocument(result.document);
-                s.setDiagnostics(result.diagnostics);
-                // The files changed on disk: the revision a save presents must follow.
-                s.setUnit(result.unit ?? null);
-                s.setCurrentSource(result.source);
-                s.markSaved();
+                // Through the shared helper: a reload of a file that stopped
+                // parsing must unbind it too. An external write is all it
+                // takes, with no user action, and the next Save would put
+                // the salvaged program on the author's file.
+                // The unit follows the disk: the revision a save presents must.
+                applyOpenedFile(result, s);
                 if (notifySuccess) {
                   useUIStore.getState().addToast("File reloaded", "info");
                 }

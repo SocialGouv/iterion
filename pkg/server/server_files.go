@@ -633,13 +633,11 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		if u.HasErrors() {
-			// Nothing is bound: the studio gets the text and the program the
-			// loader salvaged, with the diagnostics and the word that there
-			// is nothing to save onto. Same posture as serveDiskExample.
-			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags})
-			return
-		}
+		// A unit that does not load stays BOUND, deliberately: saveUnit
+		// already refuses it server-side, naming the fragment at fault, and
+		// the document here is marshalled with provenance — unbinding it
+		// would leave a buffer that Save cannot place and Save-As refuses,
+		// for a main the loader read whole.
 		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path), Bindable: true})
 		return
 	}
@@ -661,20 +659,19 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		Diagnostics:       diags,
 		Path:              req.Path,
 		ConfirmedDiskPath: confirmedDiskPath,
-		Bindable:          req.Path != "",
 	})
 }
 
-// openFileResponse is the open response of a bot in one file. Bindable is
-// false when the file does not parse, and Path is then empty: see the
-// comment where it is set.
+// openFileResponse is the open response of a bot in one file. Path is empty
+// when the file does not parse — see the comment where it is cleared — and
+// its absence IS the answer: there is no fallback path to bind instead, as
+// there is for an example served as bots/<name>.
 type openFileResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics,omitempty"`
 	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
-	Bindable          bool            `json:"bindable"`
 }
 
 // parseHasErrors reports whether a parse left errors — the state in which the

@@ -19,7 +19,6 @@ func openFileFor(t *testing.T, s *Server, path string) struct {
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
-	Bindable          bool            `json:"bindable"`
 } {
 	t.Helper()
 	var out struct {
@@ -28,7 +27,6 @@ func openFileFor(t *testing.T, s *Server, path string) struct {
 		Diagnostics       []string        `json:"diagnostics"`
 		Path              string          `json:"path"`
 		ConfirmedDiskPath string          `json:"confirmed_disk_path"`
-		Bindable          bool            `json:"bindable"`
 	}
 	body, err := json.Marshal(openFileRequest{Path: path})
 	if err != nil {
@@ -71,9 +69,6 @@ func TestAFileThatDoesNotParseIsNotBoundToItsPath(t *testing.T) {
 	if len(got.Diagnostics) == 0 {
 		t.Fatal("no diagnostics: this fixture is supposed to be unparseable, so the test would prove nothing")
 	}
-	if got.Bindable {
-		t.Error("a file that does not parse was reported bindable")
-	}
 	if got.Path != "" || got.ConfirmedDiskPath != "" {
 		t.Errorf("bound to path=%q confirmed=%q — a save would land the salvaged program on the author's file",
 			got.Path, got.ConfirmedDiskPath)
@@ -95,8 +90,8 @@ func TestAFileThatParsesIsStillBound(t *testing.T) {
 
 	got := openFileFor(t, s, "fine.bot")
 
-	if !got.Bindable || got.Path != "fine.bot" {
-		t.Errorf("bindable=%v path=%q, want a clean file bound to its own path", got.Bindable, got.Path)
+	if got.Path != "fine.bot" {
+		t.Errorf("path = %q, want a clean file bound to its own path", got.Path)
 	}
 	if got.ConfirmedDiskPath == "" {
 		t.Error("no confirmed disk path for a file read from disk")

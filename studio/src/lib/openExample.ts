@@ -25,8 +25,9 @@ export interface ExampleTargetStore {
  *
  * Binds `currentFilePath` to the path the server names — a file inside the
  * workspace that parses clean — to nothing when the server says the file is
- * not bindable (it does not parse: a save then asks where, and Run stays
- * disabled, which is honest for a file that cannot run), else to
+ * not bindable (it does not parse: a save then asks where). Run is NOT
+ * disabled by this — the salvaged document is non-null, so the toolbar's
+ * gate still enables it and the launch view lands empty, else to
  * `bots/<name>`, where a save of the one program lands; BEFORE `markSaved()`
  * so the freshly-loaded state is the clean saved baseline AND the Run button
  * enables immediately (otherwise it stays disabled with "Save the workflow

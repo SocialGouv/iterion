@@ -31,8 +31,16 @@ export interface OpenedFileTargetStore {
  *
  * The path is set before the unit, because setting it clears the unit.
  *
- * One function for both open flows (the picker and the tab host): the rule is
- * a single decision, and a second copy of it is how one site keeps binding.
+ * One function for every flow that applies an opened file — the picker, the
+ * tab host, the file watcher's reload, the assistant's post-write reload.
+ * The rule is a single decision, and a second copy of it is how one site keeps
+ * binding: the watcher and the assistant reload were exactly that, and an
+ * external write to the file was enough to re-bind the salvage with no user
+ * action at all.
+ *
+ * Blind spot, stated rather than implied: a new site that hand-rolls the same
+ * setters is invisible here. There is no guard for it — one over the source
+ * text would certify a spelling — so the check is this function's call sites.
  */
 export function applyOpenedFile(result: OpenedFile, store: OpenedFileTargetStore) {
   store.setDocument(result.document);

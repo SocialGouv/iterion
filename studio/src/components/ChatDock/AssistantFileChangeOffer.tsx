@@ -34,6 +34,7 @@ import {
 import { useUIStore } from "@/store/ui";
 
 import AssistantTextDiffDialog from "./AssistantTextDiffDialog";
+import { applyOpenedFile } from "@/lib/openedFile";
 
 type State = "idle" | "previewing" | "ready" | "saving" | "saved" | "error";
 
@@ -293,11 +294,9 @@ export default function AssistantFileChangeOffer({
         warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
         return false;
       }
-      store.setDocument(result.document);
-      store.setUnit(result.unit ?? null);
-      store.setDiagnostics(result.diagnostics);
-      store.setCurrentSource(result.source);
-      store.markSaved();
+      // Same helper as every other reload: the assistant's write may have
+      // left the file unparseable, and it must then unbind like any other.
+      applyOpenedFile(result, store);
       setReloadWarning(null);
       return true;
     } catch {
