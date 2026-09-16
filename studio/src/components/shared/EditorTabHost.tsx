@@ -378,12 +378,19 @@ function TabLoadErrorState({
 //
 // Uses botDisplayLabel so a bundle's `main.bot` shows the persona
 // display_name (e.g. "Featurly") / technical id ("feature-dev") rather
-// than the non-distinctive basename "main.bot". Only acts when
-// `currentFilePath` is non-null. Resetting label/params whenever path is
-// null would race the openFile resolution on every new tab open and
-// clobber values set by the caller.
+// than the non-distinctive basename "main.bot". Only acts when the path is
+// non-null. Resetting label/params whenever path is null would race the
+// openFile resolution on every new tab open and clobber values set by the
+// caller.
+//
+// The FOLLOWED path, not the bound one: a file that does not parse is
+// unbound, and the picker touches no tab state, so `tab.params.file` would
+// stay on the PREVIOUS file. The next remount then sees the two disagree,
+// re-hydrates from the old file over the author's in-progress repair, and
+// retitles the tab to it — the loss this branch exists to stop, reached from
+// the other side.
 function TabBindingSync({ tabId }: { tabId: string }) {
-  const path = useDocumentStore((s) => s.currentFilePath);
+  const path = useDocumentStore((s) => s.currentFilePath ?? s.watchedFilePath);
   const bots = useBotsStore((s) => s.bots);
   const fetchBots = useBotsStore((s) => s.fetch);
   useEffect(() => {
