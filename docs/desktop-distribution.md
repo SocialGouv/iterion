@@ -4,10 +4,13 @@
 
 Pushing a `v*` tag triggers two GitHub Actions workflows in parallel:
 
-1. **`release.yml`** (existing) — builds the CLI binaries for 6 platforms
-   and attaches them to the GitHub Release.
-2. **`desktop-release.yml`** (new) — builds the desktop binaries for the
-   same 6 platforms, signs each artefact, generates the manifest, and
+1. **`release.yml`** — builds the CLI binaries for 6 platforms
+   (linux / darwin / windows × amd64 / arm64) and attaches them to the
+   GitHub Release.
+2. **`desktop-release.yml`** — builds the desktop binaries for 5 targets
+   (`darwin/universal`, `windows/amd64`, `windows/arm64`, `linux/amd64`,
+   `linux/arm64` — one lipo'd universal `.app` covers both Mac
+   architectures), signs each artefact, generates the manifest, and
    attaches everything to the same GitHub Release.
 
 The two workflows do not collide because every desktop artefact is
@@ -54,8 +57,9 @@ iterion-desktop-manifest.json.sig
    `updater_apply_*.go`).
 6. Emits a `update:applied` event so the SPA can prompt for restart.
 
-The user can also trigger updates manually via Settings → Updates → "Check
-now".
+The user can also trigger a check manually, either from Settings → Updates
+→ "Check for updates", or from the native Help → "Check for Updates…" menu
+entry.
 
 ## Signing setup
 
