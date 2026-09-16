@@ -725,9 +725,6 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 		"%s", msg)
 }
 
-// routerPassThroughKeys is the set of keys a mid-graph router will have
-// on its output — incoming with-keys, plus the fields each mode adds
-// itself (llm selection, fan_out_each item binding).
 // routerElementKeys are the per-element bindings a `fan_out_each` router puts
 // in scope INSIDE a branch: the element under its `as:` name, the literal
 // `item` the runtime binds alongside it, and the position pair. Nothing else
@@ -756,6 +753,9 @@ func isBranchHead(w *Workflow, routerID, nodeID string) bool {
 	return false
 }
 
+// routerPassThroughKeys is the set of keys a mid-graph router will have
+// on its output — incoming with-keys, plus the fields each mode adds
+// itself (llm selection, fan_out_each item binding).
 func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
 	keys := map[string]bool{}
 	id := r.NodeID()
