@@ -323,6 +323,14 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	runErr := eng.Run(rctx, runID, launchInputs(wf, opts.Inputs, bias))
+	// The engine joins its branches before Run returns, but a branch the
+	// collector abandoned past its grace period may still emit: the pass is
+	// written, read and returned under the observer's lock, its lists
+	// copied, so nothing appends to what the report holds. (The observer is
+	// called outside the store's own locks, so reading the run here holds
+	// nothing the engine waits for.)
+	mu.Lock()
+	defer mu.Unlock()
 	if runErr != nil {
 		pass.Failure = runErr.Error()
 		if rctx.Err() != nil {
@@ -340,8 +348,8 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	// the order of its events: the trunk's and the branches' interleave, and
 	// the last one seen is no fact about the death.
 	pass.Deliberate = errors.Is(runErr, runtime.ErrDeliberateFailure)
-	mu.Lock()
-	defer mu.Unlock()
+	pass.Nodes = append([]string(nil), pass.Nodes...)
+	pass.Edges = append([]Edge(nil), pass.Edges...)
 	return pass, x, nil
 }
 

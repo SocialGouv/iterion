@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,8 +275,12 @@ func TestABranchEndReachesTheRun(t *testing.T) {
 		exec.on("b1", no)
 		exec.on("b2", no)
 		exec.on("c1", yes)
+		var mu sync.Mutex
 		var branchIDs []string
 		eng := New(compileBotText(t, branchEndBot), tmpStore(t), exec, WithEventObserver(func(evt store.Event) {
+			// Branch goroutines call the observer concurrently.
+			mu.Lock()
+			defer mu.Unlock()
 			if evt.Type == store.EventBudgetWarning {
 				branchIDs = append(branchIDs, evt.BranchID)
 			}
@@ -349,8 +354,12 @@ func TestABranchEndReachesTheRun(t *testing.T) {
 			return map[string]any{"ok": true}, nil
 		})
 		exec.on("c2", yes)
+		var mu sync.Mutex
 		var started []string
 		eng := New(compileBotText(t, src), tmpStore(t), exec, WithSimulation(Simulation{BranchesRunToTheirEnd: true}), WithEventObserver(func(evt store.Event) {
+			// Branch goroutines call the observer concurrently.
+			mu.Lock()
+			defer mu.Unlock()
 			if evt.Type == store.EventNodeStarted {
 				started = append(started, evt.NodeID)
 			}
