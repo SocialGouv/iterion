@@ -241,12 +241,15 @@ One-time setup per repo — install the drain hook into the target repo's
 Claude Code settings:
 
 ```sh
-iterion supervise install-hook --cwd /path/to/repo   # writes .claude/settings.local.json
+iterion supervise install-hook --cwd /path/to/repo             # writes .claude/settings.local.json
+iterion supervise install-hook --cwd /path/to/repo --project   # writes the shared .claude/settings.json
 ```
 
 This adds a `Stop` + `PostToolUse` command hook that runs
 `iterion __claude-hook-drain`. It is non-destructive (existing hooks and
-keys are preserved) and idempotent; remove it with `uninstall-hook`. The
+keys are preserved) and idempotent; `--project` targets the checked-in
+`.claude/settings.json` so the whole team inherits the drain hook, and
+`uninstall-hook` (same two flags) removes it. The
 hook must be present **before** the `claude` session starts (Claude Code
 reads hooks at session start).
 
