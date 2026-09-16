@@ -260,8 +260,12 @@ export function createDocumentStore() {
       warnings: warnings ?? [],
       issues: issues ?? [],
     }),
-  setCurrentFilePath: (currentFilePath) =>
-    set(currentFilePath === null ? { currentFilePath, unit: null } : { currentFilePath, unit: null, watchedFilePath: currentFilePath }),
+  // watchedFilePath follows the binding, null included: File→New, Import and
+  // Start-blank unbind and stop there, and a tab that kept following the
+  // previous file would auto-reload it over the new document. The one case
+  // where the two differ — a file that does not parse — is set explicitly by
+  // applyOpenedFile, right after this.
+  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null, watchedFilePath: currentFilePath }),
   setWatchedFilePath: (watchedFilePath) => set({ watchedFilePath }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),

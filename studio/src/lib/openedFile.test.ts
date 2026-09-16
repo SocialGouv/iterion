@@ -64,4 +64,21 @@ describe("applyOpenedFile", () => {
     expect(store.getState().currentFilePath).toBe("mine.bot");
     expect(store.getState().watchedFilePath).toBe("mine.bot");
   });
+
+  // File→New, Import and Start-blank unbind and stop there. A tab that kept
+  // following the previous file would auto-reload it over the new document,
+  // with no user action — so the followed path tracks the binding, null
+  // included, and only applyOpenedFile parts them.
+  it("stops following when the tab is unbound by anything but a failed parse", () => {
+    const store = createDocumentStore();
+    applyOpenedFile(
+      { source: "workflow a:\n  entry: done\n", document, diagnostics: [], path: "a.bot" },
+      store.getState(),
+      "a.bot",
+    );
+    expect(store.getState().watchedFilePath).toBe("a.bot");
+
+    store.getState().setCurrentFilePath(null); // File → New
+    expect(store.getState().watchedFilePath).toBeNull();
+  });
 });
