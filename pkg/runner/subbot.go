@@ -30,6 +30,18 @@ const maxSubbotDepth = 8
 
 type subbotDepthKey struct{}
 
+// childPath joins a relative child source onto its parent's directory the way
+// every other reader of a `subbot source:` does (bundle.ChildPath), so a pod
+// names the same file the laptop does. A parent directory that does not
+// resolve leaves the lexical join, which is what the caller's own "not found
+// beside the parent" message should quote.
+func childPath(parentDir, source string) string {
+	if resolved, err := bundle.ChildPath(parentDir, source); err == nil {
+		return resolved
+	}
+	return filepath.Clean(filepath.Join(parentDir, source))
+}
+
 // resolveSubbotSource locates the child .bot a `subbot` node names, for a
 // run executing on a pod.
 //
@@ -46,31 +58,6 @@ type subbotDepthKey struct{}
 // an absolute path, or a `..` chain that climbs out of the parent's bundle
 // collection and out of every catalogue root, is refused — a subbot names a
 // bundle, not a file on the pod.
-// realOrClean is the namespace a path is compared in: absolute and
-// symlink-resolved where the path exists, lexically cleaned where it does
-// not. A catalogue root absent from this pod is legitimate, and a path that
-// does not resolve holds nothing anyway.
-func realOrClean(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		if abs, err := filepath.Abs(resolved); err == nil {
-			return abs
-		}
-	}
-	return filepath.Clean(p)
-}
-
-// childPath joins a relative child source onto its parent's directory the way
-// every other reader of a `subbot source:` does (bundle.ChildPath), so a pod
-// names the same file the laptop does. A parent directory that does not
-// resolve leaves the lexical join, which is what the caller's own "not found
-// beside the parent" message should quote.
-func childPath(parentDir, source string) string {
-	if resolved, err := bundle.ChildPath(parentDir, source); err == nil {
-		return resolved
-	}
-	return filepath.Clean(filepath.Join(parentDir, source))
-}
-
 func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, error) {
 	if filepath.IsAbs(source) {
 		return "", fmt.Errorf("subbot source %q: an absolute path is not served on a pod — name the child relative to its parent bundle", source)
@@ -86,15 +73,9 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 			roots = append(roots, filepath.Clean(bp))
 		}
 	}
-	// Containment compares in ONE namespace, the absolute symlink-resolved
-	// one — the rule bundle.collectionOf already states and C253 already
-	// enforces on the validating side. Compared lexically, a `..` folds across
-	// a symlinked directory and a path is judged against a root it does not
-	// sit under.
 	contained := func(p string) bool {
-		p = realOrClean(p)
 		for _, root := range roots {
-			rel, err := filepath.Rel(realOrClean(root), p)
+			rel, err := filepath.Rel(root, p)
 			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				return true
 			}

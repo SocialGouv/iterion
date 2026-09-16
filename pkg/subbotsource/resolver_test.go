@@ -245,30 +245,37 @@ func TestARelativeSourceNamesTheFileTheOSReaches(t *testing.T) {
 	}
 }
 
-// TestARelativeSourceUnderARealBaseIsJoinedToIt reads the resolved branch at
-// all. Every case in the table above uses a base that does not exist, so each
-// takes the lexical fallback — a table that never exercises the branch the
-// fix added.
-func TestARelativeSourceUnderARealBaseIsJoinedToIt(t *testing.T) {
-	base := t.TempDir()
-	child := filepath.Join(base, "subbots", "child.bot")
+// TestASourceThatDoesNotClimbKeepsTheSpellingTheAuthorWrote.
+//
+// Both spellings open the same file, so resolving buys nothing here — and it
+// costs: this path becomes the child's own parentSource, which anchors the
+// walk up to `bots.lock` and the bot id its memory is scoped by. Canonicalising
+// a link away re-anchors both.
+func TestASourceThatDoesNotClimbKeepsTheSpellingTheAuthorWrote(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	child := filepath.Join(real, "subbots", "child.bot")
 	if err := os.MkdirAll(filepath.Dir(child), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(child, []byte("## child\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want, err := filepath.EvalSymlinks(child)
-	if err != nil {
-		t.Fatal(err)
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 
 	got, err := NewResolver(ResolverOptions{}).Resolve(
-		context.Background(), filepath.Join(base, "parent.bot"), filepath.Join("subbots", "child.bot"))
+		context.Background(), filepath.Join(link, "parent.bot"), filepath.Join("subbots", "child.bot"))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
+	want := filepath.Join(link, "subbots", "child.bot")
 	if got.Path != want {
-		t.Errorf("resolved %s, want %s", got.Path, want)
+		t.Errorf("resolved %s, want the written spelling %s", got.Path, want)
+	}
+	if _, statErr := os.Stat(got.Path); statErr != nil {
+		t.Errorf("the written spelling does not open: %v", statErr)
 	}
 }

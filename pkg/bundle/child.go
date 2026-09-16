@@ -3,6 +3,7 @@ package bundle
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // collectionOf is a bundle's root and the collection that holds it, both
@@ -27,24 +28,44 @@ func realPath(p string) (string, error) {
 	return filepath.EvalSymlinks(abs)
 }
 
-// ChildPath joins a relative `subbot source:` onto parentDir, resolving
-// parentDir itself first. Joined lexically, a `..` folds across a symlinked
-// directory (`link/parent/../sib` → `link/sib`) and names a file the OS does
-// not reach from the parent — which is how the two readers of one `source:`,
-// the bundle walk and the runtime resolver, come to disagree about which file
-// a bundle runs.
+// ChildPath joins a relative `subbot source:` onto parentDir.
 //
-// Only the parent's side is resolved: the child need not exist, and nothing
-// here confines it. Confinement belongs to the caller, and the callers differ:
-// this package refuses a child beyond the collection (C253), the pod's
+// A source that CLIMBS is joined onto the parent's resolved directory: folded
+// lexically, a `..` crosses a symlinked directory (`link/parent/../sib` →
+// `link/sib`) and names a file the OS does not reach from the parent, which is
+// how two readers of one `source:` come to disagree about which file a bundle
+// runs.
+//
+// A source that does not climb keeps the spelling the author wrote. Both forms
+// name the same file, and the written one is what identity is anchored on
+// downstream — the walk up to `bots.lock`, and the bot id a child's memory is
+// scoped by. Canonicalising it would re-anchor both for no correctness gain.
+//
+// Only the parent's side is ever resolved: the child need not exist, and
+// nothing here confines it. Confinement belongs to the caller, and the callers
+// differ: this package refuses a child beyond the collection (C253), the pod's
 // resolver refuses one outside every catalogue root, and the in-process
 // resolver of a plain file reference confines nothing at all.
 func ChildPath(parentDir, source string) (string, error) {
+	if !climbs(source) {
+		return filepath.Join(parentDir, filepath.FromSlash(source)), nil
+	}
 	from, err := realPath(parentDir)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(from, filepath.FromSlash(source)), nil
+}
+
+// climbs reports whether source walks out of the directory it is joined to.
+// Clean collapses interior `..`, so what survives it is a real climb.
+func climbs(source string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Clean(source)), "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveChild resolves a `subbot source:` of the file at parent, within
