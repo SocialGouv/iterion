@@ -224,9 +224,12 @@ there. Same run id — use `fork` when you want the original left intact.
 rewinds to the earliest affected node — the bot-development loop in one step.
 `--node` accepts any node with a recorded output (including `tool` and
 `compute`, unlike fork's turn anchor); `--file` overrides the source the graph
-is read from. Budget accounting, loop counters, and `events.jsonl` are
-preserved; artifacts the dropped nodes published get a superseding `rewound`
-marker version.
+is read from. `--force` accepts retained artifacts whose contract metadata
+comes from the revision being repaired; `--auto` acknowledges that itself,
+since detecting a source edit is its purpose, and either way the resume that
+follows needs its own `--force`. Budget accounting, loop counters, and
+`events.jsonl` are preserved; artifacts the dropped nodes published get a
+superseding `rewound` marker version.
 
 A successful rewind leaves the run in `paused_operator` at that checkpoint.
 It does not execute anything until an explicit `resume`; stale cloud launch
@@ -462,7 +465,7 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--dest <dir>` | Parent directory for the bundle, resolved against `--workdir` (default `bots`). |
 | `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
 | `--model`, `--backend` | Pin instead of auto-detection. |
-| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
+| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action`, `library` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 
@@ -721,7 +724,7 @@ spec, a service unit, a shell), which a one-shot CLI process cannot reach. See
 
 ### `iterion secret`
 
-Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed. `set` shape-checks the value at ingestion against the kind read off it (token / JSON / PEM), or the one `--kind` names; `--kind raw` stores it unchecked.
+Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed, and never come from a flag: `set` reads the value from the TTY prompt, from stdin, or from the environment variable `--from-env` names. `set` shape-checks the value at ingestion against the kind read off it (token / JSON / PEM), or the one `--kind` names; `--kind raw` stores it unchecked.
 
 ```bash
 iterion secret set GITHUB_TOKEN
@@ -819,7 +822,7 @@ iterion remote runs mission stop TARGET MISSION
 
 `--invocation` is the stable idempotency key; it defaults to `goal:TARGET`.
 `--assistant` can resolve the one exact active watch when `--watch` is omitted.
-All four commands support the remote command's normal `--output json` mode.
+All four commands honour the global `--json` flag for structured output.
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 
