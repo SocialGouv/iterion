@@ -83,6 +83,15 @@ iterion fmt --check bots/                # CI: exit non-zero when a file would c
 
 `fmt` parses each file, writes it back through the writer the studio saves with (`pkg/dsl/unparse`) and proves, before writing, that the text reads as the same program (`Verify`: same parse, same profile, same compiled workflow and diagnostics, prompt bodies in their canonical form). A file it cannot rewrite without changing it is refused by name and left as it is — one that does not parse, and, until comments survive a rewrite (#1282), one carrying a comment after its first declaration (the writer keeps only the leading ones) — while the files beside it are formatted all the same. `.botz` archives are not formatted in place. `--check` writes nothing and exits non-zero when a file would change or is refused; `--json` lists each file (`changed`, `written`) and the refusals.
 
+### `iterion fix`
+
+```bash
+iterion fix workflow.bot                 # apply the mechanical remedies, in place
+iterion fix --dry-run bots/my-bot        # list every edit, write nothing
+```
+
+`fix` applies the remedies that are the same every time — today **C137**: a `{{ref}}` an author quoted in a tool's `command:` or `postcondition:` loses exactly the quotes around it (the runtime shell-quotes a ref already; the two quotings cancel) — on the file's own bytes, comments and layout untouched, and proves each result before writing it: the text parses, and compiles to the same diagnostics minus the fixed. Quotes that hold more than the reference (`'v={{vars.x}}'`) are not mechanical and are left to the author, said so under `left`, as is every other diagnostic. A file that does not parse is refused by name while the others are fixed. `validate --json` carries the same edit on the diagnostic it remedies (`edit`: `code`, `line`, `column`, `from`, `to`), so an agent's loop can apply it without a second command.
+
 ### `iterion bundle`
 
 ```bash

@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite"
 	"strings"
 	"testing"
 
@@ -101,11 +102,11 @@ func TestMigrationInsertsTheHeaderAtTheEndOfACommentsOnlyFile(t *testing.T) {
 
 // An overlap between planned edits is reported, never sliced or paniced.
 func TestOverlappingEditsAreReported(t *testing.T) {
-	_, err := applyEdits("0123456789", []edit{{0, 5, "a"}, {3, 7, "b"}})
+	_, err := rewrite.Apply("0123456789", []rewrite.Edit{{Start: 0, End: 5, Repl: "a"}, {Start: 3, End: 7, Repl: "b"}})
 	if err == nil || !strings.Contains(err.Error(), "overlapping edits") {
 		t.Fatalf("err = %v", err)
 	}
-	out, err := applyEdits("0123456789", []edit{{0, 5, "a"}, {5, 7, "b"}})
+	out, err := rewrite.Apply("0123456789", []rewrite.Edit{{Start: 0, End: 5, Repl: "a"}, {Start: 5, End: 7, Repl: "b"}})
 	if err != nil || out != "ab789" {
 		t.Fatalf("adjacent edits: %q %v", out, err)
 	}

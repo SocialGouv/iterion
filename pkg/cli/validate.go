@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
+	"github.com/SocialGouv/iterion/pkg/dsl/fix"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
@@ -82,6 +83,10 @@ type ValidateDiagnostic struct {
 	Hint     string `json:"hint,omitempty"`
 	NodeID   string `json:"node_id,omitempty"`
 	EdgeID   string `json:"edge_id,omitempty"`
+	// Edit is the mechanical remedy the diagnostic carries, when its fix
+	// is the same every time (pkg/dsl/fix; `iterion fix` applies it): the
+	// literal before and after, at its line and column.
+	Edit *fix.Edit `json:"edit,omitempty"`
 }
 
 // formatDiagnostic renders one finding for the human output: the
@@ -329,6 +334,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			result.Valid = false
 		}
 	}
+	annotateEdits(result, u, cr.Diagnostics)
 
 	if cr.Workflow != nil {
 		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
@@ -490,6 +496,35 @@ func dryRunFailed(p *Printer, why string) error {
 		return fmt.Errorf("dry run failed: %w", ErrReported)
 	}
 	return fmt.Errorf("dry run failed: %s", why)
+}
+
+// annotateEdits attaches to each compile diagnostic the mechanical remedy
+// it carries (pkg/dsl/fix), planned on its file's own bytes. One edit fixes
+// every quoted reference of a literal at once and rides the first
+// diagnostic of that literal.
+func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic) {
+	for _, f := range u.Files {
+		var mine []ir.Diagnostic
+		for _, d := range diags {
+			if d.File == f.Name {
+				mine = append(mine, d)
+			}
+		}
+		if len(mine) == 0 {
+			continue
+		}
+		edits, _ := fix.PlanFor(f.Name, f.Source, mine)
+		for i := range edits {
+			e := edits[i]
+			for j := range result.Diagnostics {
+				vd := &result.Diagnostics[j]
+				if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name {
+					vd.Edit = &e
+					break
+				}
+			}
+		}
+	}
 }
 
 // loadDryRunFixtures reads the fixtures a dry run answers with: an object

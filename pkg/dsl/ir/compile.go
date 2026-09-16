@@ -1362,7 +1362,7 @@ func (c *compiler) compileTools() {
 			} else {
 				cmdRefs = refs
 			}
-			c.checkQuotedCommandRefs(t.Name, t.Command)
+			c.checkQuotedCommandRefs(t.Name, "command", t.Command)
 		}
 
 		var scriptRefs []*Ref
@@ -1397,7 +1397,7 @@ func (c *compiler) compileTools() {
 			// Same template machinery as `command:`, so the same cancel — and
 			// a postcondition is the deterministic truth oracle of a Verified
 			// Action, which makes a corrupted value worse here than anywhere.
-			c.checkQuotedCommandRefs(t.Name+" postcondition", t.Postcondition)
+			c.checkQuotedCommandRefs(t.Name, "postcondition", t.Postcondition)
 		}
 		policy := t.Policy
 		if policy == "" && t.Postcondition != "" {
@@ -2441,6 +2441,12 @@ func refInQuotes(command string) []string {
 	return hits
 }
 
+// QuotedCommandRefs is refInQuotes for the tools that rewrite a command —
+// the fixer of C137 removes exactly the quotes this scanner saw.
+func QuotedCommandRefs(command string) []string {
+	return refInQuotes(command)
+}
+
 // checkQuotedCommandRefs flags a ref the author quoted, because the runtime
 // quotes it too — and the two quotings do not nest, they CANCEL.
 //
@@ -2455,11 +2461,15 @@ func refInQuotes(command string) []string {
 // A warning rather than an error: the shape is inert for values without shell
 // metacharacters, so a repo full of them still compiles and runs while it is
 // being cleaned up. The fix is always the same — drop the author's quotes.
-func (c *compiler) checkQuotedCommandRefs(node, command string) {
+//
+// The diagnostic is attributed to the node — its position and its file —
+// and names the property (`command:` or `postcondition:`) the reference
+// sits in.
+func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 	for _, ref := range refInQuotes(command) {
 		c.warnfAt(DiagQuotedCommandRef, node, "",
-			"tool %q command: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
+			"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
 				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
-			node, ref)
+			node, where, ref)
 	}
 }

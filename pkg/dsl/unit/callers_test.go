@@ -27,6 +27,7 @@ const parserPackagePath = "github.com/SocialGouv/iterion/pkg/dsl/parser"
 func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 	documentSurfaces := map[string]string{
 		"pkg/botimport/validate.go":  "an imported draft is one generated file",
+		"pkg/cli/fmt.go":             "the formatter rewrites one file on its own text — a unit is formatted file by file, each proven against itself, as the studio's per-file save is",
 		"pkg/dsl/migrate/migrate.go": "the migrator rewrites one file in place; a unit migrates file by file",
 		"pkg/dsl/unit/unit.go":       "the unit loader itself parses each file of the unit",
 		"pkg/dsl/unparse/verify.go":  "Verify re-parses the one file it wrote",
