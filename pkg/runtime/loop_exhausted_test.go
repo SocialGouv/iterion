@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -92,36 +91,55 @@ func TestALoopSpentWithNoExitFailsAsLoopExhausted(t *testing.T) {
 // The engine says why it declined a loop edge at its cap, as an event a
 // reader of the run can tell apart: a bounded loop's cap, an unbounded
 // loop's fuel.
+// The engine says why it declined a loop edge, in the payload the
+// budget_warning consumers read: `reason` for a reader of the run, and —
+// the warning having no budget axis — `dimension` and `detail`, which the
+// alert manager and the report render in place of a used/limit ratio.
 func TestADeclinedLoopEdgeSaysWhy(t *testing.T) {
 	never := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
 	for _, tc := range []struct {
-		edge, reason string
+		edge, reason, figures string
+		changing              bool
 	}{
-		{"  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", "loop_cap"},
-		{"  assess -> check when not ok as retry(unbounded 2)\n  assess -> done when ok\n", "loop_out_of_fuel"},
+		{"  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", "loop_cap", "2/2", true},
+		{"  assess -> check when not ok as retry(unbounded 2)\n  assess -> done when ok\n", "loop_out_of_fuel", "2/2", true},
+		{"  assess -> check when not ok as retry(unbounded 50)\n  assess -> done when ok\n", "liveness_stall", "3 crossings", false},
 	} {
 		exec := newStubExecutor()
 		exec.on("check", never)
 		exec.on("assess", func(map[string]any) (map[string]any, error) {
+			if !tc.changing {
+				// Unchanging outputs: the liveness monitor stalls the
+				// unbounded loop long before its fuel is spent.
+				return map[string]any{"ok": false}, nil
+			}
 			// Outputs that change every time, so the liveness monitor never
 			// stalls the unbounded loop before its fuel is spent.
 			return map[string]any{"ok": false, "n": time.Now().UnixNano()}, nil
 		})
 		s := tmpStore(t)
-		var reasons []string
+		var payloads []map[string]any
 		src := strings.Replace(spentLoopBot, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", tc.edge, 1)
 		eng := New(compileBotText(t, src), s, exec, WithEventObserver(func(evt store.Event) {
 			if evt.Type == store.EventBudgetWarning {
-				if r, _ := evt.Data["reason"].(string); r != "" {
-					reasons = append(reasons, r)
-				}
+				payloads = append(payloads, evt.Data)
 			}
 		}))
 		if err := eng.Run(context.Background(), "run-why-"+tc.reason, nil); err == nil {
 			t.Fatalf("%s: the spent loop finished the run", tc.reason)
 		}
-		if !slices.Contains(reasons, tc.reason) {
-			t.Fatalf("%s: the engine did not say why it declined the edge: %v", tc.reason, reasons)
+		var found map[string]any
+		for _, p := range payloads {
+			if r, _ := p["reason"].(string); r == tc.reason {
+				found = p
+			}
+		}
+		if found == nil {
+			t.Fatalf("%s: the engine did not say why it declined the edge: %v", tc.reason, payloads)
+		}
+		detail, _ := found["detail"].(string)
+		if found["dimension"] != "loop" || !strings.Contains(detail, `"retry"`) || !strings.Contains(detail, tc.figures) {
+			t.Fatalf("%s: the payload does not carry what the alert manager and the report render: %v", tc.reason, found)
 		}
 	}
 }

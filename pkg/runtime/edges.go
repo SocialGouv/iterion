@@ -116,9 +116,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					if loop.Unbounded {
 						reason = "loop_out_of_fuel"
 					}
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]any{
-						"loop": edge.LoopName, "reason": reason, "crossings": rs.loopCounters[edge.LoopName], "cap": maxIter,
-					}); err != nil {
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, loopDeclineData(edge.LoopName, reason,
+						fmt.Sprintf("loop %q %s (%d/%d): its edge is declined and the run takes its exit path", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter),
+						map[string]any{"crossings": rs.loopCounters[edge.LoopName], "cap": maxIter})); err != nil {
 						e.logger.Warn("failed to emit %s warning: %v", reason, err)
 					}
 					if exhausted == "" {
@@ -133,9 +133,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				if loop.Unbounded && e.loopStalled(edge.LoopName, output, rs) {
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q made no progress for %d crossings (liveness stall), falling through",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, maxLoopStall)
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]any{
-						"loop": edge.LoopName, "reason": "liveness_stall", "crossings": maxLoopStall,
-					}); err != nil {
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, loopDeclineData(edge.LoopName, "liveness_stall",
+						fmt.Sprintf("loop %q made no progress for %d crossings (liveness stall): its edge is declined and the run takes its exit path", edge.LoopName, maxLoopStall),
+						map[string]any{"crossings": maxLoopStall})); err != nil {
 						e.logger.Warn("failed to emit liveness_stall warning: %v", err)
 					}
 					continue
@@ -234,4 +234,18 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		}
 	}
 	return unconditional, unconditionalErr
+}
+
+// loopDeclineData is the budget_warning payload of a loop edge the engine
+// declined for a reason that is no budget axis (its cap, its fuel, a
+// liveness stall). The alert manager and the report render a warning
+// without used/limit from `dimension` and `detail` — without them it reads
+// as a budget at 0% of 0 — so both ride beside the loop, the reason a
+// reader of the run keys on, and the figures.
+func loopDeclineData(loop, reason, detail string, figures map[string]any) map[string]any {
+	data := map[string]any{"loop": loop, "reason": reason, "dimension": "loop", "detail": detail}
+	for k, v := range figures {
+		data[k] = v
+	}
+	return data
 }

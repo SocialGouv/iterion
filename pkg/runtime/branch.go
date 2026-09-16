@@ -252,7 +252,10 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		var done bool
 		resumedHuman := false
 		branchHuman := false
-		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM {
+		// A dry run answers the human in the executor's place, whatever the
+		// interaction mode, as the trunk does: the node takes the executor
+		// path below instead of pausing the branch.
+		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM && !e.simulation.AnswerHumans {
 			branchHuman = true
 			if human.Interaction == ir.InteractionReview || human.Interaction == ir.InteractionLLMOrHuman {
 				e.emitBranchNodeStarted(ctx, runID, branchID, currentNodeID, node, iter, iterPath, result)

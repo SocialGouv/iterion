@@ -1091,3 +1091,59 @@ func TestADeathAfterADeclineTheRunMovedPastIsADeath(t *testing.T) {
 		t.Fatalf("a pass that died is read as clean: %+v %+v", r.Passes, r.Findings)
 	}
 }
+
+// A fan-out whose branch holds a human gate: the dry run answers it like
+// the trunk's, and the pass finishes.
+const fanHumanBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+human ask:
+  output: verdict
+  interaction: human
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow fanh:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 20
+  survey -> split
+  split -> ask
+  split -> b2
+  ask -> join
+  b2 -> join
+  join -> done
+`
+
+// A human node inside a branch is answered by a shape as one on the trunk
+// is: the pass does not pause there, and a correct bot is clean.
+func TestAHumanInsideABranchIsAnswered(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, fanHumanBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Passes {
+		if p.Status != "finished" || !contains(p.Nodes, "ask") {
+			t.Fatalf("the branch's human was not answered: %+v", p)
+		}
+	}
+	if !r.Clean() {
+		t.Fatalf("a bot whose branch holds a human gate is not clean: %+v %+v", r.Passes, r.Findings)
+	}
+}
