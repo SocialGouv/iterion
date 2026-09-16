@@ -2908,11 +2908,13 @@ cd "$WS" || err_envelope "workspace_dir unreadable: $WS"
 # That path was safe before this line existed; a fix must not open a hole of its
 # own on the way to closing one.
 #
-# It does NOT make the slot private either, and the wider defect is filed
-# separately: bank_deepsec_findings and scan_health both read this same path off
-# the disk, so a pass that never ran deepsec can still publish a neighbour
-# findings. That is a storage-layout defect older than this node coverage
-# reporting, and it is fixed where the path is defined, not here.
+# It does NOT make the slot private, and that is the residual worth knowing.
+# bank_deepsec_findings and scan_health no longer resolve this path off the disk
+# -- both read the json_paths published below, empty on every refusal -- but the
+# slot is still ONE shared name, so two passes that both run deepsec still
+# overwrite each other and the loser reads back a file it did not write. Keying
+# the export on the run id is the storage-layout fix; it belongs where the path
+# is defined, not here, and is filed separately.
 rm -f "$OUT_JSON"
 
 ERRS=""
