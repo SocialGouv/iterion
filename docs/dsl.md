@@ -26,7 +26,8 @@ A file may contain these top-level declarations:
 import "lib/<file>.bot"   (at the head, after dsl:, before every declaration)
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
-agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
+agent, judge, router, human, tool, compute, emit, wait, await_answers,
+subbot, fail,
 group, use, workflow
 ```
 

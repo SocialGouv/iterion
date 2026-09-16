@@ -73,7 +73,8 @@ Top-level declarations may appear in any order:
 ```text
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
-agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
+agent, judge, router, human, tool, compute, emit, wait, await_answers,
+subbot, fail,
 group, use, workflow
 ```
 
