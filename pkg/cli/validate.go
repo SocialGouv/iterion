@@ -65,7 +65,12 @@ type ValidateResult struct {
 // the replay shape, a list of `{"node": …, "output": {…}}` — and implies
 // Exec.
 type ValidateOptions struct {
-	Exec     bool
+	Exec bool
+	// Strict fails the command when the dry run's report is not clean —
+	// a pass died, or a reference, shell or fixture finding stands — the
+	// switch a CI gate flips; without it the exit code is the compiler's,
+	// and `exec.clean` in the JSON is the report's word.
+	Strict   bool
 	Fixtures string
 }
 
@@ -422,7 +427,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// failing — is said in the result beside the compile verdict, which
 	// stands and is printed; the command then exits non-zero for the dry
 	// run, not for the program.
-	if (opts.Exec || opts.Fixtures != "") && result.Valid && cr.Workflow != nil {
+	if (opts.Exec || opts.Fixtures != "" || opts.Strict) && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
 		if err != nil {
 			result.ExecError = err.Error()
@@ -485,7 +490,20 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if result.ExecError != "" {
 		return dryRunFailed(p, result.ExecError)
 	}
+	if opts.Strict && result.Exec != nil && !result.Exec.Clean() {
+		return dryRunNotClean(p)
+	}
 	return nil
+}
+
+// dryRunNotClean is the error of a dry run whose report is not clean under
+// --strict, returned AFTER the result was printed: in JSON mode it is
+// marked ErrReported and the CLI prints nothing more.
+func dryRunNotClean(p *Printer) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("dry run not clean: %w", ErrReported)
+	}
+	return fmt.Errorf("dry run not clean: a pass died, or a reference, shell or fixture finding stands (see the report above)")
 }
 
 // dryRunFailed is the error of a dry run that could not run, returned AFTER

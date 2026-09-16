@@ -2465,11 +2465,38 @@ func QuotedCommandRefs(command string) []string {
 // The diagnostic is attributed to the node — its position and its file —
 // and names the property (`command:` or `postcondition:`) the reference
 // sits in.
+//
+// An ERROR, not a warning, when the reference reads an artifact, an
+// attachment or a loop counter: those namespaces resolve in a tool body
+// since 3.151 — before, the braces reached the shell literally, an inert
+// command — so a bot in the field carrying the shape would go from inert
+// to armed at upgrade, with content another node or a forge produced
+// landing as shell syntax. The remedy is the same and mechanical
+// (`iterion fix` applies it); the severity keeps the run from launching.
 func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 	for _, ref := range refInQuotes(command) {
-		c.warnfAt(DiagQuotedCommandRef, node, "",
-			"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
-				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
-			node, where, ref)
+		switch quotedRefNamespace(ref) {
+		case "artifacts", "attachments", "loop":
+			c.errorfAt(DiagQuotedCommandRef, node, "",
+				"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL: "+
+					"a value that reaches the shell from an artifact, an attachment or a loop counter is then command execution "+
+					"(this shape rendered its braces literally before these namespaces resolved in a tool body; it is refused rather than armed). "+
+					"Remove the surrounding quotes — `iterion fix` does.",
+				node, where, ref)
+		default:
+			c.warnfAt(DiagQuotedCommandRef, node, "",
+				"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
+					"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
+				node, where, ref)
+		}
 	}
+}
+
+// quotedRefNamespace is the namespace of a `{{…}}` reference as written —
+// the bang and the spaces set aside, as the reference parser reads them.
+func quotedRefNamespace(ref string) string {
+	expr := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ref, "{{"), "}}"))
+	expr = strings.TrimSpace(strings.TrimPrefix(expr, "!"))
+	ns, _, _ := strings.Cut(expr, ".")
+	return ns
 }

@@ -194,3 +194,31 @@ func TestRunValidate_SaysWhenTheDryRunDidNotRun(t *testing.T) {
 		t.Fatalf("the human output lacks the verdict or the reason:\n%s", hout.String())
 	}
 }
+
+// --strict makes the dry run's verdict the exit code: a report that is not
+// clean fails the command, after the result is printed and marked
+// reported; without --strict the exit code stays the compiler's.
+func TestRunValidate_StrictFailsANotCleanDryRun(t *testing.T) {
+	inTempWorkspace(t)
+	bot := "schema v:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: v\n\ntool broken:\n  command: \"if [ -f x ]; then echo\"\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: a\n  a -> broken\n  broken -> done\n"
+	if err := os.WriteFile("dirty.bot", []byte(bot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out := jsonPrinter()
+	if err := RunValidateWith("dirty.bot", jp, ValidateOptions{Exec: true}); err != nil {
+		t.Fatalf("without --strict the exit code is the compiler's: %v", err)
+	}
+	var res ValidateResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.Exec == nil || res.Exec.Clean() {
+		t.Fatalf("the fixture's dry run is clean or missing: %v %+v", err, res.Exec)
+	}
+	jp2, out2 := jsonPrinter()
+	err := RunValidateWith("dirty.bot", jp2, ValidateOptions{Strict: true})
+	if !errors.Is(err, ErrReported) {
+		t.Fatalf("--strict on a not-clean report: %v", err)
+	}
+	var strict ValidateResult
+	if err := json.Unmarshal(out2.Bytes(), &strict); err != nil || !strict.Valid || strict.Exec == nil {
+		t.Fatalf("the result was not printed before the error: %v\n%s", err, out2.String())
+	}
+}

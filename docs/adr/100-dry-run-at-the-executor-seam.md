@@ -48,7 +48,8 @@ syntax check must hold text to the interpreter that will read it (F13).
    program that compiles, and its findings say what the first paid run would
    have met; `clean` is the report's verdict; the exit code is the
    compiler's — or, when a dry run was asked for and could not run, the
-   dry run's own inability, said in `exec_error`.
+   dry run's own inability, said in `exec_error` — and `--strict` makes
+   `clean` the exit code as well, the switch a CI gate flips on purpose.
 6. **Alongside, the compiler names the two deaths it can see** — C145, a
    bounded loop with no exit at its cap; C146, a division into an `int`
    field outside `floor()`/`round()` — and the runtime names the loop death
