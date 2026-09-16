@@ -390,8 +390,13 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 
 Write, then `iterion validate --json <file>`: every finding carries its
 source position and a `fix:` line, so correct the file at the position
-given, never by guessing. Loop until `valid` is true, then `iterion diagram`
-to check the shape, and only then run. From Claude Code the MCP
+given, never by guessing. Loop until `valid` is true, then `iterion validate
+--exec <file>`: the compiled program runs twice under a dry run — no model,
+no shell, no workspace — and `exec` names every `{{…}}` a prompt or a
+command would have sent unresolved, every command `bash -n` refuses, the
+nodes and edges no pass reached, and the nodes whose output was only a shape;
+fix those too (`--fixtures` answers nodes with recorded outputs). Then
+`iterion diagram` to check the shape, and only then run. From Claude Code the MCP
 `local_validate` tool returns the same JSON. Validate with the build the bot
 will run on (the `requires.iterion` floor in its manifest): a builtin or a
 property a newer engine added compiles on that engine and dies on an older

@@ -2,10 +2,13 @@ package dryrun
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -273,4 +276,244 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// A router that fans out, two branches, a join.
+const fanBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow fan:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 20
+  survey -> split
+  split -> b1
+  split -> b2
+  b1 -> join
+  b2 -> join
+  join -> done
+`
+
+// A bot with nothing to report — every reference resolves, every command
+// parses — whose bounded loop has no exit at its cap: the false pass dies
+// there, and only the pass status says so.
+const dyingBot = `schema verdict:
+  ok: bool
+
+agent check:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge assess:
+  model: "claude-opus-4-7"
+  output: verdict
+
+workflow d:
+  worktree: none
+  sandbox: none
+  entry: check
+  budget:
+    max_iterations: 20
+  check -> assess
+  assess -> check when not ok as retry(2)
+  assess -> done when ok
+`
+
+// A bot whose refusal is a fail node it declares.
+const refusingBot = `schema verdict:
+  ok: bool
+
+agent check:
+  model: "claude-opus-4-7"
+  output: verdict
+
+fail refused:
+  code: REFUSED
+  message: "the check said no"
+
+workflow f:
+  worktree: none
+  sandbox: none
+  entry: check
+  check -> done when ok
+  check -> refused when not ok
+`
+
+// A bot that reads a declared secret and a declared attachment in a prompt
+// and in a command, and runs a script under the default interpreter.
+const secretBot = `vars:
+  goal: string
+
+secrets:
+  api_key: "${API_KEY}"
+
+attachments:
+  spec: file
+    description: "the spec"
+
+prompt u:
+  Use {{secrets.api_key}} on {{attachments.spec}} for {{vars.goal}}.
+
+agent a:
+  model: "claude-opus-4-7"
+  user: u
+
+tool t:
+  command: "head -c 1 {{attachments.spec}} >/dev/null; echo {{secrets.api_key}}"
+
+tool s:
+  script: "cat <<< bashism"
+
+workflow sec:
+  worktree: none
+  sandbox: none
+  entry: a
+  a -> t
+  t -> s
+  s -> done
+`
+
+// The dry run leaves the operator's place alone: nothing is written where
+// the process sits — the engine's mirrors land in the run's own temporary
+// directory.
+func TestADryRunLeavesTheOperatorsPlaceUntouched(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if _, err := Run(context.Background(), compileBot(t, dryBot), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("the dry run wrote where the process sits: %v", names)
+	}
+}
+
+// Clean reads the passes: a pass that dies is not clean even without a
+// finding; a pass that ends at a fail node the bot declares is.
+func TestCleanReadsThePasses(t *testing.T) {
+	dying, err := Run(context.Background(), compileBot(t, dyingBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dying.Findings) != 0 {
+		t.Fatalf("the dying bot has findings, the pass status is not isolated: %+v", dying.Findings)
+	}
+	if dying.Passes[1].Status == "finished" || dying.Passes[1].Deliberate || dying.Clean() {
+		t.Fatalf("a pass that died at the loop's cap with nothing else to report reads as finished, deliberate or clean: %+v", dying.Passes[1])
+	}
+	refusing, err := Run(context.Background(), compileBot(t, refusingBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refusing.Passes[0].Status != "finished" || refusing.Passes[1].Deliberate != true || refusing.Passes[1].Status == "finished" {
+		t.Fatalf("the refusal was not read as deliberate: %+v", refusing.Passes)
+	}
+	if !refusing.Clean() {
+		t.Fatalf("a bot whose false pass ends at its own fail node is not clean: %+v %+v", refusing.Passes, refusing.Findings)
+	}
+	if out := refusing.Render(); !strings.Contains(out, "a fail node the bot declares") {
+		t.Fatalf("the rendering does not say the end was deliberate:\n%s", out)
+	}
+}
+
+// The edges a fan-out takes are covered, though the engine emits no
+// edge_selected for them.
+func TestFanOutEdgesAreCovered(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, fanBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.UnvisitedEdges) != 0 || len(r.UnvisitedNodes) != 0 {
+		t.Fatalf("a fan-out left edges or nodes unvisited: %v %v", r.UnvisitedEdges, r.UnvisitedNodes)
+	}
+	taken := map[Edge]bool{}
+	for _, e := range r.Passes[0].Edges {
+		taken[e] = true
+	}
+	if !taken[Edge{"split", "b1"}] || !taken[Edge{"split", "b2"}] {
+		t.Fatalf("the fan-out's edges were not recorded: %v", r.Passes[0].Edges)
+	}
+}
+
+// A declared secret and a declared attachment are not unresolved
+// references: the prompt and the command render with a placeholder. A
+// script without a language runs under sh, which the images ship as dash:
+// a bashism is refused.
+func TestDeclaredSecretsAndAttachmentsResolveAndShIsDash(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, secretBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := findingsOf(r, KindUnresolvedRef); len(u) != 0 {
+		t.Fatalf("declared secrets or attachments were reported unresolved: %+v", u)
+	}
+	if _, err := exec.LookPath("dash"); err != nil {
+		t.Skip("no dash on this host: sh text is unchecked here")
+	}
+	syntax := findingsOf(r, KindShellSyntax)
+	if len(syntax) != 1 || syntax[0].Node != "s" || syntax[0].Where != "script" {
+		t.Fatalf("the bashism in a default-interpreter script was not refused by dash: %+v (all: %+v)", syntax, r.Findings)
+	}
+}
+
+// A fixture is held to the node's schema by the production validator, and
+// the nodes it pins are named.
+func TestFixturesAreHeldToTheSchema(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, dryBot), Options{
+		Fixtures: map[string]map[string]any{"assess": {"ok": "not-a-bool", "note": 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := findingsOf(r, KindFixture)
+	if len(bad) == 0 || bad[0].Node != "assess" {
+		t.Fatalf("an off-schema fixture passed unsaid: %+v", r.Findings)
+	}
+	if !contains(r.Pinned, "assess") || contains(r.Shaped, "assess") {
+		t.Fatalf("pinned %v shaped %v", r.Pinned, r.Shaped)
+	}
+	if r.Clean() {
+		t.Fatal("a report with an off-schema fixture reads clean")
+	}
+	if out := r.Render(); !strings.Contains(out, "pinned by fixtures: assess") {
+		t.Fatalf("the rendering does not name the pinned node:\n%s", out)
+	}
+}
+
+// A checker that does not answer in time says so — never a syntax verdict,
+// never "no checker".
+func TestAShellCheckTimeoutIsSaid(t *testing.T) {
+	err := (Bash{Timeout: time.Nanosecond}).Check("bash", "echo slow")
+	if !errors.Is(err, ErrCheckTimeout) {
+		t.Fatalf("a timed-out check came out as %v", err)
+	}
 }

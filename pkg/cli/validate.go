@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
@@ -44,6 +47,22 @@ type ValidateResult struct {
 	// bound it (ADR-099) — present only when the program compiles without
 	// an error, so a view is never shown of a program that is not one.
 	PublicContract *ir.PublicContract `json:"public_contract,omitempty"`
+	// Exec is the dry run's report (`--exec`): what two passes of the
+	// compiled program met without a model, a shell or the workspace —
+	// present only when the program compiles without an error, and only
+	// when asked. Its findings are not diagnostics: they do not decide
+	// `valid`, they tell the author what the first run would have met.
+	Exec *dryrun.Report `json:"exec,omitempty"`
+}
+
+// ValidateOptions widen `iterion validate`. Exec runs the compiled program
+// under a dry run once it compiles (pkg/dryrun); Fixtures names a JSON file
+// of node outputs the dry run answers with — an object `{node: output}`, or
+// the replay shape, a list of `{"node": …, "output": {…}}` — and implies
+// Exec.
+type ValidateOptions struct {
+	Exec     bool
+	Fixtures string
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -139,6 +158,11 @@ func printDiagnostics(p *Printer, diags []ValidateDiagnostic) {
 // directory and validated; bundle metadata (name, version) is reported
 // alongside the workflow result.
 func RunValidate(path string, p *Printer) error {
+	return RunValidateWith(path, p, ValidateOptions{})
+}
+
+// RunValidateWith is RunValidate with its options.
+func RunValidateWith(path string, p *Printer, opts ValidateOptions) error {
 	path = ResolveRecipePath(path)
 	if err := requireWorkflowPathExists(path); err != nil {
 		return err
@@ -376,6 +400,29 @@ func RunValidate(path string, p *Printer) error {
 		}
 	}
 
+	// The dry run, on a program that compiles: never on one that does not —
+	// the diagnostics above are its remedy, a run of it would meet them
+	// again as noise.
+	if (opts.Exec || opts.Fixtures != "") && result.Valid && cr.Workflow != nil {
+		fixtures, err := loadDryRunFixtures(opts.Fixtures)
+		if err != nil {
+			return err
+		}
+		collection := filepath.Dir(parsePath)
+		if bundleHandle != nil {
+			collection = bundleHandle.Dir
+		}
+		report, err := dryrun.Run(context.Background(), cr.Workflow, dryrun.Options{
+			Fixtures: fixtures,
+			Path:     parsePath,
+			Children: dryRunChildren(collection),
+		})
+		if err != nil {
+			return fmt.Errorf("dry run: %w", err)
+		}
+		result.Exec = report
+	}
+
 	sortValidateDiagnostics(result.Diagnostics)
 	if p.Format == OutputJSON {
 		p.JSON(result)
@@ -393,6 +440,12 @@ func RunValidate(path string, p *Printer) error {
 			}
 		}
 		printDiagnostics(p, result.Diagnostics)
+		if result.Exec != nil {
+			p.Blank()
+			for _, line := range strings.Split(strings.TrimRight(result.Exec.Render(), "\n"), "\n") {
+				p.Line("  " + line)
+			}
+		}
 		p.Blank()
 		if result.Valid {
 			p.Line("  result: OK")
@@ -405,6 +458,69 @@ func RunValidate(path string, p *Printer) error {
 		return validationFailed(p)
 	}
 	return nil
+}
+
+// loadDryRunFixtures reads the fixtures a dry run answers with: an object
+// `{node: output}`, or the replay shape — a list of `{"node": …, "output":
+// {…}}` (pkg/botreplay). An empty path is no fixture.
+func loadDryRunFixtures(path string) (map[string]map[string]any, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("fixtures: %w", err)
+	}
+	out := map[string]map[string]any{}
+	var asMap map[string]map[string]any
+	if err := json.Unmarshal(raw, &asMap); err == nil {
+		for k, v := range asMap {
+			out[k] = v
+		}
+		return out, nil
+	}
+	var asList []struct {
+		Node   string         `json:"node"`
+		Output map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &asList); err != nil {
+		return nil, fmt.Errorf("fixtures %s: neither an object of node outputs nor a list of {node, output}: %w", path, err)
+	}
+	for _, f := range asList {
+		if f.Node == "" {
+			return nil, fmt.Errorf("fixtures %s: an entry names no node", path)
+		}
+		out[f.Node] = f.Output
+	}
+	return out, nil
+}
+
+// dryRunChildren resolves a `subbot source:` for the dry run the way
+// `validate` reads a child for its contract: within the collection that
+// holds the bundle (bundle.ResolveChild), parsed as its own unit, compiled;
+// a child that does not compile is not simulated — its own validate shows
+// why. A registry child (`bot://`) is nothing here: the executor says so.
+func dryRunChildren(collectionDir string) func(parent, source string) (string, *ir.Workflow, error) {
+	return func(parent, source string) (string, *ir.Workflow, error) {
+		path, src, ok := bundle.ResolveChild(collectionDir, parent, source)
+		if !ok {
+			return "", nil, fmt.Errorf("not read within the bundle's collection")
+		}
+		u := unit.LoadDirWithMain(path, path, src)
+		if u.HasErrors() || u.Merged == nil {
+			return path, nil, fmt.Errorf("does not parse")
+		}
+		cr := ir.Compile(u.Merged)
+		for _, d := range cr.Diagnostics {
+			if d.Severity == ir.SeverityError {
+				return path, nil, fmt.Errorf("does not compile: %s", d.Message)
+			}
+		}
+		if cr.Workflow == nil {
+			return path, nil, fmt.Errorf("has no workflow")
+		}
+		return path, cr.Workflow, nil
+	}
 }
 
 // printPublicContract renders the contract the workflow keeps, as the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -22,8 +23,19 @@ type Options struct {
 	// Inputs are launch values for vars; a var without a default and
 	// without an input takes a shape of its type.
 	Inputs map[string]any
-	// WorkDir is the run's working directory; a dry run reads nothing there.
+	// WorkDir is the run's working directory; a dry run reads nothing there,
+	// and an empty one is a temporary directory of its own — the operator's
+	// place is never the run's.
 	WorkDir string
+	// Path is the main file the workflow was compiled from; a child's source
+	// resolves beside it. Empty: children are not simulated, and said.
+	Path string
+	// Children resolves a `subbot source:` written in the file at parent to
+	// the child's own path and compiled workflow; a nil function, or a nil
+	// workflow with a nil error, leaves the child unsimulated — said. An
+	// error is said with its reason. The child runs under the same bias,
+	// its findings prefixed by the parent node.
+	Children func(parent, source string) (path string, wf *ir.Workflow, err error)
 	// Shell holds shell text to its parser; nil is Bash{}.
 	Shell ShellChecker
 	// Timeout bounds one pass; zero is a minute.
@@ -44,6 +56,9 @@ type Pass struct {
 	Status string `json:"status"`
 	// Failure is the engine's error, when it returned one.
 	Failure string `json:"failure,omitempty"`
+	// Deliberate says the pass ended at a fail node the bot declared — a
+	// refusal the author wrote, not a death the dry run met.
+	Deliberate bool `json:"deliberate,omitempty"`
 	// Nodes are the nodes started, in order; Edges the edges selected.
 	Nodes []string `json:"nodes"`
 	Edges []Edge   `json:"edges"`
@@ -57,6 +72,9 @@ type Report struct {
 	// Shaped lists the nodes whose output was a shape: a condition read
 	// from one of them decided nothing about the real bot.
 	Shaped []string `json:"shaped"`
+	// Pinned lists the nodes a fixture answered: a condition read from one
+	// of them read the recording on both passes, not the bias.
+	Pinned []string `json:"pinned,omitempty"`
 	// UnvisitedNodes and UnvisitedEdges no pass reached.
 	UnvisitedNodes []string `json:"unvisited_nodes"`
 	UnvisitedEdges []Edge   `json:"unvisited_edges"`
@@ -84,8 +102,9 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 	seenEdges := map[Edge]bool{}
 	seenFindings := map[Finding]bool{}
 	shaped := map[string]bool{}
+	pinned := map[string]bool{}
 	for _, bias := range []bool{true, false} {
-		pass, x, err := runPass(ctx, wf, opts, shell, timeout, bias)
+		pass, x, err := runPass(ctx, wf, opts, shell, timeout, bias, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -99,6 +118,9 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		for _, id := range x.Shaped() {
 			shaped[id] = true
 		}
+		for _, id := range x.Pinned() {
+			pinned[id] = true
+		}
 		for _, id := range pass.Nodes {
 			seenNodes[id] = true
 		}
@@ -111,6 +133,10 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		r.Shaped = append(r.Shaped, id)
 	}
 	sort.Strings(r.Shaped)
+	for id := range pinned {
+		r.Pinned = append(r.Pinned, id)
+	}
+	sort.Strings(r.Pinned)
 	for id, n := range wf.Nodes {
 		if seenNodes[id] || implicitTerminal(id, n) {
 			continue
@@ -133,23 +159,48 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 	return r, nil
 }
 
-// runPass runs the graph once under one bias.
-func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChecker, timeout time.Duration, bias bool) (Pass, *Executor, error) {
+// maxChildDepth bounds the simulation of children of children.
+const maxChildDepth = 4
+
+// runPass runs the graph once under one bias; depth counts the subbot
+// levels above this one.
+func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChecker, timeout time.Duration, bias bool, depth int) (Pass, *Executor, error) {
 	pass := Pass{Bias: bias}
 	dir, err := os.MkdirTemp("", "iterion-dryrun-")
 	if err != nil {
 		return pass, nil, err
 	}
 	defer os.RemoveAll(dir)
-	st, err := store.New(dir)
+	st, err := store.New(filepath.Join(dir, "store"))
 	if err != nil {
 		return pass, nil, err
+	}
+	workDir := opts.WorkDir
+	if workDir == "" {
+		workDir = filepath.Join(dir, "work")
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return pass, nil, err
+		}
 	}
 	// The dry run never opens a worktree: a shallow copy carries the choice,
 	// the caller's workflow is left as compiled.
 	sim := *wf
 	sim.Worktree = "none"
 	x := NewExecutor(&sim, bias, opts.Fixtures, shell)
+	x.path = opts.Path
+	x.children = opts.Children
+	if depth < maxChildDepth {
+		x.simulate = func(child *ir.Workflow, path string) (Pass, []Finding, error) {
+			childOpts := opts
+			childOpts.Path = path
+			childOpts.Fixtures = nil
+			p, cx, err := runPass(ctx, child, childOpts, shell, timeout, bias, depth+1)
+			if err != nil {
+				return p, nil, err
+			}
+			return p, cx.Findings(), nil
+		}
+	}
 	var mu sync.Mutex
 	observe := func(evt store.Event) {
 		mu.Lock()
@@ -161,13 +212,24 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			from, _ := evt.Data["from"].(string)
 			to, _ := evt.Data["to"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: to})
+		case store.EventBranchStarted:
+			// A fan-out activates its branches without an edge_selected: the
+			// edge taken is the router's edge to the branch's entry node.
+			for _, e := range wf.Edges {
+				if e == nil || e.To != evt.NodeID {
+					continue
+				}
+				if _, ok := wf.Nodes[e.From].(*ir.RouterNode); ok {
+					pass.Edges = append(pass.Edges, Edge{From: e.From, To: e.To})
+				}
+			}
 		}
 	}
 	eng := runtime.New(&sim, st, x,
 		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true}),
 		runtime.WithEventObserver(observe),
 		runtime.WithSandboxOverride("none"),
-		runtime.WithWorkDir(opts.WorkDir),
+		runtime.WithWorkDir(workDir),
 		runtime.WithSubbotRunner(x.subbotRunner()),
 		runtime.WithLogger(iterlog.Nop()),
 	)
@@ -188,6 +250,11 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if n := len(pass.Nodes); n > 0 {
+		if _, ok := wf.Nodes[pass.Nodes[n-1]].(*ir.FailNode); ok {
+			pass.Deliberate = true
+		}
+	}
 	return pass, x, nil
 }
 

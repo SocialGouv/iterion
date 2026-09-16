@@ -895,6 +895,18 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 				val = secretguard.PlaceholderForName(ref.Path[0])
 			}
 			handled = true
+		case ref.Kind == ir.RefArtifacts || ref.Kind == ir.RefAttachments || ref.Kind == ir.RefLoop:
+			// The namespaces a prompt resolves — artifacts, attachments, loop
+			// — resolve here through the shared resolver, so no reference
+			// resolves in a prompt and stays literal in a command (a dry run
+			// found `{{attachments.x}}` handed to the shell as written). A
+			// value the snapshot has not is nil and takes the missing-value
+			// rule below.
+			expr := strings.TrimPrefix(strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ref.Raw, "{{"), "}}")), "!")
+			if s, ok := (&TemplateResolver{Vars: vars}).ResolveRef(expr, input, td); ok {
+				val = s
+			}
+			handled = true
 		}
 		if !handled {
 			continue

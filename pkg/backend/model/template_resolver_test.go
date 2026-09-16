@@ -3,6 +3,8 @@ package model
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // The shared resolver renders what it can, keeps the rest as written, and
@@ -27,5 +29,30 @@ func TestTemplateResolverNamesWhatItKeeps(t *testing.T) {
 	// Cross-namespace references need the run's data.
 	if out := silent.Resolve("{{outputs.n.f}}", nil, nil); out != "{{outputs.n.f}}" {
 		t.Fatalf("an outputs reference resolved without template data: %q", out)
+	}
+}
+
+// A command resolves every namespace a prompt does — an attachment's path
+// and fields, a loop counter, an artifact field — and keeps as written
+// what resolves to nothing, so the shell sees it.
+func TestCommandsResolveEveryNamespaceAPromptDoes(t *testing.T) {
+	td := &TemplateData{
+		Attachments:  map[string]AttachmentInfo{"spec": {Name: "spec", Path: "/tmp/spec.md", MIME: "text/markdown"}},
+		LoopCounters: map[string]int{"fix": 2},
+		Artifacts:    map[string]map[string]any{"brief": {"url": "https://x"}},
+	}
+	command := "cat {{attachments.spec}} {{attachments.spec.mime}} {{loop.fix.iteration}} {{artifacts.brief.url}} {{attachments.nope}}"
+	refs, err := ir.ParseRefs(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := RenderCommand(command, refs, nil, nil, td, "r1")
+	for _, want := range []string{"/tmp/spec.md", "text/markdown", "2", "https://x", "{{attachments.nope}}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the command lacks %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "{{attachments.spec") || strings.Contains(got, "{{loop") || strings.Contains(got, "{{artifacts") {
+		t.Fatalf("a namespace a prompt resolves stayed literal in the command: %s", got)
 	}
 }

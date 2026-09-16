@@ -29,6 +29,12 @@ const (
 	// KindNoFixture: fixtures were supplied and this node has none, so its
 	// output is a shape.
 	KindNoFixture Kind = "no_fixture"
+	// KindChild: how a subbot child's own simulation ended — its status,
+	// its failure when it had one.
+	KindChild Kind = "child"
+	// KindFixture: a fixture does not fit the node's output schema — the
+	// production validator's word, the one a real run would apply.
+	KindFixture Kind = "fixture"
 )
 
 // Finding is one thing the dry run met, at a node.
@@ -57,13 +63,31 @@ type Executor struct {
 	bias     bool
 	fixtures map[string]map[string]any
 	shell    ShellChecker
+	// path is the main file this workflow came from; children resolves a
+	// child's source beside it; simulate runs a child (nil at the depth cap).
+	path     string
+	children func(parent, source string) (string, *ir.Workflow, error)
+	simulate func(child *ir.Workflow, path string) (Pass, []Finding, error)
 
 	mu       sync.Mutex
 	vars     map[string]any
 	workDir  string
 	executed []string
 	shaped   []string
+	pinned   []string
 	findings []Finding
+}
+
+// declaredSecrets resolves a declared secret to a placeholder — the value a
+// real run's guard puts there is not the dry run's to know — and an
+// undeclared one to nothing, which the resolver then reports.
+type declaredSecrets struct{ wf *ir.Workflow }
+
+func (d declaredSecrets) ResolveSecretRef(name string) string {
+	if d.wf == nil || d.wf.Secrets[name] == nil {
+		return ""
+	}
+	return "<secret:" + name + ">"
 }
 
 // NewExecutor builds the executor of one pass over wf. bias decides the
@@ -115,6 +139,35 @@ func (x *Executor) Shaped() []string {
 	return append([]string(nil), x.shaped...)
 }
 
+// Pinned lists the nodes a fixture answered: every condition read from one
+// of them read the recording, not the pass's bias.
+func (x *Executor) Pinned() []string {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return append([]string(nil), x.pinned...)
+}
+
+// shapedTemplateData is the engine's template data with a shape for every
+// declared attachment the dry run has no file for: a declared attachment
+// is not an unresolved reference. The engine's maps are read-only here; the
+// copy carries its own.
+func (x *Executor) shapedTemplateData(td *model.TemplateData) *model.TemplateData {
+	if td == nil || len(x.wf.Attachments) == 0 {
+		return td
+	}
+	cp := *td
+	cp.Attachments = make(map[string]model.AttachmentInfo, len(td.Attachments)+len(x.wf.Attachments))
+	for k, v := range td.Attachments {
+		cp.Attachments[k] = v
+	}
+	for name := range x.wf.Attachments {
+		if _, ok := cp.Attachments[name]; !ok {
+			cp.Attachments[name] = model.AttachmentInfo{Name: name, Path: "<attachment:" + name + ">", MIME: "application/octet-stream"}
+		}
+	}
+	return &cp
+}
+
 func (x *Executor) add(f Finding) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -124,7 +177,7 @@ func (x *Executor) add(f Finding) {
 // Execute implements runtime.NodeExecutor.
 func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	id := node.NodeID()
-	td := model.TemplateDataFromContext(ctx)
+	td := x.shapedTemplateData(model.TemplateDataFromContext(ctx))
 	x.mu.Lock()
 	x.executed = append(x.executed, id)
 	vars := x.vars
@@ -191,10 +244,17 @@ func (x *Executor) prompt(id, where, name string, input, vars map[string]any, td
 		x.add(Finding{Node: id, Kind: KindUnchecked, Where: where, Detail: fmt.Sprintf("prompt %q is not declared", name)})
 		return
 	}
-	r := &model.TemplateResolver{Vars: vars, Unresolved: func(ref string) {
-		x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolved(ref))})
+	r := &model.TemplateResolver{Vars: vars, Secrets: declaredSecrets{x.wf}, Unresolved: func(ref string) {
+		x.unresolved(id, where, ref)
 	}}
 	r.Resolve(p.Body, input, td)
+}
+
+// unresolved reports a reference kept as written. A declared secret never
+// reaches it: the prompt resolver renders it as a placeholder
+// (declaredSecrets) and the command renderer as the guard's placeholder.
+func (x *Executor) unresolved(id, where, ref string) {
+	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolved(ref))})
 }
 
 // leftovers reports the references a rendered command or script still
@@ -213,8 +273,7 @@ func (x *Executor) leftovers(id, where, rendered string) {
 		}
 		ref := strings.TrimSpace(rest[i+2 : i+j])
 		if ref != "" && ref != ir.LiteralOpenExpression {
-			ref = strings.TrimPrefix(ref, "!")
-			x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolved(ref))})
+			x.unresolved(id, where, strings.TrimPrefix(ref, "!"))
 		}
 		rest = rest[i+j+2:]
 	}
@@ -229,6 +288,8 @@ func (x *Executor) shellCheck(id, where, interpreter, text string) {
 	err := x.shell.Check(interpreter, text)
 	switch {
 	case err == nil:
+	case errors.Is(err, ErrCheckTimeout):
+		x.add(Finding{Node: id, Kind: KindUnchecked, Where: where, Detail: err.Error()})
 	case errors.Is(err, ErrNoChecker):
 		lang := interpreter
 		if lang == "" {
@@ -267,6 +328,17 @@ func (x *Executor) output(id, schema string) map[string]any {
 			for k, v := range fx {
 				out[k] = v
 			}
+			x.mu.Lock()
+			x.pinned = append(x.pinned, id)
+			x.mu.Unlock()
+			// The production validator's word on the recording: a fixture
+			// that does not fit the schema would not have come out of a
+			// real run of this node.
+			if sch := x.wf.Schemas[schema]; schema != "" && sch != nil {
+				if err := model.ValidateOutput(out, sch); err != nil {
+					x.add(Finding{Node: id, Kind: KindFixture, Detail: "the fixture does not fit the node's output schema: " + err.Error()})
+				}
+			}
 			return out
 		}
 		if schema != "" {
@@ -283,15 +355,48 @@ func (x *Executor) output(id, schema string) map[string]any {
 	return Synthesize(sch, x.bias)
 }
 
-// subbotRunner answers a subbot node in this pass: the child is not
-// simulated here — said — and the parent receives a shape of the schema it
-// declared for the child's output.
+// subbotRunner answers a subbot node in this pass. With a child loader and
+// a path, the child is read beside the parent and simulated under the same
+// bias, its findings prefixed by the node (`node/child_node`) and its
+// outcome said; without one — or past the depth cap — the child is not
+// simulated, said. Either way the parent receives a shape of the schema it
+// declared for the child's output: what a child's terminal node produces is
+// the child's business, and a shape is what the parent's contract to it
+// promises.
 func (x *Executor) subbotRunner() runtime.SubbotRunner {
 	return func(_ context.Context, req runtime.SubbotRequest) (map[string]any, error) {
-		x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s is not simulated in this pass: its output is a shape", req.Source)})
 		schema := ""
 		if sb, ok := x.wf.Nodes[req.NodeID].(*ir.SubbotNode); ok {
 			schema = sb.OutputSchema
+		}
+		switch {
+		case strings.HasPrefix(req.Source, "bot://"):
+			x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s is a registry bot: not simulated, its output is a shape", req.Source)})
+		case x.children == nil || x.path == "" || x.simulate == nil:
+			x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s is not simulated in this pass: its output is a shape", req.Source)})
+		default:
+			path, child, err := x.children(x.path, req.Source)
+			switch {
+			case err != nil:
+				x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s not simulated: %v", req.Source, err)})
+			case child == nil:
+				x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s not read: its output is a shape", req.Source)})
+			default:
+				pass, findings, err := x.simulate(child, path)
+				if err != nil {
+					x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s could not be simulated: %v", req.Source, err)})
+					break
+				}
+				for _, f := range findings {
+					f.Node = req.NodeID + "/" + f.Node
+					x.add(f)
+				}
+				detail := fmt.Sprintf("child %s ran %s — %d nodes", req.Source, pass.Status, len(pass.Nodes))
+				if pass.Failure != "" {
+					detail += ": " + pass.Failure
+				}
+				x.add(Finding{Node: req.NodeID, Kind: KindChild, Where: "subbot", Detail: detail})
+			}
 		}
 		return x.output(req.NodeID, schema), nil
 	}
@@ -313,9 +418,9 @@ func whyUnresolved(ref string) string {
 	case "artifacts":
 		return "nothing was published under that name before this node"
 	case "attachments":
-		return "no such attachment"
+		return "no such attachment is declared"
 	case "secrets":
-		return "no secret guard in a dry run"
+		return "no such secret is declared"
 	case "run":
 		return "the run namespace has no such member"
 	default:
