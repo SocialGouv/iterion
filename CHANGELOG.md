@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.150.1](https://github.com/SocialGouv/iterion/compare/v3.150.0...v3.150.1) (2026-09-16)
+
+### Bug Fixes
+
+* **dsl:** bind group members and parameters per instance ([#1191](https://github.com/SocialGouv/iterion/issues/1191)) ([557e901](https://github.com/SocialGouv/iterion/commit/557e901c3714420b50e2ce9acd35e66c021126e7))
+
+    <details><summary>why</summary>
+
+    A prompt whose source cannot be resolved refuses its {{include}} for a reason that belongs to the declaration and cannot differ between the group instances binding it, so a group of N members landed N identical diagnostics on one span. The budget refusals beside it already stop at the first; this one now does too.
+
+    </details>
+
 ## [3.150.0](https://github.com/SocialGouv/iterion/compare/v3.149.4...v3.150.0) (2026-09-16)
 
 ### Features
