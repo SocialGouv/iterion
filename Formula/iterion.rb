@@ -1,28 +1,28 @@
 class Iterion < Formula
   desc "Workflow orchestration engine with a custom DSL (.bot files)"
   homepage "https://github.com/SocialGouv/iterion"
-  version "3.153.0"
+  version "3.153.1"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-darwin-arm64"
-      sha256 "ef1894b8fec85fe7e49b2e9a1d88f1d38bd8c85a6d0a2c292f45913478f14d9d"
+      sha256 "761b5f2b42d861dc3287cd7b6af75060986b3e60cbdf3d7c4de58c008d9401b8"
     end
     on_intel do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-darwin-amd64"
-      sha256 "715cf0ca6334c287243117a35c67ac4d9ad5393c0a0a71b0589c1a111b5b4b0f"
+      sha256 "171b366ba1bf015aaf9804ed1c89dde3d39430126d159f3bebfd6bc7d81aabd0"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-linux-arm64"
-      sha256 "015d8e26ecdd1502832eb4e529d31d253e8c3df8ffb81d3257ccba92f4426361"
+      sha256 "5ec4cd0d2d7c2fe775f5b079f5f7ac3a0e54608f4813bb64e9d95091cdea514c"
     end
     on_intel do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-linux-amd64"
-      sha256 "e80cd6e81f1dd52a483cc11304003de13d46824ef708c2bcfb90382643d6a913"
+      sha256 "8acf38f78223d836ff324d6ed98f1fc6294a6636595ea669184637996ab6e0bc"
     end
   end
 
