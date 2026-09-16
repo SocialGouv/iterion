@@ -163,6 +163,9 @@ variables — see [quotas-and-limits.md](quotas-and-limits.md).
 - [settings-precedence.md](settings-precedence.md) — compression / permission / backend precedence.
 - [backends.md](backends.md) — backend, provider, and OAuth-forfait variables.
 - [sandbox.md](sandbox.md) — sandbox default, override, and host-state variables.
+- [plugins.md](plugins.md) — `ITERION_PLUGINS_ENABLE`, `ITERION_PLUGINS_DISABLE` (disable wins for a name in both), and the `ITERION_PLUGIN_<NAME>_<KEY>` config overrides.
+- [supervisors.md](supervisors.md) — `ITERION_SUPERVISORS`, the machine-wide on/off toggle for DSL-declared supervisors (default on).
+- [skills-library.md](skills-library.md) — `ITERION_SKILLS`, the machine-wide skill list unioned with `--skill`.
 - [notifications.md](notifications.md) — `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY`; the user-addressed counterpart to the deployment-wide `ITERION_ALERTS_*` above.
 - [worktree-pool.md](worktree-pool.md) — the worktree pool bound and `ITERION_WORKTREE_POOL_MAX`.
 - [usage-caps.md](usage-caps.md) — `ITERION_USAGE_CAP`, `ITERION_USAGE_CAP_5H_{MODE,PCT}`, `ITERION_USAGE_CAP_WEEK_{MODE,PCT}`.
