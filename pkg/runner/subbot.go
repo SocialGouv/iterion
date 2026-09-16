@@ -78,7 +78,16 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 	if parentDir != "" {
 		// The parent's bundle COLLECTION, not the bundle itself: a sibling
 		// bundle (`../golden-master/…`) is the designed shape of a child.
+		//
+		// In BOTH spellings, because a catalogue may ship its `<slug>`
+		// directories as links while the catalogue itself is a real
+		// directory: the parent is then `/app/bots/modernize ->
+		// /opt/bundles/modernize`, a climbing source lands beside the link's
+		// TARGET, and no written root names `/opt/bundles`.
 		roots = append(roots, filepath.Dir(filepath.Clean(parentDir)))
+		if resolved := filepath.Dir(realOrClean(parentDir)); resolved != filepath.Dir(filepath.Clean(parentDir)) {
+			roots = append(roots, resolved)
+		}
 	}
 	for _, bp := range botsPaths {
 		if bp != "" {

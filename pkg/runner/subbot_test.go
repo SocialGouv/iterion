@@ -594,3 +594,40 @@ func TestACatalogueWhoseBundlesAreSymlinksStillServesThem(t *testing.T) {
 		t.Errorf("resolved %s, want %s (the catalogue's own spelling); the real file is %s", got, want, child)
 	}
 }
+
+// TestAParentThatIsItselfASymlinkedBundleStillReachesItsSibling.
+//
+// The catalogue is a real directory whose `<slug>` entries are links:
+// `bots/modernize -> bundles/modernize`, `bots/golden-master ->
+// bundles/golden-master`. A climbing source lands beside the link's TARGET, in
+// `bundles/` — a directory no written root names, and whose written root does
+// not resolve to it either, because the root is not the link. The parent's own
+// collection has two spellings, like every other root here.
+func TestAParentThatIsItselfASymlinkedBundleStillReachesItsSibling(t *testing.T) {
+	root := t.TempDir()
+	bundles := filepath.Join(root, "bundles")
+	writeSubbotFixture(t, filepath.Join(bundles, "modernize"), "main.bot", subbotTestParent)
+	child := writeSubbotFixture(t, filepath.Join(bundles, "golden-master"), "extend.bot", subbotTestChild)
+
+	catalogue := filepath.Join(root, "bots")
+	if err := os.MkdirAll(catalogue, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"modernize", "golden-master"} {
+		if err := os.Symlink(filepath.Join(bundles, slug), filepath.Join(catalogue, slug)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+
+	got, err := resolveSubbotSource("../golden-master/extend.bot", filepath.Join(catalogue, "modernize"), nil)
+	if err != nil {
+		t.Fatalf("the pod refused a sibling the in-process resolver compiles fine: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("resolved %s, want %s", got, want)
+	}
+}
