@@ -18,10 +18,14 @@ type groupExpansion struct {
 	binds       map[string]string
 	prompts     map[string]*ast.PromptDecl
 	specialized map[string]string
+	// foreaches maps each foreach name DECLARED by the group to this
+	// instance's scoped name, so the edge clause and every {{each.<name>…}}
+	// in the body are renamed together.
+	foreaches map[string]string
 }
 
 func newGroupExpansion(c *compiler, internal map[string]bool, prefix string, binds map[string]string) *groupExpansion {
-	x := &groupExpansion{c: c, internal: internal, prefix: prefix, binds: binds, prompts: map[string]*ast.PromptDecl{}, specialized: map[string]string{}}
+	x := &groupExpansion{c: c, internal: internal, prefix: prefix, binds: binds, prompts: map[string]*ast.PromptDecl{}, specialized: map[string]string{}, foreaches: map[string]string{}}
 	for _, p := range c.file.Prompts {
 		x.prompts[p.Name] = p
 	}
@@ -116,6 +120,12 @@ func (x *groupExpansion) templates(s string) string {
 		trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(body), "!"))
 		if path, ok := strings.CutPrefix(trimmed, "outputs."); ok && x.local(strings.Split(path, ".")) {
 			offset := strings.Index(body, "outputs.") + len("outputs.")
+			body = body[:offset] + x.prefix + "." + body[offset:]
+		} else if path, ok := strings.CutPrefix(trimmed, "each."); ok && x.foreaches[strings.SplitN(path, ".", 2)[0]] != "" {
+			// A foreach name is ONE identifier — the parser forbids a dot in
+			// it — so the first segment is the whole name, and the scoped
+			// form is the instance prefix ahead of it.
+			offset := strings.Index(body, "each.") + len("each.")
 			body = body[:offset] + x.prefix + "." + body[offset:]
 		}
 		out.WriteString(body)

@@ -279,6 +279,79 @@ func TestGroupPromptIncludesAreSpecializedBeforeValidation(t *testing.T) {
 	}
 }
 
+const groupForeachSrc = `schema out:
+  ok: bool
+group g(label):
+  tool start:
+    command: "echo {{params.label}}"
+    output: out
+  tool proc:
+    command: "echo {{params.label}} {{each.scan.item}}"
+    output: out
+  start -> proc
+  proc -> proc as foreach scan(item in "{{outputs.start.items}}")
+use g as r1 with {label: "A"}
+use g as r2 with {label: "B"}
+workflow w:
+  entry: r1.start
+  r1.proc -> r2.start
+  r2.proc -> done
+`
+
+// TestEachGroupInstanceIteratesItsOWNCollection.
+//
+// `compileEdges` registers foreaches by name, FIRST WINS and without a
+// diagnostic — unlike loops, which raise DiagDuplicateLoop in the same
+// situation. So a foreach name left unprefixed by group expansion collapses
+// every instance onto one definition, and the second instance silently
+// iterates the FIRST one's collection: no error, no warning, wrong data.
+//
+// This compiles to IR on purpose. The AST-level rewrite test beside it
+// asserts Foreach survives the reflective clone and that its Collection is
+// bound per instance, which is true and not enough — the collapse happens
+// later, when two identical names meet one map.
+func TestEachGroupInstanceIteratesItsOWNCollection(t *testing.T) {
+	w := mustCompile(t, groupForeachSrc)
+	if len(w.Foreaches) != 2 {
+		t.Fatalf("Foreaches = %d (%v), want one per instance: two `use` of a group cannot share a single iteration state", len(w.Foreaches), w.Foreaches)
+	}
+	seen := map[string]string{}
+	for name, fe := range w.Foreaches {
+		seen[name] = fe.CollectionRaw
+	}
+	collections := map[string]bool{}
+	for name, coll := range seen {
+		if collections[coll] {
+			t.Fatalf("two foreaches iterate the SAME collection %q: %v", coll, seen)
+		}
+		collections[coll] = true
+		if !strings.Contains(coll, "outputs.r1.start.items") && !strings.Contains(coll, "outputs.r2.start.items") {
+			t.Errorf("foreach %q iterates %q, which names no instance", name, coll)
+		}
+	}
+	// And each instance's edge points at its OWN definition.
+	byInstance := map[string]string{}
+	for _, e := range w.Edges {
+		if e.ForeachName != "" {
+			byInstance[e.From] = e.ForeachName
+		}
+	}
+	if byInstance["r1.proc"] == "" || byInstance["r2.proc"] == "" || byInstance["r1.proc"] == byInstance["r2.proc"] {
+		t.Fatalf("instance edges share a foreach: %v", byInstance)
+	}
+	// The body's {{each.<name>...}} must follow the rename, or it resolves
+	// against a foreach that no longer carries that name.
+	for _, id := range []string{"r1.proc", "r2.proc"} {
+		n, ok := w.Nodes[id].(*ToolNode)
+		if !ok {
+			t.Fatalf("node %s = %T", id, w.Nodes[id])
+		}
+		if want := "{{each." + byInstance[id] + ".item}}"; !strings.Contains(n.Command, want) {
+			t.Errorf("%s command %q does not reference %s", id, n.Command, want)
+		}
+	}
+}
+
 // TestAnUnresolvableIncludeIsRefusedOncePerDeclaration.
 //
 // A prompt whose source cannot be resolved — a transported prompt with no

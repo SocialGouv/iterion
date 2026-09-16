@@ -97,6 +97,16 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		return name // terminals (done/fail) and external refs stay as-is
 	}
 	x := newGroupExpansion(c, internal, prefix, binds)
+	// A foreach is iteration STATE, so it is per instance like a node — two
+	// `use` of the same group cannot share one cursor over two collections.
+	// compileEdges keys foreaches by name and keeps the first silently, so an
+	// unprefixed name would collapse the instances instead of colliding
+	// loudly the way a loop does.
+	for _, e := range g.Edges {
+		if e.Foreach != nil && e.Foreach.Name != "" {
+			x.foreaches[e.Foreach.Name] = prefix + "." + e.Foreach.Name
+		}
+	}
 	copy := x.clone(reflect.ValueOf(g), "", "").Interface().(*ast.GroupDecl)
 	for _, n := range copy.Agents {
 		n.Name = pid(n.Name)
@@ -125,6 +135,11 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 	if wf != nil {
 		for _, e := range copy.Edges {
 			e.From, e.To = pid(e.From), pid(e.To)
+			if e.Foreach != nil {
+				if scoped, ok := x.foreaches[e.Foreach.Name]; ok {
+					e.Foreach.Name = scoped
+				}
+			}
 			wf.Edges = append(wf.Edges, e)
 		}
 	}
