@@ -1210,6 +1210,13 @@ func TestAggregateStreamWithIdleWatchdog_EventsResetHotTimer(t *testing.T) {
 // This one stays on the REAL clock, deliberately. Sleep guarantees a floor, so
 // an overloaded runner only sleeps longer and the watchdog fires harder: the
 // direction that is robust is the one that does not need a virtual clock.
+//
+// The COLD tier is disabled (0), and that is not tidiness: it is armed the
+// instant aggregation starts, before the producer goroutine has been
+// scheduled to send anything, so a saturated runner would fire it and this
+// test would assert on the wrong phase — a "must not fire" assertion on the
+// real clock, the very shape removed from its sibling above. The first event
+// flips to hot and arms hotTimeout whatever the cold tier was.
 func TestAggregateStreamWithIdleWatchdog_ASilenceLongerThanTheHotTimeoutFires(t *testing.T) {
 	ch := make(chan api.StreamEvent)
 	produced := make(chan struct{})
@@ -1220,7 +1227,7 @@ func TestAggregateStreamWithIdleWatchdog_ASilenceLongerThanTheHotTimeoutFires(t 
 		time.Sleep(200 * time.Millisecond) // ten hot timeouts, in the safe direction
 	}()
 
-	agg := aggregateStreamWithIdleWatchdog(context.Background(), ch, 20*time.Millisecond, 20*time.Millisecond)
+	agg := aggregateStreamWithIdleWatchdog(context.Background(), ch, 0, 20*time.Millisecond)
 	var idle *StreamIdleError
 	if !errors.As(agg.err, &idle) || idle.Phase != StreamIdleHot {
 		t.Fatalf("aggregate error = %v, want a hot StreamIdleError", agg.err)
