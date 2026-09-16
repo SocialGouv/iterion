@@ -55,6 +55,10 @@ func BashTool() api.Tool { return intl.BashTool() }
 // workspace-based validation entirely. Permission mode is fixed to
 // ModeAllow — the wrapper assumes the caller has already gated invocations
 // upstream (e.g. via an iterion workflow's allowed-tools list).
+// input["timeout_seconds"] optionally sets a whole-second deadline from 1 to
+// 600 (default 30). Invalid values fail before spawn. The caller's cancellation
+// and earlier deadline remain authoritative, including for child processes on
+// Unix. Cancellation errors wrap the corresponding context error.
 //
 // The spawned bash inherits the calling process's environment. When
 // the caller manages a project-local toolchain (devbox, nix, asdf)

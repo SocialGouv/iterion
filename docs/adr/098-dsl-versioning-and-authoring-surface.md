@@ -248,10 +248,14 @@ re-litigated:
 16. **A third axis exists beside the profile and the engine floor**: the
     runtime semantics a workflow runs under (`runtime_semantics`, the
     public-contract work of #1165), which the profile does not govern and
-    the floor only bounds. It enters as lot 4bis on its own registry;
-    the merge, the E010 check and the provenance are written by reflection
-    over `ast.File`'s fields so that two more declaration kinds trouble
-    none of them.
+    the floor only bounds. *Amended by ADR-099 (lot 4bis):* the axis is
+    reserved, its property is NOT shipped until an execution semantics
+    exists to run under it, and the contract surface lot 4bis brings in
+    (the `contract` declaration, named by the workflow) is legal WITHOUT
+    it — a future `graph` adds a data-flow semantics, it never redefines
+    `contract`. The merge, the E010 check and the provenance are written
+    by reflection over `ast.File`'s fields so that one more declaration
+    kind troubles none of them.
 17. **A refusal of a text that had no legitimate reading is not a change
     of meaning**, and is not profile-gated: a key declared twice in one
     keyed block, silently shadowed before this lot, is E010 in every

@@ -12,7 +12,7 @@ import (
 // the value to declare; a declared floor, or profile 1, draws nothing.
 func TestProfileTwoWithoutAFloorDrawsC252(t *testing.T) {
 	m := &bundle.Manifest{Name: "probe"}
-	diags := CheckConsistency(Input{Manifest: m, SyntaxProfile: 2, ProfileDeclaredBy: []string{"children/a.bot"}, EngineBuild: "v3.141.0+abc"})
+	diags := CheckConsistency(Input{Manifest: m, Syntax: bundle.SyntaxRequirements{Profile: 2, DeclaredBy: []string{"children/a.bot"}}, EngineBuild: "v3.141.0+abc"})
 	var found *Diag
 	for i := range diags {
 		if diags[i].Code == DiagProfileNeedsFloor {
@@ -26,15 +26,15 @@ func TestProfileTwoWithoutAFloorDrawsC252(t *testing.T) {
 		t.Fatalf("C252 = %+v", *found)
 	}
 	// A dev build still names the release that reads the profile.
-	diags = CheckConsistency(Input{Manifest: m, SyntaxProfile: 2, ProfileDeclaredBy: []string{"main.bot"}, EngineBuild: "dev"})
+	diags = CheckConsistency(Input{Manifest: m, Syntax: bundle.SyntaxRequirements{Profile: 2, DeclaredBy: []string{"main.bot"}}, EngineBuild: "dev"})
 	if len(diags) != 1 || diags[0].Code != DiagProfileNeedsFloor || !strings.Contains(diags[0].Hint, `">= 3.141.0"`) {
 		t.Fatalf("dev build: %v", diags)
 	}
 	// With a floor, or in profile 1, nothing.
 	withFloor := &bundle.Manifest{Name: "probe", Requires: &bundle.Requires{Iterion: ">= 3.141.0"}}
 	for _, in := range []Input{
-		{Manifest: withFloor, SyntaxProfile: 2, ProfileDeclaredBy: []string{"main.bot"}, EngineBuild: "v3.141.0"},
-		{Manifest: m, SyntaxProfile: 1, EngineBuild: "v3.141.0"},
+		{Manifest: withFloor, Syntax: bundle.SyntaxRequirements{Profile: 2, DeclaredBy: []string{"main.bot"}}, EngineBuild: "v3.141.0"},
+		{Manifest: m, Syntax: bundle.SyntaxRequirements{Profile: 1}, EngineBuild: "v3.141.0"},
 		{Manifest: m, EngineBuild: "v3.141.0"},
 	} {
 		for _, d := range CheckConsistency(in) {

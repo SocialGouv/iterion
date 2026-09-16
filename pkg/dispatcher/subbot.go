@@ -169,10 +169,10 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		opts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
+			runtime.WithBundle(childBundle),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
-			runtime.WithBundle(childBundle),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.

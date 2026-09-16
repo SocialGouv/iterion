@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BOTSOURCE_SCHEME, saveFile } from "./client";
+import { BOTSOURCE_SCHEME, openFile, saveFile } from "./client";
 import type { IterDocument } from "./types";
 
 // The cloud save of a bot in several files: the document is written back
@@ -91,5 +91,30 @@ describe("saveFile of a cloud bot in several files", () => {
     await saveFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`, document);
     expect(single.some((c) => c.init?.method === "PUT" && c.url.endsWith("/files/main.bot"))).toBe(true);
     expect(single.some((c) => c.url.endsWith("/unparse") && "files" in JSON.parse(String(c.init?.body)))).toBe(false);
+  });
+
+  it("opens a companion workflow that imports as its unit, not only main.bot", async () => {
+    const bundle = {
+      id: "b1",
+      slug: "demo",
+      version: 2,
+      files: {
+        "main.bot": "workflow w:\n  entry: done\n",
+        "workflows/x.bot": 'import "lib/n.bot"\n\nworkflow x:\n  entry: a\n  a -> done\n',
+        "workflows/lib/n.bot": "agent a:\n  model: \"m\"\n",
+      },
+    };
+    const calls = mockFetch(({ url, init }) => {
+      if (url.endsWith("/parse")) return { document: { agents: [] }, diagnostics: [], unit: { root: "", main: "workflows/x.bot", revision: "r1", files: [] } };
+      if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") return bundle;
+      return {};
+    });
+    const opened = await openFile(`${BOTSOURCE_SCHEME}t1/demo/workflows/x.bot`);
+    const parse = calls.find((c) => c.url.endsWith("/parse"));
+    expect(parse).toBeTruthy();
+    const body = JSON.parse(String(parse?.init?.body));
+    expect(body.main).toBe("workflows/x.bot");
+    expect(Object.keys(body.files ?? {}).sort()).toEqual(["main.bot", "workflows/lib/n.bot", "workflows/x.bot"]);
+    expect(opened.unit?.main).toBe("workflows/x.bot");
   });
 });

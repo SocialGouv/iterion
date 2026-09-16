@@ -24,17 +24,27 @@ import (
 // whose PUT /user/avatar records what it received, answering the configured
 // status (0 = 200 with an avatar_url).
 type mockGitLabAvatar struct {
-	mu       sync.Mutex
-	bot      bool
-	status   int
-	uploads  int
-	gotBytes []byte
+	mu               sync.Mutex
+	bot              bool
+	status           int
+	uploads          int
+	gotBytes         []byte
+	avatarURL        string
+	userReads        int
+	avatarReadStatus int
 }
 
 func (m *mockGitLabAvatar) server() *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 575, "username": "group_1026_bot_a7c08cc4", "bot": m.bot})
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.userReads++
+		if m.userReads > 1 && m.avatarReadStatus != 0 {
+			w.WriteHeader(m.avatarReadStatus)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 575, "username": "group_1026_bot_a7c08cc4", "bot": m.bot, "avatar_url": m.avatarURL})
 	})
 	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -50,7 +60,8 @@ func (m *mockGitLabAvatar) server() *httptest.Server {
 			_, _ = w.Write([]byte(`{"message":{"avatar":["is too big (should be at most 200 KB)"]}}`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/uploads/avatar.png"})
+		m.avatarURL = "https://gl/uploads/avatar.png"
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": m.avatarURL})
 	})
 	return httptest.NewServer(mux)
 }
@@ -832,5 +843,61 @@ func TestForgeConnectionAvatar_SealFailureBeforeUploadIsIterionFault500(t *testi
 	}
 	if gl.count() != 0 {
 		t.Errorf("uploads = %d, want 0 — this failure precedes any forge call", gl.count())
+	}
+}
+
+func TestForgeConnect_PreservesExistingBotAvatar(t *testing.T) {
+	for _, existing := range []string{"https://gl/uploads/operator.png", "https://gl/uploads/iterion-bot.png", "https://cdn.example.test/avatar.png"} {
+		t.Run(existing, func(t *testing.T) {
+			gl := &mockGitLabAvatar{bot: true, avatarURL: existing}
+			srv := gl.server()
+			defer srv.Close()
+			s := newForgeTestServer(t)
+			conn := connectGitLabPAT(t, s, srv.URL)
+			if gl.count() != 0 || conn.AvatarAppliedAt != nil || conn.AvatarError != "" {
+				t.Fatalf("existing avatar overwritten or falsely recorded: uploads=%d, conn=%+v", gl.count(), conn)
+			}
+		})
+	}
+}
+
+func TestForgeConnect_ReconnectAndAutomaticRetryDoNotRebrand(t *testing.T) {
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	s := newForgeTestServer(t)
+	first := connectGitLabPAT(t, s, srv.URL)
+	if first.AvatarAppliedAt == nil {
+		t.Fatal("first connect did not apply avatar")
+	}
+	if _, _, err := s.applyBotAvatarMode(context.Background(), first, brand.VariantPlain, false, true); err != nil {
+		t.Fatal(err)
+	}
+	second := connectGitLabPAT(t, s, srv.URL)
+	if gl.count() != 1 || second.AvatarAppliedAt != nil {
+		t.Fatalf("reconnect uploaded again: uploads=%d, applied=%v", gl.count(), second.AvatarAppliedAt)
+	}
+	// An operator's later custom image is also preserved on another connection.
+	gl.mu.Lock()
+	gl.avatarURL = "https://gl/uploads/operator.png"
+	gl.mu.Unlock()
+	_ = connectGitLabPAT(t, s, srv.URL)
+	if gl.count() != 1 {
+		t.Fatal("reconnect fought the operator avatar")
+	}
+}
+
+func TestForgeConnect_AvatarInspectionFailurePreservesConnectionAndImage(t *testing.T) {
+	gl := &mockGitLabAvatar{bot: true, avatarReadStatus: http.StatusServiceUnavailable}
+	srv := gl.server()
+	defer srv.Close()
+	s := newForgeTestServer(t)
+	conn := connectGitLabPAT(t, s, srv.URL)
+	if conn.Status != forge.StatusActive || conn.AvatarAppliedAt != nil || conn.AvatarError == "" || gl.count() != 0 {
+		t.Fatalf("inspection failure: status=%s applied=%v error=%q uploads=%d", conn.Status, conn.AvatarAppliedAt, conn.AvatarError, gl.count())
+	}
+	stored, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	if err != nil || stored.AvatarError != conn.AvatarError {
+		t.Fatalf("inspection failure not recorded: %v", err)
 	}
 }

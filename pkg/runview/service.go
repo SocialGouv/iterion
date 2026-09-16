@@ -549,6 +549,7 @@ type RunSummary struct {
 	FinalCommit      string              `json:"final_commit,omitempty"`
 	FinalBranch      string              `json:"final_branch,omitempty"`
 	FinalBranchError string              `json:"final_branch_error,omitempty"`
+	BankState        store.BankState     `json:"bank_state,omitempty"`
 	MergedInto       string              `json:"merged_into,omitempty"`
 	MergedCommit     string              `json:"merged_commit,omitempty"`
 	MergeStrategy    store.MergeStrategy `json:"merge_strategy,omitempty"`

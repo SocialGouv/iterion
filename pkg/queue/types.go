@@ -124,7 +124,11 @@ import (
 // v=17 (2026-09-11): mission resume receipts cross the queue and are stamped
 // on run_resumed. A stale runner would execute the mutation but drop its
 // reconciliation identity, so this additive field changes operator intent.
-const SchemaVersion = 17
+// v=18: loop cap expressions are evaluated at each crossing. A pre-v18
+// runner cannot compile this AST semantics and must reject before admission.
+// v=19: literal template delimiters require the new renderer. A pre-v19
+// runner must reject before compiling or executing their source text.
+const SchemaVersion = 19
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom

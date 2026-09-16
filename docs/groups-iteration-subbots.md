@@ -126,6 +126,51 @@ workflow w:
   `ParentRunID`, which is what folds them into the parent's card on the
   `/pipelines` board.
 
+### Child bundle resources
+
+All four launchers (CLI, dispatcher, studio and cloud runner) pass the **same
+bundle returned by compilation** to the child engine. A directory or its
+Every child file inside a bundle brings that bundle's prompts, skills and
+`devbox.json`, including a sibling `step.bot` or a `workflows/` export.
+Its persisted `FilePath` remains the selected child, while `BundlePath`
+identifies its resources. A loose file outside any bundle stays bare;
+resource-looking siblings alone do not promote it to a bundle.
+
+In a shared workspace, each active child pass borrows `.claude/skills`,
+`commands`, `agents` and `settings.json`. An unchanged skill installed by an
+ancestor can be replaced by the child's same-named skill, including directory
+skills and flat-file aliases. User-edited workspace skills retain precedence.
+On success, failure, cancellation or a human pause, the saved resource trees
+are restored before control returns. A child is published as `finished` only
+after successful restoration; a restoration failure is `failed_resumable` with
+`RESOURCE_RESTORE_FAILED`, so reattachment cannot reuse a false success.
+This code requires manual inspection rather than automatic resume.
+If an abandoned executor ignores cancellation, cleanup drains for at most five
+seconds, reports that same failure, and retains the snapshot and workspace
+lease. Background cleanup restores the resources and releases the lease only
+after that executor exits; it never restores files under a live reader or
+publishes a late success. Code edits elsewhere survive; deliberate
+edits inside those borrowed resource trees do not. A failed restore returns
+an error naming the retained backup. Nested children and externally resumed
+children use the same scope rules.
+
+Resource setup and executable nodes coordinate within the running process:
+children using one workspace serialize while they borrow its resources, and
+parent executable nodes wait for their return. Distinct workspaces keep their
+parallelism. This does not provide a cross-process workspace lock; the normal
+single-server/store and child-ownership rules still apply.
+
+A child's devbox project is staged separately. On the host its PATH belongs
+to its executor; in a shared sandbox its profile is prepended only to its
+command handle and inherited by its descendants. `sandbox_devbox_provisioned`
+reports `target: shared_sandbox`, its `bin_dirs`, or installation `errors`.
+Failure to provision remains visible and best-effort, as for other devbox
+sources. The parent retains its PATH and sandbox lifecycle; only the child's
+staging directory is removed on return. Copy-based sandboxes also save and
+restore the borrowed resource trees. File-secret refresh capability remains
+available through the child's handle; attachment mounting and the restriction
+on standalone resumes of copy-based sandbox children are unchanged.
+
 ### Human gates inside a child (pause / park / resume)
 
 A child `.bot` may contain `human` nodes. When the child pauses, the **child

@@ -43,6 +43,10 @@ type ConnectorsGenOptions struct {
 	// generating, which is what turns a regeneration into a diff of the
 	// vendor's changes rather than a loss of every correction.
 	KeepOverlay bool
+	// ValidateResponses derives explicit response contracts and stamps package
+	// format v2. Opt-in, because a v2 package does not load on an older
+	// iterion — and because the contracts are only as good as the description.
+	ValidateResponses bool
 }
 
 // ConnectorsGen generates a connector package from a vendor API description.
@@ -73,10 +77,30 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 	if strings.TrimSpace(opts.Out) == "" {
 		opts.Out = filepath.Join("connectors", opts.ID)
 	}
+	generationLock, err := lockConnectorGeneration(opts.Out)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = generationLock.Unlock() }()
 
 	data, source, err := readSpec(opts.Spec)
 	if err != nil {
 		return err
+	}
+
+	// Regenerating without the flag over a package that HAS contracts drops
+	// them: the package goes back to format 1 and responses.json is removed.
+	// That is the right write — a v1 package must not keep a v2 artifact — but
+	// it silently un-makes a choice the operator made on a previous run, so it
+	// is said out loud. A warning rather than a refusal: dropping contracts is
+	// a legitimate thing to want, and only an invisible drop is a defect.
+	if !opts.ValidateResponses {
+		if _, statErr := os.Stat(filepath.Join(opts.Out, spec.ResponsesFile)); statErr == nil {
+			fmt.Fprintf(out, "warning: %s exists and --validate-responses was not given: the regenerated package drops its response contracts and returns to format %d\n",
+				filepath.Join(opts.Out, spec.ResponsesFile), spec.LegacySchemaVersion)
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
 	}
 
 	pkg, report, err := gen.Generate(data, gen.Options{
@@ -87,6 +111,7 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		Redistributable:         opts.Redistributable,
 		OperatorSuppliedBaseURL: opts.OperatorSuppliedBaseURL,
 		GeneratedBy:             "iterion " + appinfo.Version,
+		ValidateResponses:       opts.ValidateResponses,
 	})
 	if err != nil {
 		return err
@@ -113,38 +138,24 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 	// the end judges what will actually run, rather than announcing a package
 	// incomplete because its authored half has not been merged into the half
 	// that must never carry it.
-	merged := pkg
 	if opts.KeepOverlay {
 		ov, err = overlay.Load(opts.Out)
 		if err != nil {
 			return err
 		}
-		if ov != nil {
-			probe, _, gerr := gen.Generate(data, gen.Options{
-				ConnectorID:             opts.ID,
-				Version:                 opts.Version,
-				SpecURL:                 source,
-				SpecLicense:             opts.License,
-				Redistributable:         opts.Redistributable,
-				OperatorSuppliedBaseURL: opts.OperatorSuppliedBaseURL,
-				GeneratedBy:             "iterion " + appinfo.Version,
-			})
-			if gerr != nil {
-				return gerr
-			}
-			if err := overlay.Apply(probe, ov); err != nil {
-				return fmt.Errorf("the existing overlay no longer applies to the regenerated package: %w", err)
-			}
-			merged = probe
-		}
+	} else if _, err := os.Stat(filepath.Join(opts.Out, overlay.File)); err == nil {
+		return fmt.Errorf("connectors: an existing overlay must be checked for identity preservation; use --keep-overlay or remove the overlay explicitly")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	lock, merged, err := connectorIdentity(opts.Out, pkg, ov)
+	if err != nil {
+		return err
 	}
 
 	// The PURE package: what ops/ must hold for the two halves to stay
 	// separable.
-	if err := writePackage(opts.Out, pkg); err != nil {
-		return err
-	}
-	size, err := spec.Measure(opts.Out)
+	size, err := writeLockedConnector(opts.Out, pkg, lock)
 	if err != nil {
 		return err
 	}
@@ -166,6 +177,16 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		fmt.Fprintf(out, "\n%d operations were NOT published — the description does not describe them well enough to call:\n", len(report.Skipped))
 		for _, s := range report.Skipped {
 			fmt.Fprintf(out, "  %-6s %s (%s)\n      %s\n", s.Method, s.Path, orNone(s.SourceOperationID), s.Reason)
+		}
+	}
+	// Printed for the same reason the skips are: an operator who asked for
+	// response validation must see WHICH answers did not get it, or they will
+	// read the package as fully validated. Not a failure — a description the
+	// vocabulary cannot represent is the vendor's shape, not a generator bug.
+	if len(report.Uncontracted) > 0 {
+		fmt.Fprintf(out, "\n%d success responses got NO contract — their shape is outside what a contract can state:\n", len(report.Uncontracted))
+		for _, u := range report.Uncontracted {
+			fmt.Fprintf(out, "  %s %d\n      %s\n", u.OperationID, u.Status, u.Reason)
 		}
 	}
 	// Judged on the MERGED package: what a launch will load is the generated

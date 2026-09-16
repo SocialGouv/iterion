@@ -283,6 +283,9 @@ func (e *ClawExecutor) resolveTemplate(body string, input map[string]any, td *Te
 // Cross-namespace refs require td (TemplateData) — when td is nil they
 // resolve as not-found and the literal placeholder is preserved.
 func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *TemplateData) (string, bool) {
+	if ref == ir.LiteralOpenExpression {
+		return "{{", true
+	}
 	parts := strings.SplitN(ref, ".", 2)
 	if len(parts) < 2 {
 		return "", false

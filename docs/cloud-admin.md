@@ -87,6 +87,68 @@ Public OIDC info (issuer URL, client IDs, scopes, public URL) lives
 in the **ConfigMap** through `config.auth` in `values.yaml` — no
 need to land it in the Secret.
 
+### Why a moving tag shows up in the browser first
+
+Pin `image.digest` rather than `image.tag` — the reference, the trade-off and
+the `--set image.tag` no-op it creates are in
+[cloud-deployment.md](cloud-deployment.md#pinning-the-image). What that page does
+not say is how the hazard *presents*, and it presents in the studio before it
+presents anywhere else.
+
+The SPA's assets are content-hashed per build. With several builds in one
+ReplicaSet — an HPA scale-up pulls whatever the moving tag means at that pod's
+start time — the browser takes `index.html` from one replica and asks for chunk
+hashes only that build carries. The misses land on another replica. Nothing in
+the API misbehaves; the studio simply does not boot. Sampling ONE asset URL
+repeatedly is what identifies it (see the troubleshooting table); reading the
+manifest is not, because each replica's manifest is self-consistent.
+
+Two consequences:
+
+- **`kubectl rollout restart` is not a repair** under a GitOps controller with
+  self-heal. It writes an annotation the controller reverts, restoring a
+  template that still matches the running ReplicaSet — so no pod is recreated,
+  nothing changes, and `rollout status` still reports success. Deploy by
+  changing the digest in git.
+- **Re-resolve the digest immediately before writing it.** The publisher can
+  build the same commit more than once; a digest resolved from a tag five
+  minutes earlier is already a guess.
+
+### Serving under several hostnames
+
+A deployment reachable under more than one name has one browser origin's worth
+of cookies, `sessionStorage`, CSP and WebSocket-origin allowance *per name* —
+four silently divergent copies. `config.auth.canonicalRedirect: true`
+(`ITERION_CANONICAL_REDIRECT=1`) sends browser **document navigations** arriving
+on any other host to `ITERION_PUBLIC_URL`, with a 302.
+
+It never redirects anything under `/api/`, and never a non-navigation. Inbound
+webhooks keep answering on whichever host the forge was configured with, as do
+the CLI, the SDK and the health probes — which is the point: consolidating the
+browser must not break the integrations that were handed the other name.
+
+Off by default. `ITERION_PUBLIC_URL` is also set on deployments legitimately
+reached by another name — a port-forward to localhost, an in-cluster Service
+DNS, a preview host — and redirecting those moves the operator off the instance
+they asked for. Turning it on without a `ITERION_PUBLIC_URL` carrying both a
+scheme and a host is refused at startup, in every mode.
+
+`ITERION_PUBLIC_URL` must be a **bare origin** while this is on. A path prefix
+is meaningful elsewhere in that value — the OIDC redirect URI is built as
+`${PUBLIC_URL}/api/auth/oidc/<name>/callback` — but the redirect targets the
+origin alone, so a navigation would land on the right host at the wrong path.
+That pairing is refused at startup rather than half-honoured.
+
+**Check the proxy before flipping it.** The comparison needs the host the
+*client* addressed, which it takes from `X-Forwarded-Host`, falling back to
+`Host`. A proxy that rewrites `Host` to an internal Service name *and* omits
+`X-Forwarded-Host` leaves neither, so every navigation is redirected to a
+target whose host can never match — an unbounded loop taking the whole browser
+surface down. ingress-nginx satisfies this by default (it preserves the client
+`Host` and sets `X-Forwarded-Host`); a chart or mesh that sets
+`nginx.ingress.kubernetes.io/upstream-vhost`, or an equivalent rewrite, does
+not. Verify on the deployment, not on the class of proxy.
+
 ## 5. SSO providers
 
 | Provider | Required values | Notes |
@@ -235,6 +297,7 @@ backup.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| Studio blank; console shows `/assets/*.js` blocked — as a disallowed MIME type (`text/html`) on replicas without this fix, as a 404 on replicas carrying it | Replicas are serving different builds — `image.tag` is a moving tag and a scale-up pulled a newer one. A mixed fleet shows both symptoms at once | Pin `image.digest` (§4). Confirm first: `kubectl -n <ns> get pods -l app.kubernetes.io/component=server -o custom-columns=NAME:.metadata.name,IMAGEID:.status.containerStatuses[0].imageID` — more than one digest across those pods means this. (`<none>` is a pod still pulling, not a second build) |
 | Server boots fine, every workflow fails at `unseal run_secrets` | Server and runner have different `ITERION_SECRETS_KEY` | Make the secret bundle identical (same envFrom Secret, no per-pod override) |
 | `/api/auth/login` returns 401 with no logs | DB connection healthy but `users` collection empty | Set `ITERION_BOOTSTRAP_ADMIN_EMAIL`, restart the server, capture the temp password from logs |
 | OIDC redirect lands on the SPA but immediately bounces back to `/login` | `ITERION_PUBLIC_URL` doesn't match the redirect URI registered with the IdP | Update either side; the URI must equal `${PUBLIC_URL}/api/auth/oidc/<name>/callback` |

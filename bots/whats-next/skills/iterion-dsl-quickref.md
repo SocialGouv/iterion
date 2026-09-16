@@ -286,7 +286,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `wait` — description str · event str · timeout str · output id
 - `await_answers` — description str · from str|id · timeout str
 - `fail` — description str · code str|id · message str · resumable bool
-- `workflow` — entry id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async
+- `workflow` — entry id · contract id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int
 - `resources` (`resources:` in workflow) — entries `name: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
@@ -297,6 +297,15 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `sandbox.network` (`network:` in sandbox) — mode open|allowlist|denylist · preset str|id · inherit replace|append · rules [str|id]
 - `cursors` (`cursors:` in agent, judge) — enabled bool — entries `cursor_name: ident | number | "string"`
 - `fallback` (`fallbacks:` in agent, judge) — backend str · model str · provider str · on [id] · metered bool · action skip · when str
+- `contract` — display_name str · responsibility str · version int · inputs {contract.ports} · outputs {contract.ports} · criteria {contract.criteria} · effects {contract.effects}
+- `contract.ports` (`inputs / outputs:` in contract) — entries `name: type [optional indented properties]`
+- `contract.port` (`inputs / outputs:` in contract.ports) — description str · required bool · nullable bool · default json · min_items int · max_items int · from id · file {contract.file}
+- `contract.file` (`file:` in contract.port) — media_type str · min_bytes int · schema id
+- `contract.criteria` (`criteria:` in contract) — entries `name: [indented criterion properties]`
+- `contract.criterion` (`criteria:` in contract.criteria) — kind id · port id · params json
+- `contract.effects` (`effects:` in contract) — entries `name: [indented effect properties]`
+- `contract.effect` (`effects:` in contract.effects) — description str · paid bool
+- Public criteria (deterministic; parameters are JSON data; an unregistered kind is declared, not evaluated): `min_length` `min:int` · `pattern` `pattern:string`.
 <!-- dsl-spec:end -->
 
 ## Edges
@@ -776,6 +785,29 @@ mcp_server my_server:                 # declared at top level, referenced above
   transport: stdio
   command: "my-mcp-server"
   args: []
+```
+
+## Public contract
+
+A `contract` is the bot's public face — inputs, outputs, delivered files, deterministic criteria, visible effects — declared once at top level, named by the workflow's `contract:`, and checked against the program: an input is a declared var (C300), an output names the node and field that produce it — `from: build.pr_url`, or `from: build` for a file (C301) — and a criterion names a port in the singular (`input.goal`, `output.pr_url`) and a registered `kind` (C302; an unregistered kind is declared, not evaluated, C303). `default:` and `params:` take **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word (unlike every string property), no signed number and no exponent, which the `.bot` text cannot write.
+
+```iter fragment
+contract feature:
+  responsibility: "Implements a feature and opens a pull request"
+  inputs:
+    goal: string
+      description: "What to build"
+  outputs:
+    pr_url: string
+      from: build.pr_url
+  criteria:
+    goal_is_not_empty:
+      kind: min_length
+      port: input.goal
+      params: {min: 1}
+  effects:
+    opens_pr:
+      description: "Opens a pull request on the repository"
 ```
 
 ## Worktree and sandbox

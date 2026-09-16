@@ -42,9 +42,14 @@ type Workflow struct {
 	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
 	Skills          []string               // workflow-level default skill-library references (nil = none)
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
-	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory      string                 // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	// Contracts are the unit's `contract` declarations by name, each bound
+	// to this program (ADR-099); Contract is the one the workflow names by
+	// `contract:` (nil = none).
+	Contracts  map[string]*PublicContract
+	Contract   *PublicContract
+	Worktree   string // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Compress   string // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -1113,6 +1118,7 @@ const (
 	RefRun                        // {{run.id}}
 	RefSecrets                    // {{secrets.<name>}} — renders the placeholder; materialised at exec
 	RefEach                       // {{each.<name>.item|index|count|first|last}} — sequential foreach binding
+	RefLiteralOpen                // {{"{{"}} — literal source delimiter; append to preserve prior RefKind values
 )
 
 func (rk RefKind) String() string {
@@ -1135,6 +1141,8 @@ func (rk RefKind) String() string {
 		return "secrets"
 	case RefEach:
 		return "each"
+	case RefLiteralOpen:
+		return "literal_open"
 	default:
 		return "unknown"
 	}
@@ -1379,12 +1387,12 @@ var AttachmentSubFields = map[string]struct{}{
 type Loop struct {
 	Name          string
 	MaxIterations int
-	// MaxIterationsExpr carries the raw template source when the cap
-	// was declared as `as <name>("{{outputs.X.cap}}")`. Empty for
-	// literal-int caps. Refs are pre-parsed at compile time so the
-	// runtime lookup is a pure string interpolation against rs.
+	// MaxIterationsExpr is the authored template or expression source. Literal
+	// caps leave it empty. Templates carry Refs; expressions carry an immutable
+	// AST. Both are resolved from live state at each attempted crossing.
 	MaxIterationsExpr     string
 	MaxIterationsExprRefs []*Ref
+	MaxIterationsAST      *expr.AST // expression form, evaluated at each crossing
 	// Unbounded marks `as <name>(unbounded)`: the loop has no user iteration
 	// cap. It still terminates — the runtime bounds it by FuelCap (the
 	// effective fuel ceiling) and by a liveness monitor (no-progress halt).

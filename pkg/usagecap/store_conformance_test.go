@@ -188,6 +188,7 @@ func runRefusalStreakConformance(t *testing.T, st Store) {
 func TestMemStore_Conformance(t *testing.T) {
 	runStoreConformance(t, NewMemStore())
 	runRefusalStreakConformance(t, NewMemStore())
+	runAccountConformance(t, NewMemStore())
 }
 
 // TestMongoStore_Conformance runs the same contract against the real Mongo
@@ -217,4 +218,5 @@ func TestMongoStore_Conformance(t *testing.T) {
 	}
 	runStoreConformance(t, NewMongoStore(db))
 	runRefusalStreakConformance(t, NewMongoStore(db))
+	runAccountConformance(t, NewMongoStore(db))
 }

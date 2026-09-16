@@ -239,9 +239,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 //
 // Two invariants keep it from reopening #484:
 //
-//   - Only an OUTPUT-LESS source contributes (settledFloorEligible). An edge
-//     whose source ran is left to the passes below, where routing's recorded
-//     selection still decides between exclusive siblings.
+//   - A floor edge's source produced no output in the branch whose walk
+//     admitted it. Routing prunes that branch's rejected alternatives;
+//     a fan_out_each sibling cannot decide for an item that never routed.
 //   - It is a FLOOR — applied before both passes, so a live edge and the
 //     back-edge overlay both win on a shared key.
 //
@@ -314,8 +314,9 @@ func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFl
 		if !settledFloorEligible(edge, floor) {
 			continue
 		}
-		// The source produced nothing, so `{{input.*}}` on this edge has no
-		// namespace to read: an explicit empty map, never the caller's
+		// The branch that admitted this edge produced no source output, so
+		// `{{input.*}}` has no namespace to read: an explicit empty map,
+		// never the caller's
 		// runInputs, which would silently promote a run-level payload into
 		// the source-output namespace (#479). Every floor edge therefore
 		// resolves in the SAME scope, which is what makes the template
@@ -511,6 +512,8 @@ func renderMappingValue(v any) string {
 // pass nil to skip those (they'll resolve to nil).
 func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 	switch ref.Kind {
+	case ir.RefLiteralOpen:
+		return "{{"
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
 			return sc.vars[ref.Path[0]]
@@ -655,14 +658,6 @@ func (e *Engine) resolveLoopPath(path []string, rs *runState) any {
 	return nil
 }
 
-// resolveLoopMax returns the effective cap for a loop. Literal-int
-// declarations (`as fix_loop(3)`) yield MaxIterations directly.
-// Template declarations (`as fix_loop("{{outputs.X.cap}}")`) resolve
-// the refs against the runState and coerce the result to int. The
-// fallback when resolution / coercion fails is loop.MaxIterations
-// (typically 0 for the template form) — that surfaces as a "loop
-// exhausted on iteration 0" log line at the edge check, which is the
-// loudest visible failure mode we can offer without aborting the run.
 // defaultUnboundedFuel is the fuel ceiling applied to an `unbounded` loop that
 // declares neither a per-loop fuel nor a workflow budget.max_iterations.
 // Validation (C097) normally requires one of those, so this only guards a
@@ -706,45 +701,14 @@ func outputSignature(output map[string]any) string {
 // declared/expr/fuel base plus any live-steering grant (bump_loop). The
 // grant applies for the remainder of the run; a loop re-entry still
 // resets its COUNTER, so the raised ceiling governs each entry.
+// Prompt/display lookups may happen before a referenced output exists. Only
+// actual edge selection treats an unresolved cap as a run failure.
 func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
-	base := e.resolveLoopMaxBase(loop, rs)
-	if extra := rs.loopOverrides[loop.Name]; extra > 0 {
-		return base + extra
+	n, err := e.resolveLoopMaxChecked(loop, rs)
+	if err != nil {
+		return 0
 	}
-	return base
-}
-
-func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) int {
-	// Unbounded loops have no user iteration cap; the effective ceiling is the
-	// fuel: the clause's per-loop fuel, else the workflow's max_iterations, else
-	// a hard default (so there is never a silent infinity even if validation was
-	// bypassed). The liveness monitor halts a no-progress loop before this.
-	if loop.Unbounded {
-		if loop.FuelCap > 0 {
-			return loop.FuelCap
-		}
-		if e.workflow.Budget != nil && e.workflow.Budget.MaxIterations > 0 {
-			return e.workflow.Budget.MaxIterations
-		}
-		return defaultUnboundedFuel
-	}
-	if loop.MaxIterationsExpr == "" || len(loop.MaxIterationsExprRefs) == 0 {
-		return loop.MaxIterations
-	}
-	var resolved any
-	for _, ref := range loop.MaxIterationsExprRefs {
-		v := e.resolveRef(ref, rs.scope())
-		if v != nil {
-			resolved = v
-		}
-	}
-	if resolved == nil {
-		return loop.MaxIterations
-	}
-	if n, ok := coerceToInt(resolved); ok {
-		return n
-	}
-	return loop.MaxIterations
+	return n
 }
 
 // coerceToInt accepts the common shapes that an output/var ref can
@@ -1177,66 +1141,10 @@ func samePath(a, b string) bool {
 
 // coerceVarValue narrows a user-provided override (typically a
 // string from --var or POST /api/runs) to the type declared in the
-// IR for that var. Already-typed values pass through.
+// IR for that var: the one reading of a var's text, ir.CoerceVarValue,
+// which the contract compiler mirrors for a var's default.
 func coerceVarValue(v any, vt ir.VarType) (any, error) {
-	s, isStr := v.(string)
-	if !isStr {
-		return v, nil
-	}
-	switch vt {
-	case ir.VarString:
-		return s, nil
-	case ir.VarBool:
-		switch strings.ToLower(strings.TrimSpace(s)) {
-		case "true", "1", "yes":
-			return true, nil
-		case "false", "0", "no", "":
-			return false, nil
-		default:
-			return nil, fmt.Errorf("invalid bool %q", s)
-		}
-	case ir.VarInt:
-		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid int %q: %w", s, err)
-		}
-		return n, nil
-	case ir.VarFloat:
-		n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid float %q: %w", s, err)
-		}
-		return n, nil
-	case ir.VarJSON:
-		// Parse JSON; if the user gave us non-JSON text, leave it
-		// as a string — JSON expressions accept either.
-		var out any
-		if err := json.Unmarshal([]byte(s), &out); err != nil {
-			return s, nil
-		}
-		return out, nil
-	case ir.VarStringArray:
-		trimmed := strings.TrimSpace(s)
-		if trimmed == "" {
-			return []any{}, nil
-		}
-		// Accept either JSON array form (["a","b"]) or
-		// comma-separated (a,b).
-		if strings.HasPrefix(trimmed, "[") {
-			var arr []any
-			if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
-				return arr, nil
-			}
-		}
-		parts := strings.Split(trimmed, ",")
-		out := make([]any, len(parts))
-		for i, p := range parts {
-			out[i] = strings.TrimSpace(p)
-		}
-		return out, nil
-	default:
-		return s, nil
-	}
+	return ir.CoerceVarValue(v, vt)
 }
 
 // emitTerminalNodeEvents emits the NodeStarted+NodeFinished pair for a

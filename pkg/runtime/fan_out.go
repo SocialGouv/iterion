@@ -445,7 +445,9 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 		}
 	}
 
-	return e.processConvergence(rs, convergenceNodeID, results, settledSeedsPerEdge(routerNodeID, plan.edges, results))
+	seeds := settledSeedsPerEdge(routerNodeID, plan.edges, results)
+	floor := settledEdgesInto(e.workflow, seeds, convergenceNodeID, evidenceFromBranches(results))
+	return e.processConvergence(rs, convergenceNodeID, results, seeds, floor)
 }
 
 // allTerminatedAtDone reports whether every branch finished cleanly at

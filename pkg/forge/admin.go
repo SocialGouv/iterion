@@ -165,3 +165,10 @@ type AvatarSetter interface {
 	// Returns ErrAvatarUnsupported when the instance has no avatar endpoint.
 	SetAvatar(ctx context.Context, png []byte) (avatarURL string, err error)
 }
+
+// AvatarReader is the optional ability to distinguish an existing account
+// avatar from a generated placeholder. Automatic branding requires this proof;
+// a read failure must never authorize replacing the current image.
+type AvatarReader interface {
+	CurrentAvatar(ctx context.Context) (avatarURL string, present bool, err error)
+}

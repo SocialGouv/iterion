@@ -81,7 +81,7 @@ type Orchestrator struct {
 	// permission) token is kept, so a mint failure never blocks a provision.
 	// nil (oauth/pat, or no github app configured) → no-op. Injected by the
 	// server so the orchestrator stays free of the github package + App key.
-	GitHubAppMinter func(ctx context.Context, conn Connection) (string, error)
+	GitHubAppMinter func(ctx context.Context, conn Connection) (RefreshedToken, error)
 	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
 	// a security-read withdrawal that could not run while disconnecting).
 	// Injected like the other seams so the package stays logger-free; nil
@@ -757,7 +757,8 @@ func (o *Orchestrator) narrowGitHubAppSecret(ctx context.Context, conn *Connecti
 	if conn.Kind != KindGitHubApp || o.GitHubAppMinter == nil || conn.ManagedSecretID == "" {
 		return
 	}
-	token, err := o.GitHubAppMinter(ctx, *conn)
+	out, err := o.GitHubAppMinter(ctx, *conn)
+	token := out.AccessToken
 	if err != nil || token == "" {
 		return
 	}
@@ -772,6 +773,7 @@ func (o *Orchestrator) narrowGitHubAppSecret(ctx context.Context, conn *Connecti
 	gs.SealedSecret = sealed
 	gs.Last4 = secrets.Last4(token)
 	gs.Fingerprint = secrets.FingerprintSHA256(token)
+	gs.ForgeTokenProof = out.TokenProof
 	_ = o.Secrets.Update(ctx, gs)
 }
 

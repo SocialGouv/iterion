@@ -247,3 +247,65 @@ func TestGenSaysWhenItWroteWhereNothingWillReadIt(t *testing.T) {
 		}
 	})
 }
+
+// TestRegeneratingWithoutTheFlagSaysItDropsTheContracts.
+//
+// Re-running generation without `--validate-responses` over a package that has
+// contracts is a legitimate thing to want, and the write is right: a format-1
+// package must not keep a format-2 artifact. What would be a defect is doing it
+// in silence — the previous run's explicit choice un-made with nothing said.
+func TestRegeneratingWithoutTheFlagSaysItDropsTheContracts(t *testing.T) {
+	// genFixture declares no response body at all, so it yields no contract to
+	// drop; this one does.
+	const contracted = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "basePath": "/api/v1",
+  "schemes": ["https"],
+  "produces": ["application/json"],
+  "paths": {"/issues": {"get": {"tags": ["issue"], "operationId": "issueList",
+    "responses": {"200": {"description": "ok", "schema": {
+      "type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}}}}}}
+}`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "probe.json")
+	if err := os.WriteFile(specPath, []byte(contracted), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	outDir := filepath.Join(dir, "probe")
+	run := func(contracts bool) string {
+		t.Helper()
+		var buf bytes.Buffer
+		err := cli.ConnectorsGen(cli.ConnectorsGenOptions{
+			Spec: specPath, ID: "probe", Out: outDir,
+			Version: "0.1.0", License: "MIT", Redistributable: true,
+			KeepOverlay: true, ValidateResponses: contracts,
+		}, &buf)
+		if err != nil {
+			t.Fatalf("gen(contracts=%v): %v\n%s", contracts, err, buf.String())
+		}
+		return buf.String()
+	}
+
+	if got := run(true); strings.Contains(got, "drops its response contracts") {
+		t.Errorf("nothing existed to drop on the first run:\n%s", got)
+	}
+	responses := filepath.Join(outDir, spec.ResponsesFile)
+	if _, err := os.Stat(responses); err != nil {
+		t.Fatalf("the contracted run wrote no %s: %v", spec.ResponsesFile, err)
+	}
+
+	got := run(false)
+	if !strings.Contains(got, "drops its response contracts") {
+		t.Errorf("a regeneration that removes the contracts must say so:\n%s", got)
+	}
+	if _, err := os.Stat(responses); !os.IsNotExist(err) {
+		t.Errorf("%s survived a format-1 regeneration: %v", spec.ResponsesFile, err)
+	}
+
+	// The falsifier: with nothing on disk to drop, there is nothing to say.
+	if got := run(false); strings.Contains(got, "drops its response contracts") {
+		t.Errorf("the warning repeated with no contracts present:\n%s", got)
+	}
+}

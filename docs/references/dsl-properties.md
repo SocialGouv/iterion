@@ -495,6 +495,7 @@ A top-level declaration: `workflow <name>:`.
 | Property | Value | Meaning |
 |---|---|---|
 | `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
+| `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
 | `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
@@ -653,5 +654,106 @@ An entry opened by `fallbacks:` inside `agent`, `judge`.
 | `metered` | bool | The route spends a metered API key (credential hint) |
 | `action` | ident — `skip` | skip: complete the node with a zero-value output stamped _skipped instead of failing |
 | `when` | string | Expression over vars that gates the route |
+
+### contract
+
+The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.
+
+A top-level declaration: `contract <name>:`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `display_name` | string | Explicit human-readable name |
+| `responsibility` | string | The single responsibility this bot fulfils |
+| `version` | int | Public contract version, 1 or more (C300); defaults to 1 |
+| `inputs` | block → [contract.ports](#contractports) | Named typed values and files the bot takes; each one is a declared var (C300) |
+| `outputs` | block → [contract.ports](#contractports) | Named typed values and files the bot produces on success; each one names the node and field that produce it (C301) |
+| `criteria` | block → [contract.criteria](#contractcriteria) | Deterministic registered checks on a port; prose is not executable |
+| `effects` | block → [contract.effects](#contracteffects) | Visible effects, including paid operations |
+
+### contract.ports
+
+Public input or output ports, in declaration order.
+
+A block opened by `inputs / outputs:` inside `contract`.
+
+Entries: `name: type [optional indented properties]` — Builtin or declared schema type, optionally followed by []; an entry's sub-block is a [contract.port](#contractport).
+
+### contract.port
+
+One named typed port. Missing, null and [] remain different values.
+
+An entry opened by `inputs / outputs:` inside `contract.ports`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Meaning of the value |
+| `required` | bool | Mandatory port (default true). An input mirrors its var — required exactly when the var has no default — and a written value that disagrees is refused (C300) |
+| `nullable` | bool | Permit an explicit null value (default false); on an input whose var has no default, the one way to be optional — omitted, the var is null (C300) |
+| `default` | json value | Typed default of an optional input: the var's default, read as the launch reads a value of its type (a `string[]` or `json` var's text as a list or an object) — written, it must be the var's (C300); omitted, the var's is the port's. One JSON value on one line — `"text"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write and the compiler refuses from a document (C302) |
+| `min_items` | int | Minimum array cardinality (C300 on an input, C301 on an output) |
+| `max_items` | int | Maximum array cardinality (C300 on an input, C301 on an output) |
+| `from` | ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
+| `file` | block → [contract.file](#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
+
+### contract.file
+
+Verifiable properties of a produced or consumed file.
+
+A block opened by `file:` inside `contract.port`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `media_type` | string | Expected media type |
+| `min_bytes` | int | Minimum file size |
+| `schema` | ident | Schema of structured file contents |
+
+### contract.criteria
+
+Deterministic acceptance checks on the ports, each a registered evaluator with JSON parameters — never prose.
+
+A block opened by `criteria:` inside `contract`.
+
+Entries: `name: [indented criterion properties]` — Named deterministic acceptance check; an entry's sub-block is a [contract.criterion](#contractcriterion).
+
+### contract.criterion
+
+One named check: an evaluator, the port it reads, its parameters. A bare header declares a check nothing evaluates yet.
+
+An entry opened by `criteria:` inside `contract.criteria`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `kind` | ident | Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303) |
+| `port` | ident | Checked port, singular: `input.<name>` or `output.<name>` (C302) |
+| `params` | json value | Parameters validated against the criterion's parameter declaration (C302): one JSON object on one line, e.g. `{min: 2}` |
+
+### contract.effects
+
+The bot's externally visible operations, documented; an effect grants nothing — the sandbox, the allow-lists and the verified actions keep the admission.
+
+A block opened by `effects:` inside `contract`.
+
+Entries: `name: [indented effect properties]` — A visible effect of the bot; an entry's sub-block is a [contract.effect](#contracteffect).
+
+### contract.effect
+
+One named effect and whether it may cost money.
+
+An entry opened by `effects:` inside `contract.effects`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Externally visible operation |
+| `paid` | bool | The operation may incur a charge; unknown cost remains unknown |
+
+### Deterministic public criteria
+
+A contract's `criteria:` name one of these evaluators by `kind:`; a kind this table does not have is declared and rendered but not evaluated (C303). Parameters are JSON data.
+
+| Criterion | Port types | Parameters | Meaning |
+|---|---|---|---|
+| `min_length` | `string`, `array` | `min: int (required)` | Minimum Unicode character or array element count |
+| `pattern` | `string` | `pattern: string (required)` | String matches a Go regular expression |
 
 <!-- dsl-spec:end -->

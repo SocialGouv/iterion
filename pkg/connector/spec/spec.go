@@ -31,7 +31,15 @@ package spec
 // for a newer iterion must fail with "upgrade iterion", not with an opaque
 // "unknown field" from the strict decoder. (pkg/plugin's manifest has the
 // inverse order and its version diagnostic is consequently unreachable.)
-const SchemaVersion = 1
+const SchemaVersion = ResponseContractsVersion
+
+// ResponseContractsVersion is the first package format with explicit
+// contracts in responses.json; it is also the current maximum reader version.
+const ResponseContractsVersion = 2
+
+// LegacySchemaVersion remains the default generation format. Version 2 is
+// selected only when response contracts are explicitly requested.
+const LegacySchemaVersion = 1
 
 // Connector is a parsed connector.yaml — the package's identity card. It
 // carries no operation: those live in ops/ so a large catalog entry stays

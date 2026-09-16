@@ -41,9 +41,9 @@ var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run record
 // run executed and the source on disk now.
 type DeclChange struct {
 	// Kind is the declaration kind: agent, judge, router, human, tool,
-	// compute, subbot, emit, wait, await_answers, prompt, schema, cursor,
-	// supervisor, mcp_server, vars, presets, attachments, secrets, edge,
-	// or workflow.
+	// compute, subbot, emit, wait, await_answers, prompt, schema, contract,
+	// cursor, supervisor, mcp_server, vars, presets, attachments, secrets,
+	// edge, or workflow.
 	Kind string `json:"kind"`
 	// Name identifies the declaration (node id, prompt name, "a -> b" for
 	// an edge, the workflow name for workflow-level settings).
@@ -242,6 +242,9 @@ func declFingerprints(f *ast.File) map[string]string {
 	}
 	for _, d := range f.Schemas {
 		put("schema", d.Name, &ast.File{Schemas: []*ast.SchemaDecl{d}})
+	}
+	for _, d := range f.Contracts {
+		put("contract", d.Name, &ast.File{Contracts: []*ast.ContractDecl{d}})
 	}
 	for _, d := range f.Cursors {
 		put("cursor", d.Name, &ast.File{Cursors: []*ast.CursorDecl{d}})

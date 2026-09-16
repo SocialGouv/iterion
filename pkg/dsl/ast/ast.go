@@ -22,7 +22,11 @@ type File struct {
 	// carrying them is not a program yet — the unit loader merges the
 	// fragments in and clears them; the compiler refuses a file that still
 	// has some (C030).
-	Imports      []*ImportDecl
+	Imports []*ImportDecl
+	// Contracts are the bot's public contracts (contract.go), named by a
+	// workflow's `contract:`; merged across a unit's files like every other
+	// named declaration, E010 on a duplicate.
+	Contracts    []*ContractDecl
 	Vars         *VarsBlock          // top-level vars (optional, at most one)
 	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
 	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
@@ -848,6 +852,7 @@ type FailDecl struct {
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
 	Name           string
+	Contract       string            // the bot's public contract, a top-level ContractDecl's name (empty = none)
 	Vars           *VarsBlock        // workflow-level variable declarations
 	Attachments    *AttachmentsBlock // workflow-level attachments declarations
 	Entry          string            // entry node name
@@ -1044,9 +1049,9 @@ type WhenClause struct {
 }
 
 // LoopClause represents `as <loop_name>(<max_iterations>)` on an edge.
-// The cap can be either a literal int (`as fix_loop(3)`) or a template
-// string evaluated at the moment the loop is consulted
-// (`as fix_loop("{{outputs.select_candidate.fix_loop_max}}")`). Exactly
+// The cap can be a literal int (`as fix_loop(3)`), a template string, or
+// an expression (`as fix_loop("vars.max_passes - 1")`) evaluated at each
+// attempted crossing. Exactly
 // one of MaxIterations / MaxIterationsExpr is populated.
 type LoopClause struct {
 	Name              string // loop name (e.g. "refine_loop", "full_recipe_loop")

@@ -135,7 +135,7 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	noop := func() {}
 
 	repoCfg := devboxConfigIn(e.workDir, "workspace", e.logger)
-	botCfg := devboxConfigIn(bundleResourceDir(e.bundle, e.filePath), "bundle", e.logger)
+	botCfg := devboxConfigIn(e.resourceDirForRun(), "bundle", e.logger)
 	// A declined repo source is REPORTED, not dropped: silence here is
 	// indistinguishable from a repo that declared nothing, and the
 	// operator staring at a missing binary deserves the reason.

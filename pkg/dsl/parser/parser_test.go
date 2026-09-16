@@ -472,18 +472,16 @@ func TestEdgeLoopQuotedIntLiteralCap(t *testing.T) {
 	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "")
 }
 
-func TestEdgeLoopQuotedNonNumericCapRejected(t *testing.T) {
-	// A quoted non-numeric, non-template cap has no template refs and would
-	// silently cap the loop at 0. Reject it at parse time rather than let it
-	// through as a template that resolves to nothing.
+func TestEdgeLoopMalformedExpressionCapRejected(t *testing.T) {
+	// A malformed expression must fail at the cap, before compilation.
 	src := `workflow test:
   entry: a
 
-  a -> b as fix("two")
+  a -> b as fix("vars.n +")
 `
 	res := parser.Parse("test.bot", src)
 	if len(res.Diagnostics) == 0 {
-		t.Fatal("expected a diagnostic for a quoted non-numeric loop cap")
+		t.Fatal("expected a diagnostic for a malformed loop cap expression")
 	}
 }
 

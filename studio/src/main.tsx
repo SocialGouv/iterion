@@ -14,6 +14,7 @@ import { Router } from "wouter";
 import App from "./App";
 import WorkspaceShell from "./workspace/WorkspaceShell";
 import "./app.css";
+import { installChunkReload } from "./lib/chunkReload";
 import { initializeTheme } from "./store/theme";
 import { initializeBackendDetect } from "./store/backendDetect";
 import { initializeServerInfo } from "./store/serverInfo";
@@ -29,6 +30,10 @@ import { isScopedPane, scopePrefix } from "./lib/scope";
 // injecting — unlike isDesktop(), which would briefly read false.
 const isWorkspaceShell =
   (isWailsHosted() || isBrowserWorkspace()) && !isScopedPane();
+
+// Installed before the first lazy route can resolve, and for both branches
+// below: a pane and the shell load their chunks from the same build.
+installChunkReload();
 
 initializeTheme();
 // The workspace shell talks to no single backend, so skip the boot-time

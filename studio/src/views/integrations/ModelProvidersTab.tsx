@@ -1,4 +1,5 @@
 import OAuthConnections from "@/views/account/OAuthConnections";
+import CredentialPreview from "@/views/account/CredentialPreview";
 
 // Model providers groups the LLM subscriptions a team's bots run on
 // (Claude Code / OpenAI Codex subscription OAuth). Split out of the forge tab
@@ -16,6 +17,7 @@ export default function ModelProvidersTab({ teamID }: { teamID: string }) {
         </p>
       </div>
       <OAuthConnections scope={{ teamId: teamID }} org />
+      <CredentialPreview teamID={teamID} />
     </div>
   );
 }

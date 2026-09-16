@@ -54,6 +54,15 @@ import (
 // File is the overlay file name inside a connector package directory.
 const File = "overlay.yaml"
 
+// SchemaVersion is the overlay document's OWN format version.
+//
+// Separate from the connector package's on purpose: overlay.yaml has its own
+// fields and its own history, and borrowing the package constant meant a
+// package-format bump silently widened what an overlay may declare. A version
+// this file has no meaning for must reach the "upgrade iterion" diagnosis, not
+// the strict decoder's "unknown field".
+const SchemaVersion = 1
+
 // Overlay is a parsed overlay.yaml.
 type Overlay struct {
 	SchemaVersion int `yaml:"schema_version"`
@@ -99,9 +108,9 @@ type BaseURLOverride struct {
 
 // OperationOverlay corrects one operation.
 type OperationOverlay struct {
-	// ID pins the public id, so a vendor's next release cannot move it. This
-	// is the identity lock in its per-operation form: the overlay states the
-	// id, the derivation only proposes one.
+	// ID chooses the public name after generation. The generation identity
+	// lock preserves its method+path ownership; this derived-id lookup alone
+	// cannot establish identity across vendor changes.
 	ID string `yaml:"id,omitempty"`
 	// Summary / Description replace the vendor's wording — for a curated MCP
 	// tool this is what an agent reads to choose it, so it is worth writing.
@@ -173,8 +182,8 @@ func Parse(body []byte) (*Overlay, error) {
 	if err := yaml.Unmarshal(body, &probe); err != nil {
 		return nil, fmt.Errorf("overlay: %s is not valid YAML: %w", File, err)
 	}
-	if probe.SchemaVersion > spec.SchemaVersion {
-		return nil, fmt.Errorf("overlay: %s declares schema_version %d, newer than supported %d (upgrade iterion)", File, probe.SchemaVersion, spec.SchemaVersion)
+	if probe.SchemaVersion > SchemaVersion {
+		return nil, fmt.Errorf("overlay: %s declares schema_version %d, newer than supported %d (upgrade iterion)", File, probe.SchemaVersion, SchemaVersion)
 	}
 	var ov Overlay
 	if err := yaml.UnmarshalStrict(body, &ov); err != nil {

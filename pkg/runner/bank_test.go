@@ -30,6 +30,7 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 
 func bankFixture(t *testing.T) (r *Runner, msg *queue.RunMessage, work, origin string, base string) {
 	t.Helper()
+	t.Setenv("ITERION_RUNNER_BANK_RETRY_DELAY", "0")
 	tmp := t.TempDir()
 	origin = filepath.Join(tmp, "origin.git")
 	gitOut(t, tmp, "init", "--bare", origin)

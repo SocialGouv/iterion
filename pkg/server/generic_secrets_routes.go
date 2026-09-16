@@ -188,6 +188,7 @@ func (s *Server) handleUpdateGenericSecret(w http.ResponseWriter, r *http.Reques
 		rec.SealedSecret = sealed
 		rec.Last4 = secrets.Last4(*req.Secret)
 		rec.Fingerprint = secrets.FingerprintSHA256(*req.Secret)
+		rec.ForgeTokenProof = nil
 	}
 	if err := s.genericSecrets.Update(ctx, rec); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())

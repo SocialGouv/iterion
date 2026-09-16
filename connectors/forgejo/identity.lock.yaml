@@ -1,0 +1,2053 @@
+schema_version: 1
+connector: forgejo
+operations:
+  DELETE /admin/actions/runners/{runner_id}:
+    generated_id: forgejo.admin.delete_admin_runner
+    public_ids:
+    - forgejo.admin.delete_admin_runner
+  DELETE /admin/hooks/{id}:
+    generated_id: forgejo.admin.delete_hook
+    public_ids:
+    - forgejo.admin.delete_hook
+  DELETE /admin/quota/groups/{quotagroup}:
+    generated_id: forgejo.admin.delete_quota_group
+    public_ids:
+    - forgejo.admin.delete_quota_group
+  DELETE /admin/quota/groups/{quotagroup}/rules/{quotarule}:
+    generated_id: forgejo.admin.remove_rule_from_quota_group
+    public_ids:
+    - forgejo.admin.remove_rule_from_quota_group
+  DELETE /admin/quota/groups/{quotagroup}/users/{username}:
+    generated_id: forgejo.admin.remove_user_from_quota_group
+    public_ids:
+    - forgejo.admin.remove_user_from_quota_group
+  DELETE /admin/quota/rules/{quotarule}:
+    generated_id: forgejo.admin.delete_quota_rule
+    public_ids:
+    - forgejo.admin.delete_quota_rule
+  DELETE /admin/unadopted/{owner}/{repo}:
+    generated_id: forgejo.admin.delete_unadopted_repository
+    public_ids:
+    - forgejo.admin.delete_unadopted_repository
+  DELETE /admin/users/{username}:
+    generated_id: forgejo.admin.delete_user
+    public_ids:
+    - forgejo.admin.delete_user
+  DELETE /admin/users/{username}/emails:
+    generated_id: forgejo.admin.delete_user_emails
+    public_ids:
+    - forgejo.admin.delete_user_emails
+  DELETE /admin/users/{username}/keys/{id}:
+    generated_id: forgejo.admin.delete_user_public_key
+    public_ids:
+    - forgejo.admin.delete_user_public_key
+  DELETE /admin/users/{username}/tokens/{token}:
+    generated_id: forgejo.admin.delete_user_access_token
+    public_ids:
+    - forgejo.admin.delete_user_access_token
+  DELETE /orgs/{org}:
+    generated_id: forgejo.organization.delete
+    public_ids:
+    - forgejo.organization.delete
+  DELETE /orgs/{org}/actions/runners/{runner_id}:
+    generated_id: forgejo.organization.delete_org_runner
+    public_ids:
+    - forgejo.organization.delete_org_runner
+  DELETE /orgs/{org}/actions/secrets/{secretname}:
+    generated_id: forgejo.organization.delete_org_secret
+    public_ids:
+    - forgejo.organization.delete_org_secret
+  DELETE /orgs/{org}/actions/variables/{variablename}:
+    generated_id: forgejo.organization.delete_org_variable
+    public_ids:
+    - forgejo.organization.delete_org_variable
+  DELETE /orgs/{org}/avatar:
+    generated_id: forgejo.organization.delete_avatar
+    public_ids:
+    - forgejo.organization.delete_avatar
+  DELETE /orgs/{org}/hooks/{id}:
+    generated_id: forgejo.organization.delete_hook
+    public_ids:
+    - forgejo.organization.delete_hook
+  DELETE /orgs/{org}/labels/{id}:
+    generated_id: forgejo.organization.delete_label
+    public_ids:
+    - forgejo.organization.delete_label
+  DELETE /orgs/{org}/members/{username}:
+    generated_id: forgejo.organization.delete_member
+    public_ids:
+    - forgejo.organization.delete_member
+  DELETE /orgs/{org}/public_members/{username}:
+    generated_id: forgejo.organization.conceal_member
+    public_ids:
+    - forgejo.organization.conceal_member
+  DELETE /packages/{owner}/{type}/{name}/{version}:
+    generated_id: forgejo.package.delete_package
+    public_ids:
+    - forgejo.package.delete_package
+  DELETE /repos/{owner}/{repo}:
+    generated_id: forgejo.repository.delete
+    public_ids:
+    - forgejo.repository.delete
+  DELETE /repos/{owner}/{repo}/actions/artifacts/{artifact_id}:
+    generated_id: forgejo.repository.delete_action_artifact
+    public_ids:
+    - forgejo.repository.delete_action_artifact
+  DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}:
+    generated_id: forgejo.repository.delete_repo_runner
+    public_ids:
+    - forgejo.repository.delete_repo_runner
+  DELETE /repos/{owner}/{repo}/actions/runs/{run_id}:
+    generated_id: forgejo.repository.delete_action_run
+    public_ids:
+    - forgejo.repository.delete_action_run
+  DELETE /repos/{owner}/{repo}/actions/secrets/{secretname}:
+    generated_id: forgejo.repository.delete_repo_secret
+    public_ids:
+    - forgejo.repository.delete_repo_secret
+  DELETE /repos/{owner}/{repo}/actions/variables/{variablename}:
+    generated_id: forgejo.repository.delete_repo_variable
+    public_ids:
+    - forgejo.repository.delete_repo_variable
+  DELETE /repos/{owner}/{repo}/avatar:
+    generated_id: forgejo.repository.delete_avatar
+    public_ids:
+    - forgejo.repository.delete_avatar
+  DELETE /repos/{owner}/{repo}/branch_protections/{name}:
+    generated_id: forgejo.repository.delete_branch_protection
+    public_ids:
+    - forgejo.repository.delete_branch_protection
+  DELETE /repos/{owner}/{repo}/branches/{branch}:
+    generated_id: forgejo.repository.delete_branch
+    public_ids:
+    - forgejo.repository.delete_branch
+  DELETE /repos/{owner}/{repo}/collaborators/{collaborator}:
+    generated_id: forgejo.repository.delete_collaborator
+    public_ids:
+    - forgejo.repository.delete_collaborator
+  DELETE /repos/{owner}/{repo}/contents/{filepath}:
+    generated_id: forgejo.repository.delete_file
+    public_ids:
+    - forgejo.repository.delete_file
+  DELETE /repos/{owner}/{repo}/flags:
+    generated_id: forgejo.repository.delete_all_flags
+    public_ids:
+    - forgejo.repository.delete_all_flags
+  DELETE /repos/{owner}/{repo}/flags/{flag}:
+    generated_id: forgejo.repository.delete_flag
+    public_ids:
+    - forgejo.repository.delete_flag
+  DELETE /repos/{owner}/{repo}/git/notes/{sha}:
+    generated_id: forgejo.repository.remove_note
+    public_ids:
+    - forgejo.repository.remove_note
+  DELETE /repos/{owner}/{repo}/hooks/{id}:
+    generated_id: forgejo.repository.delete_hook
+    public_ids:
+    - forgejo.repository.delete_hook
+  DELETE /repos/{owner}/{repo}/hooks/git/{id}:
+    generated_id: forgejo.repository.delete_git_hook
+    public_ids:
+    - forgejo.repository.delete_git_hook
+  DELETE /repos/{owner}/{repo}/issues/{index}:
+    generated_id: forgejo.issue.delete
+    public_ids:
+    - forgejo.issue.delete
+  DELETE /repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}:
+    generated_id: forgejo.issue.delete_issue_attachment
+    public_ids:
+    - forgejo.issue.delete_issue_attachment
+  DELETE /repos/{owner}/{repo}/issues/{index}/blocks:
+    generated_id: forgejo.issue.remove_issue_blocking
+    public_ids:
+    - forgejo.issue.remove_issue_blocking
+  DELETE /repos/{owner}/{repo}/issues/{index}/comments/{id}:
+    generated_id: forgejo.issue.delete_comment_deprecated
+    public_ids:
+    - forgejo.issue.delete_comment_deprecated
+  DELETE /repos/{owner}/{repo}/issues/{index}/dependencies:
+    generated_id: forgejo.issue.remove_issue_dependencies
+    public_ids:
+    - forgejo.issue.remove_issue_dependencies
+  DELETE /repos/{owner}/{repo}/issues/{index}/labels:
+    generated_id: forgejo.issue.clear_labels
+    public_ids:
+    - forgejo.issue.clear_labels
+  DELETE /repos/{owner}/{repo}/issues/{index}/labels/{identifier}:
+    generated_id: forgejo.issue.remove_label
+    public_ids:
+    - forgejo.issue.remove_label
+  DELETE /repos/{owner}/{repo}/issues/{index}/pin:
+    generated_id: forgejo.issue.unpin_issue
+    public_ids:
+    - forgejo.issue.unpin_issue
+  DELETE /repos/{owner}/{repo}/issues/{index}/reactions:
+    generated_id: forgejo.issue.delete_issue_reaction
+    public_ids:
+    - forgejo.issue.delete_issue_reaction
+  DELETE /repos/{owner}/{repo}/issues/{index}/stopwatch/delete:
+    generated_id: forgejo.issue.delete_stop_watch
+    public_ids:
+    - forgejo.issue.delete_stop_watch
+  DELETE /repos/{owner}/{repo}/issues/{index}/subscriptions/{user}:
+    generated_id: forgejo.issue.delete_subscription
+    public_ids:
+    - forgejo.issue.delete_subscription
+  DELETE /repos/{owner}/{repo}/issues/{index}/times:
+    generated_id: forgejo.issue.reset_time
+    public_ids:
+    - forgejo.issue.reset_time
+  DELETE /repos/{owner}/{repo}/issues/{index}/times/{id}:
+    generated_id: forgejo.issue.delete_time
+    public_ids:
+    - forgejo.issue.delete_time
+  DELETE /repos/{owner}/{repo}/issues/comments/{id}:
+    generated_id: forgejo.issue.delete_comment
+    public_ids:
+    - forgejo.issue.delete_comment
+  DELETE /repos/{owner}/{repo}/issues/comments/{id}/assets/{attachment_id}:
+    generated_id: forgejo.issue.delete_issue_comment_attachment
+    public_ids:
+    - forgejo.issue.delete_issue_comment_attachment
+  DELETE /repos/{owner}/{repo}/issues/comments/{id}/reactions:
+    generated_id: forgejo.issue.delete_comment_reaction
+    public_ids:
+    - forgejo.issue.delete_comment_reaction
+  DELETE /repos/{owner}/{repo}/keys/{id}:
+    generated_id: forgejo.repository.delete_key
+    public_ids:
+    - forgejo.repository.delete_key
+  DELETE /repos/{owner}/{repo}/labels/{id}:
+    generated_id: forgejo.issue.delete_label
+    public_ids:
+    - forgejo.issue.delete_label
+  DELETE /repos/{owner}/{repo}/milestones/{id}:
+    generated_id: forgejo.issue.delete_milestone
+    public_ids:
+    - forgejo.issue.delete_milestone
+  DELETE /repos/{owner}/{repo}/pulls/{index}/merge:
+    generated_id: forgejo.repository.cancel_scheduled_auto_merge
+    public_ids:
+    - forgejo.repository.cancel_scheduled_auto_merge
+  DELETE /repos/{owner}/{repo}/pulls/{index}/requested_reviewers:
+    generated_id: forgejo.repository.delete_pull_review_requests
+    public_ids:
+    - forgejo.repository.delete_pull_review_requests
+  DELETE /repos/{owner}/{repo}/pulls/{index}/reviews/{id}:
+    generated_id: forgejo.repository.delete_pull_review
+    public_ids:
+    - forgejo.repository.delete_pull_review
+  DELETE /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments/{comment}:
+    generated_id: forgejo.repository.delete_pull_review_comment
+    public_ids:
+    - forgejo.repository.delete_pull_review_comment
+  DELETE /repos/{owner}/{repo}/push_mirrors/{name}:
+    generated_id: forgejo.repository.delete_push_mirror
+    public_ids:
+    - forgejo.repository.delete_push_mirror
+  DELETE /repos/{owner}/{repo}/releases/{id}:
+    generated_id: forgejo.repository.delete_release
+    public_ids:
+    - forgejo.repository.delete_release
+  DELETE /repos/{owner}/{repo}/releases/{id}/assets/{attachment_id}:
+    generated_id: forgejo.repository.delete_release_attachment
+    public_ids:
+    - forgejo.repository.delete_release_attachment
+  DELETE /repos/{owner}/{repo}/releases/tags/{tag}:
+    generated_id: forgejo.repository.delete_release_by_tag
+    public_ids:
+    - forgejo.repository.delete_release_by_tag
+  DELETE /repos/{owner}/{repo}/subscription:
+    generated_id: forgejo.repository.user_current_delete_subscription
+    public_ids:
+    - forgejo.repository.user_current_delete_subscription
+  DELETE /repos/{owner}/{repo}/tag_protections/{id}:
+    generated_id: forgejo.repository.delete_tag_protection
+    public_ids:
+    - forgejo.repository.delete_tag_protection
+  DELETE /repos/{owner}/{repo}/tags/{tag}:
+    generated_id: forgejo.repository.delete_tag
+    public_ids:
+    - forgejo.repository.delete_tag
+  DELETE /repos/{owner}/{repo}/teams/{team}:
+    generated_id: forgejo.repository.delete_team
+    public_ids:
+    - forgejo.repository.delete_team
+  DELETE /repos/{owner}/{repo}/topics/{topic}:
+    generated_id: forgejo.repository.delete_topic
+    public_ids:
+    - forgejo.repository.delete_topic
+  DELETE /repos/{owner}/{repo}/wiki/page/{pageName}:
+    generated_id: forgejo.repository.delete_wiki_page
+    public_ids:
+    - forgejo.repository.delete_wiki_page
+  DELETE /teams/{id}:
+    generated_id: forgejo.organization.delete_team
+    public_ids:
+    - forgejo.organization.delete_team
+  DELETE /teams/{id}/members/{username}:
+    generated_id: forgejo.organization.remove_team_member
+    public_ids:
+    - forgejo.organization.remove_team_member
+  DELETE /teams/{id}/repos/{org}/{repo}:
+    generated_id: forgejo.organization.remove_team_repository
+    public_ids:
+    - forgejo.organization.remove_team_repository
+  DELETE /user/actions/runners/{runner_id}:
+    generated_id: forgejo.user.delete_user_runner
+    public_ids:
+    - forgejo.user.delete_user_runner
+  DELETE /user/actions/secrets/{secretname}:
+    generated_id: forgejo.user.delete_user_secret
+    public_ids:
+    - forgejo.user.delete_user_secret
+  DELETE /user/actions/variables/{variablename}:
+    generated_id: forgejo.user.delete_user_variable
+    public_ids:
+    - forgejo.user.delete_user_variable
+  DELETE /user/applications/oauth2/{id}:
+    generated_id: forgejo.user.delete_oauth2_application
+    public_ids:
+    - forgejo.user.delete_oauth2_application
+  DELETE /user/avatar:
+    generated_id: forgejo.user.delete_avatar
+    public_ids:
+    - forgejo.user.delete_avatar
+  DELETE /user/emails:
+    generated_id: forgejo.user.delete_email
+    public_ids:
+    - forgejo.user.delete_email
+  DELETE /user/following/{username}:
+    generated_id: forgejo.user.current_delete_follow
+    public_ids:
+    - forgejo.user.current_delete_follow
+  DELETE /user/gpg_keys/{id}:
+    generated_id: forgejo.user.current_delete_gpgkey
+    public_ids:
+    - forgejo.user.current_delete_gpgkey
+  DELETE /user/hooks/{id}:
+    generated_id: forgejo.user.delete_hook
+    public_ids:
+    - forgejo.user.delete_hook
+  DELETE /user/keys/{id}:
+    generated_id: forgejo.user.current_delete_key
+    public_ids:
+    - forgejo.user.current_delete_key
+  DELETE /user/starred/{owner}/{repo}:
+    generated_id: forgejo.user.current_delete_star
+    public_ids:
+    - forgejo.user.current_delete_star
+  DELETE /users/{username}/tokens/{token}:
+    generated_id: forgejo.user.delete_access_token
+    public_ids:
+    - forgejo.user.delete_access_token
+  GET /actions/run:
+    generated_id: forgejo.miscellaneous.get_actions_run
+    public_ids:
+    - forgejo.miscellaneous.get_actions_run
+  GET /activitypub/actor:
+    generated_id: forgejo.activitypub.instance_actor
+    public_ids:
+    - forgejo.activitypub.instance_actor
+  GET /activitypub/repository-id/{repository-id}:
+    generated_id: forgejo.activitypub.repository
+    public_ids:
+    - forgejo.activitypub.repository
+  GET /activitypub/user-id/{user-id}:
+    generated_id: forgejo.activitypub.person
+    public_ids:
+    - forgejo.activitypub.person
+  GET /activitypub/user-id/{user-id}/activities/{activity-id}:
+    generated_id: forgejo.activitypub.person_activity_note
+    public_ids:
+    - forgejo.activitypub.person_activity_note
+  GET /activitypub/user-id/{user-id}/activities/{activity-id}/activity:
+    generated_id: forgejo.activitypub.person_activity
+    public_ids:
+    - forgejo.activitypub.person_activity
+  GET /activitypub/user-id/{user-id}/outbox:
+    generated_id: forgejo.activitypub.person_feed
+    public_ids:
+    - forgejo.activitypub.person_feed
+  GET /admin/actions/runners:
+    generated_id: forgejo.admin.get_admin_runners
+    public_ids:
+    - forgejo.admin.get_admin_runners
+  GET /admin/actions/runners/{runner_id}:
+    generated_id: forgejo.admin.get_admin_runner
+    public_ids:
+    - forgejo.admin.get_admin_runner
+  GET /admin/actions/runners/jobs:
+    generated_id: forgejo.admin.get_action_run_jobs
+    public_ids:
+    - forgejo.admin.get_action_run_jobs
+  GET /admin/actions/runners/registration-token:
+    generated_id: forgejo.admin.get_runner_registration_token
+    public_ids:
+    - forgejo.admin.get_runner_registration_token
+  GET /admin/cron:
+    generated_id: forgejo.admin.cron_list
+    public_ids:
+    - forgejo.admin.cron_list
+  GET /admin/emails:
+    generated_id: forgejo.admin.get_all_emails
+    public_ids:
+    - forgejo.admin.get_all_emails
+  GET /admin/emails/search:
+    generated_id: forgejo.admin.search_emails
+    public_ids:
+    - forgejo.admin.search_emails
+  GET /admin/hooks:
+    generated_id: forgejo.admin.list_hooks
+    public_ids:
+    - forgejo.admin.list_hooks
+  GET /admin/hooks/{id}:
+    generated_id: forgejo.admin.get_hook
+    public_ids:
+    - forgejo.admin.get_hook
+  GET /admin/orgs:
+    generated_id: forgejo.admin.get_all_orgs
+    public_ids:
+    - forgejo.admin.get_all_orgs
+  GET /admin/quota/groups:
+    generated_id: forgejo.admin.list_quota_groups
+    public_ids:
+    - forgejo.admin.list_quota_groups
+  GET /admin/quota/groups/{quotagroup}:
+    generated_id: forgejo.admin.get_quota_group
+    public_ids:
+    - forgejo.admin.get_quota_group
+  GET /admin/quota/groups/{quotagroup}/users:
+    generated_id: forgejo.admin.list_users_in_quota_group
+    public_ids:
+    - forgejo.admin.list_users_in_quota_group
+  GET /admin/quota/rules:
+    generated_id: forgejo.admin.list_quota_rules
+    public_ids:
+    - forgejo.admin.list_quota_rules
+  GET /admin/quota/rules/{quotarule}:
+    generated_id: forgejo.admin.get_quota_rule
+    public_ids:
+    - forgejo.admin.get_quota_rule
+  GET /admin/runners/jobs:
+    generated_id: forgejo.admin.search_run_jobs
+    public_ids:
+    - forgejo.admin.search_run_jobs
+  GET /admin/runners/registration-token:
+    generated_id: forgejo.admin.get_registration_token
+    public_ids:
+    - forgejo.admin.get_registration_token
+  GET /admin/unadopted:
+    generated_id: forgejo.admin.unadopted_list
+    public_ids:
+    - forgejo.admin.unadopted_list
+  GET /admin/users:
+    generated_id: forgejo.admin.search_users
+    public_ids:
+    - forgejo.admin.search_users
+  GET /admin/users/{username}/emails:
+    generated_id: forgejo.admin.list_user_emails
+    public_ids:
+    - forgejo.admin.list_user_emails
+  GET /admin/users/{username}/quota:
+    generated_id: forgejo.admin.get_user_quota
+    public_ids:
+    - forgejo.admin.get_user_quota
+  GET /admin/users/{username}/tokens:
+    generated_id: forgejo.admin.list_user_access_tokens
+    public_ids:
+    - forgejo.admin.list_user_access_tokens
+  GET /gitignore/templates:
+    generated_id: forgejo.miscellaneous.list_gitignores_templates
+    public_ids:
+    - forgejo.miscellaneous.list_gitignores_templates
+  GET /gitignore/templates/{name}:
+    generated_id: forgejo.miscellaneous.get_gitignore_template_info
+    public_ids:
+    - forgejo.miscellaneous.get_gitignore_template_info
+  GET /label/templates:
+    generated_id: forgejo.miscellaneous.list_label_templates
+    public_ids:
+    - forgejo.miscellaneous.list_label_templates
+  GET /label/templates/{name}:
+    generated_id: forgejo.miscellaneous.get_label_template_info
+    public_ids:
+    - forgejo.miscellaneous.get_label_template_info
+  GET /licenses:
+    generated_id: forgejo.miscellaneous.list_license_templates
+    public_ids:
+    - forgejo.miscellaneous.list_license_templates
+  GET /licenses/{name}:
+    generated_id: forgejo.miscellaneous.get_license_template_info
+    public_ids:
+    - forgejo.miscellaneous.get_license_template_info
+  GET /nodeinfo:
+    generated_id: forgejo.miscellaneous.get_node_info
+    public_ids:
+    - forgejo.miscellaneous.get_node_info
+  GET /notifications:
+    generated_id: forgejo.notification.notify_get_list
+    public_ids:
+    - forgejo.notification.notify_get_list
+  GET /notifications/new:
+    generated_id: forgejo.notification.notify_new_available
+    public_ids:
+    - forgejo.notification.notify_new_available
+  GET /notifications/threads/{id}:
+    generated_id: forgejo.notification.notify_get_thread
+    public_ids:
+    - forgejo.notification.notify_get_thread
+  GET /orgs:
+    generated_id: forgejo.organization.get_all
+    public_ids:
+    - forgejo.organization.get_all
+  GET /orgs/{org}:
+    generated_id: forgejo.organization.get
+    public_ids:
+    - forgejo.organization.get
+  GET /orgs/{org}/actions/runners:
+    generated_id: forgejo.organization.get_org_runners
+    public_ids:
+    - forgejo.organization.get_org_runners
+  GET /orgs/{org}/actions/runners/{runner_id}:
+    generated_id: forgejo.organization.get_org_runner
+    public_ids:
+    - forgejo.organization.get_org_runner
+  GET /orgs/{org}/actions/runners/jobs:
+    generated_id: forgejo.organization.search_run_jobs
+    public_ids:
+    - forgejo.organization.search_run_jobs
+  GET /orgs/{org}/actions/runners/registration-token:
+    generated_id: forgejo.organization.get_runner_registration_token
+    public_ids:
+    - forgejo.organization.get_runner_registration_token
+  GET /orgs/{org}/actions/secrets:
+    generated_id: forgejo.organization.list_actions_secrets
+    public_ids:
+    - forgejo.organization.list_actions_secrets
+  GET /orgs/{org}/actions/variables:
+    generated_id: forgejo.organization.get_org_variables_list
+    public_ids:
+    - forgejo.organization.get_org_variables_list
+  GET /orgs/{org}/actions/variables/{variablename}:
+    generated_id: forgejo.organization.get_org_variable
+    public_ids:
+    - forgejo.organization.get_org_variable
+  GET /orgs/{org}/activities/feeds:
+    generated_id: forgejo.organization.list_activity_feeds
+    public_ids:
+    - forgejo.organization.list_activity_feeds
+  GET /orgs/{org}/hooks:
+    generated_id: forgejo.organization.list_hooks
+    public_ids:
+    - forgejo.organization.list_hooks
+  GET /orgs/{org}/hooks/{id}:
+    generated_id: forgejo.organization.get_hook
+    public_ids:
+    - forgejo.organization.get_hook
+  GET /orgs/{org}/labels:
+    generated_id: forgejo.organization.list_labels
+    public_ids:
+    - forgejo.organization.list_labels
+  GET /orgs/{org}/labels/{id}:
+    generated_id: forgejo.organization.get_label
+    public_ids:
+    - forgejo.organization.get_label
+  GET /orgs/{org}/list_blocked:
+    generated_id: forgejo.organization.list_blocked_users
+    public_ids:
+    - forgejo.organization.list_blocked_users
+  GET /orgs/{org}/members:
+    generated_id: forgejo.organization.list_members
+    public_ids:
+    - forgejo.organization.list_members
+  GET /orgs/{org}/members/{username}:
+    generated_id: forgejo.organization.is_member
+    public_ids:
+    - forgejo.organization.is_member
+  GET /orgs/{org}/public_members:
+    generated_id: forgejo.organization.list_public_members
+    public_ids:
+    - forgejo.organization.list_public_members
+  GET /orgs/{org}/public_members/{username}:
+    generated_id: forgejo.organization.is_public_member
+    public_ids:
+    - forgejo.organization.is_public_member
+  GET /orgs/{org}/quota:
+    generated_id: forgejo.organization.get_quota
+    public_ids:
+    - forgejo.organization.get_quota
+  GET /orgs/{org}/quota/artifacts:
+    generated_id: forgejo.organization.list_quota_artifacts
+    public_ids:
+    - forgejo.organization.list_quota_artifacts
+  GET /orgs/{org}/quota/attachments:
+    generated_id: forgejo.organization.list_quota_attachments
+    public_ids:
+    - forgejo.organization.list_quota_attachments
+  GET /orgs/{org}/quota/check:
+    generated_id: forgejo.organization.check_quota
+    public_ids:
+    - forgejo.organization.check_quota
+  GET /orgs/{org}/quota/packages:
+    generated_id: forgejo.organization.list_quota_packages
+    public_ids:
+    - forgejo.organization.list_quota_packages
+  GET /orgs/{org}/repos:
+    generated_id: forgejo.organization.list_repos
+    public_ids:
+    - forgejo.organization.list_repos
+  GET /orgs/{org}/teams:
+    generated_id: forgejo.organization.list_teams
+    public_ids:
+    - forgejo.organization.list_teams
+  GET /orgs/{org}/teams/search:
+    generated_id: forgejo.organization.team_search
+    public_ids:
+    - forgejo.organization.team_search
+  GET /packages/{owner}:
+    generated_id: forgejo.package.list_packages
+    public_ids:
+    - forgejo.package.list_packages
+  GET /packages/{owner}/{type}/{name}/{version}:
+    generated_id: forgejo.package.get_package
+    public_ids:
+    - forgejo.package.get_package
+  GET /packages/{owner}/{type}/{name}/{version}/files:
+    generated_id: forgejo.package.list_package_files
+    public_ids:
+    - forgejo.package.list_package_files
+  GET /repos/{owner}/{repo}:
+    generated_id: forgejo.repository.get
+    public_ids:
+    - forgejo.repository.get
+  GET /repos/{owner}/{repo}/actions/artifacts:
+    generated_id: forgejo.repository.list_action_artifacts
+    public_ids:
+    - forgejo.repository.list_action_artifacts
+  GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}:
+    generated_id: forgejo.repository.get_action_artifact
+    public_ids:
+    - forgejo.repository.get_action_artifact
+  GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip:
+    generated_id: forgejo.repository.download_action_artifact
+    public_ids:
+    - forgejo.repository.download_action_artifact
+  GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs:
+    generated_id: forgejo.repository.get_action_job_logs
+    public_ids:
+    - forgejo.repository.get_action_job_logs
+  GET /repos/{owner}/{repo}/actions/runners:
+    generated_id: forgejo.repository.get_repo_runners
+    public_ids:
+    - forgejo.repository.get_repo_runners
+  GET /repos/{owner}/{repo}/actions/runners/{runner_id}:
+    generated_id: forgejo.repository.get_repo_runner
+    public_ids:
+    - forgejo.repository.get_repo_runner
+  GET /repos/{owner}/{repo}/actions/runners/jobs:
+    generated_id: forgejo.repository.search_run_jobs
+    public_ids:
+    - forgejo.repository.search_run_jobs
+  GET /repos/{owner}/{repo}/actions/runners/registration-token:
+    generated_id: forgejo.repository.get_runner_registration_token
+    public_ids:
+    - forgejo.repository.get_runner_registration_token
+  GET /repos/{owner}/{repo}/actions/runs:
+    generated_id: forgejo.repository.list_action_runs
+    public_ids:
+    - forgejo.repository.list_action_runs
+  GET /repos/{owner}/{repo}/actions/runs/{run_id}:
+    generated_id: forgejo.repository.action_run
+    public_ids:
+    - forgejo.repository.action_run
+  GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts:
+    generated_id: forgejo.repository.list_action_run_artifacts
+    public_ids:
+    - forgejo.repository.list_action_run_artifacts
+  GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs:
+    generated_id: forgejo.repository.list_action_run_jobs
+    public_ids:
+    - forgejo.repository.list_action_run_jobs
+  GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs:
+    generated_id: forgejo.repository.get_action_run_logs
+    public_ids:
+    - forgejo.repository.get_action_run_logs
+  GET /repos/{owner}/{repo}/actions/secrets:
+    generated_id: forgejo.repository.list_actions_secrets
+    public_ids:
+    - forgejo.repository.list_actions_secrets
+  GET /repos/{owner}/{repo}/actions/tasks:
+    generated_id: forgejo.repository.list_action_tasks
+    public_ids:
+    - forgejo.repository.list_action_tasks
+  GET /repos/{owner}/{repo}/actions/variables:
+    generated_id: forgejo.repository.get_repo_variables_list
+    public_ids:
+    - forgejo.repository.get_repo_variables_list
+  GET /repos/{owner}/{repo}/actions/variables/{variablename}:
+    generated_id: forgejo.repository.get_repo_variable
+    public_ids:
+    - forgejo.repository.get_repo_variable
+  GET /repos/{owner}/{repo}/activities/feeds:
+    generated_id: forgejo.repository.list_activity_feeds
+    public_ids:
+    - forgejo.repository.list_activity_feeds
+  GET /repos/{owner}/{repo}/archive/{archive}:
+    generated_id: forgejo.repository.get_archive
+    public_ids:
+    - forgejo.repository.get_archive
+  GET /repos/{owner}/{repo}/assignees:
+    generated_id: forgejo.repository.get_assignees
+    public_ids:
+    - forgejo.repository.get_assignees
+  GET /repos/{owner}/{repo}/branch_protections:
+    generated_id: forgejo.repository.list_branch_protection
+    public_ids:
+    - forgejo.repository.list_branch_protection
+  GET /repos/{owner}/{repo}/branch_protections/{name}:
+    generated_id: forgejo.repository.get_branch_protection
+    public_ids:
+    - forgejo.repository.get_branch_protection
+  GET /repos/{owner}/{repo}/branches:
+    generated_id: forgejo.repository.list_branches
+    public_ids:
+    - forgejo.repository.list_branches
+  GET /repos/{owner}/{repo}/branches/{branch}:
+    generated_id: forgejo.repository.get_branch
+    public_ids:
+    - forgejo.repository.get_branch
+  GET /repos/{owner}/{repo}/collaborators:
+    generated_id: forgejo.repository.list_collaborators
+    public_ids:
+    - forgejo.repository.list_collaborators
+  GET /repos/{owner}/{repo}/collaborators/{collaborator}:
+    generated_id: forgejo.repository.check_collaborator
+    public_ids:
+    - forgejo.repository.check_collaborator
+  GET /repos/{owner}/{repo}/collaborators/{collaborator}/permission:
+    generated_id: forgejo.repository.get_repo_permissions
+    public_ids:
+    - forgejo.repository.get_repo_permissions
+  GET /repos/{owner}/{repo}/commits:
+    generated_id: forgejo.repository.get_all_commits
+    public_ids:
+    - forgejo.repository.get_all_commits
+  GET /repos/{owner}/{repo}/commits/{ref}/status:
+    generated_id: forgejo.repository.get_combined_status_by_ref
+    public_ids:
+    - forgejo.repository.get_combined_status_by_ref
+  GET /repos/{owner}/{repo}/commits/{ref}/statuses:
+    generated_id: forgejo.repository.list_statuses_by_ref
+    public_ids:
+    - forgejo.repository.list_statuses_by_ref
+  GET /repos/{owner}/{repo}/commits/{sha}/pull:
+    generated_id: forgejo.repository.get_commit_pull_request
+    public_ids:
+    - forgejo.repository.get_commit_pull_request
+  GET /repos/{owner}/{repo}/compare/{basehead}:
+    generated_id: forgejo.repository.compare_diff
+    public_ids:
+    - forgejo.repository.compare_diff
+  GET /repos/{owner}/{repo}/contents:
+    generated_id: forgejo.repository.get_contents_list
+    public_ids:
+    - forgejo.repository.get_contents_list
+  GET /repos/{owner}/{repo}/contents/{filepath}:
+    generated_id: forgejo.repository.get_contents
+    public_ids:
+    - forgejo.repository.get_file
+  GET /repos/{owner}/{repo}/editorconfig/{filepath}:
+    generated_id: forgejo.repository.get_editor_config
+    public_ids:
+    - forgejo.repository.get_editor_config
+  GET /repos/{owner}/{repo}/flags:
+    generated_id: forgejo.repository.list_flags
+    public_ids:
+    - forgejo.repository.list_flags
+  GET /repos/{owner}/{repo}/flags/{flag}:
+    generated_id: forgejo.repository.check_flag
+    public_ids:
+    - forgejo.repository.check_flag
+  GET /repos/{owner}/{repo}/forks:
+    generated_id: forgejo.repository.list_forks
+    public_ids:
+    - forgejo.repository.list_forks
+  GET /repos/{owner}/{repo}/git/blobs:
+    generated_id: forgejo.repository.get_blobs
+    public_ids:
+    - forgejo.repository.get_blobs
+  GET /repos/{owner}/{repo}/git/blobs/{sha}:
+    generated_id: forgejo.repository.get_blob
+    public_ids:
+    - forgejo.repository.get_blob
+  GET /repos/{owner}/{repo}/git/commits/{sha}:
+    generated_id: forgejo.repository.get_single_commit
+    public_ids:
+    - forgejo.repository.get_single_commit
+  GET /repos/{owner}/{repo}/git/commits/{sha}.{diffType}:
+    generated_id: forgejo.repository.download_commit_diff_or_patch
+    public_ids:
+    - forgejo.repository.download_commit_diff_or_patch
+  GET /repos/{owner}/{repo}/git/notes/{sha}:
+    generated_id: forgejo.repository.get_note
+    public_ids:
+    - forgejo.repository.get_note
+  GET /repos/{owner}/{repo}/git/refs:
+    generated_id: forgejo.repository.list_all_git_refs
+    public_ids:
+    - forgejo.repository.list_all_git_refs
+  GET /repos/{owner}/{repo}/git/refs/{ref}:
+    generated_id: forgejo.repository.list_git_refs
+    public_ids:
+    - forgejo.repository.list_git_refs
+  GET /repos/{owner}/{repo}/git/tags/{sha}:
+    generated_id: forgejo.repository.get_annotated_tag
+    public_ids:
+    - forgejo.repository.get_annotated_tag
+  GET /repos/{owner}/{repo}/git/trees/{sha}:
+    generated_id: forgejo.repository.get_tree
+    public_ids:
+    - forgejo.repository.get_tree
+  GET /repos/{owner}/{repo}/hooks:
+    generated_id: forgejo.repository.list_hooks
+    public_ids:
+    - forgejo.repository.list_hooks
+  GET /repos/{owner}/{repo}/hooks/{id}:
+    generated_id: forgejo.repository.get_hook
+    public_ids:
+    - forgejo.repository.get_hook
+  GET /repos/{owner}/{repo}/hooks/git:
+    generated_id: forgejo.repository.list_git_hooks
+    public_ids:
+    - forgejo.repository.list_git_hooks
+  GET /repos/{owner}/{repo}/hooks/git/{id}:
+    generated_id: forgejo.repository.get_git_hook
+    public_ids:
+    - forgejo.repository.get_git_hook
+  GET /repos/{owner}/{repo}/issue_config:
+    generated_id: forgejo.repository.get_issue_config
+    public_ids:
+    - forgejo.repository.get_issue_config
+  GET /repos/{owner}/{repo}/issue_config/validate:
+    generated_id: forgejo.repository.validate_issue_config
+    public_ids:
+    - forgejo.repository.validate_issue_config
+  GET /repos/{owner}/{repo}/issue_templates:
+    generated_id: forgejo.repository.get_issue_templates
+    public_ids:
+    - forgejo.repository.get_issue_templates
+  GET /repos/{owner}/{repo}/issues:
+    generated_id: forgejo.issue.list_issues
+    public_ids:
+    - forgejo.issue.list
+  GET /repos/{owner}/{repo}/issues/{index}:
+    generated_id: forgejo.issue.get_issue
+    public_ids:
+    - forgejo.issue.get
+  GET /repos/{owner}/{repo}/issues/{index}/assets:
+    generated_id: forgejo.issue.list_issue_attachments
+    public_ids:
+    - forgejo.issue.list_issue_attachments
+  GET /repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}:
+    generated_id: forgejo.issue.get_issue_attachment
+    public_ids:
+    - forgejo.issue.get_issue_attachment
+  GET /repos/{owner}/{repo}/issues/{index}/blocks:
+    generated_id: forgejo.issue.list_blocks
+    public_ids:
+    - forgejo.issue.list_blocks
+  GET /repos/{owner}/{repo}/issues/{index}/comments:
+    generated_id: forgejo.issue.get_comments
+    public_ids:
+    - forgejo.issue.list_comments
+  GET /repos/{owner}/{repo}/issues/{index}/dependencies:
+    generated_id: forgejo.issue.list_issue_dependencies
+    public_ids:
+    - forgejo.issue.list_issue_dependencies
+  GET /repos/{owner}/{repo}/issues/{index}/labels:
+    generated_id: forgejo.issue.get_labels
+    public_ids:
+    - forgejo.issue.get_labels
+  GET /repos/{owner}/{repo}/issues/{index}/reactions:
+    generated_id: forgejo.issue.get_issue_reactions
+    public_ids:
+    - forgejo.issue.get_issue_reactions
+  GET /repos/{owner}/{repo}/issues/{index}/subscriptions:
+    generated_id: forgejo.issue.subscriptions
+    public_ids:
+    - forgejo.issue.subscriptions
+  GET /repos/{owner}/{repo}/issues/{index}/subscriptions/check:
+    generated_id: forgejo.issue.check_subscription
+    public_ids:
+    - forgejo.issue.check_subscription
+  GET /repos/{owner}/{repo}/issues/{index}/timeline:
+    generated_id: forgejo.issue.get_comments_and_timeline
+    public_ids:
+    - forgejo.issue.get_comments_and_timeline
+  GET /repos/{owner}/{repo}/issues/{index}/times:
+    generated_id: forgejo.issue.tracked_times
+    public_ids:
+    - forgejo.issue.tracked_times
+  GET /repos/{owner}/{repo}/issues/comments:
+    generated_id: forgejo.issue.get_repo_comments
+    public_ids:
+    - forgejo.issue.get_repo_comments
+  GET /repos/{owner}/{repo}/issues/comments/{id}:
+    generated_id: forgejo.issue.get_comment
+    public_ids:
+    - forgejo.issue.get_comment
+  GET /repos/{owner}/{repo}/issues/comments/{id}/assets:
+    generated_id: forgejo.issue.list_issue_comment_attachments
+    public_ids:
+    - forgejo.issue.list_issue_comment_attachments
+  GET /repos/{owner}/{repo}/issues/comments/{id}/assets/{attachment_id}:
+    generated_id: forgejo.issue.get_issue_comment_attachment
+    public_ids:
+    - forgejo.issue.get_issue_comment_attachment
+  GET /repos/{owner}/{repo}/issues/comments/{id}/reactions:
+    generated_id: forgejo.issue.get_comment_reactions
+    public_ids:
+    - forgejo.issue.get_comment_reactions
+  GET /repos/{owner}/{repo}/issues/pinned:
+    generated_id: forgejo.repository.list_pinned_issues
+    public_ids:
+    - forgejo.repository.list_pinned_issues
+  GET /repos/{owner}/{repo}/keys:
+    generated_id: forgejo.repository.list_keys
+    public_ids:
+    - forgejo.repository.list_keys
+  GET /repos/{owner}/{repo}/keys/{id}:
+    generated_id: forgejo.repository.get_key
+    public_ids:
+    - forgejo.repository.get_key
+  GET /repos/{owner}/{repo}/labels:
+    generated_id: forgejo.issue.list_labels
+    public_ids:
+    - forgejo.issue.list_labels
+  GET /repos/{owner}/{repo}/labels/{id}:
+    generated_id: forgejo.issue.get_label
+    public_ids:
+    - forgejo.issue.get_label
+  GET /repos/{owner}/{repo}/languages:
+    generated_id: forgejo.repository.get_languages
+    public_ids:
+    - forgejo.repository.get_languages
+  GET /repos/{owner}/{repo}/media/{filepath}:
+    generated_id: forgejo.repository.get_raw_file_or_lfs
+    public_ids:
+    - forgejo.repository.get_raw_file_or_lfs
+  GET /repos/{owner}/{repo}/milestones:
+    generated_id: forgejo.issue.get_milestones_list
+    public_ids:
+    - forgejo.issue.get_milestones_list
+  GET /repos/{owner}/{repo}/milestones/{id}:
+    generated_id: forgejo.issue.get_milestone
+    public_ids:
+    - forgejo.issue.get_milestone
+  GET /repos/{owner}/{repo}/new_pin_allowed:
+    generated_id: forgejo.repository.new_pin_allowed
+    public_ids:
+    - forgejo.repository.new_pin_allowed
+  GET /repos/{owner}/{repo}/notifications:
+    generated_id: forgejo.notification.notify_get_repo_list
+    public_ids:
+    - forgejo.notification.notify_get_repo_list
+  GET /repos/{owner}/{repo}/pulls:
+    generated_id: forgejo.repository.list_pull_requests
+    public_ids:
+    - forgejo.pull_request.list
+  GET /repos/{owner}/{repo}/pulls/{base}/{head}:
+    generated_id: forgejo.repository.get_pull_request_by_base_head
+    public_ids:
+    - forgejo.repository.get_pull_request_by_base_head
+  GET /repos/{owner}/{repo}/pulls/{index}:
+    generated_id: forgejo.repository.get_pull_request
+    public_ids:
+    - forgejo.pull_request.get
+  GET /repos/{owner}/{repo}/pulls/{index}.{diffType}:
+    generated_id: forgejo.repository.download_pull_diff_or_patch
+    public_ids:
+    - forgejo.repository.download_pull_diff_or_patch
+  GET /repos/{owner}/{repo}/pulls/{index}/commits:
+    generated_id: forgejo.repository.get_pull_request_commits
+    public_ids:
+    - forgejo.repository.get_pull_request_commits
+  GET /repos/{owner}/{repo}/pulls/{index}/files:
+    generated_id: forgejo.repository.get_pull_request_files
+    public_ids:
+    - forgejo.repository.get_pull_request_files
+  GET /repos/{owner}/{repo}/pulls/{index}/merge:
+    generated_id: forgejo.repository.pull_request_is_merged
+    public_ids:
+    - forgejo.repository.pull_request_is_merged
+  GET /repos/{owner}/{repo}/pulls/{index}/reviews:
+    generated_id: forgejo.repository.list_pull_reviews
+    public_ids:
+    - forgejo.repository.list_pull_reviews
+  GET /repos/{owner}/{repo}/pulls/{index}/reviews/{id}:
+    generated_id: forgejo.repository.get_pull_review
+    public_ids:
+    - forgejo.repository.get_pull_review
+  GET /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments:
+    generated_id: forgejo.repository.get_pull_review_comments
+    public_ids:
+    - forgejo.repository.get_pull_review_comments
+  GET /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments/{comment}:
+    generated_id: forgejo.repository.get_pull_review_comment
+    public_ids:
+    - forgejo.repository.get_pull_review_comment
+  GET /repos/{owner}/{repo}/pulls/pinned:
+    generated_id: forgejo.repository.list_pinned_pull_requests
+    public_ids:
+    - forgejo.repository.list_pinned_pull_requests
+  GET /repos/{owner}/{repo}/push_mirrors:
+    generated_id: forgejo.repository.list_push_mirrors
+    public_ids:
+    - forgejo.repository.list_push_mirrors
+  GET /repos/{owner}/{repo}/push_mirrors/{name}:
+    generated_id: forgejo.repository.get_push_mirror_by_remote_name
+    public_ids:
+    - forgejo.repository.get_push_mirror_by_remote_name
+  GET /repos/{owner}/{repo}/raw/{filepath}:
+    generated_id: forgejo.repository.get_raw_file
+    public_ids:
+    - forgejo.repository.get_raw_file
+  GET /repos/{owner}/{repo}/releases:
+    generated_id: forgejo.repository.list_releases
+    public_ids:
+    - forgejo.release.list
+  GET /repos/{owner}/{repo}/releases/{id}:
+    generated_id: forgejo.repository.get_release
+    public_ids:
+    - forgejo.repository.get_release
+  GET /repos/{owner}/{repo}/releases/{id}/assets:
+    generated_id: forgejo.repository.list_release_attachments
+    public_ids:
+    - forgejo.repository.list_release_attachments
+  GET /repos/{owner}/{repo}/releases/{id}/assets/{attachment_id}:
+    generated_id: forgejo.repository.get_release_attachment
+    public_ids:
+    - forgejo.repository.get_release_attachment
+  GET /repos/{owner}/{repo}/releases/latest:
+    generated_id: forgejo.repository.get_latest_release
+    public_ids:
+    - forgejo.repository.get_latest_release
+  GET /repos/{owner}/{repo}/releases/tags/{tag}:
+    generated_id: forgejo.repository.get_release_by_tag
+    public_ids:
+    - forgejo.repository.get_release_by_tag
+  GET /repos/{owner}/{repo}/reviewers:
+    generated_id: forgejo.repository.get_reviewers
+    public_ids:
+    - forgejo.repository.get_reviewers
+  GET /repos/{owner}/{repo}/signing-key.gpg:
+    generated_id: forgejo.repository.signing_key
+    public_ids:
+    - forgejo.repository.signing_key
+  GET /repos/{owner}/{repo}/stargazers:
+    generated_id: forgejo.repository.list_stargazers
+    public_ids:
+    - forgejo.repository.list_stargazers
+  GET /repos/{owner}/{repo}/statuses/{sha}:
+    generated_id: forgejo.repository.list_statuses
+    public_ids:
+    - forgejo.repository.list_statuses
+  GET /repos/{owner}/{repo}/subscribers:
+    generated_id: forgejo.repository.list_subscribers
+    public_ids:
+    - forgejo.repository.list_subscribers
+  GET /repos/{owner}/{repo}/subscription:
+    generated_id: forgejo.repository.user_current_check_subscription
+    public_ids:
+    - forgejo.repository.user_current_check_subscription
+  GET /repos/{owner}/{repo}/sync_fork:
+    generated_id: forgejo.repository.sync_fork_default_info
+    public_ids:
+    - forgejo.repository.sync_fork_default_info
+  GET /repos/{owner}/{repo}/sync_fork/{branch}:
+    generated_id: forgejo.repository.sync_fork_branch_info
+    public_ids:
+    - forgejo.repository.sync_fork_branch_info
+  GET /repos/{owner}/{repo}/tag_protections:
+    generated_id: forgejo.repository.list_tag_protection
+    public_ids:
+    - forgejo.repository.list_tag_protection
+  GET /repos/{owner}/{repo}/tag_protections/{id}:
+    generated_id: forgejo.repository.get_tag_protection
+    public_ids:
+    - forgejo.repository.get_tag_protection
+  GET /repos/{owner}/{repo}/tags:
+    generated_id: forgejo.repository.list_tags
+    public_ids:
+    - forgejo.repository.list_tags
+  GET /repos/{owner}/{repo}/tags/{tag}:
+    generated_id: forgejo.repository.get_tag
+    public_ids:
+    - forgejo.repository.get_tag
+  GET /repos/{owner}/{repo}/teams:
+    generated_id: forgejo.repository.list_teams
+    public_ids:
+    - forgejo.repository.list_teams
+  GET /repos/{owner}/{repo}/teams/{team}:
+    generated_id: forgejo.repository.check_team
+    public_ids:
+    - forgejo.repository.check_team
+  GET /repos/{owner}/{repo}/times:
+    generated_id: forgejo.repository.tracked_times
+    public_ids:
+    - forgejo.repository.tracked_times
+  GET /repos/{owner}/{repo}/times/{user}:
+    generated_id: forgejo.repository.user_tracked_times
+    public_ids:
+    - forgejo.repository.user_tracked_times
+  GET /repos/{owner}/{repo}/topics:
+    generated_id: forgejo.repository.list_topics
+    public_ids:
+    - forgejo.repository.list_topics
+  GET /repos/{owner}/{repo}/wiki/page/{pageName}:
+    generated_id: forgejo.repository.get_wiki_page
+    public_ids:
+    - forgejo.repository.get_wiki_page
+  GET /repos/{owner}/{repo}/wiki/pages:
+    generated_id: forgejo.repository.get_wiki_pages
+    public_ids:
+    - forgejo.repository.get_wiki_pages
+  GET /repos/{owner}/{repo}/wiki/revisions/{pageName}:
+    generated_id: forgejo.repository.get_wiki_page_revisions
+    public_ids:
+    - forgejo.repository.get_wiki_page_revisions
+  GET /repos/issues/search:
+    generated_id: forgejo.issue.search_issues
+    public_ids:
+    - forgejo.issue.search_issues
+  GET /repos/search:
+    generated_id: forgejo.repository.search
+    public_ids:
+    - forgejo.repository.search
+  GET /repositories/{id}:
+    generated_id: forgejo.repository.get_by_id
+    public_ids:
+    - forgejo.repository.get_by_id
+  GET /settings/api:
+    generated_id: forgejo.settings.get_general_apisettings
+    public_ids:
+    - forgejo.settings.get_general_apisettings
+  GET /settings/attachment:
+    generated_id: forgejo.settings.get_general_attachment_settings
+    public_ids:
+    - forgejo.settings.get_general_attachment_settings
+  GET /settings/repository:
+    generated_id: forgejo.settings.get_general_repository_settings
+    public_ids:
+    - forgejo.settings.get_general_repository_settings
+  GET /settings/ui:
+    generated_id: forgejo.settings.get_general_uisettings
+    public_ids:
+    - forgejo.settings.get_general_uisettings
+  GET /signing-key.gpg:
+    generated_id: forgejo.miscellaneous.get_signing_key
+    public_ids:
+    - forgejo.miscellaneous.get_signing_key
+  GET /signing-key.ssh:
+    generated_id: forgejo.miscellaneous.get_sshsigning_key
+    public_ids:
+    - forgejo.miscellaneous.get_sshsigning_key
+  GET /teams/{id}:
+    generated_id: forgejo.organization.get_team
+    public_ids:
+    - forgejo.organization.get_team
+  GET /teams/{id}/activities/feeds:
+    generated_id: forgejo.organization.list_team_activity_feeds
+    public_ids:
+    - forgejo.organization.list_team_activity_feeds
+  GET /teams/{id}/members:
+    generated_id: forgejo.organization.list_team_members
+    public_ids:
+    - forgejo.organization.list_team_members
+  GET /teams/{id}/members/{username}:
+    generated_id: forgejo.organization.list_team_member
+    public_ids:
+    - forgejo.organization.list_team_member
+  GET /teams/{id}/repos:
+    generated_id: forgejo.organization.list_team_repos
+    public_ids:
+    - forgejo.organization.list_team_repos
+  GET /teams/{id}/repos/{org}/{repo}:
+    generated_id: forgejo.organization.list_team_repo
+    public_ids:
+    - forgejo.organization.list_team_repo
+  GET /topics/search:
+    generated_id: forgejo.repository.topic_search
+    public_ids:
+    - forgejo.repository.topic_search
+  GET /user:
+    generated_id: forgejo.user.get_current
+    public_ids:
+    - forgejo.user.get_current
+  GET /user/actions/runners:
+    generated_id: forgejo.user.get_user_runners
+    public_ids:
+    - forgejo.user.get_user_runners
+  GET /user/actions/runners/{runner_id}:
+    generated_id: forgejo.user.get_user_runner
+    public_ids:
+    - forgejo.user.get_user_runner
+  GET /user/actions/runners/jobs:
+    generated_id: forgejo.user.search_run_jobs
+    public_ids:
+    - forgejo.user.search_run_jobs
+  GET /user/actions/runners/registration-token:
+    generated_id: forgejo.user.get_runner_registration_token
+    public_ids:
+    - forgejo.user.get_runner_registration_token
+  GET /user/actions/variables:
+    generated_id: forgejo.user.get_user_variables_list
+    public_ids:
+    - forgejo.user.get_user_variables_list
+  GET /user/actions/variables/{variablename}:
+    generated_id: forgejo.user.get_user_variable
+    public_ids:
+    - forgejo.user.get_user_variable
+  GET /user/applications/oauth2:
+    generated_id: forgejo.user.get_oauth2_applications
+    public_ids:
+    - forgejo.user.get_oauth2_applications
+  GET /user/applications/oauth2/{id}:
+    generated_id: forgejo.user.get_oauth2_application
+    public_ids:
+    - forgejo.user.get_oauth2_application
+  GET /user/emails:
+    generated_id: forgejo.user.list_emails
+    public_ids:
+    - forgejo.user.list_emails
+  GET /user/followers:
+    generated_id: forgejo.user.current_list_followers
+    public_ids:
+    - forgejo.user.current_list_followers
+  GET /user/following:
+    generated_id: forgejo.user.current_list_following
+    public_ids:
+    - forgejo.user.current_list_following
+  GET /user/following/{username}:
+    generated_id: forgejo.user.current_check_following
+    public_ids:
+    - forgejo.user.current_check_following
+  GET /user/gpg_key_token:
+    generated_id: forgejo.user.get_verification_token
+    public_ids:
+    - forgejo.user.get_verification_token
+  GET /user/gpg_keys:
+    generated_id: forgejo.user.current_list_gpgkeys
+    public_ids:
+    - forgejo.user.current_list_gpgkeys
+  GET /user/gpg_keys/{id}:
+    generated_id: forgejo.user.current_get_gpgkey
+    public_ids:
+    - forgejo.user.current_get_gpgkey
+  GET /user/hooks:
+    generated_id: forgejo.user.list_hooks
+    public_ids:
+    - forgejo.user.list_hooks
+  GET /user/hooks/{id}:
+    generated_id: forgejo.user.get_hook
+    public_ids:
+    - forgejo.user.get_hook
+  GET /user/keys:
+    generated_id: forgejo.user.current_list_keys
+    public_ids:
+    - forgejo.user.current_list_keys
+  GET /user/keys/{id}:
+    generated_id: forgejo.user.current_get_key
+    public_ids:
+    - forgejo.user.current_get_key
+  GET /user/list_blocked:
+    generated_id: forgejo.user.list_blocked_users
+    public_ids:
+    - forgejo.user.list_blocked_users
+  GET /user/orgs:
+    generated_id: forgejo.organization.list_current_user_orgs
+    public_ids:
+    - forgejo.organization.list_current_user_orgs
+  GET /user/quota:
+    generated_id: forgejo.user.get_quota
+    public_ids:
+    - forgejo.user.get_quota
+  GET /user/quota/artifacts:
+    generated_id: forgejo.user.list_quota_artifacts
+    public_ids:
+    - forgejo.user.list_quota_artifacts
+  GET /user/quota/attachments:
+    generated_id: forgejo.user.list_quota_attachments
+    public_ids:
+    - forgejo.user.list_quota_attachments
+  GET /user/quota/check:
+    generated_id: forgejo.user.check_quota
+    public_ids:
+    - forgejo.user.check_quota
+  GET /user/quota/packages:
+    generated_id: forgejo.user.list_quota_packages
+    public_ids:
+    - forgejo.user.list_quota_packages
+  GET /user/repos:
+    generated_id: forgejo.user.current_list_repos
+    public_ids:
+    - forgejo.user.current_list_repos
+  GET /user/settings:
+    generated_id: forgejo.user.get_user_settings
+    public_ids:
+    - forgejo.user.get_user_settings
+  GET /user/starred:
+    generated_id: forgejo.user.current_list_starred
+    public_ids:
+    - forgejo.user.current_list_starred
+  GET /user/starred/{owner}/{repo}:
+    generated_id: forgejo.user.current_check_starring
+    public_ids:
+    - forgejo.user.current_check_starring
+  GET /user/stopwatches:
+    generated_id: forgejo.user.get_stop_watches
+    public_ids:
+    - forgejo.user.get_stop_watches
+  GET /user/subscriptions:
+    generated_id: forgejo.user.current_list_subscriptions
+    public_ids:
+    - forgejo.user.current_list_subscriptions
+  GET /user/teams:
+    generated_id: forgejo.user.list_teams
+    public_ids:
+    - forgejo.user.list_teams
+  GET /user/times:
+    generated_id: forgejo.user.current_tracked_times
+    public_ids:
+    - forgejo.user.current_tracked_times
+  GET /users/{username}:
+    generated_id: forgejo.user.get
+    public_ids:
+    - forgejo.user.get
+  GET /users/{username}/activities/feeds:
+    generated_id: forgejo.user.list_activity_feeds
+    public_ids:
+    - forgejo.user.list_activity_feeds
+  GET /users/{username}/followers:
+    generated_id: forgejo.user.list_followers
+    public_ids:
+    - forgejo.user.list_followers
+  GET /users/{username}/following:
+    generated_id: forgejo.user.list_following
+    public_ids:
+    - forgejo.user.list_following
+  GET /users/{username}/following/{target}:
+    generated_id: forgejo.user.check_following
+    public_ids:
+    - forgejo.user.check_following
+  GET /users/{username}/gpg_keys:
+    generated_id: forgejo.user.list_gpgkeys
+    public_ids:
+    - forgejo.user.list_gpgkeys
+  GET /users/{username}/heatmap:
+    generated_id: forgejo.user.get_heatmap_data
+    public_ids:
+    - forgejo.user.get_heatmap_data
+  GET /users/{username}/keys:
+    generated_id: forgejo.user.list_keys
+    public_ids:
+    - forgejo.user.list_keys
+  GET /users/{username}/orgs:
+    generated_id: forgejo.organization.list_user_orgs
+    public_ids:
+    - forgejo.organization.list_user_orgs
+  GET /users/{username}/orgs/{org}/permissions:
+    generated_id: forgejo.organization.get_user_permissions
+    public_ids:
+    - forgejo.organization.get_user_permissions
+  GET /users/{username}/repos:
+    generated_id: forgejo.user.list_repos
+    public_ids:
+    - forgejo.user.list_repos
+  GET /users/{username}/starred:
+    generated_id: forgejo.user.list_starred
+    public_ids:
+    - forgejo.user.list_starred
+  GET /users/{username}/subscriptions:
+    generated_id: forgejo.user.list_subscriptions
+    public_ids:
+    - forgejo.user.list_subscriptions
+  GET /users/{username}/tokens:
+    generated_id: forgejo.user.get_tokens
+    public_ids:
+    - forgejo.user.get_tokens
+  GET /users/search:
+    generated_id: forgejo.user.search
+    public_ids:
+    - forgejo.user.search
+  GET /version:
+    generated_id: forgejo.miscellaneous.get_version
+    public_ids:
+    - forgejo.miscellaneous.get_version
+  PATCH /admin/hooks/{id}:
+    generated_id: forgejo.admin.edit_hook
+    public_ids:
+    - forgejo.admin.edit_hook
+  PATCH /admin/quota/rules/{quotarule}:
+    generated_id: forgejo.admin.edit_quota_rule
+    public_ids:
+    - forgejo.admin.edit_quota_rule
+  PATCH /admin/users/{username}:
+    generated_id: forgejo.admin.edit_user
+    public_ids:
+    - forgejo.admin.edit_user
+  PATCH /notifications/threads/{id}:
+    generated_id: forgejo.notification.notify_read_thread
+    public_ids:
+    - forgejo.notification.notify_read_thread
+  PATCH /orgs/{org}:
+    generated_id: forgejo.organization.edit
+    public_ids:
+    - forgejo.organization.edit
+  PATCH /orgs/{org}/hooks/{id}:
+    generated_id: forgejo.organization.edit_hook
+    public_ids:
+    - forgejo.organization.edit_hook
+  PATCH /orgs/{org}/labels/{id}:
+    generated_id: forgejo.organization.edit_label
+    public_ids:
+    - forgejo.organization.edit_label
+  PATCH /repos/{owner}/{repo}:
+    generated_id: forgejo.repository.edit
+    public_ids:
+    - forgejo.repository.edit
+  PATCH /repos/{owner}/{repo}/branch_protections/{name}:
+    generated_id: forgejo.repository.edit_branch_protection
+    public_ids:
+    - forgejo.repository.edit_branch_protection
+  PATCH /repos/{owner}/{repo}/branches/{branch}:
+    generated_id: forgejo.repository.update_branch
+    public_ids:
+    - forgejo.repository.update_branch
+  PATCH /repos/{owner}/{repo}/hooks/{id}:
+    generated_id: forgejo.repository.edit_hook
+    public_ids:
+    - forgejo.repository.edit_hook
+  PATCH /repos/{owner}/{repo}/hooks/git/{id}:
+    generated_id: forgejo.repository.edit_git_hook
+    public_ids:
+    - forgejo.repository.edit_git_hook
+  PATCH /repos/{owner}/{repo}/issues/{index}:
+    generated_id: forgejo.issue.edit_issue
+    public_ids:
+    - forgejo.issue.update
+  PATCH /repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}:
+    generated_id: forgejo.issue.edit_issue_attachment
+    public_ids:
+    - forgejo.issue.edit_issue_attachment
+  PATCH /repos/{owner}/{repo}/issues/{index}/comments/{id}:
+    generated_id: forgejo.issue.edit_comment_deprecated
+    public_ids:
+    - forgejo.issue.edit_comment_deprecated
+  PATCH /repos/{owner}/{repo}/issues/{index}/pin/{position}:
+    generated_id: forgejo.issue.move_issue_pin
+    public_ids:
+    - forgejo.issue.move_issue_pin
+  PATCH /repos/{owner}/{repo}/issues/comments/{id}:
+    generated_id: forgejo.issue.edit_comment
+    public_ids:
+    - forgejo.issue.edit_comment
+  PATCH /repos/{owner}/{repo}/issues/comments/{id}/assets/{attachment_id}:
+    generated_id: forgejo.issue.edit_issue_comment_attachment
+    public_ids:
+    - forgejo.issue.edit_issue_comment_attachment
+  PATCH /repos/{owner}/{repo}/labels/{id}:
+    generated_id: forgejo.issue.edit_label
+    public_ids:
+    - forgejo.issue.edit_label
+  PATCH /repos/{owner}/{repo}/milestones/{id}:
+    generated_id: forgejo.issue.edit_milestone
+    public_ids:
+    - forgejo.issue.edit_milestone
+  PATCH /repos/{owner}/{repo}/pulls/{index}:
+    generated_id: forgejo.repository.edit_pull_request
+    public_ids:
+    - forgejo.repository.edit_pull_request
+  PATCH /repos/{owner}/{repo}/releases/{id}:
+    generated_id: forgejo.repository.edit_release
+    public_ids:
+    - forgejo.repository.edit_release
+  PATCH /repos/{owner}/{repo}/releases/{id}/assets/{attachment_id}:
+    generated_id: forgejo.repository.edit_release_attachment
+    public_ids:
+    - forgejo.repository.edit_release_attachment
+  PATCH /repos/{owner}/{repo}/tag_protections/{id}:
+    generated_id: forgejo.repository.edit_tag_protection
+    public_ids:
+    - forgejo.repository.edit_tag_protection
+  PATCH /repos/{owner}/{repo}/wiki/page/{pageName}:
+    generated_id: forgejo.repository.edit_wiki_page
+    public_ids:
+    - forgejo.repository.edit_wiki_page
+  PATCH /teams/{id}:
+    generated_id: forgejo.organization.edit_team
+    public_ids:
+    - forgejo.organization.edit_team
+  PATCH /user/applications/oauth2/{id}:
+    generated_id: forgejo.user.update_oauth2_application
+    public_ids:
+    - forgejo.user.update_oauth2_application
+  PATCH /user/hooks/{id}:
+    generated_id: forgejo.user.edit_hook
+    public_ids:
+    - forgejo.user.edit_hook
+  PATCH /user/settings:
+    generated_id: forgejo.user.update_user_settings
+    public_ids:
+    - forgejo.user.update_user_settings
+  POST /activitypub/actor/inbox:
+    generated_id: forgejo.activitypub.instance_actor_inbox
+    public_ids:
+    - forgejo.activitypub.instance_actor_inbox
+  POST /activitypub/actor/outbox:
+    generated_id: forgejo.activitypub.instance_actor_outbox
+    public_ids:
+    - forgejo.activitypub.instance_actor_outbox
+  POST /activitypub/repository-id/{repository-id}/inbox:
+    generated_id: forgejo.activitypub.repository_inbox
+    public_ids:
+    - forgejo.activitypub.repository_inbox
+  POST /activitypub/repository-id/{repository-id}/outbox:
+    generated_id: forgejo.activitypub.repository_outbox
+    public_ids:
+    - forgejo.activitypub.repository_outbox
+  POST /activitypub/user-id/{user-id}/inbox:
+    generated_id: forgejo.activitypub.person_inbox
+    public_ids:
+    - forgejo.activitypub.person_inbox
+  POST /admin/actions/runners:
+    generated_id: forgejo.admin.register_admin_runner
+    public_ids:
+    - forgejo.admin.register_admin_runner
+  POST /admin/cron/{task}:
+    generated_id: forgejo.admin.cron_run
+    public_ids:
+    - forgejo.admin.cron_run
+  POST /admin/hooks:
+    generated_id: forgejo.admin.create_hook
+    public_ids:
+    - forgejo.admin.create_hook
+  POST /admin/quota/groups:
+    generated_id: forgejo.admin.create_quota_group
+    public_ids:
+    - forgejo.admin.create_quota_group
+  POST /admin/quota/rules:
+    generated_id: forgejo.admin.create_quota_rule
+    public_ids:
+    - forgejo.admin.create_quota_rule
+  POST /admin/unadopted/{owner}/{repo}:
+    generated_id: forgejo.admin.adopt_repository
+    public_ids:
+    - forgejo.admin.adopt_repository
+  POST /admin/users:
+    generated_id: forgejo.admin.create_user
+    public_ids:
+    - forgejo.admin.create_user
+  POST /admin/users/{username}/keys:
+    generated_id: forgejo.admin.create_public_key
+    public_ids:
+    - forgejo.admin.create_public_key
+  POST /admin/users/{username}/orgs:
+    generated_id: forgejo.admin.create_org
+    public_ids:
+    - forgejo.admin.create_org
+  POST /admin/users/{username}/quota/groups:
+    generated_id: forgejo.admin.set_user_quota_groups
+    public_ids:
+    - forgejo.admin.set_user_quota_groups
+  POST /admin/users/{username}/rename:
+    generated_id: forgejo.admin.rename_user
+    public_ids:
+    - forgejo.admin.rename_user
+  POST /admin/users/{username}/repos:
+    generated_id: forgejo.admin.create_repo
+    public_ids:
+    - forgejo.admin.create_repo
+  POST /admin/users/{username}/tokens:
+    generated_id: forgejo.admin.create_user_access_token
+    public_ids:
+    - forgejo.admin.create_user_access_token
+  POST /markdown:
+    generated_id: forgejo.miscellaneous.render_markdown
+    public_ids:
+    - forgejo.miscellaneous.render_markdown
+  POST /markdown/raw:
+    generated_id: forgejo.miscellaneous.render_markdown_raw
+    public_ids:
+    - forgejo.miscellaneous.render_markdown_raw
+  POST /markup:
+    generated_id: forgejo.miscellaneous.render_markup
+    public_ids:
+    - forgejo.miscellaneous.render_markup
+  POST /org/{org}/repos:
+    generated_id: forgejo.organization.create_org_repo_deprecated
+    public_ids:
+    - forgejo.organization.create_org_repo_deprecated
+  POST /orgs:
+    generated_id: forgejo.organization.create
+    public_ids:
+    - forgejo.organization.create
+  POST /orgs/{org}/actions/runners:
+    generated_id: forgejo.organization.register_org_runner
+    public_ids:
+    - forgejo.organization.register_org_runner
+  POST /orgs/{org}/actions/variables/{variablename}:
+    generated_id: forgejo.organization.create_org_variable
+    public_ids:
+    - forgejo.organization.create_org_variable
+  POST /orgs/{org}/avatar:
+    generated_id: forgejo.organization.update_avatar
+    public_ids:
+    - forgejo.organization.update_avatar
+  POST /orgs/{org}/hooks:
+    generated_id: forgejo.organization.create_hook
+    public_ids:
+    - forgejo.organization.create_hook
+  POST /orgs/{org}/labels:
+    generated_id: forgejo.organization.create_label
+    public_ids:
+    - forgejo.organization.create_label
+  POST /orgs/{org}/rename:
+    generated_id: forgejo.organization.rename_org
+    public_ids:
+    - forgejo.organization.rename_org
+  POST /orgs/{org}/repos:
+    generated_id: forgejo.organization.create_org_repo
+    public_ids:
+    - forgejo.organization.create_org_repo
+  POST /orgs/{org}/teams:
+    generated_id: forgejo.organization.create_team
+    public_ids:
+    - forgejo.organization.create_team
+  POST /packages/{owner}/{type}/{name}/-/link/{repo_name}:
+    generated_id: forgejo.package.link_package
+    public_ids:
+    - forgejo.package.link_package
+  POST /packages/{owner}/{type}/{name}/-/unlink:
+    generated_id: forgejo.package.unlink_package
+    public_ids:
+    - forgejo.package.unlink_package
+  POST /repos/{owner}/{repo}/actions/runners:
+    generated_id: forgejo.repository.register_repo_runner
+    public_ids:
+    - forgejo.repository.register_repo_runner
+  POST /repos/{owner}/{repo}/actions/runs/{run_id}/cancel:
+    generated_id: forgejo.repository.cancel_action_run
+    public_ids:
+    - forgejo.repository.cancel_action_run
+  POST /repos/{owner}/{repo}/actions/variables/{variablename}:
+    generated_id: forgejo.repository.create_repo_variable
+    public_ids:
+    - forgejo.repository.create_repo_variable
+  POST /repos/{owner}/{repo}/actions/workflows/{workflowfilename}/dispatches:
+    generated_id: forgejo.repository.dispatch_workflow
+    public_ids:
+    - forgejo.repository.dispatch_workflow
+  POST /repos/{owner}/{repo}/avatar:
+    generated_id: forgejo.repository.update_avatar
+    public_ids:
+    - forgejo.repository.update_avatar
+  POST /repos/{owner}/{repo}/branch_protections:
+    generated_id: forgejo.repository.create_branch_protection
+    public_ids:
+    - forgejo.repository.create_branch_protection
+  POST /repos/{owner}/{repo}/branches:
+    generated_id: forgejo.repository.create_branch
+    public_ids:
+    - forgejo.repository.create_branch
+  POST /repos/{owner}/{repo}/contents:
+    generated_id: forgejo.repository.change_files
+    public_ids:
+    - forgejo.repository.change_files
+  POST /repos/{owner}/{repo}/contents/{filepath}:
+    generated_id: forgejo.repository.create_file
+    public_ids:
+    - forgejo.repository.create_file
+  POST /repos/{owner}/{repo}/convert:
+    generated_id: forgejo.repository.convert
+    public_ids:
+    - forgejo.repository.convert
+  POST /repos/{owner}/{repo}/diffpatch:
+    generated_id: forgejo.repository.apply_diff_patch
+    public_ids:
+    - forgejo.repository.apply_diff_patch
+  POST /repos/{owner}/{repo}/forks:
+    generated_id: forgejo.repository.create_fork
+    public_ids:
+    - forgejo.repository.create_fork
+  POST /repos/{owner}/{repo}/git/notes/{sha}:
+    generated_id: forgejo.repository.set_note
+    public_ids:
+    - forgejo.repository.set_note
+  POST /repos/{owner}/{repo}/hooks:
+    generated_id: forgejo.repository.create_hook
+    public_ids:
+    - forgejo.repository.create_hook
+  POST /repos/{owner}/{repo}/hooks/{id}/tests:
+    generated_id: forgejo.repository.test_hook
+    public_ids:
+    - forgejo.repository.test_hook
+  POST /repos/{owner}/{repo}/issues:
+    generated_id: forgejo.issue.create_issue
+    public_ids:
+    - forgejo.issue.create
+  POST /repos/{owner}/{repo}/issues/{index}/blocks:
+    generated_id: forgejo.issue.create_issue_blocking
+    public_ids:
+    - forgejo.issue.create_issue_blocking
+  POST /repos/{owner}/{repo}/issues/{index}/comments:
+    generated_id: forgejo.issue.create_comment
+    public_ids:
+    - forgejo.issue.comment
+  POST /repos/{owner}/{repo}/issues/{index}/deadline:
+    generated_id: forgejo.issue.edit_issue_deadline
+    public_ids:
+    - forgejo.issue.edit_issue_deadline
+  POST /repos/{owner}/{repo}/issues/{index}/dependencies:
+    generated_id: forgejo.issue.create_issue_dependencies
+    public_ids:
+    - forgejo.issue.create_issue_dependencies
+  POST /repos/{owner}/{repo}/issues/{index}/labels:
+    generated_id: forgejo.issue.add_label
+    public_ids:
+    - forgejo.issue.add_labels
+  POST /repos/{owner}/{repo}/issues/{index}/pin:
+    generated_id: forgejo.issue.pin_issue
+    public_ids:
+    - forgejo.issue.pin_issue
+  POST /repos/{owner}/{repo}/issues/{index}/reactions:
+    generated_id: forgejo.issue.post_issue_reaction
+    public_ids:
+    - forgejo.issue.post_issue_reaction
+  POST /repos/{owner}/{repo}/issues/{index}/stopwatch/start:
+    generated_id: forgejo.issue.start_stop_watch
+    public_ids:
+    - forgejo.issue.start_stop_watch
+  POST /repos/{owner}/{repo}/issues/{index}/stopwatch/stop:
+    generated_id: forgejo.issue.stop_stop_watch
+    public_ids:
+    - forgejo.issue.stop_stop_watch
+  POST /repos/{owner}/{repo}/issues/{index}/times:
+    generated_id: forgejo.issue.add_time
+    public_ids:
+    - forgejo.issue.add_time
+  POST /repos/{owner}/{repo}/issues/comments/{id}/reactions:
+    generated_id: forgejo.issue.post_comment_reaction
+    public_ids:
+    - forgejo.issue.post_comment_reaction
+  POST /repos/{owner}/{repo}/keys:
+    generated_id: forgejo.repository.create_key
+    public_ids:
+    - forgejo.repository.create_key
+  POST /repos/{owner}/{repo}/labels:
+    generated_id: forgejo.issue.create_label
+    public_ids:
+    - forgejo.issue.create_label
+  POST /repos/{owner}/{repo}/milestones:
+    generated_id: forgejo.issue.create_milestone
+    public_ids:
+    - forgejo.issue.create_milestone
+  POST /repos/{owner}/{repo}/mirror-sync:
+    generated_id: forgejo.repository.mirror_sync
+    public_ids:
+    - forgejo.repository.mirror_sync
+  POST /repos/{owner}/{repo}/pulls:
+    generated_id: forgejo.repository.create_pull_request
+    public_ids:
+    - forgejo.pull_request.create
+  POST /repos/{owner}/{repo}/pulls/{index}/merge:
+    generated_id: forgejo.repository.merge_pull_request
+    public_ids:
+    - forgejo.repository.merge_pull_request
+  POST /repos/{owner}/{repo}/pulls/{index}/requested_reviewers:
+    generated_id: forgejo.repository.create_pull_review_requests
+    public_ids:
+    - forgejo.repository.create_pull_review_requests
+  POST /repos/{owner}/{repo}/pulls/{index}/reviews:
+    generated_id: forgejo.repository.create_pull_review
+    public_ids:
+    - forgejo.repository.create_pull_review
+  POST /repos/{owner}/{repo}/pulls/{index}/reviews/{id}:
+    generated_id: forgejo.repository.submit_pull_review
+    public_ids:
+    - forgejo.repository.submit_pull_review
+  POST /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments:
+    generated_id: forgejo.repository.create_pull_review_comment
+    public_ids:
+    - forgejo.repository.create_pull_review_comment
+  POST /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/dismissals:
+    generated_id: forgejo.repository.dismiss_pull_review
+    public_ids:
+    - forgejo.repository.dismiss_pull_review
+  POST /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/undismissals:
+    generated_id: forgejo.repository.un_dismiss_pull_review
+    public_ids:
+    - forgejo.repository.un_dismiss_pull_review
+  POST /repos/{owner}/{repo}/pulls/{index}/update:
+    generated_id: forgejo.repository.update_pull_request
+    public_ids:
+    - forgejo.repository.update_pull_request
+  POST /repos/{owner}/{repo}/push_mirrors:
+    generated_id: forgejo.repository.add_push_mirror
+    public_ids:
+    - forgejo.repository.add_push_mirror
+  POST /repos/{owner}/{repo}/push_mirrors-sync:
+    generated_id: forgejo.repository.push_mirror_sync
+    public_ids:
+    - forgejo.repository.push_mirror_sync
+  POST /repos/{owner}/{repo}/releases:
+    generated_id: forgejo.repository.create_release
+    public_ids:
+    - forgejo.release.create
+  POST /repos/{owner}/{repo}/statuses/{sha}:
+    generated_id: forgejo.repository.create_status
+    public_ids:
+    - forgejo.repository.create_status
+  POST /repos/{owner}/{repo}/sync_fork:
+    generated_id: forgejo.repository.sync_fork_default
+    public_ids:
+    - forgejo.repository.sync_fork_default
+  POST /repos/{owner}/{repo}/sync_fork/{branch}:
+    generated_id: forgejo.repository.sync_fork_branch
+    public_ids:
+    - forgejo.repository.sync_fork_branch
+  POST /repos/{owner}/{repo}/tag_protections:
+    generated_id: forgejo.repository.create_tag_protection
+    public_ids:
+    - forgejo.repository.create_tag_protection
+  POST /repos/{owner}/{repo}/tags:
+    generated_id: forgejo.repository.create_tag
+    public_ids:
+    - forgejo.repository.create_tag
+  POST /repos/{owner}/{repo}/transfer:
+    generated_id: forgejo.repository.transfer
+    public_ids:
+    - forgejo.repository.transfer
+  POST /repos/{owner}/{repo}/transfer/accept:
+    generated_id: forgejo.repository.accept_repo_transfer
+    public_ids:
+    - forgejo.repository.accept_repo_transfer
+  POST /repos/{owner}/{repo}/transfer/reject:
+    generated_id: forgejo.repository.reject_repo_transfer
+    public_ids:
+    - forgejo.repository.reject_repo_transfer
+  POST /repos/{owner}/{repo}/wiki/new:
+    generated_id: forgejo.repository.create_wiki_page
+    public_ids:
+    - forgejo.repository.create_wiki_page
+  POST /repos/{template_owner}/{template_repo}/generate:
+    generated_id: forgejo.repository.generate_repo
+    public_ids:
+    - forgejo.repository.generate_repo
+  POST /repos/migrate:
+    generated_id: forgejo.repository.migrate
+    public_ids:
+    - forgejo.repository.migrate
+  POST /user/actions/runners:
+    generated_id: forgejo.user.register_user_runner
+    public_ids:
+    - forgejo.user.register_user_runner
+  POST /user/actions/variables/{variablename}:
+    generated_id: forgejo.user.create_user_variable
+    public_ids:
+    - forgejo.user.create_user_variable
+  POST /user/activitypub/follow:
+    generated_id: forgejo.user.current_activity_pub_follow
+    public_ids:
+    - forgejo.user.current_activity_pub_follow
+  POST /user/applications/oauth2:
+    generated_id: forgejo.user.create_oauth2_application
+    public_ids:
+    - forgejo.user.create_oauth2_application
+  POST /user/avatar:
+    generated_id: forgejo.user.update_avatar
+    public_ids:
+    - forgejo.user.update_avatar
+  POST /user/emails:
+    generated_id: forgejo.user.add_email
+    public_ids:
+    - forgejo.user.add_email
+  POST /user/gpg_key_verify:
+    generated_id: forgejo.user.verify_gpgkey
+    public_ids:
+    - forgejo.user.verify_gpgkey
+  POST /user/gpg_keys:
+    generated_id: forgejo.user.current_post_gpgkey
+    public_ids:
+    - forgejo.user.current_post_gpgkey
+  POST /user/hooks:
+    generated_id: forgejo.user.create_hook
+    public_ids:
+    - forgejo.user.create_hook
+  POST /user/keys:
+    generated_id: forgejo.user.current_post_key
+    public_ids:
+    - forgejo.user.current_post_key
+  POST /user/repos:
+    generated_id: forgejo.repository.create_current_user_repo
+    public_ids:
+    - forgejo.repository.create_current_user_repo
+  POST /users/{username}/tokens:
+    generated_id: forgejo.user.create_token
+    public_ids:
+    - forgejo.user.create_token
+  PUT /admin/quota/groups/{quotagroup}/rules/{quotarule}:
+    generated_id: forgejo.admin.add_rule_to_quota_group
+    public_ids:
+    - forgejo.admin.add_rule_to_quota_group
+  PUT /admin/quota/groups/{quotagroup}/users/{username}:
+    generated_id: forgejo.admin.add_user_to_quota_group
+    public_ids:
+    - forgejo.admin.add_user_to_quota_group
+  PUT /notifications:
+    generated_id: forgejo.notification.notify_read_list
+    public_ids:
+    - forgejo.notification.notify_read_list
+  PUT /orgs/{org}/actions/secrets/{secretname}:
+    generated_id: forgejo.organization.update_org_secret
+    public_ids:
+    - forgejo.organization.update_org_secret
+  PUT /orgs/{org}/actions/variables/{variablename}:
+    generated_id: forgejo.organization.update_org_variable
+    public_ids:
+    - forgejo.organization.update_org_variable
+  PUT /orgs/{org}/block/{username}:
+    generated_id: forgejo.organization.block_user
+    public_ids:
+    - forgejo.organization.block_user
+  PUT /orgs/{org}/public_members/{username}:
+    generated_id: forgejo.organization.publicize_member
+    public_ids:
+    - forgejo.organization.publicize_member
+  PUT /orgs/{org}/unblock/{username}:
+    generated_id: forgejo.organization.unblock_user
+    public_ids:
+    - forgejo.organization.unblock_user
+  PUT /repos/{owner}/{repo}/actions/secrets/{secretname}:
+    generated_id: forgejo.repository.update_repo_secret
+    public_ids:
+    - forgejo.repository.update_repo_secret
+  PUT /repos/{owner}/{repo}/actions/variables/{variablename}:
+    generated_id: forgejo.repository.update_repo_variable
+    public_ids:
+    - forgejo.repository.update_repo_variable
+  PUT /repos/{owner}/{repo}/collaborators/{collaborator}:
+    generated_id: forgejo.repository.add_collaborator
+    public_ids:
+    - forgejo.repository.add_collaborator
+  PUT /repos/{owner}/{repo}/contents/{filepath}:
+    generated_id: forgejo.repository.update_file
+    public_ids:
+    - forgejo.repository.update_file
+  PUT /repos/{owner}/{repo}/flags:
+    generated_id: forgejo.repository.replace_all_flags
+    public_ids:
+    - forgejo.repository.replace_all_flags
+  PUT /repos/{owner}/{repo}/flags/{flag}:
+    generated_id: forgejo.repository.add_flag
+    public_ids:
+    - forgejo.repository.add_flag
+  PUT /repos/{owner}/{repo}/issues/{index}/labels:
+    generated_id: forgejo.issue.replace_labels
+    public_ids:
+    - forgejo.issue.replace_labels
+  PUT /repos/{owner}/{repo}/issues/{index}/subscriptions/{user}:
+    generated_id: forgejo.issue.add_subscription
+    public_ids:
+    - forgejo.issue.add_subscription
+  PUT /repos/{owner}/{repo}/notifications:
+    generated_id: forgejo.notification.notify_read_repo_list
+    public_ids:
+    - forgejo.notification.notify_read_repo_list
+  PUT /repos/{owner}/{repo}/subscription:
+    generated_id: forgejo.repository.user_current_put_subscription
+    public_ids:
+    - forgejo.repository.user_current_put_subscription
+  PUT /repos/{owner}/{repo}/teams/{team}:
+    generated_id: forgejo.repository.add_team
+    public_ids:
+    - forgejo.repository.add_team
+  PUT /repos/{owner}/{repo}/topics:
+    generated_id: forgejo.repository.update_topics
+    public_ids:
+    - forgejo.repository.update_topics
+  PUT /repos/{owner}/{repo}/topics/{topic}:
+    generated_id: forgejo.repository.add_topic
+    public_ids:
+    - forgejo.repository.add_topic
+  PUT /teams/{id}/members/{username}:
+    generated_id: forgejo.organization.add_team_member
+    public_ids:
+    - forgejo.organization.add_team_member
+  PUT /teams/{id}/repos/{org}/{repo}:
+    generated_id: forgejo.organization.add_team_repository
+    public_ids:
+    - forgejo.organization.add_team_repository
+  PUT /user/actions/secrets/{secretname}:
+    generated_id: forgejo.user.update_user_secret
+    public_ids:
+    - forgejo.user.update_user_secret
+  PUT /user/actions/variables/{variablename}:
+    generated_id: forgejo.user.update_user_variable
+    public_ids:
+    - forgejo.user.update_user_variable
+  PUT /user/block/{username}:
+    generated_id: forgejo.user.block_user
+    public_ids:
+    - forgejo.user.block_user
+  PUT /user/following/{username}:
+    generated_id: forgejo.user.current_put_follow
+    public_ids:
+    - forgejo.user.current_put_follow
+  PUT /user/starred/{owner}/{repo}:
+    generated_id: forgejo.user.current_put_star
+    public_ids:
+    - forgejo.user.current_put_star
+  PUT /user/unblock/{username}:
+    generated_id: forgejo.user.unblock_user
+    public_ids:
+    - forgejo.user.unblock_user
+generated_auth:
+  65d0e9bce5f542d9dc94b5f20a3da68e14463c70083f0c0191e7be135f6c6ea2:
+    id: token
+    shape:
+      kind: api_key
+      in: header
+      name: authorization
+      value_prefix: 'token '
+  777e1a379a14f0b22351549ae2f9cac28394b22feb2afa5d4fb19d240083c49f:
+    id: basic
+    shape:
+      kind: basic
+  5083a589187eddee9fd60c8922a2a9d484de2678a3fca2048c7620bbc4b5553a:
+    id: token_4
+    shape:
+      kind: api_key
+      in: header
+      name: x-forgejo-otp
+  602101434e113ef523a5218b94a6ed49f57afeedc12a106e17c562e3b0ae5de6:
+    id: token_3
+    shape:
+      kind: api_key
+      in: query
+      name: sudo
+  b1ecae1bec9b12c7e03470554c25bdd5ae2d21ff50b49237931504f93265cac5:
+    id: token_2
+    shape:
+      kind: api_key
+      in: header
+      name: sudo
+public_auth:
+  basic:
+    kind: basic
+  token:
+    kind: api_key
+    in: header
+    name: authorization
+    value_prefix: 'token '

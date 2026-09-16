@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/SocialGouv/iterion/internal/fswatch"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -40,7 +41,7 @@ type eventTailer struct {
 // fn runs on the tailer goroutine and must not block for long; offload
 // slow work (store I/O) to the caller's own goroutine if needed.
 func (s *Store) Subscribe(fn func(Event)) (func(), error) {
-	w, err := fsnotify.NewWatcher()
+	w, err := fswatch.NewWatcher()
 	if err != nil {
 		return nil, err
 	}

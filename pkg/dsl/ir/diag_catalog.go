@@ -215,6 +215,12 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagActionBadParam:     {"Malformed action parameter", "Give every `params:` entry a name, and declare each one once — a duplicate would send a value the author did not write."},
 	DiagActionBadTimeout:   {"Malformed action timeout or retry", "Write `timeout:` as a duration (30s, 2m) and `retry:` as a count of extra attempts (3) — a duration is refused there, the delay between attempts being the vendor's Retry-After to name."},
 	DiagActionOnlyProperty: {"Connector property without an action", "Remove it, or add the `action:` it belongs to — on its own the property is inert, which reads as configured."},
+	// The public contract (ADR-099).
+	DiagContractInput:            {"Contract input not bound", "Declare the input as a var of the port's type (`vars: goal: string`), drop `from:` on an input, let `required:` and `default:` mirror the var (an input is required exactly when its var has no default, and defaults to what the var defaults to; a defaultless input may be optional only as `nullable: true`), declare each contract once with a version of 1 or more, and name a declared contract in `contract:`."},
+	DiagContractOutput:           {"Contract output not produced", "Write `from: <node>.<field>` naming a declared node and a field of its output schema, of the port's type; `from: <node>` for a file port or a port typed with the node's output schema; an output has no default."},
+	DiagContractCriterion:        {"Contract criterion or value invalid", "Name a declared port as `input.<name>` / `output.<name>`, give the evaluator a port of the type it takes and its parameters (`{min: 2}`); write a default as one JSON value of the port's type — a positive decimal, or a string — and `null` only on a nullable port."},
+	DiagContractUnknownKind:      {"Unregistered criterion kind", "Use a registered kind (`min_length`, `pattern`), or ship the evaluator with the plugin that defines the kind; until then the criterion is declared, not evaluated."},
+	DiagContractOutputOffSuccess: {"Contract output produced only on failure", "Bind the output to a node on a path to `done` — the contract lists what the bot produces on success."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has

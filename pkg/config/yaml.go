@@ -72,6 +72,7 @@ type yamlAuthConfig struct {
 	BootstrapAdminEmail *string                 `yaml:"bootstrap_admin_email"`
 	SignupMode          *string                 `yaml:"signup_mode"`
 	PublicURL           *string                 `yaml:"public_url"`
+	CanonicalRedirect   *bool                   `yaml:"canonical_redirect"`
 	CookieDomain        *string                 `yaml:"cookie_domain"`
 	CookieSecure        *bool                   `yaml:"cookie_secure"`
 	OIDC                *yamlOIDCConfig         `yaml:"oidc"`
@@ -298,6 +299,9 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 		applyString(y.Auth.BootstrapAdminEmail, &cfg.Auth.BootstrapAdminEmail)
 		applyString(y.Auth.SignupMode, &cfg.Auth.SignupMode)
 		applyString(y.Auth.PublicURL, &cfg.Auth.PublicURL)
+		if y.Auth.CanonicalRedirect != nil {
+			cfg.Auth.CanonicalRedirect = *y.Auth.CanonicalRedirect
+		}
 		applyString(y.Auth.CookieDomain, &cfg.Auth.CookieDomain)
 		if y.Auth.CookieSecure != nil {
 			cfg.Auth.CookieSecure = *y.Auth.CookieSecure

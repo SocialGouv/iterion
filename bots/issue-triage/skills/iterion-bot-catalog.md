@@ -295,7 +295,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `delivery_reserve_floor_minutes` (int), `delivery_reserve_ratio` (float), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `delivery_reserve_floor_minutes` (int), `delivery_reserve_ratio` (float), `forge_delivery_preflight_url` (string), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `campaign` — Campy
@@ -1385,7 +1385,7 @@ Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
   edits source. Reach for Doki (docs-refresh) instead when the goal is to
   fix a repo's EXISTING hand-authored docs (README/docs/**) against the
   code, editing them in place.
-- **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (string), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
+- **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (int), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/wiki-gen/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->

@@ -80,6 +80,7 @@ func (w *fileWriter) writeFile(f *ast.File) {
 	w.writeMCPServers(f.MCPServers)
 	w.writePrompts(declaredPrompts(f.Prompts))
 	w.writeSchemas(f.Schemas)
+	w.writeContracts(f.Contracts)
 	w.writeCursors(f.Cursors)
 	w.writeSupervisors(f.Supervisors)
 	w.writeAgents(f.Agents)
@@ -1067,6 +1068,9 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		if wf.Entry != "" {
 			w.b.WriteString("\n")
 			fmt.Fprintf(&w.b, "  entry: %s\n", wf.Entry)
+		}
+		if wf.Contract != "" {
+			writeIdentProp(&w.b, "contract", wf.Contract)
 		}
 
 		if wf.Budget != nil {

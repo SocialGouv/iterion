@@ -38,6 +38,15 @@ func routeSchemas() map[string]routeOp {
 		"POST /api/auth/login": {request: loginReq{}, response: AuthMeResponse{}},
 		"GET /api/auth/me":     {response: AuthMeResponse{}},
 
+		// OAuth metadata projections exclude provider UUIDs and sealed secrets.
+		"GET /api/me/oauth/connections":         {response: oauthConnectionsView{}},
+		"GET /api/teams/{id}/oauth/connections": {response: oauthConnectionsView{}},
+		"GET /api/orgs/{id}/oauth/connections":  {response: oauthConnectionsView{}},
+		"GET /api/admin/llm/oauth/connections":  {response: oauthConnectionsView{}},
+		"POST /api/teams/{id}/credentials/preview": {
+			request: runview.CredentialPreviewRequest{}, response: runview.CredentialPreview{},
+		},
+
 		// Personal access tokens (the CLI mints/lists these).
 		"POST /api/me/tokens": {
 			request: createPATReq{},

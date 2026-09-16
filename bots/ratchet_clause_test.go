@@ -1,7 +1,6 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -44,7 +43,7 @@ const continuationIndent = "      "
 // backticked.
 func ratchetClause(t *testing.T, botPath string) string {
 	t.Helper()
-	src, err := os.ReadFile(botPath)
+	src, err := botUnitSource(botPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", botPath, err)
 	}

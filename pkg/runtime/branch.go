@@ -802,7 +802,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	execCtx := e.templateContext(ctx, rs, branchScope)
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
@@ -1051,7 +1051,10 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 // same bounded loop/foreach bookkeeping to a private runState and emits the
 // selection with the branch identity.
 func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult, rs *runState) (*ir.Edge, error) {
-	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, fmt.Sprintf("branch %s", branchID), output, rs)
+	selected, capErr := e.evaluateEdgesWithLoopsRS(fromNodeID, fmt.Sprintf("branch %s", branchID), output, rs)
+	if capErr != nil {
+		return nil, capErr
+	}
 	if selected == nil {
 		return nil, fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}
