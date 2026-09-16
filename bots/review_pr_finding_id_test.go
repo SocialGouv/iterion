@@ -99,6 +99,10 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 		"{{vars.gate_enabled}}":           "true",
 		"{{vars.gate_severity}}":          "high",
 		"{{vars.gate_context}}":           "revi/review",
+		// Left unwired this renders as its own source text — a non-empty
+		// hint, i.e. the opposite of the case being pinned here: no fixer
+		// declared, and the ids published all the same.
+		"{{vars.fixer_hint}}": "",
 	} {
 		if !strings.Contains(body, ref) {
 			t.Fatalf("%s is no longer referenced by publish_review — the test wires nothing", ref)

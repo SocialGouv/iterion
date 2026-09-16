@@ -65,6 +65,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
 | `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
 | `gate_context` | `revi/review` | Commit-status context; use a shared context when another bot gates different PRs in the same repo. |
+| `fixer_hint` | *(empty)* | Sentence published with the findings when this repo has a fixer to escalate to. Empty omits the line: the reviewer does not advertise a fixer on its own initiative. `{finding}` is replaced by the first finding's id. |
 
 ## Run
 

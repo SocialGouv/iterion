@@ -76,15 +76,24 @@ through the local loop, and nothing spends a campaign on its own.
 The mechanics and the paid-for gotchas are unchanged and still worth reading
 before a deliberate pass: [../revi-billy-loop.md](../revi-billy-loop.md).
 
-**Revi's own review summary still carries `Correction : /billy`**, inside its
-collapsed "Détails du run IA" block. That line
-is the catalog bot's generic advice to any repo it reviews
-([../../bots/review-pr/main.bot](../../bots/review-pr/main.bot)), published
-whenever a review has findings — and on this repo it does not apply. It is
-deliberately not special-cased: a bot that names one repository stops being
-repo-agnostic (`bots/catalog_universality_test.go`). Deriving the line from the
-repo's own configuration is the durable fix, and it is a bot change, not a doc
-change.
+**From bundle 0.9.3, Revi's review summary advertises a fixer only where a
+repo declares one.** The escalation line is the `fixer_hint` launch var
+([../../bots/review-pr/main.bot](../../bots/review-pr/main.bot)): empty — the
+default, and what this repo leaves it at while Billy is paused — omits the line
+entirely; a repo with a fixer sets the sentence it wants, `{finding}` standing
+for the first finding's id — see
+[../merge-gate.md](../merge-gate.md#review-tiers) for the `launch_vars` form. A
+catalog bot is a general-purpose tool: it may read which repository it is
+reviewing, but it must not be scoped to one, so the escalation is the repo's to
+declare.
+
+**Until the production override is re-pushed, reviews here still carry
+`Correction : /billy`.** A stored bundle outranks the baked catalog at every
+launch surface, and the staleness warning cannot help: the deployed override is
+version-suffixed (`0.9.2-codex-claw.N`) and a suffixed version is unorderable,
+so `shadowsNewerVersion` never fires — a blind spot
+`pkg/server/bot_override_staleness.go` names itself. Landing the change moves
+`main`; re-pushing the override is what moves what a developer reads.
 
 ### Re-arm when this repo's team spends its own BYOK key
 
