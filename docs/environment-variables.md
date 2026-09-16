@@ -170,4 +170,5 @@ variables — see [quotas-and-limits.md](quotas-and-limits.md).
 - [web-search.md](web-search.md) — `ITERION_WEB_SEARCH` and the search-tier resolver.
 - [secrets.md](secrets.md) — `ITERION_SECRETS_KEY` and the redaction variables.
 - [observability.md](observability.md) — `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`, and the `SENTRY_*` variables.
+- [observability/README.md](observability/README.md) — `ITERION_PROMETHEUS_ADDR` and `ITERION_PROMETHEUS_REQUIRED`, the run-local Prometheus exporter and its fail-soft bind.
 - [workflow-reliability-1006.md](workflow-reliability-1006.md) — the compatibility ledger for the shared retry circuit and the rest of the reliability rollout, including `ITERION_RELIABILITY_MODE`.
