@@ -127,7 +127,7 @@ does too.
 | CLI top level ([cmd/iterion/main.go](../cmd/iterion/main.go)) | a panic escaping a command on the main goroutine — captured, flushed, then **re-panicked** so the process still dies the way it did. Go cannot recover another goroutine's panic from here, which is why the worker seams below capture in their own recovery blocks |
 | CLI fatal path | the error that ends the process with exit 1, before `os.Exit` skips every defer. A user-input error (exit 2 — bad flag, missing file) is a typo, not an incident, and is never reported |
 | [pkg/server/gosafe.go](../pkg/server/gosafe.go) and [cloudpublisher](../pkg/server/cloudpublisher/publisher.go) `goSafeDetached` | a panic in a fire-and-forget background goroutine (audit insert, `MarkUsed`, invitation mail), with the task label. These CONTAIN the panic — the task was best-effort |
-| `errtrack.Go` / `errtrack.TrackPanic` ([pkg/errtrack/crash.go](../pkg/errtrack/crash.go)) | a panic in a detached goroutine of the three daemons, tagged with the `surface` that raised it: the server's hub, file watchers, staged-upload reaper, pipeline admission loop, OIDC sweeper, board-dispatch workers and WS/PTY pumps; the runner pod's lease heartbeat, sandbox reaper, queue-depth gauge and credential refreshers; the dispatcher's actor loop and config watcher. This guard **re-panics** — those goroutines hold jobs the process cannot do without, so the crash stays a crash |
+| `errtrack.Go` / `errtrack.TrackPanic` ([pkg/errtrack/crash.go](../pkg/errtrack/crash.go)) | a panic in a detached goroutine of the three daemons, tagged with the `surface` that raised it: the server's hub, file watchers, staged-upload reaper, pipeline admission loop, OIDC sweeper, outcome-router sweep, board-binding sync, board-dispatch workers and WS/PTY pumps; the runner pod's lease heartbeats (a sub-bot's included), pending-queue poller and the NATS queue-depth gauge it samples, sandbox reaper, workspace checkpointer and credential refreshers; the dispatcher's actor loop, config watcher and claim reaper. This guard **re-panics** — those goroutines hold jobs the process cannot do without, so the crash stays a crash |
 | The dispatcher actor's inner recover blocks and runtime fan-out branches | already recover and log at error level, so the log coupling reports them — no extra call site |
 | The central logger, on the daemons and the studio | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event. A run's own logger is a fork of the process one, so a run's error lines reach the tracker too |
 | [pkg/alert](../pkg/alert/errtrack.go) | run health, one class per kind: `run_failed`, `budget_exceeded` and `route_action_failed` as **errors** — the run's automation is stopped; `stall`, `budget_warning`, `run_parked` and `route_escalated` as **warnings** — a run waiting on a window or on a human is a real incident, so the ops webhook is never its only channel; `stall_recovered` as a breadcrumb, because closing an episode is context for the next incident, not one of its own |
@@ -171,18 +171,30 @@ Everything passes the SDK's `BeforeSend` hook before it leaves the
 process ([pkg/errtrack/scrub.go](../pkg/errtrack/scrub.go)):
 
 - fields, tags and headers whose **name** looks sensitive
-  (`authorization`, `cookie`, `token`, `secret`, `password`, `passwd`,
+  (`authorization`, `cookie`, `secret`, `token`, `password`, `passwd`,
   `api_key`, `apikey`, `credential`, `private_key`, `dsn`, `session`,
-  `bearer`) are replaced with `[redacted]` whatever their value —
-  **unless the value is a number**, since a credential is text and the
-  exemption is what keeps `input_tokens: 1200` a measurement instead of
-  `[redacted]`. Bare `auth` is deliberately *not* in the list:
-  substring matching would eat `author` / `pr_author`;
+  `bearer`, and the whole `x-iterion-` header family — `X-Iterion-Run`
+  and `X-Iterion-Refresh` are bare tokens no value pattern can catch, so
+  the header NAME is the signal) are replaced with `[redacted]` whatever
+  their value — **unless the value is a number**, since a credential is
+  text and the exemption is what keeps `input_tokens: 1200` a
+  measurement instead of `[redacted]`. Bare `auth` is deliberately *not*
+  in the list: substring matching would eat `author` / `pr_author`;
+- three **query-string parameters** are redacted by exact name rather
+  than by fragment: `code` and `state` (the OAuth authorization code and
+  CSRF state on the SSO / forge callbacks) and `sig` (the
+  presigned-attachment HMAC, a replayable grant for its whole TTL). They
+  stay out of the name list above because as prose "code" and "state"
+  are everywhere (`exit code=1`);
 - credential-shaped **substrings** are redacted inside otherwise-useful
   text: URL userinfo (`https://key:secret@host` — the shape of a DSN),
-  the `sk-` / `xai-` / `ghp_` / `glpat-` / `iap_` / `iwh_` token
-  prefixes, `Bearer`/`Basic` header values, iterion's own
-  `__ITERION_SECRET_*__` placeholders, and email addresses;
+  the `sk-` / `xai-` / `gh[pousr]_` / `glpat-` / `iap_` / `iwh_` token
+  prefixes, Slack `xox[abpsr]-` tokens, Google/Firebase `AIza…` keys,
+  JWTs (`eyJ….….…`), `Bearer`/`Basic` header values, iterion's own
+  `__ITERION_SECRET_*__` placeholders, `token=` / `api_key=` / `secret=`
+  / `password=` / `passwd=` value echoes in prose, curl lines and query
+  strings (the key name is `\b`-anchored, so `tokens=48657` — a count —
+  stays intact), and email addresses;
 - the **user record** (id, email, ip) is cleared unconditionally.
 
 Scrubbing is on the SDK's own send hooks rather than at the call sites,
