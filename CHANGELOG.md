@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.153.0](https://github.com/SocialGouv/iterion/compare/v3.152.4...v3.153.0) (2026-09-16)
+
+### Features
+
+* **dsl:** dry-run validation — validate --exec, fmt/fix, the loop warnings (lot 4, [#1289](https://github.com/SocialGouv/iterion/issues/1289)) ([#1292](https://github.com/SocialGouv/iterion/issues/1292)) ([e652e78](https://github.com/SocialGouv/iterion/commit/e652e78ed914c0336eae1dce5a6b1eeda6d2797e)), references [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1307](https://github.com/SocialGouv/iterion/issues/1307) [#1325](https://github.com/SocialGouv/iterion/issues/1325)
+
+    <details><summary>why</summary>
+
+    A NodeExecutor that renders what each node would send through the production renderers and answers with the node's fixture or a schema-shaped output (an enum's first value then its last, a bool the pass's bias, 1, 1.0, "x", one element, an empty object), holds shell text to the interpreter's own parser (bash -n, sh -n; other interpreters are said unchecked), and reports every {{…}} kept as written — the prompt renderer now tells a listener what it keeps (model.TemplateResolver, the one…
+
+    </details>
+
 ## [3.152.4](https://github.com/SocialGouv/iterion/compare/v3.152.3...v3.152.4) (2026-09-16)
 
 ### Bug Fixes
