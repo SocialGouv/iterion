@@ -66,9 +66,17 @@ judge verdict:
   system: verdict_system
   output: verdict_schema
 
+## The loop-exhaustion exit: once `retry` is spent the back-edge is
+## declined, and the bare edge below carries the run here — a typed
+## refusal, not a death by LOOP_EXHAUSTED.
+fail deploy_unverified:
+  code: DEPLOY_UNVERIFIED
+  message: "the deployment did not pass end-to-end validation after the retries allowed"
+
 workflow deploy_e2e:
   entry: deploy_and_test
   sandbox: auto
   deploy_and_test -> verdict
   verdict -> done when pass
   verdict -> deploy_and_test as retry(2) when not pass
+  verdict -> deploy_unverified

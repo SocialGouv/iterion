@@ -30,6 +30,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
@@ -89,8 +90,8 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 	}
 	res := &Result{Name: name, Original: src}
 
-	norm := normalize(src)
-	before := parser.Parse(name, norm.text)
+	norm := rewrite.Normalize(src)
+	before := parser.Parse(name, norm.Text)
 	if errs := parseErrors(before.Diagnostics); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %s does not parse in its own profile — fix it first: %s", ErrRefused, name, strings.Join(errs, "; "))
 	}
@@ -99,22 +100,21 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 		res.Migrated = src
 		return res, nil
 	}
-	toks := parser.NewLexer(name, norm.text).All()
+	toks := parser.NewLexer(name, norm.Text).All()
 	if line := projectRootLine(before.File, toks); line > 0 {
 		return nil, fmt.Errorf("%w: %s:%d uses `project_root:`, which profile 2 removed and has no mechanical replacement (`visibility:` is a different axis, C171): keep the file in profile 1, or redesign the memory scope first", ErrRefused, name, line)
 	}
 
-	edits, changes := planEdits(norm.text, toks, before.File, to)
+	edits, changes := planEdits(norm.Text, toks, before.File, to)
 	res.Changes = changes
-	migratedNorm, err := applyEdits(norm.text, edits)
-	if err != nil {
+	if _, err := rewrite.Apply(norm.Text, edits); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrRefused, name, err)
 	}
-	res.Migrated = norm.mapBack(src, edits, migratedNorm)
+	res.Migrated = norm.MapBack(src, edits)
 	res.Changed = !bytes.Equal(res.Migrated, src)
 
 	// The oracle: the two texts read as the same document.
-	after := parser.Parse(name, normalize(res.Migrated).text)
+	after := parser.Parse(name, rewrite.Normalize(res.Migrated).Text)
 	if errs := parseErrors(after.Diagnostics); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: the migrated %s does not parse in profile %d (a defect of the migration, not of the file): %s", ErrRefused, name, to, strings.Join(errs, "; "))
 	}
@@ -142,21 +142,16 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 
 // edit replaces the normalised text in [start, end) with repl; start and
 // end are byte offsets into the normalised text.
-type edit struct {
-	start, end int
-	repl       string
-}
-
 // planEdits lists the rewrites: the header, the directive comments, the
 // quoted literals that hold a backslash. Every edit covers only what it
 // changes — the header's value, a comment's own span, a literal — so no two
 // can overlap: a comment shares its line with the header or with a literal
 // often enough.
-func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, []Change) {
-	var edits []edit
+func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]rewrite.Edit, []Change) {
+	var edits []rewrite.Edit
 	var changes []Change
-	lines := lineStarts(norm)
-	runeToByte := runeByteOffsets(norm)
+	lines := rewrite.LineStarts(norm)
+	runeToByte := rewrite.RuneByteOffsets(norm)
 
 	// The header: replace the value of an explicit `dsl: 1` — the number
 	// alone, so a comment after it stays — or insert one before the first
@@ -165,12 +160,12 @@ func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, [
 	eol := "\n"
 	header := fmt.Sprintf("dsl: %d", to)
 	if pre.HeaderLine > 0 {
-		start, end := lineSpan(norm, lines, pre.HeaderLine)
+		start, end := rewrite.LineSpan(norm, lines, pre.HeaderLine)
 		if valueEnd := headerValueEnd(toks, pre.HeaderLine, runeToByte); valueEnd > start {
-			edits = append(edits, edit{start, valueEnd, header})
+			edits = append(edits, rewrite.Edit{Start: start, End: valueEnd, Repl: header})
 			changes = append(changes, Change{Kind: "header", Line: pre.HeaderLine, From: norm[start:valueEnd], To: header})
 		} else {
-			edits = append(edits, edit{start, end, header + eol})
+			edits = append(edits, rewrite.Edit{Start: start, End: end, Repl: header + eol})
 			changes = append(changes, Change{Kind: "header", Line: pre.HeaderLine, From: strings.TrimRight(norm[start:end], "\n"), To: header})
 		}
 	} else {
@@ -184,7 +179,7 @@ func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, [
 				repl = eol + repl
 			}
 		}
-		edits = append(edits, edit{at, at, repl})
+		edits = append(edits, rewrite.Edit{Start: at, End: at, Repl: repl})
 		changes = append(changes, Change{Kind: "header", Line: line, To: header})
 	}
 
@@ -197,10 +192,10 @@ func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, [
 		if !parser.IsStrictEscapeDirective(c.Text) {
 			continue
 		}
-		lineStart, lineEnd := lineSpan(norm, lines, c.Span.Start.Line)
-		cstart := lineStart + columnByte(norm[lineStart:lineEnd], c.Span.Start.Column)
+		lineStart, lineEnd := rewrite.LineSpan(norm, lines, c.Span.Start.Line)
+		cstart := lineStart + rewrite.ColumnByte(norm[lineStart:lineEnd], c.Span.Start.Column)
 		if strings.TrimSpace(norm[lineStart:cstart]) == "" {
-			edits = append(edits, edit{lineStart, lineEnd, ""})
+			edits = append(edits, rewrite.Edit{Start: lineStart, End: lineEnd, Repl: ""})
 			changes = append(changes, Change{Kind: "directive", Line: c.Span.Start.Line, From: strings.TrimRight(norm[lineStart:lineEnd], "\n")})
 			continue
 		}
@@ -211,7 +206,7 @@ func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, [
 		if cend > cstart && norm[cend-1] == '\n' {
 			cend--
 		}
-		edits = append(edits, edit{cstart, cend, ""})
+		edits = append(edits, rewrite.Edit{Start: cstart, End: cend, Repl: ""})
 		changes = append(changes, Change{Kind: "directive", Line: c.Span.Start.Line, From: strings.TrimSpace(norm[cstart:cend])})
 	}
 
@@ -226,30 +221,12 @@ func planEdits(norm string, toks []parser.Token, f *ast.File, to int) ([]edit, [
 				continue // the same text in both profiles
 			}
 			repl := unparse.QuoteStrict(t.Value)
-			edits = append(edits, edit{start, end, repl})
+			edits = append(edits, rewrite.Edit{Start: start, End: end, Repl: repl})
 			changes = append(changes, Change{Kind: "literal", Line: t.Line, From: norm[start:end], To: repl})
 		}
 	}
-	sort.SliceStable(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
+	sort.SliceStable(edits, func(i, j int) bool { return edits[i].Start < edits[j].Start })
 	return edits, changes
-}
-
-// applyEdits rewrites text; edits are sorted by start and must not overlap.
-// An overlap is a defect of the planning, reported — never sliced into a
-// file, and never a panic out of a CI gate.
-func applyEdits(text string, edits []edit) (string, error) {
-	var b strings.Builder
-	at := 0
-	for _, e := range edits {
-		if e.start < at || e.end < e.start || e.end > len(text) {
-			return "", fmt.Errorf("overlapping edits at byte %d (the previous one ended at %d): a defect of the migration, not of the file", e.start, at)
-		}
-		b.WriteString(text[at:e.start])
-		b.WriteString(e.repl)
-		at = e.end
-	}
-	b.WriteString(text[at:])
-	return b.String(), nil
 }
 
 // headerValueEnd is the byte offset just past the number of the `dsl: N`
@@ -265,80 +242,6 @@ func headerValueEnd(toks []parser.Token, line int, runeToByte []int) int {
 		return 0
 	}
 	return 0
-}
-
-// columnByte is the byte offset within lineText of its 1-based rune column.
-func columnByte(lineText string, column int) int {
-	if column <= 1 {
-		return 0
-	}
-	n := 0
-	for i := range lineText {
-		n++
-		if n == column {
-			return i
-		}
-	}
-	return len(lineText)
-}
-
-// ---- normalisation and the way back to the original bytes ----
-
-// normalized is the text the lexer reads — BOM stripped, CRLF folded —
-// with what it takes to map an offset back to the original bytes.
-type normalized struct {
-	text string
-	bom  int   // bytes of BOM removed at the start
-	crlf []int // offsets, in text, of the '\n' that had a '\r' before it
-}
-
-func normalize(src []byte) normalized {
-	n := normalized{}
-	s := string(src)
-	if strings.HasPrefix(s, "\ufeff") {
-		n.bom = len("\ufeff")
-		s = s[n.bom:]
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\r' && i+1 < len(s) && s[i+1] == '\n' {
-			n.crlf = append(n.crlf, b.Len())
-			continue // the '\n' that follows is written on the next turn
-		}
-		b.WriteByte(s[i])
-	}
-	n.text = b.String()
-	return n
-}
-
-// origOffset maps an offset of the normalised text to the original bytes:
-// the BOM, and one '\r' per folded newline strictly before it, are added
-// back — so an offset ON a folded '\n' maps to its '\r', and a range ending
-// there keeps the file's own line ending.
-func (n normalized) origOffset(o int) int {
-	k := sort.SearchInts(n.crlf, o) // folded newlines strictly before o
-	return o + n.bom + k
-}
-
-// mapBack rebuilds the migrated file on the ORIGINAL bytes: everything
-// outside the edited ranges is copied as it was (BOM and line endings
-// included), each edit's replacement is written in place, and a
-// replacement's own line endings follow the file's.
-func (n normalized) mapBack(src []byte, edits []edit, _ string) []byte {
-	eol := "\n"
-	if len(n.crlf) > 0 {
-		eol = "\r\n"
-	}
-	var out bytes.Buffer
-	at := 0
-	for _, e := range edits {
-		s, t := n.origOffset(e.start), n.origOffset(e.end)
-		out.Write(src[at:s])
-		out.WriteString(strings.ReplaceAll(e.repl, "\n", eol))
-		at = t
-	}
-	out.Write(src[at:])
-	return out.Bytes()
 }
 
 // ---- oracles ----
@@ -473,26 +376,6 @@ func parseErrors(diags []parser.Diagnostic) []string {
 }
 
 // lineStarts is the byte offset of each line's first byte (line 1 at 0).
-func lineStarts(text string) []int {
-	starts := []int{0}
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			starts = append(starts, i+1)
-		}
-	}
-	return starts
-}
-
-// lineSpan is the byte range of a 1-based line, its newline included.
-func lineSpan(text string, starts []int, line int) (int, int) {
-	start := starts[line-1]
-	end := len(text)
-	if line < len(starts) {
-		end = starts[line]
-	}
-	return start, end
-}
-
 // firstSignificantLine is the byte offset and 1-based number of the first
 // line that is neither blank nor a comment — where the header goes.
 func firstSignificantLine(text string, starts []int) (int, int) {
@@ -511,14 +394,4 @@ func firstSignificantLine(text string, starts []int) (int, int) {
 		return start, i + 1
 	}
 	return len(text), len(starts)
-}
-
-// runeByteOffsets maps a rune index of text to its byte offset (one more
-// entry than runes, for an exclusive end).
-func runeByteOffsets(text string) []int {
-	out := make([]int, 0, len(text)+1)
-	for i := range text {
-		out = append(out, i)
-	}
-	return append(out, len(text))
 }

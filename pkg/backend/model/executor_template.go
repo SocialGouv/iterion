@@ -224,199 +224,33 @@ func (e *ClawExecutor) imageContentBlock(info AttachmentInfo) (delegate.ContentB
 // Prevents OOM from extremely large input values injected into prompts.
 const maxTemplateExpansionSize = 5 * 1024 * 1024 // 5 MB
 
+// templateResolver is the executor's view of the shared renderer: its
+// vars, its secret guard when one is wired, its logger for the expansion
+// warning. Unresolved references stay silent here — the model reads the
+// placeholder — a dry run listens to them (TemplateResolver.Unresolved).
+func (e *ClawExecutor) templateResolver() *TemplateResolver {
+	r := &TemplateResolver{Vars: e.vars, Warn: func(format string, args ...any) {
+		if e.logger != nil {
+			e.logger.Warn(format, args...)
+		}
+	}}
+	if e.secretGuard != nil {
+		r.Secrets = e.secretGuard
+	}
+	return r
+}
+
 // resolveTemplate substitutes {{...}} references in a prompt body.
 // td carries the runtime state for cross-namespace refs; pass nil
 // to limit resolution to `input.*` and `vars.*`.
 func (e *ClawExecutor) resolveTemplate(body string, input map[string]any, td *TemplateData) string {
-	var b strings.Builder
-	remaining := body
-
-	for {
-		start := strings.Index(remaining, "{{")
-		if start == -1 {
-			b.WriteString(remaining)
-			break
-		}
-		end := strings.Index(remaining[start:], "}}")
-		if end == -1 {
-			b.WriteString(remaining)
-			break
-		}
-		end += start + 2
-
-		b.WriteString(remaining[:start])
-
-		ref := strings.TrimSpace(remaining[start+2 : end-2])
-		val, resolved := e.resolveTemplateRef(ref, input, td)
-		if resolved {
-			b.WriteString(val)
-		} else {
-			// Keep unresolved refs as-is.
-			b.WriteString(remaining[start:end])
-		}
-
-		remaining = remaining[end:]
-
-		// Guard against excessive expansion from large input values.
-		// Truncate at the limit rather than appending the remaining template.
-		if b.Len() > maxTemplateExpansionSize {
-			e.logger.Warn("template expansion exceeded %d bytes, truncating", maxTemplateExpansionSize)
-			break
-		}
-	}
-
-	return b.String()
+	return e.templateResolver().Resolve(body, input, td)
 }
 
-// resolveTemplateRef resolves a single "namespace.path" reference.
-// Returns the resolved value and true, or ("", false) if unresolvable.
-// Supported namespaces:
-//   - input.<field>                                  — current node's input
-//   - vars.<name>                                    — workflow variables
-//   - outputs.<node_id>[.<field>...]                 — upstream node output
-//   - loop.<name>.iteration                          — current iteration counter
-//   - loop.<name>.max                                — declared loop bound
-//   - loop.<name>.previous_output[.<field>...]       — snapshot one iteration behind
-//   - artifacts.<publish_name>[.<field>...]          — published artifact
-//   - run.id                                         — current run ID
-//
-// Cross-namespace refs require td (TemplateData) — when td is nil they
-// resolve as not-found and the literal placeholder is preserved.
+// resolveTemplateRef resolves a single "namespace.path" reference —
+// TemplateResolver.ResolveRef with the executor's vars and secret guard.
 func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *TemplateData) (string, bool) {
-	if ref == ir.LiteralOpenExpression {
-		return "{{", true
-	}
-	parts := strings.SplitN(ref, ".", 2)
-	if len(parts) < 2 {
-		return "", false
-	}
-
-	namespace := parts[0]
-	key := parts[1]
-
-	switch namespace {
-	case "input":
-		// `input.X` accepts dotted sub-paths so prompts can drill into
-		// structured fields populated by edge `with`-mappings.
-		segs := strings.Split(key, ".")
-		v, ok := drillTemplatePath(input, segs)
-		if ok {
-			return formatValue(v), true
-		}
-	case "vars":
-		if e.vars != nil {
-			if v, ok := e.vars[key]; ok {
-				return formatValue(v), true
-			}
-		}
-	case "secrets":
-		// {{secrets.X}} renders the opaque placeholder (Layer 1); the
-		// real value is materialised by the secret guard at tool/shell
-		// execution. File secrets render their mounted path. With the
-		// placeholders kill-switch off value secrets render the real value
-		// directly.
-		if e.secretGuard != nil {
-			name := key
-			if dot := strings.IndexByte(key, '.'); dot >= 0 {
-				name = key[:dot]
-			}
-			if v := e.secretGuard.ResolveSecretRef(name); v != "" {
-				return v, true
-			}
-		}
-	case "outputs":
-		v, ok := outputsTemplateValue(td, strings.Split(key, "."))
-		if !ok {
-			return "", false
-		}
-		return formatValue(v), true
-	case "loop":
-		if td == nil {
-			return "", false
-		}
-		segs := strings.Split(key, ".")
-		if len(segs) < 2 {
-			return "", false
-		}
-		loopName, field := segs[0], segs[1]
-		switch field {
-		case "iteration":
-			return formatValue(int64(td.LoopCounters[loopName])), true
-		case "max":
-			return formatValue(int64(td.LoopMaxIterations[loopName])), true
-		case "previous_output":
-			prev := td.LoopPreviousOutput[loopName]
-			// Render empty string on the first iteration (prev is nil)
-			// so prompts that say "vide si premiere iteration" read
-			// naturally instead of leaving a literal placeholder.
-			if len(segs) == 2 {
-				if prev == nil {
-					return "", true
-				}
-				return formatValue(prev), true
-			}
-			if prev == nil {
-				return "", true
-			}
-			v, ok := drillTemplatePath(prev, segs[2:])
-			if !ok {
-				return "", true
-			}
-			return formatValue(v), true
-		}
-	case "artifacts":
-		if td == nil {
-			return "", false
-		}
-		segs := strings.Split(key, ".")
-		art, ok := td.Artifacts[segs[0]]
-		if !ok || art == nil {
-			return "", false
-		}
-		if len(segs) == 1 {
-			return formatValue(art), true
-		}
-		v, ok := drillTemplatePath(art, segs[1:])
-		if !ok {
-			return "", false
-		}
-		return formatValue(v), true
-	case "run":
-		return lookupRunTemplateRef(td, key)
-	case "attachments":
-		if td == nil {
-			return "", false
-		}
-		segs := strings.Split(key, ".")
-		info, ok := td.Attachments[segs[0]]
-		if !ok {
-			return "", false
-		}
-		// Default sub-field is the path so {{attachments.X}} reads as
-		// the local file path the agent / tool can open.
-		sub := "path"
-		if len(segs) >= 2 {
-			sub = segs[1]
-		}
-		switch sub {
-		case "path":
-			return info.Path, true
-		case "url":
-			url, err := info.URL()
-			if err != nil {
-				return "", true
-			}
-			return url, true
-		case "mime":
-			return info.MIME, true
-		case "size":
-			return formatValue(info.Size), true
-		case "sha256":
-			return info.SHA256, true
-		}
-	}
-
-	return "", false
+	return e.templateResolver().ResolveRef(ref, input, td)
 }
 
 // outputsTemplateValue resolves one `outputs.<node>[.<field>…]` reference to

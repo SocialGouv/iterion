@@ -159,6 +159,14 @@ func (e *Engine) emitEvent(rs *runState, en *ir.EmitNode, sc resolveScope) map[s
 // mandatory timeout fires, or ctx is cancelled. On success it returns a copy of
 // the event payload. Shared by the main loop (execWait) and the branch path.
 func (e *Engine) awaitEvent(ctx context.Context, rs *runState, nodeID string, wn *ir.WaitNode) (map[string]any, error) {
+	if e.simulation.EventsArrive {
+		// A dry run: the event has arrived — with its payload when an emit
+		// ran before this wait, empty otherwise.
+		if payload := rs.events.payloadFor(wn.Event); payload != nil {
+			return payload, nil
+		}
+		return map[string]any{}, nil
+	}
 	ch := rs.events.waitChan(wn.Event)
 	timer := time.NewTimer(wn.Timeout)
 	defer timer.Stop()

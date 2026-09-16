@@ -1358,7 +1358,7 @@ func (c *compiler) compileTools() {
 			} else {
 				cmdRefs = refs
 			}
-			c.checkQuotedCommandRefs(t.Name, t.Command)
+			c.checkQuotedCommandRefs(t.Name, "command", t.Command)
 		}
 
 		var scriptRefs []*Ref
@@ -1393,7 +1393,7 @@ func (c *compiler) compileTools() {
 			// Same template machinery as `command:`, so the same cancel — and
 			// a postcondition is the deterministic truth oracle of a Verified
 			// Action, which makes a corrupted value worse here than anywhere.
-			c.checkQuotedCommandRefs(t.Name+" postcondition", t.Postcondition)
+			c.checkQuotedCommandRefs(t.Name, "postcondition", t.Postcondition)
 		}
 		policy := t.Policy
 		if policy == "" && t.Postcondition != "" {
@@ -2454,6 +2454,12 @@ func refInQuotes(command string) []string {
 	return hits
 }
 
+// QuotedCommandRefs is refInQuotes for the tools that rewrite a command —
+// the fixer of C137 removes exactly the quotes this scanner saw.
+func QuotedCommandRefs(command string) []string {
+	return refInQuotes(command)
+}
+
 // checkQuotedCommandRefs flags a ref the author quoted, because the runtime
 // quotes it too — and the two quotings do not nest, they CANCEL.
 //
@@ -2468,11 +2474,63 @@ func refInQuotes(command string) []string {
 // A warning rather than an error: the shape is inert for values without shell
 // metacharacters, so a repo full of them still compiles and runs while it is
 // being cleaned up. The fix is always the same — drop the author's quotes.
-func (c *compiler) checkQuotedCommandRefs(node, command string) {
+//
+// The diagnostic is attributed to the node — its position and its file —
+// and names the property (`command:` or `postcondition:`) the reference
+// sits in.
+//
+// An ERROR, not a warning, when the reference reads an artifact, an
+// attachment or a loop counter: those namespaces resolve in a tool body
+// since 3.151 — before, the braces reached the shell literally, an inert
+// command — so a bot in the field carrying the shape would go from inert
+// to armed at upgrade, with content another node or a forge produced
+// landing as shell syntax. The remedy is the same and mechanical
+// (`iterion fix` applies it); the severity keeps the run from launching.
+func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 	for _, ref := range refInQuotes(command) {
-		c.warnfAt(DiagQuotedCommandRef, node, "",
-			"tool %q command: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
-				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
-			node, ref)
+		if QuotedRefIsRaw(ref) {
+			// A raw reference is not escaped by the runtime: the author's
+			// quotes are its only containment, and a value carrying a
+			// quote breaks out of them. Not the cancelling of two quotings
+			// — a warning with its own remedy, never the error, and not
+			// what `iterion fix` removes.
+			c.warnfAt(DiagQuotedCommandRef, node, "",
+				"tool %q %s: %s is raw (`!`) inside quotes you wrote — the runtime does not escape a raw reference, so your quotes are its only containment, and a value carrying a quote breaks out of them. "+
+					"Drop the `!` to let the runtime escape the value, or keep the quotes knowing where the value comes from.",
+				node, where, ref)
+			continue
+		}
+		switch quotedRefNamespace(ref) {
+		case "artifacts", "attachments", "loop":
+			c.errorfAt(DiagQuotedCommandRef, node, "",
+				"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL: "+
+					"a value that reaches the shell from an artifact, an attachment or a loop counter is then command execution "+
+					"(this shape rendered its braces literally before these namespaces resolved in a tool body; it is refused rather than armed). "+
+					"Remove the surrounding quotes — `iterion fix` does.",
+				node, where, ref)
+		default:
+			c.warnfAt(DiagQuotedCommandRef, node, "",
+				"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
+					"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
+				node, where, ref)
+		}
 	}
+}
+
+// QuotedRefIsRaw says a `{{…}}` reference as written is the raw form
+// (`{{!ref}}`, the bang and the spaces as the reference parser reads them):
+// the runtime does not escape it, and a fixer must not touch the quotes
+// around it.
+func QuotedRefIsRaw(ref string) bool {
+	expr := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ref, "{{"), "}}"))
+	return strings.HasPrefix(expr, "!")
+}
+
+// quotedRefNamespace is the namespace of a `{{…}}` reference as written —
+// the bang and the spaces set aside, as the reference parser reads them.
+func quotedRefNamespace(ref string) string {
+	expr := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ref, "{{"), "}}"))
+	expr = strings.TrimSpace(strings.TrimPrefix(expr, "!"))
+	ns, _, _ := strings.Cut(expr, ".")
+	return ns
 }

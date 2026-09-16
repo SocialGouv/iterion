@@ -84,7 +84,7 @@ const (
 
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
-	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning)
+	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
@@ -163,6 +163,11 @@ const (
 	DiagEventNoListener DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
 	// Skill library (ADR-059): `skills:` references on nodes / workflow.
 	DiagInvalidSkillRef DiagCode = "C199" // malformed skill-library reference name (warning; existence is resolved at run time)
+
+	DiagLoopNoExit           DiagCode = "C145" // a bounded loop edge with no exit once the loop is spent: the run would die of LOOP_EXHAUSTED at the cap (warning)
+	DiagIntDivisionUnrounded DiagCode = "C146" // a compute field typed int fed by a division with a float operand, outside floor()/round(): fails at run time (warning)
+
+	DiagUnknownLoopRef DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).

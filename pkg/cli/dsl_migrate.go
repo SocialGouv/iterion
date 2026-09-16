@@ -85,7 +85,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 	if err != nil {
 		return res, err
 	}
-	files, err := collectBotFiles(opts.Paths)
+	files, err := collectBotFiles("dsl migrate", opts.Paths)
 	if err != nil {
 		return res, err
 	}
@@ -131,7 +131,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			if err != nil {
 				return res, err
 			}
-			if err := os.WriteFile(p.path, p.out.Migrated, info.Mode().Perm()); err != nil {
+			if err := writeFileAtomic(p.path, p.out.Migrated, info.Mode().Perm()); err != nil {
 				return res, fmt.Errorf("dsl migrate: write %s: %w", p.path, err)
 			}
 			res.Files[i].Written = true
@@ -191,7 +191,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 // collectBotFiles expands the paths: a workflow file as itself, a directory
 // as every workflow file under it (skipping the store, the VCS and vendored
 // trees), sorted.
-func collectBotFiles(paths []string) ([]string, error) {
+func collectBotFiles(cmd string, paths []string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	add := func(p string) {
@@ -203,11 +203,11 @@ func collectBotFiles(paths []string) ([]string, error) {
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
-			return nil, fmt.Errorf("dsl migrate: %w", err)
+			return nil, fmt.Errorf("%s: %w", cmd, err)
 		}
 		if !info.IsDir() {
 			if !workflowfile.IsWorkflowFile(p) {
-				return nil, fmt.Errorf("dsl migrate: %s is not a workflow file", p)
+				return nil, fmt.Errorf("%s: %s is not a workflow file", cmd, p)
 			}
 			add(p)
 			continue
@@ -231,7 +231,7 @@ func collectBotFiles(paths []string) ([]string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("dsl migrate: walk %s: %w", p, err)
+			return nil, fmt.Errorf("%s: walk %s: %w", cmd, p, err)
 		}
 	}
 	sort.Strings(out)

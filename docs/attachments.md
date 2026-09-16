@@ -48,7 +48,7 @@ C050 and the later declaration is skipped.
 | ----------------------------------- | ------------------------------------------------------------------------ |
 | `{{attachments.<name>}}`            | host filesystem path (default; same as `.path`)                          |
 | `{{attachments.<name>.path}}`       | host filesystem path                                                     |
-| `{{attachments.<name>.url}}`        | presigned URL — HMAC-signed local URL or SigV4 S3 URL depending on mode  |
+| `{{attachments.<name>.url}}`        | presigned URL — HMAC-signed local URL or SigV4 S3 URL depending on mode; not found — the placeholder stays, `validate --exec` names it, the log says why — when no signer is wired or signing fails |
 | `{{attachments.<name>.mime}}`       | sniffed MIME (e.g. `image/png`)                                          |
 | `{{attachments.<name>.size}}`       | byte length as a decimal string                                          |
 | `{{attachments.<name>.sha256}}`     | hex SHA-256 of the upload                                                |

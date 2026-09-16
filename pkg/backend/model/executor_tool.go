@@ -795,7 +795,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shellEscapeValue, false)
+	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, nil)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -821,7 +821,19 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 	// parse time before any user logic can react. Substitute with the
 	// language's null literal (rendered as JSON null = "null") so the
 	// script can still run and handle the missing input itself.
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, jsonLiteralValue, true)
+	return renderScript(script, refs, input, vars, td, ctxRunID, guard, nil)
+}
+
+// renderCommand and renderScript are the two readings of a tool body —
+// shell-escaped values with a hole kept as written, JSON literals with a
+// hole as null — named once each so the production path and a dry run
+// cannot choose differently.
+func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shellEscapeValue, false, unresolved)
+}
+
+func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, jsonLiteralValue, true, unresolved)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -839,7 +851,14 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // source template — which is why EVERY namespace a tool body can
 // reference resolves here, in this one walk, rather than in a pre-pass
 // of its own.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
+//
+// unresolved, when a caller listens, receives each reference that resolved
+// to nothing — kept as written in a shell body, null in a script body — as
+// `namespace.path`. It is the only reading of what was left: the rendered
+// text is never re-read for braces, since a value may carry `{{…}}` of its
+// own and that is the value, not a reference. The production callers
+// listen to none; a dry run names them.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool, unresolved func(ref string)) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -855,7 +874,11 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		var handled bool
 		switch {
 		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
-			val = input[ref.Path[0]]
+			// Drilled to the leaf, as a prompt reads it: `{{input.a.b}}` is
+			// the field b of a, not the whole of a — one reading of a
+			// reference, whichever body holds it. A missing leaf is nil and
+			// takes the missing-value rule below.
+			val, _ = drillTemplatePath(input, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
 			val = vars[ref.Path[0]]
@@ -895,8 +918,26 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 				val = secretguard.PlaceholderForName(ref.Path[0])
 			}
 			handled = true
+		case ref.Kind == ir.RefArtifacts || ref.Kind == ir.RefAttachments || ref.Kind == ir.RefLoop:
+			// The namespaces a prompt resolves — artifacts, attachments, loop
+			// — resolve here through the shared resolver, so no reference
+			// resolves in a prompt and stays literal in a command (a dry run
+			// found `{{attachments.x}}` handed to the shell as written). The
+			// expression is the parsed reference's, not the raw text's: the
+			// parser has already read the bang and the spaces. The VALUE,
+			// not the prompt's text of it: a script body gets a counter as
+			// a number and an artifact as an object, through the renderer
+			// below like every other namespace. A value the snapshot has
+			// not is nil and takes the missing-value rule below.
+			if v, ok := (&TemplateResolver{Vars: vars}).ResolveValue(refExpr(ref), input, td); ok {
+				val = v
+			}
+			handled = true
 		}
 		if !handled {
+			if unresolved != nil {
+				unresolved(refExpr(ref))
+			}
 			continue
 		}
 		// substituteNil controls whether a recognised-but-nil ref gets
@@ -905,8 +946,13 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		// visible; script contexts MUST render (renderer turns nil into
 		// "null") because a JS/Python/Ruby parser otherwise crashes on
 		// the literal braces before any script logic runs.
-		if val == nil && !substituteNil {
-			continue
+		if val == nil {
+			if unresolved != nil {
+				unresolved(refExpr(ref))
+			}
+			if !substituteNil {
+				continue
+			}
 		}
 		if ref.Unquoted {
 			subs[ref.Raw] = rawTemplateValue(val)
@@ -940,6 +986,13 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		i++
 	}
 	return b.String()
+}
+
+// refExpr is the reference as the resolver reads it, `namespace.path`,
+// from the parsed reference — never from its raw text, whose bang and
+// spaces the parser has already consumed.
+func refExpr(ref *ir.Ref) string {
+	return ref.Kind.String() + "." + strings.Join(ref.Path, ".")
 }
 
 // jsonLiteralValue renders val as a valid JSON literal suitable for

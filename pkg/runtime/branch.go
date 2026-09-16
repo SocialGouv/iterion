@@ -134,8 +134,10 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	// handed out in goroutine-race order and does not survive a resume).
 	ledgerKey := branchLedgerKey(runID, branchID, rs)
 
-	// Emit branch_started (best-effort — branch can proceed without the event).
-	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
+	// Emit branch_started (best-effort — branch can proceed without the
+	// event), naming the edge that started the branch: a reader of the run
+	// — a dry run's coverage — records that edge and guesses none.
+	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, map[string]any{"from": startEdge.From, "to": startEdge.To}); err != nil {
 		e.logger.Warn("branch %s: failed to emit branch_started: %v", branchID, err)
 		result.eventErrors++
 	}
@@ -236,6 +238,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				Code:    outcome.code,
 				NodeID:  currentNodeID,
 				Message: fmt.Sprintf("branch %s reached fail node %q: %s", branchID, currentNodeID, outcome.reason),
+				// The decision travels with the branch's error as it does
+				// with the trunk's: the collector's aggregate carries it on.
+				Cause: ErrDeliberateFailure,
 			}
 			return result
 		}
@@ -250,7 +255,10 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		var done bool
 		resumedHuman := false
 		branchHuman := false
-		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM {
+		// A dry run answers the human in the executor's place, whatever the
+		// interaction mode, as the trunk does: the node takes the executor
+		// path below instead of pausing the branch.
+		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM && !e.simulation.AnswerHumans {
 			branchHuman = true
 			if human.Interaction == ir.InteractionReview || human.Interaction == ir.InteractionLLMOrHuman {
 				e.emitBranchNodeStarted(ctx, runID, branchID, currentNodeID, node, iter, iterPath, result)
@@ -1056,7 +1064,14 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 		return nil, capErr
 	}
 	if selected == nil {
-		return nil, fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
+		// Typed as the trunk's is: a plain error would launder the dead
+		// end into the EXECUTION_FAILED catch-all on the run.
+		return nil, &RuntimeError{
+			Code:    ErrCodeNoOutgoingEdge,
+			Message: fmt.Sprintf("no outgoing edge from node %q in branch %s", fromNodeID, branchID),
+			NodeID:  fromNodeID,
+			Hint:    "ensure the node's output matches at least one edge condition, or add an unconditional fallback edge",
+		}
 	}
 
 	if selected.LoopName == "" {

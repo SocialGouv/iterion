@@ -53,11 +53,15 @@ or a cloud instance, see [repo scope](repo-scope.md) and [cloud CLI](cloud-cli.m
 ```bash
 iterion validate workflow.bot
 iterion validate bundle.botz --json
+iterion validate workflow.bot --exec
+iterion validate workflow.bot --fixtures outputs.json
 ```
 
 Accepted inputs are `.bot`, `.botz`, and bundle directories. A bare `main.bot` whose parent is a bundle (an iterion `manifest.yaml`/`.yml` — one carrying iterion's own keys, `schema_version` first — or a `skills/` beside it; a `prompts/` alone marks nothing, and neither does a manifest of another tool, a common filename) is validated as that bundle — its `prompts/*.md` in scope, its manifest cross-checked — the same promotion `run` and `resume` apply, so `iterion validate bots/x/main.bot` and `iterion validate bots/x` give one verdict — including on a bundle that does not open (a `manifest.yaml` that does not decode), which both forms refuse by name rather than validating the bare file. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C249, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
 Every finding is printed with its source position when the stage could attribute one — `file:line:column: error [C019]: …`, the node's or edge's own line for a compile diagnostic — and a `fix:` line beneath it, the one-line remedy from the compiler's catalogue. `--json` carries the same findings as `diagnostics`, one object each: `source` (`parse` | `compile` | `bundle`), `code`, `severity`, `file` / `line` / `column`, `message`, `hint`, `node_id`, `edge_id`. The older `parse_diagnostics` / `compile_diagnostics` / `bundle_diagnostics` string lists remain. The MCP `local_validate` tool returns this same JSON, so an agent's write → validate → fix loop reads positions and fixes, not prose.
+
+**`--exec` — the dry run.** A program that compiles is then run twice under a simulation — every condition true and every enum at its first value, then the other way — without a model, a shell or the workspace: each node's prompts, `command:`, `script:` and `postcondition:` are rendered by the production renderers and every `{{…}}` left as written is named with the reason (a node that has not produced on this path, a field the input never carries); shell text is held to `bash -n` (`sh -n` for `language: sh`; other interpreters are said unchecked); a human node is answered by a schema-shaped output, a `wait` at once, a `subbot` child read within the bundle's collection and simulated under the same bias (its findings prefixed `node/child_node`). The report — `exec` in `--json`, a block in the human output — lists each pass's status and path, the findings by node, the nodes whose output was a **shape** (a condition read from one decided nothing about the real bot), and the nodes and edges no pass reached. It never runs on a program with a compile error, and its findings do not decide `valid`: they say what the first paid run would have met. `--fixtures f.json` answers the named nodes with recorded outputs — `{node: output}`, or the replay shape, a list of `{"node": …, "output": {…}}` — and reports the nodes without one; it implies `--exec`. `--strict` (implies `--exec`) exits non-zero when the report is not `clean` — the switch a CI gate flips; without it the exit code is the compiler's, and `exec.clean` in `--json` is the report's word. `--exec-timeout` bounds one pass, the simulated children included (default one minute); a pass that runs out of time is said so (`timed_out`) — the bound's doing, not the program's — and the report is not clean, since what the pass would have met past that point is unknown. Until the dry run crosses a bounded loop a few times only (#1307), `--strict` is a per-bot gate: a bot whose loops cross many times runs them to their cap, and needs `--exec-timeout` raised or is left out of the gate. A key `node/child_node` answers a node of a simulated child; a key that names no node is a `fixture` finding, not a thin recording. Each simulated child's passes are listed under `children` — a child that dies is the parent's death — and `clean` says whether every pass finished (or ended at a declared `fail`) with no reference, shell or fixture finding; the human block prints it as `verdict`. A pass that ran to a **ceiling** the shapes imposed — the bot's own `budget:`, an unbounded loop's fuel, the liveness monitor or the budget guard declining a loop edge whose exit rides a verdict the dry run shaped — is said so (`ceiling`) and is not a death: a loop that converges in production cannot converge on shapes, so its cap is the run's guard doing its job; pin the verdict with `--fixtures` to run it to its exit. Every branch of a fan-out runs to its own end under the dry run — a failure cancels no sibling — so a death in one branch beside a ceiling in another is read as the death it is. A bounded loop spent with no exit is the program's — C145's shape — and a death. The MCP tool takes `exec` and `fixtures` the same way.
 
 ### `iterion diagram`
 
@@ -68,6 +72,25 @@ iterion diagram workflow.bot --view full
 ```
 
 `--detailed` and `--full` are aliases for the corresponding `--view` values.
+
+### `iterion fmt`
+
+```bash
+iterion fmt workflow.bot                 # rewrite the file in its canonical form
+iterion fmt bots/my-bot                  # every .bot under a directory, lib/ fragments included
+iterion fmt --check bots/                # CI: exit non-zero when a file would change or is refused
+```
+
+`fmt` parses each file, writes it back through the writer the studio saves with (`pkg/dsl/unparse`) and proves, before writing, that the text reads as the same program (`Verify`: same parse, same profile, same compiled workflow and diagnostics, prompt bodies in their canonical form). The text lands on the file's own bytes: a BOM and CRLF line endings are kept. A file it cannot rewrite without changing it is refused by name and left as it is — one that does not parse, and, until comments survive a rewrite (#1282), one carrying a comment the writer would move: the writer keeps only the comments that lead the file, above the `dsl:` header, the imports and the first declaration, so a comment after any of those is refused — while the files beside it are formatted all the same. `.botz` archives are not workflow files: naming one is an error, a walk passes over them. `--check` writes nothing and exits non-zero when a file would change or is refused; `--json` lists each file (`changed`, `written`) and the refusals.
+
+### `iterion fix`
+
+```bash
+iterion fix workflow.bot                 # apply the mechanical remedies, in place
+iterion fix --dry-run bots/my-bot        # list every edit, write nothing
+```
+
+`fix` applies the remedies that are the same every time — today **C137**: a `{{ref}}` an author quoted in a tool's `command:` or `postcondition:` loses exactly the quotes around it (the runtime shell-quotes a ref already; the two quotings cancel) — on the file's own bytes, comments and layout untouched, and proves each result before writing it: the text parses, and compiles to the same diagnostics minus the fixed. Quotes that hold more than the reference (`'v={{vars.x}}'`) are not mechanical and are left to the author, said so under `left`, as is every other diagnostic — and so is a tool inside a `group`, whose literal serves every `use` (not rewritten mechanically yet). A file is fixed within its unit: naming a bot's main fixes its `lib/` fragments too, naming a fragment reads it through the main that imports it. A file that does not parse is refused by name while the others are fixed. `validate --json` carries the same edit on the diagnostic it remedies (`edit`: `code`, `line`, `column`, `from`, `to`), so an agent's loop can apply it without a second command.
 
 ### `iterion bundle`
 

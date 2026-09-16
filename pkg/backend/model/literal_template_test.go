@@ -27,7 +27,7 @@ func TestLiteralTemplateRenderingIsSinglePass(t *testing.T) {
 	for _, render := range []func(any) string{rawTemplateValue, shellEscapeValue, jsonLiteralValue} {
 		// Literal source is inserted verbatim, dynamic values retain each site's encoding.
 		expected := `{{vars.x}} / ` + render(vars["x"]) + ` / {{`
-		if got := resolveTemplateWith(source, refs, nil, vars, nil, "", nil, render, true); got != expected {
+		if got := resolveTemplateWith(source, refs, nil, vars, nil, "", nil, render, true, nil); got != expected {
 			t.Fatalf("render=%q want=%q", got, expected)
 		}
 	}

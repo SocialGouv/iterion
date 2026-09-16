@@ -73,8 +73,66 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 			}
 			loc := fmt.Sprintf("compute %q field %q", cn.ID, ce.Key)
 			c.walkExprTypes(expr.ToSnapshot(ce.AST), env, cn.ID, "", loc)
+			c.checkIntDivision(w, cn, ce, env)
 		}
 	}
+}
+
+// checkIntDivision warns when a compute field typed int is fed by a division
+// with an operand the compiler knows to be a float, outside floor()/round()
+// (C146): the runtime refuses the fractional value at the node
+// (EXPRESSION_FAILED), and only then. An operand it cannot type — a
+// function's result, an arithmetic — is not held against the author: the
+// runtime divides ints to an int, and the warning must be true when it
+// speaks.
+func (c *compiler) checkIntDivision(w *Workflow, cn *ComputeNode, ce *ComputeExpr, env exprEnv) {
+	schema := w.Schemas[cn.OutputSchema]
+	if schema == nil {
+		return
+	}
+	var field *SchemaField
+	for _, f := range schema.Fields {
+		if f != nil && f.Name == ce.Key {
+			field = f
+			break
+		}
+	}
+	if field == nil || field.Type != FieldTypeInt {
+		return
+	}
+	if unroundedDivision(expr.ToSnapshot(ce.AST), env) {
+		c.warnfAt(DiagIntDivisionUnrounded, cn.ID, "",
+			"compute %q field %q is an int and its expression %q divides a float without floor() or round(): the fractional result fails at run time — wrap the division in floor(...) or round(...), or type the field float",
+			cn.ID, ce.Key, ce.Raw)
+	}
+}
+
+// isFloat says the compiler knows the operand to be a float.
+func isFloat(t inferredType) bool {
+	return t.known && t.t == FieldTypeFloat
+}
+
+// unroundedDivision reports a division in n with an operand typed float
+// that no floor()/round() wraps.
+func unroundedDivision(n *expr.Snapshot, env exprEnv) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == expr.SnapFuncCall && (n.Func == "floor" || n.Func == "round") {
+		return false
+	}
+	if n.Kind == expr.SnapBinary && n.Op == "/" && len(n.Children) == 2 {
+		l, r := env.inferType(n.Children[0]), env.inferType(n.Children[1])
+		if isFloat(l) || isFloat(r) {
+			return true
+		}
+	}
+	for _, ch := range n.Children {
+		if unroundedDivision(ch, env) {
+			return true
+		}
+	}
+	return false
 }
 
 // walkExprTypes is the single recursive pass over an expression snapshot. At

@@ -286,7 +286,7 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			// failed for any reason under wait_all (their results would be
 			// discarded anyway, so paying for them is pure waste).
 			if result != nil && result.err != nil {
-				if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || plan.cancelOnFirstFailure {
+				if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(plan.cancelOnFirstFailure) {
 					cancelBranches()
 				}
 			}
@@ -465,4 +465,12 @@ func allTerminatedAtDone(results []*branchResult) bool {
 		}
 	}
 	return true
+}
+
+// siblingsCancelled says whether a branch that failed cancels its siblings
+// under the fan-out's policy (wait_all cancels, best_effort keeps every
+// branch) — never under a simulation asked to see every branch's own end.
+// The policy itself is untouched: it is also what says best_effort.
+func (e *Engine) siblingsCancelled(policy bool) bool {
+	return policy && !e.simulation.BranchesRunToTheirEnd
 }

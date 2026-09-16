@@ -1,17 +1,22 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
+	"github.com/SocialGouv/iterion/pkg/dsl/fix"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
@@ -44,6 +49,34 @@ type ValidateResult struct {
 	// bound it (ADR-099) — present only when the program compiles without
 	// an error, so a view is never shown of a program that is not one.
 	PublicContract *ir.PublicContract `json:"public_contract,omitempty"`
+	// Exec is the dry run's report (`--exec`): what two passes of the
+	// compiled program met without a model, a shell or the workspace —
+	// present only when the program compiles without an error, and only
+	// when asked. Its findings are not diagnostics: they do not decide
+	// `valid`, they tell the author what the first run would have met.
+	Exec *dryrun.Report `json:"exec,omitempty"`
+	// ExecError says why the dry run asked for did not run — the fixtures
+	// could not be read, or the run failed; the compile verdict stands.
+	ExecError string `json:"exec_error,omitempty"`
+}
+
+// ValidateOptions widen `iterion validate`. Exec runs the compiled program
+// under a dry run once it compiles (pkg/dryrun); Fixtures names a JSON file
+// of node outputs the dry run answers with — an object `{node: output}`, or
+// the replay shape, a list of `{"node": …, "output": {…}}` — and implies
+// Exec.
+type ValidateOptions struct {
+	Exec bool
+	// ExecTimeout bounds one pass of the dry run, the children it simulates
+	// included; zero is a minute. A pass that runs out of time is said so in
+	// the report (`timed_out`), apart from a death of the program.
+	ExecTimeout time.Duration
+	// Strict fails the command when the dry run's report is not clean —
+	// a pass died, or a reference, shell or fixture finding stands — the
+	// switch a CI gate flips; without it the exit code is the compiler's,
+	// and `exec.clean` in the JSON is the report's word.
+	Strict   bool
+	Fixtures string
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -60,6 +93,10 @@ type ValidateDiagnostic struct {
 	Hint     string `json:"hint,omitempty"`
 	NodeID   string `json:"node_id,omitempty"`
 	EdgeID   string `json:"edge_id,omitempty"`
+	// Edit is the mechanical remedy the diagnostic carries, when its fix
+	// is the same every time (pkg/dsl/fix; `iterion fix` applies it): the
+	// literal before and after, at its line and column.
+	Edit *fix.Edit `json:"edit,omitempty"`
 }
 
 // formatDiagnostic renders one finding for the human output: the
@@ -139,6 +176,17 @@ func printDiagnostics(p *Printer, diags []ValidateDiagnostic) {
 // directory and validated; bundle metadata (name, version) is reported
 // alongside the workflow result.
 func RunValidate(path string, p *Printer) error {
+	return RunValidateWith(path, p, ValidateOptions{})
+}
+
+// RunValidateWith is RunValidate with its options.
+func RunValidateWith(path string, p *Printer, opts ValidateOptions) error {
+	return RunValidateWithContext(context.Background(), path, p, opts)
+}
+
+// RunValidateWithContext is RunValidateWith under a context that bounds the
+// dry run — its passes and the children they simulate.
+func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts ValidateOptions) error {
 	path = ResolveRecipePath(path)
 	if err := requireWorkflowPathExists(path); err != nil {
 		return err
@@ -296,6 +344,7 @@ func RunValidate(path string, p *Printer) error {
 			result.Valid = false
 		}
 	}
+	annotateEdits(result, u, cr.Diagnostics)
 
 	if cr.Workflow != nil {
 		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
@@ -376,6 +425,36 @@ func RunValidate(path string, p *Printer) error {
 		}
 	}
 
+	// The dry run, on a program that compiles: never on one that does not —
+	// the diagnostics above are its remedy, a run of it would meet them
+	// again as noise.
+	// A dry run that could not run — fixtures unreadable, the run itself
+	// failing — is said in the result beside the compile verdict, which
+	// stands and is printed; the command then exits non-zero for the dry
+	// run, not for the program.
+	if (opts.Exec || opts.Fixtures != "" || opts.Strict) && result.Valid && cr.Workflow != nil {
+		fixtures, err := loadDryRunFixtures(opts.Fixtures)
+		if err != nil {
+			result.ExecError = err.Error()
+		} else {
+			collection := filepath.Dir(parsePath)
+			if bundleHandle != nil {
+				collection = bundleHandle.Dir
+			}
+			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
+				Fixtures: fixtures,
+				Path:     parsePath,
+				Children: dryRunChildren(collection),
+				Timeout:  opts.ExecTimeout,
+			})
+			if err != nil {
+				result.ExecError = "dry run: " + err.Error()
+			} else {
+				result.Exec = report
+			}
+		}
+	}
+
 	sortValidateDiagnostics(result.Diagnostics)
 	if p.Format == OutputJSON {
 		p.JSON(result)
@@ -393,6 +472,16 @@ func RunValidate(path string, p *Printer) error {
 			}
 		}
 		printDiagnostics(p, result.Diagnostics)
+		if result.Exec != nil {
+			p.Blank()
+			for _, line := range strings.Split(strings.TrimRight(result.Exec.Render(), "\n"), "\n") {
+				p.Line("  " + line)
+			}
+		}
+		if result.ExecError != "" {
+			p.Blank()
+			p.Line("  dry run: not run — " + result.ExecError)
+		}
 		p.Blank()
 		if result.Valid {
 			p.Line("  result: OK")
@@ -404,7 +493,136 @@ func RunValidate(path string, p *Printer) error {
 	if !result.Valid {
 		return validationFailed(p)
 	}
+	if result.ExecError != "" {
+		return dryRunFailed(p, result.ExecError)
+	}
+	if opts.Strict && result.Exec != nil && !result.Exec.Clean() {
+		return dryRunNotClean(p, result.Exec)
+	}
 	return nil
+}
+
+// dryRunNotClean is the error of a dry run whose report is not clean under
+// --strict, returned AFTER the result was printed: in JSON mode it is
+// marked ErrReported and the CLI prints nothing more. A pass that ran out
+// of time is named as the bound's doing, with the flag that raises it.
+func dryRunNotClean(p *Printer, report *dryrun.Report) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("dry run not clean: %w", ErrReported)
+	}
+	for _, pass := range report.Passes {
+		if pass.TimedOut {
+			return fmt.Errorf("dry run not clean: a pass ran out of time before the run ended — the dry run's bound, not the program: raise it with --exec-timeout (see the report above)")
+		}
+	}
+	return fmt.Errorf("dry run not clean: a pass died, or a reference, shell or fixture finding stands (see the report above)")
+}
+
+// dryRunFailed is the error of a dry run that could not run, returned AFTER
+// the result — the compile verdict and the reason — was printed: in JSON
+// mode it is marked ErrReported and the CLI prints nothing more.
+func dryRunFailed(p *Printer, why string) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("dry run failed: %w", ErrReported)
+	}
+	return fmt.Errorf("dry run failed: %s", why)
+}
+
+// annotateEdits attaches to each compile diagnostic the mechanical remedy
+// it carries (pkg/dsl/fix), planned on its file's own bytes. One edit fixes
+// every quoted reference of a literal at once and rides every diagnostic
+// it remedies — the one whose message names the edit's property and one of
+// its references, never the next free one: a node's command and its
+// postcondition each carry their own.
+func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic) {
+	for _, f := range u.Files {
+		var mine []ir.Diagnostic
+		for _, d := range diags {
+			if d.File == f.Name {
+				mine = append(mine, d)
+			}
+		}
+		if len(mine) == 0 {
+			continue
+		}
+		edits, _ := fix.PlanFor(f.Name, f.Source, mine)
+		for i := range edits {
+			e := edits[i]
+			for _, ref := range e.Refs {
+				for j := range result.Diagnostics {
+					vd := &result.Diagnostics[j]
+					if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name &&
+						strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+						vd.Edit = &e
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+// loadDryRunFixtures reads the fixtures a dry run answers with: an object
+// `{node: output}`, or the replay shape — a list of `{"node": …, "output":
+// {…}}` (pkg/botreplay). An empty path is no fixture.
+func loadDryRunFixtures(path string) (map[string]map[string]any, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("fixtures: %w", err)
+	}
+	out := map[string]map[string]any{}
+	var asMap map[string]map[string]any
+	if err := json.Unmarshal(raw, &asMap); err == nil {
+		for k, v := range asMap {
+			out[k] = v
+		}
+		return out, nil
+	}
+	var asList []struct {
+		Node   string         `json:"node"`
+		Output map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &asList); err != nil {
+		return nil, fmt.Errorf("fixtures %s: neither an object of node outputs nor a list of {node, output}: %w", path, err)
+	}
+	for _, f := range asList {
+		if f.Node == "" {
+			return nil, fmt.Errorf("fixtures %s: an entry names no node", path)
+		}
+		out[f.Node] = f.Output
+	}
+	return out, nil
+}
+
+// dryRunChildren resolves a `subbot source:` for the dry run the way
+// `validate` reads a child for its contract: within the collection that
+// holds the bundle (bundle.ResolveChild), parsed as its own unit, compiled;
+// a child that does not compile is not simulated — its own validate shows
+// why. A registry child (`bot://`) is nothing here: the executor says so.
+func dryRunChildren(collectionDir string) func(parent, source string) (string, *ir.Workflow, error) {
+	return func(parent, source string) (string, *ir.Workflow, error) {
+		path, src, ok := bundle.ResolveChild(collectionDir, parent, source)
+		if !ok {
+			return "", nil, fmt.Errorf("not read within the bundle's collection")
+		}
+		u := unit.LoadDirWithMain(path, path, src)
+		if u.HasErrors() || u.Merged == nil {
+			return path, nil, fmt.Errorf("does not parse")
+		}
+		cr := ir.Compile(u.Merged)
+		for _, d := range cr.Diagnostics {
+			if d.Severity == ir.SeverityError {
+				return path, nil, fmt.Errorf("does not compile: %s", d.Message)
+			}
+		}
+		if cr.Workflow == nil {
+			return path, nil, fmt.Errorf("has no workflow")
+		}
+		return path, cr.Workflow, nil
+	}
 }
 
 // printPublicContract renders the contract the workflow keeps, as the

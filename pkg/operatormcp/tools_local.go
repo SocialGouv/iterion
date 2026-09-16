@@ -20,12 +20,15 @@ func localTools() []Tool {
 	return []Tool{
 		{
 			Name:        "local_validate",
-			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns the validation result JSON including diagnostics; valid:false is a normal outcome, not a tool error.",
+			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns the validation result JSON including diagnostics; valid:false is a normal outcome, not a tool error. With exec:true a program that compiles is also run under a dry run (no model, no shell, no workspace) and the result carries `exec`: the references left unresolved, the shell text bash refuses, the nodes and edges no pass reached. The dry run is read-only in effect: it writes to a temporary store it removes, runs no command of the bot (bash -n parses the text), touches no workspace.",
 			ReadOnly:    true,
 			InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "file_path": {"type": "string", "description": "Path to the .bot file or .botz bundle (relative paths resolve against the server's working directory)."}
+    "file_path": {"type": "string", "description": "Path to the .bot file or .botz bundle (relative paths resolve against the server's working directory)."},
+    "exec": {"type": "boolean", "description": "After a clean compile, run the program under a dry run and return its report as exec."},
+    "fixtures": {"type": "string", "description": "Path to a JSON file of node outputs the dry run answers with ({node: output}, or a list of {node, output}); implies exec."},
+    "exec_timeout": {"type": "string", "description": "Bound of one pass of the dry run, simulated children included, as a Go duration (default 1m); a pass that runs out of time is said so in the report."}
   },
   "required": ["file_path"],
   "additionalProperties": false
@@ -203,9 +206,12 @@ func (s *Server) resolvePath(p string) string {
 	return filepath.Join(s.WorkDir, p)
 }
 
-func handleLocalValidate(_ context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
+func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
-		FilePath string `json:"file_path"`
+		FilePath    string `json:"file_path"`
+		Exec        bool   `json:"exec"`
+		Fixtures    string `json:"fixtures"`
+		ExecTimeout string `json:"exec_timeout"`
 	}
 	if err := unmarshalArgs(raw, &args); err != nil {
 		return "", false, err
@@ -213,8 +219,20 @@ func handleLocalValidate(_ context.Context, s *Server, raw json.RawMessage) (str
 	if args.FilePath == "" {
 		return "", false, fmt.Errorf("file_path is required")
 	}
+	fixtures := args.Fixtures
+	if fixtures != "" {
+		fixtures = s.resolvePath(fixtures)
+	}
+	var execTimeout time.Duration
+	if args.ExecTimeout != "" {
+		d, err := time.ParseDuration(args.ExecTimeout)
+		if err != nil {
+			return "", false, fmt.Errorf("exec_timeout: %w", err)
+		}
+		execTimeout = d
+	}
 	out, err := captureJSON(func(p *cli.Printer) error {
-		return cli.RunValidate(s.resolvePath(args.FilePath), p)
+		return cli.RunValidateWithContext(ctx, s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures, ExecTimeout: execTimeout})
 	})
 	// RunValidate returns "validation failed" AFTER printing the result
 	// JSON — an invalid workflow is a normal answer for this tool, so

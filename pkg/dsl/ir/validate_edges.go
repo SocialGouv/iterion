@@ -216,6 +216,9 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 				nodeID, g.elseEdges[0].To)
 		}
 
+		// C145: a loop edge with no exit once the loop is spent.
+		c.checkLoopExit(w, nodeID)
+
 		// Only validate conditions for nodes that have conditional edges.
 		if len(g.conditional) == 0 {
 			continue
@@ -729,6 +732,72 @@ func (c *compiler) validateResources(w *Workflow) {
 			}
 		}
 	}
+}
+
+// checkLoopExit warns when a node's bounded loop edges leave no way out
+// once the loop is spent (C145). At its cap the runtime declines a loop
+// edge whatever its `when` and reads the other edges alone; those must
+// cover every outcome — a bare or `else` edge, or conditionals exhaustive
+// on their own — or the run dies of LOOP_EXHAUSTED. The exit is the second,
+// bare edge from the same node (docs/dsl.md, "Leaving an exhausted loop").
+// Bounded loops only: an unbounded loop's fuel is its ceiling, dying there
+// is the ceiling's job, and its logic exit is C098's. A foreach edge from
+// the same node covers nothing here: it is spent with its collection, and
+// declined like the loop edge once it is. Never on a fan_out_all,
+// round_robin or llm router: their edges are not selected by evaluating
+// `when` and a loop's cap — a fan-out takes them all (a loop edge there is
+// C244's), a round-robin alternates over its unconditional edges, an llm
+// router takes the route the model named — so no loop edge is declined at
+// such a node and LOOP_EXHAUSTED is not a death it can meet.
+func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
+	var bounded []string
+	var rest []*Edge
+	for _, e := range w.Edges {
+		if e.From != nodeID {
+			continue
+		}
+		switch {
+		case e.LoopName != "":
+			if loop := w.Loops[e.LoopName]; loop != nil && !loop.Unbounded {
+				bounded = append(bounded, e.LoopName)
+			}
+		case e.ForeachName != "":
+		default:
+			rest = append(rest, e)
+		}
+	}
+	if len(bounded) == 0 {
+		return
+	}
+	var conditional []*Edge
+	for _, e := range rest {
+		if !e.IsConditional() {
+			return // a bare or `else` edge: the exit exists
+		}
+		conditional = append(conditional, e)
+	}
+	if isExhaustive(conditional) {
+		return
+	}
+	for _, e := range conditional {
+		if e.Expression != nil {
+			// An expression the compiler cannot evaluate may well be the
+			// exit once the loop is spent (`when: attempts >= 3`): the
+			// warning must be true when it speaks, so it does not.
+			return
+		}
+	}
+	left := "none"
+	if len(conditional) > 0 {
+		parts := make([]string, len(conditional))
+		for i, e := range conditional {
+			parts[i] = "-> " + e.To
+		}
+		left = "the conditional " + strings.Join(parts, ", ")
+	}
+	c.warnfAt(DiagLoopNoExit, nodeID, "",
+		"node %q: once loop %q is spent its edge is declined and the edges left (%s) do not cover every outcome — the run would die of LOOP_EXHAUSTED; add the loop-exhaustion exit, a bare edge from %q taken once the loop is spent",
+		nodeID, bounded[0], left, nodeID)
 }
 
 // isExhaustive returns true if the conditional edges exhaustively cover

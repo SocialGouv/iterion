@@ -143,7 +143,7 @@ func controlLoopWorkflow(bound int) *ir.Workflow {
 
 // runLoop drives a loop workflow to completion and returns the c-sequence the
 // head observed. The engine error (if any) is returned, not fataled, so a
-// freeze — which surfaces as loop exhaustion → NO_OUTGOING_EDGE — is asserted
+// freeze — which surfaces as loop exhaustion, LOOP_EXHAUSTED — is asserted
 // via the observed sequence rather than hiding behind a Fatalf.
 func runLoop(t *testing.T, wf *ir.Workflow, target int, id string) ([]int64, string) {
 	t.Helper()
@@ -157,7 +157,7 @@ func runLoop(t *testing.T, wf *ir.Workflow, target int, id string) ([]int64, str
 
 // TestLoopHeadSelfRefBackEdgeAdvances is the bug repro. Before the fix the loop
 // head's fed-back cursor freezes at the loop-entry value (0) and the loop spins
-// to its bound (surfacing as NO_OUTGOING_EDGE once exhausted); after the fix it
+// to its bound (surfacing as LOOP_EXHAUSTED once exhausted); after the fix it
 // advances 0,1,2,3 and the run finishes.
 func TestLoopHeadSelfRefBackEdgeAdvances(t *testing.T) {
 	const bound = 10 // small so a regression is a bounded failure, never a hang

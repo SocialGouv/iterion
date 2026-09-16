@@ -196,8 +196,8 @@ shipped bots, so they are written here:
 - **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
   `src -> exit` is the one legal pair of unconditional edges (the back-edge is
   exempt from C010); without the bare edge a spent loop leaves the node with
-  no edge to take and the run fails `NO_OUTGOING_EDGE` (the log names the
-  exhausted loop). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
+  no edge to take and the run fails `LOOP_EXHAUSTED` (the log names the
+  exhausted loop; `validate` warns C145 beforehand). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
   of the body — so a var that counts passes feeds the cap as `passes - 1`
   (the `campaign-loop` template derives it in its gate, re-evaluated on every pass).
 - **`outputs.*` needs no threading.** `{{outputs.<node>.<field>}}` is
@@ -390,8 +390,17 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 
 Write, then `iterion validate --json <file>`: every finding carries its
 source position and a `fix:` line, so correct the file at the position
-given, never by guessing. Loop until `valid` is true, then `iterion diagram`
-to check the shape, and only then run. From Claude Code the MCP
+given, never by guessing. Loop until `valid` is true, then `iterion validate
+--exec <file>`: the compiled program runs twice under a dry run — no model,
+no shell, no workspace — and `exec` names every `{{…}}` a prompt or a
+command would have sent unresolved, every command `bash -n` refuses, the
+nodes and edges no pass reached, and the nodes whose output was only a shape;
+fix those too (`--fixtures` answers nodes with recorded outputs; `exec.clean`
+false means a pass died or a finding stands). Then
+`iterion diagram` to check the shape, and only then run; `iterion fmt <file>`
+(`--check` in CI) rewrites the file in its canonical form and refuses one it
+cannot rewrite without changing the program; `iterion fix <file>` applies the
+mechanical remedies (C137) the diagnostics carry as `edit`. From Claude Code the MCP
 `local_validate` tool returns the same JSON. Validate with the build the bot
 will run on (the `requires.iterion` floor in its manifest): a builtin or a
 property a newer engine added compiles on that engine and dies on an older
