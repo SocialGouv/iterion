@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
@@ -77,6 +78,13 @@ type ValidateOptions struct {
 	// and `exec.clean` in the JSON is the report's word.
 	Strict   bool
 	Fixtures string
+	// Vars and Preset give the dry run its launch values — `--var k=v` and
+	// `--preset` as `run` reads them; Inputs are the same values already
+	// typed (the MCP tool's object), merged after them. A var without a
+	// default and without a value stays shaped. Any of them implies Exec.
+	Vars   []string
+	Preset string
+	Inputs map[string]any
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -432,8 +440,23 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// failing — is said in the result beside the compile verdict, which
 	// stands and is printed; the command then exits non-zero for the dry
 	// run, not for the program.
-	if (opts.Exec || opts.Fixtures != "" || opts.Strict) && result.Valid && cr.Workflow != nil {
+	if opts.wantsDryRun() && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
+		// A preset file the bundle carries and cannot read is the bot's
+		// defect, and this is the command that says so — `run` logs it at
+		// warn and goes on; the dry run does not run over it.
+		if err == nil && bundleHandle != nil {
+			if _, perrs := bundle.LoadPresets(bundleHandle.PresetsDir); len(perrs) > 0 {
+				err = fmt.Errorf("bundle presets: %s", joinErrors(perrs))
+			}
+		}
+		// The bundle's file presets (presets/<name>.md) join the in-source
+		// ones, so `--preset` resolves them as it does on `run`.
+		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, nil)
+		inputs, ierr := dryRunInputs(cr.Workflow, opts)
+		if err == nil {
+			err = ierr
+		}
 		if err != nil {
 			result.ExecError = err.Error()
 		} else {
@@ -443,6 +466,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			}
 			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
 				Fixtures: fixtures,
+				Inputs:   inputs,
 				Path:     parsePath,
 				Children: dryRunChildren(collection),
 				Timeout:  opts.ExecTimeout,
@@ -757,4 +781,84 @@ func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 		})
 	}
 	return docs
+}
+
+// wantsDryRun says the options ask for the dry run — by its switch, or by
+// anything only the dry run reads.
+func (o ValidateOptions) wantsDryRun() bool {
+	return o.Exec || o.Strict || o.Fixtures != "" || len(o.Vars) > 0 || o.Preset != "" || len(o.Inputs) > 0
+}
+
+// dryRunInputs is what the dry run's launch supplies: the preset, then the
+// --var flags, then the typed inputs — the precedence `run` has. A bot that
+// guards its entry on a var (the gallery's TAG_UNSET shape) is otherwise
+// refused at the gate on every pass, and nothing behind it is walked. The
+// values are held to the program here, where `run` is lax: a name no var
+// declares and a value the var's type cannot read are the operator's
+// errors, said as such — under the dry run's silent logger the engine's
+// own warning would reach no one, and the death would read as the bot's.
+// A null is no value: the var keeps its default, or is shaped.
+func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error) {
+	vars, err := ParseVarFlags(opts.Vars)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := buildRunInputs(wf, opts.Preset, vars)
+	if err != nil {
+		return nil, err
+	}
+	// from names each value's source, for an error to say whose word it
+	// is: the preset the operator chose, a --var flag, the tool's object.
+	from := map[string]string{}
+	if opts.Preset != "" {
+		if ps, ok := wf.Presets[opts.Preset]; ok {
+			for k := range ps.Values {
+				from[k] = fmt.Sprintf("preset %q sets", opts.Preset)
+			}
+		}
+	}
+	for k := range vars {
+		from[k] = "--var"
+	}
+	for k, v := range opts.Inputs {
+		if v == nil {
+			continue
+		}
+		inputs[k] = v
+		from[k] = "vars"
+	}
+	for k, v := range inputs {
+		decl := wf.Vars[k]
+		if decl == nil {
+			return nil, fmt.Errorf("%s %q, which names no var of the workflow (declared: %s)", from[k], k, strings.Join(declaredVars(wf), ", "))
+		}
+		typed, err := ir.CoerceVarValue(v, decl.Type)
+		if err != nil {
+			return nil, fmt.Errorf("%s %q: %v is no %s: %v", from[k], k, v, decl.Type, err)
+		}
+		inputs[k] = typed
+	}
+	return inputs, nil
+}
+
+// joinErrors lists errors on one line, for a result field.
+func joinErrors(errs []error) string {
+	parts := make([]string, 0, len(errs))
+	for _, e := range errs {
+		parts = append(parts, e.Error())
+	}
+	return strings.Join(parts, "; ")
+}
+
+// declaredVars lists the workflow's var names, sorted, for an error to name.
+func declaredVars(wf *ir.Workflow) []string {
+	names := make([]string, 0, len(wf.Vars))
+	for name := range wf.Vars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return []string{"none"}
+	}
+	return names
 }
