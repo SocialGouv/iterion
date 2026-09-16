@@ -160,7 +160,7 @@ It resolves launch overrides and node/workflow defaults, then dispatches to:
 
 - `claw`, the in-process multi-provider client with native Iterion tools;
 - `claude_code`, the recommended external CLI agent for implementation work;
-- the generic CLI-agent seam used by Kimi Code and Grok Build;
+- the generic CLI-agent seam used by pi, Kimi Code, and Grok Build;
 - the Codex CLI delegate through the pinned Agent SDK.
 
 MCP servers, board capabilities, tool policies, permission checks, secret

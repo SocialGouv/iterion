@@ -88,7 +88,7 @@ A prompt orchestrator running on your laptop has the full filesystem and the ful
 ### 10. Backend portability
 
 The same `.bot` can run on the in-process `claw` backend, Claude Code, or the
-explicit Kimi Code and Grok Build CLI-agent backends. `claw` routes among
+explicit pi, Kimi Code and Grok Build CLI-agent backends. `claw` routes among
 provider models; launch-time selectors can retarget node groups without editing
 the source. Codex remains available as a supported explicit CLI backend.
 See [backends.md](backends.md) and [delegation.md](delegation.md).
