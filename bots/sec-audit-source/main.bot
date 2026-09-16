@@ -2813,20 +2813,6 @@ tool run_deepsec_scanner:
 set +e
 mkdir -p "$(dirname "$OUT_JSON")"
 
-# OUT_JSON is one shared slot in the workspace scratch, which nothing prunes
-# between runs -- so whatever sits there on entry belongs to an EARLIER pass.
-# Left in place it decides FCNT, and FCNT decides whether the export-unusable
-# guard fires, so this pass step verdict would be settled by another pass file:
-# measured, a run whose export step exited 1 writing nothing reported no
-# export_unusable at all and shipped three findings it never produced.
-# Removing it makes "nothing came out" mean "nothing came out of THIS pass".
-#
-# It does NOT make the slot private, and the wider defect is filed separately:
-# bank_deepsec_findings and scan_health both read this same path off the disk,
-# so a pass that never ran deepsec can still publish a neighbour findings. That
-# is a storage-layout defect older than this node coverage reporting, and it is
-# fixed where the path is defined, not here.
-rm -f "$OUT_JSON"
 
 REFS_ROOT="${ITERION_REFERENCES_ROOT:-}"
 if [ -n "$REFS_ROOT" ] && [ -d "$REFS_ROOT/deepsec" ]; then
@@ -2890,6 +2876,28 @@ LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 mkdir -p "$DSW" "$LOG_DIR"
 
 cd "$WS" || err_envelope "workspace_dir unreadable: $WS"
+
+# OUT_JSON is one shared slot in the workspace scratch, which nothing prunes
+# between runs -- so whatever sits there on entry belongs to an EARLIER pass.
+# Left in place it decides FCNT, and FCNT decides whether the export-unusable
+# guard fires, so this pass step verdict would be settled by another pass file:
+# measured, a run whose export step exited 1 writing nothing reported no
+# export_unusable at all and shipped three findings it never produced.
+# Removing it makes "nothing came out" mean "nothing came out of THIS pass".
+#
+# BELOW every err_envelope exit, and that position is the point. Higher up, a
+# pass that never gets as far as running deepsec -- no binary, no usable run id,
+# unreadable workspace -- destroyed a CONCURRENT pass already-exported findings,
+# which then read a vanished file while its own coverage still said complete.
+# That path was safe before this line existed; a fix must not open a hole of its
+# own on the way to closing one.
+#
+# It does NOT make the slot private either, and the wider defect is filed
+# separately: bank_deepsec_findings and scan_health both read this same path off
+# the disk, so a pass that never ran deepsec can still publish a neighbour
+# findings. That is a storage-layout defect older than this node coverage
+# reporting, and it is fixed where the path is defined, not here.
+rm -f "$OUT_JSON"
 
 ERRS=""
 # init is idempotent: re-init only when deepsec.config.ts is absent.
