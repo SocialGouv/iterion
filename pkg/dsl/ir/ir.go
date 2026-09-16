@@ -490,6 +490,30 @@ type EmitNode struct {
 // NodeKind implements Node.
 func (n *EmitNode) NodeKind() NodeKind { return NodeEmit }
 
+// WithNode is implemented by every node kind carrying a `with { ... }`
+// payload. The seam exists so the passes that must read those mappings —
+// reference validation above all — ask one question instead of naming each
+// kind: a `with:` value is a template like any other, and a kind whose
+// mappings no pass reads is a kind whose typos surface at run time.
+//
+// Its blind spot, stated rather than hidden: a future kind that grows a
+// `with:` and does not implement this is invisible here. The list to check
+// when adding one is every construction of a [DataMapping], and there are
+// three: compileWithMappings serves the two node kinds below, compileEdges
+// hand-rolls its own — the older and more visible pattern an author is likely
+// to copy — and a fail node's `message:` is a mapping of one, walked
+// separately.
+type WithNode interface {
+	Node
+	WithMappings() []*DataMapping
+}
+
+// WithMappings implements WithNode.
+func (n *SubbotNode) WithMappings() []*DataMapping { return n.With }
+
+// WithMappings implements WithNode.
+func (n *EmitNode) WithMappings() []*DataMapping { return n.With }
+
 // WaitNode blocks its branch until the named event is emitted in the same run,
 // then completes with the event payload as its output (ADR-051). The Timeout is
 // mandatory (the "no silent infinity" invariant) and bounds the wait.
@@ -844,7 +868,7 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 	// Artifact dependency discovery needs reference ownership, not source
 	// positions. The compiler supplies span maps for diagnostics; nil maps keep
 	// this runtime-facing helper independent of parser metadata.
-	for _, rc := range collectAllRefs(w, nil, nil) {
+	for _, rc := range collectAllRefs(w, nil, nil, nil) {
 		if rc.NodeID != nodeID || rc.EdgeTo != "" {
 			continue
 		}

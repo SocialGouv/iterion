@@ -46,7 +46,7 @@ func (c *compiler) refWarnf(rc refContext, code DiagCode, format string, args ..
 
 // collectAllRefs gathers every template reference in the workflow together
 // with the node that consumes it.
-func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[*Edge]ast.Span) []refContext {
+func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[*Edge]ast.Span, withSpans map[*DataMapping]ast.Span) []refContext {
 	// Build reverse map: prompt name → list of consuming node IDs.
 	promptUsers := make(map[string][]string)
 	for _, n := range w.Nodes {
@@ -95,6 +95,44 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					EdgeTo:      e.To,
 					EdgeID:      edgeID(e.From, e.To),
 					Span:        edgeSpans[e],
+				})
+			}
+		}
+	}
+
+	// Node `with:` refs — the payload a subbot hands its child, the fields an
+	// emit publishes. Edge mappings above were walked and these were not,
+	// which is the same omission the tool-node comment below describes: the
+	// value is a template, and an unvalidated reference is WORSE than a key
+	// left unmapped. Measured on the engine: a bare `{{vars.typo}}` resolves
+	// to nil and is handed over as nil, which suppresses the child's own
+	// declared default for that key — the child then renders its own
+	// `{{vars.depth}}` as source text. Embedded in surrounding text the
+	// reference is spliced to empty instead. Omitting the key entirely is the
+	// only form that lets the child's default stand.
+	//
+	// Nothing downstream re-reads the value, so here is the only place it can
+	// be caught.
+	//
+	// The guarantee covers the namespaces the runtime resolves. `{{secrets.*}}`
+	// and `{{attachments.*}}` pass the checks below and then resolve to nil in
+	// a mapping (resolveRef has no arm for either) — that gap predates this
+	// walk, on edges, and is not closed here.
+	//
+	// IncludeSelf stays off: the node has produced no output yet when its own
+	// `with:` is resolved.
+	for _, n := range w.Nodes {
+		wn, ok := n.(WithNode)
+		if !ok {
+			continue
+		}
+		for _, dm := range wn.WithMappings() {
+			for _, ref := range dm.Refs {
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   n.NodeID(),
+					Location: fmt.Sprintf("%s node %q, with %q", n.NodeKind(), n.NodeID(), dm.Key),
+					Span:     withSpans[dm],
 				})
 			}
 		}
@@ -386,7 +424,7 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 			}
 		}
 	}
-	refs := collectAllRefs(w, promptSpans, c.edgeSpans)
+	refs := collectAllRefs(w, promptSpans, c.edgeSpans, c.withSpans)
 	if len(refs) == 0 {
 		return
 	}
@@ -517,6 +555,26 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C032: node has no output schema — warn that field access can't be verified.
 	outSchema := NodeOutputSchema(targetNode)
 	if outSchema == "" {
+		// A fan_out_each router declares no `output:` and cannot, so warning
+		// about its per-element bindings hands the author a remedy they are
+		// unable to follow. It is silenced only where the runtime guarantees
+		// the binding: on a BRANCH HEAD, reading one of the element keys.
+		//
+		// Deliberately narrower than routerPassThroughKeys, which is an upper
+		// bound built to suppress a warning on ONE edge. Read as a certificate
+		// of resolvability it over-silences in three directions, each measured
+		// to leak the raw template text at run time: past the join, where the
+		// per-branch outputs are gone; on a key carried by one of several
+		// mutually exclusive incoming edges; and on a key carried only by a
+		// back-edge, absent on the first iteration.
+		//
+		// A node deeper in a branch than its head keeps warning. That is a
+		// false positive left standing rather than a silence that cannot be
+		// justified, and it is what this compiler did before the check existed.
+		if r, isRouter := targetNode.(*RouterNode); isRouter &&
+			routerElementKeys(r)[fieldName] && isBranchHead(w, targetNodeID, rc.NodeID) {
+			return
+		}
 		c.refWarnf(rc, DiagRefNodeNoSchema,
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
 			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
@@ -666,6 +724,34 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span,
 		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, fieldName, fieldName),
 		"%s", msg)
+}
+
+// routerElementKeys are the per-element bindings a `fan_out_each` router puts
+// in scope INSIDE a branch: the element under its `as:` name, the literal
+// `item` the runtime binds alongside it, and the position pair. Nothing else
+// — a `reasoning` or `selected_route` is a router OUTPUT and is not claimed
+// here, and no other mode binds anything per element.
+func routerElementKeys(r *RouterNode) map[string]bool {
+	if r.RouterMode != RouterFanOutEach {
+		return nil
+	}
+	bind := r.ItemBinding
+	if bind == "" {
+		bind = "item"
+	}
+	return map[string]bool{bind: true, "item": true, "index": true, "count": true}
+}
+
+// isBranchHead reports whether nodeID is a direct, non-iteration target of
+// routerID — the one position where a fan-out's per-element bindings are
+// guaranteed to be in scope, on every path and every iteration.
+func isBranchHead(w *Workflow, routerID, nodeID string) bool {
+	for _, e := range w.Edges {
+		if e != nil && e.From == routerID && e.To == nodeID && !e.IsBoundedIteration() {
+			return true
+		}
+	}
+	return false
 }
 
 // routerPassThroughKeys is the set of keys a mid-graph router will have

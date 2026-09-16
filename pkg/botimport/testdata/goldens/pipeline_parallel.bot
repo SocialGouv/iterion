@@ -13,7 +13,6 @@
 ##
 ## Placeholders (unmapped constructs):
 ##   - js:15 fan-out results bound to `rewrites` are not aggregated — downstream nodes read {{outputs.<stage>}} per branch
-##   - compile warning on the draft: warning [C032]: prompt "rewriter_user" (node "rewriter"): reference {{outputs.fan_1.m}} accesses field "m" on node "fan_1" which has no output schema; cannot verify
 
 ## Fan a doc rewrite out over modules, then run two independent checks
 

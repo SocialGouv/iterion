@@ -147,6 +147,13 @@ type compiler struct {
 	// diagnostic on an edge lands on ITS line even when another edge shares
 	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
 	edgeSpans map[*Edge]ast.Span
+	// withSpans remembers where each node `with { key: value }` entry was
+	// written, so a diagnostic about one lands on that line and not on the
+	// node's header — a node carrying several keys would otherwise report
+	// every one at the same position. Kept beside the IR rather than on it,
+	// like edgeSpans: a span is the authoring surface, which this package's
+	// types stay clear of.
+	withSpans map[*DataMapping]ast.Span
 
 	autoBackendOnce   sync.Once
 	autoBackendCached bool
@@ -1544,7 +1551,12 @@ func (c *compiler) compileWithMappings(nodeID string, entries []*ast.WithEntry) 
 		if err != nil {
 			c.errorfAt(DiagBadTemplateRef, nodeID, "", "%s: with key %q: %v", nodeID, w.Key, err)
 		}
-		with = append(with, &DataMapping{Key: w.Key, Refs: refs, Raw: w.Value})
+		dm := &DataMapping{Key: w.Key, Refs: refs, Raw: w.Value}
+		if c.withSpans == nil {
+			c.withSpans = map[*DataMapping]ast.Span{}
+		}
+		c.withSpans[dm] = w.Span
+		with = append(with, dm)
 	}
 	return with
 }
