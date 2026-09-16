@@ -108,3 +108,26 @@ func TestAnUndeclaredLoopResolvesToNothing(t *testing.T) {
 		t.Fatalf("an undeclared loop in a command rendered %q, named %v", got, left)
 	}
 }
+
+// A dotted input reference drills to the leaf in a tool body as it does in
+// a prompt: `{{input.a.b}}` is the field, `{{input.a}}` the whole map.
+func TestADottedInputReferenceDrillsInAToolBody(t *testing.T) {
+	input := map[string]any{"a": map[string]any{"b": "leaf", "n": 2}}
+	body := "echo {{input.a.b}} {{input.a.n}} {{input.a}} {{input.a.nope}}"
+	var left []string
+	got := RenderCommand(body, mustRefs(body), input, nil, nil, "run-1", func(ref string) { left = append(left, ref) })
+	if got != `echo 'leaf' '2' '{"b":"leaf","n":2}' {{input.a.nope}}` {
+		t.Fatalf("command rendered %q", got)
+	}
+	if strings.Join(left, " ") != "input.a.nope" {
+		t.Fatalf("the missing leaf was not named: %v", left)
+	}
+	script := "x = {{input.a.b}}; y = {{input.a.n}}"
+	if got := RenderScript(script, mustRefs(script), input, nil, nil, "run-1", nil); got != `x = "leaf"; y = 2` {
+		t.Fatalf("script rendered %q", got)
+	}
+	prompt := (&TemplateResolver{}).Resolve("{{input.a.b}} {{input.a.n}}", input, nil)
+	if prompt != "leaf 2" {
+		t.Fatalf("prompt rendered %q", prompt)
+	}
+}

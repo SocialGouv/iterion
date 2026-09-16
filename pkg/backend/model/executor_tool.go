@@ -874,7 +874,11 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		var handled bool
 		switch {
 		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
-			val = input[ref.Path[0]]
+			// Drilled to the leaf, as a prompt reads it: `{{input.a.b}}` is
+			// the field b of a, not the whole of a — one reading of a
+			// reference, whichever body holds it. A missing leaf is nil and
+			// takes the missing-value rule below.
+			val, _ = drillTemplatePath(input, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
 			val = vars[ref.Path[0]]
