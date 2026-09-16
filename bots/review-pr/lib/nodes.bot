@@ -258,7 +258,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} SCOPE_FILES={{input.scope_files}} python3 -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} python3 -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -402,9 +402,9 @@ else:
 if recovered_from_reviewers:
     summary.extend(['', chr(9888) + ' Revue dégradée : findings récupérés des reviewers ; seuil, limite et accord entre modèles non appliqués.'])
 elif findings_parse_failed:
-    summary.extend(['', chr(9888) + ' Findings illisibles, aucun repli disponible : gate bloquée. Relancer /revi.'])
+    summary.extend(['', chr(9888) + ' Findings illisibles, aucun repli disponible : gate bloquée. Relancer la revue.'])
 if stale_anchors:
-    summary.extend(['', chr(9888) + ' Le HEAD a changé depuis la revue (' + stale_anchors + '). Findings conservés ci-dessous sans ancrage ; relancer /revi sur la tête actuelle.'])
+    summary.extend(['', chr(9888) + ' Le HEAD a changé depuis la revue (' + stale_anchors + '). Findings conservés ci-dessous sans ancrage ; relancer la revue sur la tête actuelle.'])
 # Explicit gaps stay visible. Unverifiable context stays available alongside
 # the audited scope; a missing ticket is not itself a defect to correct.
 def ticket_verdict(t, verdict):
@@ -490,8 +490,20 @@ if dual:
     summary.extend(['Revue à deux familles ; ' + str(cross_n) + ' finding(s) cross-confirmed by both model families.', ''])
 else:
     summary.extend(['Revue mono (single model family).', ''])
+# ai_value, not a raw read: an unsubstituted ref reaches this script as its
+# own template text, and every sibling value here is filtered for it.
+fixer_hint = ai_value('FIXER_HINT')
 if finding_ids:
-    summary.extend(['Correction : /billy ; arbitrage : /billy skip ' + finding_ids[0] + ' suivi du motif.', ''])
+    # The ids gathered in one place, so arbitrating one does not mean
+    # scrolling the inline comments for its header. Deduplicated: two findings
+    # on the same file and title derive the same id, and a list that repeats
+    # one reads as two handles.
+    summary.extend(['Identifiants des findings : ' + ', '.join(dict.fromkeys(finding_ids)) + '.', ''])
+    if fixer_hint:
+        # Escaped like every other interpolated value in this block: a hint is
+        # operator-written prose, and an angle-bracketed word in it must reach
+        # the reader rather than be eaten as a tag.
+        summary.extend([ai_cell(fixer_hint.replace('{finding}', finding_ids[0])), ''])
 if ai_rows:
     summary.extend(['| Étape | Modèle | Harness | Effort demandé | Tokens |',
                     '|---|---|---|---|---:|'] + ai_rows)
@@ -569,7 +581,7 @@ if gate_enabled:
     if scope_unresolved:
         payload['gate']['note'] = 'no diff could be read, so no code was reviewed - gate fails closed; re-run once the workspace carries a checkout'
     elif findings_parse_failed:
-        payload['gate']['note'] = 'review output unreadable (findings were not machine-readable) - gate fails closed; re-run /revi'
+        payload['gate']['note'] = 'review output unreadable (findings were not machine-readable) - gate fails closed; re-run the review'
     elif recovered_from_reviewers:
         payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s) recovered from the reviewers (merge step degraded)'
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),

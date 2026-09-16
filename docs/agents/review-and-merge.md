@@ -76,15 +76,15 @@ through the local loop, and nothing spends a campaign on its own.
 The mechanics and the paid-for gotchas are unchanged and still worth reading
 before a deliberate pass: [../revi-billy-loop.md](../revi-billy-loop.md).
 
-**Revi's own review summary still carries `Correction : /billy`**, inside its
-collapsed "Détails du run IA" block. That line
-is the catalog bot's generic advice to any repo it reviews
-([../../bots/review-pr/main.bot](../../bots/review-pr/main.bot)), published
-whenever a review has findings — and on this repo it does not apply. It is
-deliberately not special-cased: a bot that names one repository stops being
-repo-agnostic (`bots/catalog_universality_test.go`). Deriving the line from the
-repo's own configuration is the durable fix, and it is a bot change, not a doc
-change.
+**Revi's review summary advertises a fixer only where a repo declares one.**
+The escalation line is the `fixer_hint` launch var
+([../../bots/review-pr/main.bot](../../bots/review-pr/main.bot)): empty — the
+default, and what this repo leaves it at while Billy is paused — omits the line
+entirely; a repo with a fixer sets the sentence it wants, `{finding}` standing
+for the first finding's id — see
+[../merge-gate.md](../merge-gate.md#activating-the-blocking-gate-on-a-repo) for
+the `launch_vars` form. A catalog bot is a general-purpose tool and does not
+know which repository it is reviewing, so the repo is what says.
 
 ### Re-arm when this repo's team spends its own BYOK key
 

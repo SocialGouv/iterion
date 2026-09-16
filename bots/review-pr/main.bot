@@ -395,6 +395,16 @@ vars:
   ## bot that can gate. The default keeps this bot's historical name.
   gate_context: string = "revi/review"
 
+  ## The fixer escalation this repo offers, published with the findings so a
+  ## developer reads it where they read them. Empty — the default — omits the
+  ## line entirely: a repo with no fixer, or one whose zero-touch lane is
+  ## paused, must not be instructed by the gate to invoke one. The reviewer
+  ## cannot know which repo it is reviewing, so the repo says.
+  ## `{finding}` is replaced by the first finding's id; a hint without it is
+  ## published as written. Set it per repo via the integration's launch_vars,
+  ## the same place gate_context is set.
+  fixer_hint: string = ""
+
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER
   ## at launch when the run's team has a forge connection covering
   ## pr_url's repo (studio/API launches and inbound webhooks both

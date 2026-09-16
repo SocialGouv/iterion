@@ -20,6 +20,10 @@ func TestReviewPRConcisePublication(t *testing.T) {
 		t.Skip("python3 not on PATH")
 	}
 	finding := `{"file":"a.go","line":12,"severity":"high","title":"Lost update","detail":"Concurrent saves overwrite a newer value.","suggestion":"Use a compare-and-swap.","replacement":"saveIfCurrent(v)","reviewers":"gpt"}`
+	// The id the bot derives for that finding, computed the same way the
+	// engine does (goFindingID, pinned against the bot in
+	// review_pr_finding_id_test.go).
+	dupID := goFindingID("a.go", "Lost update")
 	for _, tc := range []struct {
 		name                    string
 		refs                    map[string]string
@@ -30,7 +34,32 @@ func TestReviewPRConcisePublication(t *testing.T) {
 			"input.findings": "[]", "input.ticket_conformance": "#1172: covered — all criteria met\n(no ticket refs): unverifiable — no linked issues", "input.review_scope": "correctness: a.go; tests: a_test.go <details open>",
 		}, visible: []string{"**Revi — aucun problème détecté dans le périmètre revu.**"}, hidden: []string{"correctness: a.go; tests: a_test.go &lt;details open&gt;", "(no ticket refs): unverifiable — no linked issues"}, absent: []string{"all criteria met", "raised no open questions", "<details open>"}},
 		{name: "inline finding is not repeated in the summary", refs: map[string]string{"input.findings": "[" + finding + "]"}, comments: 1, blocking: 1,
-			visible: []string{"**Revi — 1 problème à corriger.**", "1 high"}, hidden: []string{"Correction : /billy"}, absent: []string{"Lost update", "Concurrent saves", "Use a compare-and-swap", "saveIfCurrent"}},
+			visible: []string{"**Revi — 1 problème à corriger.**", "1 high"}, absent: []string{"Lost update", "Concurrent saves", "Use a compare-and-swap", "saveIfCurrent"}},
+		// A fixer escalation is the repo's to declare: the reviewer cannot
+		// know which repository it is reviewing. Undeclared, the gate must
+		// not instruct a developer to invoke a fixer that is paused or does
+		// not exist — and it instructs at the exact moment the findings are
+		// read, which is why the wrong default is expensive.
+		{name: "a repo that declares no fixer is not told to invoke one", refs: map[string]string{"input.findings": "[" + finding + "]"}, comments: 1, blocking: 1,
+			hidden: []string{"Identifiants des findings : R"}, absent: []string{"Correction :", "/billy"}},
+		{name: "the fixer hint a repo declares is published with its findings", comments: 1, blocking: 1,
+			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Correction : /billy ; arbitrage : /billy skip {finding} suivi du motif."},
+			hidden: []string{"Correction : /billy ; arbitrage : /billy skip "}, absent: []string{"{finding}"}},
+		// The hint is operator prose landing in a public comment body, and it
+		// is the peer of every other interpolated value in that block — all of
+		// which are escaped. Unescaped, an honest `<motif>` is eaten as a tag,
+		// and a `</details>` would lift the rest of the block out of its fold.
+		{name: "an angle-bracketed word in the hint reaches the reader", comments: 1, blocking: 1,
+			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Arbitrer : /billy skip {finding} <motif>"},
+			hidden: []string{"&lt;motif&gt;"}, absent: []string{"<motif>"}},
+		// Two findings on the same file and title derive the SAME id, so a list
+		// that repeats it reads as two handles to arbitrate instead of one.
+		// The id is DERIVED here, not spelled: a literal guessed wrong makes
+		// this case pass while asserting nothing.
+		{name: "the ids line names each finding once", comments: 2, blocking: 2,
+			refs:   map[string]string{"input.findings": "[" + finding + "," + finding + "]"},
+			hidden: []string{"Identifiants des findings : " + dupID},
+			absent: []string{dupID + ", " + dupID}},
 		{name: "only ticket gaps and real questions remain visible", refs: map[string]string{
 			"input.findings": "[" + finding + "]", "input.ticket_conformance": "#1: covered — met\n#2: partial — missing retries\n#3: unverifiable — HTTP 403\nmalformed verdict: unknown",
 			"input.questions": "Should retries preserve request order?\nShould retries preserve request order?",

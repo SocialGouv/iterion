@@ -1,7 +1,7 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.2
+version: 0.9.3
 ## A bot in several files (`import "lib/…"` at the head of main.bot): a runner
 ## older than the release that reads `import` would fail at its first parse of
 ## a fragment — the floor keeps such a runner from admitting the bundle.

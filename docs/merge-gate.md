@@ -196,6 +196,17 @@ iterion remote forge repo-bots create --data '{
   "launch_vars": { "review_tier": "glance" }}'
 ```
 
+**The fixer escalation rides the same lever.** `fixer_hint` is the sentence
+the review summary publishes with its findings when this repo has a fixer to
+escalate to. Empty by default, and the line is then omitted entirely: the
+reviewer cannot know which repository it is reviewing, so it does not
+advertise a fixer on its own initiative. `{finding}` is replaced by the first
+finding's id.
+
+```sh
+  "launch_vars": { "fixer_hint": "Correction : /billy ; arbitrage : /billy skip {finding} suivi du motif." }
+```
+
 The studio's repo detail page (`/repos/:key`) surfaces a three-position
 "Review tier" selector once `review-pr` is bound to that repo, writing the
 same `launch_vars.review_tier` field. A webhook-triggered launch never
