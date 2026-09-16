@@ -8,7 +8,6 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
-<<<<<<< HEAD
 ## 2026-09-16 — ticket conformance CLOSED on a real third-party MR: a Jira verdict nobody configured a reference for (run 01a0a72c)
 
 - Status: **validated** — the end-to-end case open since 2026-09-08 (a real
@@ -496,7 +495,7 @@ usage, not proof of source access or test coverage.
 - Verify the binary before trusting a local `validate`: a v3.69 CLI reported
   `E002` on a bot the v3.140 build compiles cleanly, on the UNMODIFIED file —
   the control that separated "my edit broke it" from "my tool is stale".
-=======
+
 ## 2026-09-10 — the first REAL merge request on demat-amiante: wiring proven, review impossible (run 01a08b60)
 
 - Status: **inconclusive by process, not by defect** — the run was launched
@@ -539,7 +538,6 @@ usage, not proof of source access or test coverage.
   sandbox events is the signature of a merge racing the review, not of a
   wiring fault; (c) before concluding on a silent repo, check the
   integration still lives where you last left it.
->>>>>>> 929f41975 (docs(bot-runs): the first real MR on demat-amiante — wiring proven, review outrun by the merge)
 
 ## 2026-09-09 — forge-native ticket context: the first `covered` verdict, and the [high] the feature found in itself (run 01a085b8, PR #1017)
 
