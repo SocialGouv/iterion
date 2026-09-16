@@ -5,18 +5,20 @@ import (
 	"strings"
 )
 
-// died says a pass ended neither finished nor at a fail node the bot
-// declared — the one reading of a death, for the parent's passes and the
-// children's alike.
+// died says a pass ended neither finished, nor at a fail node the bot
+// declared, nor at the bot's own ceiling — the one reading of a death, for
+// the parent's passes and the children's alike. A pass out of time is a
+// death here: what it would have met is unknown.
 func (p Pass) died() bool {
-	return p.Status != "finished" && !p.Deliberate
+	return p.Status != "finished" && !p.Deliberate && !p.Ceiling
 }
 
 // Clean reports whether the passes met nothing to fix: every pass — of the
-// program and of every child it simulated — finished or ended at a fail
-// node the bot declared, no reference kept as written, no shell text
-// refused, no fixture off its schema or naming nothing. Unchecked things and
-// shapes are said, not held against the bot.
+// program and of every child it simulated — finished, ended at a fail node
+// the bot declared, or ran to the bot's own ceiling; no reference kept as
+// written, no shell text refused, no fixture off its schema or naming
+// nothing. Unchecked things, shapes and ceilings are said, not held
+// against the bot.
 func (r *Report) Clean() bool {
 	for _, p := range r.Passes {
 		if p.died() {
@@ -56,6 +58,9 @@ func writePass(b *strings.Builder, label string, p Pass) {
 	fmt.Fprintf(b, "  %s %-5v %s — %d nodes, %d edges", label, p.Bias, p.Status, len(p.Nodes), len(p.Edges))
 	if p.Deliberate {
 		b.WriteString(" (a fail node the bot declares)")
+	}
+	if p.Ceiling {
+		b.WriteString(" (ran to the bot's own ceiling: an exit rode a value the dry run shapes — not a death, not a proof)")
 	}
 	if p.TimedOut {
 		b.WriteString(" (ran out of time — the dry run's bound, not the program: raise it with --exec-timeout)")

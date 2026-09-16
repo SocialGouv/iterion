@@ -200,3 +200,40 @@ workflow w:
 		t.Fatalf("the command's two diagnostics were not left: %+v", res.Left)
 	}
 }
+
+// A raw `{{!ref}}` inside the author's quotes is left alone: the runtime
+// does not escape it, so the quotes are its only containment and removing
+// them would leave the value bare in the shell — the fixer says so, and
+// the plain reference beside it is fixed all the same.
+func TestARawReferenceInQuotesIsLeftToTheAuthor(t *testing.T) {
+	src := `dsl: 2
+
+vars:
+  x: string = "v"
+
+tool run_it:
+  command: "A='{{!vars.x}}' B='{{vars.x}}'"
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: run_it
+  run_it -> done
+`
+	res, err := Bytes("r.bot", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(res.Fixed), "command: \"A='{{!vars.x}}' B={{vars.x}}\"") {
+		t.Fatalf("the raw reference's quotes were touched, or the plain one's kept:\n%s", res.Fixed)
+	}
+	var said bool
+	for _, l := range res.Left {
+		if l.Code == ir.DiagQuotedCommandRef && strings.Contains(l.Why, "raw") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("the raw reference was not said left: %+v", res.Left)
+	}
+}

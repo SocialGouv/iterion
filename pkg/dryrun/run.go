@@ -70,6 +70,14 @@ type Pass struct {
 	// or the caller's context) expired before the run ended: not a death of
 	// the program, the bound's; raise it.
 	TimedOut bool `json:"timed_out,omitempty"`
+	// Ceiling says the pass ran to a ceiling the dry run's shapes imposed —
+	// the bot's budget max_iterations, the liveness monitor's stall on an
+	// unbounded loop whose outputs never change under a shape, or the budget
+	// guard that cannot fund another iteration: an exit
+	// that rides a value the dry run shapes (a model's verdict) was never
+	// met under this bias. Not a death the dry run can hold against the
+	// bot, not a proof either: said as such.
+	Ceiling bool `json:"ceiling,omitempty"`
 	// Nodes are the nodes started, in order; Edges the edges selected.
 	Nodes []string `json:"nodes"`
 	Edges []Edge   `json:"edges"`
@@ -277,10 +285,19 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		}
 	}
 	var mu sync.Mutex
+	var stalled bool
 	observe := func(evt store.Event) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch evt.Type {
+		case store.EventBudgetWarning:
+			// The engine declined a loop edge by its own ceiling logic: the
+			// liveness monitor on an unbounded loop whose outputs never
+			// change (under a shape, they never do), or the budget guard
+			// that cannot fund another iteration.
+			if reason, _ := evt.Data["reason"].(string); reason == "liveness_stall" || reason == "loop_budget_guard" {
+				stalled = true
+			}
 		case store.EventNodeStarted:
 			pass.Nodes = append(pass.Nodes, evt.NodeID)
 		case store.EventEdgeSelected:
@@ -324,6 +341,9 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	x.fixtureKeys()
 	if run, err := st.LoadRun(ctx, runID); err == nil && run != nil {
 		pass.Status = string(run.Status)
+		mu.Lock()
+		pass.Ceiling = ceilingOf(run.FailureCode, stalled)
+		mu.Unlock()
 	} else if runErr != nil {
 		pass.Status = "error"
 	}
@@ -335,6 +355,18 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		}
 	}
 	return pass, x, nil
+}
+
+// ceilingOf says a run's end was a ceiling the dry run's shapes imposed
+// rather than a death of the program: the bot's own budget ceiling, or —
+// after the engine declined a loop edge by its own ceiling logic (the
+// liveness monitor on unchanging shapes, the budget guard) — the
+// fall-through with no edge left, or the loop's cap.
+func ceilingOf(code store.FailureCode, declined bool) bool {
+	if code == store.FailureBudgetExceeded {
+		return true
+	}
+	return declined && (code == store.FailureNoOutgoingEdge || code == store.FailureLoopExhausted)
 }
 
 // implicitTerminal reports the `done` and `fail` every workflow carries

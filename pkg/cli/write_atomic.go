@@ -6,9 +6,12 @@ import (
 )
 
 // writeFileAtomic writes data to path through a temporary file beside it,
-// renamed into place: a crash or an interrupt mid-write leaves the file as
-// it was, never truncated — what a rewrite of a whole tree owes each file.
-// The mode is the one asked for; the temporary file never outlives an error.
+// synced to disk and renamed into place, the directory synced after: a
+// crash, an interrupt or a power loss mid-write leaves the file as it was
+// or whole, never truncated — what a rewrite of a whole tree owes each
+// file. The mode is the one asked for; the temporary file never outlives
+// an error. (The directory sync is best effort: a filesystem that refuses
+// it has already made the rename durable, or cannot.)
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir, base := filepath.Split(path)
 	if dir == "" {
@@ -30,6 +33,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Chmod(perm); err != nil {
 		return fail(err)
 	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(name)
 		return err
@@ -37,6 +43,10 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(name, path); err != nil {
 		_ = os.Remove(name)
 		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

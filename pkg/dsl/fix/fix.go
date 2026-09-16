@@ -93,7 +93,7 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 		// The node's `command:` first, its `postcondition:` next: the
 		// literal that still hugs the reference the diagnostic names is
 		// the one it speaks of.
-		var placed, found bool
+		var placed, found, raw bool
 		for _, prop := range []string{"command", "postcondition"} {
 			ti := literalToken(toks, d.NodeID, prop)
 			if ti < 0 {
@@ -111,8 +111,16 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 			// postcondition's diagnostic is never placed on the command's
 			// literal, whichever hugs the reference.
 			for _, ref := range ir.QuotedCommandRefs(toks[ti].Value) {
-				if !strings.Contains(d.Message, prop+": "+ref+" sits inside quotes") {
+				if !strings.Contains(d.Message, prop+": "+ref+" is raw") && !strings.Contains(d.Message, prop+": "+ref+" sits inside quotes") {
 					continue
+				}
+				// A raw `{{!ref}}` is not escaped by the runtime: the author's
+				// quotes are its only containment, and removing them alone
+				// leaves the value bare in the shell. Not mechanical — the
+				// remedy is the author's (drop the bang, or keep the quotes).
+				if ir.QuotedRefIsRaw(ref) {
+					raw = true
+					break
 				}
 				if to, ok := unquoted(e.To, ref); ok {
 					e.To = to
@@ -121,12 +129,14 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 					break
 				}
 			}
-			if placed {
+			if placed || raw {
 				break
 			}
 		}
 		switch {
 		case placed:
+		case raw:
+			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: "the reference is raw (`!`): the runtime does not escape it, so the quotes are its only containment and removing them would leave the value bare in the shell — drop the bang, or keep the quotes knowing where the value comes from; not mechanical"})
 		case !found:
 			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: fmt.Sprintf("no command: or postcondition: literal of tool %q was found in the source", d.NodeID)})
 		default:

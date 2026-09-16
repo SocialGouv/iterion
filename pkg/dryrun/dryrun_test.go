@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // A bot with an agent whose prompt reads a node that has not run and a
@@ -882,5 +883,68 @@ func TestAListOfEnumValuesIsShapedAsAList(t *testing.T) {
 	}
 	if v, ok := VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true).([]any); !ok || len(v) != 1 || v[0] != "a" {
 		t.Fatalf("a string[] var with an enum shaped as %#v", VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true))
+	}
+}
+
+// A bot whose unbounded loop exits only on a verdict the dry run shapes:
+// under a shape its outputs never change, so the liveness monitor stalls
+// the loop on the false pass and the run falls through with no edge left
+// — a ceiling the shapes imposed, not a death of the program.
+const ceilingBot = `schema verdict:
+  ok: bool
+
+agent check:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge assess:
+  model: "claude-opus-4-7"
+  output: verdict
+
+workflow c:
+  worktree: none
+  sandbox: none
+  entry: check
+  budget:
+    max_iterations: 8
+  check -> assess
+  assess -> check when not ok as again(unbounded 100)
+  assess -> done when ok
+`
+
+// A pass that runs to the bot's own ceiling — an exit riding a value the
+// dry run shapes — is said so and is not a death: the report stays clean,
+// where a bounded loop spent with no exit stays one.
+func TestAPassAtTheBotsCeilingIsNotADeath(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, ceilingBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Passes[0].Status != "finished" || !r.Passes[1].Ceiling || r.Passes[1].Status == "finished" {
+		t.Fatalf("passes %+v", r.Passes)
+	}
+	if !r.Clean() {
+		t.Fatalf("a pass at the bot's ceiling read as a death: %+v %+v", r.Passes, r.Findings)
+	}
+	if out := r.Render(); !strings.Contains(out, "ran to the bot's own ceiling") {
+		t.Fatalf("the ceiling is not said:\n%s", out)
+	}
+	// The one reading of a ceiling: the bot's budget, or a stall followed
+	// by the fall-through's death — never a death alone.
+	for _, tc := range []struct {
+		code    store.FailureCode
+		stalled bool
+		want    bool
+	}{
+		{store.FailureBudgetExceeded, false, true},
+		{store.FailureNoOutgoingEdge, true, true},
+		{store.FailureLoopExhausted, true, true},
+		{store.FailureNoOutgoingEdge, false, false},
+		{store.FailureLoopExhausted, false, false},
+		{store.FailureFailNode, true, false},
+	} {
+		if got := ceilingOf(tc.code, tc.stalled); got != tc.want {
+			t.Fatalf("ceilingOf(%s, stalled=%v) = %v, want %v", tc.code, tc.stalled, got, tc.want)
+		}
 	}
 }

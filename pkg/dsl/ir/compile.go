@@ -2475,6 +2475,18 @@ func QuotedCommandRefs(command string) []string {
 // (`iterion fix` applies it); the severity keeps the run from launching.
 func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 	for _, ref := range refInQuotes(command) {
+		if QuotedRefIsRaw(ref) {
+			// A raw reference is not escaped by the runtime: the author's
+			// quotes are its only containment, and a value carrying a
+			// quote breaks out of them. Not the cancelling of two quotings
+			// — a warning with its own remedy, never the error, and not
+			// what `iterion fix` removes.
+			c.warnfAt(DiagQuotedCommandRef, node, "",
+				"tool %q %s: %s is raw (`!`) inside quotes you wrote — the runtime does not escape a raw reference, so your quotes are its only containment, and a value carrying a quote breaks out of them. "+
+					"Drop the `!` to let the runtime escape the value, or keep the quotes knowing where the value comes from.",
+				node, where, ref)
+			continue
+		}
 		switch quotedRefNamespace(ref) {
 		case "artifacts", "attachments", "loop":
 			c.errorfAt(DiagQuotedCommandRef, node, "",
@@ -2490,6 +2502,15 @@ func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 				node, where, ref)
 		}
 	}
+}
+
+// QuotedRefIsRaw says a `{{…}}` reference as written is the raw form
+// (`{{!ref}}`, the bang and the spaces as the reference parser reads them):
+// the runtime does not escape it, and a fixer must not touch the quotes
+// around it.
+func QuotedRefIsRaw(ref string) bool {
+	expr := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ref, "{{"), "}}"))
+	return strings.HasPrefix(expr, "!")
 }
 
 // quotedRefNamespace is the namespace of a `{{…}}` reference as written —
