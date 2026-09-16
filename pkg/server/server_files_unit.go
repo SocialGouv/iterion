@@ -700,7 +700,12 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
 	}
 	info := unitInfoOf(u, main)
 	info.Root = ""
-	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info})
+	// A unit stays bindable even when it does not load — the posture
+	// /api/files/open holds for a unit on disk. The write back goes through
+	// unparseUnitFiles, which refuses one that does not load and names the
+	// fragment at fault, so nothing lands on the author's files; unbinding
+	// would leave a buffer no save could place.
+	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info, Bindable: true})
 }
 
 // unparseUnitFiles writes a document of a bot in several files back into

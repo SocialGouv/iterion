@@ -42,6 +42,14 @@ type parseResponse struct {
 	Issues      []DiagnosticDTO `json:"issues,omitempty"`
 	// Unit is set when the request parsed a bot in several files.
 	Unit *unitInfo `json:"unit,omitempty"`
+	// Bindable is false when the parse left errors: the document is then
+	// what the parser SALVAGED, not the source, and a caller that builds an
+	// open answer out of this parse must bind no path to it — the next save
+	// would write the salvage back over what the author wrote. It is the
+	// verdict /api/files/open applies to a file on disk, for the callers
+	// that hold their source themselves: a cloud bot source is fetched and
+	// parsed here, never opened through /api/files/open.
+	Bindable bool `json:"bindable"`
 }
 
 // DiagnosticDTO is the wire-safe shape of an ir.Diagnostic. It carries the
@@ -152,6 +160,7 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, parseResponse{
 		Document:    json.RawMessage(docJSON),
 		Diagnostics: diags,
+		Bindable:    !parseHasErrors(pr.Diagnostics),
 	})
 }
 

@@ -247,7 +247,15 @@ export interface DiagnosticIssue {
 
 export async function parseSource(
   source: string,
-): Promise<{ document: IterDocument; diagnostics: string[]; issues?: DiagnosticIssue[] }> {
+): Promise<{
+  document: IterDocument;
+  diagnostics: string[];
+  issues?: DiagnosticIssue[];
+  /** False when the parse left errors: the document is what the parser
+   *  SALVAGED, so a caller that opens a file through this must bind no
+   *  path to it. Absent from an older server. */
+  bindable?: boolean;
+}> {
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ source }),
@@ -446,8 +454,11 @@ export async function openFile(
    *  back over what the author wrote. */
   path?: string;
   confirmed_disk_path?: string;
-  /** False when the file does not parse. Absent from the answers this
-   *  client builds itself below, which are never a failed parse. */
+  /** False when the file does not parse — including for a cloud bot source,
+   *  which this client fetches and parses itself below: /api/parse carries
+   *  the same verdict, so the two surfaces refuse to bind on the same
+   *  grounds. A unit stays bindable either way: its write back is refused
+   *  server-side, naming the fragment at fault. */
   bindable?: boolean;
   /** Set when the file is the main of a bot in several files: the document
    *  is the merged unit, and a save must present `unit.revision`. */
@@ -465,10 +476,21 @@ export async function openFile(
       // with that file as its main, so the fragments its imports reach
       // are in the document.
       const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
-      return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit };
+      return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit, bindable: true };
     }
     const parsed = await parseSource(source);
-    return { source, document: parsed.document, diagnostics: parsed.diagnostics, path };
+    // A source the parser could not read whole binds NOTHING here either.
+    // The document is the salvage, and this path's save is a versioned PUT
+    // of `unparse(document)` with no server-side refusal to catch it — so
+    // binding would put the salvage on the bot source at the first Ctrl+S.
+    const bindable = parsed.bindable !== false;
+    return {
+      source,
+      document: parsed.document,
+      diagnostics: parsed.diagnostics,
+      ...(bindable ? { path } : {}),
+      bindable,
+    };
   }
   return request("/files/open", {
     method: "POST",

@@ -118,3 +118,53 @@ describe("saveFile of a cloud bot in several files", () => {
     expect(opened.unit?.main).toBe("workflows/x.bot");
   });
 });
+
+// A cloud bot source never travels through /api/files/open, which is where
+// the disk surface refuses to bind a salvaged document: this client fetches
+// the bundle and parses it itself. The refusal has to hold here too — the
+// save on this path is a versioned PUT of the rendered document, with no
+// server-side refusal behind it to catch a salvage.
+describe("openFile of a cloud bot source that does not parse", () => {
+  const brokenBundle = {
+    id: "b1",
+    slug: "demo",
+    version: 1,
+    files: { "main.bot": "workflow w:\n  entry: done\n\nagent a\n  not a declaration\n" },
+  };
+
+  it("binds no path when /api/parse says the document is a salvage", async () => {
+    mockFetch(({ url, init }) => {
+      if (url.endsWith("/parse")) {
+        return {
+          document: { agents: [] },
+          diagnostics: ["main.bot:4:1: error [E012]: unknown property"],
+          bindable: false,
+        };
+      }
+      if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") return brokenBundle;
+      return {};
+    });
+
+    const opened = await openFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
+    expect(opened.path).toBeUndefined();
+    expect(opened.bindable).toBe(false);
+    // The text and the diagnostics still travel: the editor has to show
+    // what is there, and say why it will not bind it.
+    expect(opened.source).toBe(brokenBundle.files["main.bot"]);
+    expect(opened.diagnostics).toHaveLength(1);
+  });
+
+  it("still binds one that parses clean", async () => {
+    mockFetch(({ url, init }) => {
+      if (url.endsWith("/parse")) return { document: { agents: [] }, diagnostics: [], bindable: true };
+      if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") {
+        return { ...brokenBundle, files: { "main.bot": "workflow w:\n  entry: done\n" } };
+      }
+      return {};
+    });
+
+    const opened = await openFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
+    expect(opened.path).toBe(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
+    expect(opened.bindable).toBe(true);
+  });
+});
