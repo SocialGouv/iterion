@@ -498,9 +498,11 @@ func (n *EmitNode) NodeKind() NodeKind { return NodeEmit }
 //
 // Its blind spot, stated rather than hidden: a future kind that grows a
 // `with:` and does not implement this is invisible here. The list to check
-// when adding one is every construction of a [DataMapping] — compileWithMappings
-// serves the two node kinds, and compileEdges hand-rolls its own, which is the
-// older and more visible pattern an author is likely to copy.
+// when adding one is every construction of a [DataMapping], and there are
+// three: compileWithMappings serves the two node kinds below, compileEdges
+// hand-rolls its own — the older and more visible pattern an author is likely
+// to copy — and a fail node's `message:` is a mapping of one, walked
+// separately.
 type WithNode interface {
 	Node
 	WithMappings() []*DataMapping

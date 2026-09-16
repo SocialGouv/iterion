@@ -103,11 +103,16 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 	// Node `with:` refs — the payload a subbot hands its child, the fields an
 	// emit publishes. Edge mappings above were walked and these were not,
 	// which is the same omission the tool-node comment below describes: the
-	// value is a template, and an unvalidated `{{vars.typo}}` resolves to nil
-	// and is spliced away — the child run starts with an EMPTY depth, the
-	// event publishes an empty field. Nothing downstream re-reads that value,
-	// so here is the only place it can be caught; a missing value is also
-	// harder to notice than a literal would have been.
+	// value is a template, and an unvalidated reference is WORSE than a key
+	// left unmapped. Measured on the engine: a bare `{{vars.typo}}` resolves
+	// to nil and is handed over as nil, which suppresses the child's own
+	// declared default for that key — the child then renders its own
+	// `{{vars.depth}}` as source text. Embedded in surrounding text the
+	// reference is spliced to empty instead. Omitting the key entirely is the
+	// only form that lets the child's default stand.
+	//
+	// Nothing downstream re-reads the value, so here is the only place it can
+	// be caught.
 	//
 	// The guarantee covers the namespaces the runtime resolves. `{{secrets.*}}`
 	// and `{{attachments.*}}` pass the checks below and then resolve to nil in
@@ -549,13 +554,24 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C032: node has no output schema — warn that field access can't be verified.
 	outSchema := NodeOutputSchema(targetNode)
 	if outSchema == "" {
-		// A router is the one kind that reaches here and CAN be verified: it
-		// declares no `output:` of its own, but the keys it passes through are
-		// known — its incoming with-keys plus the bindings its mode adds
-		// (`item`/`index`/`count`, `reasoning`, `selected_route(s)`).
-		// Warning on those hands the author a remedy they cannot follow, since
-		// a router has no schema to add the field to.
-		if r, isRouter := targetNode.(*RouterNode); isRouter && routerPassThroughKeys(w, r)[fieldName] {
+		// A fan_out_each router declares no `output:` and cannot, so warning
+		// about its per-element bindings hands the author a remedy they are
+		// unable to follow. It is silenced only where the runtime guarantees
+		// the binding: on a BRANCH HEAD, reading one of the element keys.
+		//
+		// Deliberately narrower than routerPassThroughKeys, which is an upper
+		// bound built to suppress a warning on ONE edge. Read as a certificate
+		// of resolvability it over-silences in three directions, each measured
+		// to leak the raw template text at run time: past the join, where the
+		// per-branch outputs are gone; on a key carried by one of several
+		// mutually exclusive incoming edges; and on a key carried only by a
+		// back-edge, absent on the first iteration.
+		//
+		// A node deeper in a branch than its head keeps warning. That is a
+		// false positive left standing rather than a silence that cannot be
+		// justified, and it is what this compiler did before the check existed.
+		if r, isRouter := targetNode.(*RouterNode); isRouter &&
+			routerElementKeys(r)[fieldName] && isBranchHead(w, targetNodeID, rc.NodeID) {
 			return
 		}
 		c.refWarnf(rc, DiagRefNodeNoSchema,
@@ -712,6 +728,34 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 // routerPassThroughKeys is the set of keys a mid-graph router will have
 // on its output — incoming with-keys, plus the fields each mode adds
 // itself (llm selection, fan_out_each item binding).
+// routerElementKeys are the per-element bindings a `fan_out_each` router puts
+// in scope INSIDE a branch: the element under its `as:` name, the literal
+// `item` the runtime binds alongside it, and the position pair. Nothing else
+// — a `reasoning` or `selected_route` is a router OUTPUT and is not claimed
+// here, and no other mode binds anything per element.
+func routerElementKeys(r *RouterNode) map[string]bool {
+	if r.RouterMode != RouterFanOutEach {
+		return nil
+	}
+	bind := r.ItemBinding
+	if bind == "" {
+		bind = "item"
+	}
+	return map[string]bool{bind: true, "item": true, "index": true, "count": true}
+}
+
+// isBranchHead reports whether nodeID is a direct, non-iteration target of
+// routerID — the one position where a fan-out's per-element bindings are
+// guaranteed to be in scope, on every path and every iteration.
+func isBranchHead(w *Workflow, routerID, nodeID string) bool {
+	for _, e := range w.Edges {
+		if e != nil && e.From == routerID && e.To == nodeID && !e.IsBoundedIteration() {
+			return true
+		}
+	}
+	return false
+}
+
 func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
 	keys := map[string]bool{}
 	id := r.NodeID()

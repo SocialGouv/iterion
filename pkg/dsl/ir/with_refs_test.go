@@ -125,6 +125,81 @@ workflow test:
   handle -> done
 `
 
+// A branch head reading all four element keys, and a node PAST the join
+// reading two of them. The runtime binds the element into the branch's own
+// outputs; after the join those are gone, and the reference renders as its
+// own source text.
+const branchHeadAndPostJoinReaders = `
+schema list_out:
+  items: json
+
+schema r_out:
+  ok: bool
+
+tool list:
+  command: ` + "`echo hi`" + `
+  output: list_out
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.list.items}}"
+  as: ticket
+
+tool head:
+  command: ` + "`echo {{outputs.dispatch.ticket}} {{outputs.dispatch.item}} {{outputs.dispatch.index}} {{outputs.dispatch.count}}`" + `
+  output: r_out
+
+compute collect:
+  await: wait_all
+  expr:
+    done: "true"
+
+workflow test:
+  entry: list
+  list -> dispatch
+  dispatch -> head
+  head -> collect
+  collect -> done
+`
+
+const postJoinReaderOfAnElementKey = `
+schema list_out:
+  items: json
+
+schema r_out:
+  ok: bool
+
+tool list:
+  command: ` + "`echo hi`" + `
+  output: list_out
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.list.items}}"
+  as: ticket
+
+tool head:
+  command: ` + "`echo hi`" + `
+  output: r_out
+
+compute collect:
+  await: wait_all
+  expr:
+    done: "true"
+
+tool report:
+  command: ` + "`echo {{outputs.dispatch.index}}`" + `
+  output: r_out
+
+workflow test:
+  entry: list
+  list -> dispatch
+  dispatch -> head
+  head -> collect
+  collect -> report
+  report -> done
+`
+
 // TestASubbotReadingAFanOutElementIsNotSecondGuessed.
 //
 // Warning here would hand the author a remedy they cannot follow: "add an
@@ -133,6 +208,23 @@ workflow test:
 func TestASubbotReadingAFanOutElementIsNotSecondGuessed(t *testing.T) {
 	r := compileFile(t, subbotReadingAFanOutElement)
 	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+// TestABranchHeadReadsTheElementAndItsPosition covers all four keys the
+// silence claims, not just the one the scaffold template happens to use — a
+// claim about four keys proven on one is a claim about one.
+func TestABranchHeadReadsTheElementAndItsPosition(t *testing.T) {
+	r := compileFile(t, branchHeadAndPostJoinReaders)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+// TestPastTheJoinTheElementIsGoneAndItIsSaid is the boundary. The silence is
+// the branch's, not the router's: measured on the engine, a node after the
+// join receives the raw template text for the very same key. Silencing there
+// would re-open, inside the fix, the defect this branch exists to close.
+func TestPastTheJoinTheElementIsGoneAndItIsSaid(t *testing.T) {
+	r := compileFile(t, postJoinReaderOfAnElementKey)
+	expectDiag(t, r, DiagRefNodeNoSchema)
 }
 
 // TestAKeyTheRouterNeverBindsIsStillFlagged is the other half: the carve-out
@@ -146,11 +238,11 @@ func TestAKeyTheRouterNeverBindsIsStillFlagged(t *testing.T) {
 
 // TestASubbotHandsItsChildOnlyVarsThisProgramDeclares.
 //
-// The value is not merely unresolved: it is handed over, empty. An undeclared
-// var resolves to nil and is spliced away, so the child run starts with an
-// empty depth — quieter than a literal would have been — and nothing
-// downstream re-reads it. An unvalidated mapping is a wrong argument
-// delivered in silence rather than a diagnostic.
+// The mapping is worse than the key left unmapped. A bare undeclared ref
+// resolves to nil and is handed over as nil, which suppresses the child's own
+// declared default for `depth`; omitting the key entirely would have let that
+// default stand. Nothing downstream re-reads it, so an unvalidated mapping is
+// a wrong argument delivered in silence rather than a diagnostic.
 func TestASubbotHandsItsChildOnlyVarsThisProgramDeclares(t *testing.T) {
 	r := compileFile(t, subbotWithUndeclaredVar)
 	expectDiag(t, r, DiagUndeclaredVar)
