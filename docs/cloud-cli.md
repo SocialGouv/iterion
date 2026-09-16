@@ -71,6 +71,12 @@ minted for other purposes are never touched). Org-scoped commands
 (`--org` / `ITERION_REMOTE_ORG` / `orgs switch`) work the same way but
 without re-minting (org scope is path-based).
 
+In env mode (`ITERION_REMOTE_URL` set) both switch verbs are
+**refused** rather than silently ineffective — they write the stored
+credential env mode ignores. Pin scope with `ITERION_REMOTE_TEAM` /
+`ITERION_REMOTE_ORG` instead; for the identity team, fixed at mint
+time, mint a pinned token (`iterion remote tokens create --team <id>`).
+
 ## The launch → follow → inspect recipe
 
 ```sh
