@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.152.3](https://github.com/SocialGouv/iterion/compare/v3.152.2...v3.152.3) (2026-09-16)
+
+### Bug Fixes
+
+* **golden-master:** a mutant that lost its meta.json refuses, it no longer shrinks the set in silence ([#1306](https://github.com/SocialGouv/iterion/issues/1306)) ([a92cd3d](https://github.com/SocialGouv/iterion/commit/a92cd3d7fbbf9bbd669e57f5cfcc7dbea0aa9380))
+
+    <details><summary>why</summary>
+
+    load_mutants skipped any directory without a meta.json and said nothing. The gate then compared `detected == total` over whatever the loader had been willing to return, so a held-out set of 7 that loses 3 meta.json reports a green 4/4. That is the vacuity trap of `holdout 0/0` with a different number, and the conjunction cannot see it because both sides shrink together.
+
+    </details>
+* **subbotsource:** a relative subbot source names the file the OS reaches ([#1312](https://github.com/SocialGouv/iterion/issues/1312)) ([596e032](https://github.com/SocialGouv/iterion/commit/596e032e1364125ed427962225bbd551abb71cd5)), closes [#1283](https://github.com/SocialGouv/iterion/issues/1283), references [#1283](https://github.com/SocialGouv/iterion/issues/1283)
+
+    <details><summary>why</summary>
+
+    Two readers resolve one `subbot source:`. The bundle walk resolves the parent's directory before joining; the runtime resolver joined lexically. So through `link/parent -> real/parent`, a source `../sib/main.bot` folded to `link/sib/main.bot` — a path the kernel never produces, since it resolves the link first and only then walks `..`. A bundle that validated clean could run a different file, or none.
+
+    </details>
+
 ## [3.152.2](https://github.com/SocialGouv/iterion/compare/v3.152.1...v3.152.2) (2026-09-16)
 
 ### Bug Fixes
