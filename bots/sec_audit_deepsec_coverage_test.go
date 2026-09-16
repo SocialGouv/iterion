@@ -33,6 +33,25 @@ import (
 //
 // These exercise the REAL reader extracted from the bot against fixture
 // metadata. The property is what it produces, never how it is spelled.
+//
+// THE FIXTURES ARE A DOUBLE, so the shapes they carry were checked against the
+// real producer rather than assumed — deepsec 2.0.12, the version this bot's
+// image pins (bots/sec-audit-source/sandbox/sec/Dockerfile):
+//
+//   - createdAt is `new Date().toISOString()` at BOTH run-meta write sites
+//     (packages/core/src/run.ts:81 and :109), so it is always an ISO-8601
+//     string with milliseconds, never a numeric epoch. A numeric one would
+//     make epoch() return None and degrade every run to UNKNOWN.
+//   - the scan run id is printed as `Run ID: <id>` (commands/scan.ts:299),
+//     after the file listings, which is why the extraction takes the LAST
+//     match rather than the first.
+//   - the process run id is printed as `Processing complete. Run: <id>`
+//     (commands/process.ts), on the success path and before a non-zero exit.
+//
+// A CI without deepsec cannot catch a drift in any of the three. WHEN BUMPING
+// THE PIN, re-read those three sites: a drift degrades coverage to UNKNOWN on
+// every run — noisy and permanent, never a clean bill, but it will not go red
+// here.
 func TestDeepsecCoverageReadsTheRunMetaNotTheLog(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
