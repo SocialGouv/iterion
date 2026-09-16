@@ -81,6 +81,18 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 	// decline it follows, for a reader of the error to tell a ceiling the
 	// shapes imposed from the program's own dead end.
 	var declined, capDecline *LoopDeclined
+	// mixed says the node's loop edges were declined for reasons that do not
+	// read alike — a bounded cap beside an unbounded loop's fuel — in which
+	// case the death carries no decline: a disagreement is no cause, never a
+	// guess, whatever order the edges were written in.
+	mixed := false
+	noteDecline := func(d *LoopDeclined) {
+		if declined == nil {
+			declined = d
+		} else if d.Ceiling() != declined.Ceiling() {
+			mixed = true
+		}
+	}
 
 	for _, edge := range e.workflow.Edges {
 		if edge.From != fromNodeID {
@@ -132,9 +144,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 						exhausted = fmt.Sprintf("loop %q %s (%d/%d)", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
 						capDecline = d
 					}
-					if declined == nil {
-						declined = d
-					}
+					noteDecline(d)
 					continue
 				}
 				// Liveness monitor: an unbounded loop making no progress (its
@@ -147,9 +157,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, "liveness_stall", loopDeclineData(edge.LoopName, "liveness_stall",
 						fmt.Sprintf("loop %q made no progress for %d crossings (liveness stall): its edge is declined — the run goes on by its other edges, or dies with no edge left when none matches", edge.LoopName, maxLoopStall),
 						map[string]any{"crossings": maxLoopStall}))
-					if declined == nil {
-						declined = d
-					}
+					noteDecline(d)
 					continue
 				}
 				// Affordability: another iteration priced by the last one
@@ -161,9 +169,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q cannot fund another iteration (%s: %.2f%s left, last one took %.2f%s), falling through to the exit path",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, v.dimension, remaining, unitSuffix(unit), spent, unitSuffix(unit))
 					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, "loop_budget_guard", v.eventData(edge.LoopName))
-					if declined == nil {
-						declined = d
-					}
+					noteDecline(d)
 					continue
 				}
 			}
@@ -244,7 +250,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 			Message: fmt.Sprintf("node %q: %s, and no other edge matched", fromNodeID, exhausted),
 			NodeID:  fromNodeID,
 			Hint:    "add the loop-exhaustion exit: a bare edge from this node, taken once the loop is spent — to a typed `fail <name>:` when exhaustion is a refusal (C145 names the shape at validation)",
-			Cause:   capDecline,
+			Cause:   declineCause(capDecline, mixed),
 		}
 	}
 	if unconditional == nil && unconditionalErr == nil && declined != nil {
@@ -253,10 +259,10 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		// it follows, on the trunk and in a branch alike.
 		return nil, &RuntimeError{
 			Code:    ErrCodeNoOutgoingEdge,
-			Message: fmt.Sprintf("no outgoing edge from node %q: %s, and no other edge matched", fromNodeID, declined.Error()),
+			Message: fmt.Sprintf("no outgoing edge from node %q: a loop edge was declined and no other edge matched", fromNodeID),
 			NodeID:  fromNodeID,
 			Hint:    "ensure the node's output matches at least one edge condition, or add an unconditional fallback edge",
-			Cause:   declined,
+			Cause:   declineCause(declined, mixed),
 		}
 	}
 	return unconditional, unconditionalErr
@@ -285,4 +291,14 @@ func (e *Engine) declineLoopEdge(rs *runState, fromNodeID, loop, reason string, 
 		e.logger.Warn("failed to emit %s warning: %v", reason, err)
 	}
 	return &LoopDeclined{Loop: loop, Reason: reason}
+}
+
+// declineCause is the cause a death carries for a decline: none when the
+// node's declines disagreed (mixed), and a nil interface — never a nil
+// pointer — when there was none.
+func declineCause(d *LoopDeclined, mixed bool) error {
+	if d == nil || mixed {
+		return nil
+	}
+	return d
 }

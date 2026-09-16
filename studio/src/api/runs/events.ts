@@ -345,9 +345,9 @@ export type UserMessageEvent =
 // Budget events share {dimension, used, limit} (pkg/runtime/budget.go);
 // budget_warning has a second emitter shape for a declined loop edge
 // ({loop, reason, dimension: "loop", detail, crossings, cap?} —
-// pkg/runtime/edges.go, reasons loop_cap / loop_out_of_fuel /
-// liveness_stall; the budget guard's carries its axis), hence everything
-// optional.
+// pkg/runtime/edges.go, reasons loop_out_of_fuel / liveness_stall; the
+// budget guard's carries its axis; a bounded loop's cap is said by no
+// event, its death carries it), hence everything optional.
 export interface BudgetEventData {
   // "tokens" | "cost_usd" | "iterations" | "duration", or "loop" on a
   // declined loop edge.

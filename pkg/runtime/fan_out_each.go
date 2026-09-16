@@ -229,7 +229,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	// it was the answered branch and it exited before its successor cursor.
 	finishBranch := func(result *branchResult) {
 		if result != nil && result.err != nil {
-			if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
+			if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(cancelOnFirstFailure) {
 				cancelBranches()
 			}
 		}

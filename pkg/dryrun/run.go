@@ -305,7 +305,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		}
 	}
 	eng := runtime.New(&sim, st, x,
-		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true}),
+		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true}),
 		runtime.WithEventObserver(observe),
 		runtime.WithSandboxOverride("none"),
 		runtime.WithWorkDir(workDir),
@@ -349,14 +349,18 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 // death. declined is the reason the death itself carries (declineOf), so a
 // decline the run moved past, on the trunk or in another branch, is not
 // read into it. A bounded loop declined at its cap (`loop_cap`) is the
-// program's: C145's shape, a death.
+// program's: C145's shape, a death — the split is the engine's
+// (runtime.CeilingReason), made once.
 func ceilingOf(code store.FailureCode, declined string) bool {
 	if code == store.FailureBudgetExceeded {
 		return true
 	}
-	switch declined {
-	case "liveness_stall", "loop_budget_guard", "loop_out_of_fuel":
-		return code == store.FailureNoOutgoingEdge || code == store.FailureLoopExhausted
+	// The decline travels only on a death with no edge left — under the
+	// node's own code, or the fan-out's catch-all when its branches' codes
+	// disagree while their ends agree — so on those the reason decides.
+	switch code {
+	case store.FailureNoOutgoingEdge, store.FailureLoopExhausted, store.FailureExecutionFailed:
+		return runtime.CeilingReason(declined)
 	}
 	return false
 }

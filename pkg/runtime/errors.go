@@ -172,11 +172,12 @@ var ErrCompactionUnsupported = model.ErrCompactionUnsupported
 
 // LoopDeclined is the cause a death with no edge left carries when the
 // engine had declined a loop edge at that node: Reason is the decline's —
-// `loop_cap`, `loop_out_of_fuel`, `liveness_stall`, `loop_budget_guard` —
-// the word its budget_warning said. A reader of the error tells a ceiling
-// the run's shapes imposed from the program's own dead end by it, without
-// reading the event stream, whose order across the trunk and the branches
-// is no fact.
+// `loop_out_of_fuel`, `liveness_stall`, `loop_budget_guard`, the word the
+// budget_warning of the decline says, or `loop_cap`, a bounded loop's cap,
+// which no event says: it is the program's design, carried by the error
+// alone. A reader of the error tells a ceiling the run's shapes imposed
+// (Ceiling) from the program's own dead end by it, without reading the
+// event stream, whose order across the trunk and the branches is no fact.
 type LoopDeclined struct {
 	Loop, Reason string
 }
@@ -184,3 +185,20 @@ type LoopDeclined struct {
 func (d *LoopDeclined) Error() string {
 	return fmt.Sprintf("loop %q declined (%s)", d.Loop, d.Reason)
 }
+
+// CeilingReason says a loop decline's reason is the run's circumstances' —
+// the liveness monitor on unchanging outputs, the budget guard, an
+// unbounded loop out of fuel — rather than the program's: a bounded loop
+// declined at its cap (`loop_cap`) is the shape C145 names, a death when
+// nothing else matches. The one place the split is made; a reader of the
+// run's end (the dry run's ceiling) asks it here.
+func CeilingReason(reason string) bool {
+	switch reason {
+	case "liveness_stall", "loop_budget_guard", "loop_out_of_fuel":
+		return true
+	}
+	return false
+}
+
+// Ceiling says the decline was the run's circumstances' (CeilingReason).
+func (d *LoopDeclined) Ceiling() bool { return CeilingReason(d.Reason) }

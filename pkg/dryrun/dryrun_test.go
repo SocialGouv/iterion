@@ -941,8 +941,11 @@ func TestAPassAtTheBotsCeilingIsNotADeath(t *testing.T) {
 		{store.FailureNoOutgoingEdge, "loop_budget_guard", true},
 		{store.FailureLoopExhausted, "loop_out_of_fuel", true},
 		{store.FailureLoopExhausted, "loop_cap", false},
+		{store.FailureExecutionFailed, "loop_out_of_fuel", true},
+		{store.FailureExecutionFailed, "loop_cap", false},
 		{store.FailureNoOutgoingEdge, "", false},
 		{store.FailureLoopExhausted, "", false},
+		{store.FailureExecutionFailed, "", false},
 		{store.FailureFailNode, "liveness_stall", false},
 	} {
 		if got := ceilingOf(tc.code, tc.declined); got != tc.want {
@@ -1272,5 +1275,91 @@ func TestARefusalInsideABranchIsDeliberate(t *testing.T) {
 	}
 	if !r.Clean() {
 		t.Fatalf("a bot that refused as declared inside a branch is not clean: %+v %+v", r.Passes, r.Findings)
+	}
+}
+
+// A fan-out whose one branch stalls on the shapes (a ceiling) while the
+// other spends a bounded loop with no exit (a death): every branch runs to
+// its own end under the dry run, and the death is read as the death it is.
+const branchMixedBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent c1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge c2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow bm:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 60
+  survey -> split
+  split -> b1
+  split -> c1
+  b1 -> b2
+  b2 -> b1 when not ok as retry(unbounded 10)
+  b2 -> join when ok
+  c1 -> c2
+  c2 -> c1 when not ok as fix(5)
+  c2 -> join when ok
+  join -> done
+`
+
+// The ceiling lands first (three crossings) and the death later (five): a
+// run that cancelled the siblings of the first branch to end would never
+// see the death.
+func TestADeathInOneBranchBesideACeilingInAnotherIsADeath(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, branchMixedBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := r.Passes[1]
+	if p.Status == "finished" || p.Ceiling || !p.died() {
+		t.Fatalf("a branch's death beside another's ceiling is not read as a death: %+v", p)
+	}
+	if r.Clean() {
+		t.Fatalf("a bot whose branch dies is read as clean: %+v", r.Passes)
+	}
+}
+
+// Both branches at a ceiling of the shapes — one stalled, one out of fuel:
+// one ceiling, and the bot is clean.
+func TestTwoCeilingsInTwoBranchesAreACeiling(t *testing.T) {
+	src := strings.Replace(branchMixedBot, "  c2 -> c1 when not ok as fix(5)\n", "  c2 -> c1 when not ok as fix(unbounded 2)\n", 1)
+	r, err := Run(context.Background(), compileBot(t, src), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := r.Passes[1]
+	if p.Status == "finished" || !p.Ceiling {
+		t.Fatalf("two ceilings are not read as one: %+v", p)
+	}
+	if !r.Clean() {
+		t.Fatalf("a bot at its ceiling in both branches is not clean: %+v %+v", r.Passes, r.Findings)
 	}
 }

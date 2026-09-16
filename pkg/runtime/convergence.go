@@ -59,6 +59,12 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		}
 	}
 
+	// The branches named — the message quotes the first — in branch-id
+	// order, not in the order their goroutines finished.
+	sort.Slice(failedBranches, func(i, j int) bool {
+		return failedBranches[i]["branch_id"].(string) < failedBranches[j]["branch_id"].(string)
+	})
+
 	// Apply await strategy.
 	switch strategy {
 	case ir.AwaitWaitAll:
@@ -113,8 +119,17 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			// NODE_NOT_FOUND into the EXECUTION_FAILED catch-all — the
 			// in-process auto-resume gate retries the latter and
 			// refuses the former.
+			cause := branchEndCause(results)
 			if code := commonBranchFailureCode(results); code != "" {
-				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg, Cause: branchEndCause(results)}
+				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg, Cause: cause}
+			}
+			if cause != nil {
+				// Codes that disagree stay the catch-all; what the branches'
+				// ends agree on — two refusals at two fail nodes, two
+				// ceilings — still travels, for the reader that asks the
+				// chain. Typed, because the trunk keeps a RuntimeError as it
+				// is and flattens a plain error to its text.
+				return "", &RuntimeError{Code: ErrCodeExecutionFailed, NodeID: convergenceNodeID, Message: msg, Cause: cause}
 			}
 			return "", fmt.Errorf("%s", msg)
 		}
@@ -408,13 +423,13 @@ func branchEndCause(results []*branchResult) error {
 	return cause
 }
 
-// sameEndCause says two branch ends read alike: two declines of the same
-// reason, or two refusals.
+// sameEndCause says two branch ends read alike: two declines that are both
+// a ceiling's or both the program's (CeilingReason), or two refusals.
 func sameEndCause(a, b error) bool {
 	da, aok := a.(*LoopDeclined)
 	db, bok := b.(*LoopDeclined)
 	if aok || bok {
-		return aok && bok && da.Reason == db.Reason
+		return aok && bok && da.Ceiling() == db.Ceiling()
 	}
 	return a == b
 }

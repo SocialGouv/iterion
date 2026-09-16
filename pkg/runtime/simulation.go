@@ -14,6 +14,11 @@ type Simulation struct {
 	EventsArrive bool
 	// AnswersArrive collects an await_answers node at once, with no answer.
 	AnswersArrive bool
+	// BranchesRunToTheirEnd keeps a failed branch from cancelling its
+	// siblings: every branch of a fan-out reaches its own end, so the
+	// fan-out's verdict reads all of them — a dry run wants every death and
+	// every ceiling, where a real run saves the tokens.
+	BranchesRunToTheirEnd bool
 }
 
 // WithSimulation switches the engine's waits on the world to the

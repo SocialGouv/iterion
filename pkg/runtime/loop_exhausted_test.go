@@ -319,6 +319,134 @@ func TestABranchEndReachesTheRun(t *testing.T) {
 			t.Fatalf("the branch's refusal is not a decision on the run: %v", err)
 		}
 	})
+	t.Run("two refusals at two fail nodes keep the decision", func(t *testing.T) {
+		src := strings.Replace(branchEndBot, "  b2 -> b1 when not ok as retry(unbounded 10)\n", "  b2 -> rejected when not ok\n", 1)
+		src = strings.Replace(src, "  c1 -> join\n", "  c1 -> join when ok\n  c1 -> refused when not ok\n", 1)
+		src = strings.Replace(src, "judge join:", "fail refused:\n  code: REFUSED\n  message: \"the c branch said no\"\n\njudge join:", 1)
+		exec := newStubExecutor()
+		exec.on("survey", yes)
+		exec.on("b1", yes)
+		exec.on("b2", no)
+		exec.on("c1", no)
+		eng := New(compileBotText(t, src), tmpStore(t), exec, WithSimulation(Simulation{BranchesRunToTheirEnd: true}))
+		err := eng.Run(context.Background(), "run-two-refusals", nil)
+		var rtErr *RuntimeError
+		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeExecutionFailed || !errors.Is(err, ErrDeliberateFailure) {
+			t.Fatalf("two refusals with codes that disagree lost the decision: %v", err)
+		}
+	})
+	t.Run("a simulated fan-out runs every branch to its end", func(t *testing.T) {
+		src := strings.Replace(branchEndBot, "  c1 -> join\n", "  c1 -> c2\n  c2 -> join\n", 1)
+		src = strings.Replace(src, "fail rejected:", "judge c2:\n  model: \"m\"\n  output: verdict\n\nfail rejected:", 1)
+		exec := newStubExecutor()
+		exec.on("survey", yes)
+		exec.on("b1", yes)
+		exec.on("b2", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+		exec.on("c1", func(map[string]any) (map[string]any, error) {
+			// Slow enough that the b branch's dead end lands while c is here:
+			// a real run cancels c, a simulation lets it reach c2.
+			time.Sleep(50 * time.Millisecond)
+			return map[string]any{"ok": true}, nil
+		})
+		exec.on("c2", yes)
+		var started []string
+		eng := New(compileBotText(t, src), tmpStore(t), exec, WithSimulation(Simulation{BranchesRunToTheirEnd: true}), WithEventObserver(func(evt store.Event) {
+			if evt.Type == store.EventNodeStarted {
+				started = append(started, evt.NodeID)
+			}
+		}))
+		if err := eng.Run(context.Background(), "run-branches-to-their-end", nil); err == nil {
+			t.Fatal("the b branch's dead end did not fail the run")
+		}
+		reached := false
+		for _, id := range started {
+			if id == "c2" {
+				reached = true
+			}
+		}
+		if !reached {
+			t.Fatalf("the sibling of a failed branch was cancelled under simulation: %v", started)
+		}
+	})
+}
+
+// Branch ends that read alike agree on a cause: two ceilings of different
+// reasons are one ceiling; a ceiling beside a bounded cap is no cause.
+func TestBranchEndsThatReadAlikeAgree(t *testing.T) {
+	stall := &RuntimeError{Code: ErrCodeNoOutgoingEdge, Cause: &LoopDeclined{Loop: "review", Reason: "liveness_stall"}}
+	fuel := &RuntimeError{Code: ErrCodeLoopExhausted, Cause: &LoopDeclined{Loop: "spin", Reason: "loop_out_of_fuel"}}
+	cap := &RuntimeError{Code: ErrCodeLoopExhausted, Cause: &LoopDeclined{Loop: "fix", Reason: "loop_cap"}}
+	for _, tc := range []struct {
+		name    string
+		results []*branchResult
+		ceiling bool
+	}{
+		{"two ceilings of different reasons", []*branchResult{{branchID: "a", err: stall}, {branchID: "b", err: fuel}}, true},
+		{"a ceiling beside a bounded cap", []*branchResult{{branchID: "a", err: stall}, {branchID: "b", err: cap}}, false},
+		{"a bounded cap beside a ceiling", []*branchResult{{branchID: "a", err: cap}, {branchID: "b", err: stall}}, false},
+	} {
+		var d *LoopDeclined
+		got := errors.As(branchEndCause(tc.results), &d) && d != nil && d.Ceiling()
+		if got != tc.ceiling {
+			t.Fatalf("%s: read as a ceiling %v, want %v", tc.name, got, tc.ceiling)
+		}
+	}
+}
+
+// A node carrying an unbounded loop and a bounded one, both declined at the
+// same crossing: the death carries no decline whatever order the edges were
+// written in — a disagreement is no cause, never a guess.
+const twoLoopsBot = `schema verdict:
+  ok: bool
+  ready: bool
+
+agent a0:
+  model: "m"
+  output: verdict
+
+agent a1:
+  model: "m"
+  output: verdict
+
+judge a2:
+  model: "m"
+  output: verdict
+
+workflow tl:
+  worktree: none
+  sandbox: none
+  entry: a1
+  budget:
+    max_iterations: 60
+  a1 -> a2
+  a2 -> a1 when not ok as outer(unbounded 2)
+  a2 -> a0 when not ready as inner(3)
+  a0 -> a1
+  a2 -> done when ok
+`
+
+func TestTwoLoopsOfDifferentKindsAtOneNodeCarryNoDecline(t *testing.T) {
+	swapped := strings.Replace(twoLoopsBot,
+		"  a2 -> a1 when not ok as outer(unbounded 2)\n  a2 -> a0 when not ready as inner(3)\n",
+		"  a2 -> a0 when not ready as inner(3)\n  a2 -> a1 when not ok as outer(unbounded 2)\n", 1)
+	for name, src := range map[string]string{"outer first": twoLoopsBot, "inner first": swapped} {
+		exec := newStubExecutor()
+		never := func(map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": false, "ready": false, "n": time.Now().UnixNano()}, nil
+		}
+		exec.on("a0", never)
+		exec.on("a1", never)
+		exec.on("a2", never)
+		err := New(compileBotText(t, src), tmpStore(t), exec).Run(context.Background(), "run-two-loops-"+strings.ReplaceAll(name, " ", "-"), nil)
+		var rtErr *RuntimeError
+		var d *LoopDeclined
+		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeLoopExhausted {
+			t.Fatalf("%s: the spent loops did not end the run as LOOP_EXHAUSTED: %v", name, err)
+		}
+		if errors.As(err, &d) {
+			t.Fatalf("%s: a death after declines that disagree carries one of them: %v", name, err)
+		}
+	}
 }
 
 // The collector reads the run's code and its cause from the branches that
