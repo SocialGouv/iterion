@@ -28,11 +28,24 @@ kubectl -n <ns> logs -l app.kubernetes.io/component=runner --tail=200
 nats stream info ITERION_RUNS
 nats consumer info ITERION_RUNS iterion-runners
 
-# Mongo connectivity from server pod
-kubectl -n <ns> exec deploy/iterion -- nc -zv <mongo-host> 27017
+# Mongo connectivity from server pod. The image ships NO netcat: the runtime
+# stage installs git, ca-certificates, tini, procps, curl, passwd, python3 and
+# jq only (Dockerfile). python3 is there for the catalog bots and doubles as a
+# socket probe.
+kubectl -n <ns> exec deploy/iterion -- python3 -c \
+  'import socket; socket.create_connection(("<mongo-host>", 27017), 3).close(); print("open")'
 
-# Blob bucket connectivity from server pod
-kubectl -n <ns> exec deploy/iterion -- aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/runs/
+# Blob connectivity. No S3 CLI in the image either, so read the server's own
+# probe. S3 is non-critical, so a failure degrades at 200, not 503.
+kubectl -n <ns> exec deploy/iterion -- curl -sS localhost:4891/readyz | jq '.checks.s3'
+
+# For an actual listing, run a CLI in a throwaway pod. The pod's variables are
+# ITERION_S3_ENDPOINT / ITERION_S3_BUCKET, and artifact keys live under
+# artifacts/<run-id>/<node-id>/<version>.json — `runs/` is the *filesystem*
+# store's layout, not the blob one.
+kubectl -n <ns> run s3-probe --rm -it --restart=Never --image=amazon/aws-cli \
+  --env AWS_ACCESS_KEY_ID=<key> --env AWS_SECRET_ACCESS_KEY=<secret> -- \
+  --endpoint-url <ITERION_S3_ENDPOINT> s3 ls s3://<ITERION_S3_BUCKET>/artifacts/
 ```
 
 Reading the `/readyz` body:
@@ -79,7 +92,7 @@ Fix:
 
 Diagnose:
 1. `kubectl exec deploy/iterion -- env | grep MONGO`
-2. `kubectl exec deploy/iterion -- nc -zv <mongo-host> 27017`
+2. `kubectl exec deploy/iterion -- python3 -c 'import socket; socket.create_connection(("<mongo-host>", 27017), 3).close(); print("open")'` — the image has no `nc`; `python3` ships for the catalog bots and doubles as a socket probe.
 3. `kubectl get networkpolicy -n <ns>` — does the egress allow port 27017 to the Mongo namespace?
 
 Fix:
@@ -92,8 +105,8 @@ Fix:
 **Probable cause**: S3 credentials are wrong, the bucket doesn't exist, or the bucket policy denies the iterion server. S3 is non-critical for readiness, so the pod stays in the Service and the probe answers 200 — but artifact reads and writes fail, so treat it as urgent anyway.
 
 Diagnose:
-1. `kubectl exec deploy/iterion -- env | grep -E 'S3|AWS'`
-2. From inside the pod: `aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/`
+1. `kubectl exec deploy/iterion -- env | grep -E 'ITERION_S3|AWS'` — the chart sets `ITERION_S3_ENDPOINT` / `ITERION_S3_REGION` / `ITERION_S3_BUCKET` / `ITERION_S3_USE_PATH_STYLE` from the ConfigMap and the two `ITERION_S3_*_KEY*` from the storage Secret; there are no unprefixed `S3_*` variables.
+2. From inside the pod, read the server's own probe — the image ships no S3 CLI: `kubectl exec deploy/iterion -- curl -sS localhost:4891/readyz | jq '.checks.s3'`. For a bucket listing, run `aws --endpoint-url <ITERION_S3_ENDPOINT> s3 ls s3://<ITERION_S3_BUCKET>/artifacts/` from a throwaway `amazon/aws-cli` pod.
 3. Check the bucket policy / IAM role for the access key.
 
 Fix:
@@ -153,7 +166,7 @@ Diagnose:
 
 Fix:
 - Update the offending dependency. Most Go advisories resolve by `go get -u <module>@<version>` then `go mod tidy`.
-- Container base image CVEs: rebuild from a fresh `iterion-sandbox-slim` tag. The release pipeline emits a new tag every Monday.
+- Container base image CVEs: the sandbox bases are **not** rebuilt on a schedule — no image workflow carries a `schedule:` trigger. `sandbox-images.yml` runs on a push to `main` touching `sandbox/**`, when `image.yml` completes on `main` (refolding the finalize layer onto the fresh binary), or on `workflow_dispatch`, and publishes `:edge` only; signed `:vX.Y.Z` sandbox images come from `release-images.yml` on a `v*` tag. To pick up a fixed base layer, dispatch `sandbox-images.yml` manually (or land a `sandbox/**` change) and pull the new `:edge`. The Monday cron `0 6 * * 1` belongs to `trivy.yml` and only *scans*.
 - Genuinely irrelevant CVE (e.g. a vulnerability only triggered by a code path iterion doesn't use): add a `.trivyignore` entry with a justification comment. Don't bypass without one — drift is how compliance findings accumulate.
 
 ### Helm chart upgrade fails with `manifests version drift`
