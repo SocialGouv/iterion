@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -51,7 +52,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 				if firstBudgetErr == nil {
 					firstBudgetErr = r.err
 				}
-			case errors.Is(r.err, context.Canceled), errors.Is(r.err, context.DeadlineExceeded), errors.Is(r.err, ErrRunCancelled):
+			case stoppedBranch(r.err):
 			default:
 				otherFailures++
 			}
@@ -361,33 +362,69 @@ func firstAmbiguousBranchErr(results []*branchResult) error {
 	return nil
 }
 
-// branchEndCause is what a reader of the run's end asks the chain for —
-// the loop decline a death followed, or the sentinel of a deliberate fail
-// — taken from the first failed branch, whose error the message quotes.
-// Nothing else of a branch's chain is exposed: the aggregate stays its own
-// classification.
-func branchEndCause(results []*branchResult) error {
-	for _, r := range results {
-		if r == nil || r.err == nil {
-			continue
-		}
-		var d *LoopDeclined
-		if errors.As(r.err, &d) && d != nil {
-			return d
-		}
-		if errors.Is(r.err, ErrDeliberateFailure) {
-			return ErrDeliberateFailure
-		}
-		return nil
-	}
-	return nil
+// stoppedBranch says a branch ended because the fan-out was stopped — a
+// sibling's failure cancelling it, the run cancelled, a deadline — not by
+// a failure of its own. The aggregate reads its code and its cause from
+// the branches that failed by themselves: a stopped sibling neither
+// launders a typed code into EXECUTION_FAILED nor decides, by finishing
+// first or last, what the run's end carries.
+func stoppedBranch(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRunCancelled)
 }
 
-// typed) — partial agreement stays the catch-all, never a guess.
+// branchEndCause is what a reader of the run's end asks the chain for —
+// the loop decline a death followed, or the sentinel of a deliberate fail
+// — when every branch that failed by itself carries the same one: a
+// disagreement (one branch's decline beside another's own dead end) is no
+// cause, never a guess. Read in branch-id order, so the loop named is the
+// same whatever finished first. Nothing else of a branch's chain is
+// exposed: the aggregate stays its own classification.
+func branchEndCause(results []*branchResult) error {
+	var failed []*branchResult
+	for _, r := range results {
+		if r != nil && r.err != nil && !stoppedBranch(r.err) {
+			failed = append(failed, r)
+		}
+	}
+	sort.Slice(failed, func(i, j int) bool { return failed[i].branchID < failed[j].branchID })
+	var cause error
+	for _, r := range failed {
+		var this error
+		var d *LoopDeclined
+		switch {
+		case errors.As(r.err, &d) && d != nil:
+			this = d
+		case errors.Is(r.err, ErrDeliberateFailure):
+			this = ErrDeliberateFailure
+		default:
+			return nil
+		}
+		if cause == nil {
+			cause = this
+		} else if !sameEndCause(cause, this) {
+			return nil
+		}
+	}
+	return cause
+}
+
+// sameEndCause says two branch ends read alike: two declines of the same
+// reason, or two refusals.
+func sameEndCause(a, b error) bool {
+	da, aok := a.(*LoopDeclined)
+	db, bok := b.(*LoopDeclined)
+	if aok || bok {
+		return aok && bok && da.Reason == db.Reason
+	}
+	return a == b
+}
+
+// typed) — partial agreement stays the catch-all, never a guess. A branch
+// the fan-out stopped is not read: it failed by nothing of its own.
 func commonBranchFailureCode(results []*branchResult) ErrorCode {
 	var code ErrorCode
 	for _, r := range results {
-		if r == nil || r.err == nil {
+		if r == nil || r.err == nil || stoppedBranch(r.err) {
 			continue
 		}
 		var rtErr *RuntimeError

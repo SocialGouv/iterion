@@ -114,16 +114,20 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					}
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q %s (%d/%d)",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
-					// Said as an event, like the liveness stall and the budget
-					// guard: a reader of the run — a dry run — tells a bounded
-					// loop's cap from an unbounded loop's fuel by the reason.
+					// A bounded loop's cap is the program's design — C145's exit
+					// is written for it — so reaching it warns no one: the
+					// decline is carried by the death when nothing else matches,
+					// and said nowhere else. An unbounded loop out of fuel did
+					// not converge on its own, which an operator hears once,
+					// like the liveness stall and the budget guard.
 					reason := "loop_cap"
+					d := &LoopDeclined{Loop: edge.LoopName, Reason: reason}
 					if loop.Unbounded {
 						reason = "loop_out_of_fuel"
+						d = e.declineLoopEdge(rs, fromNodeID, edge.LoopName, reason, loopDeclineData(edge.LoopName, reason,
+							fmt.Sprintf("loop %q %s (%d/%d): its edge is declined — the run goes on by its other edges, or dies of LOOP_EXHAUSTED when none matches", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter),
+							map[string]any{"crossings": rs.loopCounters[edge.LoopName], "cap": maxIter}))
 					}
-					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, reason, loopDeclineData(edge.LoopName, reason,
-						fmt.Sprintf("loop %q %s (%d/%d): its edge is declined — the run goes on by its other edges, or dies of LOOP_EXHAUSTED when none matches", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter),
-						map[string]any{"crossings": rs.loopCounters[edge.LoopName], "cap": maxIter}))
 					if exhausted == "" {
 						exhausted = fmt.Sprintf("loop %q %s (%d/%d)", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
 						capDecline = d

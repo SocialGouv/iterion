@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +103,6 @@ func TestADeclinedLoopEdgeSaysWhy(t *testing.T) {
 		edge, reason, figures string
 		changing              bool
 	}{
-		{"  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", "loop_cap", "2/2", true},
 		{"  assess -> check when not ok as retry(unbounded 2)\n  assess -> done when ok\n", "loop_out_of_fuel", "2/2", true},
 		{"  assess -> check when not ok as retry(unbounded 50)\n  assess -> done when ok\n", "liveness_stall", "3 crossings", false},
 	} {
@@ -147,6 +147,23 @@ func TestADeclinedLoopEdgeSaysWhy(t *testing.T) {
 		if !strings.Contains(detail, "or dies") {
 			t.Fatalf("%s: the detail asserts an outcome the decline cannot know: %q", tc.reason, detail)
 		}
+	}
+	// A bounded loop's cap is the program's design, not a warning: reaching
+	// it emits nothing — the death carries it when nothing else matches.
+	exec := newStubExecutor()
+	exec.on("check", never)
+	exec.on("assess", never)
+	var warnings []map[string]any
+	eng := New(compileBotText(t, spentLoopBot), tmpStore(t), exec, WithEventObserver(func(evt store.Event) {
+		if evt.Type == store.EventBudgetWarning {
+			warnings = append(warnings, evt.Data)
+		}
+	}))
+	if err := eng.Run(context.Background(), "run-cap-silent", nil); err == nil {
+		t.Fatal("the spent loop finished the run")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("a bounded loop reaching its cap warned the operator: %v", warnings)
 	}
 }
 
@@ -302,4 +319,44 @@ func TestABranchEndReachesTheRun(t *testing.T) {
 			t.Fatalf("the branch's refusal is not a decision on the run: %v", err)
 		}
 	})
+}
+
+// The collector reads the run's code and its cause from the branches that
+// failed by themselves: a sibling the fan-out stopped is not read, the
+// cause needs the failed branches' agreement, and the branch named is the
+// first by id — whatever order the goroutines finished in.
+func TestAStoppedSiblingNeitherLaundersTheCodeNorDecidesTheCause(t *testing.T) {
+	stall := func(loop string) error {
+		return &RuntimeError{Code: ErrCodeNoOutgoingEdge, Cause: &LoopDeclined{Loop: loop, Reason: "liveness_stall"}}
+	}
+	deadEnd := &RuntimeError{Code: ErrCodeNoOutgoingEdge}
+	refusal := &RuntimeError{Code: "REJECTED", Cause: ErrDeliberateFailure}
+	stopped := fmt.Errorf("branch stopped: %w", context.Canceled)
+	for _, tc := range []struct {
+		name    string
+		results []*branchResult
+		code    ErrorCode
+		loop    string // the loop the cause names, "" for no decline
+		refused bool
+	}{
+		{"a stopped sibling is not read", []*branchResult{{branchID: "b", err: stopped}, {branchID: "a", err: stall("retry")}}, ErrCodeNoOutgoingEdge, "retry", false},
+		{"two stalls agree, the first branch by id named", []*branchResult{{branchID: "b", err: stall("later")}, {branchID: "a", err: stall("retry")}}, ErrCodeNoOutgoingEdge, "retry", false},
+		{"a decline beside a dead end is no cause", []*branchResult{{branchID: "a", err: stall("retry")}, {branchID: "b", err: deadEnd}}, ErrCodeNoOutgoingEdge, "", false},
+		{"two refusals agree", []*branchResult{{branchID: "a", err: refusal}, {branchID: "b", err: refusal}}, "REJECTED", "", true},
+		{"a refusal beside a stall is no cause, and no common code", []*branchResult{{branchID: "a", err: refusal}, {branchID: "b", err: stall("retry")}}, "", "", false},
+		{"only stopped siblings carry nothing", []*branchResult{{branchID: "a", err: stopped}, {branchID: "b", err: stopped}}, "", "", false},
+	} {
+		if got := commonBranchFailureCode(tc.results); got != tc.code {
+			t.Fatalf("%s: code %q, want %q", tc.name, got, tc.code)
+		}
+		cause := branchEndCause(tc.results)
+		var d *LoopDeclined
+		loop := ""
+		if errors.As(cause, &d) && d != nil {
+			loop = d.Loop
+		}
+		if loop != tc.loop || errors.Is(cause, ErrDeliberateFailure) != tc.refused {
+			t.Fatalf("%s: cause %v, want loop %q refused %v", tc.name, cause, tc.loop, tc.refused)
+		}
+	}
 }
