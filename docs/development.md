@@ -153,14 +153,27 @@ iterion/
 │   ├── cloud-related        # queue, runner, auth, identity, orgusage, forge, webhooks
 │   └── extensions/state     # plugin, skilllib, memory, secrets, marketplace, supervise
 ├── studio/                  # React/Vite/TypeScript UI
+├── pi-extension/            # the pi editor extension, typechecked and
+│                            # asset-diffed by `task pi-ext:check`
 ├── bots/                    # maintained bot catalogue (main.bot + manifest/resources)
 ├── examples/                # focused DSL/integration demonstrations
+├── contrib/                 # reference integrations kept outside the engine:
+│                            # mattermost-clarify (chat adapter over the run-completion
+│                            # webhook), web-search (SearXNG + Firecrawl compose stack)
+├── connectors/forgejo/      # checked-in connector catalog entry
+│                            # (connector/overlay/schemas + ops) — see connectors.md
 ├── e2e/                     # deterministic and build-tagged live E2E tests
 ├── sdks/typescript/         # @iterion/sdk CLI wrapper
 ├── charts/iterion/          # Helm chart and tests
 ├── docker/ + sandbox/       # container images/helpers and sandbox fixtures
+├── ci/arc-runner/           # self-hosted ARC CI runner image (Dockerfile + verify.sh),
+│                            # built and gated by the "ARC CI runner image" workflow
+├── build/                   # desktop packaging inputs (appicon, plists, installer)
+├── Cask/ + Formula/         # Homebrew tap, refreshed by brew-update.yml
+├── assets/brand/            # brand sources; every committed copy is guarded
+│                            # by `task brand:check`
 ├── docs/                    # living guides plus explicitly dated records
-├── scripts/ + tooling/      # generation, release, and verification helpers
+├── scripts/                 # generation, release, and verification helpers
 ├── internal/                # module-private helpers: gittest (MANDATORY for every
 │                            # git subprocess a test spawns — docs/agents/testing.md),
 │                            # httpx, ciguard, fswatch, proctest, subbottest
