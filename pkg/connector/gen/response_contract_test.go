@@ -638,6 +638,45 @@ func TestANullableReferenceCarriesItsNullIntoTheContract(t *testing.T) {
 		})
 	}
 
+	// A response whose whole schema is a nullable reference cannot BORROW the
+	// component's contract: the component says what the shape is, not that the
+	// body may be absent, so borrowing drops exactly the permission the
+	// description granted. It gets a contract of its own carrying both.
+	t.Run("a nullable reference is not borrowed at the response level", func(t *testing.T) {
+		body := func(sibling string) string {
+			return `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/issues": {"get": {"tags": ["issue"], "operationId": "issueGet",
+    "responses": {"200": {"description": "ok", "schema": {"$ref": "#/definitions/Issue"` + sibling + `}}}}}},
+  "definitions": {"Issue": {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}}
+}`
+		}
+
+		pkg, report := generateWith(t, body(`, "x-nullable": true`), true)
+		if len(report.Uncontracted) != 0 {
+			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+		}
+		op := onlyOp(t, pkg)
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`null`)); err != nil {
+			t.Errorf("a documented null body was refused: %v", err)
+		}
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1}`)); err != nil {
+			t.Errorf("the shape is still checked when one is sent: %v", err)
+		}
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"title":"no id"}`)); err == nil {
+			t.Error("nullability at the response level is not a licence to drop a required field")
+		}
+
+		plain, report := generateWith(t, body(``), true)
+		if len(report.Uncontracted) != 0 {
+			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+		}
+		if _, err := plain.ValidateResponse(onlyOp(t, plain), 200, []byte(`null`)); err == nil {
+			t.Error("a response that documents no null must still refuse one")
+		}
+	})
+
 	t.Run("a plain reference still refuses a null it does not document", func(t *testing.T) {
 		pkg, report := generateWith(t, doc(``), true)
 		if len(report.Uncontracted) != 0 {
