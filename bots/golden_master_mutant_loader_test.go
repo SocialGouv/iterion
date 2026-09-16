@@ -60,6 +60,11 @@ func mutantLoaderWorkspace(t *testing.T) string {
 
 func runHarness(t *testing.T, ws string) string {
 	t.Helper()
+	return runHarnessEnv(t, ws)
+}
+
+func runHarnessEnv(t *testing.T, ws string, extra ...string) string {
+	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -73,9 +78,9 @@ func runHarness(t *testing.T, ws string) string {
 	// `seal_holdout` MOVES mutants/holdout/* out of t.TempDir() into
 	// /tmp/gm-holdout-<basename>-<sha10>/ — outside anything Go cleans up, and
 	// named after the absolute workspace path, so every run leaves a new pile.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(),
 		"GM_WORKSPACE="+ws,
-		"GM_SEALED_DIR="+filepath.Join(ws, "sealed"))
+		"GM_SEALED_DIR="+filepath.Join(ws, "sealed")), extra...)
 	out, runErr := cmd.CombinedOutput()
 	line := lastHarnessReport(string(out))
 	if line == "" {
@@ -184,6 +189,49 @@ func TestTheEvidencePileAndLooseFilesAreNotReadAsMalformedMutants(t *testing.T) 
 	}
 }
 
+// THE regression the first round of this PR introduced, and the reason a
+// refusal has to fail EVERY term a consumer converges on — not the one that was
+// on the author's mind.
+//
+// `bail()` prints the DEFAULT report, in which `invalid` and `missing` do not
+// exist: both are only set inside the `MODE=validate` arm, which this path never
+// reaches. `reanchor.bot` computes
+// `all_valid = not verdict.get("invalid") and not verdict.get("missing")` and
+// converges its gate on it — so a LOADER refusal read as "mechanically valid",
+// declaring sound a set of mutants the harness never read. Before the refusal
+// existed, that case surfaced as `missing`.
+//
+// Same shape as `holdout_detected == holdout_total`, one gate further out.
+func TestAMalformedMutantDoesNotReadValidInValidateMode(t *testing.T) {
+	ws := mutantLoaderWorkspace(t)
+	gm := filepath.Join(ws, ".golden-master")
+	writeMutant(t, filepath.Join(gm, "mutants", "v3-lost-its-meta"), "create_lost", false)
+
+	line := runHarnessEnv(t, ws, "GM_MODE=validate")
+
+	var report struct {
+		Invalid []struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason"`
+		} `json:"invalid"`
+		Missing []string `json:"missing"`
+	}
+	if err := json.Unmarshal([]byte(line), &report); err != nil {
+		t.Fatalf("report is not JSON: %v\n%s", err, line)
+	}
+	// reanchor.bot's exact predicate.
+	allValid := len(report.Invalid) == 0 && len(report.Missing) == 0
+	if allValid {
+		t.Fatalf("a loader refusal reads all_valid — reanchor.bot converges on "+
+			"`not invalid and not missing`, so this declares mechanically sound a set "+
+			"the harness never loaded:\n%s", line)
+	}
+	if len(report.Invalid) == 0 || report.Invalid[0].ID != "v3-lost-its-meta" {
+		t.Errorf("the refused report must name the offending mutant in `invalid`, "+
+			"otherwise the consumer has a false term and no diagnosis:\n%s", line)
+	}
+}
+
 // The third arm of the same event: a meta.json that EXISTS but will not parse.
 //
 // Left to propagate it is a json.JSONDecodeError no caller catches, and main()
@@ -211,5 +259,53 @@ func TestCorruptHeldOutMetaRefusesByNameInsteadOfKillingTheHarness(t *testing.T)
 			t.Errorf("the report does not carry %q — a truncated meta.json must refuse BY NAME, "+
 				"not kill the harness with a traceback and no report:\n%s", want, line)
 		}
+	}
+}
+
+// The spellings the first fix missed, and each one restores the exact outcome
+// the refusal exists to remove: a traceback and NO report.
+//
+//   - valid JSON that is not an OBJECT dies one line later on
+//     `meta["id"] = …` with a TypeError;
+//   - a meta that cannot be OPENED raises OSError between the isfile check and
+//     the read — the "half-materialised by a partial fetch" case the docstring
+//     itself names.
+//
+// Catching two decode spellings and calling it done is the enumeration trap:
+// the fix is `(ValueError, OSError)` plus a type check, not a longer list.
+func TestEveryUnreadableMetaSpellingRefusesByName(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, dir string)
+	}{
+		{"json-non-objet", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(`["not", "an", "object"]`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"illisible", func(t *testing.T, dir string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root ignore les permissions de fichier")
+			}
+			if err := os.Chmod(filepath.Join(dir, "meta.json"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "meta.json"), 0o644) })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := mutantLoaderWorkspace(t)
+			gm := filepath.Join(ws, ".golden-master")
+			dir := filepath.Join(gm, "mutants", "holdout", "h9-"+tc.name)
+			writeMutant(t, dir, "create_lost", true)
+			tc.write(t, dir)
+
+			line := runHarness(t, ws)
+
+			if !strings.Contains(line, "h9-"+tc.name) {
+				t.Errorf("the report does not name the offending mutant — this spelling still "+
+					"kills the harness with a traceback and no report:\n%s", line)
+			}
+		})
 	}
 }

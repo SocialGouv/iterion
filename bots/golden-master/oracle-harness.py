@@ -2613,6 +2613,20 @@ def sealed_but_ephemeral(had_uncommitted, sealed_now):
 MUTANT_ROOT_NON_MUTANTS = ("holdout", "audit")
 
 
+class MalformedMutant(SystemExit):
+    """Refus du chargeur, portant l'identité du mutant fautif.
+
+    Sous-classe de SystemExit pour que tout `except SystemExit` existant garde
+    son comportement ; l'attribut `mutant` existe pour que l'appelant puisse
+    poser les TERMES qu'une porte aval consomme, au lieu de ne transmettre
+    qu'un texte que personne ne lit mécaniquement.
+    """
+
+    def __init__(self, mutant, message):
+        super().__init__(message)
+        self.mutant = mutant
+
+
 def mutant_meta_at(root, name, kind, excluded=()):
     """The meta of one entry under a mutant root, or None when it is not one.
 
@@ -2633,29 +2647,38 @@ def mutant_meta_at(root, name, kind, excluded=()):
         return None
     meta_path = os.path.join(d, "meta.json")
     if not os.path.isfile(meta_path):
-        raise SystemExit(
+        raise MalformedMutant(name,
             "%s mutant %r has no meta.json (%s). A directory without one is a "
             "MALFORMED mutant, not an absent one: dropping it in silence shrinks "
             "the set while the gate still compares detected == total, so every "
             "figure below would describe a smaller set than the one that was "
             "drawn. Restore the meta.json, or remove the directory."
             % (kind, name, d))
+    # EVERY way reading this meta can fail, not the two spellings first thought
+    # of. `ValueError` covers JSONDecodeError and UnicodeDecodeError both;
+    # `OSError` covers the file vanishing between the isfile check above and the
+    # read — which is precisely the "half-materialised by a partial fetch" case
+    # this refusal exists for. Left to propagate, either one kills the harness
+    # with a traceback and NO report: the outcome the refusal replaces.
     try:
         with open(meta_path, encoding="utf-8") as f:
             meta = json.load(f)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        # A meta.json that EXISTS but will not parse — truncated by an
-        # interrupted write, half-materialised by a partial fetch. Left to
-        # propagate it is a JSONDecodeError no caller catches, and main() has no
-        # wrapper: the harness dies on exit 1 having printed NO report, which
-        # leaves the gate's consumer the bare exit code the refusal above exists
-        # to replace. Same event as an absent meta.json, so same named refusal.
-        raise SystemExit(
-            "%s mutant %r has an unreadable meta.json (%s): %s. A half-written "
-            "or truncated meta is the same event as a missing one — the mutant "
-            "cannot be scored, and counting the set without it would describe a "
-            "smaller set than the one that was drawn."
+    except (ValueError, OSError) as e:
+        raise MalformedMutant(name,
+            "%s mutant %r has an unreadable meta.json (%s): %s. A half-written, "
+            "truncated or vanished meta is the same event as a missing one — the "
+            "mutant cannot be scored, and counting the set without it would "
+            "describe a smaller set than the one that was drawn."
             % (kind, name, meta_path, e))
+    # Valid JSON that is not an OBJECT (a list, `null`, a bare string) would die
+    # one line below on `meta["id"] = …` with a TypeError — same traceback, same
+    # absent report.
+    if not isinstance(meta, dict):
+        raise MalformedMutant(name,
+            "%s mutant %r has a meta.json that is not an object (%s): got %s. A "
+            "mutant's meta carries its surface and archetype; anything else "
+            "cannot be scored and must not be counted."
+            % (kind, name, meta_path, type(meta).__name__))
     meta["id"], meta["dir"] = name, d
     return meta
 
@@ -7288,6 +7311,27 @@ def main():
         print(json.dumps(report))
         raise SystemExit(0)
 
+    def bail_malformed_mutant(e):
+        """Refus du chargeur — pose TOUS les termes qu'une porte aval consomme.
+
+        `bail` imprime le rapport par DEFAUT, dans lequel `invalid` et `missing`
+        n'existent pas : ils ne sont posés que dans l'arme `MODE=validate`, que
+        ce chemin n'atteint jamais. Or `reanchor.bot` calcule
+        `all_valid = not verdict.get("invalid") and not verdict.get("missing")`
+        et fait converger sa porte dessus — un refus de CHARGEMENT s'y lirait
+        donc « mécaniquement valide », en déclarant bons des mutants que le
+        harnais n'a jamais lus.
+
+        C'est la même faute que `holdout_detected == holdout_total`, une porte
+        plus loin : un refus doit échouer CHAQUE terme sur lequel un
+        consommateur converge, pas seulement celui qu'on avait en tête. Un
+        helper, parce que deux estampillages recopiés divergent au troisième
+        site.
+        """
+        report["holdout_detected"] = -1
+        report["invalid"] = [{"id": getattr(e, "mutant", "?"), "reason": str(e)}]
+        bail(str(e))
+
     try:
         cfg_path = config_path(gm_dir)
     except SystemExit as e:
@@ -7437,9 +7481,8 @@ def main():
     # satisfies. Withheld, not zero-because-failed.
     try:
         visible = load_mutants(gm_dir, holdout=False)
-    except SystemExit as e:
-        report["holdout_detected"] = -1
-        bail(str(e))
+    except MalformedMutant as e:
+        bail_malformed_mutant(e)
 
     # MODE=validate — la validite MECANIQUE seule, sans application ni capture.
     #
@@ -7543,9 +7586,8 @@ def main():
         # read green on `holdout_detected == holdout_total`.
         try:
             held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
-        except SystemExit as e:
-            report["holdout_detected"] = -1
-            bail(str(e))
+        except MalformedMutant as e:
+            bail_malformed_mutant(e)
         # The held-out set lives outside the workspace once sealed. If the
         # sealed directory moved or was wiped, it is GONE — and the archetype
         # check below would then blame the campaign for an archetype it did
