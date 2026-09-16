@@ -10,12 +10,19 @@ import (
 )
 
 // writeMutant creates one mutant directory, with or without its meta.json.
+//
+// The body embeds the directory name so every mutant hashes DIFFERENTLY.
+// Sharing one body makes the held-out set collide by fingerprint with anything
+// written into mutants/audit/, and the run then stops on `holdout_reused`
+// before reaching what these benches are about — which is how the audit-pile
+// guard went vacuously green until a positive assertion caught it.
 func writeMutant(t *testing.T, dir, archetype string, withMeta bool) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "apply.sh"), []byte("#!/bin/sh\ntrue\n"), 0o755); err != nil {
+	body := "#!/bin/sh\n# " + filepath.Base(dir) + "\ntrue\n"
+	if err := os.WriteFile(filepath.Join(dir, "apply.sh"), []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if !withMeta {
@@ -62,7 +69,13 @@ func runHarness(t *testing.T, ws string) string {
 	}
 	cmd := exec.Command("python3", harness)
 	cmd.Dir = ws
-	cmd.Env = append(os.Environ(), "GM_WORKSPACE="+ws)
+	// GM_SEALED_DIR, or `sealed_dir_for` falls back to the system temp dir and
+	// `seal_holdout` MOVES mutants/holdout/* out of t.TempDir() into
+	// /tmp/gm-holdout-<basename>-<sha10>/ — outside anything Go cleans up, and
+	// named after the absolute workspace path, so every run leaves a new pile.
+	cmd.Env = append(os.Environ(),
+		"GM_WORKSPACE="+ws,
+		"GM_SEALED_DIR="+filepath.Join(ws, "sealed"))
 	out, runErr := cmd.CombinedOutput()
 	line := lastHarnessReport(string(out))
 	if line == "" {
@@ -139,12 +152,64 @@ func TestTheEvidencePileAndLooseFilesAreNotReadAsMalformedMutants(t *testing.T) 
 
 	line := runHarness(t, ws)
 
-	for _, forbidden := range []string{"has no meta.json", "MALFORMED mutant"} {
+	for _, forbidden := range []string{"has no meta.json", "unreadable meta.json"} {
 		if strings.Contains(line, forbidden) {
 			t.Errorf("the gate refused over a structural directory or a loose note — "+
 				"mutants/audit/ and *.md files are not mutants, and excluding them must "+
 				"be deliberate rather than a side effect of the silent skip (%q):\n%s",
 				forbidden, line)
+		}
+	}
+	// Absence alone would go VACUOUSLY green: any bail BEFORE the mutant loader
+	// also produces a report without those strings, and the guard would pass
+	// while testing nothing — the same both-sides-shrink vacuity this file
+	// exists to close. So pin that the run actually got PAST the loader.
+	//
+	// This fixture has no application to boot, so it stops at the first refusal
+	// that follows the loader: the missing `routes_probe`. Pinning it couples
+	// this test to that ORDER on purpose — if a future refusal lands earlier,
+	// this must go red and be re-pointed at whatever now follows the loader,
+	// rather than quietly stop proving anything.
+	var report struct {
+		LogTail string `json:"log_tail"`
+	}
+	if err := json.Unmarshal([]byte(line), &report); err != nil {
+		t.Fatalf("report is not JSON: %v\n%s", err, line)
+	}
+	if !strings.Contains(report.LogTail, "routes_probe") {
+		t.Fatalf("the run did not reach the refusal that FOLLOWS the mutant loader, so this "+
+			"guard proves nothing about mutants/audit/: it stopped on %q instead. Re-point "+
+			"this assertion at whatever now sits just after the loader:\n%s",
+			report.LogTail, line)
+	}
+}
+
+// The third arm of the same event: a meta.json that EXISTS but will not parse.
+//
+// Left to propagate it is a json.JSONDecodeError no caller catches, and main()
+// has no wrapper — the harness dies on exit 1 having printed NO report at all,
+// which leaves the gate's consumer the bare exit code the named refusal exists
+// to replace. Truncated writes and half-materialised fetches produce exactly
+// this, and they are the failure mode the successor-on-a-ref design makes
+// reachable.
+func TestCorruptHeldOutMetaRefusesByNameInsteadOfKillingTheHarness(t *testing.T) {
+	ws := mutantLoaderWorkspace(t)
+	gm := filepath.Join(ws, ".golden-master")
+	writeMutant(t, filepath.Join(gm, "mutants", "holdout", "h1-intact"), "create_lost", true)
+	writeMutant(t, filepath.Join(gm, "mutants", "holdout", "h2-truncated"), "create_lost", true)
+	// A meta cut mid-write: valid prefix, no closing brace.
+	if err := os.WriteFile(
+		filepath.Join(gm, "mutants", "holdout", "h2-truncated", "meta.json"),
+		[]byte(`{"surface": "write", "archetype": "create_`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	line := runHarness(t, ws)
+
+	for _, want := range []string{"h2-truncated", "unreadable meta.json"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the report does not carry %q — a truncated meta.json must refuse BY NAME, "+
+				"not kill the harness with a traceback and no report:\n%s", want, line)
 		}
 	}
 }

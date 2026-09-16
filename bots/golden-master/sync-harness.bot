@@ -2801,8 +2801,22 @@ tool sync_harness:
                 "figure below would describe a smaller set than the one that was "
                 "drawn. Restore the meta.json, or remove the directory."
                 % (kind, name, d))
-        with open(meta_path, encoding="utf-8") as f:
-            meta = json.load(f)
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # A meta.json that EXISTS but will not parse — truncated by an
+            # interrupted write, half-materialised by a partial fetch. Left to
+            # propagate it is a JSONDecodeError no caller catches, and main() has no
+            # wrapper: the harness dies on exit 1 having printed NO report, which
+            # leaves the gate's consumer the bare exit code the refusal above exists
+            # to replace. Same event as an absent meta.json, so same named refusal.
+            raise SystemExit(
+                "%s mutant %r has an unreadable meta.json (%s): %s. A half-written "
+                "or truncated meta is the same event as a missing one — the mutant "
+                "cannot be scored, and counting the set without it would describe a "
+                "smaller set than the one that was drawn."
+                % (kind, name, meta_path, e))
         meta["id"], meta["dir"] = name, d
         return meta
 
