@@ -579,15 +579,19 @@ func TestSwagger2HonoursProduces(t *testing.T) {
 // TestANullableReferenceIsReportedRatherThanStripped.
 //
 // `{"$ref": …, "x-nullable": true}` is go-swagger's standard way of writing a
-// nullable model reference, and the vocabulary cannot carry it: a contract
-// reference takes no siblings. Treating `x-nullable` as a non-normative
-// extension dropped the nullability and kept the reference, so the contract
-// refused the `null` the vendor had documented — on a mutation, a parked run
-// for an answer the vendor served correctly.
+// nullable model reference, and a go-swagger service writes `null` for an
+// absent relation rather than omitting the key: Forgejo sends one for
+// `assignee`, `milestone` and `merged_by` on every unassigned issue.
 //
-// The two dialects must agree: the OAS 3 spelling beside the same `$ref` was
-// already refused, and this one now is too.
-func TestANullableReferenceIsReportedRatherThanStripped(t *testing.T) {
+// Nullability is the ONE sibling a reference may carry. It does not qualify
+// the referenced shape — it says the slot may hold none — so the contract can
+// state it, and the two dialects state it the same way.
+//
+// The cost of getting this wrong is not a red diagnostic: a contract
+// violation on a 2xx is marked ambiguous, has its Data cleared and is NOT
+// retryable, so a mutation parks its run and a read fails its node, for an
+// answer the vendor served correctly.
+func TestANullableReferenceCarriesItsNullIntoTheContract(t *testing.T) {
 	doc := func(sibling string) string {
 		return `{
   "swagger": "2.0",
@@ -603,27 +607,77 @@ func TestANullableReferenceIsReportedRatherThanStripped(t *testing.T) {
 }`
 	}
 
-	t.Run("x-nullable beside a ref stops the contract", func(t *testing.T) {
-		pkg, report := generateWith(t, doc(`, "x-nullable": true`), true)
-		if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
-			t.Errorf("ResponseSchemaRef = %q — a contract that would refuse the documented null must not ship", ref)
+	for _, spelling := range []struct{ name, sibling string }{
+		{"x-nullable", `, "x-nullable": true`},
+		{"nullable", `, "nullable": true`},
+	} {
+		t.Run(spelling.name+" is carried, not dropped", func(t *testing.T) {
+			pkg, report := generateWith(t, doc(spelling.sibling), true)
+			if len(report.Uncontracted) != 0 {
+				t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+			}
+			op := onlyOp(t, pkg)
+			if op.Results[0].ResponseSchemaRef == "" {
+				t.Fatal("a nullable reference lost its contract")
+			}
+			// The answer the service actually sends.
+			if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1,"assignee":null,"title":"t"}`)); err != nil {
+				t.Errorf("the documented null was refused: %v", err)
+			}
+			// Omitting the key was always fine, and still is.
+			if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1,"title":"t"}`)); err != nil {
+				t.Errorf("an absent key was refused: %v", err)
+			}
+			// And the shape is still checked when one IS sent.
+			if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1,"assignee":{"login":"jo"}}`)); err != nil {
+				t.Errorf("a present relation was refused: %v", err)
+			}
+			if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1,"assignee":"jo"}`)); err == nil {
+				t.Error("nullability is not a licence to send anything: a string where an object belongs must still be refused")
+			}
+		})
+	}
+
+	// A response whose whole schema is a nullable reference cannot BORROW the
+	// component's contract: the component says what the shape is, not that the
+	// body may be absent, so borrowing drops exactly the permission the
+	// description granted. It gets a contract of its own carrying both.
+	t.Run("a nullable reference is not borrowed at the response level", func(t *testing.T) {
+		body := func(sibling string) string {
+			return `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "paths": {"/issues": {"get": {"tags": ["issue"], "operationId": "issueGet",
+    "responses": {"200": {"description": "ok", "schema": {"$ref": "#/definitions/Issue"` + sibling + `}}}}}},
+  "definitions": {"Issue": {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}}
+}`
 		}
-		if len(report.Uncontracted) != 1 {
-			t.Fatalf("Uncontracted = %+v, want the response reported", report.Uncontracted)
+
+		pkg, report := generateWith(t, body(`, "x-nullable": true`), true)
+		if len(report.Uncontracted) != 0 {
+			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+		}
+		op := onlyOp(t, pkg)
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`null`)); err != nil {
+			t.Errorf("a documented null body was refused: %v", err)
+		}
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1}`)); err != nil {
+			t.Errorf("the shape is still checked when one is sent: %v", err)
+		}
+		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"title":"no id"}`)); err == nil {
+			t.Error("nullability at the response level is not a licence to drop a required field")
+		}
+
+		plain, report := generateWith(t, body(``), true)
+		if len(report.Uncontracted) != 0 {
+			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
+		}
+		if _, err := plain.ValidateResponse(onlyOp(t, plain), 200, []byte(`null`)); err == nil {
+			t.Error("a response that documents no null must still refuse one")
 		}
 	})
 
-	t.Run("the OAS 3 spelling behaves identically", func(t *testing.T) {
-		pkg, report := generateWith(t, doc(`, "nullable": true`), true)
-		if ref := onlyOp(t, pkg).Results[0].ResponseSchemaRef; ref != "" {
-			t.Errorf("ResponseSchemaRef = %q — the two dialects must agree", ref)
-		}
-		if len(report.Uncontracted) != 1 {
-			t.Fatalf("Uncontracted = %+v, want the response reported", report.Uncontracted)
-		}
-	})
-
-	t.Run("a plain reference still gets its contract", func(t *testing.T) {
+	t.Run("a plain reference still refuses a null it does not document", func(t *testing.T) {
 		pkg, report := generateWith(t, doc(``), true)
 		if len(report.Uncontracted) != 0 {
 			t.Fatalf("unexpected refusal: %+v", report.Uncontracted)
@@ -632,7 +686,6 @@ func TestANullableReferenceIsReportedRatherThanStripped(t *testing.T) {
 		if op.Results[0].ResponseSchemaRef == "" {
 			t.Fatal("an ordinary reference lost its contract")
 		}
-		// And it still discriminates: the null it does NOT document is refused.
 		if _, err := pkg.ValidateResponse(op, 200, []byte(`{"id":1,"assignee":null}`)); err == nil {
 			t.Error("a contract that declares no null must still refuse one")
 		}

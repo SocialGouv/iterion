@@ -282,7 +282,12 @@ func TestResponseContractReferencesAreCheckedBeforeDispatch(t *testing.T) {
 		{"mutual alias", map[string]ResponseSchema{"result": {Ref: "other"}, "other": {Ref: "result"}}, false},
 		{"recursive object", map[string]ResponseSchema{"result": {Type: "object", Properties: map[string]ResponseSchema{"next": {Ref: "result"}}}}, true},
 		{"recursive array", map[string]ResponseSchema{"result": {Type: "array", Items: &ResponseSchema{Ref: "result"}}}, true},
-		{"ref siblings", map[string]ResponseSchema{"result": {Ref: "other", Nullable: true}, "other": {Type: "object"}}, false},
+		// Nullability is the ONE sibling a reference may carry: it does not
+		// qualify the referenced shape, it says the slot may hold none.
+		{"nullable ref", map[string]ResponseSchema{"result": {Ref: "other", Nullable: true}, "other": {Type: "object"}}, true},
+		{"ref with a type", map[string]ResponseSchema{"result": {Ref: "other", Type: "object"}, "other": {Type: "object"}}, false},
+		{"ref with an enum", map[string]ResponseSchema{"result": {Ref: "other", Enum: []json.RawMessage{json.RawMessage(`"a"`)}}, "other": {Type: "string"}}, false},
+		{"ref with properties", map[string]ResponseSchema{"result": {Ref: "other", Properties: map[string]ResponseSchema{"x": {Type: "string"}}}, "other": {Type: "object"}}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p, _ := responsePackage(ResponseSchema{})

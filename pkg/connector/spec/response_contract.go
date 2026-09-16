@@ -123,7 +123,11 @@ func (p *Package) checkResponseSchema(s ResponseSchema, depth, progress int, act
 		return fmt.Errorf("contract exceeds the depth or traversal limit")
 	}
 	if s.Ref != "" {
-		if s.Type != "" || s.Nullable || s.Enum != nil || len(s.Required) > 0 || len(s.Properties) > 0 || s.Items != nil || s.IntegerMode != "" {
+		// Nullability is the one sibling a reference may carry, and it is not a
+		// CONSTRAINT on the referenced shape: it says the slot may hold no
+		// shape at all. Everything else would qualify the target, which the
+		// reference already names in full.
+		if s.Type != "" || s.Enum != nil || len(s.Required) > 0 || len(s.Properties) > 0 || s.Items != nil || s.IntegerMode != "" {
 			return fmt.Errorf("a contract reference cannot carry sibling constraints")
 		}
 		target, ok := p.ResponseSchemas[s.Ref]
@@ -325,6 +329,13 @@ func (p *Package) validateResponseValue(s ResponseSchema, value any, path string
 		return responseViolation(path, "validation traversal limit exceeded")
 	}
 	if s.Ref != "" {
+		// A declared null is answered BEFORE the reference is resolved: the
+		// component describes the shape this slot holds when it holds one, and
+		// a go-swagger service writes `null` for an absent relation rather
+		// than omitting the key.
+		if value == nil && s.Nullable {
+			return nil
+		}
 		target, ok := p.ResponseSchemas[s.Ref]
 		if !ok {
 			return responseViolation(path, "contract reference is missing")
