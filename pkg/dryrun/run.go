@@ -291,14 +291,18 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		defer mu.Unlock()
 		switch evt.Type {
 		case store.EventBudgetWarning:
-			// The engine says why it declined a loop edge: the last reason
-			// is what the pass's end is read by (ceilingOf).
+			// The engine says why it declined a loop edge: the reason of
+			// the decline the pass ended on is what its end is read by
+			// (ceilingOf) — a ceiling has no edge selected after it.
 			if reason, _ := evt.Data["reason"].(string); reason != "" {
 				declined = reason
 			}
 		case store.EventNodeStarted:
 			pass.Nodes = append(pass.Nodes, evt.NodeID)
 		case store.EventEdgeSelected:
+			// The run moved past any decline: what it dies of later is
+			// that node's, not the ceiling's.
+			declined = ""
 			from, _ := evt.Data["from"].(string)
 			to, _ := evt.Data["to"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: to})
@@ -353,10 +357,11 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 
 // ceilingOf says a run's end was a ceiling the dry run's shapes imposed
 // rather than a death of the program: the bot's own budget ceiling, or —
-// after the engine declined a loop edge for a reason that is a ceiling's
+// when the engine declined a loop edge for a reason that is a ceiling's
 // (the liveness monitor on unchanging shapes, the budget guard, an
-// unbounded loop out of fuel) — the fall-through with no edge left, or the
-// loop's cap. A bounded loop declined at its cap (`loop_cap`) is the
+// unbounded loop out of fuel) and no edge was left — the fall-through's
+// death. declined is that decline's reason, or empty once the run moved
+// past it. A bounded loop declined at its cap (`loop_cap`) is the
 // program's: C145's shape, a death.
 func ceilingOf(code store.FailureCode, declined string) bool {
 	if code == store.FailureBudgetExceeded {

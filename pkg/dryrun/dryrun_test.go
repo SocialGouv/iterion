@@ -1024,3 +1024,70 @@ func TestAFanOutEdgeIsTheOneTheEngineNames(t *testing.T) {
 		t.Fatalf("split2 was never reached and is not said unvisited: %v", r.UnvisitedNodes)
 	}
 }
+
+// An unbounded loop the shapes stall, an exit taken, and a later node
+// whose recorded output carries no field its edges read: the death is the
+// program's, whatever the engine declined before it.
+const staleBot = `schema verdict:
+  ok: bool
+
+agent check:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge assess:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent gate:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent wrap:
+  model: "claude-opus-4-7"
+  output: verdict
+
+workflow s:
+  worktree: none
+  sandbox: none
+  entry: check
+  budget:
+    max_iterations: 60
+  check -> assess
+  assess -> check when not ok as again(unbounded 100)
+  assess -> gate
+  gate -> done when ok
+  gate -> wrap when not ok
+  wrap -> done
+`
+
+// A decline the run moved past is not the reason of what it dies of later:
+// the pass whose stalled loop fell through to its exit and then died at a
+// node with no edge left is a death, and the report is not clean.
+func TestADeathAfterADeclineTheRunMovedPastIsADeath(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, staleBot), Options{
+		Fixtures: map[string]map[string]any{"gate": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := r.Passes[1]
+	crossings := 0
+	for _, id := range p.Nodes {
+		if id == "check" {
+			crossings++
+		}
+	}
+	if crossings < 2 {
+		t.Fatalf("the false pass never crossed the loop, so nothing was declined before the death: %v", p.Nodes)
+	}
+	if p.Status == "finished" || !strings.Contains(p.Failure, "gate") {
+		t.Fatalf("the false pass did not die at gate: %+v", p)
+	}
+	if p.Ceiling {
+		t.Fatalf("a death after a decline the run moved past is read as a ceiling: %+v", p)
+	}
+	if r.Clean() {
+		t.Fatalf("a pass that died is read as clean: %+v %+v", r.Passes, r.Findings)
+	}
+}

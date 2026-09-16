@@ -743,7 +743,12 @@ func (c *compiler) validateResources(w *Workflow) {
 // Bounded loops only: an unbounded loop's fuel is its ceiling, dying there
 // is the ceiling's job, and its logic exit is C098's. A foreach edge from
 // the same node covers nothing here: it is spent with its collection, and
-// declined like the loop edge once it is.
+// declined like the loop edge once it is. Never on a fan_out_all,
+// round_robin or llm router: their edges are not selected by evaluating
+// `when` and a loop's cap — a fan-out takes them all (a loop edge there is
+// C244's), a round-robin or an llm router chooses among all of its
+// outgoing edges — so no loop edge is declined at such a node and
+// LOOP_EXHAUSTED is not a death it can meet.
 func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
 	var bounded []string
 	var rest []*Edge
