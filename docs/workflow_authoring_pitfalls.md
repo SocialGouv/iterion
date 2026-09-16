@@ -607,10 +607,16 @@ and emitted `count":3 done":false` — destroying the JSON, and
 silently failing every downstream node that expected
 `{"count": ..., "done": ...}`.
 
-### Rule: every `command:` string must be POSIX-portable
+### Rule: a `language: sh` script must be POSIX-portable
 
-When you write a `tool` node, **assume `sh` is dash**. That means none
-of the following:
+When you write a `script:` node in `sh`, **assume `sh` is dash**. A `command:`
+gets bash by the pin, so the constructs below do work in one — write them where
+the image is guaranteed to ship bash, and prefer `language: bash` over a
+bash-only `command:` when the shell is the point. The two brace rows bind a
+`command:` regardless: brace expansion is a *bash* feature, so an unescaped
+`{…}` is mangled under the pin exactly as the JSON case above shows.
+
+In an `sh` script, none of the following is available:
 
 | Pattern              | Replace with                          |
 | -------------------- | ------------------------------------- |
