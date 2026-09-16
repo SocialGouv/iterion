@@ -44,8 +44,8 @@ workflow w:
 `
 
 // A {{loop.<name>.<field>}} reference names a loop an edge declares and a
-// field the namespace has (C147): the runtime renders the counters of an
-// unknown loop as 0, silently.
+// field the namespace has (C147, a warning): the runtime renders no value
+// for an unknown loop, and a bot in the field is not broken at upgrade.
 func TestALoopReferenceNamesADeclaredLoop(t *testing.T) {
 	for name, tc := range map[string]struct {
 		ref  string
@@ -71,8 +71,8 @@ func TestALoopReferenceNamesADeclaredLoop(t *testing.T) {
 				}
 				return
 			}
-			if got == nil || got.Severity != SeverityError || !strings.Contains(got.Message, tc.want) || got.NodeID != "say" {
-				t.Fatalf("no C147 error at say saying %q: %+v\n%v", tc.want, got, cr.Diagnostics)
+			if got == nil || got.Severity != SeverityWarning || !strings.Contains(got.Message, tc.want) || got.NodeID != "say" {
+				t.Fatalf("no C147 warning at say saying %q: %+v\n%v", tc.want, got, cr.Diagnostics)
 			}
 		})
 	}

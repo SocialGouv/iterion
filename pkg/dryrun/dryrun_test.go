@@ -375,14 +375,14 @@ attachments:
     description: "the spec"
 
 prompt u:
-  Use {{secrets.api_key}} on {{attachments.spec}} for {{vars.goal}}.
+  Use {{secrets.api_key}} on {{attachments.spec}} ({{attachments.spec.url}}) for {{vars.goal}}.
 
 agent a:
   model: "claude-opus-4-7"
   user: u
 
 tool t:
-  command: "head -c 1 {{attachments.spec}} >/dev/null; echo {{secrets.api_key}}"
+  command: "head -c 1 {{attachments.spec}} >/dev/null; curl -sI {{attachments.spec.url}} >/dev/null; echo {{secrets.api_key}}"
 
 tool s:
   script: "cat <<< bashism"
@@ -758,5 +758,21 @@ func TestAChildRunsWithinWhatIsLeftOfThePass(t *testing.T) {
 	}
 	if len(r.Children) == 0 || r.Children[0].Status == "finished" || !strings.Contains(r.Children[0].Failure, "deadline") {
 		t.Fatalf("the child was not cut by the parent's deadline: %+v", r.Children)
+	}
+}
+
+// The reason a dry run gives for a reference kept as written comes from the
+// program it holds: a declared attachment that resolves to nothing is said
+// declared, an undeclared one undeclared.
+func TestTheReasonComesFromTheProgram(t *testing.T) {
+	x := NewExecutor(compileBot(t, secretBot), true, nil, nil)
+	if why := x.whyUnresolved("attachments.spec.url"); !strings.Contains(why, "declared, but its \"url\"") {
+		t.Fatalf("a declared attachment: %q", why)
+	}
+	if why := x.whyUnresolved("attachments.nope"); why != "no such attachment is declared" {
+		t.Fatalf("an undeclared attachment: %q", why)
+	}
+	if why := x.whyUnresolved("loop.nope.iteration"); !strings.Contains(why, "no such loop") {
+		t.Fatalf("an undeclared loop: %q", why)
 	}
 }

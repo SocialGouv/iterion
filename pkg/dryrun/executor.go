@@ -180,7 +180,16 @@ func (x *Executor) shapedTemplateData(td *model.TemplateData) *model.TemplateDat
 	}
 	for name := range x.wf.Attachments {
 		if _, ok := cp.Attachments[name]; !ok {
-			cp.Attachments[name] = model.AttachmentInfo{Name: name, Path: "<attachment:" + name + ">", MIME: "application/octet-stream"}
+			// A dry run wires no signer: without a shape here `.url` would
+			// resolve to nothing, and a declared attachment would read as an
+			// undeclared one.
+			shaped := name
+			cp.Attachments[name] = model.AttachmentInfo{
+				Name:       name,
+				Path:       "<attachment:" + name + ">",
+				MIME:       "application/octet-stream",
+				PresignURL: func() (string, error) { return "<attachment-url:" + shaped + ">", nil },
+			}
 		}
 	}
 	return &cp
@@ -269,7 +278,7 @@ func (x *Executor) prompt(id, where, name string, input, vars map[string]any, td
 // reaches it: the prompt resolver renders it as a placeholder
 // (declaredSecrets) and the command renderer as the guard's placeholder.
 func (x *Executor) unresolved(id, where, ref string) {
-	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolved(ref))})
+	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, x.whyUnresolved(ref))})
 }
 
 // reporter is the renderer's listener for one place of a node: each
@@ -455,9 +464,26 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 }
 
 // whyUnresolved says, for a reference kept as written, what a dry run can
-// say about why.
-func whyUnresolved(ref string) string {
-	ns, _, _ := strings.Cut(ref, ".")
+// say about why — from the program it holds, never from the text alone: a
+// declared attachment that resolves to nothing is not an undeclared one.
+func (x *Executor) whyUnresolved(ref string) string {
+	ns, rest, _ := strings.Cut(ref, ".")
+	switch ns {
+	case "attachments":
+		name, sub, _ := strings.Cut(rest, ".")
+		if x.wf != nil && x.wf.Attachments[name] != nil {
+			if sub == "" {
+				sub = "path"
+			}
+			return fmt.Sprintf("the attachment is declared, but its %q has no value here", sub)
+		}
+		return "no such attachment is declared"
+	}
+	return whyUnresolvedNamespace(ns)
+}
+
+// whyUnresolvedNamespace is the reading a namespace alone allows.
+func whyUnresolvedNamespace(ns string) string {
 	switch ns {
 	case "input":
 		return "the node's input carries no such field on this path (the edge that reached it maps none)"
@@ -466,11 +492,9 @@ func whyUnresolved(ref string) string {
 	case "outputs":
 		return "that node has produced nothing on this path yet, or its output has no such field"
 	case "loop":
-		return "the node is not inside that loop here"
+		return "no such loop is declared (a declared loop's counters resolve even outside its body)"
 	case "artifacts":
 		return "nothing was published under that name before this node"
-	case "attachments":
-		return "no such attachment is declared"
 	case "secrets":
 		return "no such secret is declared"
 	case "run":

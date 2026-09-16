@@ -83,3 +83,28 @@ func TestAnUnsignedAttachmentURLIsNotFound(t *testing.T) {
 		t.Fatalf("a command with an unsignable url rendered %q, named %v", got, left)
 	}
 }
+
+// A loop no edge declares resolves to nothing — not to a 0 that a guard
+// reads as "never": the reference stays as written in a command, is null
+// in a script, and a declared loop resolves before and after its first
+// crossing.
+func TestAnUndeclaredLoopResolvesToNothing(t *testing.T) {
+	td := &TemplateData{LoopMaxIterations: map[string]int{"retry": 3}}
+	r := &TemplateResolver{}
+	if v, ok := r.ResolveValue("loop.retry.iteration", nil, td); !ok || v != int64(0) {
+		t.Fatalf("a declared loop before its first crossing: %#v %v", v, ok)
+	}
+	if _, ok := r.ResolveValue("loop.TYPO.iteration", nil, td); ok {
+		t.Fatal("an undeclared loop resolved")
+	}
+	crossed := &TemplateData{LoopCounters: map[string]int{"fix": 2}}
+	if v, ok := r.ResolveValue("loop.fix.iteration", nil, crossed); !ok || v != int64(2) {
+		t.Fatalf("a crossed loop known by its counter alone: %#v %v", v, ok)
+	}
+	body := "if [ {{loop.TYPO.iteration}} -ge {{loop.TYPO.max}} ]; then exit 1; fi"
+	var left []string
+	got := RenderCommand(body, mustRefs(body), nil, nil, td, "run-1", func(ref string) { left = append(left, ref) })
+	if got != body || len(left) != 2 {
+		t.Fatalf("an undeclared loop in a command rendered %q, named %v", got, left)
+	}
+}

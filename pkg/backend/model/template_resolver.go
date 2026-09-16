@@ -24,6 +24,7 @@ type SecretRefResolver interface {
 //   - loop.<name>.iteration                          — current iteration counter
 //   - loop.<name>.max                                — declared loop bound
 //   - loop.<name>.previous_output[.<field>...]       — snapshot one iteration behind
+//     (a loop the workflow does not declare is not found: no 0 for a misspelling)
 //   - artifacts.<publish_name>[.<field>...]          — published artifact
 //   - run.<member>                                   — the run namespace (`run.id` always)
 //   - attachments.<name>[.path|.url|.mime|.size|.sha256]
@@ -153,6 +154,15 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 			return "", false
 		}
 		loopName, field := segs[0], segs[1]
+		// A loop no edge declares has no counters: not found, so the
+		// reference stays as written and a dry run names it — never a 0
+		// that reads as "never". A declared loop is in the bounds map
+		// (every loop of the workflow is), or in the counters once crossed.
+		if _, declared := td.LoopMaxIterations[loopName]; !declared {
+			if _, crossed := td.LoopCounters[loopName]; !crossed {
+				return nil, false
+			}
+		}
 		switch field {
 		case "iteration":
 			return int64(td.LoopCounters[loopName]), true
