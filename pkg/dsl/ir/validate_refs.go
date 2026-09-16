@@ -46,7 +46,7 @@ func (c *compiler) refWarnf(rc refContext, code DiagCode, format string, args ..
 
 // collectAllRefs gathers every template reference in the workflow together
 // with the node that consumes it.
-func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[*Edge]ast.Span) []refContext {
+func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[*Edge]ast.Span, withSpans map[*DataMapping]ast.Span) []refContext {
 	// Build reverse map: prompt name → list of consuming node IDs.
 	promptUsers := make(map[string][]string)
 	for _, n := range w.Nodes {
@@ -132,6 +132,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Ref:      ref,
 					NodeID:   n.NodeID(),
 					Location: fmt.Sprintf("%s node %q, with %q", n.NodeKind(), n.NodeID(), dm.Key),
+					Span:     withSpans[dm],
 				})
 			}
 		}
@@ -423,7 +424,7 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 			}
 		}
 	}
-	refs := collectAllRefs(w, promptSpans, c.edgeSpans)
+	refs := collectAllRefs(w, promptSpans, c.edgeSpans, c.withSpans)
 	if len(refs) == 0 {
 		return
 	}

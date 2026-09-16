@@ -263,3 +263,50 @@ func TestAnEmitPublishesOnlyVarsThisProgramDeclares(t *testing.T) {
 	r := compileFile(t, emitWithUndeclaredVar)
 	expectDiag(t, r, DiagUndeclaredVar)
 }
+
+// A node carrying several keys, two of them wrong, each on its own line.
+const subbotWithSeveralKeysOnSeveralLines = `
+vars:
+  goal: string
+
+schema vout:
+  validated: bool
+
+subbot child:
+  source: "kid.bot"
+  with {
+    a: "{{vars.nope1}}",
+    b: "{{vars.goal}}",
+    c: "{{vars.nope2}}"
+  }
+  output: vout
+
+workflow test:
+  entry: child
+  child -> done
+`
+
+// TestEachBadMappingIsReportedOnItsOwnLine.
+//
+// #1281 asks for the check "at the mapping's line", and the edge walk already
+// carries a span for exactly this reason. Without one, every key of a
+// multi-key `with { … }` reports at the node's header — the author is told
+// there is a problem in the block and left to find which key, in the CLI, in
+// the studio and in any inline forge rendering.
+func TestEachBadMappingIsReportedOnItsOwnLine(t *testing.T) {
+	r := compileFile(t, subbotWithSeveralKeysOnSeveralLines)
+
+	lines := map[int]bool{}
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagUndeclaredVar {
+			lines[d.Line] = true
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("two bad keys on two lines reported at %d distinct position(s): %v", len(lines), r.Diagnostics)
+	}
+	// The node header is line 9 of this source; the mappings are 12 and 14.
+	if lines[9] {
+		t.Errorf("a mapping diagnostic landed on the node's header line: %v", r.Diagnostics)
+	}
+}
