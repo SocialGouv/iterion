@@ -60,6 +60,46 @@ func TestAnIndexDeclaringNothingIsRefusedWhileCollisionsRemain(t *testing.T) {
 	}
 }
 
+// The guard's two working directions, and the row that lies about where it
+// points. None of the three is reachable from the tests above — the real tree
+// has nothing to report and the inertness fixture returns early — so without
+// these, inverting a comparison or dropping an append would ship green and
+// the guard would pass on a tree full of duplicates.
+func TestAnUndeclaredCollisionIsRefused(t *testing.T) {
+	dir := writeADRFixture(t, declaredPairRows,
+		"001-first.md", "001-first-take.md", "002-second.md", "002-second-take.md")
+	problems := strings.Join(checkADRNumbers(t, dir), "\n")
+	if !strings.Contains(problems, "002 002-second-take.md") {
+		t.Fatalf("a collision the index does not declare was not reported: %q", problems)
+	}
+}
+
+func TestADeclaredNumberThatNoLongerCollidesIsRefused(t *testing.T) {
+	dir := writeADRFixture(t, declaredPairRows+"| `003` | [003-gone.md](003-gone.md) | Stale |\n",
+		"001-first.md", "001-first-take.md")
+	problems := strings.Join(checkADRNumbers(t, dir), "\n")
+	if !strings.Contains(problems, "003 003-gone.md") {
+		t.Fatalf("a row declaring a number that no longer collides was not reported: %q", problems)
+	}
+}
+
+// A half-applied rename updates the label and leaves the target: the row
+// still satisfies both directions while sending every reader who follows it
+// to the other record of the pair.
+func TestARowWhoseLabelAndLinkDisagreeIsRefused(t *testing.T) {
+	dir := writeADRFixture(t,
+		"| `001` | [001-first.md](001-first.md) | Declared |\n"+
+			"| `001` | [001-renamed.md](001-first-take.md) | Label renamed, link not |\n",
+		"001-first.md", "001-first-take.md")
+	problems := strings.Join(checkADRNumbers(t, dir), "\n")
+	if !strings.Contains(problems, "reads [001-renamed.md] but links to 001-first-take.md") {
+		t.Fatalf("a row pointing somewhere other than it reads was accepted: %q", problems)
+	}
+}
+
+const declaredPairRows = "| `001` | [001-first.md](001-first.md) | Declared |\n" +
+	"| `001` | [001-first-take.md](001-first-take.md) | Declared |\n"
+
 func writeADRFixture(t *testing.T, readme string, records ...string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -75,7 +115,13 @@ func writeADRFixture(t *testing.T, readme string, records ...string) string {
 }
 
 // | `098` | [098-connector-catalog.md](098-connector-catalog.md) | … |
-var adrCollisionRow = regexp.MustCompile("\\|\\s*`(\\d{3})`\\s*\\|\\s*\\[([^\\]]+\\.md)\\]")
+//
+// Both the label and the TARGET are captured. The target is what a reader
+// follows, so it is what the guard compares; the label is checked against it
+// because a half-applied rename that updates one and not the other sends
+// every reader of that row to the wrong document — the silent
+// mis-resolution the table exists to prevent.
+var adrCollisionRow = regexp.MustCompile("\\|\\s*`(\\d{3})`\\s*\\|\\s*\\[([^\\]]+\\.md)\\]\\(([^)]+\\.md)\\)")
 
 var adrRecord = regexp.MustCompile(`^(\d{3})-.+\.md$`)
 
@@ -116,13 +162,18 @@ func checkADRNumbers(t *testing.T, dir string) []string {
 		t.Fatalf("read the ADR index: %v", err)
 	}
 	declared := map[string]bool{}
+	var problems []string
 	for _, m := range adrCollisionRow.FindAllStringSubmatch(string(readme), -1) {
-		declared[m[1]+" "+m[2]] = true
+		number, label, target := m[1], m[2], m[3]
+		declared[number+" "+target] = true
+		if label != target {
+			problems = append(problems, "the index row for "+number+" reads ["+label+"] but links to "+target+
+				"\nA reader follows the link: make the two name the same record.")
+		}
 	}
 
-	var problems []string
 	if len(onDisk) > 0 && len(declared) == 0 {
-		return []string{"ADRs on disk share a number, yet the index declares no collision row — either the table moved or this guard stopped matching it, and it would then pass on a tree full of duplicates"}
+		return append(problems, "ADRs on disk share a number, yet the index declares no collision row — either the table moved or this guard stopped matching it, and it would then pass on a tree full of duplicates")
 	}
 
 	var undeclared, stale []string
