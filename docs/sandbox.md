@@ -513,13 +513,23 @@ iterion sandbox doctor                 # report driver + capabilities
 ### Precedence (highest → lowest)
 
 1. Per-node `sandbox:` declaration (DSL)
-2. CLI `--sandbox` flag
+2. CLI `--sandbox` flag (`ITERION_SANDBOX_OVERRIDE` sits in this tier)
 3. Workflow-level `sandbox:` declaration (DSL)
 4. `ITERION_SANDBOX_DEFAULT` env var
 5. Built-in `auto` at product entry points (sandbox-by-default;
    degrades gracefully outside a git repo or without a container
    runtime). Engines embedded without an explicit default (tests,
    library use) stay neutral: no sandbox.
+
+Tiers 2 and 3 carry one carve-out (`runtime.pickMode`): `--sandbox=auto`
+loses to a workflow-level `sandbox:` block whose mode is `inline` (what
+the block form defaults to when it declares no `mode:`) and that carries
+an `image:`. Both express the same intent, and the block is the more
+specific expression of it — honouring the CLI instead would resolve
+`auto` against a missing `devcontainer.json` and substitute the default
+image for the operator's declared `image:` (or hard-error when no
+default image is configured). `--sandbox=none` still beats the workflow
+block: an explicit opt-out is non-overridable.
 
 The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
