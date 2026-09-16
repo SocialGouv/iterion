@@ -304,15 +304,11 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			pass.Edges = append(pass.Edges, Edge{From: from, To: to})
 		case store.EventBranchStarted:
 			// A fan-out activates its branches without an edge_selected: the
-			// edge taken is the router's edge to the branch's entry node.
-			for _, e := range wf.Edges {
-				if e == nil || e.To != evt.NodeID {
-					continue
-				}
-				if _, ok := wf.Nodes[e.From].(*ir.RouterNode); ok {
-					pass.Edges = append(pass.Edges, Edge{From: e.From, To: e.To})
-				}
-			}
+			// engine names the edge that started the branch, and that edge
+			// alone is recorded — never every edge into the entry node, which
+			// would credit a router no pass reached.
+			from, _ := evt.Data["from"].(string)
+			pass.Edges = append(pass.Edges, Edge{From: from, To: evt.NodeID})
 		}
 	}
 	eng := runtime.New(&sim, st, x,

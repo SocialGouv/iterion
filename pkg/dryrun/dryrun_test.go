@@ -950,3 +950,77 @@ func TestAPassAtTheBotsCeilingIsNotADeath(t *testing.T) {
 		}
 	}
 }
+
+// Two fan-out routers into the same branches, one reached, one never: the
+// edges of the router no pass reached stay unvisited.
+const twoRoutersBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split1:
+  mode: fan_out_all
+
+router split2:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow two:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 20
+  survey -> split1 when ok
+  survey -> split2 when not ok
+  split1 -> b1
+  split1 -> b2
+  split2 -> b1
+  split2 -> b2
+  b1 -> join
+  b2 -> join
+  join -> done
+`
+
+// The edge a fan-out took is the one the engine names, never every edge
+// into the branch's entry: a router no pass reached keeps its edges
+// unvisited, and the router that ran has its edges covered.
+func TestAFanOutEdgeIsTheOneTheEngineNames(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, twoRoutersBot), Options{
+		Fixtures: map[string]map[string]any{"survey": {"ok": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(from, to string) bool {
+		for _, e := range r.UnvisitedEdges {
+			if e.From == from && e.To == to {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("split2", "b1") || !has("split2", "b2") || !has("survey", "split2") {
+		t.Fatalf("the router no pass reached was credited with its edges: unvisited %v", r.UnvisitedEdges)
+	}
+	if has("split1", "b1") || has("split1", "b2") {
+		t.Fatalf("the router that ran was not credited with its edges: unvisited %v", r.UnvisitedEdges)
+	}
+	if !contains(r.UnvisitedNodes, "split2") {
+		t.Fatalf("split2 was never reached and is not said unvisited: %v", r.UnvisitedNodes)
+	}
+}

@@ -134,8 +134,10 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	// handed out in goroutine-race order and does not survive a resume).
 	ledgerKey := branchLedgerKey(runID, branchID, rs)
 
-	// Emit branch_started (best-effort — branch can proceed without the event).
-	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
+	// Emit branch_started (best-effort — branch can proceed without the
+	// event), naming the edge that started the branch: a reader of the run
+	// — a dry run's coverage — records that edge and guesses none.
+	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, map[string]any{"from": startEdge.From, "to": startEdge.To}); err != nil {
 		e.logger.Warn("branch %s: failed to emit branch_started: %v", branchID, err)
 		result.eventErrors++
 	}
