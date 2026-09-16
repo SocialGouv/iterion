@@ -24,6 +24,7 @@ func TestReviewPRConcisePublication(t *testing.T) {
 	// engine does (goFindingID, pinned against the bot in
 	// review_pr_finding_id_test.go).
 	dupID := goFindingID("a.go", "Lost update")
+	otherFinding := `{"file":"b.go","line":7,"severity":"medium","title":"Unbounded retry","detail":"Retries never stop.","suggestion":"Cap them.","reviewers":"gpt"}`
 	for _, tc := range []struct {
 		name                    string
 		refs                    map[string]string
@@ -42,16 +43,24 @@ func TestReviewPRConcisePublication(t *testing.T) {
 		// read, which is why the wrong default is expensive.
 		{name: "a repo that declares no fixer is not told to invoke one", refs: map[string]string{"input.findings": "[" + finding + "]"}, comments: 1, blocking: 1,
 			hidden: []string{"Identifiants des findings : R"}, absent: []string{"Correction :", "/billy"}},
-		{name: "the fixer hint a repo declares is published with its findings", comments: 1, blocking: 1,
-			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Correction : /billy ; arbitrage : /billy skip {finding} suivi du motif."},
-			hidden: []string{"Correction : /billy ; arbitrage : /billy skip "}, absent: []string{"{finding}"}},
-		// The hint is operator prose landing in a public comment body, and it
-		// is the peer of every other interpolated value in that block — all of
-		// which are escaped. Unescaped, an honest `<motif>` is eaten as a tag,
-		// and a `</details>` would lift the rest of the block out of its fold.
+		// Two findings with DIFFERENT ids, so "the first finding's id" is a
+		// claim the case can refute rather than a coincidence of one.
+		{name: "the fixer hint a repo declares is published with its findings", comments: 2, blocking: 1,
+			refs:   map[string]string{"input.findings": "[" + finding + "," + otherFinding + "]", "vars.fixer_hint": "Correction : /billy ; arbitrage : /billy skip {finding} suivi du motif."},
+			hidden: []string{"arbitrage : /billy skip " + dupID + " suivi"}, absent: []string{"{finding}"}},
+		// The hint is operator prose landing in a public comment body.
+		// Unescaped, an honest `<motif>` is eaten as a tag, and a stray
+		// `</details>` would lift the rest of the block out of its fold.
 		{name: "an angle-bracketed word in the hint reaches the reader", comments: 1, blocking: 1,
 			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Arbitrer : /billy skip {finding} <motif>"},
 			hidden: []string{"&lt;motif&gt;"}, absent: []string{"<motif>"}},
+		// The escaping is narrow on purpose. A character reference inside a
+		// code span is literal text in CommonMark, so escaping quotes would
+		// publish `&quot;` where the operator wrote `"` — in the one place a
+		// hint is most likely to carry a command meant to be copied.
+		{name: "a command in the hint stays copy-pasteable", comments: 1, blocking: 1,
+			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Lancer `/billy skip {finding} \"motif\"`"},
+			hidden: []string{"`/billy skip " + dupID + " \"motif\"`"}, absent: []string{"&quot;", "&#34;"}},
 		// Two findings on the same file and title derive the SAME id, so a list
 		// that repeats it reads as two handles to arbitrate instead of one.
 		// The id is DERIVED here, not spelled: a literal guessed wrong makes
@@ -67,9 +76,9 @@ func TestReviewPRConcisePublication(t *testing.T) {
 		{name: "missing anchors preserve all finding content and replacement", refs: map[string]string{"input.findings": "[" + strings.Replace(finding, `"line":12`, `"line":0`, 1) + "]"}, blocking: 1,
 			visible: []string{"Findings sans ancrage", "Lost update", "Concurrent saves", "Use a compare-and-swap", "saveIfCurrent(v)"}},
 		{name: "unreadable output cannot look clean", refs: map[string]string{"input.findings": "not-json", "input.claude_findings": "[]", "input.gpt_findings": "[]"}, blocking: 1,
-			visible: []string{"revue inexploitable", "gate bloquée"}, absent: []string{"aucun problème détecté"}},
+			visible: []string{"revue inexploitable", "gate bloquée"}, absent: []string{"aucun problème détecté", "/revi", "/billy"}},
 		{name: "recovery stays explicitly degraded", refs: map[string]string{"input.findings": "not-json", "input.gpt_findings": "[" + finding + "]"}, comments: 1, blocking: 1,
-			visible: []string{"Revue dégradée", "seuil, limite et accord entre modèles non appliqués"}},
+			visible: []string{"Revue dégradée", "seuil, limite et accord entre modèles non appliqués"}, absent: []string{"/revi", "/billy"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got struct {

@@ -490,9 +490,7 @@ if dual:
     summary.extend(['Revue à deux familles ; ' + str(cross_n) + ' finding(s) cross-confirmed by both model families.', ''])
 else:
     summary.extend(['Revue mono (single model family).', ''])
-# ai_value, not a raw read: an unsubstituted ref reaches this script as its
-# own template text, and every sibling value here is filtered for it.
-fixer_hint = ai_value('FIXER_HINT')
+fixer_hint = str(os.environ.get('FIXER_HINT', '')).strip()
 if finding_ids:
     # The ids gathered in one place, so arbitrating one does not mean
     # scrolling the inline comments for its header. Deduplicated: two findings
@@ -500,10 +498,13 @@ if finding_ids:
     # one reads as two handles.
     summary.extend(['Identifiants des findings : ' + ', '.join(dict.fromkeys(finding_ids)) + '.', ''])
     if fixer_hint:
-        # Escaped like every other interpolated value in this block: a hint is
-        # operator-written prose, and an angle-bracketed word in it must reach
-        # the reader rather than be eaten as a tag.
-        summary.extend([ai_cell(fixer_hint.replace('{finding}', finding_ids[0])), ''])
+        # Escaped narrowly, on purpose: an angle-bracketed word must reach
+        # the reader instead of being eaten as a tag, and a stray closing
+        # tag must not lift the rest of this block out of its fold. Quotes
+        # and pipes are left alone — inside a code span a character
+        # reference is literal text, and a fixer hint is exactly where an
+        # operator backticks a command to copy.
+        summary.extend([html.escape(fixer_hint.replace('{finding}', finding_ids[0]), quote=False), ''])
 if ai_rows:
     summary.extend(['| Étape | Modèle | Harness | Effort demandé | Tokens |',
                     '|---|---|---|---|---:|'] + ai_rows)
