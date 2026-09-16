@@ -63,7 +63,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `tenant_id` | owning org; every store call is tenant-filtered (fail-closed) |
 | `scope_team` | the team the key belongs to |
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **team-wide** |
-| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:50-63](../pkg/secrets/byok.go#L50)) |
+| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:114-130](../pkg/secrets/byok.go#L114)) |
 | `name` | human label |
 | `last4` / `fingerprint` | shown in UI; the key itself is never returned. `fingerprint` is `FingerprintSHA256(plaintext)` — the audit identity the run document, the GRANTED log line and the metering bump all key on; indexed (sparse) by `EnsureSchema` |
 | `sealed_secret` | the ciphertext (`SealAPIKey(sealer, keyID, plaintext)`); JSON-hidden (`json:"-"`) |
@@ -77,7 +77,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 - Interface: `ApiKeyStore` (Create/Get/GetOwned/Update/Delete/ListByTeam/ListByUser/MarkUsed/MarkFingerprintUsed/ClearDefault) — [pkg/secrets/byok.go](../pkg/secrets/byok.go). `GetOwned` is the credential pool's cross-tenant read, bounded by ownership; `MarkFingerprintUsed` the runner's metering bump.
 - Ingestion gate: the create and rotate routes refuse (`400`) a value whose shape could not authenticate — [`secrets.ValidateAPIKeyShape`](../pkg/secrets/credential_shape.go): a bearer token with any white-space, control or invisible character for the bearer providers; anything but a JSON object for `bedrock` / `vertex`, whose credential is a document. See the ingestion-gate section of [cloud-llm-credentials.md](cloud-llm-credentials.md).
 - Backings: `MongoApiKeyStore` (prod) + `MemoryApiKeyStore` (tests).
-- Wired in the server at [cmd/iterion/server.go:193](../cmd/iterion/server.go#L193) (`NewMongoApiKeyStore(st.DB())` + `EnsureSchema`), handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
+- Wired in the server at [cmd/iterion/server.go:801](../cmd/iterion/server.go#L801) (`NewMongoApiKeyStore(st.DB())`), its `EnsureSchema` running from the batched schema sequence at [server.go:849](../cmd/iterion/server.go#L849); handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
 
 The plaintext is sealed with the server's `Sealer` before it touches
 Mongo, and is only unsealed transiently inside `resolveAndSealCredentials`
@@ -198,10 +198,12 @@ sealed BYOK map.
 | `GET /api/teams/{id}/api-keys` | list team-wide + my keys visible from the team |
 | `POST /api/teams/{id}/api-keys` | create a **team-wide** key |
 | `GET/POST /api/me/api-keys` | list / create a **personal** key |
-| `PATCH /api/teams/{id}/api-keys/{key_id}` | rename / promote to default |
-| `DELETE /api/teams/{id}/api-keys/{key_id}` | revoke |
+| `PATCH /api/teams/{id}/api-keys/{key_id}`<br>`PATCH /api/me/api-keys/{key_id}` | rename, rotate the secret, promote to default, re-cap `max_concurrent_runs` — one handler serves both prefixes |
+| `DELETE /api/teams/{id}/api-keys/{key_id}`<br>`DELETE /api/me/api-keys/{key_id}` | revoke — one handler serves both prefixes |
 
-Create body ([byok_routes.go:132](../pkg/server/byok_routes.go#L132)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true }`. The server seals `secret` and stores only the ciphertext + `last4`.
+The org tier's shared keys are the same four verbs on a third prefix, registered next door ([pkg/server/org_credentials_routes.go:24-27](../pkg/server/org_credentials_routes.go#L24)): `GET`/`POST /api/orgs/{id}/api-keys` and `PATCH`/`DELETE /api/orgs/{id}/api-keys/{key_id}`.
+
+Create body ([byok_routes.go:61-70](../pkg/server/byok_routes.go#L61)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true, "max_concurrent_runs": 0 }`. The server seals `secret` and stores only the ciphertext + `last4`; `max_concurrent_runs` is optional and `0` means uncapped ([what counts](#concurrency-ceiling--what-counts)).
 
 Studio UI: Settings → API Keys ([studio/src/views/SettingsDialog/ApiKeysTab.tsx](../studio/src/views/SettingsDialog/ApiKeysTab.tsx), [studio/src/api/byok.ts](../studio/src/api/byok.ts)). Cloud accounts use the sibling [account API-key page](../studio/src/views/account/ApiKeys.tsx).
 
