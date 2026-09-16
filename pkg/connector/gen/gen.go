@@ -31,6 +31,9 @@ import (
 
 // Options drives one generation.
 type Options struct {
+	// ValidateResponses opts into explicit response contracts and package
+	// format v2. The default keeps existing v1 packages unchanged.
+	ValidateResponses bool
 	// ConnectorID is the package slug and the first segment of every derived
 	// operation id. Required — it is a naming decision, not something to
 	// derive from a vendor's title.
@@ -59,6 +62,13 @@ type Options struct {
 	OperatorSuppliedBaseURL bool
 	// Now is injectable so a generated package is byte-reproducible in tests.
 	Now func() time.Time
+}
+
+func (o Options) schemaVersion() int {
+	if o.ValidateResponses {
+		return spec.ResponseContractsVersion
+	}
+	return spec.LegacySchemaVersion
 }
 
 func (o *Options) defaults() {
@@ -97,6 +107,9 @@ type Skip struct {
 // `issue_id` on a path templated `{epic_issue_id}`.
 type Report struct {
 	Skipped []Skip
+	// Uncontracted lists the success responses that were asked for a v2
+	// contract and could not be given one. Empty unless ValidateResponses.
+	Uncontracted []Uncontracted
 }
 
 // Format is a recognised description format.
@@ -145,7 +158,7 @@ func Generate(data []byte, opts Options) (*spec.Package, *Report, error) {
 
 	pkg := &spec.Package{
 		Connector: spec.Connector{
-			SchemaVersion: spec.SchemaVersion,
+			SchemaVersion: opts.schemaVersion(),
 			ID:            opts.ConnectorID,
 			DisplayName:   str(mapAt(doc, "info"), "title"),
 			Description:   firstLine(str(mapAt(doc, "info"), "description")),
@@ -167,13 +180,22 @@ func Generate(data []byte, opts Options) (*spec.Package, *Report, error) {
 		Ops:     w.opsFiles(),
 		Schemas: w.schemas,
 	}
+	report := &Report{Skipped: w.skipped}
+	if opts.ValidateResponses {
+		contracts, uncontracted, err := attachResponseContracts(data, format, pkg)
+		if err != nil {
+			return nil, report, err
+		}
+		pkg.ResponseSchemas = contracts
+		report.Uncontracted = uncontracted
+	}
 	if err := pkg.ValidateGenerated(); err != nil {
 		// A failure HERE is a generator bug, not bad vendor data: every
 		// operation was already validated on its own during the walk, so
 		// what is left is a package-level contradiction the walk built.
 		return nil, nil, fmt.Errorf("gen: generated package is invalid: %w", err)
 	}
-	return pkg, &Report{Skipped: w.skipped}, nil
+	return pkg, report, nil
 }
 
 // decode reads a description that may be JSON or YAML into a generic tree.

@@ -840,6 +840,252 @@
         ],
         "type": "object"
       },
+      "CredentialPreview": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/CredentialPreviewCandidate"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/CredentialPreviewContext"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/CredentialPreviewPool"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "wires": {
+            "items": {
+              "$ref": "#/components/schemas/CredentialPreviewWire"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "observed_at",
+          "context",
+          "wires",
+          "candidates",
+          "pool",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewCandidate": {
+        "properties": {
+          "account_group": {
+            "type": "string"
+          },
+          "capacity": {
+            "$ref": "#/components/schemas/CredentialPreviewCapacity"
+          },
+          "conditional": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reopens_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "selection": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/CredentialPreviewWindow"
+            },
+            "type": "array"
+          },
+          "wire": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tier",
+          "source",
+          "provider",
+          "wire",
+          "rank",
+          "label",
+          "pinned",
+          "state",
+          "selection",
+          "selected",
+          "conditional",
+          "windows"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewCapacity": {
+        "properties": {
+          "live_runs": {
+            "type": "integer"
+          },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
+          "remaining_usd": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "CredentialPreviewContext": {
+        "properties": {
+          "bot_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/CredentialPreviewSource"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "bot_id",
+          "source"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewPool": {
+        "properties": {
+          "considered": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "wants": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "considered",
+          "wants"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewRequest": {
+        "properties": {
+          "bot_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/CredentialPreviewSource"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewSource": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewWindow": {
+        "properties": {
+          "fresh": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "percent": {
+            "type": "number"
+          },
+          "resets_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "observed_at",
+          "fresh"
+        ],
+        "type": "object"
+      },
+      "CredentialPreviewWire": {
+        "properties": {
+          "candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "wire": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wire",
+          "candidate_ids"
+        ],
+        "type": "object"
+      },
       "DependencyGraphEdge": {
         "properties": {
           "from": {
@@ -2388,6 +2634,9 @@
             },
             "type": "array"
           },
+          "bank_state": {
+            "type": "string"
+          },
           "bot_source_tenant": {
             "type": "string"
           },
@@ -2734,6 +2983,9 @@
           },
           "auto_merge": {
             "type": "boolean"
+          },
+          "bank_state": {
+            "type": "string"
           },
           "bundle_display_name": {
             "type": "string"
@@ -3875,6 +4127,84 @@
         ],
         "type": "object"
       },
+      "oauthConnectionView": {
+        "properties": {
+          "access_token_expires_at": {
+            "type": "string"
+          },
+          "account_checked_at": {
+            "type": "string"
+          },
+          "account_email": {
+            "type": "string"
+          },
+          "account_error": {
+            "type": "string"
+          },
+          "account_label": {
+            "type": "string"
+          },
+          "account_verified": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_refreshed_at": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "refreshable": {
+            "type": "boolean"
+          },
+          "same_account_ranks": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "rank",
+          "account_verified",
+          "refreshable",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "oauthConnectionsView": {
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/oauthConnectionView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "connections"
+        ],
+        "type": "object"
+      },
       "orgView": {
         "properties": {
           "created_at": {
@@ -4723,8 +5053,15 @@
       "get": {
         "operationId": "getAdminLlmOauthConnections",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/oauthConnectionsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/llm/oauth/connections",
@@ -6061,8 +6398,15 @@
       "get": {
         "operationId": "getMeOauthConnections",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/oauthConnectionsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/me/oauth/connections",
@@ -6974,8 +7318,15 @@
       "get": {
         "operationId": "getOrgsByIdOauthConnections",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/oauthConnectionsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/orgs/{id}/oauth/connections",
@@ -10441,6 +10792,47 @@
         ]
       }
     },
+    "/api/teams/{id}/credentials/preview": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdCredentialsPreview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialPreview"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/credentials/preview",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/credentials/usage": {
       "get": {
         "operationId": "getTeamsByIdCredentialsUsage",
@@ -11247,8 +11639,15 @@
       "get": {
         "operationId": "getTeamsByIdOauthConnections",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/oauthConnectionsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/oauth/connections",

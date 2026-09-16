@@ -514,6 +514,7 @@ else_clause = "else" ;
 
 iteration_clause = "as" ( loop_spec | foreach_spec ) ;
 loop_spec = IDENT "(" loop_cap ")" ;
+(* STRING_LIT holds one template reference or an expression over vars/outputs. *)
 loop_cap = INT_LIT | STRING_LIT | "unbounded" [ INT_LIT ] ;
 foreach_spec = "foreach" IDENT "(" IDENT "in" STRING_LIT ")" ;
 

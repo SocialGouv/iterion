@@ -1049,9 +1049,9 @@ type WhenClause struct {
 }
 
 // LoopClause represents `as <loop_name>(<max_iterations>)` on an edge.
-// The cap can be either a literal int (`as fix_loop(3)`) or a template
-// string evaluated at the moment the loop is consulted
-// (`as fix_loop("{{outputs.select_candidate.fix_loop_max}}")`). Exactly
+// The cap can be a literal int (`as fix_loop(3)`), a template string, or
+// an expression (`as fix_loop("vars.max_passes - 1")`) evaluated at each
+// attempted crossing. Exactly
 // one of MaxIterations / MaxIterationsExpr is populated.
 type LoopClause struct {
 	Name              string // loop name (e.g. "refine_loop", "full_recipe_loop")

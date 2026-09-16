@@ -214,6 +214,38 @@ weakened.
 - The local `iterion` binary was at **v3.69.0** against a v3.144.0 tree, which
   is why the repo-targeting flags appeared not to exist at all. Check
   `iterion version` before concluding a flag is missing.
+## 2026-09-14 — #1212: verified account meters and credential preview (#945)
+
+- **Result:** automatic [Revi run `01a09ec6-b5b3-7660-8ef1-295031b7260d`](https://iterion.cloud/runs/01a09ec6-b5b3-7660-8ef1-295031b7260d) finished and published [review 5195055206](https://github.com/SocialGouv/iterion/pull/1212#pullrequestreview-5195055206) at 07:37:30 UTC: zero findings, `revi/review=success` on `fdca64e5d9c95da493ccb9740f51ffd83541d9b8`. No manual `/revi` or Billy launch. The run list since before PR creation contained only two completed Revi runs; the other belongs to #1211, with no Billy on #1212.
+- **Provenance:** runtime event identifies engine `v3.132.0`; this is not the PR/main version. `delegate_started` names claw with `openai/gpt-5.6-sol`; actual `llm_request` events name the same GPT model family. Published reviewer effort high (3,982,111 cumulative tokens), convergence medium (26,073), total 4,008,184. The input `mono_family=claude` is not the effective route. Lifecycle `effective_model` is absent, so provenance rests on the actual request events plus publication metadata, not that optional field.
+- **Observed work:** successful read-file events include OAuth/secrets routes and tests, credential preview, pool broker, Studio connections, webhook types and authz. Completed tool events include bash 36, grep 21, read_file 13, glob 2 and the publication tools (event counts are not guaranteed unique logical actions). Six targeted test commands returned `ok`: cloudpublisher 0.063s, server 0.107s, CLI 0.089s, secrets 0.017s, usagecap 0.009s, credpool 0.008s. `DIFF_CHECK_PASS` at seq 256.
+- **Limits/frictions:** Revi's broad race command failed because its runtime had cgo disabled; four broader commands hit the 30s tool timeout. Reading a test log outside the workspace failed for grep/read_file; another bash command exited 1 without a detailed output. Convergence's todo_write was denied by its policy. Ambient Sentry MCP failed initialization with EOF (already tracked by #1208). The reviewer recovered with targeted tests; this run did not establish a full-suite or full-race pass. The separate developer/CI checks provide that evidence.
+- **CI and correction:** every completed CI job except `test` passed, including race, Mongo, NATS, cloud-e2e, Go lint, vulnerability/vendor checks and Helm. The sole failure was Studio source-discipline: `OAuthConnections.tsx:312` used native `<select>` instead of the shared `Select` primitive. Revi reported zero findings despite reading that file; the CI assertion caught this project-specific rule. The correction was prepared without pushing during review and passed the complete Studio suite (227 files / 2022 tests). It will be published once with this bilan, then receive the normal automatic re-review.
+- **Independent validation:** full-race secrets 1.143s / server 147.510s; real Mongo OAuth 1.242s / usagecap 1.079s under race; lint 0 and OpenAPI check PASS. No quota/routing change, merge or deployment. Zero findings is the review's bounded verdict, not proof of perfect defect recall.
+
+## 2026-09-14 — safe MCP startup diagnostics (run 01a09eab, PR #1210)
+
+- Status: **review validated** — [published review](https://github.com/SocialGouv/iterion/pull/1210#pullrequestreview-5194770789), run [01a09eab-4a83-7418-ae51-3ca32edaf9fb](https://iterion.cloud/runs/01a09eab-4a83-7418-ae51-3ca32edaf9fb), exact head `7906726adfa2572992f0256d6e8b69100b8ba121`. Zero findings; security, concurrency, error handling, tests, documentation and #1208/#1203 conformance are included in the stated review scope.
+- Versions and method: source base `8fdbd3de19` (3.143.0), live review-pr platform override, PR-open webhook launch. The run's provenance reports executing engine **v3.132.0 / `505c54c16b60e8bfbda3e758079abbe451fb7c6e`**, launched by **v3.142.1+f1230b15956f**. These are distinct from the PR build. Actual LLM routes: **openai/gpt-5.6-sol / claw**, high effort for review, medium for synthesis.
+- Result: 2026-09-14 06:47:01–06:54:56 UTC. Reviewer 503,338 tokens + synthesis 25,464 = **528,802** at publication. No finding required Billy; no deployment or merge was performed.
+- Tool evidence: reviewer 15 model requests and 24 successful tool calls (16 bash, 5 todo_write, 2 read_file, 1 grep). It ran MCP tests successfully with three `ok` package results (7.074s, 0.654s, 10.905s). Its attempted `-race` validation could not run in the sandbox: CGO was disabled and gcc absent. Several shell calls reached the declared 30s limit; grep rejected an out-of-workspace module-cache path and reported an absent path. Synthesis denied todo_write under its own phase policy. These were explicit failures, not empty successful tool results.
+- Value: the review inspected a deterministic fix for the ambient MCP observability gap found by #1203. The SDK command hook drains stderr into a bounded tail; only fixed categories, exit status and counts reach diagnostics. Controlled tests include secret-bearing stderr/protocol errors, inherited pipes, cancellation and forced shutdown. Local MCP/model tests passed under `-race`; the full PR CI also passed, including test (10m11s), race (12m30s), cloud-e2e and lint.
+- Limits and lesson: the live runtime still reported ambient Sentry initialization degradation. This review does not prove the unmerged diagnostic is deployed or identify the historical EOF's cause. Preserve the distinction between source verification, sandbox test capability, server version and executing engine version; the observed old engine also prevents treating server health alone as the DSL 2 fleet floor.
+
+## 2026-09-14 — #1207: corrected policy identity re-reviewed, release floor still open
+
+- Status: **correction reviewed; delivery remains blocked**. [Review 5194648699](https://github.com/SocialGouv/iterion/pull/1207#pullrequestreview-5194648699), run [01a09e9c-461e-786c-9c8d-9d349feff5b6](https://iterion.cloud/runs/01a09e9c-461e-786c-9c8d-9d349feff5b6), head `ea720e91d410c88c416e7dd38808c0c15b83671e`. All GitHub CI checks passed, including test, race, cloud-e2e and both conformance suites.
+- Result: one high finding **R85d46f**, the same release-floor condition as **Rda4616** on the prior head. No other finding. The registry-identity policy correction and its red-to-green regression test were included in this review. PR #1207 stays draft until `ToolAliasesSince` is aligned with the actual first release containing the resolver and the preceding-release compatibility probe is rerun. No gate override or merge was requested.
+- Telemetry: effective `openai/gpt-5.6-sol` through `claw`, reviewer high 1,184,468 tokens + synthesis medium 21,702 = **1,206,170 accumulated tokens**. This is one follow-up review, not an assertion of perfect recall; the policy counterexample missed in the first review remains documented in that bilan.
+- Billy: the red gate auto-launched [01a09ea5-4156-7103-afd0-f7b484947441](https://iterion.cloud/runs/01a09ea5-4156-7103-afd0-f7b484947441), rejected before any node execution by the hard seven-day quota at 99% (threshold 95%, reset 2026-09-15 21:00 UTC). The session confirmed its PR/head, cancelled the scheduled retry, and verified `cancelled`, with no final commit or branch. No new manual fix or third review is needed for the already-known release condition. Quotas were unchanged.
+
+## 2026-09-14 — catalogue DSL 2 first lot, final-head re-review (run 01a09e90)
+
+- Status: **validated review, draft preparation only** — [published review](https://github.com/SocialGouv/iterion/pull/1206#pullrequestreview-5194515720), run [01a09e90-c572-7152-828a-1378588914ad](https://iterion.cloud/runs/01a09e90-c572-7152-828a-1378588914ad), exact PR1206 head `c0fe9eabd2224623fb822c279da530b631f93ca1`. Zero findings; #1159 remains explicitly partial.
+- Versions and method: source base `882c76afbb` (3.143.0), observed server v3.142.1 / `f1230b15956f0cbd45da2d8945b87475cbeb5382`; live platform review override. An explicit `/revi` comment re-reviewed the draft after the fixture and first-run bilan changes. The published telemetry confirms **openai/gpt-5.6-sol / claw**, high effort for review and medium for synthesis.
+- Result: reviewer 432,204 tokens + synthesis 25,505 = **457,709** at publication. The reviewed scope covers both workflow headers, manifest floors, full-IR equivalence, real request captures, prompt goldens, convergence truth tables, mixed-profile corpus checks and the documented activation prerequisites. The review also reports focused bots/migration/bundlelint/botreplay verification and whitespace validation.
+- Value and follow-up: the final head preserves explicit empty-scope rendering coverage without trimming prompt bytes, alongside the readable nonempty checked-in example. No findings required Billy. The first run's phase-specific policy refusal and declared shell timeout are not themselves tool-wiring defects; the separate ambient Sentry degradation was investigated in audit #1203. No deployment, platform catalogue push, migration of an active campaign or merge was performed.
+- Lesson: a clean exact-head review validates this small preparation scope. It does not satisfy the remaining catalogue migration, actual release-floor record, fleet verification or deployment-wide campaign check, which stay open in #1159.
 ## 2026-09-14 — #1211: connector identity history, clean review and one independent counterexample
 
 - Status: **first review published, initial CI green** — [review 5194884352](https://github.com/SocialGouv/iterion/pull/1211#pullrequestreview-5194884352),
@@ -246,6 +278,79 @@ weakened.
   an independently published review is green. The final correction is followed
   by a separate review on its published head; this entry describes the first
   run only, not that later verdict.
+## 2026-09-14 — falsifiable Claw / GPT review proof (#1203)
+
+- Status: **validated end to end on both controls**. The isolated draft [PR #1204](https://github.com/SocialGouv/iterion/pull/1204)
+  is closed, unmerged and still draft. Its base contains a small
+  standard-library Python module, its contract and four tests; the reviewed
+  diff changes only the source. Expected defects were recorded before the
+  first model call, outside the reviewed checkout and launch prompt.
+  The compact [event evidence](evidence/revi-1203.json) contains only selected
+  metadata and tool observations, without prompts or credentials.
+- Configuration: the platform `review-pr` catalog override, a real repository
+  checkout pinned to each head, the existing forge connection, mono GPT,
+  `post_to_board=false`, `ticket_context=off`, `gate_enabled=false`,
+  `arm_automerge=false`, `merge_into=none`, `auto_merge=false`. The last four
+  settings keep intentional defects away from the automatic fixer/merge lane;
+  no integration, credential, quota or deployment was changed.
+- Positive oracle: removing the authenticated-tenant filter exposes another
+  tenant's report; accepting `expires_at == now` violates the exclusive expiry
+  contract. The reference tree passes all four tests; the candidate fails
+  exactly these two while preserving the empty-input and order/duplicate tests.
+- Positive run: [01a09e7b-bbe3-708a-919c-211ea943745c](https://iterion.cloud/runs/01a09e7b-bbe3-708a-919c-211ea943745c),
+  head `65658c94b1835ad12b34a5cfea397ade294e008c`, base
+  `b1f9823f94` (fixture base). `delegate_started` names `claw` /
+  `openai/gpt-5.6-sol`; `llm_request` names `gpt-5.6-sol` at requested effort
+  `high`. The agent actually executes the git diff, reads `access.py`, then
+  discovers and reads `CONTRACT.md` and `test_access.py` outside the diff. Its
+  own `bash` test execution reports `FAILED (failures=2)` and `UNITTEST_EXIT=1`
+  at event 73. These are tool results, not statements inferred from a finished
+  run or the model's summary. The [published review](https://github.com/SocialGouv/iterion/pull/1204#pullrequestreview-5194327519)
+  retains exactly two findings: [R36090a, high, line 27](https://github.com/SocialGouv/iterion/pull/1204#discussion_r4002544764)
+  and [R467bfc, medium, line 19](https://github.com/SocialGouv/iterion/pull/1204#discussion_r4002544781),
+  with correct suggested replacements. Both anchor to the reviewed head;
+  neither expected defect was missed and no additional finding was invented.
+- Corrected control: head `949edb2b82c93db2ac22497efba549a91aa744b7`
+  restores both invariants but retains an equivalent nonempty diff against the
+  fixture base, so the empty-diff short circuit cannot explain a clean result.
+  [Run 01a09e7f-c697-7f11-9846-36c681ad0fb2](https://iterion.cloud/runs/01a09e7f-c697-7f11-9846-36c681ad0fb2)
+  uses exactly the same launch settings and independently reruns all four
+  checks: event 73 reports `Ran 4 tests` / `OK`. Its [published clean review](https://github.com/SocialGouv/iterion/pull/1204#pullrequestreview-5194358316)
+  names the corrected head. No stale or additional inline finding is posted.
+- Validation: assertions over the retrieved run events and GitHub responses
+  verify both terminal states, exact commits, GPT/Claw request metadata,
+  source/contract/test reads, the expected red/green test outputs and both
+  original inline anchors. The reviewer uses `bash`, `read_file` and `glob`;
+  synthesis writes and reads back its report before deterministic publication.
+  No fixture code is included in this documentation change, and no runtime
+  code change was needed to pass the probe. Billy was not launched on the
+  intentional defects; the two per-run disabled gates prevented automatic
+  fixing, and no fixer was active before the controlled correction.
+
+### Earlier clean reviews were often the second pass
+
+The same deployed GPT/Claw route had already published concrete findings:
+[PR #1191](https://github.com/SocialGouv/iterion/pull/1191) received three on
+`b418765b` and another on `2672578d`; [PR #1199](https://github.com/SocialGouv/iterion/pull/1199)
+received two on `ed30f3d4`; [PR #1201](https://github.com/SocialGouv/iterion/pull/1201)
+received `R9f2eac` on `abbce695` before the clean review of corrected
+`cc75aa83`. That last clean run,
+[01a09c8c-102e-707d-bc10-a2a752c841ce](https://iterion.cloud/runs/01a09c8c-102e-707d-bc10-a2a752c841ce),
+has real source-reading and command events too.
+
+### What this does not establish
+
+A finite positive/negative probe measures detection of its seeded regressions,
+not general review recall. A clean verdict does not certify the complete test
+suite: the existing #1201 run's broad Go test timed out at 30 seconds, although
+it continued targeted inspection. The optional ambient Sentry MCP discovery
+failed; this does not prevent the required git/source tools from working and
+is not proof that every connected MCP works. The synthesis also tried a denied
+`todo_write` and a read of a report directory that did not yet exist, then
+continued. Engine request/delegate events establish the routed backend/model
+and real tool execution; they are not independent attestation of the provider's
+internal model implementation. Tokens in the review table are cumulative
+usage, not proof of source access or test coverage.
 ## 2026-09-13 — ARC Docker startup gate (#981, infra-apps #56)
 
 - Status: **reviewed, activation pending** — [PR #56](https://github.com/SocialGouv/infra-apps/pull/56), head `6cefd0d18ab526971656fe3af3fde69559e9e516`; run [01a09c85-9579-7738-8516-baa9880e9f4c](https://iterion.cloud/runs/01a09c85-9579-7738-8516-baa9880e9f4c) published a review with no findings.
@@ -1227,3 +1332,19 @@ way to perform. Mono now says so in as many words.
 
 <!-- Live probe note: this very PR exercised the 0.7.0 stack end to end —
      PR-open review (immediate), then this push (debounced). -->
+
+
+## 2026-09-13 — literal delimiter rollout consistency (#1201)
+
+[Run 01a09c7b-4575-7eb6-bac0-40c4ec770b5a](https://iterion.cloud/runs/01a09c7b-4575-7eb6-bac0-40c4ec770b5a)
+reviewed `abbce695f26c27a1980de260c0235daab88040cb` and published one medium
+finding, R9f2eac. The implementation and ADR used queue schema 19 for literal
+delimiters, but the mandatory rollout runbook still reserved 19 for connectors.
+The correction adds the real v18-reader refusal proof and a dedicated literal
+rollout checklist, and moves every connector-checklist reference to 19→20.
+
+All CI checks passed on the reviewed head. The correction is documentation-only;
+its numbered transitions were checked against `queue.SchemaVersion=19` and
+`MinSchemaVersion=10`. Billy has no active run on this PR and its Claude weekly
+quota remains blocked until 2026-09-15 21:00 UTC, so R9f2eac was corrected directly
+under the runbook's weekly-cap exception. No Billy run was launched for #1201.

@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -81,6 +82,9 @@ const PlatformOwnerKey = platformScope
 // (or when the user pasted only the refresh token) leave it zero
 // and the worker skips them.
 type OAuthRecord struct {
+	// Produced only by RefreshRecord; never persisted or exposed.
+	accountUpdate *OAuthAccountUpdate
+
 	ID                   string     `bson:"_id" json:"id"`
 	UserID               string     `bson:"user_id" json:"user_id"`
 	Kind                 OAuthKind  `bson:"kind" json:"kind"`
@@ -95,23 +99,29 @@ type OAuthRecord struct {
 	// self-heals them by setting this flag.
 	NotRefreshable bool `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
 	// Fingerprint is the audit identity of the SUBSCRIPTION behind this
-	// record: stamped when a human connects/pastes credentials, PRESERVED
-	// by the automatic refresh worker (whose rewrites are the same
-	// account), self-healed on legacy records at their first refresh. It
-	// is what downstream metering keys on — re-posting credentials is the
-	// act that says "different subscription", so it re-stamps.
+	// record: verified against the actual bearer at connect and refresh.
+	// It is what downstream metering keys on. A verified provider account
+	// keeps it across token rotations, reconnects and owner/rank changes;
+	// unidentified credentials retain a local payload-derived fallback.
 	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 	// AccountLabel names the ACCOUNT this credential belongs to, in the
-	// operator's own words ("jothedev", "SocialGouv Revi"). Nothing else
-	// in the record identifies it: the payload is sealed, and the runtime
-	// logs print only the fingerprint — so answering "whose subscription
-	// is this run spending?" meant grepping server logs and correlating
-	// hex by hand. Purely descriptive; no resolution path reads it.
+	// operator's own words ("jothedev", "SocialGouv Revi"). An unnamed
+	// verified account defaults to its provider email. The label is purely
+	// descriptive; identity, metering and resolution never depend on it.
 	//
 	// No bson omitempty: the Mongo store writes records through $set, and
 	// an omitted key leaves the OLD value in place — so clearing the label
 	// would report success and keep the stale name.
 	AccountLabel string `bson:"account_label" json:"account_label,omitempty"`
+	// Provider identity is verified at connect and refresh, separate from the
+	// operator's editable label. Explicit zero values clear it on an account
+	// swap whose new token cannot be identified. Refreshes replace it only
+	// through an explicit Account update, atomically with the new tokens.
+	AccountID             string     `bson:"account_id" json:"-"`
+	AccountOrganizationID string     `bson:"account_organization_id" json:"-"`
+	AccountEmail          string     `bson:"account_email" json:"account_email,omitempty"`
+	AccountCheckedAt      *time.Time `bson:"account_checked_at" json:"account_checked_at,omitempty"`
+	AccountError          string     `bson:"account_error" json:"account_error,omitempty"`
 	// RefreshClaimOwner / RefreshNotBefore fence the ONE refresh exchange a
 	// record may have in flight, and hold the sweep off a record it must
 	// not retry yet. They are the record's scheduling state, never a
@@ -214,7 +224,9 @@ type OAuthStore interface {
 	// ClaimRefresh elects the ONE holder allowed to exchange this record's
 	// refresh token, by compare-and-swap: it succeeds only while nobody
 	// holds a live claim (RefreshNotBefore absent or already past), and
-	// stamps owner + until when it does. Returns false — not an error —
+	// stamps owner + until when it does. Production refreshers must use
+	// ClaimRefreshRecord to additionally fence the snapshot they will open.
+	// Returns false — not an error —
 	// when someone else holds it; that caller must not touch the provider.
 	// A crashed holder's claim is re-claimable as soon as `until` passes,
 	// so nothing has to release it. Missing record → false, no error.
@@ -228,6 +240,29 @@ type OAuthStore interface {
 	ReleaseRefreshClaim(ctx context.Context, id string, owner string, notBefore *time.Time) error
 }
 
+// ClaimRefreshRecord binds the lease to the exact credential the caller read.
+// ClaimRefresh elects a holder by record ID, but a reconnect can replace that
+// ID before the claim is taken. Re-read under the claim before exchanging the
+// stale snapshot's refresh token. Reconnects after this check still invalidate
+// the claim and are fenced by UpdateTokens at commit time.
+func ClaimRefreshRecord(ctx context.Context, store OAuthStore, rec OAuthRecord, owner string, now, until time.Time) (bool, error) {
+	claimed, err := store.ClaimRefresh(ctx, rec.ID, owner, now, until)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	rows, err := store.ListByUser(ctx, rec.UserID)
+	if err == nil {
+		for _, current := range rows {
+			if current.ID == rec.ID && current.RefreshClaimOwner == owner && bytes.Equal(current.SealedPayload, rec.SealedPayload) {
+				return true, nil
+			}
+		}
+	}
+	// This release cannot clear a successor's lease or a reconnected record.
+	_ = store.ReleaseRefreshClaim(ctx, rec.ID, owner, nil)
+	return false, err
+}
+
 // ErrRefreshClaimLost is the outcome of a refresh whose claim no longer
 // holds at commit time — the lease expired under a slow exchange, or a
 // re-connect replaced the credential while the provider round trip was in
@@ -236,17 +271,27 @@ type OAuthStore interface {
 // one, so they are DISCARDED rather than written over what replaced them.
 var ErrRefreshClaimLost = errors.New("secrets: oauth refresh claim lost")
 
+// OAuthAccountUpdate replaces the provider identity atomically with refreshed
+// tokens. A non-nil update explicitly clears absent metadata after a failed
+// profile lookup; nil means this writer did not identify a new bearer.
+// PreviousEmail permits a conditional update of an email-derived label only
+// while it still equals the value read before refresh, preserving a rename.
+type OAuthAccountUpdate struct {
+	ID             string
+	OrganizationID string
+	Email          string
+	CheckedAt      *time.Time
+	Error          string
+	PreviousEmail  string
+}
+
 // OAuthTokenUpdate is the set of fields a refresh (or its self-heal) may
-// rewrite. Everything absent from it belongs to another writer — the
-// account label to the rename endpoint, created_at to the connect path —
-// and is left exactly as stored.
-//
-// A nil/empty field means "leave it alone", never "clear it": a refresh
-// only ever learns MORE about a record. The two shapes that rely on it are
-// the self-heal (flips NotRefreshable on a record it never re-sealed) and
-// a provider response that carries no expiry or no scopes, which
-// RefreshRecord already treats as "keep what we had".
+// rewrite. Unrelated metadata remains owned by its original writer.
+// Except for Account, a nil/empty field means "leave it alone": the self-heal
+// learns only NotRefreshable, and a provider response without expiry/scopes
+// preserves what was already known. Account explicitly replaces its fields.
 type OAuthTokenUpdate struct {
+	Account *OAuthAccountUpdate
 	// SealedPayload replaces the sealed blob; nil leaves it in place.
 	SealedPayload []byte
 	// AccessTokenExpiresAt / LastRefreshedAt replace their fields; nil
@@ -255,9 +300,8 @@ type OAuthTokenUpdate struct {
 	LastRefreshedAt      *time.Time
 	// Scopes replaces the scope list; empty leaves it in place.
 	Scopes []string
-	// Fingerprint stamps the subscription identity on a legacy record;
-	// "" leaves whatever is stored (a refresh is the same subscription,
-	// so it never re-stamps a record that already carries one).
+	// Fingerprint stamps a legacy subscription or the refreshed bearer's
+	// newly checked account identity; "" leaves whatever is stored.
 	Fingerprint string
 	// NotRefreshable is always written: a successful refresh proves the
 	// record IS refreshable, and the self-heal path exists to set it.
@@ -266,7 +310,7 @@ type OAuthTokenUpdate struct {
 	// commits only while the record still carries that claim owner
 	// (ErrRefreshClaimLost otherwise) and releases the claim as part of the
 	// same write. Empty means "no claim was taken" and leaves the claim
-	// fields exactly as stored — the shape the self-heal partial writes use.
+	// fields exactly as stored. Refresh paths fence their self-heal writes too.
 	ClaimOwner string
 	// RefreshNotBefore is the cool-down to leave behind when releasing the
 	// claim, and — like NotRefreshable — it is always written on a claimed
@@ -282,6 +326,7 @@ type OAuthTokenUpdate struct {
 // only some of them.
 func OAuthTokenUpdateFrom(rec OAuthRecord) OAuthTokenUpdate {
 	return OAuthTokenUpdate{
+		Account:              rec.accountUpdate,
 		SealedPayload:        rec.SealedPayload,
 		AccessTokenExpiresAt: rec.AccessTokenExpiresAt,
 		LastRefreshedAt:      rec.LastRefreshedAt,
@@ -552,15 +597,12 @@ func ParseCodexView(payload []byte) (CodexCredentialsView, error) {
 // identifier; the hash is namespaced so an account-derived identity can
 // never be confused with a blob-derived one.
 //
-// KNOWN GAP — Anthropic: a Claude Code credentials.json carries no account
-// or subscription id (see AnthropicCredentialsView, and the token exchange
-// in oauth_authcode.go, which returns only tokens/scopes/expiry), so it
-// falls back to the whole-blob hash and re-connecting the SAME Claude
-// subscription still opens a fresh meter. That fails OPEN — the next run
-// proceeds and republishes the provider's own reading at its first call —
-// and the mid-run guard remains the backstop. Closing it needs an identity
-// from outside the payload (an Anthropic profile lookup at connect time),
-// not a different hash of it.
+// A Claude Code payload carries no account identity. This pure helper
+// therefore supplies only its legacy whole-blob fallback; the server's
+// connect path replaces that with OAuthAccount.Fingerprint after a verified
+// Anthropic profile lookup. Credentials without user:profile or a successful
+// lookup remain explicitly unidentified, and the provider usage probe plus
+// the mid-run guard remain their admission backstops.
 func SubscriptionFingerprint(kind OAuthKind, payload []byte) string {
 	if kind == OAuthKindCodex {
 		if v, err := ParseCodexView(payload); err == nil && v.Tokens.AccountID != "" {
@@ -931,6 +973,13 @@ func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, id string, upd OAuthT
 	if upd.Fingerprint != "" {
 		r.Fingerprint = upd.Fingerprint
 	}
+	if a := upd.Account; a != nil {
+		if a.PreviousEmail != "" && r.AccountLabel == a.PreviousEmail {
+			r.AccountLabel = a.Email
+		}
+		r.AccountID, r.AccountOrganizationID, r.AccountEmail = a.ID, a.OrganizationID, a.Email
+		r.AccountCheckedAt, r.AccountError = copyTimePtr(a.CheckedAt), a.Error
+	}
 	r.NotRefreshable = upd.NotRefreshable
 	r.UpdatedAt = time.Now().UTC()
 	s.m[id] = r
@@ -1169,12 +1218,31 @@ func oauthTokenUpdateWrite(id string, upd OAuthTokenUpdate, now time.Time) (bson
 	if upd.Fingerprint != "" {
 		set["fingerprint"] = upd.Fingerprint
 	}
+	if a := upd.Account; a != nil {
+		set["account_id"], set["account_organization_id"], set["account_email"] = a.ID, a.OrganizationID, a.Email
+		set["account_checked_at"], set["account_error"] = notBeforeValue(a.CheckedAt), a.Error
+	}
 	return filter, bson.M{"$set": set}
 }
 
 func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, id string, upd OAuthTokenUpdate) error {
 	filter, update := oauthTokenUpdateWrite(id, upd, time.Now())
-	res, err := s.coll.UpdateOne(ctx, filter, update)
+	var write any = update
+	if a := upd.Account; a != nil && a.PreviousEmail != "" {
+		// An aggregation update can change the derived label and identity in
+		// the same fenced write without undoing SetAccountLabel. Every supplied
+		// value is literal: profile strings beginning with '$' are data.
+		stage := bson.M{}
+		for field, value := range update["$set"].(bson.M) {
+			stage[field] = bson.M{"$literal": value}
+		}
+		stage["account_label"] = bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{"$account_label", bson.M{"$literal": a.PreviousEmail}}},
+			bson.M{"$literal": a.Email}, "$account_label",
+		}}
+		write = mongo.Pipeline{bson.D{{Key: "$set", Value: stage}}}
+	}
+	res, err := s.coll.UpdateOne(ctx, filter, write)
 	if err != nil {
 		return fmt.Errorf("secrets: update oauth tokens: %w", err)
 	}

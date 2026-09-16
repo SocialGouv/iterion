@@ -13,8 +13,10 @@ const workflowPath = "../../.github/workflows/tests.yml"
 // runsOnLine captures the value of every job-level `runs-on:` in the file.
 var runsOnLine = regexp.MustCompile(`(?m)^\s{4}runs-on:\s*(.+)$`)
 
-// TestSelfHostedRoutingExpressionsAgree pins the six copies of one security
-// decision against each other.
+// TestSelfHostedRoutingExpressionsAgree pins every copy of one security
+// decision against each other. The count is deliberately NOT asserted: a job
+// added without the expression is the guard's blind spot by design — what it
+// pins is that no copy DIFFERS, not how many exist.
 //
 // `runs-on` cannot read a workflow-level `env`, and routing the choice
 // through a `needs:` job would put every job behind a single GitHub-hosted

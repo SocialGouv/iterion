@@ -350,6 +350,14 @@ config:
     # Externally reachable origin used to build OIDC redirect URIs
     # and as the CookieDomain default. Empty disables OIDC.
     publicUrl: ""
+    # Send browser DOCUMENT navigations arriving on any other host to
+    # publicUrl, so a deployment published under several names keeps one
+    # browser origin for cookies, storage, CSP and the WS origin gate.
+    # /api/ is never redirected: webhooks, the CLI and the SDK go on
+    # answering on every host. Off by default — publicUrl is also set on
+    # deployments legitimately reached by another name (port-forward,
+    # in-cluster DNS), and those must not be moved.
+    canonicalRedirect: false
     # Cookie scoping. Empty = host-only (recommended). Set when
     # the SPA is served from a different host than the API.
     cookieDomain: ""

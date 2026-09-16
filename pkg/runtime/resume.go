@@ -80,7 +80,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // fields into the paused human node's downstream output. Host inputs are not
 // persisted as human answers or artifacts; callers must be able to derive
 // them again from the durable run record on every resume.
-func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) error {
+func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) (resultErr error) {
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -171,6 +171,17 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	if rerr := e.refuseBundleRequiringNewerEngine(); rerr != nil {
 		return rerr
 	}
+	e.restoreRunEnv(r)
+	e.parentRunID = r.ParentRunID
+	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, r.ParentRunID != "" && !r.Worktree)
+	if resourceErr != nil {
+		return resourceErr
+	}
+	defer func() {
+		if cleanupErr := resourceCleanup(); cleanupErr != nil {
+			resultErr = errors.Join(cleanupErr, resultErr)
+		}
+	}()
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
@@ -308,7 +319,11 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 	sort.Strings(persistedNames)
 	for _, name := range persistedNames {
 		revision := persisted[name]
-		if _, ok := outputs[revision.NodeID]; ok {
+		// A compacted historical artifact owns its immutable body even when
+		// convergence removed the producer's obsolete output (#1116). A
+		// rewind/fork that invalidates the artifact removes its revision too;
+		// absence from outputs alone is not that invalidation.
+		if _, ok := outputs[revision.NodeID]; ok || revision.ValueFromRevision {
 			if revision.ContractLogicalRef == "" {
 				revision.ContractLogicalRef = name
 			}
@@ -1524,6 +1539,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
 	}
 
+	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
 	// Attachments are otherwise loaded only by runInitState, on the LAUNCH
@@ -1772,6 +1788,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	}
 	defer sandboxCleanup()
 
+	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
 	// Same reason as the paused-resume path above: without this every
@@ -2012,7 +2029,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	execCtx := e.execContext(ctx, rs, nodeID)
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The llm half of llm_or_human is an OPTIMIZATION — it auto-answers
@@ -2715,7 +2732,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
 	execCtx = e.execContext(execCtx, rs, nodeID)
 	execStart := time.Now()
-	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// Check for another interaction request (recursive). depth+1

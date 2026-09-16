@@ -48,7 +48,12 @@ type oauthConnectionView struct {
 	// AccountLabel is the operator's name for the account behind this
 	// credential ("jothedev"). Empty on records connected before labels
 	// existed — rename them with PATCH.
-	AccountLabel string `json:"account_label,omitempty"`
+	AccountLabel     string  `json:"account_label,omitempty"`
+	AccountEmail     string  `json:"account_email,omitempty"`
+	AccountCheckedAt *string `json:"account_checked_at,omitempty"`
+	AccountError     string  `json:"account_error,omitempty"`
+	AccountVerified  bool    `json:"account_verified"`
+	SameAccountRanks []int   `json:"same_account_ranks,omitempty"`
 	// Fingerprint is the credential's stable id, and the SAME value the
 	// runtime prints when it picks a credential
 	// ("oauth-forfait(org) used … fp=700acc7b…"). Exposing it is what
@@ -67,10 +72,22 @@ type oauthConnectionView struct {
 }
 
 func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
+	if !secrets.IsAccountFingerprint(r.Fingerprint) {
+		// Older binaries replace known token fields but cannot clear profile
+		// metadata introduced during a rolling upgrade.
+		if r.AccountLabel == r.AccountEmail {
+			r.AccountLabel = ""
+		}
+		r.AccountEmail, r.AccountCheckedAt = "", nil
+	}
 	return oauthConnectionView{
 		Kind:                 string(r.Kind),
 		Rank:                 r.Rank,
 		AccountLabel:         r.AccountLabel,
+		AccountEmail:         r.AccountEmail,
+		AccountCheckedAt:     optRFC3339(r.AccountCheckedAt),
+		AccountError:         r.AccountError,
+		AccountVerified:      secrets.IsAccountFingerprint(r.Fingerprint),
 		Fingerprint:          r.Fingerprint,
 		Scopes:               r.Scopes,
 		CreatedAt:            r.CreatedAt.Format(time.RFC3339),
@@ -206,6 +223,10 @@ func (s *Server) auditOAuthByOwner(r *http.Request, ownerKey, verb string, kind 
 	}
 }
 
+type oauthConnectionsView struct {
+	Connections []oauthConnectionView `json:"connections"`
+}
+
 func (s *Server) listOAuthForOwner(w http.ResponseWriter, r *http.Request, ownerKey string) {
 	records, err := s.oauthStore.ListByUser(r.Context(), ownerKey)
 	if err != nil {
@@ -214,11 +235,17 @@ func (s *Server) listOAuthForOwner(w http.ResponseWriter, r *http.Request, owner
 	}
 	views := make([]oauthConnectionView, 0, len(records))
 	for _, rec := range records {
-		views = append(views, toOAuthView(rec))
+		view := toOAuthView(rec)
+		if view.AccountVerified {
+			for _, other := range records {
+				if other.Kind == rec.Kind && other.Rank != rec.Rank && other.Fingerprint == rec.Fingerprint {
+					view.SameAccountRanks = append(view.SameAccountRanks, other.Rank)
+				}
+			}
+		}
+		views = append(views, view)
 	}
-	writeJSON(w, struct {
-		Connections []oauthConnectionView `json:"connections"`
-	}{Connections: views})
+	writeJSON(w, oauthConnectionsView{Connections: views})
 }
 
 // startOAuthForOwner kicks off the browser OAuth flow: it mints PKCE +
@@ -626,6 +653,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// Derived from the account the payload names where it names one, so
 	// connecting ONE subscription twice does not open two meters.
 	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, identity)
+	s.identifyOAuthAccount(ctx, &rec, blob)
 	// The name follows the fingerprint. A re-connect that names no account
 	// keeps the previous label ONLY when it provably re-connects the same
 	// subscription (codex: same account id; claude_code: the same setup
@@ -640,9 +668,12 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		// The link being replaced, not the primary: comparing a fallback's
 		// fingerprint against rank 0's never matches, so rotating a named
 		// fallback would drop its name on every rotation.
-		if prev, err := s.resolveOAuthRecord(ctx, ownerKey, kind, rank); err == nil && prev.Fingerprint == rec.Fingerprint {
+		if prev, err := s.resolveOAuthRecord(ctx, ownerKey, kind, rank); err == nil && prev.Fingerprint == rec.Fingerprint && (prev.AccountEmail == "" || prev.AccountLabel != prev.AccountEmail) {
 			rec.AccountLabel = prev.AccountLabel
 		}
+	}
+	if rec.AccountLabel == "" {
+		rec.AccountLabel = rec.AccountEmail
 	}
 	if err := s.oauthStore.Upsert(ctx, rec); err != nil {
 		return secrets.OAuthRecord{}, err
@@ -692,7 +723,7 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	now := time.Now().UTC()
-	claimed, err := s.oauthStore.ClaimRefresh(r.Context(), rec.ID, owner, now, now.Add(secrets.RefreshClaimTTL))
+	claimed, err := secrets.ClaimRefreshRecord(r.Context(), s.oauthStore, rec, owner, now, now.Add(secrets.RefreshClaimTTL))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -704,9 +735,6 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
 		// Give the claim back so the sweep is not held off by a failed
 		// attempt; a claim already superseded has nothing to release.
-		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), rec.ID, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
-			s.logger.Warn("oauth: release refresh claim %s/%s: %v", ownerKey, kind, rerr)
-		}
 		if errors.Is(err, secrets.ErrNotRefreshable) {
 			// Self-heal the record so the background worker stops
 			// attempting it; surface an actionable message instead of
@@ -714,12 +742,17 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 			if !rec.NotRefreshable {
 				// Partial write: the flag is all this path learned, and a
 				// rename may have landed since the Get above.
-				if uerr := s.oauthStore.UpdateTokens(r.Context(), rec.ID, secrets.OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
+				if uerr := s.oauthStore.UpdateTokens(r.Context(), rec.ID, secrets.OAuthTokenUpdate{NotRefreshable: true}.WithClaim(owner)); uerr != nil && !errors.Is(uerr, secrets.ErrRefreshClaimLost) {
 					s.logger.Warn("oauth: mark not-refreshable %s/%s: %v", ownerKey, kind, uerr)
 				}
+			} else {
+				_ = s.oauthStore.ReleaseRefreshClaim(r.Context(), rec.ID, owner, nil)
 			}
 			httpError(w, http.StatusConflict, "this connection has no refresh token and can't auto-refresh — reconnect it to renew")
 			return
+		}
+		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), rec.ID, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
+			s.logger.Warn("oauth: release refresh claim %s/%s: %v", ownerKey, kind, rerr)
 		}
 		httpError(w, http.StatusBadGateway, "refresh: %v", err)
 		return

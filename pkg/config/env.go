@@ -139,6 +139,9 @@ func loadEnv(cfg *Config) error {
 	if v, ok := lookup("ITERION_PUBLIC_URL"); ok {
 		cfg.Auth.PublicURL = strings.TrimRight(v, "/")
 	}
+	if err := lookupBool("ITERION_CANONICAL_REDIRECT", &cfg.Auth.CanonicalRedirect); err != nil {
+		return err
+	}
 	lookupString("ITERION_COOKIE_DOMAIN", &cfg.Auth.CookieDomain)
 	if err := lookupBool("ITERION_COOKIE_SECURE", &cfg.Auth.CookieSecure); err != nil {
 		return err

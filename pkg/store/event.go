@@ -204,6 +204,15 @@ const (
 	//     landed. Triage reads the DLQ, it does not infer absence from here
 	//   - error: why the archive was not confirmed (absent when parked)
 	EventRunDeliveryExhausted EventType = "run_delivery_exhausted"
+	// EventRunBankRetry records a failed terminal push before a bounded retry.
+	// Data names the attempted head/branch, attempt/max_attempts, delay_ms,
+	// error, failure_kind and (for a process exit) exit_code.
+	EventRunBankRetry EventType = "run_bank_retry"
+	// EventRunBankFailed records exhausted terminal banking with no earlier
+	// banked pair to retain. It does not change the workflow's outcome.
+	// recorded says whether the run document saved the same failure; the
+	// timeline still carries it when that write fails.
+	EventRunBankFailed EventType = "run_bank_failed"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
 	// the storage branch — because that attempt banked a strictly richer

@@ -29,6 +29,7 @@ const (
 	ErrCodeBudgetExceeded        = store.FailureBudgetExceeded
 	ErrCodeExecutionFailed       = store.FailureExecutionFailed
 	ErrCodeWorkspaceSafety       = store.FailureWorkspaceSafety
+	ErrCodeResourceRestore       = store.FailureResourceRestore
 	ErrCodeTimeout               = store.FailureTimeout
 	ErrCodeCancelled             = store.FailureCancelled
 	ErrCodeJoinFailed            = store.FailureJoinFailed

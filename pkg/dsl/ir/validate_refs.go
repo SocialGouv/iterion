@@ -468,11 +468,11 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
-	targetNodeID := rc.Ref.Path[0]
+	targetNodeID, fields := outputNodePath(w, rc.Ref.Path)
 
 	// C029: referenced node must exist.
-	targetNode, ok := w.Nodes[targetNodeID]
-	if !ok {
+	targetNode := w.Nodes[targetNodeID]
+	if targetNode == nil {
 		c.refErrorf(rc, DiagUnknownRefNode,
 			"%s: reference %s targets unknown node %q",
 			rc.Location, rc.Ref.Raw, targetNodeID)
@@ -488,10 +488,10 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	}
 
 	// Field-level validation (only when accessing a specific field).
-	if len(rc.Ref.Path) < 2 {
+	if len(fields) == 0 {
 		return
 	}
-	fieldName := rc.Ref.Path[1]
+	fieldName := fields[0]
 
 	// Skip .history — already covered by C017.
 	if fieldName == "history" {
@@ -744,4 +744,20 @@ func checkReachable(rc refContext, predecessors map[string]map[string]bool, targ
 		reachable = true
 	}
 	return reachable
+}
+
+// outputNodePath uses the same longest-node-prefix rule as runtime templates
+// and expressions, so an instance ID such as r1.gate is not split into a node
+// named r1 and a field named gate.
+func outputNodePath(w *Workflow, path []string) (string, []string) {
+	for n := len(path); n > 0; n-- {
+		id := strings.Join(path[:n], ".")
+		if w.Nodes[id] != nil {
+			return id, path[n:]
+		}
+	}
+	if len(path) == 0 {
+		return "", nil
+	}
+	return path[0], path[1:]
 }

@@ -69,6 +69,15 @@ a targeted re-run on a fresh base, recommend a direct
 `iterion run <bot> --var … --merge-into none` (isolated worktree) run
 instead, and say why.
 
+## A terminal run has no final branch
+
+Read `bank_state` and `final_branch_error`, not `final_branch` alone.
+`bank_failed` is a delivery failure even when the workflow is `finished`.
+Inspect `run_bank_retry`, `run_bank_failed`, and `run_bank_refused` before
+choosing recovery; a local `final_commit` does not prove a forge push.
+The retry settings, diagnostic fields, and workspace-checkpoint recovery
+path are in [the bank failure runbook](../../../docs/resume.md#when-the-final-bank-push-fails).
+
 ## Base drift during long drains
 
 Factory branches are cut from main-at-dispatch. If main advances while
@@ -147,3 +156,14 @@ App delivery permissions deliberately, refresh the token and relaunch.
 Installation grants alone do not prove the narrower token's capabilities.
 Do not schedule repeated analysis attempts against the same missing proof.
 See [Revi/Billy delivery preflight](../../../docs/revi-billy-loop.md).
+
+## Child resources differ from the parent
+
+When a subbot cannot read its skills/tools, or its parent sees child resources
+later, consult [Child bundle resources](../../../docs/groups-iteration-subbots.md#child-bundle-resources).
+Check the child's `FilePath`/`BundlePath` and `sandbox_devbox_provisioned`
+event (`target`, `bin_dirs`, `errors`). A workflow inside a bundle, including
+`step.bot` beside `main.bot`, inherits that bundle; a standalone file outside
+one has no bundle resources. Shared-workspace resources are borrowed for each
+active pass and restored on return, including pauses; child devbox PATH never replaces the
+parent's. A restoration error names a retained backup to inspect.

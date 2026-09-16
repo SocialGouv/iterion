@@ -239,9 +239,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 //
 // Two invariants keep it from reopening #484:
 //
-//   - Only an OUTPUT-LESS source contributes (settledFloorEligible). An edge
-//     whose source ran is left to the passes below, where routing's recorded
-//     selection still decides between exclusive siblings.
+//   - A floor edge's source produced no output in the branch whose walk
+//     admitted it. Routing prunes that branch's rejected alternatives;
+//     a fan_out_each sibling cannot decide for an item that never routed.
 //   - It is a FLOOR — applied before both passes, so a live edge and the
 //     back-edge overlay both win on a shared key.
 //
@@ -314,8 +314,9 @@ func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFl
 		if !settledFloorEligible(edge, floor) {
 			continue
 		}
-		// The source produced nothing, so `{{input.*}}` on this edge has no
-		// namespace to read: an explicit empty map, never the caller's
+		// The branch that admitted this edge produced no source output, so
+		// `{{input.*}}` has no namespace to read: an explicit empty map,
+		// never the caller's
 		// runInputs, which would silently promote a run-level payload into
 		// the source-output namespace (#479). Every floor edge therefore
 		// resolves in the SAME scope, which is what makes the template
@@ -511,6 +512,8 @@ func renderMappingValue(v any) string {
 // pass nil to skip those (they'll resolve to nil).
 func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 	switch ref.Kind {
+	case ir.RefLiteralOpen:
+		return "{{"
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
 			return sc.vars[ref.Path[0]]
@@ -524,12 +527,12 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 			return nil
 		}
 		// Resolve the node id as the LONGEST dotted prefix of the path that is
-		// an actual output key. Group-instance nodes have dotted ids
+		// a declared node. Group-instance nodes have dotted ids
 		// (`prefix.name`), which collide with the dotted ref grammar:
 		// {{outputs.r1.gate.id}} parses as [r1, gate, id] but the node is
 		// "r1.gate". Longest-prefix-match disambiguates this for any nesting
 		// depth (the field path is whatever follows the matched id).
-		nodeOut, fieldPath := matchOutputNode(sc.outputs, ref.Path)
+		nodeOut, fieldPath := matchOutputNode(e.workflow, sc.outputs, ref.Path)
 		if nodeOut == nil {
 			return nil
 		}
@@ -655,14 +658,6 @@ func (e *Engine) resolveLoopPath(path []string, rs *runState) any {
 	return nil
 }
 
-// resolveLoopMax returns the effective cap for a loop. Literal-int
-// declarations (`as fix_loop(3)`) yield MaxIterations directly.
-// Template declarations (`as fix_loop("{{outputs.X.cap}}")`) resolve
-// the refs against the runState and coerce the result to int. The
-// fallback when resolution / coercion fails is loop.MaxIterations
-// (typically 0 for the template form) — that surfaces as a "loop
-// exhausted on iteration 0" log line at the edge check, which is the
-// loudest visible failure mode we can offer without aborting the run.
 // defaultUnboundedFuel is the fuel ceiling applied to an `unbounded` loop that
 // declares neither a per-loop fuel nor a workflow budget.max_iterations.
 // Validation (C097) normally requires one of those, so this only guards a
@@ -706,45 +701,14 @@ func outputSignature(output map[string]any) string {
 // declared/expr/fuel base plus any live-steering grant (bump_loop). The
 // grant applies for the remainder of the run; a loop re-entry still
 // resets its COUNTER, so the raised ceiling governs each entry.
+// Prompt/display lookups may happen before a referenced output exists. Only
+// actual edge selection treats an unresolved cap as a run failure.
 func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
-	base := e.resolveLoopMaxBase(loop, rs)
-	if extra := rs.loopOverrides[loop.Name]; extra > 0 {
-		return base + extra
+	n, err := e.resolveLoopMaxChecked(loop, rs)
+	if err != nil {
+		return 0
 	}
-	return base
-}
-
-func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) int {
-	// Unbounded loops have no user iteration cap; the effective ceiling is the
-	// fuel: the clause's per-loop fuel, else the workflow's max_iterations, else
-	// a hard default (so there is never a silent infinity even if validation was
-	// bypassed). The liveness monitor halts a no-progress loop before this.
-	if loop.Unbounded {
-		if loop.FuelCap > 0 {
-			return loop.FuelCap
-		}
-		if e.workflow.Budget != nil && e.workflow.Budget.MaxIterations > 0 {
-			return e.workflow.Budget.MaxIterations
-		}
-		return defaultUnboundedFuel
-	}
-	if loop.MaxIterationsExpr == "" || len(loop.MaxIterationsExprRefs) == 0 {
-		return loop.MaxIterations
-	}
-	var resolved any
-	for _, ref := range loop.MaxIterationsExprRefs {
-		v := e.resolveRef(ref, rs.scope())
-		if v != nil {
-			resolved = v
-		}
-	}
-	if resolved == nil {
-		return loop.MaxIterations
-	}
-	if n, ok := coerceToInt(resolved); ok {
-		return n
-	}
-	return loop.MaxIterations
+	return n
 }
 
 // coerceToInt accepts the common shapes that an output/var ref can
@@ -923,12 +887,22 @@ func drillPath(root any, path []string) any {
 }
 
 // matchOutputNode picks the node whose id is the LONGEST dotted prefix of the
-// reference path that is an actual key in outputs, returning that node's output
-// map and the remaining field path. This disambiguates dotted group-instance
-// node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
+// reference path declared by the workflow, returning that exact node's output
+// (possibly nil) and the remaining field path. A missing dotted node must not
+// fall back to a shorter node's nested fields. With no declared prefix, the
+// output keys remain a fallback for legacy/ad-hoc resolver scopes.
+// This disambiguates dotted group-instance node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
 // {{outputs.r1.gate.id}} with a node "r1.gate" yields (outputs["r1.gate"], ["id"]).
 // Returns (nil, nil) when no prefix matches.
-func matchOutputNode(outputs map[string]map[string]any, path []string) (map[string]any, []string) {
+func matchOutputNode(wf *ir.Workflow, outputs map[string]map[string]any, path []string) (map[string]any, []string) {
+	if wf != nil {
+		for n := len(path); n >= 1; n-- {
+			id := strings.Join(path[:n], ".")
+			if wf.Nodes[id] != nil {
+				return outputs[id], path[n:]
+			}
+		}
+	}
 	for n := len(path); n >= 1; n-- {
 		id := strings.Join(path[:n], ".")
 		if out, ok := outputs[id]; ok {

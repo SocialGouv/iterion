@@ -75,8 +75,11 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 	fctx := store.WithoutTenantFilter(ctx)
 	var repo, botID, status, name, nodeID, interactionID, tenantID, ownerID string
 	var updatedAt time.Time
+	var bankState store.BankState
+	var finalBranch, finalCommit, finalBranchError string
 	if r, err := rs.LoadRun(fctx, runID); err == nil && r != nil {
 		updatedAt = r.UpdatedAt
+		bankState, finalBranch, finalCommit, finalBranchError = r.BankState(), r.FinalBranch, r.FinalCommit, r.FinalBranchError
 		repo = r.ProjectPath
 		botID = r.BotID
 		status = string(r.Status)
@@ -117,6 +120,14 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 	}
 
 	payload := map[string]any{"bot_id": botID, "status": status, "run_id": runID}
+	if bankState != "" {
+		payload["bank_state"] = string(bankState)
+		payload["final_branch"] = finalBranch
+		payload["final_commit"] = finalCommit
+		if finalBranchError != "" {
+			payload["final_branch_error"] = finalBranchError
+		}
+	}
 	if nodeID != "" {
 		payload["node_id"] = nodeID
 	}

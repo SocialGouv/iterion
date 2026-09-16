@@ -95,6 +95,33 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 		}
 	}
 
+	// The response contract is judged LAST, and only for a status the package
+	// explicitly opted in. Status and outcome decide what the answer MEANS: a
+	// body the vendor sends to report its own failure must surface as that
+	// failure, not as a shape violation, so a package that declares both keeps
+	// the diagnosis it authored.
+	if checked, err := pkg.ValidateResponse(op, resp.StatusCode, body); checked && err != nil {
+		res.Err = &Error{
+			Class:   spec.ErrUpstream,
+			Status:  resp.StatusCode,
+			Message: fmt.Sprintf("the vendor answered %d with a body that breaks the declared response contract: %v", resp.StatusCode, err),
+			Cause:   err,
+		}
+		// The same certainty as the undecodable 2xx above: the vendor answered,
+		// so a mutation CERTAINLY happened and only its answer is unusable.
+		markAmbiguous(op, res.Err, resp.StatusCode)
+		// A body that broke its contract must not be readable: leaving it would
+		// hand the workflow the very fields the contract just refused to vouch
+		// for.
+		//
+		// No reader can reach it today — every consumer of Data is guarded on
+		// success, and CallPaged returns before it collects a refused page's
+		// rows. This is defence in depth for the next reader, not the thing that
+		// makes the refusal effective.
+		res.Data = nil
+		return res
+	}
+
 	// 202 is pending by DEFAULT, not only when a package remembered to say so.
 	// "Accepted" means the work has not happened yet, whoever documented it;
 	// a package that omits the case (most do — generators only see what the
