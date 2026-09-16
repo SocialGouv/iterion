@@ -5,6 +5,12 @@ name: 🛡️ Trivy
 # published to the GitHub Security tab (Code scanning) via SARIF instead of
 # failing the run.
 #
+# What DOES fail a job here: the scan not running, and its results not
+# reaching Code scanning. Both are deliberately loud — a security scan whose
+# findings stop being published is the one failure nobody would notice
+# otherwise. Only the rendered table is advisory; it is decoration, and its
+# absence says so rather than showing an empty block.
+#
 # Triggers:
 #   - pull_request / push on main → fs-scan only (fast, source tree).
 #   - workflow_run after image.yml succeeds on main → image-scan on the
@@ -67,6 +73,11 @@ jobs:
           category: trivy-fs
 
       - name: Trivy filesystem scan (summary)
+        # A second trivy download and DB restore whose only product is a table
+        # for whoever opens the run page. The scan and its publish above are
+        # this job's verdict; rendering that table is not, so it does not get
+        # to decide whether the job passed.
+        continue-on-error: true
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -86,9 +97,15 @@ jobs:
           {
             echo "## Trivy filesystem scan"
             echo ""
-            echo '```'
-            cat trivy-fs.txt || true
-            echo '```'
+            if [ -s trivy-fs.txt ]; then
+              echo '```'
+              cat trivy-fs.txt
+              echo '```'
+            else
+              # An empty code fence under a security heading reads as "nothing
+              # found". Say which one it is.
+              echo "_No table: the summary pass produced none. The SARIF scan above is this job's verdict._"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   image-scan:
@@ -143,6 +160,8 @@ jobs:
           category: ${{ matrix.image }}
 
       - name: Trivy image scan (summary)
+        # Cosmetic, like its filesystem sibling: see the comment there.
+        continue-on-error: true
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -165,7 +184,11 @@ jobs:
             echo ""
             echo "ref: \`${REF}\`"
             echo ""
-            echo '```'
-            cat "trivy-${IMAGE}.txt" || true
-            echo '```'
+            if [ -s "trivy-${IMAGE}.txt" ]; then
+              echo '```'
+              cat "trivy-${IMAGE}.txt"
+              echo '```'
+            else
+              echo "_No table: the summary pass produced none. The SARIF scan above is this job's verdict._"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
