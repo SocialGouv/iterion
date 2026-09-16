@@ -109,6 +109,18 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					}
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q %s (%d/%d)",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
+					// Said as an event, like the liveness stall and the budget
+					// guard: a reader of the run — a dry run — tells a bounded
+					// loop's cap from an unbounded loop's fuel by the reason.
+					reason := "loop_cap"
+					if loop.Unbounded {
+						reason = "loop_out_of_fuel"
+					}
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]any{
+						"loop": edge.LoopName, "reason": reason, "crossings": rs.loopCounters[edge.LoopName], "cap": maxIter,
+					}); err != nil {
+						e.logger.Warn("failed to emit %s warning: %v", reason, err)
+					}
 					if exhausted == "" {
 						exhausted = fmt.Sprintf("loop %q %s (%d/%d)", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
 					}

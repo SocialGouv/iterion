@@ -7,6 +7,7 @@ import (
 
 const loopHead = `schema verdict:
   ok: bool
+  n: int
   items: string[]
 
 agent check:
@@ -49,6 +50,7 @@ func TestALoopWithNoExitAtItsCapIsAWarning(t *testing.T) {
 		"unbounded loop, its fuel the ceiling":                {"  assess -> check when not ok as retry(unbounded 5)\n  assess -> done when ok\n", false},
 		"unbounded loop declared first, bounded second":       {"  assess -> check when ok as slow(unbounded 5)\n  assess -> check when not ok as retry(2)\n", true},
 		"foreach edge beside the bounded loop":                {"  assess -> check when not ok as retry(2)\n  assess -> survey as foreach scan(item in \"{{outputs.check.items}}\")\n  survey -> done\n", true},
+		"an expression edge the compiler cannot evaluate":     {"  assess -> check when \"outputs.assess.n < 3\" as retry(3)\n  assess -> done when \"outputs.assess.n >= 3\"\n", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cr := compileText(t, loopHead+tc.edges)

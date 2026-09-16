@@ -932,19 +932,21 @@ func TestAPassAtTheBotsCeilingIsNotADeath(t *testing.T) {
 	// The one reading of a ceiling: the bot's budget, or a stall followed
 	// by the fall-through's death — never a death alone.
 	for _, tc := range []struct {
-		code    store.FailureCode
-		stalled bool
-		want    bool
+		code     store.FailureCode
+		declined string
+		want     bool
 	}{
-		{store.FailureBudgetExceeded, false, true},
-		{store.FailureNoOutgoingEdge, true, true},
-		{store.FailureLoopExhausted, true, true},
-		{store.FailureNoOutgoingEdge, false, false},
-		{store.FailureLoopExhausted, false, false},
-		{store.FailureFailNode, true, false},
+		{store.FailureBudgetExceeded, "", true},
+		{store.FailureNoOutgoingEdge, "liveness_stall", true},
+		{store.FailureNoOutgoingEdge, "loop_budget_guard", true},
+		{store.FailureLoopExhausted, "loop_out_of_fuel", true},
+		{store.FailureLoopExhausted, "loop_cap", false},
+		{store.FailureNoOutgoingEdge, "", false},
+		{store.FailureLoopExhausted, "", false},
+		{store.FailureFailNode, "liveness_stall", false},
 	} {
-		if got := ceilingOf(tc.code, tc.stalled); got != tc.want {
-			t.Fatalf("ceilingOf(%s, stalled=%v) = %v, want %v", tc.code, tc.stalled, got, tc.want)
+		if got := ceilingOf(tc.code, tc.declined); got != tc.want {
+			t.Fatalf("ceilingOf(%s, %q) = %v, want %v", tc.code, tc.declined, got, tc.want)
 		}
 	}
 }

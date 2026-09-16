@@ -774,6 +774,14 @@ func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
 	if isExhaustive(conditional) {
 		return
 	}
+	for _, e := range conditional {
+		if e.Expression != nil {
+			// An expression the compiler cannot evaluate may well be the
+			// exit once the loop is spent (`when: attempts >= 3`): the
+			// warning must be true when it speaks, so it does not.
+			return
+		}
+	}
 	left := "none"
 	if len(conditional) > 0 {
 		parts := make([]string, len(conditional))

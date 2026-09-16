@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -83,5 +86,42 @@ func TestALoopSpentWithNoExitFailsAsLoopExhausted(t *testing.T) {
 	}
 	if run2.Status != store.RunStatusFinished {
 		t.Fatalf("the run with an exit ended %q", run2.Status)
+	}
+}
+
+// The engine says why it declined a loop edge at its cap, as an event a
+// reader of the run can tell apart: a bounded loop's cap, an unbounded
+// loop's fuel.
+func TestADeclinedLoopEdgeSaysWhy(t *testing.T) {
+	never := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
+	for _, tc := range []struct {
+		edge, reason string
+	}{
+		{"  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", "loop_cap"},
+		{"  assess -> check when not ok as retry(unbounded 2)\n  assess -> done when ok\n", "loop_out_of_fuel"},
+	} {
+		exec := newStubExecutor()
+		exec.on("check", never)
+		exec.on("assess", func(map[string]any) (map[string]any, error) {
+			// Outputs that change every time, so the liveness monitor never
+			// stalls the unbounded loop before its fuel is spent.
+			return map[string]any{"ok": false, "n": time.Now().UnixNano()}, nil
+		})
+		s := tmpStore(t)
+		var reasons []string
+		src := strings.Replace(spentLoopBot, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", tc.edge, 1)
+		eng := New(compileBotText(t, src), s, exec, WithEventObserver(func(evt store.Event) {
+			if evt.Type == store.EventBudgetWarning {
+				if r, _ := evt.Data["reason"].(string); r != "" {
+					reasons = append(reasons, r)
+				}
+			}
+		}))
+		if err := eng.Run(context.Background(), "run-why-"+tc.reason, nil); err == nil {
+			t.Fatalf("%s: the spent loop finished the run", tc.reason)
+		}
+		if !slices.Contains(reasons, tc.reason) {
+			t.Fatalf("%s: the engine did not say why it declined the edge: %v", tc.reason, reasons)
+		}
 	}
 }

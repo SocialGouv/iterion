@@ -285,18 +285,16 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		}
 	}
 	var mu sync.Mutex
-	var stalled bool
+	var declined string
 	observe := func(evt store.Event) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch evt.Type {
 		case store.EventBudgetWarning:
-			// The engine declined a loop edge by its own ceiling logic: the
-			// liveness monitor on an unbounded loop whose outputs never
-			// change (under a shape, they never do), or the budget guard
-			// that cannot fund another iteration.
-			if reason, _ := evt.Data["reason"].(string); reason == "liveness_stall" || reason == "loop_budget_guard" {
-				stalled = true
+			// The engine says why it declined a loop edge: the last reason
+			// is what the pass's end is read by (ceilingOf).
+			if reason, _ := evt.Data["reason"].(string); reason != "" {
+				declined = reason
 			}
 		case store.EventNodeStarted:
 			pass.Nodes = append(pass.Nodes, evt.NodeID)
@@ -342,7 +340,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	if run, err := st.LoadRun(ctx, runID); err == nil && run != nil {
 		pass.Status = string(run.Status)
 		mu.Lock()
-		pass.Ceiling = ceilingOf(run.FailureCode, stalled)
+		pass.Ceiling = ceilingOf(run.FailureCode, declined)
 		mu.Unlock()
 	} else if runErr != nil {
 		pass.Status = "error"
@@ -359,14 +357,20 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 
 // ceilingOf says a run's end was a ceiling the dry run's shapes imposed
 // rather than a death of the program: the bot's own budget ceiling, or —
-// after the engine declined a loop edge by its own ceiling logic (the
-// liveness monitor on unchanging shapes, the budget guard) — the
-// fall-through with no edge left, or the loop's cap.
-func ceilingOf(code store.FailureCode, declined bool) bool {
+// after the engine declined a loop edge for a reason that is a ceiling's
+// (the liveness monitor on unchanging shapes, the budget guard, an
+// unbounded loop out of fuel) — the fall-through with no edge left, or the
+// loop's cap. A bounded loop declined at its cap (`loop_cap`) is the
+// program's: C145's shape, a death.
+func ceilingOf(code store.FailureCode, declined string) bool {
 	if code == store.FailureBudgetExceeded {
 		return true
 	}
-	return declined && (code == store.FailureNoOutgoingEdge || code == store.FailureLoopExhausted)
+	switch declined {
+	case "liveness_stall", "loop_budget_guard", "loop_out_of_fuel":
+		return code == store.FailureNoOutgoingEdge || code == store.FailureLoopExhausted
+	}
+	return false
 }
 
 // implicitTerminal reports the `done` and `fail` every workflow carries
