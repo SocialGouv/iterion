@@ -201,3 +201,40 @@ func writeTestFile(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+// TestARelativeSourceNamesTheFileTheOSReaches.
+//
+// `link/parent -> real/parent`, and a child at `real/sib/child.bot`. Joined
+// lexically, `../sib/child.bot` folds to `link/sib/child.bot` — a path the
+// kernel never produces, because it resolves `link/parent` first and only
+// then walks `..`. The bundle reader resolves the parent's directory before
+// joining (bundle.ResolveChild); the runtime resolver is the other reader of
+// the same `source:`, and a bundle that validates clean through a link must
+// not run a different file.
+func TestARelativeSourceNamesTheFileTheOSReaches(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	for _, d := range []string{filepath.Join(real, "parent"), filepath.Join(real, "sib")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child := filepath.Join(real, "sib", "child.bot")
+	if err := os.WriteFile(child, []byte("## child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(real, "parent"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := NewResolver(ResolverOptions{}).Resolve(
+		context.Background(), filepath.Join(link, "parent.bot"), filepath.Join("..", "sib", "child.bot"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, statErr := os.Stat(got.Path); statErr != nil {
+		t.Errorf("resolved %s, which the OS cannot reach: %v\nthe file the parent's own `../sib/child.bot` reaches is %s",
+			got.Path, statErr, child)
+	}
+}

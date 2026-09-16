@@ -83,7 +83,20 @@ func (r *Resolver) Resolve(_ context.Context, parentSource, requestedSource stri
 
 	path := requestedSource
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(base, path)
+		// bundle.ChildPath is the reading the bundle walk uses, and the two
+		// must name the same file: a `..` joined lexically folds across a
+		// symlinked parent directory and names one the OS does not reach, so
+		// a bundle that validates clean through a link would run another.
+		//
+		// A base that cannot be resolved is a base that does not exist, and
+		// the child under it does not either. Joining lexically then leaves
+		// the caller the path the author wrote, which is the better message
+		// for the open that is about to fail.
+		if resolved, err := bundle.ChildPath(base, path); err == nil {
+			path = resolved
+		} else {
+			path = filepath.Join(base, path)
+		}
 	}
 	return ResolvedSource{Kind: KindFile, Path: path}, nil
 }

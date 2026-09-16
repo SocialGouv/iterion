@@ -27,6 +27,24 @@ func realPath(p string) (string, error) {
 	return filepath.EvalSymlinks(abs)
 }
 
+// ChildPath joins a relative `subbot source:` onto parentDir, resolving
+// parentDir itself first. Joined lexically, a `..` folds across a symlinked
+// directory (`link/parent/../sib` → `link/sib`) and names a file the OS does
+// not reach from the parent — which is how the two readers of one `source:`,
+// the bundle walk and the runtime resolver, come to disagree about which file
+// a bundle runs.
+//
+// Only the parent's side is resolved: the child need not exist. Confinement
+// belongs to the caller — this package refuses a child beyond the collection,
+// the runtime confines through `.botz` installs and botlock.
+func ChildPath(parentDir, source string) (string, error) {
+	from, err := realPath(parentDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(from, filepath.FromSlash(source)), nil
+}
+
 // ResolveChild resolves a `subbot source:` of the file at parent, within
 // the collection that holds the bundle at dir — the same confinement as
 // MaxSyntaxRequirementsDir: a child beyond the collection, through `..` or
@@ -41,15 +59,11 @@ func ResolveChild(dir, parent, source string) (path string, src []byte, ok bool)
 	if !ok {
 		return "", nil, false
 	}
-	// The parent's directory is resolved before the source is joined to it:
-	// joined first, a `..` folds lexically across a symlinked directory
-	// (`link/parent/../sib` → `link/sib`) and names a file the OS does not
-	// reach from the parent.
-	from, err := realPath(filepath.Dir(parent))
+	joined, err := ChildPath(filepath.Dir(parent), source)
 	if err != nil {
 		return "", nil, false
 	}
-	real, err := filepath.EvalSymlinks(filepath.Join(from, filepath.FromSlash(source)))
+	real, err := filepath.EvalSymlinks(joined)
 	if err != nil || !within(real, collection) {
 		return "", nil, false
 	}
