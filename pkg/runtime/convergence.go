@@ -113,7 +113,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			// in-process auto-resume gate retries the latter and
 			// refuses the former.
 			if code := commonBranchFailureCode(results); code != "" {
-				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg}
+				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg, Cause: branchEndCause(results)}
 			}
 			return "", fmt.Errorf("%s", msg)
 		}
@@ -357,6 +357,28 @@ func firstAmbiguousBranchErr(results []*branchResult) error {
 		if IsAmbiguousEffect(r.err) {
 			return r.err
 		}
+	}
+	return nil
+}
+
+// branchEndCause is what a reader of the run's end asks the chain for —
+// the loop decline a death followed, or the sentinel of a deliberate fail
+// — taken from the first failed branch, whose error the message quotes.
+// Nothing else of a branch's chain is exposed: the aggregate stays its own
+// classification.
+func branchEndCause(results []*branchResult) error {
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		var d *LoopDeclined
+		if errors.As(r.err, &d) && d != nil {
+			return d
+		}
+		if errors.Is(r.err, ErrDeliberateFailure) {
+			return ErrDeliberateFailure
+		}
+		return nil
 	}
 	return nil
 }

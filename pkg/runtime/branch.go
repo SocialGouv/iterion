@@ -238,6 +238,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				Code:    outcome.code,
 				NodeID:  currentNodeID,
 				Message: fmt.Sprintf("branch %s reached fail node %q: %s", branchID, currentNodeID, outcome.reason),
+				// The decision travels with the branch's error as it does
+				// with the trunk's: the collector's aggregate carries it on.
+				Cause: ErrDeliberateFailure,
 			}
 			return result
 		}
@@ -1061,7 +1064,14 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 		return nil, capErr
 	}
 	if selected == nil {
-		return nil, fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
+		// Typed as the trunk's is: a plain error would launder the dead
+		// end into the EXECUTION_FAILED catch-all on the run.
+		return nil, &RuntimeError{
+			Code:    ErrCodeNoOutgoingEdge,
+			Message: fmt.Sprintf("no outgoing edge from node %q in branch %s", fromNodeID, branchID),
+			NodeID:  fromNodeID,
+			Hint:    "ensure the node's output matches at least one edge condition, or add an unconditional fallback edge",
+		}
 	}
 
 	if selected.LoopName == "" {

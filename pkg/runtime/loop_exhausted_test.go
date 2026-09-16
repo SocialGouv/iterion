@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +142,164 @@ func TestADeclinedLoopEdgeSaysWhy(t *testing.T) {
 		if found["dimension"] != "loop" || !strings.Contains(detail, `"retry"`) || !strings.Contains(detail, tc.figures) {
 			t.Fatalf("%s: the payload does not carry what the alert manager and the report render: %v", tc.reason, found)
 		}
+		// The decline is said before its outcome is known: the detail
+		// must not claim an exit the run may not have.
+		if !strings.Contains(detail, "or dies") {
+			t.Fatalf("%s: the detail asserts an outcome the decline cannot know: %q", tc.reason, detail)
+		}
 	}
+}
+
+// A death with no edge left carries the loop decline it follows, on the
+// error the engine returns: the code says how the run died, the cause says
+// why the edge was declined — a reader tells a ceiling from a dead end by
+// it without reading the events.
+func TestADeathWithNoEdgeLeftCarriesTheDecline(t *testing.T) {
+	never := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
+	for _, tc := range []struct {
+		edge, reason string
+		code         ErrorCode
+		changing     bool
+	}{
+		{"  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", "loop_cap", ErrCodeLoopExhausted, true},
+		{"  assess -> check when not ok as retry(unbounded 2)\n  assess -> done when ok\n", "loop_out_of_fuel", ErrCodeLoopExhausted, true},
+		{"  assess -> check when not ok as retry(unbounded 50)\n  assess -> done when ok\n", "liveness_stall", ErrCodeNoOutgoingEdge, false},
+	} {
+		exec := newStubExecutor()
+		exec.on("check", never)
+		exec.on("assess", func(map[string]any) (map[string]any, error) {
+			if !tc.changing {
+				return map[string]any{"ok": false}, nil
+			}
+			return map[string]any{"ok": false, "n": time.Now().UnixNano()}, nil
+		})
+		src := strings.Replace(spentLoopBot, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", tc.edge, 1)
+		err := New(compileBotText(t, src), tmpStore(t), exec).Run(context.Background(), "run-carries-"+tc.reason, nil)
+		var rtErr *RuntimeError
+		if !errors.As(err, &rtErr) || rtErr.Code != tc.code || rtErr.NodeID != "assess" {
+			t.Fatalf("%s: the death is not typed as expected: %v", tc.reason, err)
+		}
+		var d *LoopDeclined
+		if !errors.As(err, &d) || d.Reason != tc.reason || d.Loop != "retry" {
+			t.Fatalf("%s: the death does not carry the decline it follows: %v", tc.reason, err)
+		}
+	}
+	// A dead end that follows no decline carries none: the node's output
+	// lacks the field its edges read.
+	exec := newStubExecutor()
+	exec.on("check", never)
+	exec.on("assess", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	err := New(compileBotText(t, spentLoopBot), tmpStore(t), exec).Run(context.Background(), "run-carries-none", nil)
+	var rtErr *RuntimeError
+	var d *LoopDeclined
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeNoOutgoingEdge || errors.As(err, &d) {
+		t.Fatalf("a dead end that follows no decline is not said as such: %v", err)
+	}
+}
+
+// A fan-out whose one branch ends: the branch's end reaches the run's error
+// with its code and what a reader asks the chain for — the loop decline a
+// dead end followed, the sentinel of a refusal — and the decline's warning
+// is attributed to the branch.
+const branchEndBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "m"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "m"
+  output: verdict
+
+judge b2:
+  model: "m"
+  output: verdict
+
+agent c1:
+  model: "m"
+  output: verdict
+
+fail rejected:
+  code: REJECTED
+  message: "the branch said no"
+
+judge join:
+  model: "m"
+  output: verdict
+  await: wait_all
+
+workflow be:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 40
+  survey -> split
+  split -> b1
+  split -> c1
+  b1 -> b2
+  b2 -> b1 when not ok as retry(unbounded 10)
+  b2 -> join when ok
+  c1 -> join
+  join -> done
+`
+
+func TestABranchEndReachesTheRun(t *testing.T) {
+	yes := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil }
+	no := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
+	t.Run("a stall with no edge left", func(t *testing.T) {
+		exec := newStubExecutor()
+		exec.on("survey", yes)
+		exec.on("b1", no)
+		exec.on("b2", no)
+		exec.on("c1", yes)
+		var branchIDs []string
+		eng := New(compileBotText(t, branchEndBot), tmpStore(t), exec, WithEventObserver(func(evt store.Event) {
+			if evt.Type == store.EventBudgetWarning {
+				branchIDs = append(branchIDs, evt.BranchID)
+			}
+		}))
+		err := eng.Run(context.Background(), "run-branch-stall", nil)
+		var rtErr *RuntimeError
+		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeNoOutgoingEdge {
+			t.Fatalf("the branch's dead end is not typed on the run: %v", err)
+		}
+		var d *LoopDeclined
+		if !errors.As(err, &d) || d.Reason != "liveness_stall" {
+			t.Fatalf("the run's error does not carry the branch's decline: %v", err)
+		}
+		if len(branchIDs) == 0 || branchIDs[0] == "" {
+			t.Fatalf("the decline raised inside a branch is not attributed to it: %v", branchIDs)
+		}
+	})
+	t.Run("a dead end that follows no decline", func(t *testing.T) {
+		exec := newStubExecutor()
+		exec.on("survey", yes)
+		exec.on("b1", yes)
+		exec.on("b2", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+		exec.on("c1", yes)
+		err := New(compileBotText(t, branchEndBot), tmpStore(t), exec).Run(context.Background(), "run-branch-dead-end", nil)
+		var rtErr *RuntimeError
+		var d *LoopDeclined
+		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeNoOutgoingEdge || errors.As(err, &d) {
+			t.Fatalf("the branch's dead end is not typed as the trunk's: %v", err)
+		}
+	})
+	t.Run("a refusal", func(t *testing.T) {
+		src := strings.Replace(branchEndBot, "  b2 -> b1 when not ok as retry(unbounded 10)\n", "  b2 -> rejected when not ok\n", 1)
+		exec := newStubExecutor()
+		exec.on("survey", yes)
+		exec.on("b1", yes)
+		exec.on("b2", no)
+		exec.on("c1", yes)
+		err := New(compileBotText(t, src), tmpStore(t), exec).Run(context.Background(), "run-branch-refusal", nil)
+		var rtErr *RuntimeError
+		if !errors.As(err, &rtErr) || rtErr.Code != "REJECTED" || !errors.Is(err, ErrDeliberateFailure) {
+			t.Fatalf("the branch's refusal is not a decision on the run: %v", err)
+		}
+	})
 }

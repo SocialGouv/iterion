@@ -1084,11 +1084,11 @@ func TestADeathAfterADeclineTheRunMovedPastIsADeath(t *testing.T) {
 	if p.Status == "finished" || !strings.Contains(p.Failure, "gate") {
 		t.Fatalf("the false pass did not die at gate: %+v", p)
 	}
-	if p.Ceiling {
+	// The pass's own verdict, not the report's: the empty fixture is off
+	// schema and is a finding by itself, so Clean() would be false whatever
+	// the ceiling logic said.
+	if p.Ceiling || !p.died() {
 		t.Fatalf("a death after a decline the run moved past is read as a ceiling: %+v", p)
-	}
-	if r.Clean() {
-		t.Fatalf("a pass that died is read as clean: %+v %+v", r.Passes, r.Findings)
 	}
 }
 
@@ -1145,5 +1145,132 @@ func TestAHumanInsideABranchIsAnswered(t *testing.T) {
 	}
 	if !r.Clean() {
 		t.Fatalf("a bot whose branch holds a human gate is not clean: %+v %+v", r.Passes, r.Findings)
+	}
+}
+
+// A fan-out whose branch holds the canonical unbounded review loop, its
+// exit riding a verdict the dry run shapes: under the shapes it stalls,
+// and that is the ceiling — in a branch as on the trunk.
+const branchCeilingBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent c1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow bc:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 40
+  survey -> split
+  split -> b1
+  split -> c1
+  b1 -> b2
+  b2 -> b1 when not ok as retry(unbounded 10)
+  b2 -> join when ok
+  c1 -> join
+  join -> done
+`
+
+// A pass whose branch stalled on the shapes and had no edge left is at
+// the bot's ceiling, exactly as the trunk's would be: the death carries
+// its decline through the collector, and the report stays clean.
+func TestACeilingInsideABranchIsACeiling(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, branchCeilingBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Passes[0].Status != "finished" {
+		t.Fatalf("the true pass did not finish: %+v", r.Passes[0])
+	}
+	p := r.Passes[1]
+	if p.Status == "finished" || !p.Ceiling || !strings.Contains(p.Failure, "liveness_stall") {
+		t.Fatalf("a branch's stall with no edge left is not read as a ceiling: %+v", p)
+	}
+	if !r.Clean() {
+		t.Fatalf("a bot at its ceiling inside a branch is not clean: %+v %+v", r.Passes, r.Findings)
+	}
+}
+
+// A fan-out whose branch ends at a declared fail node: the refusal is the
+// program's decision, in a branch as on the trunk.
+const branchRefusalBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent c1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+fail rejected:
+  code: REJECTED
+  message: "the branch said no"
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow br:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 20
+  survey -> split
+  split -> b1
+  split -> c1
+  b1 -> join when ok
+  b1 -> rejected when not ok
+  c1 -> join
+  join -> done
+`
+
+// A refusal a branch reached is deliberate, whatever the other branches
+// were doing when it was: the decision travels on the error, not on the
+// order of the events.
+func TestARefusalInsideABranchIsDeliberate(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, branchRefusalBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := r.Passes[1]
+	if p.Status == "finished" || !p.Deliberate {
+		t.Fatalf("a branch's refusal is not read as deliberate: %+v", p)
+	}
+	if !r.Clean() {
+		t.Fatalf("a bot that refused as declared inside a branch is not clean: %+v %+v", r.Passes, r.Findings)
 	}
 }

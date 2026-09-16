@@ -746,9 +746,9 @@ func (c *compiler) validateResources(w *Workflow) {
 // declined like the loop edge once it is. Never on a fan_out_all,
 // round_robin or llm router: their edges are not selected by evaluating
 // `when` and a loop's cap — a fan-out takes them all (a loop edge there is
-// C244's), a round-robin or an llm router chooses among all of its
-// outgoing edges — so no loop edge is declined at such a node and
-// LOOP_EXHAUSTED is not a death it can meet.
+// C244's), a round-robin alternates over its unconditional edges, an llm
+// router takes the route the model named — so no loop edge is declined at
+// such a node and LOOP_EXHAUSTED is not a death it can meet.
 func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
 	var bounded []string
 	var rest []*Edge

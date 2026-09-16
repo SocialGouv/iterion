@@ -76,6 +76,11 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 	// exhausted names the first loop edge declined at its cap or out of
 	// fuel: when nothing else matches, that is what the run died of.
 	var exhausted string
+	// declined is the first loop edge declined for any reason, capDecline
+	// the first at its cap or fuel: a death with no edge left carries the
+	// decline it follows, for a reader of the error to tell a ceiling the
+	// shapes imposed from the program's own dead end.
+	var declined, capDecline *LoopDeclined
 
 	for _, edge := range e.workflow.Edges {
 		if edge.From != fromNodeID {
@@ -116,13 +121,15 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					if loop.Unbounded {
 						reason = "loop_out_of_fuel"
 					}
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, loopDeclineData(edge.LoopName, reason,
-						fmt.Sprintf("loop %q %s (%d/%d): its edge is declined and the run takes its exit path", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter),
-						map[string]any{"crossings": rs.loopCounters[edge.LoopName], "cap": maxIter})); err != nil {
-						e.logger.Warn("failed to emit %s warning: %v", reason, err)
-					}
+					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, reason, loopDeclineData(edge.LoopName, reason,
+						fmt.Sprintf("loop %q %s (%d/%d): its edge is declined — the run goes on by its other edges, or dies of LOOP_EXHAUSTED when none matches", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter),
+						map[string]any{"crossings": rs.loopCounters[edge.LoopName], "cap": maxIter}))
 					if exhausted == "" {
 						exhausted = fmt.Sprintf("loop %q %s (%d/%d)", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
+						capDecline = d
+					}
+					if declined == nil {
+						declined = d
 					}
 					continue
 				}
@@ -133,10 +140,11 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				if loop.Unbounded && e.loopStalled(edge.LoopName, output, rs) {
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q made no progress for %d crossings (liveness stall), falling through",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, maxLoopStall)
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, loopDeclineData(edge.LoopName, "liveness_stall",
-						fmt.Sprintf("loop %q made no progress for %d crossings (liveness stall): its edge is declined and the run takes its exit path", edge.LoopName, maxLoopStall),
-						map[string]any{"crossings": maxLoopStall})); err != nil {
-						e.logger.Warn("failed to emit liveness_stall warning: %v", err)
+					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, "liveness_stall", loopDeclineData(edge.LoopName, "liveness_stall",
+						fmt.Sprintf("loop %q made no progress for %d crossings (liveness stall): its edge is declined — the run goes on by its other edges, or dies with no edge left when none matches", edge.LoopName, maxLoopStall),
+						map[string]any{"crossings": maxLoopStall}))
+					if declined == nil {
+						declined = d
 					}
 					continue
 				}
@@ -148,8 +156,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					spent, remaining, _, _, unit := v.display()
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q cannot fund another iteration (%s: %.2f%s left, last one took %.2f%s), falling through to the exit path",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, v.dimension, remaining, unitSuffix(unit), spent, unitSuffix(unit))
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, v.eventData(edge.LoopName)); err != nil {
-						e.logger.Warn("failed to emit loop_budget_guard warning: %v", err)
+					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, "loop_budget_guard", v.eventData(edge.LoopName))
+					if declined == nil {
+						declined = d
 					}
 					continue
 				}
@@ -231,6 +240,19 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 			Message: fmt.Sprintf("node %q: %s, and no other edge matched", fromNodeID, exhausted),
 			NodeID:  fromNodeID,
 			Hint:    "add the loop-exhaustion exit: a bare edge from this node, taken once the loop is spent — to a typed `fail <name>:` when exhaustion is a refusal (C145 names the shape at validation)",
+			Cause:   capDecline,
+		}
+	}
+	if unconditional == nil && unconditionalErr == nil && declined != nil {
+		// Nothing else matched after a loop edge was declined — by the
+		// liveness monitor or the budget guard: the death names the decline
+		// it follows, on the trunk and in a branch alike.
+		return nil, &RuntimeError{
+			Code:    ErrCodeNoOutgoingEdge,
+			Message: fmt.Sprintf("no outgoing edge from node %q: %s, and no other edge matched", fromNodeID, declined.Error()),
+			NodeID:  fromNodeID,
+			Hint:    "ensure the node's output matches at least one edge condition, or add an unconditional fallback edge",
+			Cause:   declined,
 		}
 	}
 	return unconditional, unconditionalErr
@@ -243,9 +265,20 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 // as a budget at 0% of 0 — so both ride beside the loop, the reason a
 // reader of the run keys on, and the figures.
 func loopDeclineData(loop, reason, detail string, figures map[string]any) map[string]any {
-	data := map[string]any{"loop": loop, "reason": reason, "dimension": "loop", "detail": detail}
+	data := make(map[string]any, len(figures)+4)
 	for k, v := range figures {
 		data[k] = v
 	}
+	data["loop"], data["reason"], data["dimension"], data["detail"] = loop, reason, "loop", detail
 	return data
+}
+
+// declineLoopEdge says why the engine declined a loop edge — a
+// budget_warning, attributed to the branch whose edge it is — and returns
+// the decline for the death that may follow to carry.
+func (e *Engine) declineLoopEdge(rs *runState, fromNodeID, loop, reason string, data map[string]any) *LoopDeclined {
+	if err := e.emitBranch(rs.ctx, rs.runID, rs.correctionScope, store.EventBudgetWarning, fromNodeID, data); err != nil {
+		e.logger.Warn("failed to emit %s warning: %v", reason, err)
+	}
+	return &LoopDeclined{Loop: loop, Reason: reason}
 }

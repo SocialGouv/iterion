@@ -169,3 +169,18 @@ type Compactor interface {
 // runtime callers can match on it without importing model directly.
 // This is a const alias — the canonical sentinel lives in model/.
 var ErrCompactionUnsupported = model.ErrCompactionUnsupported
+
+// LoopDeclined is the cause a death with no edge left carries when the
+// engine had declined a loop edge at that node: Reason is the decline's —
+// `loop_cap`, `loop_out_of_fuel`, `liveness_stall`, `loop_budget_guard` —
+// the word its budget_warning said. A reader of the error tells a ceiling
+// the run's shapes imposed from the program's own dead end by it, without
+// reading the event stream, whose order across the trunk and the branches
+// is no fact.
+type LoopDeclined struct {
+	Loop, Reason string
+}
+
+func (d *LoopDeclined) Error() string {
+	return fmt.Sprintf("loop %q declined (%s)", d.Loop, d.Reason)
+}
