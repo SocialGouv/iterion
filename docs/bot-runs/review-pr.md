@@ -9,6 +9,63 @@ commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
 <<<<<<< HEAD
+## 2026-09-16 — ticket conformance CLOSED on a real third-party MR: a Jira verdict nobody configured a reference for (run 01a0a72c)
+
+- Status: **validated** — the end-to-end case open since 2026-09-08 (a real
+  merge request, a real private Jira ticket, a verdict that cites the ticket's
+  own content) is closed, unattended, on someone else's repository.
+- Subject: `…/dematamiante/code/demat-amiante!4` "Release 1.18"
+  (`release-1.18` → `main`, 22 files, head `433773805b2d`), opened 22:25:20Z by
+  the product's own developer. Reviewed automatically at 02:15:07Z — no
+  operator involved, no `/revi`.
+- The verdict, and why it is the interesting part:
+
+  > `DAM-2009: partial` — the indexing hot spot is genuinely fixed
+  > (`PdreDao.findAllPhaseTravauxInPdreIds` now filters on the requested PDRE
+  > ids instead of scanning every PDRE's planning/phases, **directly targeting
+  > the ~17h indexing and memory pressure reported in the ticket**), but the ES
+  > timeout tuning shipped alongside it is inert (wrong property key) and the
+  > other reported symptoms (**PDRE stuck "en transmission", 502s, OOM
+  > restarts**) are not addressed by this diff.
+
+  The bolded facts exist only inside the private Jira issue — they are the
+  proof the fetch happened, not an inference from the diff.
+- **It found the ticket where the recipe does not look.** The verdict says so
+  itself: *"the MR title, empty body, and branch name release-1.18 carry no
+  ticket reference themselves"* — every source
+  [skills/ticket-context.md](../../bots/review-pr/skills/ticket-context.md)
+  enumerates was empty. It recovered `DAM-2009` from the **merge commit
+  subject** (`4337738 "Merge branch 'feature/DAM-2009'"`). That path is not in
+  the skill; the reviewer went past the recipe rather than reporting
+  `unverifiable`. Worth folding back into the skill as a named source (a
+  release MR aggregating feature branches is the common shape), instead of
+  leaving it to each reviewer's initiative.
+- Finding raised, and it is a real one: `Rd75e47 [medium]` — the new
+  `elasticsearch.socket.timeout` key is **inert**, the wired key being
+  `elasticsearch.timeout.socket`. A mitigation that reads as shipped and
+  changes nothing: same class as a guard matching nothing. Its open questions
+  push further — the existing value lives in `docker.properties` while
+  `livraison.properties` defines no ES key at all, *"so the DAM-2009 mitigation
+  may not reach production"*.
+- Secret hygiene, measured on the run's 160 KB of events, positive controls
+  first so the zero means something: `DAM-2009` ×40, `PdreDao` ×40, the Jira
+  host ×2, the service-account email ×2, `tracker_token` ×2 — and the token
+  itself **0** in eight forms (verbatim, first/last 8 chars, `ATATT` prefix,
+  base64 of the token, base64 of `user:token`, url-escaped, json-escaped).
+- Cost: **34 660 tokens** total — 28 875 for the Claude review (opus-5, effort
+  high) + 5 785 for the sonnet-5 synthesis. Mono topology.
+- What made this run possible where 2026-09-10's could not: the MR stayed
+  **open**. The previous one lived 72 seconds and the review was cancelled
+  mid-flight. Nothing was fixed in between — the difference is entirely the
+  author's merge timing, which is worth remembering before reading a silent
+  repo as a broken integration.
+- Lessons for next run: (a) add "commit subjects of the range under review" to
+  the skill's extraction sources — this run proves it pays; (b) a release MR is
+  a legitimate conformance subject and will often carry several ticket keys, so
+  the per-ticket verdict shape holds; (c) the integration had moved to its own
+  team (`PIC DematAmiante`) — look for the run on the team that OWNS the
+  integration, not the one that used to.
+
 ## 2026-09-15 — a stale base widened the scope onto an already-merged PR (runs `01a0a3eb`, `01a0a403`, `01a0a414`)
 
 - Status: **partial → fixed**. Five launches on three PRs. Two were perfect, one
