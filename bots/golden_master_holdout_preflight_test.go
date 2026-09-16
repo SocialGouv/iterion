@@ -179,7 +179,13 @@ func TestGoldenMasterReusedHoldoutRefusesWithoutReadingGreen(t *testing.T) {
 
 	cmd := exec.Command("python3", harness)
 	cmd.Dir = ws
-	cmd.Env = append(os.Environ(), "GM_WORKSPACE="+ws)
+	// Without GM_SEALED_DIR, `sealed_dir_for` falls back to the system temp dir
+	// and `seal_holdout` MOVES mutants/holdout/* out of t.TempDir() into
+	// /tmp/gm-holdout-<basename>-<sha10>/, which nothing cleans up. The pile is
+	// named after the absolute workspace path, so every run leaves a new one.
+	cmd.Env = append(os.Environ(),
+		"GM_WORKSPACE="+ws,
+		"GM_SEALED_DIR="+filepath.Join(ws, "sealed"))
 	out, runErr := cmd.CombinedOutput()
 
 	var report struct {
