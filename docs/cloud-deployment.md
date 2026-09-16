@@ -716,7 +716,7 @@ For a real install + workflow exec, see the `cloud-e2e` CI job in
 | Path | Behaviour |
 |---|---|
 | `/healthz` | 200 if the HTTP listener is up — covers liveness (and the startup probe) |
-| `/readyz` | Pings Mongo + NATS + S3 + Valkey with a 1s sub-deadline each. 503 while draining, or when a **critical** dependency (Mongo) is down; a failing non-critical one reports `status: degraded` and still answers **200** |
+| `/readyz` | Pings Mongo + NATS + S3 + Valkey with a 1s sub-deadline each. 503 while draining, on a superseded rollout epoch (checked first, before any dependency is touched), or when a **critical** dependency (Mongo) is down; a failing non-critical one reports `status: degraded` and still answers **200** |
 
 The `/readyz` JSON response details which dependency is failing so the
 operator can debug from `kubectl describe pod`.
