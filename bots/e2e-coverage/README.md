@@ -34,6 +34,9 @@ skipped.
 | `matrix_path` | no | `docs/e2e-coverage-matrix.md` | The committed feature×coverage matrix, relative to the repo root. |
 | `baseline` | no | `""` | Known pre-existing failures to SKIP (empty = cheap stash-check once). |
 | `max_passes` | no | `8` | Continuation-loop cap. |
+| `plan_phase` | no | `on` | `on` authors the plan before the campaign; `off` skips planning and the campaign plans in stride. |
+| `plan_review` | no | `auto` | Gates ONLY the peer review of that plan: `auto` resolves at launch to on iff a SECOND model family is credentialed, `on` forces it. |
+| `plan_review_policy` | no | `skip` | What a mid-run peer failure does: `skip` (proceed unreviewed, loudly stamped) or `wait` (park `failed_resumable` until the usage window reopens). |
 | `workspace_dir` | no | `${PROJECT_DIR}` | Workspace root (resolves to the run worktree under `worktree: auto` — do not override). |
 | `scratch_dir` | no | `${PROJECT_SCRATCH_DIR}/e2e-coverage` | Out-of-tree scratch for the gate's verify script/log. |
 
@@ -58,7 +61,8 @@ gate → done            (loop exhausted — ship what is banked)
   off` opts out); `plan_review: auto` gates ONLY the cross-model peer
   review (on iff a second model family is credentialed at launch),
   otherwise the campaign gets the author's plan stamped as unreviewed
-  (`plan_provenance`).
+  (`plan_provenance`). `plan_review_policy` picks the mid-run
+  peer-unavailability behaviour: `skip` (default) or `wait`.
 - `campaign` — one adaptive claude_code agent: feature inventory → matrix →
   per gap: observable contract → deterministic e2e test in the repo's own
   idiom → see it pass → flip the row → commit test+row together.
