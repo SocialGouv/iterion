@@ -41,14 +41,19 @@ map). NATS, S3 and Valkey are pinged, reported, and *not* fatal:
 
 ```json
 {"status":"degraded","mode":"cloud","version":"v3.52.0","commit":"a984b1066",
- "usage_cap":"usage caps off",
+ "epoch":0,"high_water_epoch":0,
+ "usage_cap":"usage caps off","usage_cap_source":"env",
  "checks":{"mongo":"ok","s3":"error: connection refused","nats":"ok","valkey":"ok"}}
 ```
 
-(`version` / `commit` / `usage_cap` ride every health response, so a probe
-also tells you which build answered and whether the usage cap reached the
-deployment. `"valkey":"ok"` means reachable **or not configured** — the
-check returns nil when no Redis client is wired.)
+(`version` / `commit` / `epoch` / `high_water_epoch` ride **every** health
+response — the two epoch fields carry no `omitempty`, so they are always
+present and are how you read a pod's rollout generation straight off a probe.
+`usage_cap` says whether the usage cap reached the deployment and
+`usage_cap_source` where it came from — `env`, `db` or `db+env`;
+`recovery_passive` appears only when set. `"valkey":"ok"` means reachable
+**or not configured** — the check returns nil when no Redis client is
+wired.)
 
 That body comes back with **200**. Alerting is what should page on it —
 [docs/observability.md](observability.md) — because a degraded backend no
