@@ -1134,7 +1134,7 @@ The compiler refuses undeclared references and definitely non-integer cap types.
 
 Expression caps require the engine release that introduces queue schema v15. New publishers use v15 so older runners reject the message before compilation; new runners retain support for v10–v14. See the [queue rollout contract](cloud-queue-schema-rollout.md) before deploying a mixed fleet.
 
-**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `NO_OUTGOING_EDGE`. The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
+**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `LOOP_EXHAUSTED` — `iterion validate` names the shape beforehand ([C145](references/diagnostics.md)). The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
 
 ```iter fragment:edges
 fixer -> run_tests as fix_passes(3)   # the back-edge, taken while iterations remain

@@ -216,6 +216,9 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 				nodeID, g.elseEdges[0].To)
 		}
 
+		// C145: a loop edge with no exit once the loop is spent.
+		c.checkLoopExit(w, nodeID)
+
 		// Only validate conditions for nodes that have conditional edges.
 		if len(g.conditional) == 0 {
 			continue
@@ -729,6 +732,66 @@ func (c *compiler) validateResources(w *Workflow) {
 			}
 		}
 	}
+}
+
+// checkLoopExit warns when a node's bounded loop edges leave no way out
+// once the loop is spent (C145). At its cap the runtime declines a loop
+// edge whatever its `when` and reads the other edges alone; those must
+// cover every outcome — a bare or `else` edge, or conditionals exhaustive
+// on their own — or the run dies of LOOP_EXHAUSTED. The exit is the second,
+// bare edge from the same node (docs/dsl.md, "Leaving an exhausted loop").
+// Bounded loops only: an unbounded loop's fuel is its ceiling, dying there
+// is the ceiling's job, and its logic exit is C098's. A foreach edge has
+// its own rule.
+func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
+	var loops []string
+	var rest []*Edge
+	for _, e := range w.Edges {
+		if e.From != nodeID {
+			continue
+		}
+		switch {
+		case e.LoopName != "":
+			loops = append(loops, e.LoopName)
+		case e.ForeachName != "":
+			return
+		default:
+			rest = append(rest, e)
+		}
+	}
+	if len(loops) == 0 {
+		return
+	}
+	bounded := false
+	for _, name := range loops {
+		if loop := w.Loops[name]; loop != nil && !loop.Unbounded {
+			bounded = true
+		}
+	}
+	if !bounded {
+		return
+	}
+	var conditional []*Edge
+	for _, e := range rest {
+		if !e.IsConditional() {
+			return // a bare or `else` edge: the exit exists
+		}
+		conditional = append(conditional, e)
+	}
+	if isExhaustive(conditional) {
+		return
+	}
+	left := "none"
+	if len(conditional) > 0 {
+		parts := make([]string, len(conditional))
+		for i, e := range conditional {
+			parts[i] = "-> " + e.To
+		}
+		left = "the conditional " + strings.Join(parts, ", ")
+	}
+	c.warnfAt(DiagLoopNoExit, nodeID, "",
+		"node %q: once loop %q is spent its edge is declined and the edges left (%s) do not cover every outcome — the run would die of LOOP_EXHAUSTED; add the loop-exhaustion exit, a bare edge from %q taken once the loop is spent",
+		nodeID, loops[0], left, nodeID)
 }
 
 // isExhaustive returns true if the conditional edges exhaustively cover

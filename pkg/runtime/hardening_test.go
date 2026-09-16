@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -513,10 +514,14 @@ func TestLoopExhaustionRuntimeError(t *testing.T) {
 	if !errors.As(err, &rtErr) {
 		t.Fatalf("expected RuntimeError, got: %T: %v", err, err)
 	}
-	// When a loop edge is exhausted and no fallback edge exists, the error
-	// is NO_OUTGOING_EDGE (the exhausted edge is skipped, leaving no match).
-	if rtErr.Code != ErrCodeNoOutgoingEdge {
-		t.Errorf("expected code NO_OUTGOING_EDGE, got %s", rtErr.Code)
+	// When a loop edge is exhausted and no other edge matches, the run
+	// dies of the loop, named as such: LOOP_EXHAUSTED — the code the docs
+	// and the retry policy name — not of a missing edge in general.
+	if rtErr.Code != ErrCodeLoopExhausted {
+		t.Errorf("expected code LOOP_EXHAUSTED, got %s", rtErr.Code)
+	}
+	if !strings.Contains(rtErr.Message, `loop "fix_loop"`) && !strings.Contains(rtErr.Message, "exhausted") {
+		t.Errorf("the message does not name the loop: %s", rtErr.Message)
 	}
 	if rtErr.Hint == "" {
 		t.Error("expected a hint")

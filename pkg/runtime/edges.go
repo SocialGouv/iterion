@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"fmt"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -71,6 +73,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 	var unconditional, elseEdge *ir.Edge
 	var unconditionalErr, elseErr error
 	var exprCtx *expr.Context
+	// exhausted names the first loop edge declined at its cap or out of
+	// fuel: when nothing else matches, that is what the run died of.
+	var exhausted string
 
 	for _, edge := range e.workflow.Edges {
 		if edge.From != fromNodeID {
@@ -104,6 +109,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					}
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q %s (%d/%d)",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
+					if exhausted == "" {
+						exhausted = fmt.Sprintf("loop %q %s (%d/%d)", edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
+					}
 					continue
 				}
 				// Liveness monitor: an unbounded loop making no progress (its
@@ -200,6 +208,18 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 
 	if elseEdge != nil {
 		return elseEdge, elseErr
+	}
+	if unconditional == nil && unconditionalErr == nil && exhausted != "" {
+		// Nothing else matched and a loop edge was declined at its cap: the
+		// run dies of the loop, named as such — LOOP_EXHAUSTED, the code the
+		// docs and the retry policy always promised — not of a missing edge
+		// in general.
+		return nil, &RuntimeError{
+			Code:    ErrCodeLoopExhausted,
+			Message: fmt.Sprintf("node %q: %s, and no other edge matched", fromNodeID, exhausted),
+			NodeID:  fromNodeID,
+			Hint:    "add the loop-exhaustion exit: a bare edge from this node, taken once the loop is spent — to a typed `fail <name>:` when exhaustion is a refusal (C145 names the shape at validation)",
+		}
 	}
 	return unconditional, unconditionalErr
 }

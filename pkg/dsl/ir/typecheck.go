@@ -73,8 +73,60 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 			}
 			loc := fmt.Sprintf("compute %q field %q", cn.ID, ce.Key)
 			c.walkExprTypes(expr.ToSnapshot(ce.AST), env, cn.ID, "", loc)
+			c.checkIntDivision(w, cn, ce, env)
 		}
 	}
+}
+
+// checkIntDivision warns when a compute field typed int is fed by a division
+// that may carry a fraction — an operand not statically an int — outside
+// floor()/round() (C146): the runtime refuses the fractional value at the
+// node (EXPRESSION_FAILED), and only then.
+func (c *compiler) checkIntDivision(w *Workflow, cn *ComputeNode, ce *ComputeExpr, env exprEnv) {
+	schema := w.Schemas[cn.OutputSchema]
+	if schema == nil {
+		return
+	}
+	var field *SchemaField
+	for _, f := range schema.Fields {
+		if f != nil && f.Name == ce.Key {
+			field = f
+			break
+		}
+	}
+	if field == nil || field.Type != FieldTypeInt {
+		return
+	}
+	if unroundedDivision(expr.ToSnapshot(ce.AST), env) {
+		c.warnfAt(DiagIntDivisionUnrounded, cn.ID, "",
+			"compute %q field %q is an int and its expression %q divides without floor() or round(): a fractional result fails at run time — wrap the division in floor(...) or round(...), or type the field float",
+			cn.ID, ce.Key, ce.Raw)
+	}
+}
+
+// unroundedDivision reports a division in n whose result may carry a
+// fraction — an operand not statically an int — that no floor()/round()
+// wraps.
+func unroundedDivision(n *expr.Snapshot, env exprEnv) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == expr.SnapFuncCall && (n.Func == "floor" || n.Func == "round") {
+		return false
+	}
+	if n.Kind == expr.SnapBinary && n.Op == "/" && len(n.Children) == 2 {
+		l, r := env.inferType(n.Children[0]), env.inferType(n.Children[1])
+		bothInt := l.known && l.t == FieldTypeInt && r.known && r.t == FieldTypeInt
+		if !bothInt {
+			return true
+		}
+	}
+	for _, ch := range n.Children {
+		if unroundedDivision(ch, env) {
+			return true
+		}
+	}
+	return false
 }
 
 // walkExprTypes is the single recursive pass over an expression snapshot. At

@@ -350,10 +350,11 @@ func TestResumeFromFailure_RestoresLoopCounters(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the exhausted loop to fail the run")
 	}
-	// With the exhausted back-edge skipped and pass=false, no edge matches.
+	// With the exhausted back-edge skipped and pass=false, no edge matches:
+	// the run dies of the loop, LOOP_EXHAUSTED.
 	var rtErr *RuntimeError
-	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeNoOutgoingEdge {
-		t.Errorf("error = %v, want RuntimeError NO_OUTGOING_EDGE", err)
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeLoopExhausted {
+		t.Errorf("error = %v, want RuntimeError LOOP_EXHAUSTED", err)
 	}
 	// Restored counter 1 → traversals 2 and 3 only. A lost counter would
 	// have produced 3 fix executions.

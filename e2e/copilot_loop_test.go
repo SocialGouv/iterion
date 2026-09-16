@@ -588,7 +588,7 @@ func TestCopilot_GraphContract(t *testing.T) {
 
 	// There are exactly two clean exits: explicit close, and the chat fallback
 	// used when the bounded/budget-guarded back-edge is declined. Without the
-	// latter, exhaustion becomes NO_OUTGOING_EDGE instead of a finished session.
+	// latter, exhaustion becomes LOOP_EXHAUSTED instead of a finished session.
 	var doneEdges []*ir.Edge
 	for _, e := range wf.Edges {
 		if e.To == "done" {
