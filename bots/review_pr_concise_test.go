@@ -59,8 +59,9 @@ func TestReviewPRConcisePublication(t *testing.T) {
 		// publish `&quot;` where the operator wrote `"` — in the one place a
 		// hint is most likely to carry a command meant to be copied.
 		{name: "a command in the hint stays copy-pasteable", comments: 1, blocking: 1,
-			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Lancer `/billy skip {finding} \"motif\"`"},
-			hidden: []string{"`/billy skip " + dupID + " \"motif\"`"}, absent: []string{"&quot;", "&#34;"}},
+			refs:   map[string]string{"input.findings": "[" + finding + "]", "vars.fixer_hint": "Lancer `/billy skip {finding} \"motif\" && voir https://x.fr/a?b=1&c=2`"},
+			hidden: []string{"`/billy skip " + dupID + " \"motif\" && voir https://x.fr/a?b=1&c=2`"},
+			absent: []string{"&quot;", "&#34;", "&amp;"}},
 		// Two findings on the same file and title derive the SAME id, so a list
 		// that repeats it reads as two handles to arbitrate instead of one.
 		// The id is DERIVED here, not spelled: a literal guessed wrong makes

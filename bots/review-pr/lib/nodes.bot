@@ -498,13 +498,14 @@ if finding_ids:
     # one reads as two handles.
     summary.extend(['Identifiants des findings : ' + ', '.join(dict.fromkeys(finding_ids)) + '.', ''])
     if fixer_hint:
-        # Escaped narrowly, on purpose: an angle-bracketed word must reach
-        # the reader instead of being eaten as a tag, and a stray closing
-        # tag must not lift the rest of this block out of its fold. Quotes
-        # and pipes are left alone — inside a code span a character
-        # reference is literal text, and a fixer hint is exactly where an
-        # operator backticks a command to copy.
-        summary.extend([html.escape(fixer_hint.replace('{finding}', finding_ids[0]), quote=False), ''])
+        # Only the two characters that can change the document's STRUCTURE:
+        # an angle-bracketed word must reach the reader instead of being
+        # eaten as a tag, and a stray closing tag must not lift the rest of
+        # this block out of its fold. Quotes, pipes and ampersands are left
+        # alone — inside a code span a character reference is literal text,
+        # and a fixer hint is exactly where an operator quotes a command
+        # meant to be copied, shell operators and URL query strings included.
+        summary.extend([fixer_hint.replace('{finding}', finding_ids[0]).replace('<', '&lt;').replace('>', '&gt;'), ''])
 if ai_rows:
     summary.extend(['| Étape | Modèle | Harness | Effort demandé | Tokens |',
                     '|---|---|---|---|---:|'] + ai_rows)
