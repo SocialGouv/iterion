@@ -238,7 +238,7 @@ launched with no cost cap never refuses on cost.
 
 The refusal is the named `plan_exhausted` fail node: `failure_code =
 PLAN_BUDGET_EXHAUSTED` and an `error` naming what was used against what
-was allowed, both on the RUN — `iterion runs list`, the studio, the
+was allowed, both on the RUN — `iterion inspect`, the studio, the
 merge-gate notice and the alert sinks read them. It is **resumable**: the
 checkpoint anchors on `plan_budget_gate`, so
 

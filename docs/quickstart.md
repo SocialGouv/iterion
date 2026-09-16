@@ -66,7 +66,7 @@ that hits the cap pauses resumably — raise it and `iterion resume`.
 ## 5. Operate the run
 
 ```bash
-iterion runs list                 # every run, with status
+iterion inspect                   # every run, with status
 iterion report --run-id <id>      # a chronological report
 iterion resume --run-id <id> --file <bot>   # continue a paused/failed run
 ```
