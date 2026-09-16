@@ -101,8 +101,10 @@ context. `ParsedNote.Command()` extracts a leading slash command;
 
 The handler (`pkg/server/webhooks_gitlab.go`, dispatch on
 `X-Gitlab-Event`):
-1. A webhook opts into notes by adding `"note"` to its `event_allowlist`
-   (default stays `merge_request`-only — safe).
+1. A note event reaches the handler through the webhook's
+   `event_allowlist`; the GitLab lanes' zero-config default is
+   `{merge_request, note}`, so notes arrive without an explicit opt-in — and
+   an allowlist naming `["note"]` alone would drop MR auto-review.
 2. **Loop guard (critical):** skip notes whose author is the bot itself
    (else the bot's reply re-triggers a run → infinite loop). Resolve the
    bot's forge user once from the forge_token (`GET /user`) and compare
