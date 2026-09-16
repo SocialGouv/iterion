@@ -630,8 +630,10 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		// Unbound, the main is still named as the file followed, so the write
-		// that makes the unit load reloads it and binds it then. It is the
+		// Unbound, the main is still named as the file followed, so the studio
+		// reloads it on the next write to it — through /api/files/open, which
+		// binds a unit whether or not it loads; a save of one that still does
+		// not is refused there, naming the fragment at fault. It is the
 		// main alone: with no unit there is nothing to say which fragments
 		// belong to it, so a fix written in one of them lands on the next
 		// touch of the main.

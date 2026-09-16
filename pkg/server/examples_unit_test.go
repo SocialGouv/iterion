@@ -80,6 +80,14 @@ func assertOneProgram(t *testing.T, got oneProgram, wantPath string) *ast.File {
 	if got.Path != wantPath || got.ConfirmedDiskPath != "" {
 		t.Errorf("a flat program was bound: path %q (want %q), confirmed %q", got.Path, wantPath, got.ConfirmedDiskPath)
 	}
+	// An example is served as a flat program because the working directory
+	// does NOT hold the file — an embedded bot, a catalog outside it. There
+	// is nothing to follow, and naming a file would have the tab reload one
+	// the author never opened. (/api/files/open, which answers for a path it
+	// was GIVEN, carries no such field: wantPath is non-empty there.)
+	if wantPath == "" && got.FollowedPath != "" {
+		t.Errorf("a flat program the workspace does not hold named %q as the file it follows", got.FollowedPath)
+	}
 	if wantPath == "" && !got.Bindable {
 		t.Error("a flat program that parses was declared not bindable")
 	}
@@ -361,7 +369,11 @@ func TestLoadExampleNamesADiskBotInOneFileInsideTheWorkDir(t *testing.T) {
 // the author wrote.
 func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
 	workDir := t.TempDir()
-	examples := filepath.Join(workDir, "bots")
+	// Deliberately NOT bots/: the followed path asserted below is then the
+	// file the server READ, and no longer coincides with the studio's
+	// bots/<name> layout guess — which must not be followed, since it would
+	// reload some other file over the buffer.
+	examples := filepath.Join(workDir, "catalog")
 	if err := os.MkdirAll(filepath.Join(examples, "one"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +406,7 @@ func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
 		// the file it was handed, so the write that repairs it reloads the
 		// tab that has it open; unnamed, that tab stops following for good
 		// and a later remount puts the salvage back over the author's work.
-		if want := "bots/" + name; got.FollowedPath != want {
+		if want := "catalog/" + name; got.FollowedPath != want {
 			t.Errorf("%s: a file that does not parse was not named as the one followed: got %q want %q", name, got.FollowedPath, want)
 		}
 		if got.Source == "" || !strings.Contains(got.Source, "!!!") {
@@ -429,6 +441,12 @@ func TestLoadExampleRefusesAnExampleThatIsASymlinkIntoTheWorkDir(t *testing.T) {
 	}
 	if got.Path != "" || got.ConfirmedDiskPath != "" {
 		t.Fatalf("a symlink into the working directory was bound: path %q confirmed %q", got.Path, got.ConfirmedDiskPath)
+	}
+	// Nor followed: the tab would reload that other file over the buffer on
+	// its next write, and rename itself to it — the same substitution the
+	// binding refusal exists to prevent, one step later.
+	if got.FollowedPath != "" {
+		t.Errorf("a symlink into the working directory was named as the file followed: %q", got.FollowedPath)
 	}
 }
 
