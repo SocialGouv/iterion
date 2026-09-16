@@ -20,18 +20,18 @@ func TestABundleThatImportsNeedsTheImportRelease(t *testing.T) {
 		}
 		return nil
 	}
-	none := CheckConsistency(Input{Manifest: nil, SyntaxProfile: 1, ImportedBy: []string{"main.bot"}, EngineBuild: "v3.145.0"})
+	none := CheckConsistency(Input{Manifest: nil, Syntax: bundle.SyntaxRequirements{Profile: 1, ImportedBy: []string{"main.bot"}}, EngineBuild: "v3.145.0"})
 	if d := find(none); d == nil || !strings.Contains(d.Message, "`import` (main.bot)") || !strings.Contains(d.Hint, `">= `+parser.ImportSince+`"`) {
 		t.Fatalf("no floor: %v", none)
 	}
 	low := &bundle.Manifest{Name: "probe", Requires: &bundle.Requires{Iterion: ">= 3.141.0"}}
-	below := CheckConsistency(Input{Manifest: low, SyntaxProfile: 2, ProfileDeclaredBy: []string{"main.bot"}, ImportedBy: []string{"lib/nodes.bot"}, EngineBuild: "v3.145.0"})
+	below := CheckConsistency(Input{Manifest: low, Syntax: bundle.SyntaxRequirements{Profile: 2, DeclaredBy: []string{"main.bot"}, ImportedBy: []string{"lib/nodes.bot"}}, EngineBuild: "v3.145.0"})
 	d := find(below)
 	if d == nil || !strings.Contains(d.Message, "dsl profile 2 (main.bot) and `import` (lib/nodes.bot)") || !strings.Contains(d.Message, parser.ImportSince) {
 		t.Fatalf("a floor for the profile alone: %v", below)
 	}
 	ok := &bundle.Manifest{Name: "probe", Requires: &bundle.Requires{Iterion: ">= " + parser.ImportSince}}
-	if d := find(CheckConsistency(Input{Manifest: ok, SyntaxProfile: 1, ImportedBy: []string{"main.bot"}, EngineBuild: "v3.145.0"})); d != nil {
+	if d := find(CheckConsistency(Input{Manifest: ok, Syntax: bundle.SyntaxRequirements{Profile: 1, ImportedBy: []string{"main.bot"}}, EngineBuild: "v3.145.0"})); d != nil {
 		t.Fatalf("C252 drawn with the import release declared: %+v", *d)
 	}
 }

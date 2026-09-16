@@ -54,6 +54,10 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenMCP:
 			wd.MCP = p.parseMCPConfigBlock("workflow")
 
+		case TokenContract:
+			p.next() // consume "contract"
+			wd.Contract = p.contractIdent("contract", false)
+
 		case TokenEntry:
 			p.next() // consume "entry"
 			p.expect(TokenColon)

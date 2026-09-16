@@ -394,6 +394,14 @@ func (s *Server) handleAuthoringChange(w http.ResponseWriter, r *http.Request, c
 	}
 	version, recovery, err := s.commitAuthoring(r, target, previews, resolved)
 	if err != nil {
+		// A typed refusal of the write (the engine floor the edit's syntax
+		// asks for) carries its code, like a refusal of the preview: the
+		// client acts on the code, not on the sentence.
+		var failure authoringValidationFailure
+		if errors.As(err, &failure) {
+			s.writeAuthoringValidationError(w, r, failure)
+			return
+		}
 		s.authoringError(w, r, err)
 		return
 	}
@@ -1013,6 +1021,14 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		bs.UpdatedBy = target.userID
 		if err := bs.Validate(); err != nil {
 			return 0, nil, err
+		}
+		// The same floor guard as every push route: an edit that introduces
+		// a syntax with a floor the manifest does not reach (a profile,
+		// `import`, a `contract`) is refused here too, never stored for a
+		// runner that cannot parse it. No force on this path: the assistant
+		// edits the manifest like any file.
+		if gap := bundleSyntaxFloorGap(bs); gap != nil {
+			return 0, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: gap.refusal(bs.Slug)}
 		}
 		out, err := s.botSources.Update(store.WithTenant(r.Context(), target.teamID), bs)
 		if err != nil {

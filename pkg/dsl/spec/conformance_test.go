@@ -25,50 +25,58 @@ import (
 // its registry line fails here, and so does a registry line the parser does
 // not honour.
 var probes = map[string]string{
-	"agent":           "agent x:\n  %s: 1\n",
-	"judge":           "judge x:\n  %s: 1\n",
-	"router":          "router x:\n  %s: 1\n",
-	"human":           "human x:\n  %s: 1\n",
-	"tool":            "tool x:\n  %s: 1\n",
-	"compute":         "compute x:\n  %s: 1\n",
-	"subbot":          "subbot x:\n  %s: 1\n",
-	"emit":            "emit x:\n  %s: 1\n",
-	"wait":            "wait x:\n  %s: 1\n",
-	"await_answers":   "await_answers x:\n  %s: 1\n",
-	"fail":            "fail x:\n  %s: 1\n",
-	"workflow":        "workflow w:\n  %s: 1\n",
-	"supervisor":      "supervisor s:\n  %s: 1\n",
-	"cursor":          "cursor c:\n  %s: 1\n",
-	"mcp_server":      "mcp_server m:\n  %s: 1\n",
-	"auth":            "mcp_server m:\n  auth:\n    %s: 1\n",
-	"mcp":             "workflow w:\n  mcp:\n    %s: 1\n",
-	"budget":          "workflow w:\n  budget:\n    %s: 1\n",
-	"compaction":      "workflow w:\n  compaction:\n    %s: 1\n",
-	"memory":          "agent a:\n  memory:\n    %s: 1\n",
-	"sandbox":         "workflow w:\n  sandbox:\n    %s: 1\n",
-	"sandbox.build":   "workflow w:\n  sandbox:\n    build:\n      %s: 1\n",
-	"sandbox.network": "workflow w:\n  sandbox:\n    network:\n      %s: 1\n",
-	"recovery":        "tool t:\n  recovery:\n    %s: 1\n",
-	"fallback":        "agent a:\n  fallbacks:\n    r:\n      %s: 1\n",
-	"attachment":      "attachments:\n  a: file\n    %s: 1\n",
-	"secret":          "secrets:\n  s:\n    %s: 1\n",
-	"cursors":         "agent a:\n  cursors:\n    %s: 1\n",
+	"agent":              "agent x:\n  %s: 1\n",
+	"judge":              "judge x:\n  %s: 1\n",
+	"router":             "router x:\n  %s: 1\n",
+	"human":              "human x:\n  %s: 1\n",
+	"tool":               "tool x:\n  %s: 1\n",
+	"compute":            "compute x:\n  %s: 1\n",
+	"subbot":             "subbot x:\n  %s: 1\n",
+	"emit":               "emit x:\n  %s: 1\n",
+	"wait":               "wait x:\n  %s: 1\n",
+	"await_answers":      "await_answers x:\n  %s: 1\n",
+	"fail":               "fail x:\n  %s: 1\n",
+	"workflow":           "workflow w:\n  %s: 1\n",
+	"supervisor":         "supervisor s:\n  %s: 1\n",
+	"cursor":             "cursor c:\n  %s: 1\n",
+	"mcp_server":         "mcp_server m:\n  %s: 1\n",
+	"auth":               "mcp_server m:\n  auth:\n    %s: 1\n",
+	"mcp":                "workflow w:\n  mcp:\n    %s: 1\n",
+	"budget":             "workflow w:\n  budget:\n    %s: 1\n",
+	"compaction":         "workflow w:\n  compaction:\n    %s: 1\n",
+	"memory":             "agent a:\n  memory:\n    %s: 1\n",
+	"sandbox":            "workflow w:\n  sandbox:\n    %s: 1\n",
+	"sandbox.build":      "workflow w:\n  sandbox:\n    build:\n      %s: 1\n",
+	"sandbox.network":    "workflow w:\n  sandbox:\n    network:\n      %s: 1\n",
+	"recovery":           "tool t:\n  recovery:\n    %s: 1\n",
+	"fallback":           "agent a:\n  fallbacks:\n    r:\n      %s: 1\n",
+	"attachment":         "attachments:\n  a: file\n    %s: 1\n",
+	"secret":             "secrets:\n  s:\n    %s: 1\n",
+	"cursors":            "agent a:\n  cursors:\n    %s: 1\n",
+	"contract":           "contract c:\n  %s: 1\n",
+	"contract.port":      "contract c:\n  inputs:\n    x: string\n      %s: 1\n",
+	"contract.file":      "contract c:\n  inputs:\n    x: string\n      file:\n        %s: 1\n",
+	"contract.criterion": "contract c:\n  criteria:\n    k:\n      %s: 1\n",
+	"contract.effect":    "contract c:\n  effects:\n    e:\n      %s: 1\n",
 }
 
 // freeEntryProbes is one arbitrary entry name in each block whose body is
 // author-named entries; the parser must take it without a diagnostic.
 var freeEntryProbes = map[string]string{
-	"vars":          "vars:\n  zz_probe: string\n",
-	"presets":       "presets:\n  zz_probe:\n    a: 1\n",
-	"attachments":   "attachments:\n  zz_probe: file\n",
-	"secrets":       "secrets:\n  zz_probe: \"v\"\n",
-	"resources":     "workflow w:\n  resources:\n    zz_probe: 1\n",
-	"expr":          "compute c:\n  expr:\n    zz_probe: \"1\"\n",
-	"params":        "tool t:\n  params:\n    zz_probe: \"1\"\n",
-	"cursors":       "agent a:\n  cursors:\n    zz_probe: 1\n",
-	"cursor.values": "cursor c:\n  values:\n    zz_probe: \"f\"\n",
-	"cursor.bands":  "cursor c:\n  bands:\n    \"0..1\": \"f\"\n",
-	"schema":        "schema s:\n  zz_probe: string\n",
+	"vars":              "vars:\n  zz_probe: string\n",
+	"presets":           "presets:\n  zz_probe:\n    a: 1\n",
+	"attachments":       "attachments:\n  zz_probe: file\n",
+	"secrets":           "secrets:\n  zz_probe: \"v\"\n",
+	"resources":         "workflow w:\n  resources:\n    zz_probe: 1\n",
+	"expr":              "compute c:\n  expr:\n    zz_probe: \"1\"\n",
+	"params":            "tool t:\n  params:\n    zz_probe: \"1\"\n",
+	"cursors":           "agent a:\n  cursors:\n    zz_probe: 1\n",
+	"cursor.values":     "cursor c:\n  values:\n    zz_probe: \"f\"\n",
+	"cursor.bands":      "cursor c:\n  bands:\n    \"0..1\": \"f\"\n",
+	"schema":            "schema s:\n  zz_probe: string\n",
+	"contract.ports":    "contract c:\n  inputs:\n    zz_probe: string\n",
+	"contract.criteria": "contract c:\n  criteria:\n    zz_probe:\n      kind: min_length\n",
+	"contract.effects":  "contract c:\n  effects:\n    zz_probe:\n      paid: true\n",
 }
 
 func parserAccepts(tmpl, name string) bool {
@@ -194,6 +202,10 @@ func sampleValues(p spec.Property) []string {
 		return []string{p.Name + ": 1"}
 	case spec.Bool:
 		return []string{p.Name + ": true", p.Name + ": false"}
+	case spec.JSON:
+		// The subset the text writes: every shape, no signed number, no
+		// exponent (a `-1` here would not be a form error but a lexer one).
+		return []string{p.Name + ": null", p.Name + ": []", p.Name + `: {"key": [true, 1, "x"]}`, p.Name + ": 1.5", p.Name + `: "s"`}
 	case spec.Enum, spec.BlockOrIdent:
 		return each(p.Values)
 	case spec.IdentList, spec.ToolList, spec.MixedList:

@@ -15,7 +15,10 @@ import (
 // unit merged from several files. MarshalFile itself, the transport,
 // carries no such key and is byte-identical to what it always was.
 func MarshalFileWithProvenance(f *File, root string) ([]byte, error) {
-	jf := toJSON(f)
+	jf, err := toJSON(f)
+	if err != nil {
+		return nil, err
+	}
 	stampProvenance(reflect.ValueOf(f), reflect.ValueOf(jf), func(name string) string {
 		return provenanceRel(root, name)
 	})

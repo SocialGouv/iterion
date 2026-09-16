@@ -8,6 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 )
 
 // consistencyAllowlist records (bot dir, diagnostic code) pairs that are
@@ -76,6 +77,14 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 			Workflow:    cr.Workflow,
 			Frontmatter: bundle.ReadFrontmatter(mainBot),
 			DirName:     filepath.Base(dir),
+			// A shipped bundle using a syntax with a floor declares it
+			// (C252 in CI): a catalogue bot a runner cannot parse is a
+			// broken bot, not a demo.
+			Syntax: bundle.MaxSyntaxRequirementsDir(dir),
+			// The children a `subbot source:` names within the collection,
+			// compiled for their contract (C255): the gate holds a shipped
+			// parent to what its child declares, as `iterion validate` does.
+			SubbotContracts: subbotcontracts.Read(dir, mainBot, cr.Workflow),
 		})
 		checked++
 		for _, d := range diags {
