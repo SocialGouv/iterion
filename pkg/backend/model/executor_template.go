@@ -431,14 +431,30 @@ func outputsTemplateValue(td *TemplateData, segs []string) (any, bool) {
 	if td == nil || len(segs) == 0 {
 		return nil, false
 	}
-	nodeOut, ok := td.Outputs[segs[0]]
-	if !ok || nodeOut == nil {
+	// Prefer declared identity over the currently available output keys.
+	// Legacy hosts without node metadata still resolve their snapshot keys.
+	for n := len(segs); n >= 1; n-- {
+		id := strings.Join(segs[:n], ".")
+		if td.Nodes[id] != nil {
+			return outputTemplatePath(td.Outputs[id], segs[n:])
+		}
+	}
+	for n := len(segs); n >= 1; n-- {
+		if out, ok := td.Outputs[strings.Join(segs[:n], ".")]; ok {
+			return outputTemplatePath(out, segs[n:])
+		}
+	}
+	return nil, false
+}
+
+func outputTemplatePath(out map[string]any, fields []string) (any, bool) {
+	if out == nil {
 		return nil, false
 	}
-	if len(segs) == 1 {
-		return nodeOut, true
+	if len(fields) == 0 {
+		return out, true
 	}
-	return drillTemplatePath(nodeOut, segs[1:])
+	return drillTemplatePath(out, fields)
 }
 
 // lookupRunTemplateRef resolves one `{{run.<key>}}` reference for a PROMPT

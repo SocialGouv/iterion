@@ -1805,6 +1805,26 @@ delegate-level network retries and an auto-resume loop that relaunches from
 the checkpoint (no progress lost) until convergence. None were the
 context-overflow bug; all were absorbed without operator intervention.
 
+## 2026-09-13 — PR #1191, weekly cap before the first node
+
+The red Revi gate on commit `2672578d89b4c565e7dc5b07478f57123755a76e`
+automatically launched Billy run
+[`01a09bb1-7c27-76df-8106-4a6f2f993ba7`](https://iterion.cloud/runs/01a09bb1-7c27-76df-8106-4a6f2f993ba7).
+The run was created at 16:54:55.296 UTC and parked at 16:54:55.498 UTC with
+`USAGE_LIMIT_BLOCKED`: the Claude seven-day window was at 99%, above the 95%
+hard cap, resetting on September 15 at 21:00 UTC. No commit was published;
+`iterion/fix-in-flight` returned success and the run list confirmed no active
+fixer before interactive edits resumed. No manual relaunch was requested.
+
+Following the weekly-cap exception in the Revi/Billy runbook, the session
+corrected finding `R63e3a5` directly: pass declared node identities into the
+model template snapshot, then resolve the longest declared output node for
+prompts, commands, scripts, and postconditions. A missing dotted node cannot
+fall through to a shorter node's nested value. The runtime regression now
+uses the real model executor with a capturing delegate and shell
+postconditions for two group instances, instead of checking only edge input.
+Full model/runtime/IR suites pass with `-race`; lint reports zero issues. The
+next push requests a fresh independent Revi review.
 
 ## 2026-09-13 — #1195 resource cleanup review, blocked before work
 

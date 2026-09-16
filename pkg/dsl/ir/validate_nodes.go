@@ -508,7 +508,8 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 			if ref.Kind != RefOutputs || len(ref.Path) == 0 {
 				continue
 			}
-			if _, exists := w.Nodes[ref.Path[0]]; !exists {
+			id, _ := outputNodePath(w, ref.Path)
+			if _, exists := w.Nodes[id]; !exists {
 				c.warnfAt(DiagReviewURLUnknownRef, h.NodeID(), "",
 					"human %q review_url references output of unknown node %q",
 					h.NodeID(), ref.Path[0])

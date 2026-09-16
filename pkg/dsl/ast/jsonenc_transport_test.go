@@ -123,12 +123,8 @@ func TestTransportCarriesGroupsUsesForeachAndPools(t *testing.T) {
 	}
 }
 
-// A group body exercising every node kind and every internal-edge clause —
-// the corpus has one group file and no foreach or resources, so this fixture
-// is the transport's real guard for the constructs a group can hold. Two
-// of its references are out of scope for the transport and expected as
-// diagnostics on both sides (a group cannot yet reference its own members,
-// #1049); the oracle compares them like any other code.
+// A six-kind group survives transport and compiles with local references and
+// prompts bound independently for both instances (#1049).
 const fullKindGroupFixture = `schema pout:
   ok: bool
   items: string[]
@@ -207,6 +203,26 @@ workflow w:
 func TestTransportCarriesAFullKindGroup(t *testing.T) {
 	direct, viaJSON := compileBothWays(t, "fullgroup.bot", fullKindGroupFixture)
 	dsltest.AssertSameProgram(t, "fullgroup.bot", direct, viaJSON)
+	for _, d := range direct.Diagnostics {
+		if d.Severity == ir.SeverityError {
+			t.Errorf("full group must compile: %s", d.Error())
+		}
+	}
+	for prefix, label := range map[string]string{"r1": "A", "r2": "B"} {
+		w := direct.Workflow
+		a := w.Nodes[prefix+".work"].(*ir.AgentNode)
+		if body := w.Prompts[a.SystemPrompt].Body; !strings.Contains(body, "Work on "+label+" up to ") || strings.Contains(body, "{{params.") {
+			t.Errorf("%s agent prompt: %q", prefix, body)
+		}
+		j := w.Nodes[prefix+".rate"].(*ir.JudgeNode)
+		if body := w.Prompts[j.SystemPrompt].Body; !strings.Contains(body, "Judge the work for "+label) {
+			t.Errorf("judge prompt: %q", body)
+		}
+		h := w.Nodes[prefix+".ask"].(*ir.HumanNode)
+		if body := w.Prompts[h.Instructions].Body; !strings.Contains(body, "Please check "+label) {
+			t.Errorf("human prompt: %q", body)
+		}
+	}
 	pr := parser.Parse("fullgroup.bot", fullKindGroupFixture)
 	raw, err := ast.MarshalFile(pr.File)
 	if err != nil {

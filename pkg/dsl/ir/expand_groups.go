@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"reflect"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -27,6 +28,7 @@ func (c *compiler) expandGroups() {
 	if len(c.file.Workflows) > 0 {
 		wf = c.file.Workflows[0]
 	}
+	c.groupPromptTemplates = make(map[string]bool)
 	prefixes := make(map[string]bool, len(c.file.Uses))
 	for _, use := range c.file.Uses {
 		g, ok := groups[use.Group]
@@ -57,6 +59,7 @@ func (c *compiler) expandGroups() {
 		binds := c.bindGroupParams(g, use)
 		c.instantiateGroup(g, names[use.Group], use.Prefix, binds, wf)
 	}
+	c.retainConcreteGroupPrompts()
 }
 
 // bindGroupParams maps each declared param to its bound value from the use's
@@ -93,102 +96,52 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		}
 		return name // terminals (done/fail) and external refs stay as-is
 	}
-	subst := func(s string) string { return substParams(s, binds) }
-
-	for _, a := range g.Agents {
-		na := *a
-		na.Name = pid(a.Name)
-		c.file.Agents = append(c.file.Agents, &na)
-	}
-	for _, j := range g.Judges {
-		nj := *j
-		nj.Name = pid(j.Name)
-		c.file.Judges = append(c.file.Judges, &nj)
-	}
-	for _, r := range g.Routers {
-		nr := *r
-		nr.Name = pid(r.Name)
-		nr.Over = subst(r.Over)
-		c.file.Routers = append(c.file.Routers, &nr)
-	}
-	for _, h := range g.Humans {
-		nh := *h
-		nh.Name = pid(h.Name)
-		nh.ReviewURL = subst(h.ReviewURL)
-		c.file.Humans = append(c.file.Humans, &nh)
-	}
-	for _, t := range g.Tools {
-		nt := *t
-		nt.Name = pid(t.Name)
-		nt.Command = subst(t.Command)
-		nt.Script = subst(t.Script)
-		nt.Goal = subst(t.Goal)
-		nt.Postcondition = subst(t.Postcondition)
-		// The connector recipe's fields, substituted like every other one —
-		// a group whose whole purpose is to be instantiated per target has to
-		// be able to parameterise which operation it calls, over which
-		// connection, with which arguments.
-		nt.Action = subst(t.Action)
-		nt.Connection = subst(t.Connection)
-		// Substituted like every other field, because the omission had no
-		// reason behind it: a group instantiated per target may well want a
-		// different bound or a different attempt count per instance, and
-		// leaving these two out meant `{{params.deadline}}` reached the
-		// compiler as literal text and failed C265 as "not a duration".
-		nt.Retry = subst(t.Retry)
-		nt.Timeout = subst(t.Timeout)
-		// DEEP-copied, unlike the scalars above: `nt := *t` shares the Params
-		// slice with the group template, so substituting in place would write
-		// the FIRST instantiation's values into the template and every later
-		// `use` of the same group would inherit them. The Computes branch
-		// below copies for exactly this reason.
-		if len(t.Params) > 0 {
-			nt.Params = make([]ast.ActionParam, len(t.Params))
-			for i, p := range t.Params {
-				np := p
-				np.Value = subst(p.Value)
-				nt.Params[i] = np
-			}
-		}
-		c.file.Tools = append(c.file.Tools, &nt)
-	}
-	for _, cd := range g.Computes {
-		nc := *cd
-		nc.Name = pid(cd.Name)
-		if len(cd.Expr) > 0 {
-			nc.Expr = make([]*ast.ComputeExpr, len(cd.Expr))
-			for i, e := range cd.Expr {
-				ne := *e
-				ne.Expr = subst(e.Expr)
-				nc.Expr[i] = &ne
-			}
-		}
-		c.file.Computes = append(c.file.Computes, &nc)
-	}
-
-	if wf == nil {
-		return
-	}
+	x := newGroupExpansion(c, internal, prefix, binds)
+	// A foreach is iteration STATE, so it is per instance like a node — two
+	// `use` of the same group cannot share one cursor over two collections.
+	// compileEdges keys foreaches by name and keeps the first silently, so an
+	// unprefixed name would collapse the instances instead of colliding
+	// loudly the way a loop does.
 	for _, e := range g.Edges {
-		ne := &ast.Edge{
-			From: pid(e.From),
-			To:   pid(e.To),
-			Span: e.Span,
+		if e.Foreach != nil && e.Foreach.Name != "" {
+			x.foreaches[e.Foreach.Name] = prefix + "." + e.Foreach.Name
 		}
-		if e.When != nil {
-			w := *e.When
-			w.Expr = subst(e.When.Expr)
-			ne.When = &w
+	}
+	copy := x.clone(reflect.ValueOf(g), "", "").Interface().(*ast.GroupDecl)
+	for _, n := range copy.Agents {
+		n.Name = pid(n.Name)
+	}
+	for _, n := range copy.Judges {
+		n.Name = pid(n.Name)
+	}
+	for _, n := range copy.Routers {
+		n.Name = pid(n.Name)
+	}
+	for _, n := range copy.Humans {
+		n.Name = pid(n.Name)
+	}
+	for _, n := range copy.Tools {
+		n.Name = pid(n.Name)
+	}
+	for _, n := range copy.Computes {
+		n.Name = pid(n.Name)
+	}
+	c.file.Agents = append(c.file.Agents, copy.Agents...)
+	c.file.Judges = append(c.file.Judges, copy.Judges...)
+	c.file.Routers = append(c.file.Routers, copy.Routers...)
+	c.file.Humans = append(c.file.Humans, copy.Humans...)
+	c.file.Tools = append(c.file.Tools, copy.Tools...)
+	c.file.Computes = append(c.file.Computes, copy.Computes...)
+	if wf != nil {
+		for _, e := range copy.Edges {
+			e.From, e.To = pid(e.From), pid(e.To)
+			if e.Foreach != nil {
+				if scoped, ok := x.foreaches[e.Foreach.Name]; ok {
+					e.Foreach.Name = scoped
+				}
+			}
+			wf.Edges = append(wf.Edges, e)
 		}
-		if e.Loop != nil {
-			l := *e.Loop
-			l.MaxIterationsExpr = subst(e.Loop.MaxIterationsExpr)
-			ne.Loop = &l
-		}
-		for _, we := range e.With {
-			ne.With = append(ne.With, &ast.WithEntry{Key: we.Key, Value: subst(we.Value), Span: we.Span})
-		}
-		wf.Edges = append(wf.Edges, ne)
 	}
 }
 

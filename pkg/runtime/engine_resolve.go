@@ -582,22 +582,34 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 //	first  — index == 0 (bool)
 //	last   — index >= count-1, or count == 0 (bool)
 //	empty  — count == 0 (bool)
+//
+// A group instance scopes its foreach under the instance prefix
+// (`r1.scan`), so the name is matched by LONGEST PREFIX like a dotted node
+// id, not by the first segment alone. An authored name is a single
+// identifier — the parser forbids a dot in it — so the two forms cannot be
+// confused.
 func (e *Engine) resolveEachPath(path []string, sc resolveScope) any {
-	name := path[0]
-	fe, ok := e.workflow.Foreaches[name]
-	if !ok {
+	name, field := "", 0
+	for i := len(path) - 1; i >= 1; i-- {
+		if candidate := strings.Join(path[:i], "."); e.workflow.Foreaches[candidate] != nil {
+			name, field = candidate, i
+			break
+		}
+	}
+	if name == "" {
 		return nil
 	}
+	fe := e.workflow.Foreaches[name]
 	coll := e.resolveForeachCollection(fe, sc)
 	idx := runStateIterationCounters(sc.rs)[foreachCounterKey(name)]
 	count := len(coll)
-	switch path[1] {
+	switch path[field] {
 	case "item":
 		if idx < 0 || idx >= count {
 			return nil
 		}
-		if len(path) > 2 {
-			return drillPath(coll[idx], path[2:])
+		if len(path) > field+1 {
+			return drillPath(coll[idx], path[field+1:])
 		}
 		return coll[idx]
 	case "index":
@@ -766,6 +778,7 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 	}
 	return &model.TemplateData{
 		Outputs:            sc.outputs,
+		Nodes:              e.workflow.Nodes,
 		LoopCounters:       runStateIterationCounters(rs),
 		LoopMaxIterations:  loopMax,
 		LoopPreviousOutput: loopPreviousOutputView(rs),
