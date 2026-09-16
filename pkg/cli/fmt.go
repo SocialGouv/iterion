@@ -74,7 +74,7 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("fmt: %w", err)
 			}
-			if err := os.WriteFile(path, out, info.Mode().Perm()); err != nil {
+			if err := writeFileAtomic(path, out, info.Mode().Perm()); err != nil {
 				return res, fmt.Errorf("fmt: %w", err)
 			}
 			f.Written = true

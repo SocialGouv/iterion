@@ -776,3 +776,62 @@ func TestTheReasonComesFromTheProgram(t *testing.T) {
 		t.Fatalf("an undeclared loop: %q", why)
 	}
 }
+
+// A bot whose llm router selects several routes at once, converging at a
+// node that waits for all of them.
+const multiRouterBot = `schema verdict:
+  ok: bool
+
+prompt routing:
+  Pick the fixes.
+
+router pick:
+  mode: llm
+  model: "claude-opus-4-7"
+  system: routing
+  multi: true
+
+agent fix_code:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent fix_docs:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent verify:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow m:
+  worktree: none
+  sandbox: none
+  entry: pick
+  pick -> fix_code
+  pick -> fix_docs
+  fix_code -> verify
+  fix_docs -> verify
+  verify -> done
+`
+
+// A multi-select llm router is answered on `selected_routes` — every
+// candidate on the true pass, so each branch is covered — and the passes
+// finish: a correct bot is clean, and `--strict` would let it through.
+func TestAMultiSelectRouterIsAnsweredOnEveryRoute(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, multiRouterBot), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Passes {
+		if p.Status != "finished" {
+			t.Fatalf("pass %v ended %q (%s): %+v", p.Bias, p.Status, p.Failure, r.Findings)
+		}
+	}
+	if !r.Clean() {
+		t.Fatalf("a correct bot with a multi-select router is not clean: %+v", r.Findings)
+	}
+	if len(r.UnvisitedNodes) != 0 {
+		t.Fatalf("the true pass did not cover every route: unvisited %v", r.UnvisitedNodes)
+	}
+}

@@ -69,7 +69,7 @@ func RunFix(opts FixOptions) (FixResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("fix: %w", err)
 			}
-			if err := os.WriteFile(path, out.Fixed, info.Mode().Perm()); err != nil {
+			if err := writeFileAtomic(path, out.Fixed, info.Mode().Perm()); err != nil {
 				return res, fmt.Errorf("fix: %w", err)
 			}
 			f.Written = true

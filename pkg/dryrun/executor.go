@@ -230,6 +230,12 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 		}
 		x.prompt(id, "system prompt", n.SystemPrompt, input, vars, td)
 		x.prompt(id, "user prompt", n.UserPrompt, input, vars, td)
+		if n.RouterMulti {
+			// A multi-select llm router is read on `selected_routes`: every
+			// candidate on the true pass — the widest fan-out, every branch
+			// covered — the last one alone on the false pass.
+			return map[string]any{"selected_routes": x.routes(id)}, nil
+		}
 		return map[string]any{"selected_route": x.route(id)}, nil
 	case *ir.HumanNode:
 		x.prompt(id, "instructions", n.Instructions, input, vars, td)
@@ -311,15 +317,22 @@ func (x *Executor) shellCheck(id, where, interpreter, text string) {
 	}
 }
 
-// route is the LLM router's choice: the first outgoing target on the true
-// pass, the last on the false one — both are candidates the engine accepts.
-func (x *Executor) route(id string) string {
-	var candidates []string
+// candidates are the targets an llm router may select: its outgoing edges.
+func (x *Executor) candidates(id string) []string {
+	var out []string
 	for _, e := range x.wf.Edges {
 		if e != nil && e.From == id {
-			candidates = append(candidates, e.To)
+			out = append(out, e.To)
 		}
 	}
+	return out
+}
+
+// route is a single-select LLM router's choice: the first outgoing target on
+// the true pass, the last on the false one — both are candidates the engine
+// accepts.
+func (x *Executor) route(id string) string {
+	candidates := x.candidates(id)
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -327,6 +340,23 @@ func (x *Executor) route(id string) string {
 		return candidates[0]
 	}
 	return candidates[len(candidates)-1]
+}
+
+// routes are a multi-select LLM router's choice: every candidate on the true
+// pass, the last one alone on the false pass.
+func (x *Executor) routes(id string) []any {
+	candidates := x.candidates(id)
+	if len(candidates) == 0 {
+		return []any{}
+	}
+	if x.bias {
+		out := make([]any, len(candidates))
+		for i, c := range candidates {
+			out[i] = c
+		}
+		return out
+	}
+	return []any{candidates[len(candidates)-1]}
 }
 
 // output is the node's fixture when one is given, else a shape of its
