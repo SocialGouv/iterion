@@ -24,7 +24,7 @@ A manifest's `contributes:` block lists one or more typed extension points:
 | `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/` (claude_code discovers via `--setting-sources project`) |
 | `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/` (claude_code discovers via `--setting-sources project`) |
 | `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`) |
-| `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
+| `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index\|refresh` (+ optional `auto_index`) |
 
 `skills` / `commands` / `agents` share one mirror mechanism + the bundle
 collision policy (copy / no-op / refresh / shadow) — a same-named
