@@ -105,11 +105,20 @@ Attachments: `--attach name=./file` uploads via `POST /api/runs/uploads`
 and wires the returned id into the launch. `runs upload <path>` does
 the staging step alone and prints the upload id.
 
+`runs mission` (`start · list · get · stop`) drives the durable assistant
+missions attached to a target run — start or reattach a bounded mission,
+list them, read one with its receipts, stop one without changing its
+watch. Invocation shapes and the `--invocation` idempotency key:
+[cli-reference.md](cli-reference.md#remote-benchmarks-and-utility-commands).
+`runs watch-health <run-id>` reports that watch's health from
+`GET /api/runs/{id}/assistant-watch-health`; `--follow` keeps polling at
+`--interval` (default 5s).
+
 ## Command tree
 
 | Group | Commands |
 |---|---|
-| `runs` | `list · launch · get · events · follow · log · workflow · artifacts · files · commits · cancel · pause · resume · fork · send · merge · conflicts · rename · delete · preview-cost · upload · stats · repos` |
+| `runs` | `list · launch · get · events · follow · log · workflow · artifacts · files · commits · cancel · pause · resume · fork · send · merge · conflicts · rename · delete · preview-cost · upload · stats · repos · mission · watch-health` |
 | `bots` | `list · get · put · overlay · install · upload` |
 | `marketplace` | `list · get · download · submit · install · uninstall · moderation` |
 | `issues` | `list · get · create · update · delete · transition · comment · push · pulls` |
@@ -126,9 +135,9 @@ the staging step alone and prints the upload id.
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
 | `webhooks` | `list · get · create · update · delete · rotate · deliveries` |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
-| `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
+| `audit` / `usage` / `limits` | `audit <team\|org\|admin>` (`--since`, `--limit`, `--org`/`--team`) · org usage — `usage --by-credential` switches to the team's per-credential ledger, each amount typed `metered\|estimate` (`--month YYYY-MM`, `--repo <owner/repo>`) · `limits [cost\|override]`, the override set with `--data` |
 | `memory` | `usage · docs · doc get\|put\|delete · export · import` (`--name` space) |
-| `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
+| `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox · vars · platform-credentials · usage-readings` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox`/`vars` = runtime webhook role bindings, the `sandbox: auto` image, and the DB-backed `${ITERION_X:-default}` bot vars (`set`/`rm`, stored and audited in clear — never a secret), see [platform-bots.md](platform-bots.md); `platform-credentials` = who may draw on the platform tier, enforcement opt-in, see [cloud-llm-credentials.md](cloud-llm-credentials.md#gating-the-platform-tier); `usage-readings clear <fingerprint>` = forget one credential's stored provider-window readings after a reset the ledger could not see, see [usage-caps.md](usage-caps.md)) |
 | `sso` | `providers · domains` (org-scoped) |
 | `plugins` | `list · enable · disable · install · uninstall · config` |
 | `pool` | `status · history · share · pause · resume · withdraw · donors · policy` — lend your own LLM subscription or personal metered key to the shared [credential pool](credential-pool.md), bounded by ceilings you set on `share` (`--max-usd-day/-week`, `--max-runs-day`, `--max-concurrent`, `--from-hour/--to-hour`, `--bots`). `donors` is the operator view of the pool's policy and its lenders; `policy` is the operator write side (`--enabled`, `--name`, audience flags — the audience is replaced whole). |
