@@ -497,9 +497,10 @@ func (n *EmitNode) NodeKind() NodeKind { return NodeEmit }
 // mappings no pass reads is a kind whose typos surface at run time.
 //
 // Its blind spot, stated rather than hidden: a future kind that grows a
-// `with:` and does not implement this is invisible here. No such mapping can
-// be built without compileWithMappings, so that function's call sites are the
-// list to check when adding one.
+// `with:` and does not implement this is invisible here. The list to check
+// when adding one is every construction of a [DataMapping] — compileWithMappings
+// serves the two node kinds, and compileEdges hand-rolls its own, which is the
+// older and more visible pattern an author is likely to copy.
 type WithNode interface {
 	Node
 	WithMappings() []*DataMapping

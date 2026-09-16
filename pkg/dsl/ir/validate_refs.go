@@ -103,11 +103,16 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 	// Node `with:` refs — the payload a subbot hands its child, the fields an
 	// emit publishes. Edge mappings above were walked and these were not,
 	// which is the same omission the tool-node comment below describes: the
-	// value is a template, and an unvalidated `{{vars.typo}}` renders as its
-	// own source text and is HANDED OVER — a child run started with the
-	// literal `{{vars.depth}}` as its depth, an event published with it as a
-	// payload field. Nothing downstream re-reads that value, so here is the
-	// only place it can be caught.
+	// value is a template, and an unvalidated `{{vars.typo}}` resolves to nil
+	// and is spliced away — the child run starts with an EMPTY depth, the
+	// event publishes an empty field. Nothing downstream re-reads that value,
+	// so here is the only place it can be caught; a missing value is also
+	// harder to notice than a literal would have been.
+	//
+	// The guarantee covers the namespaces the runtime resolves. `{{secrets.*}}`
+	// and `{{attachments.*}}` pass the checks below and then resolve to nil in
+	// a mapping (resolveRef has no arm for either) — that gap predates this
+	// walk, on edges, and is not closed here.
 	//
 	// IncludeSelf stays off: the node has produced no output yet when its own
 	// `with:` is resolved.
@@ -544,6 +549,15 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C032: node has no output schema — warn that field access can't be verified.
 	outSchema := NodeOutputSchema(targetNode)
 	if outSchema == "" {
+		// A router is the one kind that reaches here and CAN be verified: it
+		// declares no `output:` of its own, but the keys it passes through are
+		// known — its incoming with-keys plus the bindings its mode adds
+		// (`item`/`index`/`count`, `reasoning`, `selected_route(s)`).
+		// Warning on those hands the author a remedy they cannot follow, since
+		// a router has no schema to add the field to.
+		if r, isRouter := targetNode.(*RouterNode); isRouter && routerPassThroughKeys(w, r)[fieldName] {
+			return
+		}
 		c.refWarnf(rc, DiagRefNodeNoSchema,
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
 			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
