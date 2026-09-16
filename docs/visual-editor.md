@@ -10,11 +10,16 @@ Iterion includes a browser-based visual workflow editor built with React and XYF
 iterion studio                     # Launch on default port (4891), opens browser
 iterion studio --port 8080         # Custom port
 iterion studio --dir ./workflows   # Custom working directory
-iterion studio --bind 0.0.0.0      # Expose on the LAN (default 127.0.0.1)
+iterion studio --bind 0.0.0.0      # Expose on the LAN (needs the env opt-in below)
 iterion studio --bots-path ./bots  # Add a bot discovery path (repeatable; feeds the Launch modal)
 iterion studio --no-browser        # Don't auto-open browser
 iterion studio --no-browser-pane   # Disable the run console's Browser pane
 ```
+
+`--bind` defaults to `127.0.0.1`. The local studio runs with authentication
+disabled, so a non-loopback bind is refused at startup unless
+`ITERION_STUDIO_INSECURE_NONLOOPBACK=1` downgrades the refusal to a warning
+([browser-security.md](browser-security.md#the-studio-refuses-an-unauthenticated-non-loopback-bind)).
 
 See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for the full flag set
 (networking, attachments, bot discovery).
@@ -35,6 +40,10 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Kanban `/board` view** — Native tracker CRUD with drag-and-drop (gated on `server_info.native_tracker_enabled`; see [native-tracker.md](native-tracker.md))
 - **Pipeline `/pipelines` board** — Global control-center board tracking staged tasks and their in-flight runs, with priority-driven launch (same `server_info.native_tracker_enabled` gate; concurrency capped by `--max-concurrent-pipelines`; see [native-tracker.md](native-tracker.md))
 - **`/dispatcher` dashboard** — Live running + retry tables when `iterion dispatch` is wired (gated on `server_info.dispatcher_enabled`; see [dispatcher.md](dispatcher.md))
+- **Automations `/triggers`** — Event triggers and cron schedules in one view, two tabs: *Automations* and *Schedules*. The nav entry appears when `server_info.triggers_enabled` or in cloud mode; on a server with no schedule store the Schedules tab says so and points at `iterion schedule` on the host crontab instead (see [scheduling.md](scheduling.md))
+- **Plugins `/plugins`** — The plugin registry (embedded builtins + `~/.iterion/plugins`) with enable/disable, install from a git URL or local path, and uninstall; builtins can only be disabled, never removed. Always present — `server_info.plugins_enabled` is unconditionally true — but install/uninstall need a super-admin, which the auth-less local operator is (see [plugins.md](plugins.md))
+- **Skills `/skills`** — CRUD over the host's skill library, the one workflows reach through the DSL `skills:` field; local mode only, backed by `/api/local/skills` (gated on `server_info.skills_enabled`, i.e. `mode != "cloud"`; see [skills-library.md](skills-library.md))
+- **Secrets `/secrets`** — The sealed local secret store (machine-global `~/.iterion/secrets.json` plus an optional per-project override): values are AES-GCM sealed at rest, injected into runs at tool/shell exec time, and never enter the agent's context or any API response. Local mode only, and only with a store + sealer wired (`server_info.secrets_enabled`); backed by `/api/local/secrets` (see [secrets.md](secrets.md))
 - **Browser pane** — Preview URLs, live CDP screencast, and time-travel screenshots tied to a run (see [browser-pane.md](browser-pane.md)). Disable with `--no-browser-pane`.
 - **Run console** — Launch a workflow from the studio and watch events stream live
 - **Assistant dock** — The conversational assistant on *every* route: a corner bubble that opens into a floating panel or a docked right column. It hosts the same session `/whats-next` renders full-width, so navigating neither restarts it nor loses the transcript, and it reports the page you are on as a dismissible context chip (see [assistant-dock.md](assistant-dock.md))

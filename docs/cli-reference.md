@@ -583,7 +583,7 @@ iterion studio --workspace --port 4891
 iterion studio --recovery-passive --dir .
 ```
 
-The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so use it only on trusted networks. Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
+The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so it is refused at startup unless `ITERION_STUDIO_INSECURE_NONLOOPBACK=1` accepts the risk (see [browser security](browser-security.md#the-studio-refuses-an-unauthenticated-non-loopback-bind)). Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
 
 `--workspace` imports projects from the legacy `instances.conf`, pins each
 project to its existing run store, and hosts the registered local runtimes in
