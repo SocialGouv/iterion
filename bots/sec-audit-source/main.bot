@@ -397,6 +397,16 @@ schema deepsec_bank:
 schema lang_input:
   langs:  json
 
+## The two nodes that used to locate the deep scan by NAME take it from the
+## producer instead. `{{outputs.X}}` is not substituted inside a command body,
+## so the path has to arrive on the edge and be read as {{input.X}}.
+schema deepsec_bank_input:
+  json_paths:  json
+
+schema scan_health_input:
+  langs:          json
+  deepsec_paths:  json
+
 schema scan_join_output:
   generic_scan:  json
   lang_scan:     json
@@ -409,6 +419,12 @@ schema scan_join_output:
   ## Coverage scalars projected out of the deepsec envelope so report_card
   ## never sees the envelope's log tail. Empty when deepsec did not run.
   deepsec_coverage: json
+  ## The scanner's own json_paths, projected for scan_health. Empty when
+  ## deepsec did not run, and {} whenever it refused -- which is how a
+  ## downstream reader tells "this pass exported" from "something is lying
+  ## at the shared slot". Projected, not the whole envelope: errors[] carries
+  ## a log tail the audited tree can write into.
+  deepsec_paths: json
 
 ## cap_findings emits the truncation budget so triage can surface it in
 ## the report (explicit, never-silent signal loss). per_scanner is a list
@@ -3399,11 +3415,26 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
 ## unreadable, or valid JSON in an unrecognisable shape is a fact to report
 ## (the scanner was skipped, or its output was dropped as unusable), never a
 ## reason to fail the run.
+##
+## THE PATH COMES FROM THE PRODUCER, NOT FROM THE VAR. vars.deepsec_out is one
+## shared slot under ${PROJECT_SCRATCH_DIR}, which nothing prunes between runs
+## and which a concurrent pass writes too. Read off the var, this node banks
+## whatever sits at that name -- an earlier pass's export, after a pass that
+## refused to run and so produced nothing -- and stamps it as this run's. The
+## scanner already publishes json_paths, empty on every refusal, and triage has
+## always honoured it: this node and scan_health were the two readers that went
+## to disk instead. No path published means no bank, whatever the slot holds.
 tool bank_deepsec_findings:
-  command: `DEEPSEC_OUT={{vars.deepsec_out}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -c '
+  command: `DEEPSEC_PATHS={{input.json_paths}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -c '
 import json, os
 
-out = os.environ["DEEPSEC_OUT"]
+try:
+    _paths = json.loads(os.environ.get("DEEPSEC_PATHS") or "{}")
+except ValueError:
+    _paths = {}
+out = _paths.get("deepsec") if isinstance(_paths, dict) else None
+if not isinstance(out, str):
+    out = ""
 try:
     budget = int(os.environ.get("MAX_BYTES") or 0)
 except ValueError:
@@ -3414,6 +3445,11 @@ if budget <= 0:
 def emit(findings, embedded, total, truncated, note):
     print(json.dumps({"findings": findings, "embedded": embedded,
                       "total": total, "truncated": truncated, "note": note}))
+
+if not out:
+    emit([], 0, 0, False,
+         "the deep scanner published no export path: it was skipped, it refused to run, or it dropped its output as unusable. Nothing is banked -- the shared slot may still hold another pass file, and that file is not this run result")
+    raise SystemExit(0)
 
 if not os.path.isfile(out):
     emit([], 0, 0, False,
@@ -3461,6 +3497,7 @@ for it in items:
 emit(kept, len(kept), len(items), len(kept) < len(items),
      "banked " + str(len(kept)) + " of " + str(len(items)) + " findings from " + out)
 '`
+  input: deepsec_bank_input
   output: deepsec_bank
   publish: deepsec_findings_bank
 
@@ -3486,6 +3523,7 @@ compute scan_join:
     ## the audited tree can write into, and report_card holds bash and
     ## board.create.
     deepsec_coverage: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.coverage, '')"
+    deepsec_paths: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.json_paths, '')"
 
 ## scan_health (anti-façade smoke gate). Each scanner command ends in
 ## `|| true`, so a scanner that crashes or is absent (e.g. the sandbox
@@ -3507,8 +3545,16 @@ compute scan_join:
 ## claiming its json_paths entry — run_lang_scanners, run_generic_scanners
 ## and run_deepsec_scanner all do it. Keep that invariant when adding a
 ## scanner: a file left behind by a failed tool defeats this gate silently.
+##
+## Which is why the deepsec entry is judged on the path the SCANNER published,
+## not on the name in vars.deepsec_out. That name is one shared slot under
+## ${PROJECT_SCRATCH_DIR} -- nothing prunes it between runs, and a concurrent
+## pass writes it too -- so a pass that never ran deepsec at all still found a
+## parseable file sitting there and read as covered. The expected basename stays
+## in the list so an ABSENT deep scan is still flagged; only the presence test
+## moves to the producer's own json_paths.
 tool scan_health:
-  command: `SCAN_DIR={{vars.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
+  command: `SCAN_DIR={{vars.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
 import os, sys, json, re
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -3529,10 +3575,24 @@ GENERIC = ['gitleaks.json', 'trivy.json', 'semgrep-auto.json']
 # surfaces a missing/invalid deepsec.json in the missing list to
 # report_card. It does NOT count toward min_generic so a missing deepsec
 # never hard-fails (gracefully degraded), only flags as degraded.
+#
+# PRODUCED maps an expected name to the absolute path its producer says it
+# wrote. An entry present with an empty value is MISSING however the shared
+# slot looks on disk: that is the difference between 'this pass exported' and
+# 'a file happens to bear that name'. Names absent from PRODUCED keep being
+# resolved under scan_dir, as before.
+PRODUCED = {}
 if (os.environ.get('ENABLE_DEEPSEC', 'false') or 'false').strip().lower() == 'true':
     _ds_out = os.environ.get('DEEPSEC_OUT', '').strip()
     if _ds_out:
-        GENERIC.append(os.path.basename(_ds_out))
+        _ds_name = os.path.basename(_ds_out)
+        GENERIC.append(_ds_name)
+        try:
+            _ds_paths = json.loads(os.environ.get('DEEPSEC_PATHS') or '{}')
+        except ValueError:
+            _ds_paths = {}
+        _ds_got = _ds_paths.get('deepsec') if isinstance(_ds_paths, dict) else None
+        PRODUCED[_ds_name] = _ds_got if isinstance(_ds_got, str) else ''
 # LANG outputs are derived from the same iterion:scanners skill blocks that
 # run_lang_scanners executes, filtered to the detected languages — so the
 # per-language coverage check stays in lockstep with what actually ran, with
@@ -3605,7 +3665,12 @@ CUSTOM  = ['custom.json']
 FINDING_KEYS = ['results', 'Issues', 'findings', 'matches', 'vulnerabilities', 'Vulns', 'alerts']
 
 def classify(fname):
-    p = os.path.join(scan_dir, fname)
+    if fname in PRODUCED:
+        p = PRODUCED[fname]
+        if not p:
+            return 'missing', 0
+    else:
+        p = os.path.join(scan_dir, fname)
     if not os.path.exists(p):
         return 'missing', 0
     try:
@@ -3676,7 +3741,7 @@ if generic_present < min_generic:
     )
     sys.exit(1)
 "`
-  input: lang_input
+  input: scan_health_input
   output: scanner_health_output
 
 ## cap_findings (overflow guard, Cap. 1-class). gosec/semgrep can emit
@@ -5534,10 +5599,10 @@ workflow sec_audit_source:
 
   deepsec_gate -> run_deepsec_scanner when enabled
   deepsec_gate -> scan_join when not enabled
-  run_deepsec_scanner -> bank_deepsec_findings
+  run_deepsec_scanner -> bank_deepsec_findings with {json_paths: "{{outputs.run_deepsec_scanner.json_paths}}"}
   bank_deepsec_findings -> scan_join
 
-  scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}"}
+  scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}", deepsec_paths: "{{outputs.scan_join.deepsec_paths}}"}
   scan_health -> cap_findings
 
   ## ZERO-FINDINGS IS DELIBERATELY NOT SHORT-CIRCUITED. On a clean repo

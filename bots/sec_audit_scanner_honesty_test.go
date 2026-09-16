@@ -253,7 +253,11 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 		Present  []string         `json:"present"`
 	}
 
-	run := func(t *testing.T, files map[string]string) health {
+	// paths is the scanner's own json_paths, the envelope scan_health now
+	// believes about the deep scan instead of the name on disk. "" means the
+	// caller wants the honest default: the producer claims the export exactly
+	// when it left a usable one behind.
+	runPaths := func(t *testing.T, files map[string]string, paths string) health {
 		t.Helper()
 		dir := t.TempDir()
 		scanDir := filepath.Join(dir, "scan")
@@ -265,6 +269,16 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		if paths == "" {
+			paths = "{}"
+			if _, ok := files["deepsec.json"]; ok {
+				enc, err := json.Marshal(map[string]string{"deepsec": filepath.Join(scanDir, "deepsec.json")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				paths = string(enc)
+			}
+		}
 		rendered := body
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":             scanDir,
@@ -273,6 +287,12 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 			"{{vars.workspace_dir}}":        dir,
 			"{{vars.enable_deepsec}}":       "true",
 			"{{vars.deepsec_out}}":          filepath.Join(scanDir, "deepsec.json"),
+			// Shell-quoted, because the runtime shell-escapes every ref it
+			// substitutes into a command and a bare JSON object would otherwise
+			// lose its quotes to the shell here — a harness artefact, not a
+			// property of the node. The .bot must NOT quote it itself: author
+			// quotes cancel the runtime's escaping (C137).
+			"{{input.deepsec_paths}}": shellQuote(paths),
 		} {
 			rendered = strings.ReplaceAll(rendered, ref, val)
 		}
@@ -289,6 +309,11 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 			t.Fatalf("scan_health output is not JSON: %v (%q)", err, out)
 		}
 		return h
+	}
+
+	run := func(t *testing.T, files map[string]string) health {
+		t.Helper()
+		return runPaths(t, files, "")
 	}
 
 	full := map[string]string{
@@ -329,6 +354,53 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("missing[] does not name deepsec.json, got %v", h.Missing)
+		}
+	})
+
+	// The deep scan's landing slot lives in the workspace scratch, which nothing
+	// prunes between runs and which a concurrent pass writes too. Judged by NAME,
+	// a pass that never ran deepsec at all — no binary, an unusable run id, an
+	// unreadable workspace — read as fully covered, because somebody else's
+	// export was lying at that path. No missing entry, no degraded flag, no
+	// banner on the report: the deep-analysis layer vanishes silently, which is
+	// the one thing this gate exists to prevent.
+	t.Run("an export this pass did not produce is not coverage", func(t *testing.T) {
+		// Every file present, including a fat, perfectly parseable deepsec.json —
+		// and a scanner envelope that claims nothing, which is what every
+		// err_envelope refusal emits.
+		stale := map[string]string{}
+		for k, v := range full {
+			stale[k] = v
+		}
+		stale["deepsec.json"] = `[{"id":1},{"id":2},{"id":3}]`
+
+		h := runPaths(t, stale, `{}`)
+		if h.Healthy {
+			t.Error("a pass that published no deep scan reads healthy because an earlier pass's export sits at the shared slot — findings from a scan that never ran, with no word on the report")
+		}
+		if !h.Degraded {
+			t.Error("degraded=false although this pass produced no deep scan — report_card prints no coverage banner")
+		}
+		found := false
+		for _, m := range h.Missing {
+			if f, _ := m["file"].(string); f == "deepsec.json" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing[] does not name deepsec.json although this pass produced none, got %v", h.Missing)
+		}
+		for _, p := range h.Present {
+			if p == "deepsec.json" {
+				t.Error("deepsec.json counted as PRESENT on the strength of a foreign file")
+			}
+		}
+
+		// The falsifiable half. The very same scan_dir, with the producer
+		// claiming the export, must read healthy — otherwise this test would
+		// pass on a node that had simply stopped seeing deepsec at all.
+		if h := runPaths(t, stale, ""); !h.Healthy || h.Degraded {
+			t.Errorf("the same tree reads degraded once the producer claims its export: healthy=%v degraded=%v missing=%v", h.Healthy, h.Degraded, h.Missing)
 		}
 	})
 }
