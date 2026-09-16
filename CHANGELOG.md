@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.154.0](https://github.com/SocialGouv/iterion/compare/v3.153.1...v3.154.0) (2026-09-16)
+
+### Features
+
+* **cli,mcp,dsl:** the dry run takes its launch values (validate --var/--preset, the MCP tool's vars); the skill names the loop namespace (lot 4 follow-up) ([#1336](https://github.com/SocialGouv/iterion/issues/1336)) ([d812f44](https://github.com/SocialGouv/iterion/commit/d812f444f01e66899f0318722927bc88c83ac68a)), closes [#1332](https://github.com/SocialGouv/iterion/issues/1332), references [#1289](https://github.com/SocialGouv/iterion/issues/1289) [#1292](https://github.com/SocialGouv/iterion/issues/1292) [#1110](https://github.com/SocialGouv/iterion/issues/1110) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [pre-#1332](https://github.com/pre-/issues/1332) [#1332](https://github.com/SocialGouv/iterion/issues/1332)
+
+    <details><summary>why</summary>
+
+    Follow-up of lot 4 (#1289, PR #1292), from the F20 re-probe of 2026-09-16 with a mid-size model (#1110).
+
+    </details>
+
 ## [3.153.1](https://github.com/SocialGouv/iterion/compare/v3.153.0...v3.153.1) (2026-09-16)
 
 ### Bug Fixes
