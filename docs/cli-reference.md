@@ -73,6 +73,16 @@ iterion diagram workflow.bot --view full
 
 `--detailed` and `--full` are aliases for the corresponding `--view` values.
 
+### `iterion fmt`
+
+```bash
+iterion fmt workflow.bot                 # rewrite the file in its canonical form
+iterion fmt bots/my-bot                  # every .bot under a directory, lib/ fragments included
+iterion fmt --check bots/                # CI: exit non-zero when a file would change or is refused
+```
+
+`fmt` parses each file, writes it back through the writer the studio saves with (`pkg/dsl/unparse`) and proves, before writing, that the text reads as the same program (`Verify`: same parse, same profile, same compiled workflow and diagnostics, prompt bodies in their canonical form). A file it cannot rewrite without changing it is refused by name and left as it is — one that does not parse, and, until comments survive a rewrite (#1282), one carrying a comment after its first declaration (the writer keeps only the leading ones) — while the files beside it are formatted all the same. `.botz` archives are not formatted in place. `--check` writes nothing and exits non-zero when a file would change or is refused; `--json` lists each file (`changed`, `written`) and the refusals.
+
 ### `iterion bundle`
 
 ```bash

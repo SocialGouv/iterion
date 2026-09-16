@@ -148,7 +148,7 @@ func TestCollectBotFilesSkipsHiddenTrees(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := collectBotFiles([]string{dir})
+	got, err := collectBotFiles("dsl migrate", []string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,11 +157,11 @@ func TestCollectBotFilesSkipsHiddenTrees(t *testing.T) {
 		t.Fatalf("collected %v, want %v", got, want)
 	}
 	// Named as a path, a hidden tree is migrated: the rule is about the walk.
-	got, err = collectBotFiles([]string{filepath.Join(dir, ".works")})
+	got, err = collectBotFiles("dsl migrate", []string{filepath.Join(dir, ".works")})
 	if err != nil || len(got) != 1 {
 		t.Fatalf("named hidden dir: %v %v", got, err)
 	}
-	if _, err := collectBotFiles([]string{filepath.Join(dir, "nope")}); !errors.Is(err, os.ErrNotExist) && err == nil {
+	if _, err := collectBotFiles("dsl migrate", []string{filepath.Join(dir, "nope")}); !errors.Is(err, os.ErrNotExist) && err == nil {
 		t.Fatalf("a missing path is an error")
 	}
 }

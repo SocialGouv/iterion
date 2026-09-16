@@ -397,7 +397,9 @@ command would have sent unresolved, every command `bash -n` refuses, the
 nodes and edges no pass reached, and the nodes whose output was only a shape;
 fix those too (`--fixtures` answers nodes with recorded outputs; `exec.clean`
 false means a pass died or a finding stands). Then
-`iterion diagram` to check the shape, and only then run. From Claude Code the MCP
+`iterion diagram` to check the shape, and only then run; `iterion fmt <file>`
+(`--check` in CI) rewrites the file in its canonical form and refuses one it
+cannot rewrite without changing the program. From Claude Code the MCP
 `local_validate` tool returns the same JSON. Validate with the build the bot
 will run on (the `requires.iterion` floor in its manifest): a builtin or a
 property a newer engine added compiles on that engine and dies on an older

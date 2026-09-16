@@ -164,6 +164,7 @@ devbox run -- go test ./...
 
 ```
 iterion validate <file.bot>              # Parse and validate a workflow
+iterion fmt <file.bot|dir> [--check]     # Rewrite .bot files in their canonical form
 iterion run <file.bot> [--var k=v] [--store-dir] [--max-cost-usd] [--compress]
 iterion inspect [--run-id] [--events]    # Run state and events
 iterion report --run-id <id> [--output]  # Chronological run report
