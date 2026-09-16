@@ -528,3 +528,69 @@ func TestAPodNamesTheSameChildTheEngineDoes(t *testing.T) {
 		t.Errorf("the engine names %s and the pod names %s — one bundle, two files", engine.Path, pod)
 	}
 }
+
+// TestACatalogueReachedThroughALinkStillHoldsItsChildren.
+//
+// `srv/bots -> opt/catalogue`, and the real tree sits OUTSIDE the link's own
+// lexical parent — which is what the earlier parity test failed to exercise,
+// its target happening to live under it. A climbing source joins onto the
+// resolved parent, so the candidate is spelled in `opt/catalogue` while the
+// root is still spelled `srv/bots`: compared in one spelling only, a child
+// that never left its collection looks outside it, and the pod returns a hard
+// error instead of falling through.
+func TestACatalogueReachedThroughALinkStillHoldsItsChildren(t *testing.T) {
+	root := t.TempDir()
+	catalogue := filepath.Join(root, "opt", "catalogue")
+	writeSubbotFixture(t, filepath.Join(catalogue, "modernize"), "main.bot", subbotTestParent)
+	child := writeSubbotFixture(t, filepath.Join(catalogue, "golden-master"), "extend.bot", subbotTestChild)
+
+	srv := filepath.Join(root, "srv")
+	if err := os.MkdirAll(srv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(srv, "bots")
+	if err := os.Symlink(catalogue, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := resolveSubbotSource("../golden-master/extend.bot", filepath.Join(link, "modernize"), nil)
+	if err != nil {
+		t.Fatalf("a child inside its own collection was refused: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("resolved %s, want %s", got, want)
+	}
+}
+
+// TestACatalogueWhoseBundlesAreSymlinksStillServesThem is the other arm. A
+// deployment may ship `<bots>/<slug>` as a link to a bundle held elsewhere;
+// resolved, the candidate leaves a root it is plainly inside, so judging it in
+// the resolved namespace ALONE would refuse a shape that works today — and
+// with a message claiming the file is absent when it was found and refused.
+func TestACatalogueWhoseBundlesAreSymlinksStillServesThem(t *testing.T) {
+	root := t.TempDir()
+	catalogue := filepath.Join(root, "bots")
+	if err := os.MkdirAll(catalogue, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(root, "elsewhere", "golden-master")
+	child := writeSubbotFixture(t, elsewhere, "extend.bot", subbotTestChild)
+	if err := os.Symlink(elsewhere, filepath.Join(catalogue, "golden-master")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// A parent materialised alone: no sibling beside it, so the catalogue serves.
+	alone := filepath.Join(root, "materialised", "modernize")
+	writeSubbotFixture(t, alone, "main.bot", subbotTestParent)
+
+	got, err := resolveSubbotSource("../golden-master/extend.bot", alone, []string{catalogue})
+	if err != nil {
+		t.Fatalf("a catalogue bundle shipped as a symlink was refused: %v", err)
+	}
+	if want := filepath.Join(catalogue, "golden-master", "extend.bot"); got != want {
+		t.Errorf("resolved %s, want %s (the catalogue's own spelling); the real file is %s", got, want, child)
+	}
+}

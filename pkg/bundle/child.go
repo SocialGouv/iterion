@@ -86,7 +86,14 @@ func ResolveChild(dir, parent, source string) (path string, src []byte, ok bool)
 	if err != nil {
 		return "", nil, false
 	}
-	real, err := filepath.EvalSymlinks(joined)
+	// Absolutised before resolving: ChildPath keeps a non-climbing source in
+	// the caller's own spelling, which is relative when the parent is, and
+	// `within` compares it against a collection that is always absolute.
+	abs, err := filepath.Abs(joined)
+	if err != nil {
+		return "", nil, false
+	}
+	real, err := filepath.EvalSymlinks(abs)
 	if err != nil || !within(real, collection) {
 		return "", nil, false
 	}

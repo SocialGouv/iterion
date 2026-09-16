@@ -38,9 +38,11 @@ type Dependency struct {
 }
 
 // ResolvedSource is the result of resolving a subbot node's source reference.
-// A relative reference is joined onto the parent's RESOLVED directory, so Path
-// is absolute and names the file the OS reaches; an absolute reference is
-// returned unchanged.
+// Path has two shapes for a relative reference: one that CLIMBS is joined onto
+// the parent's resolved directory, so it is absolute and names the file the OS
+// reaches; one that does not climb keeps the spelling the author wrote, and is
+// relative whenever the parent is. An absolute reference is returned
+// unchanged. A caller needing an absolute path must absolutise it.
 type ResolvedSource struct {
 	Kind       Kind
 	Path       string

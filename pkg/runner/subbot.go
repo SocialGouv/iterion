@@ -30,6 +30,18 @@ const maxSubbotDepth = 8
 
 type subbotDepthKey struct{}
 
+// realOrClean is a path's absolute symlink-resolved form, or its lexically
+// cleaned form when it does not resolve — a catalogue root absent from this
+// pod is legitimate, and a path that does not resolve holds nothing anyway.
+func realOrClean(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		if abs, err := filepath.Abs(resolved); err == nil {
+			return abs
+		}
+	}
+	return filepath.Clean(p)
+}
+
 // childPath joins a relative child source onto its parent's directory the way
 // every other reader of a `subbot source:` does (bundle.ChildPath), so a pod
 // names the same file the laptop does. A parent directory that does not
@@ -73,10 +85,30 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 			roots = append(roots, filepath.Clean(bp))
 		}
 	}
+	// A candidate is held by a root in EITHER namespace: as both were
+	// written, or as both resolve. Two shapes need the two arms, and each is
+	// a deployment that works today.
+	//
+	// The written arm: a catalogue whose `<slug>` directories are symlinks —
+	// `/app/bots/golden-master -> /opt/…`. Resolved, the candidate leaves the
+	// root it is plainly inside.
+	//
+	// The resolved arm: a catalogue reached THROUGH a link —
+	// `/srv/bots -> /opt/catalogue`. A climbing source now joins onto the
+	// resolved parent, so the candidate is `/opt/catalogue/…` while the root
+	// is still spelled `/srv/bots`; compared lexically it looks outside a
+	// collection it has never left.
+	//
+	// Either arm accepting is enough, which keeps this strictly more
+	// permissive than a lexical-only comparison: nothing that resolves today
+	// stops resolving.
 	contained := func(p string) bool {
+		holds := func(root, candidate string) bool {
+			rel, err := filepath.Rel(root, candidate)
+			return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		}
 		for _, root := range roots {
-			rel, err := filepath.Rel(root, p)
-			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if holds(root, p) || holds(realOrClean(root), realOrClean(p)) {
 				return true
 			}
 		}
