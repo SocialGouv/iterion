@@ -442,6 +442,14 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// run, not for the program.
 	if opts.wantsDryRun() && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
+		// A preset file the bundle carries and cannot read is the bot's
+		// defect, and this is the command that says so — `run` logs it at
+		// warn and goes on; the dry run does not run over it.
+		if err == nil && bundleHandle != nil {
+			if _, perrs := bundle.LoadPresets(bundleHandle.PresetsDir); len(perrs) > 0 {
+				err = fmt.Errorf("bundle presets: %s", joinErrors(perrs))
+			}
+		}
 		// The bundle's file presets (presets/<name>.md) join the in-source
 		// ones, so `--preset` resolves them as it does on `run`.
 		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, nil)
@@ -799,24 +807,47 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
+	// from names each value's source, for an error to say whose word it
+	// is: the preset the operator chose, a --var flag, the tool's object.
+	from := map[string]string{}
+	if opts.Preset != "" {
+		if ps, ok := wf.Presets[opts.Preset]; ok {
+			for k := range ps.Values {
+				from[k] = fmt.Sprintf("preset %q sets", opts.Preset)
+			}
+		}
+	}
+	for k := range vars {
+		from[k] = "--var"
+	}
 	for k, v := range opts.Inputs {
 		if v == nil {
 			continue
 		}
 		inputs[k] = v
+		from[k] = "vars"
 	}
 	for k, v := range inputs {
 		decl := wf.Vars[k]
 		if decl == nil {
-			return nil, fmt.Errorf("launch value %q names no var of the workflow (declared: %s)", k, strings.Join(declaredVars(wf), ", "))
+			return nil, fmt.Errorf("%s %q, which names no var of the workflow (declared: %s)", from[k], k, strings.Join(declaredVars(wf), ", "))
 		}
 		typed, err := ir.CoerceVarValue(v, decl.Type)
 		if err != nil {
-			return nil, fmt.Errorf("launch value %q: %v is no %s: %v", k, v, decl.Type, err)
+			return nil, fmt.Errorf("%s %q: %v is no %s: %v", from[k], k, v, decl.Type, err)
 		}
 		inputs[k] = typed
 	}
 	return inputs, nil
+}
+
+// joinErrors lists errors on one line, for a result field.
+func joinErrors(errs []error) string {
+	parts := make([]string, 0, len(errs))
+	for _, e := range errs {
+		parts = append(parts, e.Error())
+	}
+	return strings.Join(parts, "; ")
 }
 
 // declaredVars lists the workflow's var names, sorted, for an error to name.

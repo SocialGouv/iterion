@@ -319,9 +319,9 @@ func TestRunValidate_LaunchValuesReachTheDryRun(t *testing.T) {
 		want string
 	}{
 		{ValidateOptions{Vars: []string{"release_tag"}}, "invalid --var format"},
-		{ValidateOptions{Vars: []string{"relase_tag=v1"}}, `"relase_tag" names no var of the workflow (declared: n, release_tag)`},
-		{ValidateOptions{Vars: []string{"n=notanumber"}}, `"n": notanumber is no int`},
-		{ValidateOptions{Inputs: map[string]any{"nosuch": "x"}}, `"nosuch" names no var`},
+		{ValidateOptions{Vars: []string{"relase_tag=v1"}}, `--var "relase_tag", which names no var of the workflow (declared: n, release_tag)`},
+		{ValidateOptions{Vars: []string{"n=notanumber"}}, `--var "n": notanumber is no int`},
+		{ValidateOptions{Inputs: map[string]any{"nosuch": "x"}}, `vars "nosuch", which names no var`},
 	} {
 		jp, out := jsonPrinter()
 		err := RunValidateWith("g.bot", jp, tc.opts)
@@ -371,5 +371,40 @@ func TestRunValidate_BundlePresetsResolve(t *testing.T) {
 	}
 	if got := res.Exec.Passes[0].Nodes; !contains(got, "other") {
 		t.Fatalf("the bundle preset's value did not reach the gate: %v", got)
+	}
+	// A preset that sets a var the bot no longer declares is the bundle's
+	// defect, said as the preset's word — not as an operator's typo.
+	stale := "---\nname: stale\ndisplay_name: Stale\ndescription: Sets a var the bot dropped.\nvars:\n  old_key: \"x\"\n---\nOld.\n"
+	if err := os.WriteFile("bnd/presets/stale.md", []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out = jsonPrinter()
+	err := RunValidateWith("bnd", jp, ValidateOptions{Preset: "stale"})
+	var bad ValidateResult
+	if derr := json.Unmarshal(out.Bytes(), &bad); derr != nil {
+		t.Fatalf("the JSON result does not decode: %v\n%s", derr, out.String())
+	}
+	if err == nil || !strings.Contains(bad.ExecError, `preset "stale" sets "old_key", which names no var`) {
+		t.Fatalf("a stale preset key is not attributed to the preset: err=%v exec_error=%q", err, bad.ExecError)
+	}
+	// A preset file the bundle cannot read is the dry run's error, named,
+	// where run logs it and goes on.
+	if err := os.MkdirAll("bnd2/presets", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("bnd2/main.bot", []byte(gatedBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("bnd2/presets/bad.md", []byte("---\nnam: typo\n---\nBroken.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out = jsonPrinter()
+	err = RunValidateWith("bnd2", jp, ValidateOptions{Exec: true})
+	bad = ValidateResult{}
+	if derr := json.Unmarshal(out.Bytes(), &bad); derr != nil {
+		t.Fatalf("the JSON result does not decode: %v\n%s", derr, out.String())
+	}
+	if err == nil || !bad.Valid || !strings.Contains(bad.ExecError, "bundle presets:") || !strings.Contains(bad.ExecError, "bad.md") {
+		t.Fatalf("a preset file the bundle cannot read is not the dry run's error: err=%v exec_error=%q", err, bad.ExecError)
 	}
 }
