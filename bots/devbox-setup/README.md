@@ -52,8 +52,7 @@ done
   missing tools), never clobber existing pins (see skill §6).
 
 ## v1 scope + next
-v1 is the linear flow above (detect → generate → verify → done); the
+v1 is the linear flow above (`preflight` → `detect_stack` →
+`generate_devbox` → `verify_devbox` → `commit_devbox` → done); the
 worktree + PR review is the gate. Next enhancements: an in-bot `human`
-approve_devbox gate + an `apply_mode` (propose | apply), and a real dogfood
-run (a target repo + a stable network for the cold `devbox install`) to
-confirm the generated devbox.json installs.
+approve_devbox gate + an `apply_mode` (propose | apply).
