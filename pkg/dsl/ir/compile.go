@@ -1774,7 +1774,19 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				c.errorf(DiagForeachConflictsLoop, "edge %s -> %s: cannot combine `as foreach` with `as <loop>`", ae.From, ae.To)
 			}
 			e.ForeachName = ae.Foreach.Name
-			if _, ok := foreaches[ae.Foreach.Name]; !ok {
+			if existing, ok := foreaches[ae.Foreach.Name]; ok {
+				// Several edges may SHARE a foreach, as they may share a
+				// loop — one cursor, re-entered. What they may not do is
+				// disagree about what it iterates: registration keeps the
+				// FIRST declaration, so a second one was discarded and its
+				// edge walked a collection its author never wrote, with no
+				// diagnostic. The loop arm above refuses the same shape.
+				if existing.Item != ae.Foreach.Item || existing.CollectionRaw != ae.Foreach.Collection {
+					c.errorfOnEdge(DiagDuplicateForeach, ae,
+						"foreach %q is declared twice over different iteration: %q in %q, then %q in %q",
+						ae.Foreach.Name, existing.Item, existing.CollectionRaw, ae.Foreach.Item, ae.Foreach.Collection)
+				}
+			} else {
 				fe := &Foreach{
 					Name:          ae.Foreach.Name,
 					Item:          ae.Foreach.Item,

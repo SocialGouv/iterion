@@ -183,6 +183,10 @@ const (
 	// that names one target twice gives two goroutines one branch id.
 	DiagDuplicateFanOutTarget     DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
 	DiagSessionSlotWithoutPersist DiagCode = "C268" // session_slot requires session: persist
+	// Edges may SHARE a foreach, as they may share a loop; what they may not
+	// do is disagree about what it iterates. Registration keeps the first
+	// declaration, so a disagreement used to be resolved in silence.
+	DiagDuplicateForeach DiagCode = "C269" // two edges declare the same `as foreach` name with a different collection or element binding (error)
 
 	// Connector actions (ADR-098) — the `tool … action:` recipe. The band is
 	// about ONE promise: an action node reaches a third-party API with no LLM
