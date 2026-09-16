@@ -3006,6 +3006,18 @@ _dsrid() {
 # (packages/deepsec/src/commands/process.ts) and also BEFORE it exits 1 on
 # errored batches, so the id is readable either way. Empty when the line never
 # appeared, which is the honest input to "start fresh".
+#
+# BOTH anchors here are the wording of a PINNED deepsec (2.0.12, see
+# sandbox/sec/Dockerfile in this bot). If a bump changes them, the ids come back
+# empty, no run meta is matched, and coverage degrades to UNKNOWN on every run:
+# noisy and permanent, but never a clean bill. Re-read this pair when bumping.
+#
+# A quota wall is NOT one of the cases these anchors have to catch. deepsec
+# exits non-zero on quotaExhausted at both of its exit sites, before it even
+# looks at errored batches (commands/process.ts, standard and direct mode), so
+# the step verdict this node already owns catches it. The log-only
+# "Stopped: ... exhausted" grep below is a SECOND door, deciding whether to
+# retry -- not the one that decides whether coverage is claimed.
 _dsrunid() { _dsrid "$LOG_DIR/process.log" "Processing complete" "Run: "; }
 
 # True when the id names a run meta the scanner really wrote. The log is a
@@ -3013,8 +3025,16 @@ _dsrunid() { _dsrid "$LOG_DIR/process.log" "Processing complete" "Run: "; }
 # paths out of the audited tree -- so one crafted line can carry both anchors
 # the extraction greps for. Enumerating more anchors does not settle that; the
 # meta does, because it is the same authority the coverage reader consults.
+# The data root is resolved the SAME way the coverage reader resolves it, and
+# that is the point: two readers of one location that disagree are a defect
+# waiting for the day the environment sets it. deepsec honours
+# DEEPSEC_DATA_ROOT, so a hardcoded data/ here would discard every id the log
+# announced, make the resume branch unreachable, and log "no run meta carries
+# it" -- which reads as a forgery attempt rather than a path mismatch.
 _dsmeta_exists() {
-  for _m in "$DSW"/data/*/runs/"$1".json; do
+  _dsroot="${DEEPSEC_DATA_ROOT:-data}"
+  case "$_dsroot" in /*) : ;; *) _dsroot="$DSW/$_dsroot" ;; esac
+  for _m in "$_dsroot"/*/runs/"$1".json; do
     [ -f "$_m" ] && return 0
   done
   return 1
@@ -3285,6 +3305,13 @@ if [ "$COV_RC" != 0 ] || [ -z "$COVERAGE" ]; then
   # steps_failed is null and not [] on purpose: the reader that projects the
   # step verdicts is the thing that just broke, so "none failed" is precisely
   # what this branch cannot say. Absence, not zero. Rule 1 gates it anyway.
+  #
+  # The reader stderr lands in coverage.log, which is NOT an ERRS token, so the
+  # tail builder below never reads it and it dies with the pod. This branch
+  # tells the operator "our own reader broke" and would leave no evidence of
+  # why -- the exact failure this node fixed for every other step. env.log is
+  # the one log appended to errors[] unconditionally, so the tail moves there.
+  cat "$LOG_DIR/coverage.log" >>"$LOG_DIR/env.log" 2>/dev/null
   COVERAGE=$(printf "{\"source\":\"counter_failed\",\"steps_failed\":null,\"candidates_found\":null,\"candidate_files\":null,\"files_processed\":null,\"scan_phase\":null,\"process_phase\":null,\"process_limit\":null,\"limit_truncated\":null,\"process_failed\":false,\"process_complete\":false}")
 fi
 # Deliberately NOT folded into ERRS. ERRS means "a step failed", and it drives

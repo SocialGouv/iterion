@@ -876,6 +876,14 @@ func runDeepsecNodeIn(t *testing.T, dir, runID, deepsecStub string) (map[string]
 	return cov, scanDir
 }
 
+// runDeepsecNodeEnv runs the node with extra environment, for the variables
+// deepsec itself honours and this node has to honour the same way.
+func runDeepsecNodeEnv(t *testing.T, deepsecStub string, env ...string) map[string]any {
+	t.Helper()
+	cov, _, _ := runDeepsecNodeFull(t, t.TempDir(), "run-under-test", deepsecStub, env...)
+	return cov
+}
+
 // runDeepsecNodeErrs also returns the envelope's errors[], which is where a
 // refusal states WHY — the difference between "it degraded" and "it degraded
 // for the reason under test".
@@ -885,7 +893,7 @@ func runDeepsecNodeErrs(t *testing.T, dir, runID, deepsecStub string) (map[strin
 	return cov, errs
 }
 
-func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string) (map[string]any, []string, string) {
+func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string, env ...string) (map[string]any, []string, string) {
 	t.Helper()
 	body := secToolCommand(t, "run_deepsec_scanner")
 
@@ -922,16 +930,16 @@ func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string) (map[strin
 		t.Fatalf("unsubstituted ref left in the command near %q", rendered[strings.Index(rendered, "{{"):])
 	}
 
-	raw := runShell(t, rendered, stubs)
+	raw := runShell(t, rendered, stubs, env...)
 	lines := strings.Split(strings.TrimSpace(raw), "\n")
-	var env struct {
+	var parsed struct {
 		Coverage map[string]any `json:"coverage"`
 		Errors   []string       `json:"errors"`
 	}
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &env); err != nil {
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &parsed); err != nil {
 		t.Fatalf("envelope is not JSON: %v (%q)\nfull output: %q", err, lines[len(lines)-1], raw)
 	}
-	return env.Coverage, env.Errors, scanDir
+	return parsed.Coverage, parsed.Errors, scanDir
 }
 
 // The identity pin is only as trustworthy as the file it reads the id from.
@@ -1118,6 +1126,85 @@ esac`)
 	if !sawUnusable {
 		t.Errorf("the export was deleted and the report is never told: steps_failed = %v — the "+
 			"vocabulary and rule 3c name a token the code cannot emit", cov["steps_failed"])
+	}
+}
+
+// counter_failed tells the operator "our own reader broke". The reader's stderr
+// goes to coverage.log, which is not an ERRS token, so the tail builder never
+// reads it and the pod takes it to the grave — the exact failure this node
+// fixed for every other step. env.log is the one log appended to errors[]
+// unconditionally, so the tail has to be moved there to travel at all.
+func TestDeepsecBrokenReaderShipsItsDiagnostic(t *testing.T) {
+	realPython, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	dir := t.TempDir()
+
+	// A python3 that fails ONLY for the coverage reader — recognised by a field
+	// name only that script carries — and is the real interpreter for the
+	// finding count and the error-tail builder.
+	stubs := filepath.Join(dir, "bin", "run-under-test")
+	stubBin(t, stubs, "python3", `case "$*" in
+  *steps_failed*) echo "coverage reader exploded: SYNTHETIC-WITNESS" >&2; exit 3 ;;
+esac
+exec `+realPython+` "$@"`)
+
+	_, errs, _ := runDeepsecNodeFull(t, dir, "run-under-test", `
+prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+exit 0`)
+
+	joined := strings.Join(errs, " ")
+	if !strings.Contains(joined, "SYNTHETIC-WITNESS") {
+		t.Errorf("the reader broke and said why, and the envelope carries none of it: %q\n"+
+			"the report will banner UNKNOWN (counter_failed) with no evidence, and the log dies "+
+			"with the pod", joined)
+	}
+}
+
+// Two readers of ONE location. The coverage reader resolves the data root as
+// $DEEPSEC_DATA_ROOT or "data", because deepsec honours that variable; the
+// shell guard that validates a run id reads the same directory. A guard that
+// hardcoded data/ would discard every id the log announced the moment the
+// variable is set — making the resume branch unreachable and logging "no run
+// meta carries it", which reads as a forgery attempt rather than a path
+// mismatch. The variable is unset in this repo today, which is exactly why the
+// divergence would have waited for the day it is not.
+func TestDeepsecMetaLookupHonoursTheSameDataRootAsTheReader(t *testing.T) {
+	cov := runDeepsecNodeEnv(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p alt/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":10,"candidatesFound":10}}' "$NOW" > alt/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    # The two retry paths must end DIFFERENTLY, or the assertion cannot tell
+    # them apart: a resume ends with the flag raised, a fresh pass ends clean.
+    for a in "$@"; do case "$a" in --run-id) exit 0;; esac; done
+    if [ -f alt/.attempted ]; then exit 0; fi
+    : > alt/.attempted
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":10}}' "$NOW" > alt/p/runs/rid1.json
+    echo "Processing complete. Run: rid1"
+    echo "2 batch(es) errored — exiting 1 (agent failure, not a clean review)."
+    exit 1 ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+    exit 0 ;;
+esac
+exit 0`, "DEEPSEC_DATA_ROOT=alt")
+
+	// The reader found the metas under the non-default root...
+	if cov["source"] != "run_meta" || cov["candidate_files"] != float64(10) {
+		t.Fatalf("the coverage reader did not honour DEEPSEC_DATA_ROOT: %v", cov)
+	}
+	// ...and so did the guard: the id was accepted, so the retry RESUMED, which
+	// is the only path that raises process_failed here. A guard looking in
+	// data/ would have found nothing, cleared the id, and run a fresh pass.
+	if cov["process_failed"] != true {
+		t.Errorf("the run-id guard looked somewhere the reader does not: the id was discarded and "+
+			"the resume branch became unreachable — %v", cov)
 	}
 }
 
