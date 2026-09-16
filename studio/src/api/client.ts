@@ -362,6 +362,11 @@ export async function loadExample(
   /** The on-disk path the server read, when `path` is set — what
    *  /api/files/open confirms for the same path. */
   confirmed_disk_path?: string;
+  /** The workspace file the answer was read from, named whether or not it
+   *  is bound: the tab FOLLOWS it, so the write that makes it parse again
+   *  reloads it and binds it there. Absent for a program the workspace does
+   *  not hold — an embedded bot, or a catalog outside it. */
+  followed_path?: string;
   /** False when the example does not parse: the studio binds no path at
    *  all — a save asks where and never lands on the file as the author
    *  wrote it, which bots/<name> would name in the default layout. Absent

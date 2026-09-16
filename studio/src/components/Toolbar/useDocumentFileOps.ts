@@ -163,6 +163,7 @@ export function useDocumentFileOps({
             setDiagnostics,
             setCurrentSource,
             setCurrentFilePath,
+            setWatchedFilePath,
             setUnit,
             markSaved,
           });

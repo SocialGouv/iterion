@@ -532,12 +532,18 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 // when the file does not parse: the studio then binds no path at all, so a
 // save asks where instead of landing on the file as the author wrote it —
 // its bots/<name> fallback would name that very file in the default layout.
+// FollowedPath names the file the answer was read from whether or not it is
+// bound, so a tab keeps FOLLOWING a file it could not bind: the write that
+// makes it parse again reloads it through /api/files/open, which binds it
+// there. Empty for a program the working directory does not hold — an
+// embedded bot, or a catalog outside it — which nothing can follow.
 type exampleResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics,omitempty"`
 	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	FollowedPath      string          `json:"followed_path,omitempty"`
 	Bindable          bool            `json:"bindable"`
 }
 
@@ -549,6 +555,9 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 	pr := parser.Parse(name, source)
 	var diags []string
 	bindable := true
+	// The file read, kept whole across the unbinding below: what is refused
+	// is binding it, not knowing which file the answer came from.
+	followed := rel
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
 		// A file that does not parse is never bound to its path: the
@@ -576,6 +585,7 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 		Diagnostics:       diags,
 		Path:              rel,
 		ConfirmedDiskPath: confirmed,
+		FollowedPath:      followed,
 		Bindable:          bindable,
 	})
 }
@@ -620,7 +630,13 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags})
+		// Unbound, the main is still named as the file followed, so the write
+		// that makes the unit load reloads it and binds it then. It is the
+		// main alone: with no unit there is nothing to say which fragments
+		// belong to it, so a fix written in one of them lands on the next
+		// touch of the main.
+		followed, _, _ := s.workDirRelative(abs, name)
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, FollowedPath: followed})
 		return
 	}
 	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {

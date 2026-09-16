@@ -12,6 +12,10 @@ export interface ExampleTargetStore {
   setDiagnostics: (diagnostics: string[]) => void;
   setCurrentSource: (source: string | null) => void;
   setCurrentFilePath: (path: string | null) => void;
+  /** The file the tab FOLLOWS, bound or not. Set AFTER the path, which
+   *  tracks it: the one case where the two differ is a file that does not
+   *  parse, which is followed without being bound. */
+  setWatchedFilePath: (path: string | null) => void;
   /** A bot in several files binds its unit: the document is the merged
    *  program, its source view is read-only, a save presents the revision.
    *  Bound AFTER the path, which clears it. */
@@ -49,7 +53,15 @@ export async function openExampleIntoStore(name: string, store: ExampleTargetSto
   // bots/<name> would name that very file in the default layout, and a
   // save would replace what the author wrote with what the parser kept;
   // anything else binds bots/<name>, where a save of the one program lands.
-  store.setCurrentFilePath(result.path ?? (result.bindable === false ? null : `bots/${name}`));
+  const bound = result.path ?? (result.bindable === false ? null : `bots/${name}`);
+  store.setCurrentFilePath(bound);
+  // Bound or not, the tab follows the workspace file the server read, so the
+  // write that makes it parse again reloads it — through /api/files/open,
+  // which binds it there. Left unfollowed, the tab stops following for good:
+  // the repair never reaches it, and every remount applies the file the tab
+  // still names over the author's work. The server names it; `bots/<name>`
+  // is a layout guess, and following the wrong file is that same loss.
+  store.setWatchedFilePath(bound ?? result.followed_path ?? null);
   store.setUnit(result.unit ?? null);
   store.markSaved();
   return result;

@@ -28,6 +28,7 @@ type oneProgram struct {
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
+	FollowedPath      string          `json:"followed_path"`
 	Bindable          bool            `json:"bindable"`
 	Unit              *unitInfo       `json:"unit"`
 }
@@ -388,6 +389,13 @@ func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
 		// bindable, and keep the text the source pane shows.
 		if got.Bindable {
 			t.Errorf("%s: a file that does not parse was declared bindable", name)
+		}
+		// Refusing to BIND it is not refusing to name it. The studio follows
+		// the file it was handed, so the write that repairs it reloads the
+		// tab that has it open; unnamed, that tab stops following for good
+		// and a later remount puts the salvage back over the author's work.
+		if want := "bots/" + name; got.FollowedPath != want {
+			t.Errorf("%s: a file that does not parse was not named as the one followed: got %q want %q", name, got.FollowedPath, want)
 		}
 		if got.Source == "" || !strings.Contains(got.Source, "!!!") {
 			t.Errorf("%s: the served text is not the file's: %q", name, got.Source)
