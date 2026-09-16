@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.153.1](https://github.com/SocialGouv/iterion/compare/v3.153.0...v3.153.1) (2026-09-16)
+
+### Bug Fixes
+
+* **sec-audit-source:** a pass that refuses to run must destroy nothing ([#1331](https://github.com/SocialGouv/iterion/issues/1331)) ([85bff66](https://github.com/SocialGouv/iterion/commit/85bff66c90be7b3e24931160dbf77696c443e361))
+
+    <details><summary>why</summary>
+
+    R24f9d8 from the gate, and it is my own fix from the round before. Removing the stale export on entry is what makes "nothing came out" mean "nothing came out of THIS pass" — but I put it at the top of the body, above the graceful-degrade probes. A pass that never gets as far as running deepsec (no binary, no usable run id, unreadable workspace) then destroyed a CONCURRENT pass's already-exported findings, and that neighbour kept claiming json_paths.deepsec while its coverage still read…
+
+    </details>
+
 ## [3.153.0](https://github.com/SocialGouv/iterion/compare/v3.152.4...v3.153.0) (2026-09-16)
 
 ### Features
