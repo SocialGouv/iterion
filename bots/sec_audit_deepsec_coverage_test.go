@@ -1181,6 +1181,98 @@ exit 0`)
 	}
 }
 
+// Removing the stale export on entry is what makes "nothing came out" mean
+// "nothing came out of THIS pass" — but placed above the degrade probes it did
+// a new harm the node did not have before: a pass that never gets as far as
+// running deepsec destroyed a CONCURRENT pass's already-exported findings, and
+// that neighbour then claimed a path to a vanished file while its own coverage
+// still read complete. A fix must not open a hole on the way to closing one,
+// and the position in the body is the whole of the fix.
+func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
+	dir := t.TempDir()
+	scanDir := filepath.Join(dir, "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(scanDir, "deepsec.json")
+	neighbour := `[{"id":"N1"},{"id":"N2"}]`
+	if err := os.WriteFile(out, []byte(neighbour), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty run id is one of the paths that refuses before deepsec runs.
+	cov, _ := runDeepsecNodeIn(t, dir, "", `exit 0`)
+	if cov["source"] != "deepsec_unavailable" {
+		t.Fatalf("this pass was meant to refuse before running deepsec: %v", cov)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("a pass that refused to run deleted a neighbour's export: %v", err)
+	}
+	if string(got) != neighbour {
+		t.Errorf("a pass that refused to run rewrote a neighbour's export: %q", got)
+	}
+}
+
+// The test above locks only the CEILING of that line: it reddens if the clear
+// moves back above the probes. Deleting the line outright left every test green,
+// because every other exercise of this node starts from a fresh TempDir and so
+// never has a stale export to inherit — a refactor could restore the defect the
+// line exists to close and the build would not notice.
+//
+// This is that floor. A pass that DOES run, whose export writes nothing and
+// fails, must not let the file already sitting in the shared slot stand in for
+// its own output: FCNT would count a foreign export's findings, the
+// export-unusable guard would not fire, and the pass would ship findings it
+// never produced under a coverage that reads complete.
+func TestDeepsecAFailedExportDoesNotInheritTheSlot(t *testing.T) {
+	dir := t.TempDir()
+	scanDir := filepath.Join(dir, "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(scanDir, "deepsec.json")
+	if err := os.WriteFile(out, []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cov, _, _ := runDeepsecNodeFull(t, dir, "run-under-test", `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":10,"candidatesFound":10}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":10}}' "$NOW" > data/p/runs/pid1.json
+    echo "Processing complete. Run: pid1"
+    exit 0 ;;
+  export)
+    exit 1 ;;
+  *) exit 0 ;;
+esac`)
+
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(out)
+		t.Errorf("the export step wrote nothing and failed, yet a file still sits at the shared slot (%q). "+
+			"triage reads it, scan_health counts it present, and the findings of an EARLIER pass ship as this one's", body)
+	}
+
+	steps, _ := cov["steps_failed"].([]any)
+	var sawUnusable bool
+	for _, s := range steps {
+		if s == "export_unusable" {
+			sawUnusable = true
+		}
+	}
+	if !sawUnusable {
+		t.Errorf("a failed export that produced nothing is not reported as unusable: steps_failed = %v — "+
+			"a stale file decided the count and the report carries no banner", cov["steps_failed"])
+	}
+}
+
 // Two readers of ONE location. The coverage reader resolves the data root as
 // $DEEPSEC_DATA_ROOT or "data", because deepsec honours that variable; the
 // shell guard that validates a run id reads the same directory. A guard that

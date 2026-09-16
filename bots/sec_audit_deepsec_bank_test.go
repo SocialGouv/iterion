@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -91,10 +92,37 @@ func TestDeepsecFindingsLeaveThePod(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func(t *testing.T, out, budget string) bankOut {
+	// The node locates the export through the path its PRODUCER published, so
+	// the harness speaks the same envelope the scanner emits: json_paths.
+	//
+	// DEEPSEC_OUT is set too, and always to a real forty-finding export. That is
+	// the shared slot as production has it — a file under the workspace scratch
+	// bearing the expected name, left by an earlier or concurrent pass. Without
+	// it a node that went back to reading the var would simply find nothing, and
+	// the refusal case below would pass against a starved mutant instead of
+	// against the defect.
+	runPaths := func(t *testing.T, paths, budget string) bankOut {
 		t.Helper()
 		cmd := exec.Command("python3", scriptPath)
-		cmd.Env = append(os.Environ(), "DEEPSEC_OUT="+out, "MAX_BYTES="+budget)
+		cmd.Env = append(os.Environ(), "DEEPSEC_PATHS="+paths, "DEEPSEC_OUT="+full, "MAX_BYTES="+budget)
+		raw, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("the banking node exited non-zero (%v) — it must always emit its envelope: %q", err, raw)
+		}
+		var got bankOut
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("output is not the declared envelope: %v (%q)", err, raw)
+		}
+		return got
+	}
+	run := func(t *testing.T, out, budget string) bankOut {
+		t.Helper()
+		enc, err := json.Marshal(map[string]string{"deepsec": out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("python3", scriptPath)
+		cmd.Env = append(os.Environ(), "DEEPSEC_PATHS="+string(enc), "DEEPSEC_OUT="+out, "MAX_BYTES="+budget)
 		raw, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("the banking node exited non-zero (%v) — it must always emit its envelope: %q", err, raw)
@@ -132,6 +160,33 @@ func TestDeepsecFindingsLeaveThePod(t *testing.T) {
 		}
 		if len(got.Findings) != got.Embedded {
 			t.Errorf("embedded=%d but %d findings carried — the count must describe the payload", got.Embedded, len(got.Findings))
+		}
+	})
+
+	// The slot the scanner exports into lives in the workspace scratch, which
+	// nothing prunes between runs and which a concurrent pass writes too. So a
+	// file bearing that name is NOT evidence that this pass produced it: when
+	// the scanner refuses (no node, no deepsec CLI, unusable run id, unreadable
+	// workspace) it emits json_paths:{} and there is nothing of ours to bank.
+	// Banking the file anyway stamps a neighbour's — or an older pass's —
+	// findings as this run's, which is the silent-partial-audit facade in its
+	// most expensive form: findings attributed to a scan that never happened.
+	t.Run("a refusal banks nothing, whatever sits at the shared slot", func(t *testing.T) {
+		for _, envelope := range []string{`{}`, ``, `{"deepsec": ""}`, `{"deepsec": null}`, `[]`, `not json`} {
+			got := runPaths(t, envelope, "524288")
+			if got.Total != 0 || got.Embedded != 0 || len(got.Findings) != 0 {
+				t.Errorf("json_paths=%q banked %d findings (%+v) — the scanner published no path, so nothing here is this pass's output",
+					envelope, got.Total, got)
+			}
+			if !strings.Contains(got.Note, "published no export path") {
+				t.Errorf("json_paths=%q: the note does not say why nothing was banked: %q", envelope, got.Note)
+			}
+		}
+		// And the falsifiable half: the very same file IS banked once the
+		// producer claims it. Without this the case above would pass on a node
+		// that simply never banks anything.
+		if got := runPaths(t, `{"deepsec": `+strconv.Quote(full)+`}`, "524288"); got.Total != 40 {
+			t.Errorf("a published path banked %d of 40 — the refusal guard has swallowed the normal path", got.Total)
 		}
 	})
 
