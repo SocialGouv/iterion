@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.152.0](https://github.com/SocialGouv/iterion/compare/v3.151.0...v3.152.0) (2026-09-16)
+
+### Features
+
+* **connectors:** a contract reference may declare itself nullable ([#1302](https://github.com/SocialGouv/iterion/issues/1302)) ([9a531c1](https://github.com/SocialGouv/iterion/commit/9a531c141ec48e75fc9c9164f707d8ff9b7c12ea)), closes [#1269](https://github.com/SocialGouv/iterion/issues/1269)
+
+    <details><summary>why</summary>
+
+    A response contract generated from a Swagger 2 description refused the null that go-swagger services send for an absent relation. Forgejo sends one for assignee, milestone and merged_by on every unassigned issue, so --validate-responses on that description produced contracts refusing ordinary answers - and the cost is not a red diagnostic: a contract violation on a 2xx is marked ambiguous, has its Data cleared and is NOT retryable, so a mutation parks its run and a read fails its node, for an…
+
+    </details>
+
 ## [3.151.0](https://github.com/SocialGouv/iterion/compare/v3.150.2...v3.151.0) (2026-09-16)
 
 ### Features
