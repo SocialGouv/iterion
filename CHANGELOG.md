@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.152.2](https://github.com/SocialGouv/iterion/compare/v3.152.1...v3.152.2) (2026-09-16)
+
+### Bug Fixes
+
+* **dsl:** a node's with: values are references like any other ([#1311](https://github.com/SocialGouv/iterion/issues/1311)) ([7ddbb79](https://github.com/SocialGouv/iterion/commit/7ddbb790c2e95cdbed2026b09da7b3f252db9d3a)), references [#1281](https://github.com/SocialGouv/iterion/issues/1281) [#1281](https://github.com/SocialGouv/iterion/issues/1281)
+
+    <details><summary>why</summary>
+
+    `collectAllRefs` walked prompts, edge with-mappings, tool commands, scripts and action params, fail messages and compute exprs — every template family except the one a NODE carries. A subbot handing its child `{{vars.depth}}` where no `depth` is declared compiled clean, and the child started with the literal text as its value.
+
+    </details>
+
 ## [3.152.1](https://github.com/SocialGouv/iterion/compare/v3.152.0...v3.152.1) (2026-09-16)
 
 ### Bug Fixes
