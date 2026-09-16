@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.150.0](https://github.com/SocialGouv/iterion/compare/v3.149.4...v3.150.0) (2026-09-16)
+
+### Features
+
+* **dsl:** the public contract — declaration, binding, floor, readers (lot 4bis, [#1263](https://github.com/SocialGouv/iterion/issues/1263)) ([#1276](https://github.com/SocialGouv/iterion/issues/1276)) ([c22cd5b](https://github.com/SocialGouv/iterion/commit/c22cd5bfb456966559e6aa3f1509784763913312)), references [#1216](https://github.com/SocialGouv/iterion/issues/1216) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1280](https://github.com/SocialGouv/iterion/issues/1280) [#1281](https://github.com/SocialGouv/iterion/issues/1281) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1285](https://github.com/SocialGouv/iterion/issues/1285) [#1154](https://github.com/SocialGouv/iterion/issues/1154)
+
+    <details><summary>why</summary>
+
+    A bot's public contract as a top-level declaration named by the workflow's `contract:`: display name, responsibility, version, typed input/output ports with JSON defaults and file specs, deterministic criteria (`min_length`, `pattern`) with JSON parameters, visible effects. Harvested from #1216 (ADR-099; ADR-098 §16 amended: no `graph`, `port_policy` or `runtime_semantics` until a semantics runs under them).
+
+    </details>
+
 ## [3.149.4](https://github.com/SocialGouv/iterion/compare/v3.149.3...v3.149.4) (2026-09-15)
 
 ### Bug Fixes
