@@ -1181,6 +1181,40 @@ exit 0`)
 	}
 }
 
+// Removing the stale export on entry is what makes "nothing came out" mean
+// "nothing came out of THIS pass" — but placed above the degrade probes it did
+// a new harm the node did not have before: a pass that never gets as far as
+// running deepsec destroyed a CONCURRENT pass's already-exported findings, and
+// that neighbour then claimed a path to a vanished file while its own coverage
+// still read complete. A fix must not open a hole on the way to closing one,
+// and the position in the body is the whole of the fix.
+func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
+	dir := t.TempDir()
+	scanDir := filepath.Join(dir, "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(scanDir, "deepsec.json")
+	neighbour := `[{"id":"N1"},{"id":"N2"}]`
+	if err := os.WriteFile(out, []byte(neighbour), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty run id is one of the paths that refuses before deepsec runs.
+	cov, _ := runDeepsecNodeIn(t, dir, "", `exit 0`)
+	if cov["source"] != "deepsec_unavailable" {
+		t.Fatalf("this pass was meant to refuse before running deepsec: %v", cov)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("a pass that refused to run deleted a neighbour's export: %v", err)
+	}
+	if string(got) != neighbour {
+		t.Errorf("a pass that refused to run rewrote a neighbour's export: %q", got)
+	}
+}
+
 // Two readers of ONE location. The coverage reader resolves the data root as
 // $DEEPSEC_DATA_ROOT or "data", because deepsec honours that variable; the
 // shell guard that validates a run id reads the same directory. A guard that
