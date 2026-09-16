@@ -30,6 +30,30 @@ const maxSubbotDepth = 8
 
 type subbotDepthKey struct{}
 
+// realOrClean is a path's absolute symlink-resolved form, or its lexically
+// cleaned form when it does not resolve — a catalogue root absent from this
+// pod is legitimate, and a path that does not resolve holds nothing anyway.
+func realOrClean(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		if abs, err := filepath.Abs(resolved); err == nil {
+			return abs
+		}
+	}
+	return filepath.Clean(p)
+}
+
+// childPath joins a relative child source onto its parent's directory the way
+// every other reader of a `subbot source:` does (bundle.ChildPath), so a pod
+// names the same file the laptop does. A parent directory that does not
+// resolve leaves the lexical join, which is what the caller's own "not found
+// beside the parent" message should quote.
+func childPath(parentDir, source string) string {
+	if resolved, err := bundle.ChildPath(parentDir, source); err == nil {
+		return resolved
+	}
+	return filepath.Clean(filepath.Join(parentDir, source))
+}
+
 // resolveSubbotSource locates the child .bot a `subbot` node names, for a
 // run executing on a pod.
 //
@@ -54,17 +78,46 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 	if parentDir != "" {
 		// The parent's bundle COLLECTION, not the bundle itself: a sibling
 		// bundle (`../golden-master/…`) is the designed shape of a child.
+		//
+		// In BOTH spellings, because a catalogue may ship its `<slug>`
+		// directories as links while the catalogue itself is a real
+		// directory: the parent is then `/app/bots/modernize ->
+		// /opt/bundles/modernize`, a climbing source lands beside the link's
+		// TARGET, and no written root names `/opt/bundles`.
 		roots = append(roots, filepath.Dir(filepath.Clean(parentDir)))
+		if resolved := filepath.Dir(realOrClean(parentDir)); resolved != filepath.Dir(filepath.Clean(parentDir)) {
+			roots = append(roots, resolved)
+		}
 	}
 	for _, bp := range botsPaths {
 		if bp != "" {
 			roots = append(roots, filepath.Clean(bp))
 		}
 	}
+	// A candidate is held by a root in EITHER namespace: as both were
+	// written, or as both resolve. Two shapes need the two arms, and each is
+	// a deployment that works today.
+	//
+	// The written arm: a catalogue whose `<slug>` directories are symlinks —
+	// `/app/bots/golden-master -> /opt/…`. Resolved, the candidate leaves the
+	// root it is plainly inside.
+	//
+	// The resolved arm: a catalogue reached THROUGH a link —
+	// `/srv/bots -> /opt/catalogue`. A climbing source now joins onto the
+	// resolved parent, so the candidate is `/opt/catalogue/…` while the root
+	// is still spelled `/srv/bots`; compared lexically it looks outside a
+	// collection it has never left.
+	//
+	// Either arm accepting is enough, which keeps this strictly more
+	// permissive than a lexical-only comparison: nothing that resolves today
+	// stops resolving.
 	contained := func(p string) bool {
+		holds := func(root, candidate string) bool {
+			rel, err := filepath.Rel(root, candidate)
+			return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		}
 		for _, root := range roots {
-			rel, err := filepath.Rel(root, p)
-			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if holds(root, p) || holds(realOrClean(root), realOrClean(p)) {
 				return true
 			}
 		}
@@ -72,7 +125,7 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 	}
 	beside := "(no parent bundle directory)"
 	if parentDir != "" {
-		beside = filepath.Clean(filepath.Join(parentDir, source))
+		beside = childPath(parentDir, source)
 		if _, err := os.Stat(beside); err == nil {
 			if !contained(beside) {
 				return "", fmt.Errorf("subbot source %q: resolves to %s, outside the parent's bundle collection and every catalogue root %v — a child is named relative to its parent bundle, not by a path across the pod", source, beside, botsPaths)

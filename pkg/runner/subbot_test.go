@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
 const subbotTestChild = `## tool-only child: no API keys, no sandbox needed
@@ -480,5 +481,153 @@ func TestSubbotRunnerRunsTheChildInTheParentSandbox(t *testing.T) {
 	}
 	if shared != 1 || started != 0 {
 		t.Fatalf("child events: sandbox_shared=%d sandbox_started=%d, want 1/0", shared, started)
+	}
+}
+
+// TestAPodNamesTheSameChildTheEngineDoes.
+//
+// A `subbot source:` has several readers — bundle.ResolveChild on the
+// validating side, subbotsource.Resolve in-process, this one on a pod. The
+// same declaration must name the same file in all of them, or a bundle runs
+// on a laptop and dies in a cluster with a message quoting a path nobody
+// wrote.
+//
+// `link/modernize -> real/modernize`, sibling at `real/golden-master`. Joined
+// lexically, `../golden-master/extend.bot` folds to `link/golden-master/…`,
+// which is not there; the kernel resolves the link first and reaches the
+// sibling.
+func TestAPodNamesTheSameChildTheEngineDoes(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	writeSubbotFixture(t, filepath.Join(real, "modernize"), "main.bot", subbotTestParent)
+	sibling := writeSubbotFixture(t, filepath.Join(real, "golden-master"), "extend.bot", subbotTestChild)
+
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(real, "modernize"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	pod, podErr := resolveSubbotSource("../golden-master/extend.bot", link, nil)
+	if podErr != nil {
+		t.Fatalf("the pod cannot reach a child the engine runs: %v", podErr)
+	}
+	want, err := filepath.EvalSymlinks(sibling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod != want {
+		t.Errorf("the pod names %s, the file the parent's own `../golden-master/extend.bot` reaches is %s", pod, want)
+	}
+
+	engine, err := subbotsource.NewResolver(subbotsource.ResolverOptions{}).Resolve(
+		context.Background(), filepath.Join(link, "main.bot"), "../golden-master/extend.bot")
+	if err != nil {
+		t.Fatalf("engine resolve: %v", err)
+	}
+	if engine.Path != pod {
+		t.Errorf("the engine names %s and the pod names %s — one bundle, two files", engine.Path, pod)
+	}
+}
+
+// TestACatalogueReachedThroughALinkStillHoldsItsChildren.
+//
+// `srv/bots -> opt/catalogue`, and the real tree sits OUTSIDE the link's own
+// lexical parent — which is what the earlier parity test failed to exercise,
+// its target happening to live under it. A climbing source joins onto the
+// resolved parent, so the candidate is spelled in `opt/catalogue` while the
+// root is still spelled `srv/bots`: compared in one spelling only, a child
+// that never left its collection looks outside it, and the pod returns a hard
+// error instead of falling through.
+func TestACatalogueReachedThroughALinkStillHoldsItsChildren(t *testing.T) {
+	root := t.TempDir()
+	catalogue := filepath.Join(root, "opt", "catalogue")
+	writeSubbotFixture(t, filepath.Join(catalogue, "modernize"), "main.bot", subbotTestParent)
+	child := writeSubbotFixture(t, filepath.Join(catalogue, "golden-master"), "extend.bot", subbotTestChild)
+
+	srv := filepath.Join(root, "srv")
+	if err := os.MkdirAll(srv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(srv, "bots")
+	if err := os.Symlink(catalogue, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := resolveSubbotSource("../golden-master/extend.bot", filepath.Join(link, "modernize"), nil)
+	if err != nil {
+		t.Fatalf("a child inside its own collection was refused: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("resolved %s, want %s", got, want)
+	}
+}
+
+// TestACatalogueWhoseBundlesAreSymlinksStillServesThem is the other arm. A
+// deployment may ship `<bots>/<slug>` as a link to a bundle held elsewhere;
+// resolved, the candidate leaves a root it is plainly inside, so judging it in
+// the resolved namespace ALONE would refuse a shape that works today — and
+// with a message claiming the file is absent when it was found and refused.
+func TestACatalogueWhoseBundlesAreSymlinksStillServesThem(t *testing.T) {
+	root := t.TempDir()
+	catalogue := filepath.Join(root, "bots")
+	if err := os.MkdirAll(catalogue, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(root, "elsewhere", "golden-master")
+	child := writeSubbotFixture(t, elsewhere, "extend.bot", subbotTestChild)
+	if err := os.Symlink(elsewhere, filepath.Join(catalogue, "golden-master")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// A parent materialised alone: no sibling beside it, so the catalogue serves.
+	alone := filepath.Join(root, "materialised", "modernize")
+	writeSubbotFixture(t, alone, "main.bot", subbotTestParent)
+
+	got, err := resolveSubbotSource("../golden-master/extend.bot", alone, []string{catalogue})
+	if err != nil {
+		t.Fatalf("a catalogue bundle shipped as a symlink was refused: %v", err)
+	}
+	if want := filepath.Join(catalogue, "golden-master", "extend.bot"); got != want {
+		t.Errorf("resolved %s, want %s (the catalogue's own spelling); the real file is %s", got, want, child)
+	}
+}
+
+// TestAParentThatIsItselfASymlinkedBundleStillReachesItsSibling.
+//
+// The catalogue is a real directory whose `<slug>` entries are links:
+// `bots/modernize -> bundles/modernize`, `bots/golden-master ->
+// bundles/golden-master`. A climbing source lands beside the link's TARGET, in
+// `bundles/` — a directory no written root names, and whose written root does
+// not resolve to it either, because the root is not the link. The parent's own
+// collection has two spellings, like every other root here.
+func TestAParentThatIsItselfASymlinkedBundleStillReachesItsSibling(t *testing.T) {
+	root := t.TempDir()
+	bundles := filepath.Join(root, "bundles")
+	writeSubbotFixture(t, filepath.Join(bundles, "modernize"), "main.bot", subbotTestParent)
+	child := writeSubbotFixture(t, filepath.Join(bundles, "golden-master"), "extend.bot", subbotTestChild)
+
+	catalogue := filepath.Join(root, "bots")
+	if err := os.MkdirAll(catalogue, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"modernize", "golden-master"} {
+		if err := os.Symlink(filepath.Join(bundles, slug), filepath.Join(catalogue, slug)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+
+	got, err := resolveSubbotSource("../golden-master/extend.bot", filepath.Join(catalogue, "modernize"), nil)
+	if err != nil {
+		t.Fatalf("the pod refused a sibling the in-process resolver compiles fine: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("resolved %s, want %s", got, want)
 	}
 }
