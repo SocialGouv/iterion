@@ -34,9 +34,11 @@ func realPath(p string) (string, error) {
 // the bundle walk and the runtime resolver, come to disagree about which file
 // a bundle runs.
 //
-// Only the parent's side is resolved: the child need not exist. Confinement
-// belongs to the caller — this package refuses a child beyond the collection,
-// the runtime confines through `.botz` installs and botlock.
+// Only the parent's side is resolved: the child need not exist, and nothing
+// here confines it. Confinement belongs to the caller, and the callers differ:
+// this package refuses a child beyond the collection (C253), the pod's
+// resolver refuses one outside every catalogue root, and the in-process
+// resolver of a plain file reference confines nothing at all.
 func ChildPath(parentDir, source string) (string, error) {
 	from, err := realPath(parentDir)
 	if err != nil {

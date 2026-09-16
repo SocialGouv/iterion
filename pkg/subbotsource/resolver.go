@@ -38,8 +38,9 @@ type Dependency struct {
 }
 
 // ResolvedSource is the result of resolving a subbot node's source reference.
-// Path retains the historical path semantics: relative references are joined
-// to the parent directory, while absolute references are returned unchanged.
+// A relative reference is joined onto the parent's RESOLVED directory, so Path
+// is absolute and names the file the OS reaches; an absolute reference is
+// returned unchanged.
 type ResolvedSource struct {
 	Kind       Kind
 	Path       string
@@ -69,7 +70,9 @@ func NewResolver(opts ResolverOptions) *Resolver {
 	return &Resolver{parentlessBaseDir: opts.ParentlessBaseDir, workDir: opts.WorkDir}
 }
 
-// Resolve resolves requestedSource using exactly the legacy filesystem rules.
+// Resolve locates the file a subbot names. A relative reference is joined the
+// way every other reader of a `source:` joins it (bundle.ChildPath), so this
+// and the pod's resolver name the same file.
 // Context is accepted now so future remote source kinds can perform bounded
 // work without changing the runner contract.
 func (r *Resolver) Resolve(_ context.Context, parentSource, requestedSource string) (ResolvedSource, error) {

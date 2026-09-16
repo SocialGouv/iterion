@@ -233,8 +233,42 @@ func TestARelativeSourceNamesTheFileTheOSReaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if _, statErr := os.Stat(got.Path); statErr != nil {
-		t.Errorf("resolved %s, which the OS cannot reach: %v\nthe file the parent's own `../sib/child.bot` reaches is %s",
-			got.Path, statErr, child)
+	// The VALUE, not merely that something stats: the resolved parent is
+	// itself a directory, so `os.Stat` alone accepts a path that dropped the
+	// source entirely.
+	want, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != want {
+		t.Errorf("resolved %s; the file the parent's own `../sib/child.bot` reaches is %s", got.Path, want)
+	}
+}
+
+// TestARelativeSourceUnderARealBaseIsJoinedToIt reads the resolved branch at
+// all. Every case in the table above uses a base that does not exist, so each
+// takes the lexical fallback — a table that never exercises the branch the
+// fix added.
+func TestARelativeSourceUnderARealBaseIsJoinedToIt(t *testing.T) {
+	base := t.TempDir()
+	child := filepath.Join(base, "subbots", "child.bot")
+	if err := os.MkdirAll(filepath.Dir(child), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(child, []byte("## child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewResolver(ResolverOptions{}).Resolve(
+		context.Background(), filepath.Join(base, "parent.bot"), filepath.Join("subbots", "child.bot"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Path != want {
+		t.Errorf("resolved %s, want %s", got.Path, want)
 	}
 }

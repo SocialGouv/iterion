@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
 const subbotTestChild = `## tool-only child: no API keys, no sandbox needed
@@ -480,5 +481,50 @@ func TestSubbotRunnerRunsTheChildInTheParentSandbox(t *testing.T) {
 	}
 	if shared != 1 || started != 0 {
 		t.Fatalf("child events: sandbox_shared=%d sandbox_started=%d, want 1/0", shared, started)
+	}
+}
+
+// TestAPodNamesTheSameChildTheEngineDoes.
+//
+// A `subbot source:` has several readers — bundle.ResolveChild on the
+// validating side, subbotsource.Resolve in-process, this one on a pod. The
+// same declaration must name the same file in all of them, or a bundle runs
+// on a laptop and dies in a cluster with a message quoting a path nobody
+// wrote.
+//
+// `link/modernize -> real/modernize`, sibling at `real/golden-master`. Joined
+// lexically, `../golden-master/extend.bot` folds to `link/golden-master/…`,
+// which is not there; the kernel resolves the link first and reaches the
+// sibling.
+func TestAPodNamesTheSameChildTheEngineDoes(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	writeSubbotFixture(t, filepath.Join(real, "modernize"), "main.bot", subbotTestParent)
+	sibling := writeSubbotFixture(t, filepath.Join(real, "golden-master"), "extend.bot", subbotTestChild)
+
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(real, "modernize"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	pod, podErr := resolveSubbotSource("../golden-master/extend.bot", link, nil)
+	if podErr != nil {
+		t.Fatalf("the pod cannot reach a child the engine runs: %v", podErr)
+	}
+	want, err := filepath.EvalSymlinks(sibling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod != want {
+		t.Errorf("the pod names %s, the file the parent's own `../golden-master/extend.bot` reaches is %s", pod, want)
+	}
+
+	engine, err := subbotsource.NewResolver(subbotsource.ResolverOptions{}).Resolve(
+		context.Background(), filepath.Join(link, "main.bot"), "../golden-master/extend.bot")
+	if err != nil {
+		t.Fatalf("engine resolve: %v", err)
+	}
+	if engine.Path != pod {
+		t.Errorf("the engine names %s and the pod names %s — one bundle, two files", engine.Path, pod)
 	}
 }
