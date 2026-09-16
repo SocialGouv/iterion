@@ -9,7 +9,9 @@ through the full pipeline: parse `.bot` → compile IR → runtime engine → st
 
 ## Pipeline
 
-Each test loads an `.bot` file from `examples/`, compiles it to IR,
+Each test loads an `.bot` fixture through `compileFixture`, which resolves
+the name against `bots/`, then `examples/`, then `e2e/testdata/` — every
+fixture below lives in `e2e/testdata/`. It compiles the fixture to IR,
 injects a `scenarioExecutor` (stub configurable per node) and executes via
 `runtime.Engine`. Assertions cover:
 
@@ -57,7 +59,7 @@ injects a `scenarioExecutor` (stub configurable per node) and executes via
 
 | Test | Verification |
 |------|-------------|
-| `TestAllFixturesCompile` | All 5 fixtures compile without errors (parse + IR) |
+| `TestAllFixturesCompile` | All 16 `.bot` fixtures compile without errors (parse + IR) |
 | `TestEventSequenceCoherence` | Event rules: run_started first, run_finished/failed last, node_started/finished paired, seq monotonic |
 
 ## Primitive Coverage
