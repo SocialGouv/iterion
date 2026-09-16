@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -74,6 +75,27 @@ func stubDeepsec(t *testing.T, dir, stdout string, exitCode int) {
 	}
 }
 
+// runIDsIn returns the run ids a scenario's stdout announces, read the same
+// way the node reads them: the text after "Run: " on a line that also carries
+// "Processing complete".
+// The scenarios carry ANSI as the literal escapes printf '%b' will expand, so
+// the pattern skips them the way the node's tr+sed pair does, then takes the
+// leading run of id characters.
+var announcedRunID = regexp.MustCompile(`Run: (?:\\033\[[0-9;]*m)*([A-Za-z0-9._-]+)`)
+
+func runIDsIn(stdout string) []string {
+	var ids []string
+	for _, line := range strings.Split(stdout, `\n`) {
+		if !strings.Contains(line, "Processing complete") {
+			continue
+		}
+		if m := announcedRunID.FindStringSubmatch(line); m != nil {
+			ids = append(ids, m[1])
+		}
+	}
+	return ids
+}
+
 // runRetryBlock executes the shipped block with the stub on PATH and returns
 // the recorded invocations plus the ERRS the block ended with.
 func runRetryBlock(t *testing.T, stdout string, exitCode int) ([]string, string) {
@@ -86,6 +108,22 @@ func runRetryBlock(t *testing.T, stdout string, exitCode int) ([]string, string)
 	for _, d := range []string{logDir, dsw} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	// deepsec writes a run meta for every run it starts, and the node now
+	// requires one before it accepts an id read out of the log: the log is a
+	// channel the audited tree can write into, the meta is not. A scenario that
+	// announces a run must therefore have written its meta, or it is not
+	// modelling deepsec — it is modelling a forged line.
+	for _, id := range runIDsIn(stdout) {
+		runs := filepath.Join(dsw, "data", "p", "runs")
+		if err := os.MkdirAll(runs, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		body := `{"type":"process","phase":"done","createdAt":"2026-09-16T00:00:00.000Z","stats":{"filesProcessed":1}}`
+		if err := os.WriteFile(filepath.Join(runs, id+".json"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write meta: %v", err)
 		}
 	}
 

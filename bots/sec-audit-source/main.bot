@@ -310,6 +310,76 @@ schema scanner_output:
   json_paths:     json
   finding_count:  int
   errors:         json
+  ## How much of the tree a deep scan reached, read from the run metadata the
+  ## scanner writes about itself rather than from its log. Eleven fields, the
+  ## same eleven on every path: source, steps_failed, candidates_found,
+  ## candidate_files, files_processed, scan_phase, process_phase, process_limit,
+  ## limit_truncated, process_failed, process_complete. Only
+  ## run_deepsec_scanner fills it; the shell scanners omit it, and an omitted
+  ## field is absent, not zero.
+  ##
+  ## Ten are scalars and steps_failed is a list, drawn from a closed vocabulary
+  ## this node writes (init, scan, process, export, export_unusable) and
+  ## filtered against it by the reader. Every other field is coerced before it
+  ## is emitted: counts must be real numbers and are never bool (bool is a
+  ## subclass of int in python, so a JSON true would have travelled as a
+  ## count); phases must be short alphabetic strings. That is what makes
+  ## "these fields cannot carry an instruction" a property of the code rather
+  ## than an intention, which matters because report_card holds bash,
+  ## write_file and board.create.
+  ##
+  ## The meta is matched to THIS pass by run id -- runs/<id>.json, the id each
+  ## step prints for the run it wrote -- with the run window as a floor and a
+  ## ceiling beneath it. Selecting the newest meta in a window instead let a
+  ## concurrent run, a second project in the same data root, or a future-dated
+  ## meta author this pass verdict; the scratch is shared between runs by
+  ## design, so none of those is hypothetical.
+  ##
+  ## candidate_files is deepsec filesScanned, which is records.length: the
+  ## number of files carrying at least one candidate, returned to deepsec own
+  ## caller as candidateCount. It is NOT a repository size -- no field here is.
+  ##
+  ## steps_failed carries the verdicts of init, scan and export, which live
+  ## only in this shell and in no meta. Without it, a scan that exited non-zero
+  ## AFTER recording phase=done reached the report as a complete audit.
+  ##
+  ## process_complete is CONSERVATIVE, and it compares nothing across units.
+  ## Three earlier shapes of this predicate were wrong, each for a reason
+  ## worth keeping written down:
+  ##   - a phase is not a completion signal: the scanner records "done" after
+  ##     a quota wall too, and after "nothing to claim, 0 files processed";
+  ##   - its own numbers are not commensurable: --limit counts FILES (its own
+  ##     help text says so), candidatesFound sums CANDIDATES over the current
+  ##     scan, and process draws from a persistent on-disk backlog that
+  ##     neither number measures;
+  ##   - so any ratio built from them reads a healthy unlimited pass as
+  ##     incomplete as soon as one file carries two candidates.
+  ## The predicate therefore uses only terms this node owns outright: the
+  ## process step did not fail, the scanner recorded done, and something was
+  ## actually processed. The CAP is deliberately not one of them -- it is an
+  ## independent fact with its own banner, and folding it in made every run in
+  ## shipped configuration (limit 50) incomplete for a reason no field carried.
+  ##
+  ## "The step did not fail" is the shell verdict, and it is not the exit code
+  ## alone: a retry that RESUMES a run the scanner already marked done exits
+  ## zero without investigating anything, so that resume counts as a failure to
+  ## have completed. A retry with no run id to resume is a different thing -- a
+  ## fresh pass over what is still pending -- and must not be counted as one,
+  ## or a retry that covered the whole tree gets bannered as a partial audit.
+  ##
+  ## What that buys, stated exactly: it never claims more than the scanner
+  ## claims about itself, plus what this node knows about the cap it set. It
+  ## does NOT detect a pass that exited zero while silently skipping files —
+  ## and no reading of the scanner own bookkeeping would, because that
+  ## bookkeeping is what would be lying. The three counters travel alongside
+  ## so a human can judge; they are reportable facts, never terms of an
+  ## equation.
+  ##
+  ## limit_truncated is false only when no cap was set. With a cap it is null,
+  ## never true or false: --limit cuts a backlog whose size nothing records,
+  ## so whether the cap BIT cannot be established — only that coverage is
+  ## unprovable.
+  coverage:       json
 
 ## The deep scanner writes its findings to a file inside the sandbox, and the
 ## pod is destroyed with the run: a pass that dies after it — at triage, at the
@@ -332,10 +402,13 @@ schema scan_join_output:
   lang_scan:     json
   custom_scan:   json
   ## Enhancement 4 — deepsec backend. When vars.enable_deepsec=false
-  ## (default is true), the deepsec_gate routes around run_deepsec_scanner
+  ## (the default), the deepsec_gate routes around run_deepsec_scanner
   ## and this field resolves to an empty object (the runtime tolerates
   ## missing-node refs in compute exprs; see compute scan_join).
   deepsec_scan:  json
+  ## Coverage scalars projected out of the deepsec envelope so report_card
+  ## never sees the envelope's log tail. Empty when deepsec did not run.
+  deepsec_coverage: json
 
 ## cap_findings emits the truncation budget so triage can surface it in
 ## the report (explicit, never-silent signal loss). per_scanner is a list
@@ -596,6 +669,26 @@ schema report_input:
   ## agreement" banner near the top of the markdown report so the
   ## operator sees the cross-voter confidence at a glance.
   voter_agreement:     json
+  ## deepsec's coverage object ONLY — never the whole envelope. The
+  ## envelope's errors[] carries a 1500-character tail PER failed step
+  ## plus env.log, so up to about 9 000 characters, and deepsec echoes
+  ## target-controlled text into its logs (the paths it reads, the
+  ## output of the commands it runs). report_card holds bash,
+  ## write_file and board.create, so routing that tail into its prompt
+  ## would hand the audited repository a channel to the node that files
+  ## the findings.
+  ##
+  ## The coverage object cannot carry an instruction, and that is
+  ## enforced rather than assumed: the reader coerces every count to a
+  ## real number or null, every phase to a short alphabetic string or
+  ## null, and steps_failed to members of a closed vocabulary this node
+  ## writes. Without that coercion the claim rested on deepsec never
+  ## putting a string where a number belongs.
+  ##
+  ## Routed through scan_join so it inherits the SAME enable_deepsec
+  ## guard the rest of the graph uses (empty when the gate routed
+  ## around the scanner).
+  deepsec_coverage:    json
 
 schema report_output:
   created_issues:  json
@@ -1448,6 +1541,105 @@ prompt report_card_user:
   to N changed files — full-repo coverage is NOT implied by this run"
   banner. When `enabled` is false, the run scanned the full repo as
   usual; no diff banner needed.
+
+  Deep-scan coverage (deepsec, when enabled), read from deepsec's own run
+  metadata — NOT from its log, which the audited repository can write into:
+  {{input.deepsec_coverage}}
+  Empty means deepsec did not run on this pass — say nothing about it.
+  Otherwise these eleven fields say how much of the tree the deep scan reached.
+  The finding count never substitutes for them: a truncated pass on a busy
+  tree outnumbers a complete pass on a clean one.
+
+  Rules 1 and 2 are gates on COVERAGE: if one matches, banner it and say
+  nothing further about how much of the tree was reached — 3a and 3b are then
+  already answered ("we cannot tell"), so do not evaluate them. Rule 3c is NOT
+  about coverage but about the findings list, so it survives both gates and is
+  always evaluated. 3a, 3b and 3c are otherwise INDEPENDENT of each other:
+  evaluate each and banner every one that applies.
+
+  Never compute a ratio or a percentage from these numbers, and never present
+  two of them as numerator and denominator. `candidates_found` counts
+  candidates. `candidate_files` counts the files that carried at least one
+  candidate — it is NOT the size of the repository, which appears in no field
+  here. `files_processed` counts files analysed on this pass. `process_limit`
+  counts files of a backlog whose size is recorded nowhere. They are reportable
+  facts, not terms of an equation.
+
+  1. `source` is not "run_meta" → the coverage could not be established.
+     "deepsec_unavailable" means the scanner never ran; "counter_failed"
+     means our own reader broke; "unavailable" means no run metadata could be
+     matched to this pass. Banner "⚠ Deep-scan coverage: UNKNOWN
+     (<source>) — this run is NOT evidence of a full deep scan". Do not round
+     any of them to "complete", and do not omit the banner.
+
+  2. `scan_phase` is not "done", OR `steps_failed` contains "scan" or "init" →
+     the scan that feeds the deep pass did not finish, so nothing downstream
+     describes the repository. Banner "⚠ Deep-scan coverage: UNKNOWN — the scan
+     step did not complete (scan_phase=<scan_phase>, steps_failed=<list>)".
+     Both halves matter and neither implies the other: the scanner records
+     "done" before printing its summary and can die afterwards, leaving a
+     healthy-looking phase beside a failed step. `steps_failed` is null when
+     this reader could not establish the step verdicts at all — treat a null
+     as "not established", which rule 1 has already bannered.
+
+  3a. `limit_truncated` is not false AND `process_limit` is a number → a cap
+     was in force: at most
+     `process_limit` files were eligible for the deep pass, and whether that
+     cap bit cannot be established from the metadata. Banner "⚠ Deep-scan
+     coverage: capped at <process_limit> files (deepsec_process_limit); this
+     run cannot be shown to have deep-scanned the whole repository". This is
+     the most misleading state, because everything downstream of the cap
+     completes normally and looks healthy. `deepsec_process_limit=0` removes
+     the cap.
+
+  3b. `process_complete` is false → the deep pass is not shown to have covered
+     the tree. One of these terms failed, and each has its own words. Read them
+     in order and use the FIRST that applies; if none does, say so plainly
+     ("the deep pass reported a state this report could not interpret") rather
+     than picking the nearest — an unexplained false is a defect of ours, not a
+     fact about the repository:
+     - `process_failed` is true → the step failed. Commonly a quota wall; also
+       raised when a retry merely resumed a run the scanner had already closed,
+       which returns without investigating anything. Banner "⚠ Deep-scan
+       coverage: the deep pass did not complete (the process step failed);
+       findings cover only the part it reached".
+     - `process_phase` is not "done" → it never recorded an end (killed,
+       timed out). Banner the same way, naming the phase.
+     - `files_processed` is 0 or null → nothing was analysed ON THIS PASS. Do
+       NOT read that as an empty repository, and do not say the scan reached
+       nothing: on a workspace that a previous pass already analysed, zero is
+       the ordinary steady state, because the scanner only processes files it
+       has not analysed yet. Banner "⚠ Deep-scan coverage: this pass analysed
+       no file — either everything had already been analysed in this
+       workspace, or nothing was eligible; it cannot attest the repository on
+       its own".
+     Note carefully: a `process_phase` of "done" alone never means completion —
+     the scanner records "done" after a quota wall as well, which is why this
+     field is not read from that label.
+
+  3c. `steps_failed` contains "export" or "export_unusable" → the deep pass may
+     have covered the tree, but its findings did not all come out of it. This
+     is about the FINDINGS LIST, not about coverage; it is not implied by any
+     other rule, and it survives gates 1 and 2. The two tokens say different
+     things and must not be merged:
+     - "export" → the export step itself failed. Banner "⚠ Deep-scan findings:
+       the export step failed; the list below is incomplete regardless of how
+       much was analysed".
+     - "export_unusable" → a step failed AND the export carried nothing, so it
+       was dropped. NONE of the deep scan findings are below, not merely some,
+       and the export step may well have exited zero — do not say it failed.
+       Banner "⚠ Deep-scan findings: this pass produced no usable findings file
+       and it was discarded; no deepsec finding appears in this report".
+
+  4. Only when none of 1, 2, 3a, 3b and 3c applies did the deep pass run
+     uncapped, to a recorded end, without a failed step, over something; no
+     banner needed. You may state the counts factually in the body, with their
+     units named — and even here, do not divide one by another, and do not
+     present `files_processed` as a fraction of anything. On a workspace a
+     previous pass already analysed, the scanner only processes what it has not
+     analysed yet, so a small `files_processed` beside a large
+     `candidate_files` is the ordinary steady state and means nothing about how
+     much of the repository is covered.
 
   Verifier agreement (Enhancement 2 — fixed pool of 3 adversarial
   "disprove" voters; majority drives the verdict):
@@ -2617,9 +2809,24 @@ compute deepsec_gate:
 ## untrusted-input boundary the triage prompt already applies to
 ## semgrep/gosec output.
 tool run_deepsec_scanner:
-  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} bash -c '
+  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} bash -c '
 set +e
 mkdir -p "$(dirname "$OUT_JSON")"
+
+# OUT_JSON is one shared slot in the workspace scratch, which nothing prunes
+# between runs -- so whatever sits there on entry belongs to an EARLIER pass.
+# Left in place it decides FCNT, and FCNT decides whether the export-unusable
+# guard fires, so this pass step verdict would be settled by another pass file:
+# measured, a run whose export step exited 1 writing nothing reported no
+# export_unusable at all and shipped three findings it never produced.
+# Removing it makes "nothing came out" mean "nothing came out of THIS pass".
+#
+# It does NOT make the slot private, and the wider defect is filed separately:
+# bank_deepsec_findings and scan_health both read this same path off the disk,
+# so a pass that never ran deepsec can still publish a neighbour findings. That
+# is a storage-layout defect older than this node coverage reporting, and it is
+# fixed where the path is defined, not here.
+rm -f "$OUT_JSON"
 
 REFS_ROOT="${ITERION_REFERENCES_ROOT:-}"
 if [ -n "$REFS_ROOT" ] && [ -d "$REFS_ROOT/deepsec" ]; then
@@ -2631,7 +2838,7 @@ fi
 # ── graceful-degrade probe ────────────────────────────────────────
 err_envelope() {
   REASON="$1"
-  printf "{\"scanner\":\"deepsec\",\"subscanners\":[],\"json_paths\":{},\"finding_count\":0,\"errors\":[\"deepsec unavailable: %s\"]}\n" "$REASON"
+  printf "{\"scanner\":\"deepsec\",\"subscanners\":[],\"json_paths\":{},\"finding_count\":0,\"coverage\":{\"source\":\"deepsec_unavailable\",\"steps_failed\":null,\"candidates_found\":null,\"candidate_files\":null,\"files_processed\":null,\"scan_phase\":null,\"process_phase\":null,\"process_limit\":null,\"limit_truncated\":null,\"process_failed\":false,\"process_complete\":false},\"errors\":[\"deepsec unavailable: %s\"]}\n" "$REASON"
   exit 0
 }
 
@@ -2660,9 +2867,26 @@ else
   AGENT_ARGS="--agent claude"
 fi
 
-# ── per-run state dir under scan_dir ──────────────────────────────
+# ── state dirs under scan_dir ─────────────────────────────────────
+# DSW is shared between runs ON PURPOSE: it holds the deepsec data root, the
+# file-record cache and the claim mutex, which is how a second pass skips what
+# a first already analysed.
+#
+# LOG_DIR must not be, and that is not a preference. The run ids this node pins
+# its coverage on are read back out of these logs, and every step opens them
+# with > (truncate). ${PROJECT_SCRATCH_DIR} is per-workspace and deliberately
+# shared between runs -- a subbot child writes into its PARENT scratch
+# (runtime/scratch_sweep.go) -- so one shared log dir means the LAST writer owns
+# the id every other reader pins. Measured: a pass that deep-scanned nothing
+# adopted a neighbour run and reported two thousand files covered, with no
+# banner at all. Keying the directory on the run id closes that by
+# construction; reading the ids sooner would only narrow the window.
 DSW="$SCAN_DIR/deepsec-workspace"
-LOG_DIR="$SCAN_DIR/deepsec-logs"
+case "${RUN_ID:-}" in
+  ""|*[!A-Za-z0-9._-]*)
+    err_envelope "run id missing or not usable as a path segment: refusing to share a log directory between runs, because the run ids this node pins its coverage on are read back out of it" ;;
+esac
+LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 mkdir -p "$DSW" "$LOG_DIR"
 
 cd "$WS" || err_envelope "workspace_dir unreadable: $WS"
@@ -2685,6 +2909,28 @@ if [ -n "$GLOBAL_NM" ] && [ -d "$GLOBAL_NM/deepsec" ]; then
 fi
 
 # scan / process / export run from inside the .deepsec workspace.
+#
+# IDENTITY PINS, THE WINDOW FLOORS.
+#
+# Each step prints the id of the run it wrote, and that run meta is exactly
+# runs/<id>.json (core/src/paths.ts runMetaPath). Opening THAT file is the only
+# way to certify the numbers describe THIS pass. Picking the newest meta inside
+# a time window instead spliced three things together, each measured:
+# ${PROJECT_SCRATCH_DIR} is per-workspace and DELIBERATELY shared between runs
+# (runtime/scratch_sweep.go); deepsec supports concurrent runs on one project
+# (packages/processor/src/index.ts, the lock covers the claim and not the work,
+# so runs against disjoint file sets do not block each other); and one data root
+# can hold several projects. A pass killed at 3 files of 2000 adopted a
+# neighbour run and reported COMPLETE, with no banner.
+#
+# The window survives as a FLOOR under the identity, never as the selector: a
+# run id read from a log can be stale or forged, and a meta older than this pass
+# must not be adopted whatever names it. An id that resolves to nothing degrades
+# to source=unavailable and an UNKNOWN banner -- never to a clean bill.
+# Sub-second because deepsec stamps in milliseconds, and a whole-second floor
+# let the last second of the previous run back in.
+START_EPOCH=$(python3 -c "import time; print(time.time())" 2>/dev/null || date -u +%s)
+
 ( cd "$DSW" && deepsec scan ) >"$LOG_DIR/scan.log" 2>&1 || ERRS="$ERRS scan"
 
 PROC_ARGS=""
@@ -2739,13 +2985,59 @@ _dsproc() {
   fi
 }
 
-# deepsec prints "Processing complete. Run: <id>" BEFORE it exits 1 on errored
-# batches, so the id is readable from a FAILED attempt -- which is the only
-# time it is wanted. Strips the ANSI colouring the CLI wraps it in. Empty when
-# the line never appeared, which is the honest input to "start fresh".
-_dsrunid() {
-  grep -a "Processing complete" "$LOG_DIR/process.log" 2>/dev/null | tail -1 \
-    | tr -d "\033" | sed -e "s/.*Run: //" -e "s/\[[0-9;]*m//g" -e "s/[^A-Za-z0-9_.-].*//"
+# Extracts the run id deepsec prints for the run it just wrote. Two steps print
+# one, with different wording, so the extraction is parameterised and written
+# ONCE -- a second copy would drift from this one. Strips the ANSI colouring the
+# CLI wraps it in, keeps the LAST match because deepsec prints its own line
+# after any file listing, and yields the empty string when the line never
+# appeared, which is the honest input to "we do not know which run".
+# BOTH patterns are required, and the second is not redundant: the sed that
+# strips the prefix is a NO-OP on a line that lacks it, so a stack trace
+# carrying the anchor alone used to yield a plausible-looking id (measured:
+# "Error", "TypeError", "node"). A non-empty garbage id is worse than none --
+# it raises the resume flag and sends the retry to resume a run that does not
+# exist, instead of starting the fresh pass the retry exists for.
+_dsrid() {
+  grep -a "$2" "$1" 2>/dev/null | grep -a "$3" | tail -1 \
+    | tr -d "\033" | sed -e "s/.*$3//" -e "s/\[[0-9;]*m//g" -e "s/[^A-Za-z0-9_.-].*//"
+}
+
+# deepsec prints "Processing complete. Run: <id>" on the success path
+# (packages/deepsec/src/commands/process.ts) and also BEFORE it exits 1 on
+# errored batches, so the id is readable either way. Empty when the line never
+# appeared, which is the honest input to "start fresh".
+#
+# BOTH anchors here are the wording of a PINNED deepsec (2.0.12, see
+# sandbox/sec/Dockerfile in this bot). If a bump changes them, the ids come back
+# empty, no run meta is matched, and coverage degrades to UNKNOWN on every run:
+# noisy and permanent, but never a clean bill. Re-read this pair when bumping.
+#
+# A quota wall is NOT one of the cases these anchors have to catch. deepsec
+# exits non-zero on quotaExhausted at both of its exit sites, before it even
+# looks at errored batches (commands/process.ts, standard and direct mode), so
+# the step verdict this node already owns catches it. The log-only
+# "Stopped: ... exhausted" grep below is a SECOND door, deciding whether to
+# retry -- not the one that decides whether coverage is claimed.
+_dsrunid() { _dsrid "$LOG_DIR/process.log" "Processing complete" "Run: "; }
+
+# True when the id names a run meta the scanner really wrote. The log is a
+# target-writable channel -- deepsec streams agent text into it, including
+# paths out of the audited tree -- so one crafted line can carry both anchors
+# the extraction greps for. Enumerating more anchors does not settle that; the
+# meta does, because it is the same authority the coverage reader consults.
+# The data root is resolved the SAME way the coverage reader resolves it, and
+# that is the point: two readers of one location that disagree are a defect
+# waiting for the day the environment sets it. deepsec honours
+# DEEPSEC_DATA_ROOT, so a hardcoded data/ here would discard every id the log
+# announced, make the resume branch unreachable, and log "no run meta carries
+# it" -- which reads as a forgery attempt rather than a path mismatch.
+_dsmeta_exists() {
+  _dsroot="${DEEPSEC_DATA_ROOT:-data}"
+  case "$_dsroot" in /*) : ;; *) _dsroot="$DSW/$_dsroot" ;; esac
+  for _m in "$_dsroot"/*/runs/"$1".json; do
+    [ -f "$_m" ] && return 0
+  done
+  return 1
 }
 
 # A quota wall does not heal in twenty seconds. Retrying one buys a second
@@ -2766,9 +3058,37 @@ elif _dsquota; then
   ERRS="$ERRS process"
 else
   _RID=$(_dsrunid)
+  # An id is only an id if a run meta carries it. Unchecked, a forged line did
+  # two harms at once: it raised the resume flag, so a healthy pass was
+  # bannered as one that did not complete, and it sent the retry to resume a
+  # run that does not exist -- letting the audited repository suppress the very
+  # recovery the retry exists for.
+  if [ -n "$_RID" ] && ! _dsmeta_exists "$_RID"; then
+    echo "[deepsec] the process log named run $_RID but no run meta carries it; treating it as absent and starting fresh" >>"$LOG_DIR/process.log"
+    _RID=""
+  fi
   if [ -n "$_RID" ]; then
     echo "[deepsec] process failed; resuming run $_RID in 20s (batches already investigated are not redone)" >>"$LOG_DIR/process.log"
+    # ONLY a resume can launder a closed run, so only a resume raises this.
+    # Resuming a run deepsec already marked done short-circuits
+    # (packages/processor/src/index.ts:259 "Run <id> already completed",
+    # returning errorBatchCount 0) and therefore exits 0 without investigating
+    # one batch -- a first attempt that failed on errored batches would be
+    # laundered into a clean pass, reading complete over whatever fraction the
+    # first attempt reached. Raised BEFORE the retry, never lowered by it.
+    #
+    # NOTE, a defect of its own, reported separately: _RID is readable only
+    # once the run is done, so this branch can never re-investigate anything.
+    # deepsec says so itself when it exits 1: "Files in those batches were
+    # marked status=error and will be retried on the NEXT run".
+    PROC_RESUMED=1
   else
+    # A fresh pass, not a resume: nothing is being laundered, and it reprocesses
+    # pending|error only, so it neither pays for the whole tree again nor
+    # short-circuits. Raising the resume flag here bannered a retry that had
+    # covered the entire tree as "the deep pass did not complete" -- a false
+    # alarm on the most reachable path, since any blip that kills the first
+    # attempt early leaves no run id at all.
     echo "[deepsec] process failed; no run id in the log, the retry starts a fresh pass" >>"$LOG_DIR/process.log"
   fi
   sleep 20
@@ -2792,12 +3112,215 @@ fi
 # report. Drop the file and stop claiming the path; the unavailable branch
 # above already emits json_paths:{} and triage only reads what json_paths
 # lists, so this is the shape both already handle.
+#
+# This runs BEFORE the coverage reader, and the order is load-bearing: the
+# reader projects the step verdicts out of ERRS, so a guard that appended its
+# token afterwards would put a step name in the vocabulary and in the report
+# rules that the code could never emit -- a dead branch documented as working.
+# Nothing between here and the reader consumes PATHS_JSON.
 PATHS_JSON=$(printf "{\"deepsec\":\"%s\"}" "$OUT_JSON")
 if [ -n "$ERRS" ] && [ "$FCNT" = "0" ]; then
   rm -f "$OUT_JSON"
   PATHS_JSON="{}"
   ERRS="$ERRS export_unusable"
 fi
+
+# How much of the tree this pass actually reached. Nothing else in this
+# envelope answers it: a pass stopped by a quota wall exports the findings of
+# the batches it did run, exits through this same path, and outnumbers a
+# complete pass on a cleaner tree — so finding_count cannot tell them apart.
+#
+# READ FROM THE RUN META deepsec WRITES ABOUT ITSELF, never from its log.
+# (That sentence avoids an apostrophe on purpose: one closes the bash -c
+# block this whole body lives in, and the outer shell then re-parses the
+# rest of the script. Measured here, exit 2 and a mangled envelope.)
+# Three reasons to prefer the meta, each
+# measured, and the third is why a log parser cannot be repaired into
+# correctness:
+#
+#  1. --limit truncates the candidate list BEFORE batching
+#     (packages/processor/src/index.ts:479 slice, :543 batchCandidates), so
+#     every count derived from the batch lines is a count of the TRUNCATED
+#     slice. At the shipped default of 50, a 2000-candidate tree reports a
+#     complete pass over 2.5% of itself.
+#  2. A batch line is printed when a batch STARTS. A quota wall aborts every
+#     batch in flight, each of which already printed, so a wall in the last
+#     concurrency group reads as a complete pass.
+#  3. deepsec echoes target-controlled text into that log — the paths it reads
+#     and the output of the commands it runs. A repository containing a
+#     directory named "Batch 4" and a file named "4" writes its own coverage
+#     verdict. We are auditing the very tree that would author it.
+#
+# The run metas are structured JSON deepsec writes about itself, one per run,
+# carrying its type (scan|process), its phase (running|done|error) and its
+# stats (packages/core/src/types.ts).
+#
+# WHAT THE META DOES NOT HOLD, and the name that misleads. filesScanned is
+# records.length (packages/scanner/src/index.ts:575) -- the count of files
+# carrying at least one candidate, which deepsec returns to its own caller
+# under the name candidateCount six lines later (:581). The tree total is
+# computed per language as scannedFiles and never persisted, so NO field of
+# the meta is a denominator. It travels here as candidate_files, under the
+# name of what it counts: called files_scanned, it would have written
+# "1194 files scanned, coverage complete" into a report about a
+# twenty-thousand-file repository.
+#
+# THE STEP VERDICTS TRAVEL TOO. Only this shell knows whether init, scan or
+# export failed, and a failure there is invisible in the metas: scan calls
+# completeRun(..., "done", ...) and THEN prints for another 180 lines under an
+# uncaughtException handler that exits 1 (packages/deepsec/src/cli.ts), so a
+# disk filling up mid-summary leaves phase=done on disk and a failed step in
+# this shell. Reading scan_phase alone substituted a meta label for our own
+# verdict -- exactly what this node refuses to do for the process step.
+#
+# Data root: $DEEPSEC_DATA_ROOT or "data", relative to the cwd deepsec ran in,
+# which is $DSW (packages/core/src/paths.ts:4). The project id is unknown here,
+# so the glob carries the run id, which is unique.
+# (No backticks and no apostrophes below: they close this block.)
+case "$ERRS" in *process*) PROC_FAILED=1 ;; *) PROC_FAILED="${PROC_RESUMED:-0}" ;; esac
+# Both ids are read HERE, once every log is written, rather than each beside
+# its own step: the retry block is exercised on its own by the retry tests,
+# which slice it out of this body, so a helper it needs must be defined inside
+# it. The scan log is still on disk, so nothing is lost by reading it late.
+SCAN_RID=$(_dsrid "$LOG_DIR/scan.log" "Run ID: " "Run ID: ")
+PROC_RID=$(_dsrunid)
+COVERAGE=$(DSW="$DSW" PROC_LIMIT="$PROC_LIMIT" START_EPOCH="$START_EPOCH" PROC_FAILED="$PROC_FAILED" STEPS_FAILED="$ERRS" SCAN_RID="$SCAN_RID" PROC_RID="$PROC_RID" python3 -c "
+import datetime, glob, json, math, os, time
+root = os.environ.get(\"DEEPSEC_DATA_ROOT\") or \"data\"
+if not os.path.isabs(root):
+    root = os.path.join(os.environ[\"DSW\"], root)
+try:
+    limit = int(os.environ.get(\"PROC_LIMIT\") or 0)
+except ValueError:
+    limit = 0
+try:
+    start = float(os.environ.get(\"START_EPOCH\") or 0)
+except ValueError:
+    start = 0.0
+proc_failed = os.environ.get(\"PROC_FAILED\") == \"1\"
+
+# A closed vocabulary this shell writes, never anything read from disk or from
+# a log. Filtering against it is what makes the claim below TRUE rather than
+# merely intended: no value of this field can carry an instruction.
+KNOWN_STEPS = (\"init\", \"scan\", \"process\", \"export\", \"export_unusable\")
+steps_failed = sorted(set(
+    t for t in (os.environ.get(\"STEPS_FAILED\") or \"\").split() if t in KNOWN_STEPS
+))
+
+def epoch(ts):
+    if not isinstance(ts, str):
+        return None
+    t = ts.strip()
+    if t.endswith(\"Z\"):
+        t = t[:-1] + \"+00:00\"
+    try:
+        return datetime.datetime.fromisoformat(t).timestamp()
+    except ValueError:
+        return None
+
+def load(rid, kind):
+    # Identity first: runs/<rid>.json is THIS run, whatever else shares the
+    # scratch. The window is the floor under it, bounded on both sides -- a
+    # future-dated meta used to sit inside every window, so a pass that wrote
+    # nothing adopted an older one and reported a clean bill.
+    if not rid:
+        return None
+    ceiling = time.time() + 300
+    for path in glob.glob(os.path.join(
+            glob.escape(root), \"*\", \"runs\", glob.escape(rid) + \".json\")):
+        try:
+            with open(path, errors=\"replace\") as fh:
+                # json accepts NaN and Infinity by default, and int(nan) raises:
+                # our OWN meta being malformed would kill the reader and spell
+                # itself counter_failed, which reads as a defect of ours.
+                meta = json.load(fh, parse_constant=lambda _: None)
+        except Exception:
+            continue
+        if not isinstance(meta, dict) or meta.get(\"type\") != kind:
+            continue
+        when = epoch(meta.get(\"createdAt\"))
+        if when is None or when < start or when > ceiling:
+            continue
+        return meta
+    return None
+
+def count(v):
+    # bool is a subclass of int in python, and a JSON true would have travelled
+    # into a field the report describes as a count.
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    # 1e400 is not the token Infinity, so parse_constant never sees it and
+    # int() would raise -- killing the reader and spelling itself
+    # counter_failed, the label reserved for a defect of ours.
+    if not math.isfinite(v):
+        return None
+    return int(v)
+
+def phase(meta):
+    # The closed vocabulary deepsec declares (packages/core/src/types.ts), not a
+    # shape heuristic: a thirty-character letters-only string is still a
+    # sentence, and this value is injected verbatim into a prompt whose node
+    # holds bash, write_file and board.create. The same argument that makes
+    # steps_failed safe has to apply here or it was never an argument.
+    p = (meta or {}).get(\"phase\")
+    return p if p in (\"running\", \"done\", \"error\") else None
+
+def stats(meta):
+    s = (meta or {}).get(\"stats\")
+    return s if isinstance(s, dict) else {}
+
+scan = load(os.environ.get(\"SCAN_RID\"), \"scan\")
+proc = load(os.environ.get(\"PROC_RID\"), \"process\")
+sstats = stats(scan)
+pstats = stats(proc)
+processed = count(pstats.get(\"filesProcessed\"))
+pphase = phase(proc)
+
+truncated = False if limit <= 0 else None
+
+print(json.dumps({
+    \"source\": \"run_meta\" if (scan or proc) else \"unavailable\",
+    \"steps_failed\": steps_failed,
+    \"candidates_found\": count(sstats.get(\"candidatesFound\")),
+    \"candidate_files\": count(sstats.get(\"filesScanned\")),
+    \"files_processed\": processed,
+    \"scan_phase\": phase(scan),
+    \"process_phase\": pphase,
+    \"process_limit\": limit,
+    \"limit_truncated\": truncated,
+    \"process_failed\": proc_failed,
+    \"process_complete\": bool(
+        pphase == \"done\"
+        and not proc_failed
+        and isinstance(processed, int)
+        and processed > 0
+    ),
+}))
+" 2>>"$LOG_DIR/coverage.log")
+COV_RC=$?
+if [ "$COV_RC" != 0 ] || [ -z "$COVERAGE" ]; then
+  # A distinct third state. "The counter itself failed" must not be spelled
+  # the same way as "deepsec never wrote a meta": one is our defect, the
+  # other is a fact about the run, and they call for different actions.
+  # steps_failed is null and not [] on purpose: the reader that projects the
+  # step verdicts is the thing that just broke, so "none failed" is precisely
+  # what this branch cannot say. Absence, not zero. Rule 1 gates it anyway.
+  #
+  # The reader stderr lands in coverage.log, which is NOT an ERRS token, so the
+  # tail builder below never reads it and it dies with the pod. This branch
+  # tells the operator "our own reader broke" and would leave no evidence of
+  # why -- the exact failure this node fixed for every other step. env.log is
+  # the one log appended to errors[] unconditionally, so the tail moves there.
+  cat "$LOG_DIR/coverage.log" >>"$LOG_DIR/env.log" 2>/dev/null
+  COVERAGE=$(printf "{\"source\":\"counter_failed\",\"steps_failed\":null,\"candidates_found\":null,\"candidate_files\":null,\"files_processed\":null,\"scan_phase\":null,\"process_phase\":null,\"process_limit\":null,\"limit_truncated\":null,\"process_failed\":false,\"process_complete\":false}")
+fi
+# Deliberately NOT folded into ERRS. ERRS means "a step failed", and it drives
+# two things that partial coverage must not drive: the export-unusable guard
+# above (which DELETES the export when ERRS is set and the count is zero) and
+# the per-step log tails. A pass that exported the findings of the batches it
+# did run is a harvest to exploit, not a failure to relaunch — it travels as
+# its own field. The traffic is one-way on purpose: ERRS feeds the coverage
+# object, the coverage object never feeds ERRS.
 
 # The envelope carries the LOG, not just the name of the step that failed.
 # Every log this node writes lives under LOG_DIR inside the sandbox, and the
@@ -2842,7 +3365,7 @@ except OSError as ex:
     out.append(\"env.log: unreadable (\" + type(ex).__name__ + \")\")
 print(json.dumps(out))
 ")
-printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s,\"finding_count\":%s,\"errors\":%s}\n" "$PATHS_JSON" "$FCNT" "$ERR_JSON"
+printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s,\"finding_count\":%s,\"coverage\":%s,\"errors\":%s}\n" "$PATHS_JSON" "$FCNT" "$COVERAGE" "$ERR_JSON"
 '`
   output: scanner_output
   publish: deepsec_scan_artifact
@@ -2950,6 +3473,11 @@ compute scan_join:
     lang_scan:    "outputs.run_lang_scanners"
     custom_scan:  "outputs.run_custom_matchers"
     deepsec_scan: "if(vars.enable_deepsec, outputs.run_deepsec_scanner, '')"
+    ## The coverage scalars alone, behind the same guard. report_card reads
+    ## THIS, never deepsec_scan: the envelope's errors[] carries a log tail
+    ## the audited tree can write into, and report_card holds bash and
+    ## board.create.
+    deepsec_coverage: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.coverage, '')"
 
 ## scan_health (anti-façade smoke gate). Each scanner command ends in
 ## `|| true`, so a scanner that crashes or is absent (e.g. the sandbox
@@ -5103,7 +5631,8 @@ workflow sec_audit_source:
     findings_budget:    "{{outputs.cap_findings}}",
     scanner_health:     "{{outputs.scan_health}}",
     diff_scope:         "{{outputs.diff_scope}}",
-    voter_agreement:    "{{outputs.majority_verdict.voter_agreement}}"
+    voter_agreement:    "{{outputs.majority_verdict.voter_agreement}}",
+    deepsec_coverage:   "{{outputs.scan_join.deepsec_coverage}}"
   }
 
   report_card -> update_file_records with {
