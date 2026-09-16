@@ -126,6 +126,7 @@ Inputs and execution:
 | `--log-level error\|warn\|info\|debug\|trace` | Logging verbosity. |
 | `--no-interactive` | Return at a human pause instead of prompting on the TTY. |
 | `--skip-mcp-health` | Warn instead of aborting when a declared MCP server fails startup health. |
+| `--skill <name>` | Add a skill-library skill to this run on top of whatever the bot declares; repeatable. Also settable machine-wide with `ITERION_SKILLS=a,b`. Manage the library with [`iterion skill`](#iterion-skill). |
 | `--auto-resume <n>` | Retry eligible `failed_resumable` causes with capped backoff. |
 
 Launch-time graph overrides:
@@ -134,6 +135,7 @@ Launch-time graph overrides:
 |---|---|
 | `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
 | `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are in the default auto-selection order; Codex, `pi`, Kimi and Grok are explicit opt-ins. |
+| `--effort-for selector=effort` | Per-node/-group `reasoning_effort` override; repeatable. Same selector rules as `--model`, and a bare effort targets every LLM node (`low`, `medium`, `high`, `xhigh`, `max`, `ultracode`). Wins over the node's DSL `reasoning_effort:` **and** over a dynamic `_reasoning_effort` edge mapping. |
 | `--fallback <backend>:<model>` | Run-level fallback route taken when an agent node's primary fails, e.g. `claw:openai/gpt-5.5`. Applies only to agent nodes that declare no `fallbacks:` of their own, never to judges, and uses the default trigger set (`usage_window`, `unavailable`) — author a `fallbacks:` block for anything finer. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md). |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
 | `--loop-budget-guard on\|off` | Decline a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path with the work it banked instead of dying mid-iteration. Empty inherits the workflow `loop_budget_guard:` then `ITERION_LOOP_BUDGET_GUARD`; default on. |
@@ -196,7 +198,7 @@ iterion resume --run-id RUN --answers-file answers.json
 iterion resume --run-id RUN --answer music=@./theme.mp3   # file field → staged as an attachment
 ```
 
-`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the four run-shape toggles `--auto-memory`, `--repo-devbox`, `--loop-budget-guard` and `--supervisors`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
+`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend/effort overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the four run-shape toggles `--auto-memory`, `--repo-devbox`, `--loop-budget-guard` and `--supervisors`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
 
 ### `iterion fork`
 
