@@ -436,8 +436,14 @@ export async function openFile(
   source: string;
   document: IterDocument;
   diagnostics: string[];
-  path: string;
+  /** Absent when the file does not parse: the document is then what the
+   *  parser salvaged, and binding it would make the next save write that
+   *  back over what the author wrote. */
+  path?: string;
   confirmed_disk_path?: string;
+  /** False when the file does not parse. Absent from the answers this
+   *  client builds itself below, which are never a failed parse. */
+  bindable?: boolean;
   /** Set when the file is the main of a bot in several files: the document
    *  is the merged unit, and a save must present `unit.revision`. */
   unit?: UnitInfo;

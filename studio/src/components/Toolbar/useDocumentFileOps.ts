@@ -64,6 +64,7 @@ export interface UseDocumentFileOpsResult {
   handleAddWorkflow: () => void;
   handleRemoveWorkflow: () => void;
 }
+import { applyOpenedFile } from "@/lib/openedFile";
 
 export function useDocumentFileOps({
   confirm,
@@ -135,13 +136,16 @@ export function useDocumentFileOps({
       try {
         if (kind === "file") {
           const result = await api.openFile(path);
-          setDocument(result.document);
-          setDiagnostics(result.diagnostics);
-          setCurrentFilePath(result.path);
-          setCurrentSource(result.source);
-          setUnit(result.unit ?? null);
-          pushRecent(result.path);
-          markSaved();
+          applyOpenedFile(result, {
+            setDocument,
+            setDiagnostics,
+            setCurrentSource,
+            setCurrentFilePath,
+            setUnit,
+            markSaved,
+          });
+          // Only a file that bound: a recent row is a path to reopen by.
+          if (result.path) pushRecent(result.path);
         } else {
           // The shared helper binds the path the server names for a file
           // inside the workspace, else bots/<name> (so Save works and the

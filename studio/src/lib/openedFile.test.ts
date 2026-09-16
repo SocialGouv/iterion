@@ -1,0 +1,47 @@
+import { describe, expect, it } from "vitest";
+
+import type { IterDocument, UnitInfo } from "@/api/types";
+import { createDocumentStore } from "@/store/document";
+
+import { applyOpenedFile } from "./openedFile";
+
+const document = { workflows: [] } as unknown as IterDocument;
+
+// The real store, not a double: its setCurrentFilePath clears the unit, which
+// is the coupling that decides whether a unit survives being bound.
+describe("applyOpenedFile", () => {
+  it("binds the path and the unit the server named", () => {
+    const unit: UnitInfo = {
+      root: "bots/x",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot", imports: ["lib/nodes.bot"] }, { rel: "lib/nodes.bot" }],
+    };
+    const store = createDocumentStore();
+    applyOpenedFile(
+      { source: 'import "lib/nodes.bot"\n', document, diagnostics: [], path: "bots/x/main.bot", unit },
+      store.getState(),
+    );
+    expect(store.getState().currentFilePath).toBe("bots/x/main.bot");
+    expect(store.getState().unit).toEqual(unit);
+  });
+
+  // The defect: the document is what the parser SALVAGED, so binding it makes
+  // the first Save write that back over what the author wrote.
+  it("binds nothing when the server named no path — a save must ask where", () => {
+    const source = "workflow y:\n  entry: done\n\nagent broken\n  not a declaration\n";
+    const store = createDocumentStore();
+    store.getState().setCurrentFilePath("bots/y/main.bot");
+
+    applyOpenedFile(
+      { source, document, diagnostics: ["y.bot:4:1: error [E012]: unknown property"] },
+      store.getState(),
+    );
+
+    expect(store.getState().currentFilePath).toBeNull();
+    expect(store.getState().unit).toBeNull();
+    // The text is still shown: the editor has to display what is there.
+    expect(store.getState().currentSource).toBe(source);
+    expect(store.getState().diagnostics).toHaveLength(1);
+  });
+});

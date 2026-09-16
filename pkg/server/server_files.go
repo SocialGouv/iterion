@@ -633,7 +633,14 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path)})
+		if u.HasErrors() {
+			// Nothing is bound: the studio gets the text and the program the
+			// loader salvaged, with the diagnostics and the word that there
+			// is nothing to save onto. Same posture as serveDiskExample.
+			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags})
+			return
+		}
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path), Bindable: true})
 		return
 	}
 	docJSON, err := ast.MarshalFile(pr.File)
@@ -641,19 +648,44 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	writeJSON(w, struct {
-		Source            string          `json:"source"`
-		Document          json.RawMessage `json:"document"`
-		Diagnostics       []string        `json:"diagnostics,omitempty"`
-		Path              string          `json:"path"`
-		ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
-	}{
+	if parseHasErrors(pr.Diagnostics) {
+		// The document is what the parser SALVAGED — the file minus the
+		// region it could not read. Bound and marked saved, the next save
+		// writes that back and the author's text is gone. So nothing is
+		// bound, and a save asks where.
+		confirmedDiskPath, req.Path = "", ""
+	}
+	writeJSON(w, openFileResponse{
 		Source:            string(data),
 		Document:          json.RawMessage(docJSON),
 		Diagnostics:       diags,
 		Path:              req.Path,
 		ConfirmedDiskPath: confirmedDiskPath,
+		Bindable:          req.Path != "",
 	})
+}
+
+// openFileResponse is the open response of a bot in one file. Bindable is
+// false when the file does not parse, and Path is then empty: see the
+// comment where it is set.
+type openFileResponse struct {
+	Source            string          `json:"source"`
+	Document          json.RawMessage `json:"document"`
+	Diagnostics       []string        `json:"diagnostics,omitempty"`
+	Path              string          `json:"path,omitempty"`
+	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	Bindable          bool            `json:"bindable"`
+}
+
+// parseHasErrors reports whether a parse left errors — the state in which the
+// AST is what the parser could salvage rather than what the file holds.
+func parseHasErrors(diags []parser.Diagnostic) bool {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {

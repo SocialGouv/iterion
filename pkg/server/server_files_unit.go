@@ -663,9 +663,13 @@ type unitOpenResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics,omitempty"`
-	Path              string          `json:"path"`
+	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	Unit              *unitInfo       `json:"unit"`
+	// Bindable is false when the file does not parse: the document is then
+	// what the parser SALVAGED, and binding it would make the next save
+	// write that back over what the author wrote.
+	Bindable bool `json:"bindable"`
 }
 
 // parseUnitFiles parses a bot in several files, given as a files map, as its

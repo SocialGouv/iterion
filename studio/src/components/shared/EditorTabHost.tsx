@@ -33,6 +33,7 @@ import { useUIStore } from "@/store/ui";
 import { botDisplayLabel } from "@/lib/botLabel";
 import { toastError } from "@/lib/errorHints";
 import { Button, EmptyState } from "@/components/ui";
+import { applyOpenedFile } from "@/lib/openedFile";
 
 const EditorView = lazy(() => import("@/components/EditorView"));
 
@@ -129,12 +130,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         // Another path (deep link, Save As) may have bound the file
         // while the fetch was in flight — don't clobber it.
         if (s.currentFilePath !== file) {
-          s.setDocument(result.document);
-          s.setCurrentFilePath(result.path);
-          s.setCurrentSource(result.source);
-          s.setUnit(result.unit ?? null);
-          s.setDiagnostics(result.diagnostics);
-          s.markSaved();
+          applyOpenedFile(result, s);
         }
         setLoadState("ready");
       })
