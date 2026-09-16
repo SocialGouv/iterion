@@ -161,11 +161,11 @@ Iterion ships a catalog of named, first-class agent workflows. Each is packaged 
 | Workflow | Role | Bundle |
 |---|---|---|
 | 🧭 **Nexie** | Co-CTO orchestrator — surveys the repo, elicits priorities, proposes a roadmap, and emits kanban issues | [`whats-next`](bots/whats-next/) |
-| 🛠️ **Featurly** | Ships a feature end-to-end — plan → implement → simplify → review-fix loop | [`feature_dev`](bots/feature-dev/) |
-| 🌿 **Billy** | Branch reviewer-fixer — one adaptive campaign over the branch diff, with deterministic checks and convergence gates | [`branch_improve_loop`](bots/branch-improve-loop/) |
-| 🌍 **Willy** | Whole-repo reviewer-fixer — the same unit-convergent campaign across the full codebase | [`whole_improve_loop`](bots/whole-improve-loop/) |
+| 🛠️ **Featurly** | Ships a feature end-to-end — plan → implement → simplify → review-fix loop | [`feature-dev`](bots/feature-dev/) |
+| 🌿 **Billy** | Branch reviewer-fixer — one adaptive campaign over the branch diff, with deterministic checks and convergence gates | [`branch-improve-loop`](bots/branch-improve-loop/) |
+| 🌍 **Willy** | Whole-repo reviewer-fixer — the same unit-convergent campaign across the full codebase | [`whole-improve-loop`](bots/whole-improve-loop/) |
 | 📚 **Doki** | Doc aligner — detects & fixes doc/code drift (the docs, never the code) | [`docs-refresh`](bots/docs-refresh/) |
-| 🔎 **Revi** | Read-only code reviewer — one model family by default, optional cross-family dual mode, findings published to the board | [`review_pr`](bots/review-pr/) |
+| 🔎 **Revi** | Read-only code reviewer — one model family by default, optional cross-family dual mode, findings published to the board | [`review-pr`](bots/review-pr/) |
 | 🛡️ **Seki** | Source security auditor — SAST + secret scan + LLM triage | [`sec-audit-source`](bots/sec-audit-source/) |
 | 📦 **Depsy** | Supply-chain auditor — dependency malware / CVE scan | [`sec-audit-deps`](bots/sec-audit-deps/) |
 | ⬆️ **Renovacy** | Security-aware dependency upgrader | [`secured-renovacy`](bots/secured-renovacy/) |
