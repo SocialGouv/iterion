@@ -29,5 +29,7 @@ func init() {
 	validateCmd.Flags().StringVar(&validateOpts.Fixtures, "fixtures", "", "JSON file of node outputs the dry run answers with ({node: output}, or a list of {node, output}); implies --exec")
 	validateCmd.Flags().BoolVar(&validateOpts.Strict, "strict", false, "with --exec: exit non-zero when the dry run's report is not clean (a CI gate); implies --exec")
 	validateCmd.Flags().DurationVar(&validateOpts.ExecTimeout, "exec-timeout", 0, "with --exec: the bound of one pass of the dry run, the simulated children included (default 1m); a pass that runs out of time is said so in the report")
+	validateCmd.Flags().StringArrayVar(&validateOpts.Vars, "var", nil, "with --exec: a launch value for a workflow var (key=value, repeatable), with the precedence `run` has; implies --exec")
+	validateCmd.Flags().StringVar(&validateOpts.Preset, "preset", "", "with --exec: an in-source named preset applied before --var; implies --exec")
 	rootCmd.AddCommand(validateCmd)
 }

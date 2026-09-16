@@ -254,3 +254,79 @@ func jsonPrinterOnly() *Printer {
 	p, _ := jsonPrinter()
 	return p
 }
+
+// A bot that guards its entry on a var, as the gallery teaches: without a
+// value the gate refuses on every pass and the graph behind it is never
+// walked; a value from --var, a preset or typed inputs opens it.
+const gatedBot = "vars:\n  release_tag: string = \"\"\n\npresets:\n  ship:\n    release_tag: \"v9\"\n\nschema check_out:\n  configured: bool\n\nschema verdict:\n  ok: bool\n\ncompute gate:\n  output: check_out\n  expr:\n    configured: \"!!vars.release_tag\"\n\nagent work:\n  model: \"claude-opus-4-7\"\n  output: verdict\n\nfail unset:\n  code: TAG_UNSET\n  message: \"release_tag must be set\"\n\nworkflow g:\n  worktree: none\n  sandbox: none\n  entry: gate\n  gate -> work when configured\n  gate -> unset when not configured\n  work -> done\n"
+
+func TestRunValidate_LaunchValuesReachTheDryRun(t *testing.T) {
+	inTempWorkspace(t)
+	if err := os.WriteFile("g.bot", []byte(gatedBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(opts ValidateOptions) ValidateResult {
+		t.Helper()
+		jp, out := jsonPrinter()
+		if err := RunValidateWith("g.bot", jp, opts); err != nil {
+			t.Fatalf("validate: %v\n%s", err, out.String())
+		}
+		var res ValidateResult
+		if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+			t.Fatalf("the JSON result does not decode: %v\n%s", err, out.String())
+		}
+		if res.Exec == nil || len(res.Exec.Passes) != 2 {
+			t.Fatalf("the result carries no dry run: %+v\n%s", res.Exec, out.String())
+		}
+		return res
+	}
+	ended := func(res ValidateResult) []string {
+		var last []string
+		for _, p := range res.Exec.Passes {
+			last = append(last, p.Nodes[len(p.Nodes)-1])
+		}
+		return last
+	}
+	// Without a value: refused at the gate on both passes, `work` never walked.
+	res := run(ValidateOptions{Exec: true})
+	if got := ended(res); got[0] != "unset" || got[1] != "unset" || !res.Exec.Passes[0].Deliberate {
+		t.Fatalf("without a value the gate did not refuse on both passes: %v %+v", got, res.Exec.Passes)
+	}
+	if !contains(res.Exec.UnvisitedNodes, "work") {
+		t.Fatalf("the node behind the gate is not said unvisited: %v", res.Exec.UnvisitedNodes)
+	}
+	// --var opens it, and implies --exec.
+	res = run(ValidateOptions{Vars: []string{"release_tag=v1.2.3"}})
+	if got := ended(res); got[0] != "done" || got[1] != "done" || res.Exec.Passes[0].Status != "finished" {
+		t.Fatalf("--var did not reach the dry run: %v %+v", got, res.Exec.Passes)
+	}
+	// A preset opens it as well; --var wins over it.
+	res = run(ValidateOptions{Preset: "ship"})
+	if got := ended(res); got[0] != "done" {
+		t.Fatalf("--preset did not reach the dry run: %v", got)
+	}
+	// Typed inputs (the MCP tool's) open it too.
+	res = run(ValidateOptions{Inputs: map[string]any{"release_tag": "v2"}})
+	if got := ended(res); got[0] != "done" {
+		t.Fatalf("inputs did not reach the dry run: %v", got)
+	}
+	// A malformed flag is the dry run's error, beside the compile verdict.
+	jp, out := jsonPrinter()
+	err := RunValidateWith("g.bot", jp, ValidateOptions{Vars: []string{"release_tag"}})
+	var bad ValidateResult
+	if derr := json.Unmarshal(out.Bytes(), &bad); derr != nil {
+		t.Fatalf("the JSON result does not decode: %v\n%s", derr, out.String())
+	}
+	if err == nil || !bad.Valid || !strings.Contains(bad.ExecError, "invalid --var format") {
+		t.Fatalf("a malformed --var is not said as the dry run's error: err=%v result=%+v", err, bad)
+	}
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}

@@ -430,3 +430,41 @@ func TestLocalBotsListSkipsMissingPaths(t *testing.T) {
 		t.Fatalf("bot not discovered: %s", text)
 	}
 }
+
+// The dry run's launch values travel on the tool as `inputs` (and `preset`):
+// a bot that guards its entry on a var is refused at the gate without them
+// and walked with them.
+func TestLocalValidateInputsReachTheDryRun(t *testing.T) {
+	s := newTestServer(t)
+	gated := "vars:\n  release_tag: string = \"\"\n\nschema check_out:\n  configured: bool\n\ncompute gate:\n  output: check_out\n  expr:\n    configured: \"!!vars.release_tag\"\n\ntool work:\n  command: \"echo ok\"\n\nfail unset:\n  code: TAG_UNSET\n  message: \"release_tag must be set\"\n\nworkflow g:\n  worktree: none\n  sandbox: none\n  entry: gate\n  gate -> work when configured\n  gate -> unset when not configured\n  work -> done\n"
+	if err := os.WriteFile(filepath.Join(s.WorkDir, "g.bot"), []byte(gated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	last := func(args string) string {
+		t.Helper()
+		text, isErr := call(t, s, "local_validate", args)
+		if isErr {
+			t.Fatalf("tool error: %s", text)
+		}
+		var res struct {
+			Exec struct {
+				Passes []struct {
+					Nodes []string `json:"nodes"`
+				} `json:"passes"`
+			} `json:"exec"`
+		}
+		if err := json.Unmarshal([]byte(text), &res); err != nil {
+			t.Fatalf("decode: %v\n%s", err, text)
+		}
+		if len(res.Exec.Passes) != 2 {
+			t.Fatalf("no dry run in the result:\n%s", text)
+		}
+		return res.Exec.Passes[1].Nodes[len(res.Exec.Passes[1].Nodes)-1]
+	}
+	if got := last(`{"file_path":"g.bot","exec":true}`); got != "unset" {
+		t.Fatalf("without inputs the gate did not refuse: ended at %q", got)
+	}
+	if got := last(`{"file_path":"g.bot","inputs":{"release_tag":"v1"}}`); got != "done" {
+		t.Fatalf("inputs did not reach the dry run: ended at %q", got)
+	}
+}

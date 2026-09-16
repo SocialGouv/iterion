@@ -28,7 +28,9 @@ func localTools() []Tool {
     "file_path": {"type": "string", "description": "Path to the .bot file or .botz bundle (relative paths resolve against the server's working directory)."},
     "exec": {"type": "boolean", "description": "After a clean compile, run the program under a dry run and return its report as exec."},
     "fixtures": {"type": "string", "description": "Path to a JSON file of node outputs the dry run answers with ({node: output}, or a list of {node, output}); implies exec."},
-    "exec_timeout": {"type": "string", "description": "Bound of one pass of the dry run, simulated children included, as a Go duration (default 1m); a pass that runs out of time is said so in the report."}
+    "exec_timeout": {"type": "string", "description": "Bound of one pass of the dry run, simulated children included, as a Go duration (default 1m); a pass that runs out of time is said so in the report."},
+    "inputs": {"type": "object", "description": "Launch values for the workflow's vars, keyed by name (what run --var sets): a bot that guards its entry on a var is otherwise refused at the gate on every pass; a var without a default and without a value is shaped. Implies exec.", "additionalProperties": true},
+    "preset": {"type": "string", "description": "An in-source named preset applied before inputs; implies exec."}
   },
   "required": ["file_path"],
   "additionalProperties": false
@@ -208,10 +210,12 @@ func (s *Server) resolvePath(p string) string {
 
 func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
-		FilePath    string `json:"file_path"`
-		Exec        bool   `json:"exec"`
-		Fixtures    string `json:"fixtures"`
-		ExecTimeout string `json:"exec_timeout"`
+		FilePath    string         `json:"file_path"`
+		Exec        bool           `json:"exec"`
+		Fixtures    string         `json:"fixtures"`
+		ExecTimeout string         `json:"exec_timeout"`
+		Inputs      map[string]any `json:"inputs"`
+		Preset      string         `json:"preset"`
 	}
 	if err := unmarshalArgs(raw, &args); err != nil {
 		return "", false, err
@@ -232,7 +236,7 @@ func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (s
 		execTimeout = d
 	}
 	out, err := captureJSON(func(p *cli.Printer) error {
-		return cli.RunValidateWithContext(ctx, s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures, ExecTimeout: execTimeout})
+		return cli.RunValidateWithContext(ctx, s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures, ExecTimeout: execTimeout, Inputs: args.Inputs, Preset: args.Preset})
 	})
 	// RunValidate returns "validation failed" AFTER printing the result
 	// JSON — an invalid workflow is a normal answer for this tool, so

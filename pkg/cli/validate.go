@@ -77,6 +77,13 @@ type ValidateOptions struct {
 	// and `exec.clean` in the JSON is the report's word.
 	Strict   bool
 	Fixtures string
+	// Vars and Preset give the dry run its launch values — `--var k=v` and
+	// `--preset` as `run` reads them; Inputs are the same values already
+	// typed (the MCP tool's object), merged after them. A var without a
+	// default and without a value stays shaped. Any of them implies Exec.
+	Vars   []string
+	Preset string
+	Inputs map[string]any
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -432,8 +439,12 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// failing — is said in the result beside the compile verdict, which
 	// stands and is printed; the command then exits non-zero for the dry
 	// run, not for the program.
-	if (opts.Exec || opts.Fixtures != "" || opts.Strict) && result.Valid && cr.Workflow != nil {
+	if opts.wantsDryRun() && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
+		inputs, ierr := dryRunInputs(cr.Workflow, opts)
+		if err == nil {
+			err = ierr
+		}
 		if err != nil {
 			result.ExecError = err.Error()
 		} else {
@@ -443,6 +454,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			}
 			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
 				Fixtures: fixtures,
+				Inputs:   inputs,
 				Path:     parsePath,
 				Children: dryRunChildren(collection),
 				Timeout:  opts.ExecTimeout,
@@ -757,4 +769,29 @@ func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 		})
 	}
 	return docs
+}
+
+// wantsDryRun says the options ask for the dry run — by its switch, or by
+// anything only the dry run reads.
+func (o ValidateOptions) wantsDryRun() bool {
+	return o.Exec || o.Strict || o.Fixtures != "" || len(o.Vars) > 0 || o.Preset != "" || len(o.Inputs) > 0
+}
+
+// dryRunInputs is what the dry run's launch supplies: the preset, then the
+// --var flags, then the typed inputs — the precedence `run` has. A bot that
+// guards its entry on a var (the gallery's TAG_UNSET shape) is otherwise
+// refused at the gate on every pass, and nothing behind it is walked.
+func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error) {
+	vars, err := ParseVarFlags(opts.Vars)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := buildRunInputs(wf, opts.Preset, vars)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range opts.Inputs {
+		inputs[k] = v
+	}
+	return inputs, nil
 }
