@@ -341,9 +341,9 @@ The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
 CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
 `claw`. Pi also consumes the resolved plugin skills through an explicit
 `--skill` directory in both transports, and the MCP catalog through its embedded
-RPC extension. The remaining work is claw-side discovery/execution for commands,
-named agents, and hooks. Kimi, Grok, and Codex do not consume these
-plugin contribution surfaces:
+RPC extension. The remaining work is claw-side: discovery and execution for
+commands and named agents, and hook-schema parity. Kimi, Grok, and Codex do not
+consume these plugin contribution surfaces:
 
 | Claude plugin type | iterion kind | parity note |
 |--------------------|--------------|-------------|
@@ -351,7 +351,7 @@ plugin contribution surfaces:
 | MCP servers        | `mcp_servers` ✅ shipped | `claude_code`, claw, and pi RPC consume the resolved MCP catalog |
 | slash commands     | `commands` ✅ shipped (claude_code) | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`. claw reads commands only from CLAUDE.md today → a `.claude/commands/` loader is staged in `.works/claw-code-go` (`internal/commands/`), lands on the next claw release + `go.mod` bump |
 | subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
-| hooks              | `hooks` ✅ shipped (claude_code) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw has shell + Go hook runners but no settings discovery → claw-side follow-on |
+| hooks              | `hooks` ✅ shipped (claude_code) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw reads the same `.claude/settings.json` (user-global, project, then `settings.local.json`) and has shell + Go hook runners, but its `hooks` block is a flat `{PreToolUse \| PostToolUse \| PostToolUseFailure: ["cmd", …]}` of bare command strings — not the Claude Code hook *groups* iterion injects, which decode to nothing there → claw-side follow-on |
 
 The principle: where claude_code has a native surface and claw does not (or they
 diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw
