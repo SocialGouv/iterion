@@ -2766,6 +2766,47 @@ tool sync_harness:
         return bool(sealed_now) and bool(had_uncommitted)
 
 
+    # Directories that live under mutants/ and are NOT mutants. They are named here
+    # because the loader used to exclude them by ACCIDENT: they carry no meta.json,
+    # and "no meta.json" was a silent skip. The moment that silence becomes a
+    # refusal, the exclusion has to be deliberate — otherwise the gate breaks on the
+    # evidence pile the net itself publishes under mutants/audit/.
+    MUTANT_ROOT_NON_MUTANTS = ("holdout", "audit")
+
+
+    def mutant_meta_at(root, name, kind, excluded=()):
+        """The meta of one entry under a mutant root, or None when it is not one.
+
+        A FILE at the root (ADVERSARIAL-NOTES.md, X-LENS.md …) is not a mutant and
+        is skipped, as is any name in `excluded`.
+
+        A DIRECTORY without meta.json is a MALFORMED mutant, and that is the case
+        this exists for. Dropping it in silence shrinks the set while the gate still
+        compares `detected == total`, so a set of 7 that loses 3 meta.json reports a
+        green 4/4 — the vacuity trap of `holdout 0/0` with a different number. It
+        stayed invisible only because git does not lose a tracked file; a set
+        carried on anything less durable makes it reachable.
+        """
+        if name in excluded:
+            return None
+        d = os.path.join(root, name)
+        if not os.path.isdir(d):
+            return None
+        meta_path = os.path.join(d, "meta.json")
+        if not os.path.isfile(meta_path):
+            raise SystemExit(
+                "%s mutant %r has no meta.json (%s). A directory without one is a "
+                "MALFORMED mutant, not an absent one: dropping it in silence shrinks "
+                "the set while the gate still compares detected == total, so every "
+                "figure below would describe a smaller set than the one that was "
+                "drawn. Restore the meta.json, or remove the directory."
+                % (kind, name, d))
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["id"], meta["dir"] = name, d
+        return meta
+
+
     def load_mutants(gm_dir, holdout, sealed_dir=None):
         if holdout:
             root = sealed_dir or os.path.join(gm_dir, "mutants", "holdout")
@@ -2773,31 +2814,19 @@ tool sync_harness:
                 return []
             out = []
             for name in sorted(os.listdir(root)):
-                d = os.path.join(root, name)
-                meta_path = os.path.join(d, "meta.json")
-                if not os.path.isdir(d) or not os.path.isfile(meta_path):
-                    continue
-                with open(meta_path, encoding="utf-8") as f:
-                    meta = json.load(f)
-                meta["id"], meta["dir"] = name, d
-                out.append(meta)
+                meta = mutant_meta_at(root, name, "held-out")
+                if meta is not None:
+                    out.append(meta)
             return out
         root = os.path.join(gm_dir, "mutants", "")
         if not os.path.isdir(root):
             return []
         out = []
         for name in sorted(os.listdir(root)):
-            d = os.path.join(root, name)
-            if name == "holdout" or not os.path.isdir(d):
-                continue
-            meta_path = os.path.join(d, "meta.json")
-            if not os.path.isfile(meta_path):
-                continue
-            with open(meta_path, encoding="utf-8") as f:
-                meta = json.load(f)
-            meta["id"] = name
-            meta["dir"] = d
-            out.append(meta)
+            meta = mutant_meta_at(root, name, "visible",
+                                 excluded=MUTANT_ROOT_NON_MUTANTS)
+            if meta is not None:
+                out.append(meta)
         return out
 
 
@@ -7545,7 +7574,19 @@ tool sync_harness:
                     "a tree that never existed. Commit, then gate."
                     % (len(paths), ", ".join(paths[:12]))))
 
-        visible = load_mutants(gm_dir, holdout=False)
+        # A malformed mutant refuses from inside the loader. Caught here so the
+        # diagnosis lands in the REPORT — the gate's consumer reads that JSON, and a
+        # bare traceback would leave it with an exit code and no term to point at.
+        #
+        # `holdout_detected = -1` for the same reason the reuse arm below does it:
+        # bailing leaves the held-out figures at their 0/0 defaults and the gate
+        # converges in part on `holdout_detected == holdout_total`, which 0 == 0
+        # satisfies. Withheld, not zero-because-failed.
+        try:
+            visible = load_mutants(gm_dir, holdout=False)
+        except SystemExit as e:
+            report["holdout_detected"] = -1
+            bail(str(e))
 
         # MODE=validate — la validite MECANIQUE seule, sans application ni capture.
         #
@@ -7643,7 +7684,15 @@ tool sync_harness:
                              "consume the set; a committed set with no gate on its "
                              "horizon narrows the counter-test while reading as "
                              "prepared.")
-            held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
+            # Same refusal as the visible pile, and it matters MORE here: the
+            # held-out set is scored once, so a silently shrunk one cannot be caught
+            # by a later pass. Same deliberate inequality, so the refusal cannot
+            # read green on `holdout_detected == holdout_total`.
+            try:
+                held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
+            except SystemExit as e:
+                report["holdout_detected"] = -1
+                bail(str(e))
             # The held-out set lives outside the workspace once sealed. If the
             # sealed directory moved or was wiped, it is GONE — and the archetype
             # check below would then blame the campaign for an archetype it did
