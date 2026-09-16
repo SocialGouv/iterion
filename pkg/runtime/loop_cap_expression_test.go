@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -190,6 +191,88 @@ func TestInvalidLoopCapIsPersistedAsExpressionFailure(t *testing.T) {
 				t.Fatalf("status=%s code=%s error=%s", r.Status, r.FailureCode, r.Error)
 			}
 		})
+	}
+}
+
+// TestALoopCapExpressionRefusesAConcatenatedString.
+//
+// `+` concatenates as soon as one operand is a string, so a cap written
+// `outputs.pass.remaining + 1` over a field holding "3" evaluates to "31" —
+// and loopCapInteger accepts a numeric string, deliberately, for the LEGACY
+// single-reference template form. The two tolerances compose into an
+// order-of-magnitude larger loop against the run budget, with no diagnostic.
+//
+// The compile-time guard cannot catch this one: it refuses an operand whose
+// type is KNOWN, and an unschema'd output field has none — which is why the
+// workflow here is built with the shape a compiler could not have typed.
+func TestALoopCapExpressionRefusesAConcatenatedString(t *testing.T) {
+	parsed, err := expr.Parse("outputs.pass.remaining + 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := campaignShapedWorkflow(0)
+	loop := wf.Loops["continuation"]
+	loop.MaxIterations, loop.MaxIterationsExpr, loop.MaxIterationsAST = 0, "outputs.pass.remaining + 1", parsed
+
+	passes := 0
+	exec := newStubExecutor()
+	exec.on("pass", func(_ map[string]any) (map[string]any, error) {
+		passes++
+		return map[string]any{"remaining": "3"}, nil
+	})
+	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"converged": false}, nil
+	})
+	exec.on("deliver", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"published": true}, nil
+	})
+
+	s := tmpStore(t)
+	runErr := New(wf, s, exec).Run(context.Background(), "concat-cap", nil)
+	if runErr == nil {
+		t.Fatalf("a cap that evaluated to the string \"31\" was accepted; the loop ran %d passes where 4 was written", passes)
+	}
+	if !strings.Contains(runErr.Error(), `loop "continuation" cap`) || !strings.Contains(runErr.Error(), "31") {
+		t.Fatalf("the refusal does not name the loop and the value it got: %v", runErr)
+	}
+	if passes > 2 {
+		t.Errorf("passes=%d: the run kept looping on a cap it could not read", passes)
+	}
+	r, err := s.LoadRun(context.Background(), "concat-cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FailureCode != store.FailureExpressionFailed {
+		t.Errorf("failure code = %q, want %q", r.FailureCode, store.FailureExpressionFailed)
+	}
+}
+
+// The legacy single-reference template form KEEPS its numeric-string
+// tolerance: a dynamically typed output that already emitted "2" still caps
+// at 2. Narrowing the expression path must not narrow this one.
+func TestTheLegacyTemplateCapStillAcceptsANumericString(t *testing.T) {
+	wf := campaignShapedWorkflow(0)
+	loop := wf.Loops["continuation"]
+	loop.MaxIterations, loop.MaxIterationsExpr = 0, "{{outputs.pass.remaining}}"
+	loop.MaxIterationsExprRefs = []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"pass", "remaining"}, Raw: "{{outputs.pass.remaining}}"}}
+
+	passes := 0
+	exec := newStubExecutor()
+	exec.on("pass", func(_ map[string]any) (map[string]any, error) {
+		passes++
+		return map[string]any{"remaining": "2"}, nil
+	})
+	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"converged": false}, nil
+	})
+	exec.on("deliver", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"published": true}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "legacy-cap", nil); err != nil {
+		t.Fatalf("the legacy template form lost its numeric-string tolerance: %v", err)
+	}
+	if passes != 3 {
+		t.Errorf("passes=%d, want 3 (the first pass plus a cap of 2 crossings)", passes)
 	}
 }
 
