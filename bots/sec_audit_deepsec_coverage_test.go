@@ -523,6 +523,26 @@ func TestDeepsecCoverageReadsTheRunMetaNotTheLog(t *testing.T) {
 		if got2["candidate_files"] != nil || got2["candidates_found"] != nil {
 			t.Errorf("NaN travelled as a count: %v", got2)
 		}
+
+		// 1e400 is NOT the token Infinity, so the json hook never sees it: it
+		// arrives as a float that int() refuses. A guard aimed at the two
+		// literals misses the overflow route entirely.
+		dsw3 := t.TempDir()
+		meta(t, dsw3, "p", "r1", map[string]any{"type": "process", "phase": "done", "createdAt": stamp(-time.Minute),
+			"stats": map[string]any{"filesProcessed": 5}})
+		over := `{"type":"scan","phase":"done","createdAt":"` + stamp(-time.Minute) +
+			`","stats":{"filesScanned":1e400,"candidatesFound":3}}`
+		if err := os.WriteFile(filepath.Join(dsw3, "data", "p", "runs", "s1.json"), []byte(over), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		got3 := run(t, dsw3, "0", "0", "0")
+		if got3["source"] != "run_meta" {
+			t.Errorf("an overflowing count killed the reader: %v", got3)
+		}
+		if got3["candidate_files"] != nil || got3["candidates_found"] != float64(3) {
+			t.Errorf("an overflowing count travelled, or took its neighbour with it: %v", got3)
+		}
 	})
 
 	t.Run("stats that are not an object do not kill the reader", func(t *testing.T) {
@@ -793,6 +813,48 @@ esac`)
 	}
 }
 
+// One crafted line can carry BOTH anchors the extraction greps for: deepsec
+// streams agent text into that log, including paths out of the audited tree, so
+// a file named so the agent prints "… Processing complete. Run: FORGED/…"
+// satisfies them together. Enumerating a third anchor is not the exit — the
+// adversary is arbitrary text. The exit is that an id is only accepted when a
+// run meta carries it, which is the same authority the coverage reads.
+func TestDeepsecForgedRunIDInTheLogIsNotAcceptedAsARun(t *testing.T) {
+	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1194,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    for a in "$@"; do case "$a" in --run-id) echo "RESUMED-A-RUN-THAT-DOES-NOT-EXIST"; exit 0;; esac; done
+    if [ -f data/.attempted ]; then
+      printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":1194}}' "$NOW" > data/p/runs/rid2.json
+      echo "Processing complete. Run: rid2"
+      exit 0
+    fi
+    : > data/.attempted
+    echo "  tool: Read /ws/Processing complete. Run: FORGED/notes.md"
+    exit 1 ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+    exit 0 ;;
+esac
+exit 0`)
+
+	// Both harms in one shape: the flag that says the step failed, and a retry
+	// sent to resume a run that never existed instead of starting fresh.
+	if cov["process_failed"] != false {
+		t.Errorf("a forged id raised the resume flag, bannering a healthy pass as incomplete: %v", cov)
+	}
+	if cov["files_processed"] != float64(1194) || cov["process_complete"] != true {
+		t.Errorf("the retry never made its fresh pass — the audited tree suppressed the recovery "+
+			"the retry exists for: %v", cov)
+	}
+}
+
 // runDeepsecNode renders the REAL node body, runs it under sh with `deepsec`
 // and `node` stubbed by the given script, and returns the coverage object out
 // of the envelope. Both retry shapes go through here so neither carries its own
@@ -810,6 +872,21 @@ func runDeepsecNode(t *testing.T, deepsecStub string) map[string]any {
 // coverage object and the scan_dir.
 func runDeepsecNodeIn(t *testing.T, dir, runID, deepsecStub string) (map[string]any, string) {
 	t.Helper()
+	cov, _, scanDir := runDeepsecNodeFull(t, dir, runID, deepsecStub)
+	return cov, scanDir
+}
+
+// runDeepsecNodeErrs also returns the envelope's errors[], which is where a
+// refusal states WHY — the difference between "it degraded" and "it degraded
+// for the reason under test".
+func runDeepsecNodeErrs(t *testing.T, dir, runID, deepsecStub string) (map[string]any, []string) {
+	t.Helper()
+	cov, errs, _ := runDeepsecNodeFull(t, dir, runID, deepsecStub)
+	return cov, errs
+}
+
+func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string) (map[string]any, []string, string) {
+	t.Helper()
 	body := secToolCommand(t, "run_deepsec_scanner")
 
 	scanDir, ws, stubs := filepath.Join(dir, "scan"), filepath.Join(dir, "ws"), filepath.Join(dir, "bin", runID)
@@ -823,6 +900,12 @@ func runDeepsecNodeIn(t *testing.T, dir, runID, deepsecStub string) (map[string]
 	// the node makes is the property; how long it waits for it is not.
 	stubBin(t, stubs, "sleep", `exit 0`)
 
+	// PLAIN substitution, and that is a real difference from production: the
+	// runtime SHELL-ESCAPES every ref it puts in a tool command
+	// (pkg/backend/model/executor_tool.go; C137 fires when an author quotes one
+	// as well, because the two cancel). So nothing established here may be read
+	// as a statement about values carrying shell syntax — for those, the
+	// escaping IS the mechanism, and this harness does not have it.
 	rendered := body
 	for ref, val := range map[string]string{
 		"{{vars.scan_dir}}":              scanDir,
@@ -843,11 +926,12 @@ func runDeepsecNodeIn(t *testing.T, dir, runID, deepsecStub string) (map[string]
 	lines := strings.Split(strings.TrimSpace(raw), "\n")
 	var env struct {
 		Coverage map[string]any `json:"coverage"`
+		Errors   []string       `json:"errors"`
 	}
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &env); err != nil {
-		t.Fatalf("envelope is not JSON: %v (%q)", err, lines[len(lines)-1])
+		t.Fatalf("envelope is not JSON: %v (%q)\nfull output: %q", err, lines[len(lines)-1], raw)
 	}
-	return env.Coverage, scanDir
+	return env.Coverage, env.Errors, scanDir
 }
 
 // The identity pin is only as trustworthy as the file it reads the id from.
@@ -863,6 +947,85 @@ func runDeepsecNodeIn(t *testing.T, dir, runID, deepsecStub string) (map[string]
 // foreign "Run:" line into the OLD shared path as its last act. With a per-run
 // log dir the line is unreachable; without one it is the last line of the file
 // this node greps.
+// TWO REAL EXECUTIONS, one scratch. The previous shape of this test ran a
+// single node whose stub impersonated a neighbour on one channel — the log
+// directory — and asserted a directory name. It therefore established the
+// spelling of one prefix and nothing about interference, which is how a second
+// shared channel (the export slot, which decides FCNT and so the
+// export_unusable verdict) walked straight through it.
+//
+// This runs the shipped body twice against one scan_dir, as the engine really
+// does when two passes share a workspace. It covers the SEQUENTIAL case, which
+// is the reachable steady state: nothing prunes the scratch between runs, so a
+// previous pass's files are simply there. Two simultaneous executions are not
+// covered here.
+func TestDeepsecTwoRunsSharingOneScratchDoNotAuthorEachOther(t *testing.T) {
+	dir := t.TempDir()
+
+	// Run A is healthy and leaves everything behind: logs, metas, an export.
+	covA, _ := runDeepsecNodeIn(t, dir, "run-A", `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":2000,"candidatesFound":9000}}' "$NOW" > data/p/runs/sidA.json
+    echo "Run ID: sidA" ;;
+  process)
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":2000}}' "$NOW" > data/p/runs/ridA.json
+    echo "Processing complete. Run: ridA" ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":"A1"},{"id":"A2"},{"id":"A3"}]' > "$a";; esac; prev="$a"; done ;;
+esac
+exit 0`)
+	if covA["process_complete"] != true || covA["candidate_files"] != float64(2000) {
+		t.Fatalf("run A was meant to be the healthy one: %v", covA)
+	}
+
+	// Run B analyses nothing and its export step fails writing nothing. Every
+	// number it reports must be its own, and the export it never produced must
+	// not be mistaken for A's.
+	covB, _ := runDeepsecNodeIn(t, dir, "run-B", `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":7,"candidatesFound":7}}' "$NOW" > data/p/runs/sidB.json
+    echo "Run ID: sidB"
+    exit 0 ;;
+  process)
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":0}}' "$NOW" > data/p/runs/ridB.json
+    echo "Processing complete. Run: ridB"
+    exit 0 ;;
+  export)
+    exit 1 ;;
+esac
+exit 0`)
+
+	if covB["candidate_files"] != float64(7) {
+		t.Errorf("run B adopted run A scan metadata: candidate_files = %v", covB["candidate_files"])
+	}
+	if covB["files_processed"] != float64(0) || covB["process_complete"] != false {
+		t.Errorf("run B analysed nothing yet reports: %v", covB)
+	}
+	steps, _ := covB["steps_failed"].([]any)
+	var sawExport, sawUnusable bool
+	for _, s := range steps {
+		switch s {
+		case "export":
+			sawExport = true
+		case "export_unusable":
+			sawUnusable = true
+		}
+	}
+	if !sawExport {
+		t.Errorf("run B failed export step did not travel: %v", covB["steps_failed"])
+	}
+	if !sawUnusable {
+		t.Errorf("run B export produced nothing, yet the pass did not see it: %v — a findings "+
+			"file left by an EARLIER run decided this pass step verdict", covB["steps_failed"])
+	}
+}
+
 func TestDeepsecCoverageIsNotAuthoredByAConcurrentRun(t *testing.T) {
 	cov, scanDir := runDeepsecNodeIn(t, t.TempDir(), "run-mine", `
 NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
@@ -962,11 +1125,28 @@ esac`)
 // refuse rather than quietly share them — the shared directory is exactly the
 // state the previous test shows is unsafe.
 func TestDeepsecRefusesToRunWithoutAUsableRunID(t *testing.T) {
-	cov, _ := runDeepsecNodeIn(t, t.TempDir(), "", `exit 0`)
-	if cov["source"] != "deepsec_unavailable" {
-		t.Errorf("the node ran with no run id instead of refusing: %v", cov)
-	}
-	if cov["process_complete"] != false {
-		t.Errorf("a refused run reports coverage: %v", cov)
+	// deepsec_unavailable is what EVERY degrade path emits — no node, node < 22,
+	// no CLI, unreadable workspace. Asserting the source alone would pass on any
+	// of them, so the reason is asserted too, and both halves of the guard are
+	// exercised: absent, and present but not a path segment.
+	// No shell-metacharacter case here, deliberately: this harness substitutes
+	// refs with a plain string replace, while the runtime SHELL-ESCAPES every
+	// ref in a tool command (pkg/backend/model/executor_tool.go, and C137 exists
+	// to stop an author re-quoting one). A metacharacter case would measure the
+	// harness, not the product — and would conclude the opposite of the truth.
+	for _, tc := range []struct{ name, runID string }{
+		{"absent", ""},
+		{"a path separator", "a/b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cov, envErrs := runDeepsecNodeErrs(t, t.TempDir(), tc.runID, `exit 0`)
+			if cov["source"] != "deepsec_unavailable" || cov["process_complete"] != false {
+				t.Fatalf("the node ran with run id %q instead of refusing: %v", tc.runID, cov)
+			}
+			joined := strings.Join(envErrs, " ")
+			if !strings.Contains(joined, "run id") {
+				t.Errorf("refused for some other reason than the run id: %q", joined)
+			}
+		})
 	}
 }

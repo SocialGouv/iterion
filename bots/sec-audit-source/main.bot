@@ -1619,9 +1619,17 @@ prompt report_card_user:
 
   3c. `steps_failed` contains "export" or "export_unusable" → the deep pass may
      have covered the tree, but its findings did not all come out of it. This
-     is about the FINDINGS LIST, not about coverage, and it is not implied by
-     any other rule. Banner "⚠ Deep-scan findings: the export step failed; the
-     list below is incomplete regardless of how much was analysed".
+     is about the FINDINGS LIST, not about coverage; it is not implied by any
+     other rule, and it survives gates 1 and 2. The two tokens say different
+     things and must not be merged:
+     - "export" → the export step itself failed. Banner "⚠ Deep-scan findings:
+       the export step failed; the list below is incomplete regardless of how
+       much was analysed".
+     - "export_unusable" → a step failed AND the export carried nothing, so it
+       was dropped. NONE of the deep scan findings are below, not merely some,
+       and the export step may well have exited zero — do not say it failed.
+       Banner "⚠ Deep-scan findings: this pass produced no usable findings file
+       and it was discarded; no deepsec finding appears in this report".
 
   4. Only when none of 1, 2, 3a, 3b and 3c applies did the deep pass run
      uncapped, to a recorded end, without a failed step, over something; no
@@ -2805,6 +2813,21 @@ tool run_deepsec_scanner:
 set +e
 mkdir -p "$(dirname "$OUT_JSON")"
 
+# OUT_JSON is one shared slot in the workspace scratch, which nothing prunes
+# between runs -- so whatever sits there on entry belongs to an EARLIER pass.
+# Left in place it decides FCNT, and FCNT decides whether the export-unusable
+# guard fires, so this pass step verdict would be settled by another pass file:
+# measured, a run whose export step exited 1 writing nothing reported no
+# export_unusable at all and shipped three findings it never produced.
+# Removing it makes "nothing came out" mean "nothing came out of THIS pass".
+#
+# It does NOT make the slot private, and the wider defect is filed separately:
+# bank_deepsec_findings and scan_health both read this same path off the disk,
+# so a pass that never ran deepsec can still publish a neighbour findings. That
+# is a storage-layout defect older than this node coverage reporting, and it is
+# fixed where the path is defined, not here.
+rm -f "$OUT_JSON"
+
 REFS_ROOT="${ITERION_REFERENCES_ROOT:-}"
 if [ -n "$REFS_ROOT" ] && [ -d "$REFS_ROOT/deepsec" ]; then
   REF_PATH="$REFS_ROOT/deepsec"
@@ -2985,6 +3008,18 @@ _dsrid() {
 # appeared, which is the honest input to "start fresh".
 _dsrunid() { _dsrid "$LOG_DIR/process.log" "Processing complete" "Run: "; }
 
+# True when the id names a run meta the scanner really wrote. The log is a
+# target-writable channel -- deepsec streams agent text into it, including
+# paths out of the audited tree -- so one crafted line can carry both anchors
+# the extraction greps for. Enumerating more anchors does not settle that; the
+# meta does, because it is the same authority the coverage reader consults.
+_dsmeta_exists() {
+  for _m in "$DSW"/data/*/runs/"$1".json; do
+    [ -f "$_m" ] && return 0
+  done
+  return 1
+}
+
 # A quota wall does not heal in twenty seconds. Retrying one buys a second
 # full pass that cannot succeed and spends the remaining wall-clock proving
 # it. deepsec names this failure itself rather than leaving it to be inferred
@@ -3003,6 +3038,15 @@ elif _dsquota; then
   ERRS="$ERRS process"
 else
   _RID=$(_dsrunid)
+  # An id is only an id if a run meta carries it. Unchecked, a forged line did
+  # two harms at once: it raised the resume flag, so a healthy pass was
+  # bannered as one that did not complete, and it sent the retry to resume a
+  # run that does not exist -- letting the audited repository suppress the very
+  # recovery the retry exists for.
+  if [ -n "$_RID" ] && ! _dsmeta_exists "$_RID"; then
+    echo "[deepsec] the process log named run $_RID but no run meta carries it; treating it as absent and starting fresh" >>"$LOG_DIR/process.log"
+    _RID=""
+  fi
   if [ -n "$_RID" ]; then
     echo "[deepsec] process failed; resuming run $_RID in 20s (batches already investigated are not redone)" >>"$LOG_DIR/process.log"
     # ONLY a resume can launder a closed run, so only a resume raises this.
@@ -3121,7 +3165,7 @@ case "$ERRS" in *process*) PROC_FAILED=1 ;; *) PROC_FAILED="${PROC_RESUMED:-0}" 
 SCAN_RID=$(_dsrid "$LOG_DIR/scan.log" "Run ID: " "Run ID: ")
 PROC_RID=$(_dsrunid)
 COVERAGE=$(DSW="$DSW" PROC_LIMIT="$PROC_LIMIT" START_EPOCH="$START_EPOCH" PROC_FAILED="$PROC_FAILED" STEPS_FAILED="$ERRS" SCAN_RID="$SCAN_RID" PROC_RID="$PROC_RID" python3 -c "
-import datetime, glob, json, os, time
+import datetime, glob, json, math, os, time
 root = os.environ.get(\"DEEPSEC_DATA_ROOT\") or \"data\"
 if not os.path.isabs(root):
     root = os.path.join(os.environ[\"DSW\"], root)
@@ -3184,6 +3228,11 @@ def count(v):
     # bool is a subclass of int in python, and a JSON true would have travelled
     # into a field the report describes as a count.
     if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    # 1e400 is not the token Infinity, so parse_constant never sees it and
+    # int() would raise -- killing the reader and spelling itself
+    # counter_failed, the label reserved for a defect of ours.
+    if not math.isfinite(v):
         return None
     return int(v)
 
