@@ -95,7 +95,8 @@ workflow review_loop:
 - `{{outputs.worker.history}}` gives the agent all its previous attempts
 - The `when` condition field (`approved`) must be `bool` in `eval_output`
 - When the loop's five iterations are spent, the back-edge is declined and
-  the evaluator has no edge left, so the run fails `NO_OUTGOING_EDGE`; add a
+  the evaluator has no edge left, so the run fails `LOOP_EXHAUSTED` (`validate`
+  warns C145 beforehand); add a
   bare `evaluator -> <exit>` edge (the loop-exhaustion exit, exempt from
   C010) to route the exhausted case somewhere useful instead
 

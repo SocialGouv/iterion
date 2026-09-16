@@ -741,10 +741,11 @@ func (c *compiler) validateResources(w *Workflow) {
 // on their own — or the run dies of LOOP_EXHAUSTED. The exit is the second,
 // bare edge from the same node (docs/dsl.md, "Leaving an exhausted loop").
 // Bounded loops only: an unbounded loop's fuel is its ceiling, dying there
-// is the ceiling's job, and its logic exit is C098's. A foreach edge has
-// its own rule.
+// is the ceiling's job, and its logic exit is C098's. A foreach edge from
+// the same node covers nothing here: it is spent with its collection, and
+// declined like the loop edge once it is.
 func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
-	var loops []string
+	var bounded []string
 	var rest []*Edge
 	for _, e := range w.Edges {
 		if e.From != nodeID {
@@ -752,23 +753,15 @@ func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
 		}
 		switch {
 		case e.LoopName != "":
-			loops = append(loops, e.LoopName)
+			if loop := w.Loops[e.LoopName]; loop != nil && !loop.Unbounded {
+				bounded = append(bounded, e.LoopName)
+			}
 		case e.ForeachName != "":
-			return
 		default:
 			rest = append(rest, e)
 		}
 	}
-	if len(loops) == 0 {
-		return
-	}
-	bounded := false
-	for _, name := range loops {
-		if loop := w.Loops[name]; loop != nil && !loop.Unbounded {
-			bounded = true
-		}
-	}
-	if !bounded {
+	if len(bounded) == 0 {
 		return
 	}
 	var conditional []*Edge
@@ -791,7 +784,7 @@ func (c *compiler) checkLoopExit(w *Workflow, nodeID string) {
 	}
 	c.warnfAt(DiagLoopNoExit, nodeID, "",
 		"node %q: once loop %q is spent its edge is declined and the edges left (%s) do not cover every outcome — the run would die of LOOP_EXHAUSTED; add the loop-exhaustion exit, a bare edge from %q taken once the loop is spent",
-		nodeID, loops[0], left, nodeID)
+		nodeID, bounded[0], left, nodeID)
 }
 
 // isExhaustive returns true if the conditional edges exhaustively cover

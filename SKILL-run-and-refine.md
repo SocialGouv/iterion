@@ -141,7 +141,7 @@ inspect Git history and external side effects so retries remain idempotent.
 - Check schemas, prompt references, edge exhaustiveness, declared cycles,
   router-mode properties, convergence, resources, and workspace safety.
 - Add an exit edge for loop exhaustion (a spent loop with no other edge fails
-  the run `NO_OUTGOING_EDGE`). Do not make a loop unbounded merely to silence
+  the run `LOOP_EXHAUSTED`; `validate` warns C145). Do not make a loop unbounded merely to silence
   that failure.
 - Keep decisions that can be computed or tested out of LLM prompts.
 

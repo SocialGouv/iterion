@@ -7,8 +7,13 @@ import (
 
 const loopHead = `schema verdict:
   ok: bool
+  items: string[]
 
 agent check:
+  model: "m"
+  output: verdict
+
+agent survey:
   model: "m"
   output: verdict
 
@@ -42,6 +47,8 @@ func TestALoopWithNoExitAtItsCapIsAWarning(t *testing.T) {
 		"conditional back-edge and an else":                   {"  assess -> check when not ok as retry(2)\n  assess -> done else\n", false},
 		"no loop at all":                                      {"  assess -> done\n", false},
 		"unbounded loop, its fuel the ceiling":                {"  assess -> check when not ok as retry(unbounded 5)\n  assess -> done when ok\n", false},
+		"unbounded loop declared first, bounded second":       {"  assess -> check when ok as slow(unbounded 5)\n  assess -> check when not ok as retry(2)\n", true},
+		"foreach edge beside the bounded loop":                {"  assess -> check when not ok as retry(2)\n  assess -> survey as foreach scan(item in \"{{outputs.check.items}}\")\n  survey -> done\n", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cr := compileText(t, loopHead+tc.edges)
@@ -53,6 +60,11 @@ func TestALoopWithNoExitAtItsCapIsAWarning(t *testing.T) {
 			}
 			if tc.warn && (got == nil || got.Severity != SeverityWarning || !strings.Contains(got.Message, "LOOP_EXHAUSTED") || got.NodeID != "assess") {
 				t.Fatalf("no C145 warning at assess: %+v\n%v", got, cr.Diagnostics)
+			}
+			// The warning names the BOUNDED loop — never the unbounded one
+			// declared beside it, whose fuel is its ceiling.
+			if tc.warn && !strings.Contains(got.Message, `loop "retry"`) {
+				t.Fatalf("C145 does not name the bounded loop: %s", got.Message)
 			}
 			if !tc.warn && got != nil {
 				t.Fatalf("C145 on a loop that has its exit: %s", got.Message)

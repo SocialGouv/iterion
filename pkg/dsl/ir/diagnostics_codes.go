@@ -165,7 +165,7 @@ const (
 	DiagInvalidSkillRef DiagCode = "C199" // malformed skill-library reference name (warning; existence is resolved at run time)
 
 	DiagLoopNoExit           DiagCode = "C145" // a bounded loop edge with no exit once the loop is spent: the run would die of LOOP_EXHAUSTED at the cap (warning)
-	DiagIntDivisionUnrounded DiagCode = "C146" // a compute field typed int fed by a division that may carry a fraction, outside floor()/round(): fails at run time (warning)
+	DiagIntDivisionUnrounded DiagCode = "C146" // a compute field typed int fed by a division with a float operand, outside floor()/round(): fails at run time (warning)
 
 	DiagUnknownLoopRef DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (error)
 	// Async human interaction (ADR-081): interaction: async + await_answers

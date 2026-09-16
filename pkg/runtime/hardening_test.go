@@ -469,7 +469,7 @@ func TestRuntimeErrorStructured(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: loop exhaustion with no fallback produces NO_OUTGOING_EDGE
+// Test: loop exhaustion with no fallback produces LOOP_EXHAUSTED
 // ---------------------------------------------------------------------------
 
 func TestLoopExhaustionRuntimeError(t *testing.T) {

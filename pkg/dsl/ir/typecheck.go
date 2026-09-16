@@ -79,9 +79,12 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 }
 
 // checkIntDivision warns when a compute field typed int is fed by a division
-// that may carry a fraction — an operand not statically an int — outside
-// floor()/round() (C146): the runtime refuses the fractional value at the
-// node (EXPRESSION_FAILED), and only then.
+// with an operand the compiler knows to be a float, outside floor()/round()
+// (C146): the runtime refuses the fractional value at the node
+// (EXPRESSION_FAILED), and only then. An operand it cannot type — a
+// function's result, an arithmetic — is not held against the author: the
+// runtime divides ints to an int, and the warning must be true when it
+// speaks.
 func (c *compiler) checkIntDivision(w *Workflow, cn *ComputeNode, ce *ComputeExpr, env exprEnv) {
 	schema := w.Schemas[cn.OutputSchema]
 	if schema == nil {
@@ -99,14 +102,18 @@ func (c *compiler) checkIntDivision(w *Workflow, cn *ComputeNode, ce *ComputeExp
 	}
 	if unroundedDivision(expr.ToSnapshot(ce.AST), env) {
 		c.warnfAt(DiagIntDivisionUnrounded, cn.ID, "",
-			"compute %q field %q is an int and its expression %q divides without floor() or round(): a fractional result fails at run time — wrap the division in floor(...) or round(...), or type the field float",
+			"compute %q field %q is an int and its expression %q divides a float without floor() or round(): the fractional result fails at run time — wrap the division in floor(...) or round(...), or type the field float",
 			cn.ID, ce.Key, ce.Raw)
 	}
 }
 
-// unroundedDivision reports a division in n whose result may carry a
-// fraction — an operand not statically an int — that no floor()/round()
-// wraps.
+// isFloat says the compiler knows the operand to be a float.
+func isFloat(t inferredType) bool {
+	return t.known && t.t == FieldTypeFloat
+}
+
+// unroundedDivision reports a division in n with an operand typed float
+// that no floor()/round() wraps.
 func unroundedDivision(n *expr.Snapshot, env exprEnv) bool {
 	if n == nil {
 		return false
@@ -116,8 +123,7 @@ func unroundedDivision(n *expr.Snapshot, env exprEnv) bool {
 	}
 	if n.Kind == expr.SnapBinary && n.Op == "/" && len(n.Children) == 2 {
 		l, r := env.inferType(n.Children[0]), env.inferType(n.Children[1])
-		bothInt := l.known && l.t == FieldTypeInt && r.known && r.t == FieldTypeInt
-		if !bothInt {
+		if isFloat(l) || isFloat(r) {
 			return true
 		}
 	}

@@ -571,8 +571,8 @@ shipped bots, so they are written here:
 - **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
   `src -> exit` is the one legal pair of unconditional edges (the back-edge is
   exempt from C010); without the bare edge a spent loop leaves the node with
-  no edge to take and the run fails `NO_OUTGOING_EDGE` (the log names the
-  exhausted loop). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
+  no edge to take and the run fails `LOOP_EXHAUSTED` (the log names the
+  exhausted loop; `validate` warns C145 beforehand). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
   of the body — so a var that counts passes feeds the cap as `passes - 1`
   (the `campaign-loop` template derives it in its gate, re-evaluated on every pass).
 - **`outputs.*` needs no threading.** `{{outputs.<node>.<field>}}` is
