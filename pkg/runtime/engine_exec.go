@@ -167,6 +167,11 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		return true, true, "", e.failRunDeliberate(rs, currentNodeID, e.failOutcome(rs, n))
 
 	case *ir.HumanNode:
+		if e.simulation.AnswerHumans {
+			// A dry run: the executor answers in the human's place, whatever
+			// the interaction mode, through the standard pipeline below.
+			return false, false, "", nil
+		}
 		switch n.Interaction {
 		case ir.InteractionLLM:
 			// LLM interaction human nodes execute via the standard

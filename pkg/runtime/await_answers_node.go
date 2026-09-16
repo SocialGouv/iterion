@@ -41,6 +41,10 @@ func SetAwaitAnswersPollInterval(d time.Duration) time.Duration {
 // timeout. On success it returns {answers: [...]} with every answered
 // async question in scope.
 func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID string, an *ir.AwaitAnswersNode) (out map[string]any, resultErr error) {
+	if e.simulation.AnswersArrive {
+		// A dry run: the answers have arrived, and there are none.
+		return map[string]any{"answers": []any{}}, nil
+	}
 	until := time.Now().Add(an.Timeout)
 	token := ""
 	defer func() {
