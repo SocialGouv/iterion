@@ -79,7 +79,7 @@ built-in `firecrawl` plugin (disabled by default):
 ```sh
 iterion plugin enable firecrawl
 # self-hosted Firecrawl? set its URL (leave empty for Firecrawl cloud):
-iterion plugin config firecrawl api_url=http://localhost:3002
+iterion plugin config firecrawl --set api_url=http://localhost:3002
 ```
 
 The plugin contributes an `mcp.firecrawl.*` server to the workflow MCP
