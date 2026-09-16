@@ -61,6 +61,13 @@ interface Props {
 // EditorTabHost owns one editor subtree's local state: it instantiates
 // (or fetches from registry) the tab's DocumentStore + SelectionStore,
 // plumbs them through Context so every component below reads its own
+// The file a tab FOLLOWS: the one it hydrated from, whether or not the
+// document is bound to it. A file that does not parse is unbound and still
+// hydrated.
+function followedPath(s: { currentFilePath: string | null; watchedFilePath: string | null }) {
+  return s.currentFilePath ?? s.watchedFilePath;
+}
+
 // per-tab data, and triggers the initial `api.openFile` hydration when
 // a file path is provided. While that hydration is in flight it shows a
 // spinner — never the untitled scaffold the store initializes with —
@@ -82,7 +89,11 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
   const tab = useTabsStore((s) => s.tabs.find((t) => t.id === tabId));
 
   const [loadState, setLoadState] = useState<LoadState>(() => {
-    if (file) return docStore.getState().currentFilePath !== file ? "loading" : "ready";
+    // The FOLLOWED file, not the bound one: a tab whose file does not parse
+    // is unbound, and comparing the binding would make it never count as
+    // hydrated — every remount would re-fetch and replace the author's
+    // in-progress repair with the salvaged document from disk.
+    if (file) return followedPath(docStore.getState()) !== file ? "loading" : "ready";
     // A fresh store has a null source; anything else means the tab already
     // carries a document we must not replace.
     if (draft) return docStore.getState().currentSource === null ? "loading" : "ready";
@@ -115,7 +126,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
   // through the per-tab store via Context.
   useEffect(() => {
     if (!file) return;
-    if (docStore.getState().currentFilePath === file) {
+    if (followedPath(docStore.getState()) === file) {
       setLoadState("ready");
       return;
     }
@@ -129,7 +140,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         const s = docStore.getState();
         // Another path (deep link, Save As) may have bound the file
         // while the fetch was in flight — don't clobber it.
-        if (s.currentFilePath !== file) {
+        if (followedPath(s) !== file) {
           applyOpenedFile(result, s, file);
         }
         setLoadState("ready");

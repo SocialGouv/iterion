@@ -65,6 +65,19 @@ describe("applyOpenedFile", () => {
     expect(store.getState().watchedFilePath).toBe("mine.bot");
   });
 
+  // A tab counts as HYDRATED from the file it follows. Keyed on the binding,
+  // a file that does not parse never counts, so every remount — leaving the
+  // editor and coming back, a project switch, StrictMode's double mount —
+  // re-fetches and replaces the author's in-progress repair with the salvage
+  // from disk. That is the loss #1251 is about, on exactly its files.
+  it("counts as hydrated from the file it follows, bound or not", () => {
+    const store = createDocumentStore();
+    applyOpenedFile({ source: "broken\n", document, diagnostics: ["e"] }, store.getState(), "mine.bot");
+
+    const s = store.getState();
+    expect(s.currentFilePath ?? s.watchedFilePath).toBe("mine.bot");
+  });
+
   // File→New, Import and Start-blank unbind and stop there. A tab that kept
   // following the previous file would auto-reload it over the new document,
   // with no user action — so the followed path tracks the binding, null
