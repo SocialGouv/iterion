@@ -583,8 +583,9 @@ shipped bots, so they are written here:
 - **`expr:` values and quoted `when` are expressions, not templates**: write
   `input.x`, never `{{input.x}}` (C040).
 - **A loop's counter lives under `loop.`, not `outputs.`**: `{{loop.<name>.iteration}}`
-  is the crossing count and `{{loop.<name>.previous_output.<field>}}` the tail's last
-  output; a loop is not a node, so `outputs.loop` names nothing (C029).
+  is the crossing count, `{{loop.<name>.previous_output.<field>}}` the output, at the
+  previous crossing, of the node the loop edge leaves (empty on the first); a loop is
+  not a node, so `outputs.loop` names nothing (C029).
 - **`#` is a comment everywhere EXCEPT inside a string, a prompt body or a
   block scalar, where it is text** — `# Approve the plan?` in a prompt reaches
   the model as a heading. A literal `{{…}}` example belongs in prose, not in a

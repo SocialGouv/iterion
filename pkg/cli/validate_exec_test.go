@@ -257,8 +257,9 @@ func jsonPrinterOnly() *Printer {
 
 // A bot that guards its entry on a var, as the gallery teaches: without a
 // value the gate refuses on every pass and the graph behind it is never
-// walked; a value from --var, a preset or typed inputs opens it.
-const gatedBot = "vars:\n  release_tag: string = \"\"\n\npresets:\n  ship:\n    release_tag: \"v9\"\n\nschema check_out:\n  configured: bool\n\nschema verdict:\n  ok: bool\n\ncompute gate:\n  output: check_out\n  expr:\n    configured: \"!!vars.release_tag\"\n\nagent work:\n  model: \"claude-opus-4-7\"\n  output: verdict\n\nfail unset:\n  code: TAG_UNSET\n  message: \"release_tag must be set\"\n\nworkflow g:\n  worktree: none\n  sandbox: none\n  entry: gate\n  gate -> work when configured\n  gate -> unset when not configured\n  work -> done\n"
+// walked; a value from --var, a preset or typed inputs opens it, and the
+// node after the gate says which value arrived.
+const gatedBot = "vars:\n  release_tag: string = \"\"\n  n: int = 1\n\npresets:\n  ship:\n    release_tag: \"v9\"\n\nschema check_out:\n  configured: bool\n\nschema pick_out:\n  is_v1: bool\n\nschema verdict:\n  ok: bool\n\ncompute gate:\n  output: check_out\n  expr:\n    configured: \"!!vars.release_tag\"\n\nagent work:\n  model: \"claude-opus-4-7\"\n  output: verdict\n\ncompute pick:\n  output: pick_out\n  expr:\n    is_v1: \"vars.release_tag == 'v1'\"\n\nagent other:\n  model: \"claude-opus-4-7\"\n  output: verdict\n\nfail unset:\n  code: TAG_UNSET\n  message: \"release_tag must be set\"\n\nworkflow g:\n  worktree: none\n  sandbox: none\n  entry: gate\n  gate -> work when configured\n  gate -> unset when not configured\n  work -> pick\n  pick -> done when is_v1\n  pick -> other when not is_v1\n  other -> done\n"
 
 func TestRunValidate_LaunchValuesReachTheDryRun(t *testing.T) {
 	inTempWorkspace(t)
@@ -280,45 +281,57 @@ func TestRunValidate_LaunchValuesReachTheDryRun(t *testing.T) {
 		}
 		return res
 	}
-	ended := func(res ValidateResult) []string {
-		var last []string
-		for _, p := range res.Exec.Passes {
-			last = append(last, p.Nodes[len(p.Nodes)-1])
-		}
-		return last
-	}
+	path := func(res ValidateResult) []string { return res.Exec.Passes[0].Nodes }
 	// Without a value: refused at the gate on both passes, `work` never walked.
 	res := run(ValidateOptions{Exec: true})
-	if got := ended(res); got[0] != "unset" || got[1] != "unset" || !res.Exec.Passes[0].Deliberate {
-		t.Fatalf("without a value the gate did not refuse on both passes: %v %+v", got, res.Exec.Passes)
+	for _, p := range res.Exec.Passes {
+		if last := p.Nodes[len(p.Nodes)-1]; last != "unset" || !p.Deliberate {
+			t.Fatalf("without a value the gate did not refuse: %+v", p)
+		}
 	}
 	if !contains(res.Exec.UnvisitedNodes, "work") {
 		t.Fatalf("the node behind the gate is not said unvisited: %v", res.Exec.UnvisitedNodes)
 	}
-	// --var opens it, and implies --exec.
-	res = run(ValidateOptions{Vars: []string{"release_tag=v1.2.3"}})
-	if got := ended(res); got[0] != "done" || got[1] != "done" || res.Exec.Passes[0].Status != "finished" {
-		t.Fatalf("--var did not reach the dry run: %v %+v", got, res.Exec.Passes)
+	// --var opens it, implies --exec, and the value arrives as given.
+	if got := path(run(ValidateOptions{Vars: []string{"release_tag=v1"}})); contains(got, "other") || !contains(got, "work") {
+		t.Fatalf("--var did not reach the dry run as given: %v", got)
 	}
-	// A preset opens it as well; --var wins over it.
-	res = run(ValidateOptions{Preset: "ship"})
-	if got := ended(res); got[0] != "done" {
+	// A preset opens it as well, with its own value.
+	if got := path(run(ValidateOptions{Preset: "ship"})); !contains(got, "other") {
 		t.Fatalf("--preset did not reach the dry run: %v", got)
 	}
+	// --var wins over the preset, as on `run`.
+	if got := path(run(ValidateOptions{Preset: "ship", Vars: []string{"release_tag=v1"}})); contains(got, "other") {
+		t.Fatalf("--var does not win over the preset: %v", got)
+	}
 	// Typed inputs (the MCP tool's) open it too.
-	res = run(ValidateOptions{Inputs: map[string]any{"release_tag": "v2"}})
-	if got := ended(res); got[0] != "done" {
+	if got := path(run(ValidateOptions{Inputs: map[string]any{"release_tag": "v1"}})); contains(got, "other") || !contains(got, "work") {
 		t.Fatalf("inputs did not reach the dry run: %v", got)
 	}
-	// A malformed flag is the dry run's error, beside the compile verdict.
-	jp, out := jsonPrinter()
-	err := RunValidateWith("g.bot", jp, ValidateOptions{Vars: []string{"release_tag"}})
-	var bad ValidateResult
-	if derr := json.Unmarshal(out.Bytes(), &bad); derr != nil {
-		t.Fatalf("the JSON result does not decode: %v\n%s", derr, out.String())
+	// A null is no value: the preset's value stands, the gate stays open.
+	if got := path(run(ValidateOptions{Preset: "ship", Inputs: map[string]any{"release_tag": nil}})); !contains(got, "other") {
+		t.Fatalf("a null launch value wiped the preset's: %v", got)
 	}
-	if err == nil || !bad.Valid || !strings.Contains(bad.ExecError, "invalid --var format") {
-		t.Fatalf("a malformed --var is not said as the dry run's error: err=%v result=%+v", err, bad)
+	// The operator's errors are the dry run's, beside the compile verdict:
+	// a malformed flag, a name no var declares, a value the type cannot read.
+	for _, tc := range []struct {
+		opts ValidateOptions
+		want string
+	}{
+		{ValidateOptions{Vars: []string{"release_tag"}}, "invalid --var format"},
+		{ValidateOptions{Vars: []string{"relase_tag=v1"}}, `"relase_tag" names no var of the workflow (declared: n, release_tag)`},
+		{ValidateOptions{Vars: []string{"n=notanumber"}}, `"n": notanumber is no int`},
+		{ValidateOptions{Inputs: map[string]any{"nosuch": "x"}}, `"nosuch" names no var`},
+	} {
+		jp, out := jsonPrinter()
+		err := RunValidateWith("g.bot", jp, tc.opts)
+		var bad ValidateResult
+		if derr := json.Unmarshal(out.Bytes(), &bad); derr != nil {
+			t.Fatalf("the JSON result does not decode: %v\n%s", derr, out.String())
+		}
+		if err == nil || !bad.Valid || !strings.Contains(bad.ExecError, tc.want) {
+			t.Fatalf("%+v: not said as the dry run's error %q: err=%v exec_error=%q", tc.opts, tc.want, err, bad.ExecError)
+		}
 	}
 }
 
@@ -329,4 +342,34 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// A bundle's file presets (presets/<name>.md) resolve on the dry run as on
+// `run`: the value they set reaches the gate.
+func TestRunValidate_BundlePresetsResolve(t *testing.T) {
+	inTempWorkspace(t)
+	if err := os.MkdirAll("bnd/presets", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("bnd/main.bot", []byte(gatedBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preset := "---\nname: filed\ndisplay_name: Filed\ndescription: A bundle-file preset that sets the release tag.\nvars:\n  release_tag: \"v9\"\n---\nShip it.\n"
+	if err := os.WriteFile("bnd/presets/filed.md", []byte(preset), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out := jsonPrinter()
+	if err := RunValidateWith("bnd", jp, ValidateOptions{Preset: "filed"}); err != nil {
+		t.Fatalf("validate --preset on a bundle: %v\n%s", err, out.String())
+	}
+	var res ValidateResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("the JSON result does not decode: %v\n%s", err, out.String())
+	}
+	if res.ExecError != "" || res.Exec == nil || len(res.Exec.Passes) != 2 {
+		t.Fatalf("the bundle's preset did not resolve: exec_error=%q exec=%+v", res.ExecError, res.Exec)
+	}
+	if got := res.Exec.Passes[0].Nodes; !contains(got, "other") {
+		t.Fatalf("the bundle preset's value did not reach the gate: %v", got)
+	}
 }

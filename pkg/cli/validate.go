@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
@@ -441,6 +442,9 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// run, not for the program.
 	if opts.wantsDryRun() && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
+		// The bundle's file presets (presets/<name>.md) join the in-source
+		// ones, so `--preset` resolves them as it does on `run`.
+		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, nil)
 		inputs, ierr := dryRunInputs(cr.Workflow, opts)
 		if err == nil {
 			err = ierr
@@ -780,7 +784,12 @@ func (o ValidateOptions) wantsDryRun() bool {
 // dryRunInputs is what the dry run's launch supplies: the preset, then the
 // --var flags, then the typed inputs — the precedence `run` has. A bot that
 // guards its entry on a var (the gallery's TAG_UNSET shape) is otherwise
-// refused at the gate on every pass, and nothing behind it is walked.
+// refused at the gate on every pass, and nothing behind it is walked. The
+// values are held to the program here, where `run` is lax: a name no var
+// declares and a value the var's type cannot read are the operator's
+// errors, said as such — under the dry run's silent logger the engine's
+// own warning would reach no one, and the death would read as the bot's.
+// A null is no value: the var keeps its default, or is shaped.
 func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error) {
 	vars, err := ParseVarFlags(opts.Vars)
 	if err != nil {
@@ -791,7 +800,34 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 		return nil, err
 	}
 	for k, v := range opts.Inputs {
+		if v == nil {
+			continue
+		}
 		inputs[k] = v
 	}
+	for k, v := range inputs {
+		decl := wf.Vars[k]
+		if decl == nil {
+			return nil, fmt.Errorf("launch value %q names no var of the workflow (declared: %s)", k, strings.Join(declaredVars(wf), ", "))
+		}
+		typed, err := ir.CoerceVarValue(v, decl.Type)
+		if err != nil {
+			return nil, fmt.Errorf("launch value %q: %v is no %s: %v", k, v, decl.Type, err)
+		}
+		inputs[k] = typed
+	}
 	return inputs, nil
+}
+
+// declaredVars lists the workflow's var names, sorted, for an error to name.
+func declaredVars(wf *ir.Workflow) []string {
+	names := make([]string, 0, len(wf.Vars))
+	for name := range wf.Vars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return []string{"none"}
+	}
+	return names
 }
