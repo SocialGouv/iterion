@@ -22,9 +22,11 @@ green.
   wall clock, 19 of them waiting for a first slot, while five entries built in
   parallel. The queue is tuned against that cap — `max_entries_to_build: 2`
   (at most two entries under CI at once, instead of five) and
-  `min_entries_to_merge: 3` (merges land in batches of 3-5, so the workflows
-  that fire on every push to `main` — Runner Image, Trivy, Sandbox, Brew Tap —
-  run once per batch). A lone PR still merges after
+  `min_entries_to_merge: 3` (merges land in batches of 3-5, so the image and
+  scan workflows that fire on every push to `main` — Container Image and
+  Trivy directly, Runner Image and the Sandbox finalize chained on the
+  container build's completion — run once per batch; Brew Tap Update hangs off
+  a completed Release, not off a merge). A lone PR still merges after
   `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
@@ -38,8 +40,9 @@ green.
   there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
 
-  > **Promoting a check to required is a two-file change.** The four advisory
-  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck` — carry
+  > **Promoting a check to required is a two-file change.** The six advisory
+  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `desktop-vet-linux`,
+  > `desktop-vet-cross`, `govulncheck` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
   > a job that cannot block a merge should not hold a runner slot the queue
   > needs. Adding one to this ruleset **without deleting its skip** is worse
