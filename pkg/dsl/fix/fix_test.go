@@ -159,3 +159,44 @@ workflow w:
 		t.Fatalf("edits %+v left %+v", edits, left)
 	}
 }
+
+// A diagnostic is placed only on the literal it names: a command whose
+// quotes are not mechanically removable (the same reference twice) beside
+// a postcondition whose are — the postcondition's diagnostic lands on the
+// postcondition, the command's two are left, and the proof holds.
+func TestADiagnosticIsPlacedOnTheLiteralItNames(t *testing.T) {
+	src := `dsl: 2
+
+vars:
+  x: string = "v"
+
+tool check:
+  command: "A='{{vars.x}}' B='{{vars.x}}'"
+  postcondition: "test -f '{{vars.x}}'"
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: check
+  check -> done
+`
+	res, err := Bytes("p.bot", []byte(src))
+	if err != nil {
+		t.Fatalf("a fixable file was refused: %v", err)
+	}
+	if len(res.Applied) != 1 || res.Applied[0].Line != 8 || res.Applied[0].To != "\"test -f {{vars.x}}\"" {
+		t.Fatalf("applied %+v", res.Applied)
+	}
+	if !strings.Contains(string(res.Fixed), "command: \"A='{{vars.x}}' B='{{vars.x}}'\"") {
+		t.Fatalf("the command was touched:\n%s", res.Fixed)
+	}
+	var commandLeft int
+	for _, l := range res.Left {
+		if l.Code == ir.DiagQuotedCommandRef && strings.Contains(l.Message, "command:") {
+			commandLeft++
+		}
+	}
+	if commandLeft != 2 {
+		t.Fatalf("the command's two diagnostics were not left: %+v", res.Left)
+	}
+}
