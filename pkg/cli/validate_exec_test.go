@@ -147,11 +147,13 @@ func TestRunValidate_ExecSimulatesTheChildren(t *testing.T) {
 		if f.Node == "child/bad" && f.Kind == "shell_syntax" {
 			found = true
 		}
-		if f.Node == "child" && f.Kind == "child" && strings.Contains(f.Detail, "kids/k.bot") {
+	}
+	for _, c := range res.Exec.Children {
+		if c.Node == "child" && strings.Contains(c.Source, "kids/k.bot") && c.Status == "finished" {
 			ran = true
 		}
 	}
 	if !found || !ran {
-		t.Fatalf("the child's broken command was not met through the parent: %+v", res.Exec.Findings)
+		t.Fatalf("the child's broken command was not met through the parent, or its pass not carried: %+v %+v", res.Exec.Findings, res.Exec.Children)
 	}
 }

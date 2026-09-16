@@ -429,7 +429,7 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		if whole && !secret {
 			rendered = resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
 		} else {
-			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, rawTemplateValue, true)
+			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, rawTemplateValue, true, nil)
 		}
 		// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value —
 		// the whole point, since a secret must not sit in a command line or

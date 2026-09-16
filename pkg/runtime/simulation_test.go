@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"bytes"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -37,25 +36,40 @@ func TestAProductionEngineSimulatesNothing(t *testing.T) {
 // engine — a launch path that gained the option would simulate a real run.
 func TestNoProductionPackagePassesWithSimulation(t *testing.T) {
 	root := filepath.Join("..", "..")
-	for _, dir := range []string{"pkg/cli", "pkg/runview", "pkg/runner", "pkg/dispatcher", "pkg/server", "pkg/benchmark", "cmd"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			src, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			if bytes.Contains(src, []byte("WithSimulation(")) {
-				t.Errorf("%s passes WithSimulation: a production launch would simulate", path)
+	skipDirs := map[string]bool{"vendor": true, "node_modules": true, ".git": true, ".works": true, ".repos": true, ".claude": true, "web": true}
+	var launchers []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if d.IsDir() {
+			if skipDirs[d.Name()] || rel == filepath.Join("pkg", "runtime") || rel == filepath.Join("pkg", "dryrun") {
+				return filepath.SkipDir
 			}
 			return nil
-		})
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			t.Fatal(err)
 		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(src, []byte("runtime.New(")) {
+			launchers = append(launchers, rel)
+		}
+		if bytes.Contains(src, []byte("WithSimulation(")) {
+			t.Errorf("%s passes WithSimulation: a production launch would simulate", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The sweep must have read the launchers, or it proves nothing: the
+	// CLI, the runner, the dispatcher and the run view all build an engine.
+	if len(launchers) < 4 {
+		t.Fatalf("the sweep read %d engine launchers (%v): it did not cover the tree", len(launchers), launchers)
 	}
 }

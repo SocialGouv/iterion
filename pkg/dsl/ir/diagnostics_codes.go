@@ -163,6 +163,8 @@ const (
 	DiagEventNoListener DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
 	// Skill library (ADR-059): `skills:` references on nodes / workflow.
 	DiagInvalidSkillRef DiagCode = "C199" // malformed skill-library reference name (warning; existence is resolved at run time)
+
+	DiagUnknownLoopRef DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (error)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).

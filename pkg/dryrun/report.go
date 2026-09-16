@@ -5,13 +5,26 @@ import (
 	"strings"
 )
 
-// Clean reports whether the passes met nothing to fix: every pass finished
-// or ended at a fail node the bot declared, no reference kept as written,
-// no shell text refused, no fixture off its schema. Unchecked things and
+// died says a pass ended neither finished nor at a fail node the bot
+// declared — the one reading of a death, for the parent's passes and the
+// children's alike.
+func (p Pass) died() bool {
+	return p.Status != "finished" && !p.Deliberate
+}
+
+// Clean reports whether the passes met nothing to fix: every pass — of the
+// program and of every child it simulated — finished or ended at a fail
+// node the bot declared, no reference kept as written, no shell text
+// refused, no fixture off its schema or naming nothing. Unchecked things and
 // shapes are said, not held against the bot.
 func (r *Report) Clean() bool {
 	for _, p := range r.Passes {
-		if p.Status != "finished" && !p.Deliberate {
+		if p.died() {
+			return false
+		}
+	}
+	for _, c := range r.Children {
+		if c.died() {
 			return false
 		}
 	}
@@ -23,19 +36,27 @@ func (r *Report) Clean() bool {
 	return true
 }
 
+// writePass is the one line of a pass, the program's or a child's.
+func writePass(b *strings.Builder, label string, p Pass) {
+	fmt.Fprintf(b, "  %s %-5v %s — %d nodes, %d edges", label, p.Bias, p.Status, len(p.Nodes), len(p.Edges))
+	if p.Deliberate {
+		b.WriteString(" (a fail node the bot declares)")
+	}
+	if p.Failure != "" {
+		fmt.Fprintf(b, " — %s", p.Failure)
+	}
+	b.WriteString("\n")
+}
+
 // Render is the human reading of the report.
 func (r *Report) Render() string {
 	var b strings.Builder
 	b.WriteString("Dry run — two passes, every condition true then false; no model, no shell, no workspace\n")
 	for _, p := range r.Passes {
-		fmt.Fprintf(&b, "  pass %-5v %s — %d nodes, %d edges", p.Bias, p.Status, len(p.Nodes), len(p.Edges))
-		if p.Deliberate {
-			b.WriteString(" (a fail node the bot declares)")
-		}
-		if p.Failure != "" {
-			fmt.Fprintf(&b, " — %s", p.Failure)
-		}
-		b.WriteString("\n")
+		writePass(&b, "pass", p)
+	}
+	for _, c := range r.Children {
+		writePass(&b, fmt.Sprintf("child %s (%s) pass", c.Node, c.Source), c.Pass)
 	}
 	if len(r.Findings) == 0 {
 		b.WriteString("  findings: none\n")
@@ -60,6 +81,11 @@ func (r *Report) Render() string {
 			parts[i] = e.From + " -> " + e.To
 		}
 		fmt.Fprintf(&b, "  unvisited edges: %s\n", strings.Join(parts, ", "))
+	}
+	if r.Clean() {
+		b.WriteString("  verdict: clean — every pass finished or refused as declared, nothing left as written, no shell text refused\n")
+	} else {
+		b.WriteString("  verdict: not clean — a pass died, or a reference, shell or fixture finding stands\n")
 	}
 	return b.String()
 }

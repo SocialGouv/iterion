@@ -2,6 +2,7 @@ package dryrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,7 +19,9 @@ import (
 // Options tune a dry run.
 type Options struct {
 	// Fixtures answer the nodes they name (node id → output) in place of a
-	// shape; a node without one is reported. nil: every output is a shape.
+	// shape; a node without one is reported, and so is a key that names no
+	// node. A key `node/child_node` answers a node of the child that subbot
+	// node hands work to. nil: every output is a shape.
 	Fixtures map[string]map[string]any
 	// Inputs are launch values for vars; a var without a default and
 	// without an input takes a shape of its type.
@@ -64,20 +67,86 @@ type Pass struct {
 	Edges []Edge   `json:"edges"`
 }
 
-// Report is what two passes met.
+// ChildPass is one pass of a simulated child, under the node that handed
+// it work — a path `node/child_node` past the first level.
+type ChildPass struct {
+	Node   string `json:"node"`
+	Source string `json:"source"`
+	Pass
+}
+
+// Report is what two passes met. Its JSON carries `clean` as well: the
+// verdict of Clean.
 type Report struct {
 	Passes []Pass `json:"passes"`
+	// Children are the passes of every child simulated, in node order then
+	// bias: a child is read like the parent, its death is the parent's.
+	Children []ChildPass `json:"children,omitempty"`
 	// Findings, deduplicated across passes, by node.
-	Findings []Finding `json:"findings"`
+	Findings []Finding `json:"findings,omitempty"`
 	// Shaped lists the nodes whose output was a shape: a condition read
 	// from one of them decided nothing about the real bot.
-	Shaped []string `json:"shaped"`
+	Shaped []string `json:"shaped,omitempty"`
 	// Pinned lists the nodes a fixture answered: a condition read from one
 	// of them read the recording on both passes, not the bias.
 	Pinned []string `json:"pinned,omitempty"`
-	// UnvisitedNodes and UnvisitedEdges no pass reached.
-	UnvisitedNodes []string `json:"unvisited_nodes"`
-	UnvisitedEdges []Edge   `json:"unvisited_edges"`
+	// UnvisitedNodes and UnvisitedEdges no pass reached — a child's under
+	// its node's path.
+	UnvisitedNodes []string `json:"unvisited_nodes,omitempty"`
+	UnvisitedEdges []Edge   `json:"unvisited_edges,omitempty"`
+}
+
+// MarshalJSON adds the verdict, `clean`, to the report's fields.
+func (r Report) MarshalJSON() ([]byte, error) {
+	type plain Report
+	return json.Marshal(struct {
+		plain
+		Clean bool `json:"clean"`
+	}{plain(r), r.Clean()})
+}
+
+// coverage is what the passes reached of one program.
+type coverage struct {
+	wf    *ir.Workflow
+	nodes map[string]bool
+	edges map[Edge]bool
+}
+
+func newCoverage(wf *ir.Workflow) *coverage {
+	return &coverage{wf: wf, nodes: map[string]bool{}, edges: map[Edge]bool{}}
+}
+
+func (c *coverage) saw(p Pass) {
+	for _, id := range p.Nodes {
+		c.nodes[id] = true
+	}
+	for _, e := range p.Edges {
+		c.edges[e] = true
+	}
+}
+
+// unvisited names what no pass reached, each name under prefix.
+func (c *coverage) unvisited(prefix string) (nodes []string, edges []Edge) {
+	for id, n := range c.wf.Nodes {
+		if c.nodes[id] || implicitTerminal(id, n) {
+			continue
+		}
+		nodes = append(nodes, prefix+id)
+	}
+	sort.Strings(nodes)
+	listed := map[Edge]bool{}
+	for _, e := range c.wf.Edges {
+		if e == nil {
+			continue
+		}
+		k := Edge{From: e.From, To: e.To}
+		if c.edges[k] || listed[k] {
+			continue
+		}
+		listed[k] = true
+		edges = append(edges, Edge{From: prefix + e.From, To: prefix + e.To})
+	}
+	return nodes, edges
 }
 
 // Run executes wf twice — every bool true and every enum at its first
@@ -98,8 +167,8 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		timeout = time.Minute
 	}
 	r := &Report{}
-	seenNodes := map[string]bool{}
-	seenEdges := map[Edge]bool{}
+	main := newCoverage(wf)
+	children := map[string]*coverage{} // by the child's node path
 	seenFindings := map[Finding]bool{}
 	shaped := map[string]bool{}
 	pinned := map[string]bool{}
@@ -109,6 +178,7 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 			return nil, err
 		}
 		r.Passes = append(r.Passes, pass)
+		main.saw(pass)
 		for _, f := range x.Findings() {
 			if !seenFindings[f] {
 				seenFindings[f] = true
@@ -121,14 +191,23 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		for _, id := range x.Pinned() {
 			pinned[id] = true
 		}
-		for _, id := range pass.Nodes {
-			seenNodes[id] = true
-		}
-		for _, e := range pass.Edges {
-			seenEdges[e] = true
+		for _, cr := range x.ChildRuns() {
+			r.Children = append(r.Children, ChildPass{Node: cr.node, Source: cr.source, Pass: cr.pass})
+			cov := children[cr.node]
+			if cov == nil {
+				cov = newCoverage(cr.wf)
+				children[cr.node] = cov
+			}
+			cov.saw(cr.pass)
 		}
 	}
 	sortFindings(r.Findings)
+	sort.SliceStable(r.Children, func(i, j int) bool {
+		if r.Children[i].Node != r.Children[j].Node {
+			return r.Children[i].Node < r.Children[j].Node
+		}
+		return r.Children[i].Bias && !r.Children[j].Bias
+	})
 	for id := range shaped {
 		r.Shaped = append(r.Shaped, id)
 	}
@@ -137,24 +216,16 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		r.Pinned = append(r.Pinned, id)
 	}
 	sort.Strings(r.Pinned)
-	for id, n := range wf.Nodes {
-		if seenNodes[id] || implicitTerminal(id, n) {
-			continue
-		}
-		r.UnvisitedNodes = append(r.UnvisitedNodes, id)
+	r.UnvisitedNodes, r.UnvisitedEdges = main.unvisited("")
+	childNodes := make([]string, 0, len(children))
+	for node := range children {
+		childNodes = append(childNodes, node)
 	}
-	sort.Strings(r.UnvisitedNodes)
-	listed := map[Edge]bool{}
-	for _, e := range wf.Edges {
-		if e == nil {
-			continue
-		}
-		k := Edge{From: e.From, To: e.To}
-		if seenEdges[k] || listed[k] {
-			continue
-		}
-		listed[k] = true
-		r.UnvisitedEdges = append(r.UnvisitedEdges, k)
+	sort.Strings(childNodes)
+	for _, node := range childNodes {
+		nodes, edges := children[node].unvisited(node + "/")
+		r.UnvisitedNodes = append(r.UnvisitedNodes, nodes...)
+		r.UnvisitedEdges = append(r.UnvisitedEdges, edges...)
 	}
 	return r, nil
 }
@@ -190,15 +261,11 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	x.path = opts.Path
 	x.children = opts.Children
 	if depth < maxChildDepth {
-		x.simulate = func(child *ir.Workflow, path string) (Pass, []Finding, error) {
+		x.simulate = func(child *ir.Workflow, path, node string) (Pass, *Executor, error) {
 			childOpts := opts
 			childOpts.Path = path
-			childOpts.Fixtures = nil
-			p, cx, err := runPass(ctx, child, childOpts, shell, timeout, bias, depth+1)
-			if err != nil {
-				return p, nil, err
-			}
-			return p, cx.Findings(), nil
+			childOpts.Fixtures = childFixtures(opts.Fixtures, node)
+			return runPass(ctx, child, childOpts, shell, timeout, bias, depth+1)
 		}
 	}
 	var mu sync.Mutex
@@ -243,6 +310,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	if runErr != nil {
 		pass.Failure = runErr.Error()
 	}
+	x.fixtureKeys()
 	if run, err := st.LoadRun(ctx, runID); err == nil && run != nil {
 		pass.Status = string(run.Status)
 	} else if runErr != nil {

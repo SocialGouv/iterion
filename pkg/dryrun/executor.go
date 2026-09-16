@@ -29,11 +29,9 @@ const (
 	// KindNoFixture: fixtures were supplied and this node has none, so its
 	// output is a shape.
 	KindNoFixture Kind = "no_fixture"
-	// KindChild: how a subbot child's own simulation ended — its status,
-	// its failure when it had one.
-	KindChild Kind = "child"
 	// KindFixture: a fixture does not fit the node's output schema — the
-	// production validator's word, the one a real run would apply.
+	// production validator's word, the one a real run would apply — or
+	// names no node of the program.
 	KindFixture Kind = "fixture"
 )
 
@@ -64,10 +62,14 @@ type Executor struct {
 	fixtures map[string]map[string]any
 	shell    ShellChecker
 	// path is the main file this workflow came from; children resolves a
-	// child's source beside it; simulate runs a child (nil at the depth cap).
+	// child's source beside it; simulate runs a child under the node that
+	// hands it work (nil at the depth cap).
 	path     string
 	children func(parent, source string) (string, *ir.Workflow, error)
-	simulate func(child *ir.Workflow, path string) (Pass, []Finding, error)
+	simulate func(child *ir.Workflow, path, node string) (Pass, *Executor, error)
+	// childRuns are the children this pass simulated, grandchildren
+	// included, each under the path of nodes that reached it.
+	childRuns []childRun
 
 	mu       sync.Mutex
 	vars     map[string]any
@@ -88,6 +90,22 @@ func (d declaredSecrets) ResolveSecretRef(name string) string {
 		return ""
 	}
 	return "<secret:" + name + ">"
+}
+
+// childRun is one simulated child: the node that handed it work (a path
+// `node/child_node` past the first level), its source and file, its
+// program, and how its pass went.
+type childRun struct {
+	node, source, path string
+	wf                 *ir.Workflow
+	pass               Pass
+}
+
+// ChildRuns are the children this pass simulated, grandchildren included.
+func (x *Executor) ChildRuns() []childRun {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return append([]childRun(nil), x.childRuns...)
 }
 
 // NewExecutor builds the executor of one pass over wf. bias decides the
@@ -214,17 +232,14 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 		case n.Action != "":
 			x.add(Finding{Node: id, Kind: KindUnchecked, Where: "action", Detail: fmt.Sprintf("connector action %s is not executed by a dry run: its output is a shape", n.Action)})
 		case n.Script != "":
-			rendered := model.RenderScript(n.Script, n.ScriptRefs, input, vars, td, runID)
-			x.leftovers(id, "script", rendered)
+			rendered := model.RenderScript(n.Script, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script"))
 			x.shellCheck(id, "script", n.Language, rendered)
 		default:
-			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID)
-			x.leftovers(id, "command", rendered)
+			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID, x.reporter(id, "command"))
 			x.shellCheck(id, "command", "bash", rendered)
 		}
 		if n.Postcondition != "" {
-			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID)
-			x.leftovers(id, "postcondition", rendered)
+			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID, x.reporter(id, "postcondition"))
 			x.shellCheck(id, "postcondition", "bash", rendered)
 		}
 	default:
@@ -257,26 +272,12 @@ func (x *Executor) unresolved(id, where, ref string) {
 	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolved(ref))})
 }
 
-// leftovers reports the references a rendered command or script still
-// carries — the production renderers keep a reference that resolves to
-// nothing as written, so the shell sees it.
-func (x *Executor) leftovers(id, where, rendered string) {
-	rest := rendered
-	for {
-		i := strings.Index(rest, "{{")
-		if i < 0 {
-			return
-		}
-		j := strings.Index(rest[i:], "}}")
-		if j < 0 {
-			return
-		}
-		ref := strings.TrimSpace(rest[i+2 : i+j])
-		if ref != "" && ref != ir.LiteralOpenExpression {
-			x.unresolved(id, where, strings.TrimPrefix(ref, "!"))
-		}
-		rest = rest[i+j+2:]
-	}
+// reporter is the renderer's listener for one place of a node: each
+// reference the renderer resolved to nothing is a finding there. The
+// rendered text is never re-read for braces — a value may carry `{{…}}` of
+// its own, and that is the value, not a reference.
+func (x *Executor) reporter(id, where string) func(ref string) {
+	return func(ref string) { x.unresolved(id, where, ref) }
 }
 
 // shellCheck holds rendered shell text to its interpreter's parser.
@@ -355,14 +356,54 @@ func (x *Executor) output(id, schema string) map[string]any {
 	return Synthesize(sch, x.bias)
 }
 
+// fixtureKeys reports a fixture that names no node of this program: a
+// misspelled node would otherwise read as a thin recording. A key
+// `node/child_node` addresses a node of the child that subbot node hands
+// work to, and is that child's pass to check.
+func (x *Executor) fixtureKeys() {
+	keys := make([]string, 0, len(x.fixtures))
+	for key := range x.fixtures {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, ok := x.wf.Nodes[key]; ok {
+			continue
+		}
+		if head, _, isChild := strings.Cut(key, "/"); isChild {
+			if _, ok := x.wf.Nodes[head].(*ir.SubbotNode); ok {
+				continue
+			}
+		}
+		x.add(Finding{Node: key, Kind: KindFixture, Detail: "the fixture names no node of this program"})
+	}
+}
+
+// childFixtures are the fixtures addressed to the child under node —
+// the keys `node/…` with the prefix removed.
+func childFixtures(fixtures map[string]map[string]any, node string) map[string]map[string]any {
+	var out map[string]map[string]any
+	for key, fx := range fixtures {
+		rest, ok := strings.CutPrefix(key, node+"/")
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = map[string]map[string]any{}
+		}
+		out[rest] = fx
+	}
+	return out
+}
+
 // subbotRunner answers a subbot node in this pass. With a child loader and
 // a path, the child is read beside the parent and simulated under the same
-// bias, its findings prefixed by the node (`node/child_node`) and its
-// outcome said; without one — or past the depth cap — the child is not
-// simulated, said. Either way the parent receives a shape of the schema it
-// declared for the child's output: what a child's terminal node produces is
-// the child's business, and a shape is what the parent's contract to it
-// promises.
+// bias: its pass is carried on the report's children, its findings, shapes
+// and pins prefixed by the node (`node/child_node`); without one — or past
+// the depth cap — the child is not simulated, said. Either way the parent
+// receives a shape of the schema it declared for the child's output: what a
+// child's terminal node produces is the child's business, and a shape is
+// what the parent's contract to it promises.
 func (x *Executor) subbotRunner() runtime.SubbotRunner {
 	return func(_ context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		schema := ""
@@ -382,20 +423,29 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 			case child == nil:
 				x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s not read: its output is a shape", req.Source)})
 			default:
-				pass, findings, err := x.simulate(child, path)
+				pass, cx, err := x.simulate(child, path, req.NodeID)
 				if err != nil {
 					x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s could not be simulated: %v", req.Source, err)})
 					break
 				}
-				for _, f := range findings {
+				for _, f := range cx.Findings() {
 					f.Node = req.NodeID + "/" + f.Node
 					x.add(f)
 				}
-				detail := fmt.Sprintf("child %s ran %s — %d nodes", req.Source, pass.Status, len(pass.Nodes))
-				if pass.Failure != "" {
-					detail += ": " + pass.Failure
+				shaped, pinned, runs := cx.Shaped(), cx.Pinned(), cx.ChildRuns()
+				x.mu.Lock()
+				for _, id := range shaped {
+					x.shaped = append(x.shaped, req.NodeID+"/"+id)
 				}
-				x.add(Finding{Node: req.NodeID, Kind: KindChild, Where: "subbot", Detail: detail})
+				for _, id := range pinned {
+					x.pinned = append(x.pinned, req.NodeID+"/"+id)
+				}
+				x.childRuns = append(x.childRuns, childRun{node: req.NodeID, source: req.Source, path: path, wf: child, pass: pass})
+				for _, cr := range runs {
+					cr.node = req.NodeID + "/" + cr.node
+					x.childRuns = append(x.childRuns, cr)
+				}
+				x.mu.Unlock()
 			}
 		}
 		return x.output(req.NodeID, schema), nil

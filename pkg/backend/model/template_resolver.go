@@ -27,6 +27,7 @@ type SecretRefResolver interface {
 //   - artifacts.<publish_name>[.<field>...]          — published artifact
 //   - run.<member>                                   — the run namespace (`run.id` always)
 //   - attachments.<name>[.path|.url|.mime|.size|.sha256]
+//     (.url is not found when no signer is wired or the signer fails — said to Warn)
 //
 // Cross-namespace references need a TemplateData; with nil they resolve as
 // not found. A reference that resolves to nothing is kept as written, and
@@ -37,7 +38,8 @@ type TemplateResolver struct {
 	Secrets SecretRefResolver
 	// Unresolved receives every reference kept as written; nil listens to none.
 	Unresolved func(ref string)
-	// Warn receives the expansion-limit warning; nil is silent.
+	// Warn receives the resolver's warnings — the expansion limit, a
+	// presign that fails; nil is silent.
 	Warn func(format string, args ...any)
 }
 
@@ -209,9 +211,19 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 		case "path":
 			return info.Path, true
 		case "url":
+			// A URL that cannot be signed — no signer wired, or the signer
+			// failing — resolves as not found: the placeholder stays, a
+			// dry run names it, and the failure is said to Warn. An empty
+			// string would read as a value.
 			url, err := info.URL()
 			if err != nil {
-				return "", true
+				if r.Warn != nil {
+					r.Warn("attachment %s: presigned url not resolved: %v", key, err)
+				}
+				return "", false
+			}
+			if url == "" {
+				return "", false
 			}
 			return url, true
 		case "mime":
@@ -228,15 +240,17 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 
 // RenderCommand renders a tool node's `command:` (or its `postcondition:`)
 // as the executor does before `bash -c`: each reference shell-escaped, a
-// reference that resolves to nothing kept as written so the shell — or a
-// dry run — sees it.
-func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string) string {
-	return resolveCommandTemplate(command, refs, input, vars, td, runID)
+// reference that resolves to nothing kept as written so the shell sees it,
+// and said to unresolved when a caller listens — the rendered text is not
+// the place to look for it, a value may carry braces of its own.
+func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) string {
+	return renderCommand(command, refs, input, vars, td, runID, nil, unresolved)
 }
 
 // RenderScript renders a tool node's `script:` as the executor does before
 // the interpreter: each reference a JSON literal, a reference that resolves
-// to nothing the language's null.
-func RenderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string) string {
-	return resolveScriptTemplate(script, refs, input, vars, td, runID)
+// to nothing the language's null — and said to unresolved when a caller
+// listens, since the null hides it from the text.
+func RenderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) string {
+	return renderScript(script, refs, input, vars, td, runID, nil, unresolved)
 }

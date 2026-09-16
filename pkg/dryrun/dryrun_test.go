@@ -2,6 +2,7 @@ package dryrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -515,5 +516,191 @@ func TestAShellCheckTimeoutIsSaid(t *testing.T) {
 	err := (Bash{Timeout: time.Nanosecond}).Check("bash", "echo slow")
 	if !errors.Is(err, ErrCheckTimeout) {
 		t.Fatalf("a timed-out check came out as %v", err)
+	}
+}
+
+// A bot whose tool echoes a value that carries braces of its own.
+const bracesBot = `schema verdict:
+  ok: bool
+  note: string
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+tool echoit:
+  command: "echo {{outputs.survey.note}} ; echo done"
+
+tool sc:
+  language: python
+  script: "x = {{input.missing}}"
+
+workflow b:
+  worktree: none
+  sandbox: none
+  entry: survey
+  survey -> echoit
+  echoit -> sc
+  sc -> done
+`
+
+// A value that carries `{{…}}` is a value, not a reference: the renderer
+// names what it left as written, the rendered text is never re-read. And a
+// script's hole, rendered null, is named all the same.
+func TestAValueCarryingBracesIsNotAnUnresolvedReference(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, bracesBot), Options{
+		Fixtures: map[string]map[string]any{"survey": {"ok": true, "note": "please fill {{vars.goal}} in"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var script, phantom bool
+	for _, f := range findingsOf(r, KindUnresolvedRef) {
+		switch {
+		case f.Node == "sc" && f.Where == "script" && strings.Contains(f.Detail, "{{input.missing}}"):
+			script = true
+		case f.Node == "echoit":
+			phantom = true
+		}
+	}
+	if phantom {
+		t.Fatalf("a value carrying braces was read as an unresolved reference: %+v", r.Findings)
+	}
+	if !script {
+		t.Fatalf("the script's null hole was not named: %+v", r.Findings)
+	}
+}
+
+// A child whose judge decides, a refusal it declares, a celebration only a
+// yes reaches.
+const kidBot = `schema verdict:
+  ok: bool
+
+judge judge:
+  model: "claude-opus-4-7"
+  output: verdict
+
+tool celebrate:
+  command: "echo yes"
+
+fail refused:
+  code: REFUSED
+  message: "no"
+
+workflow kid:
+  worktree: none
+  sandbox: none
+  entry: judge
+  judge -> celebrate when ok
+  judge -> refused when not ok
+  celebrate -> done
+`
+
+// A parent that hands its work to one child.
+const parentBot = `schema verdict:
+  ok: bool
+
+subbot kid:
+  source: "kid.bot"
+  output: verdict
+
+workflow p:
+  worktree: none
+  sandbox: none
+  entry: kid
+  kid -> done
+`
+
+func withChild(t *testing.T, child string) Options {
+	t.Helper()
+	wf := compileBot(t, child)
+	return Options{Path: "/nowhere/main.bot", Children: func(parent, source string) (string, *ir.Workflow, error) {
+		if source != "kid.bot" {
+			return "", nil, nil
+		}
+		return "/nowhere/kid.bot", wf, nil
+	}}
+}
+
+// A child is read like the parent: its passes are on the report and a
+// child that dies is not clean; a refusal it declares is; fixtures reach it
+// under `node/child_node` and pin it; what no pass reached in it is named
+// under its node; a fixture naming nothing is a finding, at either level.
+func TestAChildIsReadLikeTheParent(t *testing.T) {
+	parent := compileBot(t, parentBot)
+
+	dying, err := Run(context.Background(), parent, withChild(t, dyingBot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dying.Children) != 2 || dying.Children[0].Node != "kid" || !dying.Children[0].Bias || dying.Children[1].Bias {
+		t.Fatalf("the child's passes are not on the report in node then bias order: %+v", dying.Children)
+	}
+	if dying.Children[1].Status == "finished" || dying.Children[1].Deliberate {
+		t.Fatalf("the child's death at its loop's cap was not read: %+v", dying.Children[1])
+	}
+	if dying.Clean() {
+		t.Fatalf("a parent whose child died reads clean: %+v", dying.Children)
+	}
+	if out := dying.Render(); !strings.Contains(out, "child kid (kid.bot) pass false") || !strings.Contains(out, "verdict: not clean") {
+		t.Fatalf("the rendering does not carry the child's pass and the verdict:\n%s", out)
+	}
+
+	opts := withChild(t, kidBot)
+	opts.Fixtures = map[string]map[string]any{"kid/judge": {"ok": false}, "kid/nope": {"x": 1}, "nope": {"x": 1}}
+	refusing, err := Run(context.Background(), parent, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range refusing.Children {
+		if !c.Deliberate || c.Status == "finished" {
+			t.Fatalf("the child's declared refusal was not read as deliberate on pass %v: %+v", c.Bias, c)
+		}
+	}
+	if !contains(refusing.Pinned, "kid/judge") {
+		t.Fatalf("the child's fixture did not pin its judge: pinned %v", refusing.Pinned)
+	}
+	if !contains(refusing.UnvisitedNodes, "kid/celebrate") {
+		t.Fatalf("what no child pass reached is not named under the child: %v", refusing.UnvisitedNodes)
+	}
+	var edge bool
+	for _, e := range refusing.UnvisitedEdges {
+		if e.From == "kid/judge" && e.To == "kid/celebrate" {
+			edge = true
+		}
+	}
+	if !edge {
+		t.Fatalf("the child's edge no pass took is not named: %v", refusing.UnvisitedEdges)
+	}
+	unknown := map[string]bool{}
+	for _, f := range findingsOf(refusing, KindFixture) {
+		if strings.Contains(f.Detail, "names no node") {
+			unknown[f.Node] = true
+		}
+	}
+	if !unknown["nope"] || !unknown["kid/nope"] {
+		t.Fatalf("a fixture naming nothing is silent at some level: %+v", refusing.Findings)
+	}
+	if refusing.Clean() {
+		t.Fatal("two fixtures naming nothing and the report reads clean")
+	}
+	delete(opts.Fixtures, "nope")
+	delete(opts.Fixtures, "kid/nope")
+	pinnedOnly, err := Run(context.Background(), parent, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pinnedOnly.Clean() {
+		t.Fatalf("a child refusing as declared, pinned by a fixture, is not clean: %+v %+v", pinnedOnly.Children, pinnedOnly.Findings)
+	}
+	raw, err := json.Marshal(pinnedOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"clean":true`) || !strings.Contains(string(raw), `"children":[`) {
+		t.Fatalf("the JSON carries neither the verdict nor the children:\n%s", raw)
+	}
+	if raw, _ = json.Marshal(dying); !strings.Contains(string(raw), `"clean":false`) {
+		t.Fatalf("the JSON of a dirty report says clean:\n%s", raw)
 	}
 }

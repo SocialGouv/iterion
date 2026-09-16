@@ -408,7 +408,42 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 			c.validateAttachmentsRef(w, rc)
 		case RefSecrets:
 			c.validateSecretsRef(w, rc)
+		case RefLoop:
+			c.validateLoopRef(w, rc)
 		}
+	}
+}
+
+// validateLoopRef flags a {{loop.X.<field>}} reference whose loop X no edge
+// declares, or whose field the loop namespace has not: the runtime renders
+// the counters of an unknown loop as 0 and says nothing, so a misspelled
+// name is a guard that is always false.
+func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
+	if len(rc.Ref.Path) < 2 {
+		c.refErrorf(rc, DiagUnknownLoopRef,
+			"%s: reference %s is incomplete (expected loop.<name>.iteration, .max or .previous_output)",
+			rc.Location, rc.Ref.Raw)
+		return
+	}
+	name, field := rc.Ref.Path[0], rc.Ref.Path[1]
+	if w.Loops[name] == nil {
+		c.refErrorf(rc, DiagUnknownLoopRef,
+			"%s: reference %s targets undeclared loop %q",
+			rc.Location, rc.Ref.Raw, name)
+		return
+	}
+	switch field {
+	case "iteration", "max":
+		if len(rc.Ref.Path) > 2 {
+			c.refErrorf(rc, DiagUnknownLoopRef,
+				"%s: reference %s: loop.%s.%s has no sub-field",
+				rc.Location, rc.Ref.Raw, name, field)
+		}
+	case "previous_output":
+	default:
+		c.refErrorf(rc, DiagUnknownLoopRef,
+			"%s: reference %s uses unknown loop field %q (expected: iteration, max, previous_output)",
+			rc.Location, rc.Ref.Raw, field)
 	}
 }
 

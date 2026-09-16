@@ -156,6 +156,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagToolNodePermissionInert: {"Tool-node permission inert", "Remove `permission:` from the tool node; gate the agent nodes instead."},
 	DiagGatedCLIBackendSandbox:  {"Gated backend needs a host-side run", "Declare `sandbox: none` (workflow or node), launch with `--sandbox none`, or use a deny-shaped policy on claw."},
 	DiagIndexOnScalar:           {"Index on scalar", "Index an array or map; drop the subscript on a string/bool/number."},
+	DiagUnknownLoopRef:          {"Loop reference to an undeclared loop", "Name a loop an edge declares (`as <name>(N)`) and one of its fields: iteration, max, previous_output."},
 	DiagInvalidNodeTimeout:      {"Invalid node timeout", "Use a positive Go duration string, e.g. `timeout: \"20m\"`."},
 	DiagFileFieldNotHuman:       {"file field outside a human pause", "Move the `file` field to a human node's `output:` with `interaction: human` (or `llm_or_human`), or use `string` for a path the node computes."},
 	DiagReservedAnswerKey:       {"Reserved answer key", "Rename the field — `_attachments` is written by the engine on resume."},
