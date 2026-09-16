@@ -490,6 +490,27 @@ type EmitNode struct {
 // NodeKind implements Node.
 func (n *EmitNode) NodeKind() NodeKind { return NodeEmit }
 
+// WithNode is implemented by every node kind carrying a `with { ... }`
+// payload. The seam exists so the passes that must read those mappings —
+// reference validation above all — ask one question instead of naming each
+// kind: a `with:` value is a template like any other, and a kind whose
+// mappings no pass reads is a kind whose typos surface at run time.
+//
+// Its blind spot, stated rather than hidden: a future kind that grows a
+// `with:` and does not implement this is invisible here. No such mapping can
+// be built without compileWithMappings, so that function's call sites are the
+// list to check when adding one.
+type WithNode interface {
+	Node
+	WithMappings() []*DataMapping
+}
+
+// WithMappings implements WithNode.
+func (n *SubbotNode) WithMappings() []*DataMapping { return n.With }
+
+// WithMappings implements WithNode.
+func (n *EmitNode) WithMappings() []*DataMapping { return n.With }
+
 // WaitNode blocks its branch until the named event is emitted in the same run,
 // then completes with the event payload as its output (ADR-051). The Timeout is
 // mandatory (the "no silent infinity" invariant) and bounds the wait.

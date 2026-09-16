@@ -100,6 +100,33 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 		}
 	}
 
+	// Node `with:` refs — the payload a subbot hands its child, the fields an
+	// emit publishes. Edge mappings above were walked and these were not,
+	// which is the same omission the tool-node comment below describes: the
+	// value is a template, and an unvalidated `{{vars.typo}}` renders as its
+	// own source text and is HANDED OVER — a child run started with the
+	// literal `{{vars.depth}}` as its depth, an event published with it as a
+	// payload field. Nothing downstream re-reads that value, so here is the
+	// only place it can be caught.
+	//
+	// IncludeSelf stays off: the node has produced no output yet when its own
+	// `with:` is resolved.
+	for _, n := range w.Nodes {
+		wn, ok := n.(WithNode)
+		if !ok {
+			continue
+		}
+		for _, dm := range wn.WithMappings() {
+			for _, ref := range dm.Refs {
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   n.NodeID(),
+					Location: fmt.Sprintf("%s node %q, with %q", n.NodeKind(), n.NodeID(), dm.Key),
+				})
+			}
+		}
+	}
+
 	// Tool node command + script refs. ScriptRefs used to be skipped,
 	// so {{outputs.X.history}} inside a tool's script never went
 	// through C029–C036 validation — typos were caught only at
