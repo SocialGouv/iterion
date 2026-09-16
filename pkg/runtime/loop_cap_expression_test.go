@@ -247,32 +247,47 @@ func TestALoopCapExpressionRefusesAConcatenatedString(t *testing.T) {
 	}
 }
 
-// The legacy single-reference template form KEEPS its numeric-string
-// tolerance: a dynamically typed output that already emitted "2" still caps
-// at 2. Narrowing the expression path must not narrow this one.
-func TestTheLegacyTemplateCapStillAcceptsANumericString(t *testing.T) {
-	wf := campaignShapedWorkflow(0)
-	loop := wf.Loops["continuation"]
-	loop.MaxIterations, loop.MaxIterationsExpr = 0, "{{outputs.pass.remaining}}"
-	loop.MaxIterationsExprRefs = []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"pass", "remaining"}, Raw: "{{outputs.pass.remaining}}"}}
+// A cap that READS a value keeps its numeric-string tolerance, in BOTH
+// spellings — `{{outputs.x.n}}` and the un-braced `"outputs.x.n"`, which
+// compileLoopCap parses into an AST whose root is a bare path. Only an
+// expression that COMPUTES has to produce a number, so narrowing that path
+// must not narrow either of these.
+func TestACapThatOnlyReadsAValueKeepsItsNumericStringTolerance(t *testing.T) {
+	for _, spelling := range []string{"template", "bare path"} {
+		t.Run(spelling, func(t *testing.T) {
+			wf := campaignShapedWorkflow(0)
+			loop := wf.Loops["continuation"]
+			loop.MaxIterations = 0
+			if spelling == "template" {
+				loop.MaxIterationsExpr = "{{outputs.pass.remaining}}"
+				loop.MaxIterationsExprRefs = []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"pass", "remaining"}, Raw: "{{outputs.pass.remaining}}"}}
+			} else {
+				parsed, err := expr.Parse("outputs.pass.remaining")
+				if err != nil {
+					t.Fatal(err)
+				}
+				loop.MaxIterationsExpr, loop.MaxIterationsAST = "outputs.pass.remaining", parsed
+			}
 
-	passes := 0
-	exec := newStubExecutor()
-	exec.on("pass", func(_ map[string]any) (map[string]any, error) {
-		passes++
-		return map[string]any{"remaining": "2"}, nil
-	})
-	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"converged": false}, nil
-	})
-	exec.on("deliver", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"published": true}, nil
-	})
-	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "legacy-cap", nil); err != nil {
-		t.Fatalf("the legacy template form lost its numeric-string tolerance: %v", err)
-	}
-	if passes != 3 {
-		t.Errorf("passes=%d, want 3 (the first pass plus a cap of 2 crossings)", passes)
+			passes := 0
+			exec := newStubExecutor()
+			exec.on("pass", func(_ map[string]any) (map[string]any, error) {
+				passes++
+				return map[string]any{"remaining": "2"}, nil
+			})
+			exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"converged": false}, nil
+			})
+			exec.on("deliver", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"published": true}, nil
+			})
+			if err := New(wf, tmpStore(t), exec).Run(context.Background(), "reading-cap", nil); err != nil {
+				t.Fatalf("a cap that only reads a value lost its numeric-string tolerance: %v", err)
+			}
+			if passes != 3 {
+				t.Errorf("passes=%d, want 3 (the first pass plus a cap of 2 crossings)", passes)
+			}
+		})
 	}
 }
 

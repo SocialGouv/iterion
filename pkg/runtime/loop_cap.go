@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -44,16 +45,26 @@ func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		// An expression must produce a NUMBER. `+` concatenates as soon as
-		// one operand is a string, so `outputs.x.n + 1` over a field holding
-		// "3" yields "31" — which loopCapInteger would then accept, because
-		// it tolerates a numeric string for the legacy single-reference form
-		// below. That tolerance is for a value the author referenced whole,
-		// never for one arithmetic built, so it stops here. The compile-time
-		// guard cannot cover this: it refuses an operand whose type is known,
-		// and an unschema'd output field has none.
+		// An expression that COMPUTES must produce a number. `+` concatenates
+		// as soon as one operand is a string, so `outputs.x.n + 1` over a
+		// field holding "3" yields "31" — which loopCapInteger would then
+		// accept, because it tolerates a numeric string for dynamically typed
+		// outputs. That tolerance is for a value the author referenced whole,
+		// never for one arithmetic built.
+		//
+		// A whole reference reaches HERE too, not only through the `{{…}}`
+		// form: compileLoopCap parses every un-braced quoted cap, so
+		// `as retry("outputs.gate.remaining")` is an AST whose root is a bare
+		// path. It reads the same value the template form reads, so it keeps
+		// the same tolerance — the shape of the expression is what separates
+		// them, not which field it landed in.
+		//
+		// The compile-time guard cannot cover either case: it refuses an
+		// operand whose type is KNOWN, and an unschema'd output field has none.
 		if s, ok := value.(string); ok {
-			return 0, fmt.Errorf("evaluated to the string %q, not a number: `+` concatenates when either side is a string", s)
+			if snap := expr.ToSnapshot(loop.MaxIterationsAST); snap == nil || snap.Kind != expr.SnapPath {
+				return 0, fmt.Errorf("evaluated to the string %q, not a number: `+` concatenates as soon as either side is a string", s)
+			}
 		}
 	} else if loop.MaxIterationsExpr != "" {
 		if len(loop.MaxIterationsExprRefs) != 1 {
