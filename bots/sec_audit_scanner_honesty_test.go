@@ -193,6 +193,10 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
 			"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
+			// The node keys its log directory on the run id so two runs sharing
+			// the workspace scratch cannot truncate each other's logs — and it
+			// refuses to start without one.
+			"{{run.id}}": "honesty-test",
 		} {
 			rendered = strings.ReplaceAll(rendered, ref, val)
 		}
