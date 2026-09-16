@@ -71,9 +71,16 @@ green.
   > required.
 - **Three required checks run on self-hosted runners** — `test`,
   `vendor-check` and `golangci` route to the organisation's `arc-runners`
-  scale set on `merge_group`, because the 20-job cap above is what makes a
-  cycle slow. That scale set is **outside this repository**, and it was dead
-  and unnoticed for over a year before 2026-09-08.
+  scale set, because the 20-job cap above is what makes a queue cycle slow.
+  The routing is **not** scoped to the queue: the expression carries no
+  `merge_group` term and diverts back to GitHub-hosted only for
+  `CI_SELF_HOSTED=off`, fork pull requests and dependency-bot pull requests,
+  so ordinary pull-request and `main` builds run there too — as do four of
+  the six advisory jobs above (`nats-conformance`, `helm-lint`,
+  `desktop-vet-cross`, `govulncheck`). A dead scale set therefore stalls the
+  checks on every ordinary pull request, not just on queue entries. That
+  scale set is **outside this repository**, and it was dead and unnoticed for
+  over a year before 2026-09-08.
 
   > **If nobody can merge and the checks never report, this is the first thing
   > to try.** Set the repository variable **`CI_SELF_HOSTED` to `off`**
