@@ -79,7 +79,11 @@ func (r *Report) Render() string {
 		writePass(&b, "pass", p)
 	}
 	for _, c := range r.Children {
-		writePass(&b, fmt.Sprintf("child %s (%s) pass", c.Node, c.Source), c.Pass)
+		label := fmt.Sprintf("child %s (%s) pass", c.Node, c.Source)
+		if c.Crossings > 1 {
+			label = fmt.Sprintf("child %s (%s, crossed %d times) pass", c.Node, c.Source, c.Crossings)
+		}
+		writePass(&b, label, c.Pass)
 	}
 	if len(r.Findings) == 0 {
 		b.WriteString("  findings: none\n")

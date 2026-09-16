@@ -88,6 +88,10 @@ type Pass struct {
 type ChildPass struct {
 	Node   string `json:"node"`
 	Source string `json:"source"`
+	// Crossings counts the times the node handed the child work in this
+	// pass: the child is simulated once — the same work every time under
+	// the shapes — and crossed that many times.
+	Crossings int `json:"crossings,omitempty"`
 	Pass
 }
 
@@ -208,7 +212,7 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 			pinned[id] = true
 		}
 		for _, cr := range x.ChildRuns() {
-			r.Children = append(r.Children, ChildPass{Node: cr.node, Source: cr.source, Pass: cr.pass})
+			r.Children = append(r.Children, ChildPass{Node: cr.node, Source: cr.source, Crossings: cr.crossings, Pass: cr.pass})
 			cov := children[cr.node]
 			if cov == nil {
 				cov = newCoverage(cr.wf)

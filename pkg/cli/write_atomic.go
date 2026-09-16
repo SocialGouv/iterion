@@ -13,6 +13,13 @@ import (
 // an error. (The directory sync is best effort: a filesystem that refuses
 // it has already made the rename durable, or cannot.)
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	// A symlinked file is written through the link, as os.WriteFile does:
+	// the temporary file and the rename land beside the target, and the
+	// link stays a link — a checkout that shares a fragment by symlink
+	// keeps sharing it.
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
 	dir, base := filepath.Split(path)
 	if dir == "" {
 		dir = "."

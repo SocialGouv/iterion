@@ -49,3 +49,26 @@ func TestAWriteLandsWholeAndLeavesNothingBeside(t *testing.T) {
 		t.Fatalf("a temporary file was left after a failed rename: %v", entries)
 	}
 }
+
+// A symlinked file is written through the link: the target carries the
+// new content and the link is still a link, as with os.WriteFile.
+func TestWriteFileAtomicWritesThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "shared.bot")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.bot")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := writeFileAtomic(link, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced by a file: %v %v", info, err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "new" {
+		t.Fatalf("the target was not written through the link: %q", got)
+	}
+}

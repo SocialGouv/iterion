@@ -70,6 +70,12 @@ type Executor struct {
 	// childRuns are the children this pass simulated, grandchildren
 	// included, each under the path of nodes that reached it.
 	childRuns []childRun
+	// childMemos are the children simulated, one per node: a subbot inside
+	// a loop is crossed many times, and under the shapes every crossing
+	// hands the child the same work — its pass is simulated on the first
+	// crossing and counted on the others, so the report and the time a
+	// pass takes are bounded by the program, not by its loops.
+	childMemos map[string]*childMemo
 
 	mu       sync.Mutex
 	vars     map[string]any
@@ -99,6 +105,15 @@ type childRun struct {
 	node, source, path string
 	wf                 *ir.Workflow
 	pass               Pass
+	// crossings counts the times the node handed the child work: the
+	// pass is the first crossing's, the others are the same work.
+	crossings int
+}
+
+// childMemo is one child's simulation, shared by every crossing of its
+// node: done is closed once the first crossing has its pass.
+type childMemo struct {
+	done chan struct{}
 }
 
 // ChildRuns are the children this pass simulated, grandchildren included.
@@ -462,9 +477,33 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 			case child == nil:
 				x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s not read: its output is a shape", req.Source)})
 			default:
+				x.mu.Lock()
+				if x.childMemos == nil {
+					x.childMemos = map[string]*childMemo{}
+				}
+				memo, crossed := x.childMemos[req.NodeID]
+				if !crossed {
+					memo = &childMemo{done: make(chan struct{})}
+					x.childMemos[req.NodeID] = memo
+				}
+				x.mu.Unlock()
+				if crossed {
+					// The same work again: the pass simulated on the first
+					// crossing stands, and this crossing is counted on it.
+					<-memo.done
+					x.mu.Lock()
+					for i := range x.childRuns {
+						if x.childRuns[i].node == req.NodeID {
+							x.childRuns[i].crossings++
+						}
+					}
+					x.mu.Unlock()
+					break
+				}
 				// Under the node's own context: the child runs within what is
 				// left of the parent's pass, never on a budget of its own.
 				pass, cx, err := x.simulate(ctx, child, path, req.NodeID)
+				close(memo.done)
 				if err != nil {
 					x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s could not be simulated: %v", req.Source, err)})
 					break
@@ -481,7 +520,7 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 				for _, id := range pinned {
 					x.pinned = append(x.pinned, req.NodeID+"/"+id)
 				}
-				x.childRuns = append(x.childRuns, childRun{node: req.NodeID, source: req.Source, path: path, wf: child, pass: pass})
+				x.childRuns = append(x.childRuns, childRun{node: req.NodeID, source: req.Source, path: path, wf: child, pass: pass, crossings: 1})
 				for _, cr := range runs {
 					cr.node = req.NodeID + "/" + cr.node
 					x.childRuns = append(x.childRuns, cr)

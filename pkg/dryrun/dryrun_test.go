@@ -1363,3 +1363,53 @@ func TestTwoCeilingsInTwoBranchesAreACeiling(t *testing.T) {
 		t.Fatalf("a bot at its ceiling in both branches is not clean: %+v %+v", r.Passes, r.Findings)
 	}
 }
+
+// A parent whose subbot sits inside a bounded loop: the child is crossed
+// once, then three more times on the false pass.
+const loopingParentBot = `schema verdict:
+  ok: bool
+
+subbot kid:
+  source: "kid.bot"
+  output: verdict
+
+judge check:
+  model: "claude-opus-4-7"
+  output: verdict
+
+workflow p:
+  worktree: none
+  sandbox: none
+  entry: kid
+  budget:
+    max_iterations: 30
+  kid -> check
+  check -> kid when not ok as again(3)
+  check -> done when ok
+`
+
+// A child inside a loop is simulated once per pass and counted on every
+// crossing: the report carries one child pass per bias, saying how many
+// times it was crossed, not one per crossing.
+func TestAChildInsideALoopIsSimulatedOnceAndCounted(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, loopingParentBot), withChild(t, kidBot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Children) != 2 {
+		t.Fatalf("one child pass per bias expected, got %d: %+v", len(r.Children), r.Children)
+	}
+	crossings := map[bool]int{}
+	for _, c := range r.Children {
+		if c.Node != "kid" || len(c.Nodes) == 0 {
+			t.Fatalf("the child pass is not the kid's: %+v", c)
+		}
+		crossings[c.Bias] = c.Crossings
+	}
+	if crossings[true] != 1 || crossings[false] != 4 {
+		t.Fatalf("crossings not counted: %v", crossings)
+	}
+	if out := r.Render(); !strings.Contains(out, "crossed 4 times") {
+		t.Fatalf("the crossings are not said:\n%s", out)
+	}
+}

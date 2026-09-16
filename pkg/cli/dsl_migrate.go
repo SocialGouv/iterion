@@ -131,7 +131,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			if err != nil {
 				return res, err
 			}
-			if err := os.WriteFile(p.path, p.out.Migrated, info.Mode().Perm()); err != nil {
+			if err := writeFileAtomic(p.path, p.out.Migrated, info.Mode().Perm()); err != nil {
 				return res, fmt.Errorf("dsl migrate: write %s: %w", p.path, err)
 			}
 			res.Files[i].Written = true
