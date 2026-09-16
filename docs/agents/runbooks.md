@@ -87,6 +87,13 @@ the hours this one spent.
   client (Claude Code, desktop, Cursor): `iterion mcp` setup, the
   `local_*`/`remote_*` tool families, detached-launch semantics,
   `--read-only`, and the `remote_api` escape hatch.
+- [docs/scheduling.md](../scheduling.md) — running a bot on a cron cadence
+  with **no resident daemon**: the `iterion schedule
+  add|list|remove|run|audit|install|uninstall` surface, the managed block
+  `install` splices into the host crontab, and the overlap policy (an empty
+  `overlap` normalizes to `skip`; `overlap: keepalive` is the always-on-agent
+  policy). Read it before wiring a recurring run, or when a scheduled run
+  did not fire.
 - [docs/usage-caps.md](../usage-caps.md) — capping the LLM
   subscription below the provider's own wall (`ITERION_USAGE_CAP_*`:
   soft on the 5h window, hard on the weekly one), where the numbers
@@ -335,3 +342,13 @@ the hours this one spent.
   actually landed (Deployment generation, never pods — the ArgoCD stall of
   2026-09-05 sat 2h30 until the next push). Read it on "I pushed the config
   and nothing happened", or before shipping an engine fix to the runners.
+- [docs/cloud-troubleshooting.md](../cloud-troubleshooting.md) — triaging a
+  live cloud instance: server and runner health, which Deployment name and
+  component label to target, NATS queue depth, Mongo reachability from a
+  server pod, and why asking the API port for `/metrics` falls through to the
+  SPA handler and returns HTML with a 200. Read it when the instance is up
+  but runs are not moving.
+- [docs/cloud-backup.md](../cloud-backup.md) — Mongo + blob backup and
+  restore: the CronJob skeleton, the retention policy, the restore drill, and
+  the explicit list of what this runbook does NOT back up. Read it before
+  trusting a backup exists, or when one has to be restored.
