@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.152.1](https://github.com/SocialGouv/iterion/compare/v3.152.0...v3.152.1) (2026-09-16)
+
+### Bug Fixes
+
+* **review-pr:** the repo says whether it has a fixer; the reviewer stops assuming ([#1313](https://github.com/SocialGouv/iterion/issues/1313)) ([6a669dc](https://github.com/SocialGouv/iterion/commit/6a669dc5281d111bab4f2c40d7d3b4acc02f99a9)), closes [#1232](https://github.com/SocialGouv/iterion/issues/1232), references [#1232](https://github.com/SocialGouv/iterion/issues/1232)
+
+    <details><summary>why</summary>
+
+    Revi published `Correction : /billy` on every review carrying a finding — at the moment and in the place a developer reads the findings, which makes it the highest-traffic instruction the gate emits. On this repo it says the opposite of the contract: the zero-touch lane is off for cost, findings are the developer's through the local loop.
+
+    </details>
+
 ## [3.152.0](https://github.com/SocialGouv/iterion/compare/v3.151.0...v3.152.0) (2026-09-16)
 
 ### Features
