@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.150.2](https://github.com/SocialGouv/iterion/compare/v3.150.1...v3.150.2) (2026-09-16)
+
+### Bug Fixes
+
+* **runtime:** a loop cap expression must produce a number, not a concatenation ([#1294](https://github.com/SocialGouv/iterion/issues/1294)) ([cdd871c](https://github.com/SocialGouv/iterion/commit/cdd871c0f806bfe3a4e1c1934e4b0ba4dc81b754)), closes [#1271](https://github.com/SocialGouv/iterion/issues/1271)
+
+    <details><summary>why</summary>
+
+    `+` concatenates as soon as one operand is a string, and loopCapInteger accepts a numeric string - deliberately, for the LEGACY single-reference template form. The two tolerances composed: a cap written `outputs.gate.remaining + 1` over an unschema'd field holding "3" evaluated to "31" and bounded the loop at 31 instead of 4, against the run budget, with no diagnostic. Measured end to end before the fix: 32 passes where 4 was written.
+
+    </details>
+
 ## [3.150.1](https://github.com/SocialGouv/iterion/compare/v3.150.0...v3.150.1) (2026-09-16)
 
 ### Bug Fixes
