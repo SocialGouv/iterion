@@ -7,7 +7,7 @@ This runbook covers the durable state iterion owns in cloud-mode:
 | Run docs + checkpoints | Mongo (`runs` collection) | Authoritative for resume | Runs un-resumable; events orphan |
 | Events stream | Mongo (`events` collection, TTL) | Observability replay | Editor "run console" goes blank for affected runs |
 | Interactions | Mongo (`interactions`) | Pause/resume answers | Affected runs stuck at `paused_waiting_human` |
-| Identity + auth | Mongo (`users`/`teams`/`memberships`/`sessions`/`oidc_links`) | Login + RBAC | All users logged out, RBAC lost |
+| Identity + auth | Mongo (`users`/`orgs`/`org_memberships`/`teams`/`memberships`/`invitations`/`oidc_links`/`sessions`) | Login + RBAC + the org/tenant tree | All users logged out, orgs and RBAC lost, pending invites dropped |
 | Secrets (BYOK, OAuth, run secrets) | Mongo, encrypted with `ITERION_SECRETS_KEY` | Per-tenant credentials | Secrets unrecoverable if the secrets key is also lost |
 | Artifact bodies | S3 / blob | Versioned `artifacts/<run-id>/<node>/<v>.json` | Artifacts lost; checkpoints reference dead keys |
 
@@ -23,8 +23,18 @@ in lock-step (same `cron`, same monitoring alert).
 ### Native — `mongodump` CronJob
 
 A tightly-scoped CronJob in the same namespace as the data-plane
-release. Adjust `MONGO_URI` to point at the cluster's hostname (the
-chart's default Service is `<release>-mongodb`).
+release. Point `MONGO_URI` at whatever Mongo the deployment actually
+uses: the chart ships `mongodb.enabled: false` by default and
+`values-prod.yaml` keeps it off — you bring your own Atlas/managed
+cluster — while the bundled dev Mongo from `values-dev.yaml` is pinned
+to the fixed name `iterion-mongodb` (headless Service
+`iterion-mongodb-headless:27017`) through `fullnameOverride`,
+deliberately *not* `<release>-mongodb`. Read the authoritative value
+straight out of the ConfigMap:
+
+```bash
+kubectl -n <ns> get cm <release>-config -o jsonpath='{.data.ITERION_MONGO_URI}'
+```
 
 ```yaml
 apiVersion: batch/v1
