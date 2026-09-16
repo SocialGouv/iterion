@@ -81,7 +81,9 @@ After onboarding the studio opens on your project. Multi-project switcher is in 
 
 ## Auto-update
 
-The desktop app polls GitHub for new releases every 4 hours (configurable in Settings → Updater) and offers in-app update on detection. Manifests and artefacts are Ed25519-signed.
+The desktop app polls GitHub for new releases every 4 hours (a fixed interval) and offers in-app update on detection. Manifests and artefacts are Ed25519-signed.
+
+Automatic checking can be switched off, and the release channel moved between `stable` and `prerelease`, through the `updater` block (`auto_check`, `channel`) of `<UserConfigDir>/Iterion/config.json` — with `auto_check` false no polling ticker is started at all. A check on demand is available two ways: **Settings → Updates → "Check for updates"**, and the native **Help → "Check for Updates…"** menu entry.
 
 ## Advanced — for contributors / power users
 
