@@ -60,6 +60,11 @@ interface DocumentState {
    *  `warnings`. Empty for parser-only responses. */
   issues: DiagnosticIssue[];
   currentFilePath: string | null;
+  /** The file this tab FOLLOWS, bound or not. It tracks currentFilePath, and
+   *  survives a file being unbound because it stopped parsing — the watcher
+   *  reads it so an unparseable file is still followed, and rebinds on the
+   *  write that makes it parse again. */
+  watchedFilePath: string | null;
   // Cached so cloud-mode launch/resume can pass it inline. Updated on
   // openFile / saveFile / parseSource; null otherwise.
   currentSource: string | null;
@@ -78,6 +83,9 @@ interface DocumentState {
   setDocument: (doc: IterDocument) => void;
   setDiagnostics: (d: string[], w?: string[], issues?: DiagnosticIssue[]) => void;
   setCurrentFilePath: (path: string | null) => void;
+  /** Sets the followed file. Called with the path that was OPENED, which is
+   *  the same as currentFilePath except when the file does not parse. */
+  setWatchedFilePath: (path: string | null) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
   markSaved: () => void;
@@ -234,6 +242,7 @@ export function createDocumentStore() {
   warnings: [],
   issues: [],
   currentFilePath: null,
+  watchedFilePath: null,
   currentSource: null,
   unit: null,
   _generation: 0,
@@ -251,7 +260,9 @@ export function createDocumentStore() {
       warnings: warnings ?? [],
       issues: issues ?? [],
     }),
-  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null }),
+  setCurrentFilePath: (currentFilePath) =>
+    set(currentFilePath === null ? { currentFilePath, unit: null } : { currentFilePath, unit: null, watchedFilePath: currentFilePath }),
+  setWatchedFilePath: (watchedFilePath) => set({ watchedFilePath }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),

@@ -268,9 +268,13 @@ export default function AssistantFileChangeOffer({
     if (!activeTarget || !proposal.sessionId || proposal.revision === null) return true;
     const current = resolveEditorSession(proposal.sessionId);
     const before = current?.store.getState();
-    const path = before?.currentFilePath;
+    // The followed file, not the bound one: a tab whose file stopped
+    // parsing is still this tab's file, and the assistant's next write may
+    // be the one that repairs it.
+    const path = before?.currentFilePath ?? before?.watchedFilePath;
     if (
       !current ||
+      !before ||
       !path ||
       !isEditorSessionActive(proposal.sessionId) ||
       before._generation !== proposal.revision ||
@@ -287,7 +291,7 @@ export default function AssistantFileChangeOffer({
         !after ||
         !isEditorSessionActive(proposal.sessionId) ||
         !store ||
-        store.currentFilePath !== path ||
+        (store.currentFilePath ?? store.watchedFilePath) !== path ||
         store._generation !== proposal.revision ||
         store.isDirty()
       ) {
@@ -296,7 +300,7 @@ export default function AssistantFileChangeOffer({
       }
       // Same helper as every other reload: the assistant's write may have
       // left the file unparseable, and it must then unbind like any other.
-      applyOpenedFile(result, store);
+      applyOpenedFile(result, store, path);
       setReloadWarning(null);
       return true;
     } catch {

@@ -44,4 +44,24 @@ describe("applyOpenedFile", () => {
     expect(store.getState().currentSource).toBe(source);
     expect(store.getState().diagnostics).toHaveLength(1);
   });
+
+  // Unbinding without this stops the tab following the file for good: every
+  // later file_modified bails on the missing path, so the write that REPAIRS
+  // the file never reaches it, and the canvas keeps a salvage marked saved.
+  it("keeps following the file it opened, so a later write can rebind it", () => {
+    const store = createDocumentStore();
+
+    applyOpenedFile({ source: "broken\n", document, diagnostics: ["e"] }, store.getState(), "mine.bot");
+    expect(store.getState().currentFilePath).toBeNull();
+    expect(store.getState().watchedFilePath).toBe("mine.bot");
+
+    // The next write makes it parse: the tab binds it again.
+    applyOpenedFile(
+      { source: "workflow ok:\n  entry: done\n", document, diagnostics: [], path: "mine.bot" },
+      store.getState(),
+      "mine.bot",
+    );
+    expect(store.getState().currentFilePath).toBe("mine.bot");
+    expect(store.getState().watchedFilePath).toBe("mine.bot");
+  });
 });

@@ -34,7 +34,10 @@ export function useFileWatcher() {
       }
       const store = docStoreRef.current.getState();
       const { addToast, notifyFilesChanged } = useUIStore.getState();
-      const filePath = store.currentFilePath;
+      // The file this tab FOLLOWS, which survives the file being unbound for
+      // not parsing: otherwise one bad write stops the tab following it, and
+      // the write that repairs the file never arrives.
+      const filePath = store.currentFilePath ?? store.watchedFilePath;
       const dirty = store.isDirty();
 
       if (event.type === "file_created" || event.type === "file_deleted") {
@@ -65,13 +68,13 @@ export function useFileWatcher() {
               .openFile(path)
               .then((result) => {
                 const s = docStoreRef.current.getState();
-                if (s.currentFilePath !== path) return;
+                if ((s.currentFilePath ?? s.watchedFilePath) !== path) return;
                 // Through the shared helper: a reload of a file that stopped
                 // parsing must unbind it too. An external write is all it
                 // takes, with no user action, and the next Save would put
                 // the salvaged program on the author's file.
                 // The unit follows the disk: the revision a save presents must.
-                applyOpenedFile(result, s);
+                applyOpenedFile(result, s, path);
                 if (notifySuccess) {
                   useUIStore.getState().addToast("File reloaded", "info");
                 }
@@ -102,7 +105,7 @@ export function useFileWatcher() {
             clearTimeout(reloadTimerRef.current);
             reloadTimerRef.current = setTimeout(() => {
               const current = docStoreRef.current.getState();
-              if (current.currentFilePath !== targetPath || current.isDirty()) {
+              if ((current.currentFilePath ?? current.watchedFilePath) !== targetPath || current.isDirty()) {
                 return;
               }
               reload(targetPath, true);
@@ -113,7 +116,8 @@ export function useFileWatcher() {
               action: {
                 label: "Reload",
                 onClick: () => {
-                  const path = docStoreRef.current.getState().currentFilePath;
+                  const st = docStoreRef.current.getState();
+                  const path = st.currentFilePath ?? st.watchedFilePath;
                   if (path) reload(path, false);
                 },
               },

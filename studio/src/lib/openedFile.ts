@@ -16,6 +16,7 @@ export interface OpenedFileTargetStore {
   setDiagnostics: (d: string[]) => void;
   setCurrentSource: (s: string) => void;
   setCurrentFilePath: (p: string | null) => void;
+  setWatchedFilePath: (p: string | null) => void;
   setUnit: (u: UnitInfo | null) => void;
   markSaved: () => void;
 }
@@ -42,10 +43,14 @@ export interface OpenedFileTargetStore {
  * setters is invisible here. There is no guard for it — one over the source
  * text would certify a spelling — so the check is this function's call sites.
  */
-export function applyOpenedFile(result: OpenedFile, store: OpenedFileTargetStore) {
+export function applyOpenedFile(result: OpenedFile, store: OpenedFileTargetStore, openedPath?: string) {
   store.setDocument(result.document);
   store.setDiagnostics(result.diagnostics);
   store.setCurrentFilePath(result.path ?? null);
+  // The tab keeps FOLLOWING the file even when it is not bound, so the
+  // watcher sees the write that makes it parse again and rebinds it.
+  // Unbinding without this stops the tab following the file for good.
+  store.setWatchedFilePath(result.path ?? openedPath ?? null);
   store.setCurrentSource(result.source);
   store.setUnit(result.unit ?? null);
   store.markSaved();

@@ -77,6 +77,7 @@ export function useDocumentFileOps({
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
+  const setWatchedFilePath = useDocumentStore((s) => s.setWatchedFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
@@ -136,14 +137,19 @@ export function useDocumentFileOps({
       try {
         if (kind === "file") {
           const result = await api.openFile(path);
-          applyOpenedFile(result, {
-            setDocument,
-            setDiagnostics,
-            setCurrentSource,
-            setCurrentFilePath,
-            setUnit,
-            markSaved,
-          });
+          applyOpenedFile(
+            result,
+            {
+              setDocument,
+              setDiagnostics,
+              setCurrentSource,
+              setCurrentFilePath,
+              setWatchedFilePath,
+              setUnit,
+              markSaved,
+            },
+            path,
+          );
           // Only a file that bound: a recent row is a path to reopen by.
           if (result.path) pushRecent(result.path);
         } else {
@@ -185,6 +191,7 @@ export function useDocumentFileOps({
       setDocument,
       setDiagnostics,
       setCurrentFilePath,
+      setWatchedFilePath,
       setCurrentSource,
       setUnit,
       markSaved,

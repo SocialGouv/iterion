@@ -130,7 +130,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         // Another path (deep link, Save As) may have bound the file
         // while the fetch was in flight — don't clobber it.
         if (s.currentFilePath !== file) {
-          applyOpenedFile(result, s);
+          applyOpenedFile(result, s, file);
         }
         setLoadState("ready");
       })
