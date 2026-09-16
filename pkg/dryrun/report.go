@@ -36,11 +36,29 @@ func (r *Report) Clean() bool {
 	return true
 }
 
+// timedOut says a pass — the program's or a child's — ran out of time.
+func (r *Report) timedOut() bool {
+	for _, p := range r.Passes {
+		if p.TimedOut {
+			return true
+		}
+	}
+	for _, c := range r.Children {
+		if c.TimedOut {
+			return true
+		}
+	}
+	return false
+}
+
 // writePass is the one line of a pass, the program's or a child's.
 func writePass(b *strings.Builder, label string, p Pass) {
 	fmt.Fprintf(b, "  %s %-5v %s — %d nodes, %d edges", label, p.Bias, p.Status, len(p.Nodes), len(p.Edges))
 	if p.Deliberate {
 		b.WriteString(" (a fail node the bot declares)")
+	}
+	if p.TimedOut {
+		b.WriteString(" (ran out of time — the dry run's bound, not the program: raise it with --exec-timeout)")
 	}
 	if p.Failure != "" {
 		fmt.Fprintf(b, " — %s", p.Failure)
@@ -82,9 +100,12 @@ func (r *Report) Render() string {
 		}
 		fmt.Fprintf(&b, "  unvisited edges: %s\n", strings.Join(parts, ", "))
 	}
-	if r.Clean() {
+	switch {
+	case r.Clean():
 		b.WriteString("  verdict: clean — every pass finished or refused as declared, nothing left as written, no shell text refused\n")
-	} else {
+	case r.timedOut():
+		b.WriteString("  verdict: not clean — a pass ran out of time before the run ended (the dry run's bound, --exec-timeout; children share it), and what it met past that point is unknown\n")
+	default:
 		b.WriteString("  verdict: not clean — a pass died, or a reference, shell or fixture finding stands\n")
 	}
 	return b.String()

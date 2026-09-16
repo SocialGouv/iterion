@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A bot that compiles, whose first run would meet an unresolved reference
@@ -221,4 +222,35 @@ func TestRunValidate_StrictFailsANotCleanDryRun(t *testing.T) {
 	if err := json.Unmarshal(out2.Bytes(), &strict); err != nil || !strict.Valid || strict.Exec == nil {
 		t.Fatalf("the result was not printed before the error: %v\n%s", err, out2.String())
 	}
+}
+
+// --exec-timeout bounds a pass; a pass that runs out of time is said so in
+// the report and, under --strict, named as the bound's doing.
+func TestRunValidate_ExecTimeoutIsTheOperators(t *testing.T) {
+	inTempWorkspace(t)
+	bot := "schema v:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: v\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: a\n  a -> done\n"
+	if err := os.WriteFile("slow.bot", []byte(bot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out := jsonPrinter()
+	if err := RunValidateWith("slow.bot", jp, ValidateOptions{Exec: true, ExecTimeout: time.Nanosecond}); err != nil {
+		t.Fatalf("without --strict the exit code is the compiler's: %v", err)
+	}
+	var res ValidateResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.Exec == nil || len(res.Exec.Passes) == 0 || !res.Exec.Passes[0].TimedOut {
+		t.Fatalf("the pass under a nanosecond is not said timed out: %v %+v", err, res.Exec)
+	}
+	hp, hout := testPrinter()
+	err := RunValidateWith("slow.bot", hp, ValidateOptions{Strict: true, ExecTimeout: time.Nanosecond})
+	if err == nil || !strings.Contains(err.Error(), "ran out of time") || !strings.Contains(err.Error(), "--exec-timeout") {
+		t.Fatalf("--strict on a timed-out pass: %v\n%s", err, hout.String())
+	}
+	if err := RunValidateWith("slow.bot", jsonPrinterOnly(), ValidateOptions{Strict: true, ExecTimeout: time.Minute}); err != nil {
+		t.Fatalf("a pass within its bound: %v", err)
+	}
+}
+
+func jsonPrinterOnly() *Printer {
+	p, _ := jsonPrinter()
+	return p
 }

@@ -12,13 +12,15 @@ import "github.com/SocialGouv/iterion/pkg/dsl/ir"
 
 // Value is the schema-shaped value of one field: an enum's first value (its
 // last when bias is false), bias for a bool, 1, 1.0, "x", one element for a
-// list, an empty object for json, "" for a file. A shape, never data.
+// list — one enum value when the list is of an enum — an empty object for
+// json, "" for a file. A shape, never data.
 func Value(ft ir.FieldType, enum []string, bias bool) any {
 	if len(enum) > 0 {
-		if bias {
-			return enum[0]
+		pick := enumValue(enum, bias)
+		if ft == ir.FieldTypeStringArray {
+			return []any{pick}
 		}
-		return enum[len(enum)-1]
+		return pick
 	}
 	switch ft {
 	case ir.FieldTypeBool:
@@ -54,6 +56,14 @@ func Synthesize(schema *ir.Schema, bias bool) map[string]any {
 	return out
 }
 
+// enumValue is the enum's first value, its last when bias is false.
+func enumValue(enum []string, bias bool) string {
+	if bias {
+		return enum[0]
+	}
+	return enum[len(enum)-1]
+}
+
 // VarValue is the launch value of a var the launch did not supply: a shape
 // of its type — an enum's first value (last when bias is false), bias for a
 // bool, 1, 1.0, "x", one element, an empty object. The engine seeds the
@@ -63,10 +73,11 @@ func VarValue(v *ir.Var, bias bool) any {
 		return "x"
 	}
 	if len(v.EnumValues) > 0 {
-		if bias {
-			return v.EnumValues[0]
+		pick := enumValue(v.EnumValues, bias)
+		if v.Type == ir.VarStringArray {
+			return []any{pick}
 		}
-		return v.EnumValues[len(v.EnumValues)-1]
+		return pick
 	}
 	switch v.Type {
 	case ir.VarBool:

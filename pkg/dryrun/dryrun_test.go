@@ -775,6 +775,9 @@ func TestTheReasonComesFromTheProgram(t *testing.T) {
 	if why := x.whyUnresolved("loop.nope.iteration"); !strings.Contains(why, "no such loop") {
 		t.Fatalf("an undeclared loop: %q", why)
 	}
+	if why := x.whyUnresolved("each.items.item"); !strings.Contains(why, "with:") {
+		t.Fatalf("the foreach binding: %q", why)
+	}
 }
 
 // A bot whose llm router selects several routes at once, converging at a
@@ -833,5 +836,51 @@ func TestAMultiSelectRouterIsAnsweredOnEveryRoute(t *testing.T) {
 	}
 	if len(r.UnvisitedNodes) != 0 {
 		t.Fatalf("the true pass did not cover every route: unvisited %v", r.UnvisitedNodes)
+	}
+}
+
+// A pass that runs out of time is said so — the dry run's bound, not a death
+// of the program — and the report is not clean, since what the pass would
+// have met past that point is unknown.
+func TestAPassThatRunsOutOfTimeIsSaidSo(t *testing.T) {
+	r, err := Run(context.Background(), compileBot(t, dryBot), Options{Timeout: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Passes {
+		if !p.TimedOut || p.Status == "finished" {
+			t.Fatalf("pass %v under a nanosecond: %+v", p.Bias, p)
+		}
+	}
+	if r.Clean() {
+		t.Fatal("a report whose passes ran out of time reads clean")
+	}
+	// The pass line names the bound, and so does the verdict — each in its
+	// own words, so neither can stand in for the other.
+	if out := r.Render(); !strings.Contains(out, "the dry run's bound, not the program") || !strings.Contains(out, "before the run ended") || !strings.Contains(out, "--exec-timeout") {
+		t.Fatalf("the rendering does not say the bound was hit, on the pass and in the verdict:\n%s", out)
+	}
+	whole, err := Run(context.Background(), compileBot(t, refusingBot), Options{Timeout: time.Minute})
+	if err != nil || whole.timedOut() {
+		t.Fatalf("a pass within its bound read as timed out: %v %+v", err, whole.Passes)
+	}
+}
+
+// A field or a var typed `string[]` with an enum is shaped as a LIST of one
+// enum value, never the bare value: a compute reading it as an array (the
+// copilot bot's scope guard) does not die on the shape.
+func TestAListOfEnumValuesIsShapedAsAList(t *testing.T) {
+	enum := []string{"a", "b"}
+	if v, ok := Value(ir.FieldTypeStringArray, enum, true).([]any); !ok || len(v) != 1 || v[0] != "a" {
+		t.Fatalf("a string[] with an enum shaped as %#v", Value(ir.FieldTypeStringArray, enum, true))
+	}
+	if v, ok := Value(ir.FieldTypeStringArray, enum, false).([]any); !ok || len(v) != 1 || v[0] != "b" {
+		t.Fatalf("the false pass shaped %#v", Value(ir.FieldTypeStringArray, enum, false))
+	}
+	if v := Value(ir.FieldTypeString, enum, true); v != "a" {
+		t.Fatalf("a plain enum shaped as %#v", v)
+	}
+	if v, ok := VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true).([]any); !ok || len(v) != 1 || v[0] != "a" {
+		t.Fatalf("a string[] var with an enum shaped as %#v", VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true))
 	}
 }

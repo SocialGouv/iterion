@@ -43,7 +43,9 @@ type Options struct {
 	Shell ShellChecker
 	// Timeout bounds one pass, the children it simulates included — a
 	// child runs under the node that hands it work, within what is left of
-	// the pass; zero is a minute. The caller's context bounds the whole run.
+	// the pass; zero is a minute (`validate --exec-timeout` sets it). The
+	// caller's context bounds the whole run. A pass that runs out of time is
+	// said so (Pass.TimedOut), apart from a death of the program.
 	Timeout time.Duration
 }
 
@@ -64,6 +66,10 @@ type Pass struct {
 	// Deliberate says the pass ended at a fail node the bot declared — a
 	// refusal the author wrote, not a death the dry run met.
 	Deliberate bool `json:"deliberate,omitempty"`
+	// TimedOut says the pass ran out of time — its deadline (Options.Timeout,
+	// or the caller's context) expired before the run ended: not a death of
+	// the program, the bound's; raise it.
+	TimedOut bool `json:"timed_out,omitempty"`
 	// Nodes are the nodes started, in order; Edges the edges selected.
 	Nodes []string `json:"nodes"`
 	Edges []Edge   `json:"edges"`
@@ -311,6 +317,9 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	runErr := eng.Run(rctx, runID, launchInputs(wf, opts.Inputs, bias))
 	if runErr != nil {
 		pass.Failure = runErr.Error()
+		if rctx.Err() != nil {
+			pass.TimedOut = true
+		}
 	}
 	x.fixtureKeys()
 	if run, err := st.LoadRun(ctx, runID); err == nil && run != nil {

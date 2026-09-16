@@ -523,6 +523,8 @@ func whyUnresolvedNamespace(ns string) string {
 		return "that node has produced nothing on this path yet, or its output has no such field"
 	case "loop":
 		return "no such loop is declared (a declared loop's counters resolve even outside its body)"
+	case "each":
+		return "the foreach binding resolves on an edge's `with:` mapping, not in a prompt or a tool body: map the item onto the node's input and read {{input.…}}"
 	case "artifacts":
 		return "nothing was published under that name before this node"
 	case "secrets":

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -66,6 +67,10 @@ type ValidateResult struct {
 // Exec.
 type ValidateOptions struct {
 	Exec bool
+	// ExecTimeout bounds one pass of the dry run, the children it simulates
+	// included; zero is a minute. A pass that runs out of time is said so in
+	// the report (`timed_out`), apart from a death of the program.
+	ExecTimeout time.Duration
 	// Strict fails the command when the dry run's report is not clean —
 	// a pass died, or a reference, shell or fixture finding stands — the
 	// switch a CI gate flips; without it the exit code is the compiler's,
@@ -440,6 +445,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				Fixtures: fixtures,
 				Path:     parsePath,
 				Children: dryRunChildren(collection),
+				Timeout:  opts.ExecTimeout,
 			})
 			if err != nil {
 				result.ExecError = "dry run: " + err.Error()
@@ -491,17 +497,23 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		return dryRunFailed(p, result.ExecError)
 	}
 	if opts.Strict && result.Exec != nil && !result.Exec.Clean() {
-		return dryRunNotClean(p)
+		return dryRunNotClean(p, result.Exec)
 	}
 	return nil
 }
 
 // dryRunNotClean is the error of a dry run whose report is not clean under
 // --strict, returned AFTER the result was printed: in JSON mode it is
-// marked ErrReported and the CLI prints nothing more.
-func dryRunNotClean(p *Printer) error {
+// marked ErrReported and the CLI prints nothing more. A pass that ran out
+// of time is named as the bound's doing, with the flag that raises it.
+func dryRunNotClean(p *Printer, report *dryrun.Report) error {
 	if p.Format == OutputJSON {
 		return fmt.Errorf("dry run not clean: %w", ErrReported)
+	}
+	for _, pass := range report.Passes {
+		if pass.TimedOut {
+			return fmt.Errorf("dry run not clean: a pass ran out of time before the run ended — the dry run's bound, not the program: raise it with --exec-timeout (see the report above)")
+		}
 	}
 	return fmt.Errorf("dry run not clean: a pass died, or a reference, shell or fixture finding stands (see the report above)")
 }
