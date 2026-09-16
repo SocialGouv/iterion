@@ -1181,7 +1181,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 
 ## Validation and references
 
-Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session: persist` in a fan-out body), C244 (bounded iteration crossing a parallel-branch boundary), and C245 (trunk-only human mode in a parallel branch); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
+Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async/parallel/fail band C240–C249 — which covers async interaction (C240–C242), `session: persist` in a fan-out body (C243), bounded iteration crossing a parallel-branch boundary (C244) and trunk-only human mode in a parallel branch (C245) — and the connector-`action:` band C260–C268; bundle checks use C200–C234 and C250–C253. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
 - [Readable grammar](references/dsl-grammar.md)
 - [Property reference](references/dsl-properties.md) (generated)

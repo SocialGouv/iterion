@@ -94,8 +94,9 @@ and claimed by a runner.
 4. **Validate** — structural and semantic passes check reachability, cycles and
    loop fuel, routing, convergence, capabilities, templates, sandbox settings,
    and backend constraints before execution. DSL diagnostics occupy C001–C199
-   plus the async-interaction band C240–C242; bundle consistency checks occupy
-   C200–C234.
+   plus the async/parallel/fail band C240–C249 and the connector-`action:` band
+   C260–C268; the bundle and manifest consistency checks in `pkg/bundlelint`
+   occupy C200–C234 and C250–C253.
 
 The compiler returns diagnostics rather than hiding repairs. The authoritative
 catalogue is [references/diagnostics.md](references/diagnostics.md); the language
