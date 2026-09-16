@@ -90,10 +90,15 @@ func (r *TemplateResolver) Resolve(body string, input map[string]any, td *Templa
 	return b.String()
 }
 
-// ResolveRef resolves a single "namespace.path" reference. It returns the
-// resolved value and true, or ("", false) when the reference resolves to
-// nothing.
-func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *TemplateData) (string, bool) {
+// ResolveValue resolves a single reference (`vars.x`, `outputs.node.field`,
+// `loop.name.iteration`, `attachments.name.size`, …) to its VALUE — the
+// map, the number, the text the namespace holds — and true, or (nil, false)
+// when the reference resolves to nothing. It is the one lookup behind the
+// prompt path (ResolveRef, which formats it) and the tool command / script
+// / postcondition path (resolveTemplateWith, which shell-escapes or
+// JSON-encodes it), so a counter reaches a script as a number and an
+// artifact as an object, never as the text a prompt would show.
+func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *TemplateData) (any, bool) {
 	if ref == ir.LiteralOpenExpression {
 		return "{{", true
 	}
@@ -112,11 +117,11 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 		segs := strings.Split(key, ".")
 		v, ok := drillTemplatePath(input, segs)
 		if ok {
-			return formatValue(v), true
+			return v, true
 		}
 	case "vars":
 		if v, ok := r.Vars[key]; ok {
-			return formatValue(v), true
+			return v, true
 		}
 	case "secrets":
 		// {{secrets.X}} renders the opaque placeholder (Layer 1); the
@@ -138,7 +143,7 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 		if !ok {
 			return "", false
 		}
-		return formatValue(v), true
+		return v, true
 	case "loop":
 		if td == nil {
 			return "", false
@@ -150,9 +155,9 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 		loopName, field := segs[0], segs[1]
 		switch field {
 		case "iteration":
-			return formatValue(int64(td.LoopCounters[loopName])), true
+			return int64(td.LoopCounters[loopName]), true
 		case "max":
-			return formatValue(int64(td.LoopMaxIterations[loopName])), true
+			return int64(td.LoopMaxIterations[loopName]), true
 		case "previous_output":
 			prev := td.LoopPreviousOutput[loopName]
 			// Render empty string on the first iteration (prev is nil)
@@ -162,7 +167,7 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 				if prev == nil {
 					return "", true
 				}
-				return formatValue(prev), true
+				return prev, true
 			}
 			if prev == nil {
 				return "", true
@@ -171,7 +176,7 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 			if !ok {
 				return "", true
 			}
-			return formatValue(v), true
+			return v, true
 		}
 	case "artifacts":
 		if td == nil {
@@ -183,15 +188,15 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 			return "", false
 		}
 		if len(segs) == 1 {
-			return formatValue(art), true
+			return art, true
 		}
 		v, ok := drillTemplatePath(art, segs[1:])
 		if !ok {
 			return "", false
 		}
-		return formatValue(v), true
+		return v, true
 	case "run":
-		return lookupRunTemplateRef(td, key)
+		return runNamespaceValue("", td, key)
 	case "attachments":
 		if td == nil {
 			return "", false
@@ -229,13 +234,24 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 		case "mime":
 			return info.MIME, true
 		case "size":
-			return formatValue(info.Size), true
+			return info.Size, true
 		case "sha256":
 			return info.SHA256, true
 		}
 	}
 
 	return "", false
+}
+
+// ResolveRef resolves a single reference to the text a prompt shows for it
+// — ResolveValue formatted: a string as is, anything else as JSON — or
+// ("", false) when the reference resolves to nothing.
+func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *TemplateData) (string, bool) {
+	v, ok := r.ResolveValue(ref, input, td)
+	if !ok {
+		return "", false
+	}
+	return formatValue(v), true
 }
 
 // RenderCommand renders a tool node's `command:` (or its `postcondition:`)

@@ -66,7 +66,7 @@ type Executor struct {
 	// hands it work (nil at the depth cap).
 	path     string
 	children func(parent, source string) (string, *ir.Workflow, error)
-	simulate func(child *ir.Workflow, path, node string) (Pass, *Executor, error)
+	simulate func(ctx context.Context, child *ir.Workflow, path, node string) (Pass, *Executor, error)
 	// childRuns are the children this pass simulated, grandchildren
 	// included, each under the path of nodes that reached it.
 	childRuns []childRun
@@ -405,7 +405,7 @@ func childFixtures(fixtures map[string]map[string]any, node string) map[string]m
 // child's terminal node produces is the child's business, and a shape is
 // what the parent's contract to it promises.
 func (x *Executor) subbotRunner() runtime.SubbotRunner {
-	return func(_ context.Context, req runtime.SubbotRequest) (map[string]any, error) {
+	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		schema := ""
 		if sb, ok := x.wf.Nodes[req.NodeID].(*ir.SubbotNode); ok {
 			schema = sb.OutputSchema
@@ -423,7 +423,9 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 			case child == nil:
 				x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s not read: its output is a shape", req.Source)})
 			default:
-				pass, cx, err := x.simulate(child, path, req.NodeID)
+				// Under the node's own context: the child runs within what is
+				// left of the parent's pass, never on a budget of its own.
+				pass, cx, err := x.simulate(ctx, child, path, req.NodeID)
 				if err != nil {
 					x.add(Finding{Node: req.NodeID, Kind: KindUnchecked, Where: "subbot", Detail: fmt.Sprintf("child %s could not be simulated: %v", req.Source, err)})
 					break

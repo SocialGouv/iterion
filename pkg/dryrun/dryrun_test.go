@@ -704,3 +704,59 @@ func TestAChildIsReadLikeTheParent(t *testing.T) {
 		t.Fatalf("the JSON of a dirty report says clean:\n%s", raw)
 	}
 }
+
+// A child that takes its time: a BOUNDED loop (the liveness monitor stops
+// only an unbounded one that makes no progress) over a tool whose shell
+// check the test makes slow — three hundred crossings at twenty
+// milliseconds each, six seconds if nothing cuts it.
+const slowKid = `schema verdict:
+  ok: bool
+
+agent check:
+  model: "claude-opus-4-7"
+  output: verdict
+
+tool slow:
+  command: "echo slow"
+
+workflow spin:
+  worktree: none
+  sandbox: none
+  entry: check
+  budget:
+    max_iterations: 1000
+  check -> slow
+  slow -> check as spin(300)
+`
+
+// slowChecker is a shell checker that sleeps: the one way a dry run spends
+// wall time, since nothing else in it waits.
+type slowChecker struct{ d time.Duration }
+
+func (s slowChecker) Check(string, string) error {
+	time.Sleep(s.d)
+	return nil
+}
+
+// A simulated child runs within what is left of the parent's pass — the
+// caller's deadline reaches it through the node that hands it work — never
+// on a fresh budget of its own.
+func TestAChildRunsWithinWhatIsLeftOfThePass(t *testing.T) {
+	parent := compileBot(t, parentBot)
+	opts := withChild(t, slowKid)
+	opts.Timeout = time.Hour
+	opts.Shell = slowChecker{20 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	r, err := Run(ctx, parent, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("the dry run took %s: the child ran on a budget of its own", elapsed)
+	}
+	if len(r.Children) == 0 || r.Children[0].Status == "finished" || !strings.Contains(r.Children[0].Failure, "deadline") {
+		t.Fatalf("the child was not cut by the parent's deadline: %+v", r.Children)
+	}
+}

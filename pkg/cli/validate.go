@@ -53,6 +53,9 @@ type ValidateResult struct {
 	// when asked. Its findings are not diagnostics: they do not decide
 	// `valid`, they tell the author what the first run would have met.
 	Exec *dryrun.Report `json:"exec,omitempty"`
+	// ExecError says why the dry run asked for did not run — the fixtures
+	// could not be read, or the run failed; the compile verdict stands.
+	ExecError string `json:"exec_error,omitempty"`
 }
 
 // ValidateOptions widen `iterion validate`. Exec runs the compiled program
@@ -163,6 +166,12 @@ func RunValidate(path string, p *Printer) error {
 
 // RunValidateWith is RunValidate with its options.
 func RunValidateWith(path string, p *Printer, opts ValidateOptions) error {
+	return RunValidateWithContext(context.Background(), path, p, opts)
+}
+
+// RunValidateWithContext is RunValidateWith under a context that bounds the
+// dry run — its passes and the children they simulate.
+func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts ValidateOptions) error {
 	path = ResolveRecipePath(path)
 	if err := requireWorkflowPathExists(path); err != nil {
 		return err
@@ -403,24 +412,30 @@ func RunValidateWith(path string, p *Printer, opts ValidateOptions) error {
 	// The dry run, on a program that compiles: never on one that does not —
 	// the diagnostics above are its remedy, a run of it would meet them
 	// again as noise.
+	// A dry run that could not run — fixtures unreadable, the run itself
+	// failing — is said in the result beside the compile verdict, which
+	// stands and is printed; the command then exits non-zero for the dry
+	// run, not for the program.
 	if (opts.Exec || opts.Fixtures != "") && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
 		if err != nil {
-			return err
+			result.ExecError = err.Error()
+		} else {
+			collection := filepath.Dir(parsePath)
+			if bundleHandle != nil {
+				collection = bundleHandle.Dir
+			}
+			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
+				Fixtures: fixtures,
+				Path:     parsePath,
+				Children: dryRunChildren(collection),
+			})
+			if err != nil {
+				result.ExecError = "dry run: " + err.Error()
+			} else {
+				result.Exec = report
+			}
 		}
-		collection := filepath.Dir(parsePath)
-		if bundleHandle != nil {
-			collection = bundleHandle.Dir
-		}
-		report, err := dryrun.Run(context.Background(), cr.Workflow, dryrun.Options{
-			Fixtures: fixtures,
-			Path:     parsePath,
-			Children: dryRunChildren(collection),
-		})
-		if err != nil {
-			return fmt.Errorf("dry run: %w", err)
-		}
-		result.Exec = report
 	}
 
 	sortValidateDiagnostics(result.Diagnostics)
@@ -446,6 +461,10 @@ func RunValidateWith(path string, p *Printer, opts ValidateOptions) error {
 				p.Line("  " + line)
 			}
 		}
+		if result.ExecError != "" {
+			p.Blank()
+			p.Line("  dry run: not run — " + result.ExecError)
+		}
 		p.Blank()
 		if result.Valid {
 			p.Line("  result: OK")
@@ -457,7 +476,20 @@ func RunValidateWith(path string, p *Printer, opts ValidateOptions) error {
 	if !result.Valid {
 		return validationFailed(p)
 	}
+	if result.ExecError != "" {
+		return dryRunFailed(p, result.ExecError)
+	}
 	return nil
+}
+
+// dryRunFailed is the error of a dry run that could not run, returned AFTER
+// the result — the compile verdict and the reason — was printed: in JSON
+// mode it is marked ErrReported and the CLI prints nothing more.
+func dryRunFailed(p *Printer, why string) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("dry run failed: %w", ErrReported)
+	}
+	return fmt.Errorf("dry run failed: %s", why)
 }
 
 // loadDryRunFixtures reads the fixtures a dry run answers with: an object

@@ -20,7 +20,7 @@ answered at once, and the report lists the nodes and edges no pass reached.
 --fixtures answers the named nodes with recorded outputs instead of shapes.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.RunValidateWith(args[0], newPrinter(), validateOpts)
+		return cli.RunValidateWithContext(cmd.Context(), args[0], newPrinter(), validateOpts)
 	},
 }
 

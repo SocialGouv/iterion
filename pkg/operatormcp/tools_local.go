@@ -205,7 +205,7 @@ func (s *Server) resolvePath(p string) string {
 	return filepath.Join(s.WorkDir, p)
 }
 
-func handleLocalValidate(_ context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
+func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		FilePath string `json:"file_path"`
 		Exec     bool   `json:"exec"`
@@ -222,7 +222,7 @@ func handleLocalValidate(_ context.Context, s *Server, raw json.RawMessage) (str
 		fixtures = s.resolvePath(fixtures)
 	}
 	out, err := captureJSON(func(p *cli.Printer) error {
-		return cli.RunValidateWith(s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures})
+		return cli.RunValidateWithContext(ctx, s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures})
 	})
 	// RunValidate returns "validation failed" AFTER printing the result
 	// JSON — an invalid workflow is a normal answer for this tool, so

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,8 +109,15 @@ func TestRunValidate_FixturesAnswerNodes(t *testing.T) {
 	if err := os.WriteFile("bad.json", []byte(`"not a fixture file"`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := RunValidateWith("e.bot", jp, ValidateOptions{Fixtures: "bad.json"}); err == nil || !strings.Contains(err.Error(), "fixtures") {
-		t.Fatalf("a malformed fixture file was accepted: %v", err)
+	// A malformed fixture file is refused — said beside the compile verdict,
+	// which is printed, the error after it marked reported.
+	jp2, out2 := jsonPrinter()
+	if err := RunValidateWith("e.bot", jp2, ValidateOptions{Fixtures: "bad.json"}); !errors.Is(err, ErrReported) {
+		t.Fatalf("a malformed fixture file was accepted, or refused before the result: %v", err)
+	}
+	var refused ValidateResult
+	if err := json.Unmarshal(out2.Bytes(), &refused); err != nil || !refused.Valid || refused.Exec != nil || !strings.Contains(refused.ExecError, "fixtures") {
+		t.Fatalf("the refusal is not in the result: %v %+v\n%s", err, refused, out2.String())
 	}
 }
 
@@ -155,5 +163,34 @@ func TestRunValidate_ExecSimulatesTheChildren(t *testing.T) {
 	}
 	if !found || !ran {
 		t.Fatalf("the child's broken command was not met through the parent, or its pass not carried: %+v %+v", res.Exec.Findings, res.Exec.Children)
+	}
+}
+
+// A dry run that could not run — here, fixtures that cannot be read — is
+// said beside the compile verdict, which stands and is printed; the error
+// comes after, marked reported, so the MCP tool returns the result.
+func TestRunValidate_SaysWhenTheDryRunDidNotRun(t *testing.T) {
+	inTempWorkspace(t)
+	if err := os.WriteFile("ok.bot", []byte("schema v:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: v\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: a\n  a -> done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out := jsonPrinter()
+	err := RunValidateWith("ok.bot", jp, ValidateOptions{Fixtures: "nowhere.json"})
+	if err == nil || !errors.Is(err, ErrReported) {
+		t.Fatalf("a dry run that did not run returned %v, want an error marked reported", err)
+	}
+	var res ValidateResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("no result printed: %v\n%s", err, out.String())
+	}
+	if !res.Valid || res.Exec != nil || !strings.Contains(res.ExecError, "nowhere.json") {
+		t.Fatalf("result %+v", res)
+	}
+	hp, hout := testPrinter()
+	if err := RunValidateWith("ok.bot", hp, ValidateOptions{Fixtures: "nowhere.json"}); err == nil || errors.Is(err, ErrReported) {
+		t.Fatalf("human mode: %v", err)
+	}
+	if !strings.Contains(hout.String(), "result: OK") || !strings.Contains(hout.String(), "dry run: not run") {
+		t.Fatalf("the human output lacks the verdict or the reason:\n%s", hout.String())
 	}
 }

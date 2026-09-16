@@ -41,7 +41,9 @@ type Options struct {
 	Children func(parent, source string) (path string, wf *ir.Workflow, err error)
 	// Shell holds shell text to its parser; nil is Bash{}.
 	Shell ShellChecker
-	// Timeout bounds one pass; zero is a minute.
+	// Timeout bounds one pass, the children it simulates included — a
+	// child runs under the node that hands it work, within what is left of
+	// the pass; zero is a minute. The caller's context bounds the whole run.
 	Timeout time.Duration
 }
 
@@ -261,7 +263,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	x.path = opts.Path
 	x.children = opts.Children
 	if depth < maxChildDepth {
-		x.simulate = func(child *ir.Workflow, path, node string) (Pass, *Executor, error) {
+		x.simulate = func(ctx context.Context, child *ir.Workflow, path, node string) (Pass, *Executor, error) {
 			childOpts := opts
 			childOpts.Path = path
 			childOpts.Fixtures = childFixtures(opts.Fixtures, node)

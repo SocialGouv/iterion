@@ -920,10 +920,13 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// resolves in a prompt and stays literal in a command (a dry run
 			// found `{{attachments.x}}` handed to the shell as written). The
 			// expression is the parsed reference's, not the raw text's: the
-			// parser has already read the bang and the spaces. A value the
-			// snapshot has not is nil and takes the missing-value rule below.
-			if s, ok := (&TemplateResolver{Vars: vars}).ResolveRef(refExpr(ref), input, td); ok {
-				val = s
+			// parser has already read the bang and the spaces. The VALUE,
+			// not the prompt's text of it: a script body gets a counter as
+			// a number and an artifact as an object, through the renderer
+			// below like every other namespace. A value the snapshot has
+			// not is nil and takes the missing-value rule below.
+			if v, ok := (&TemplateResolver{Vars: vars}).ResolveValue(refExpr(ref), input, td); ok {
+				val = v
 			}
 			handled = true
 		}
