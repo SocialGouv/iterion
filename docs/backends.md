@@ -63,6 +63,7 @@ If you have **at least one** of:
 - `ANTHROPIC_API_KEY` set in your environment
 - `OPENAI_API_KEY` set in your environment
 - `XAI_API_KEY` set in your environment (xAI Grok)
+- `ZAI_API_KEY` set in your environment (z.ai GLM over the Anthropic wire format)
 - `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`
 - AWS credentials (Bedrock) or `GOOGLE_CLOUD_PROJECT` (Vertex)
 
@@ -876,12 +877,18 @@ forwarding is claw-only.
 
 | Provider | Detection |
 |---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` |
+| `anthropic` | `ANTHROPIC_API_KEY`. Suppressed when `ANTHROPIC_BASE_URL` points at a z.ai / bigmodel facade — that configuration reports as `zai` instead, so the resolver never picks an Anthropic model that would 401 against the facade |
+| `zai` | `ZAI_API_KEY` (the bearer and base URL are synthesised from it), **or** an `ANTHROPIC_BASE_URL` containing `z.ai`/`bigmodel` together with `ANTHROPIC_AUTH_TOKEN` (see [z.ai / GLM](#using-a-non-anthropic-provider-via-the-anthropic-wire-format-zai--glm)) |
 | `openai` | `OPENAI_API_KEY`, **or** Codex CLI signed in via "Sign in with ChatGPT" (see `OpenAI via ChatGPT forfait` below) |
 | `xai` | `XAI_API_KEY` (xAI Grok — OpenAI-compatible chat completions at `api.x.ai`) |
 | `foundry` (Azure) | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` |
 | `bedrock` | `AWS_REGION` or `AWS_DEFAULT_REGION` (full chain handled by AWS SDK) |
 | `vertex` | `GOOGLE_CLOUD_PROJECT` |
+
+A bare `ANTHROPIC_AUTH_TOKEN` — the Claude subscription path of the 💳 note
+above — is deliberately **not** a detection source: `claw` accepts it as auth
+once a node asks for it, but auto-selection will not reach for `claw` on it
+alone. Set `backend: claw` explicitly to use that token.
 
 When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider (the detector's
@@ -1472,15 +1479,18 @@ families internally.
   provider side. If you're pointing at OpenRouter, Ollama, or another
   OpenAI-shaped endpoint, use `backend: claw` with `model: openai/…`
   + `OPENAI_BASE_URL` instead.
-- **API keys only — no forfait via iterion.** Both Anthropic's Consumer
-  Terms (Pro/Max plans) and z.ai's Coding Plan terms restrict
-  subscription benefits to *officially supported tools*. Driving either
-  provider's subscription/OAuth forfait through iterion (or any other
-  third-party orchestrator) is a ToS violation. Always use a BYOK API
-  key path: `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, or the BYOK panel in the
-  cloud UI. The legacy in-cloud OAuth-forfait wiring
-  (`pkg/server/oauth_routes.go::OAuthKindClaudeCode`) is scheduled for
-  removal — see `.plans/zai-glm-byok.md`.
+- **z.ai Coding Plan: API keys only.** z.ai's Coding Plan terms restrict
+  subscription benefits to *officially supported tools*, so drive z.ai from a
+  BYOK key — `ZAI_API_KEY`, or the BYOK panel in the cloud UI — rather than a
+  Coding Plan subscription. **Anthropic is no longer in the same boat:** a
+  Pro/Max OAuth token is accepted from third-party apps and billed against the
+  separate *extra usage* balance, so the path is supported — see [the 💳 note
+  above](#default-preference-order). iterion warns on every node that spends
+  one and refuses outright under `ITERION_FORBID_SUBSCRIPTION_OAUTH=1`; a
+  metered `ANTHROPIC_API_KEY` stays the predictable choice for production
+  spend. The legacy in-cloud OAuth-forfait wiring (`pkg/server/oauth_routes.go`,
+  the `OAuthKindClaudeCode` branch) is still present and scheduled for removal;
+  use the BYOK panel ([byok.md](byok.md)) for new deployments.
 - Cost: iterion's token-usage panels currently price against an
   Anthropic rate card. When you route to z.ai the wire shape is
   unchanged so token counts are still reported, but the dollar
