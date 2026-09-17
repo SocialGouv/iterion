@@ -14,7 +14,9 @@ commit-status gate. Never edits or commits. See
   0 findings, the review prompts rendered with their paragraphs.
 - Versions: bot review-pr 0.9.4 (`dsl: 2` on `main.bot` and the three `lib/`
   fragments, wave 1 of #1344) · iterion `d5b7db09f` (branch build
-  v3.154.1+54527ba05) · claude_code + claude-opus-5.
+  v3.154.1+54527ba05) · claude_code — `reviewer_claude` on claude-opus-5,
+  `converge` on claude-sonnet-5 — through the host's Anthropic-compatible
+  facade (z.ai).
 - Method: CLI `iterion run` from the worktree, `--store-dir` the operator's
   workspace store, `ITERION_BIN` the branch binary, `--var base_ref=origin/main
   --var review_mode=mono --var mono_family=claude --var post_to_board=false

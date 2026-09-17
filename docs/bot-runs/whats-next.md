@@ -16,9 +16,11 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   workspace store, `--sandbox none`, `ITERION_BIN` the branch binary (the
   board MCP subprocess runs it), a French seed asking for the repository's
   state in three sentences and a recommendation, caps `--max-cost-usd 4
-  --max-duration 12m`. claude_code + claude-opus-5 (21 tools, 2 MCP servers).
+  --max-duration 12m`. claude_code + claude-opus-5 (21 tools, 2 MCP servers),
+  served through the Anthropic-compatible facade configured on this host
+  (z.ai), as the run's provenance events record.
   Turn 2 by `iterion resume --answer message=…` asking to close.
-- Result: turn 1 in ~40 s / 61 958 tokens / $0.34 — the branch, the 13
+- Result: turn 1 in 45 s / 61 958 tokens / $0.34 — the branch, the 13
   uncommitted files and the last commit named exactly, a recommendation in the
   right order (validate and test, commit, then the local adversarial round),
   four aligned quick replies, `close: false`, pause at `chat`. Turn 2 in 18 s /
@@ -27,8 +29,9 @@ priorities form → roadmap → review form → emit → dispatch pickers).
 - Value: the live proof that profile 2 changes what the model reads and
   nothing else — the run's `events.jsonl` carries the rendered system prompt
   with `not like a workflow.\n\nAnchor every file read…`, the paragraph break
-  the profile-1 lexer used to fold; the reply itself was grounded (a `git
-  status` and a `git log` read, no invention).
+  the profile-1 lexer used to fold; the reply itself was grounded in the
+  harness's git snapshot — Bash is denied to Nexie, her two tool calls were
+  greps — with no invention.
 - Findings / misses: a first attempt (run `01a0ae5c-38e1…`, cancelled) ran
   under the environment's default sandbox and spent its first two minutes
   realising iterion's whole `devbox.json` inside the container before the

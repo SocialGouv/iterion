@@ -13,7 +13,8 @@
   `--merge-into none`, `--var plan_review=off --var max_passes=2`, caps
   `--max-cost-usd 8 --max-duration 30m`, `ITERION_BIN` the branch binary.
   Feature prompt: a `--shout` flag printing the greeting in upper case, with
-  a unit test and a README line. claude_code + claude-opus-5 on every node.
+  a unit test and a README line. claude_code + claude-opus-5 on every node,
+  served through the host's Anthropic-compatible facade (z.ai).
 - Result: **converged**, ~10 min, **$2.28** (plan $0.38 · campaign $0.64 +
   $0.52 · verify_build $0.29 · review $0.17 + $0.27). Pass 1 shipped the
   feature in three commits (feat, test, docs), one per slice, tree green after
@@ -22,7 +23,8 @@
   that with a `.gitignore` commit; the in-loop review was clean both times.
   Four commits on the storage branch `iterion/run/magneto-slam-distortpedal-e7d0`
   (`6f6f7c1`), merged nowhere.
-- Value: the migrated bot's whole graph live on profile 2 — `workspace_probe`
+- Value: every LLM node of the migrated bot live on profile 2, with its
+  deterministic gates between them — `workspace_probe`
   → `plan` (plan_system / plan_user with their paragraphs) → `campaign` →
   `verify_build` → `verify_run` → `review` → `gate` → `mr_gate` → `done`; the
   run's `events.jsonl` carries the rendered campaign prompt with
