@@ -7,7 +7,7 @@ leaves blocked. See [bots/arbitrate/](../../bots/arbitrate/).
 
 - Status: **the preflight only** — on a programme with no blocked case and no doctrine, `case_read`
   refused and the judge never ran.
-- Versions: bot arbitrate 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Versions: bot arbitrate 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
 - Method: CLI `iterion run <bundle>/main.bot` launched FROM the scratch copy Campy used (a one-lot
   `.modernize/plan.yaml`, no `.modernize/ARBITRAGE.md`), `--store-dir` the operator's workspace
   store, `--sandbox none`, caps `--max-cost-usd 2 --max-duration 10m`.

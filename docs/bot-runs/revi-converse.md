@@ -6,7 +6,7 @@ Newest first. Template: [README.md](README.md).
 
 - Status: **validated for what it could reach** — a grounded answer drafted from a branch diff,
   the POST and its mandatory VERIFY refused by an unresolvable forge host, reported honestly.
-- Versions: bot revi-converse 0.1.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
+- Versions: bot revi-converse 0.1.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
   claude-opus-5.
 - Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of the greet project on
   `feat/shout`, `--store-dir` the operator's workspace store, `--sandbox none`, `--var base_ref=main

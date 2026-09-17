@@ -4,7 +4,7 @@
 
 - Status: **the file has no prompt** — the profile-2 header changes the file's reading and nothing
   a model receives; the run on a bare scratch refused at `plan`.
-- Versions: bot vuln-watch 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Versions: bot vuln-watch 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
 - Method: CLI `iterion run <bundle>/main.bot --var dry_run=true` launched FROM a scratch copy of
   the greet project with no `vuln-watch.json` and no `inventory.json`, `--store-dir` the
   operator's workspace store, `--sandbox none`.

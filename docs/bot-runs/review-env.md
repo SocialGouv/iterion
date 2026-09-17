@@ -7,7 +7,7 @@ and hands back a live https URL. See [bots/review-env/](../../bots/review-env/).
 
 - Status: **partial** — the deploy agent ran and refused honestly (no image to name), the verdict
   routed the retry the bot allows, and the run's 10-minute wall ended it as BUDGET_EXCEEDED.
-- Versions: bot review-env 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
+- Versions: bot review-env 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
   claude-opus-5.
 - Method: CLI `iterion run <bundle>/main.bot --var slug=greet-scratch` launched FROM a scratch copy
   of the greet project (no CI, no published image, no platform attached), `--store-dir` the

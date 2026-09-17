@@ -7,7 +7,7 @@ Newest first. One section per dogfooded run.
 ## 2026-09-17 — profile 2: a zero-LLM collect and a dry-run digest whose synthesis prompt reaches the model with its paragraphs (runs 01a0af56-04dd, 01a0af56-922b)
 
 - Status: **validated** — both modes end to end on a one-feed fixture, nothing delivered.
-- Versions: bot feed-watch 1.6.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · synthesis on claude_code +
+- Versions: bot feed-watch 1.6.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · synthesis on claude_code +
   claude-opus-5 (the bot's default).
 - Method: a scratch copy of the greet project seeded with `feed-watch.json` (one category
   `iterion`, one public feed — this repository's GitHub releases Atom — one sink by name, no

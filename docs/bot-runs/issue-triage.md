@@ -13,7 +13,7 @@ authors → `triage:auto`, external authors → `needs:approval` + studio
 
 - Status: **validated** — a scratch card read, classified and stamped; the bot's default GPT route
   refused on quota and the run recovered on claude by a resume.
-- Versions: bot issue-triage 0.2.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Versions: bot issue-triage 0.2.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
 - Method: a scratch native card created in the operator's store (`iterion issue create`, label
   `scratch`, "add a --shout flag to greet.py"), then CLI `iterion run <bundle>/main.bot --var
   issue_id=native:35fcaf04…`, `--store-dir` the operator's workspace store, `--sandbox none`,

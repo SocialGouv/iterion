@@ -5,7 +5,7 @@ Index + template: [README.md](README.md). Newest first.
 ## 2026-09-17 — profile 2: detect and generate prompts reach the models with their paragraphs (run 01a0af4e-e3e6)
 
 - Status: **validated** — a devbox.json written for a scratch repository, verified, banked.
-- Versions: bot devbox-setup 0.1.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code + claude-opus-5.
+- Versions: bot devbox-setup 0.1.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code + claude-opus-5.
 - Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of the greet project
   (a one-file Python CLI with its test), `--store-dir` the operator's workspace store,
   `--sandbox none --merge-into none`, caps `--max-cost-usd 3 --max-duration 15m`,

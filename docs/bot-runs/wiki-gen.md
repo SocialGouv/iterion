@@ -9,7 +9,7 @@ its skills (`wiki-authoring`, `okf-format`). Newest run first.
 ## 2026-09-17 — profile 2: the author prompt reaches the model with its paragraphs (run 01a0af4e-f21d)
 
 - Status: **validated** — a three-page wiki written and gated in one pass on a scratch repository.
-- Versions: bot wiki-gen 1.0.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
+- Versions: bot wiki-gen 1.0.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
   claude-sonnet-5 (`ITERION_WIKI_MODEL_CLAUDE`).
 - Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of the greet project,
   `--store-dir` the operator's workspace store, `--sandbox none --merge-into none`,

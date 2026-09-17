@@ -7,7 +7,7 @@ is forbidden to rewrite. See [bots/modernize/](../../bots/modernize/).
 ## 2026-09-17 — profile 2: the campaign prompts reach the model with their paragraphs (run 01a0af4e-ff2a)
 
 - Status: **validated** — one lot of a seeded programme landed and gated on a scratch repository.
-- Versions: bot modernize 0.4.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code + claude-opus-5.
+- Versions: bot modernize 0.4.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code + claude-opus-5.
 - Method: CLI `iterion run <bundle>/main.bot --var only_lot=L1 --var max_passes=2` launched FROM
   the scratch copy Campy used on 2026-09-17 (`.modernize/plan.yaml` with one lot — a docstring and
   type hints on `greeting()`, exit gate = the unit tests and a docstring check — and a
