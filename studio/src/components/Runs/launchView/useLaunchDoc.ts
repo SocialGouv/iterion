@@ -33,6 +33,7 @@ export function useLaunchDoc(
   // save.
   const storeDocument = useDocumentStore((s) => s.document);
   const salvaged = useDocumentStore((s) => s.salvaged);
+  const storeUnit = useDocumentStore((s) => s.unit);
   // Pristine-buffer detection: the document store initializes with a
   // default scaffold document (createEmptyDocument), so `storeDocument`
   // is never null — a bare deep-link to /runs/new would otherwise
@@ -77,7 +78,7 @@ export function useLaunchDoc(
       // author never wrote, at real cost, and the run's report gives no
       // sign of what is missing. The harshest of the six, so the same
       // refusal covers it.
-      const refusal = salvageRefusal({ salvaged });
+      const refusal = salvageRefusal({ salvaged, unit: storeUnit });
       if (refusal) {
         onError(refusal);
         return;
@@ -120,7 +121,7 @@ export function useLaunchDoc(
     return () => {
       cancelled = true;
     };
-  }, [filePath, noSource, onError, setCurrentSource, storeDocument, salvaged]);
+  }, [filePath, noSource, onError, setCurrentSource, storeDocument, salvaged, storeUnit]);
 
   // The full declared field list. Progressive-disclosure bucketing
   // (primary / bot options / auto) happens in LaunchView via

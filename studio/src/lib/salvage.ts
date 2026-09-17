@@ -31,8 +31,15 @@ import type { IterDocument } from "@/api/types";
  * is the only way out, deliberately — the canvas cannot restore a region the
  * parser never read.
  */
-export function salvageRefusal(state: { salvaged: boolean }): string | null {
+export function salvageRefusal(state: { salvaged: boolean; unit?: unknown }): string | null {
   if (!state.salvaged) return null;
+  // A refusal has to name a way out that EXISTS. The Source view is
+  // read-only for a bot in several files — it is edited file by file — so
+  // pointing a unit's author at Edit/Apply there points at a control the
+  // render gate hides, and the buffer has no route at all.
+  if (state.unit) {
+    return "This bot's main did not parse, so the canvas holds only what could be read of it — saving would drop the rest. A bot in several files is edited file by file: repair its main from the files drawer or on disk, and the tab reloads when it parses again.";
+  }
   return "This file did not parse, so the canvas holds only what could be read of it — saving would drop the rest. Repair it in the Source view and Apply.";
 }
 
