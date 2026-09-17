@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -201,7 +201,7 @@ describe("SequentialReviews", () => {
     fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
     expect(onResolved).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Send 2 responses" }));
-    await vi.waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
     expect(resumeRun).toHaveBeenCalledTimes(2);
   });
 
