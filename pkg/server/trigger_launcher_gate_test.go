@@ -54,7 +54,7 @@ func (*spinePublisher) CancelRun(context.Context, string) error { return nil }
 func (*spinePublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
-func (*spinePublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, string) error {
+func (*spinePublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, *runview.CompiledSource) error {
 	return nil
 }
 

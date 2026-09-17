@@ -115,7 +115,7 @@ func TestSubmitResumeStampsOrgIDFromPriorTenant(t *testing.T) {
 	}
 	adminCtx := store.WithIdentity(context.Background(), "team-b", "admin")
 	wf := &ir.Workflow{Name: "wf"}
-	if err := p.SubmitResume(adminCtx, runview.ResumeSpec{RunID: "run-r", FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}, wf, "hash"); err != nil {
+	if err := p.SubmitResume(adminCtx, runview.ResumeSpec{RunID: "run-r", FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if len(published) != 1 || published[0].OrgID != "org-2" {

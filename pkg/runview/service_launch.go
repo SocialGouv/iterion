@@ -64,7 +64,13 @@ type LaunchPublisher interface {
 	CancelRunWithReason(ctx context.Context, runID string, reason store.RunEndReason) error
 	// SubmitResume republishes a RunMessage with ResumeSpec set so
 	// the runner picks the run back up.
-	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, hash string) error
+	//
+	// It takes the COMPILED SOURCE, not just its hash, for the same reason
+	// SubmitLaunch does: the queue message carries the IR and the identity
+	// hash and never the files, so the runner's engine has no text of its
+	// own to record and whatever the document holds is all `rewind --auto`
+	// will ever have. This is the only holder of the text on that path.
+	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, cs *CompiledSource) error
 }
 
 // validateRoutingPolicyForLaunch is the ONE choke point freezing the
@@ -620,7 +626,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// merged ask, after its own status CAS — not this layer's: the wire
 	// carries the merge, and the doc copy loaded above is stale by then.
 	if s.publisher != nil {
-		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
+		if err := s.publisher.SubmitResume(parent, spec, wf, cs); err != nil {
 			return nil, err
 		}
 		closed := make(chan struct{})

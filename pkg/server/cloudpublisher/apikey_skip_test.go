@@ -424,7 +424,7 @@ func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) 
 	}
 	if err := p.SubmitResume(ctx, runview.ResumeSpec{
 		RunID: "run-w1", FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
-	}, wf, "hash"); err != nil {
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	run, err = rs.LoadRun(ctx, "run-w1")

@@ -179,7 +179,7 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 		RunID:   "run-resume",
 		Source:  spec.Source,
 		Answers: map[string]any{"ok": true},
-	}, wf, "hash"); err != nil {
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if len(published) != 2 {
@@ -340,7 +340,7 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 		FilePath: "canary.bot",
 		Source:   "workflow canary:\n  start -> done\n",
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err == nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil {
 		t.Fatal("expected SubmitResume to fail for an unresolved required secret")
 	} else if !strings.Contains(err.Error(), "test_e2e_canary") {
 		t.Fatalf("error should name the secret, got %q", err.Error())

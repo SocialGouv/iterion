@@ -71,7 +71,7 @@ func TestSubmitResume_PublishFailureRestoresOperatorPause(t *testing.T) {
 		Source:   "workflow operator_resume:\n  entry: done\n",
 	}
 
-	err = p.SubmitResume(ctx, spec, wf, "hash")
+	err = p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"})
 	if err == nil {
 		t.Fatal("SubmitResume returned nil, want publish failure")
 	}
@@ -151,7 +151,7 @@ func TestSubmitResume_ClearsArmedRetryOnSuccessfulPublish(t *testing.T) {
 		RunID: runID, FilePath: "wf.bot",
 		Source: "workflow wf:\n  entry: done\n",
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if len(spy.cleared) != 1 || spy.cleared[0] != runID {
@@ -186,7 +186,7 @@ func TestSubmitResume_KeepsRetryStateOnPublishFailure(t *testing.T) {
 	}
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err == nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil {
 		t.Fatal("SubmitResume returned nil, want publish failure")
 	}
 	if len(spy.cleared) != 0 {
@@ -226,7 +226,7 @@ func TestSubmitResume_ConcurrentRequestsPublishOnce(t *testing.T) {
 	}
 	errs := make(chan error, 2)
 	for range 2 {
-		go func() { errs <- p.SubmitResume(ctx, spec, wf, "hash") }()
+		go func() { errs <- p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}) }()
 	}
 	select {
 	case <-barrier.ready:
@@ -264,14 +264,14 @@ func TestSubmitResume_MissionExpectedStatusAndReceiptCrossPublisherCAS(t *testin
 	p := &Publisher{store: st, publishRun: func(_ context.Context, msg *queue.RunMessage) error { published = msg; return nil }}
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n", ExpectedStatus: store.RunStatusPausedOperator, ReceiptID: "receipt-1"}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err == nil || !strings.Contains(err.Error(), "status changed") {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil || !strings.Contains(err.Error(), "status changed") {
 		t.Fatalf("mismatched expected status = %v", err)
 	}
 	if published != nil {
 		t.Fatal("mismatched expected status reached the queue")
 	}
 	spec.ExpectedStatus = store.RunStatusFailedResumable
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	if published == nil || published.Resume == nil || published.Resume.ExpectedStatus != store.RunStatusFailedResumable || published.Resume.ReceiptID != "receipt-1" {

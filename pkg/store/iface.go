@@ -106,6 +106,30 @@ type RunStore interface {
 	// the resume has already CAS-transitioned the doc to `queued`.
 	SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error
 
+	// SetRunRecordedSource stamps the source a resume is about to execute —
+	// the text `rewind --auto` diffs the current file against — TOGETHER
+	// with the identity hash of that same compile. The two travel as one
+	// write because they are one fact, and the engine's forced-resume path
+	// clears a pair whose hash names a different revision, on purpose.
+	//
+	// Written by the cloud SubmitResume, the only holder of the text on
+	// that path: the queue message carries the compiled IR and the hash,
+	// never the files, so the runner's engine records nothing of its own
+	// (restampWorkflowSource) and a forced cloud resume used to wipe the
+	// pair — a run could be rewound once and never again.
+	//
+	// It writes all THREE keys every call, empty included: the caller states
+	// a whole triple. Skipping an empty hash left the previous revision's
+	// hash standing beside a restored older source — the mismatched pair
+	// this write exists to prevent.
+	//
+	// Empty src with no files is a legal clear: the compile busted the
+	// 1 MiB cap, which costs the run auto-targetability and nothing else.
+	// Granular for the same reason as the budget setters: the resume has
+	// already CAS-transitioned the doc to `queued`, so a whole-doc SaveRun
+	// from the copy loaded before that would revert it.
+	SetRunRecordedSource(ctx context.Context, runID, src string, files []WorkflowSourceFile, hash string) error
+
 	// SetRunnerVersion records the iterion build that EXECUTED the run,
 	// beside the launcher's own (Run.IterionVersion). In cloud the two are
 	// separate deployments that move independently, and the pair is what

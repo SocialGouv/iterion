@@ -34,7 +34,7 @@ func (*queueOutageTestPublisher) CancelRunWithReason(context.Context, string, st
 	return nil
 }
 
-func (p *queueOutageTestPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, string) error {
+func (p *queueOutageTestPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, *runview.CompiledSource) error {
 	return p.err
 }
 

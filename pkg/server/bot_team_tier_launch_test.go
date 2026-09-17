@@ -56,7 +56,7 @@ func (*tierPublisher) CancelRun(context.Context, string) error { return nil }
 func (*tierPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
-func (*tierPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, string) error {
+func (*tierPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, *runview.CompiledSource) error {
 	return nil
 }
 

@@ -796,6 +796,51 @@ func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunC
 	return nil
 }
 
+// SetRunRecordedSource stamps the executed source and the hash of that same
+// compile in ONE granular write (see store.RunStore). Tenant-scoped like
+// every other targeted patch, so a status transition racing it is never
+// disturbed.
+//
+// $unset rather than $set "" for an empty value: the fields are omitempty, so
+// a stored empty and an absent key already mean the same thing, and unsetting
+// keeps the document in the shape a launch writes.
+//
+// All THREE keys are written every call, empty included. The caller states a
+// whole triple, and skipping the empty hash left the previous revision's hash
+// beside a restored older source — the mismatched pair this write exists to
+// prevent — whenever a rollback put back a document that predates hashes.
+func (s *Store) SetRunRecordedSource(ctx context.Context, id, src string, files []store.WorkflowSourceFile, hash string) error {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	unset := bson.M{}
+	if src != "" {
+		set["workflow_source"] = src
+	} else {
+		unset["workflow_source"] = ""
+	}
+	if len(files) > 0 {
+		set["workflow_sources"] = files
+	} else {
+		unset["workflow_sources"] = ""
+	}
+	if hash != "" {
+		set["workflow_hash"] = hash
+	} else {
+		unset["workflow_hash"] = ""
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run recorded source: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 // SetRunLLMIdle toggles the model-idle marker (see store.RunStore).
 // Granular $set/$unset, tenant-scoped like the other targeted patches.
 func (s *Store) SetRunLLMIdle(ctx context.Context, id string, idleSince *time.Time) error {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -283,7 +284,8 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -321,14 +323,46 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		}
 		sourcePath = resolved
 	}
+	// A run served by a STORED bot tier has no current source on this
+	// filesystem: resolveWorkflowPath would answer the baked catalog twin,
+	// which --auto refuses to diff against (ErrRewindStoredBotSourceUnresolved).
+	// Re-resolve the SAME row at its current version and hand --auto that —
+	// the resume path already does exactly this to replay a stored bot.
+	// Whenever the caller did not name a source itself — NOT only for --auto.
+	// The diff is the visible consumer, but the same compile yields the graph
+	// that decides what is downstream of the pivot, so a `--node` rewind of a
+	// stored-bot run computed its drop set from the baked twin: a different
+	// program, and the same destructive wrong-graph answer.
+	currentPath, releaseBot, berr := s.currentStoredBotSource(r.Context(), runMeta, sourcePath == "")
+	if berr != nil {
+		// resolveResumeBot types its failures, and flattening them into one
+		// 400 tells an operator a store blip is their fault. Neither case can
+		// be served from the baked twin — that is the defect above — so both
+		// refuse, and each names the way out it actually has.
+		switch {
+		case errors.Is(berr, errResumeResolveTransient):
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable,
+				"resolve the bot's current source: %v — transient, retry", berr)
+		case errors.Is(berr, botsource.ErrNotFound):
+			s.httpErrorFor(w, r, http.StatusBadRequest,
+				"resolve the bot's current source: the stored bot this run was served by was deleted, so nothing "+
+					"here holds the program it ran — pass source_path to name a copy, or fork the run instead. "+
+					"Rewinding against the baked catalog bot of the same name would drop the wrong nodes")
+		default:
+			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve the bot's current source: %v", berr)
+		}
+		return
+	}
+	defer releaseBot()
 	result, err := s.runs.Rewind(r.Context(), runview.RewindSpec{
-		RunID:        id,
-		NodeID:       req.NodeID,
-		Auto:         req.Auto,
-		Force:        req.Force,
-		KeepFiles:    req.KeepFiles,
-		RestoreScope: restoreScope,
-		SourcePath:   sourcePath,
+		RunID:             id,
+		NodeID:            req.NodeID,
+		Auto:              req.Auto,
+		Force:             req.Force,
+		KeepFiles:         req.KeepFiles,
+		RestoreScope:      restoreScope,
+		SourcePath:        sourcePath,
+		CurrentSourcePath: currentPath,
 	})
 	if err != nil {
 		switch {

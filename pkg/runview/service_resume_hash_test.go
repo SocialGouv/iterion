@@ -84,7 +84,7 @@ func (*resumeHashPublisher) CancelRunWithReason(context.Context, string, store.R
 	return nil
 }
 
-func (p *resumeHashPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
+func (p *resumeHashPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, *CompiledSource) error {
 	p.resumeCalls++
 	return nil
 }

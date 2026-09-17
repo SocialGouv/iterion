@@ -37,6 +37,20 @@ var ErrRewindAmbiguous = errors.New("runview: rewind: the edit affects independe
 // or nowhere; the operator names the node instead.
 var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run recorded its main file but not the fragments it imports — name the node with --node")
 
+// currentSourcePath is where the program as it is NOW lives: the caller's
+// materialization of a stored bot's current version when it named one, else
+// the path the run resolves to.
+//
+// Every consumer of "now" reads this — the compile that yields the graph and
+// its revision, and the --auto diff. Redirecting one and not the other
+// computes a pivot in one program and applies it to another.
+func currentSourcePath(spec RewindSpec, sourcePath string) string {
+	if spec.CurrentSourcePath != "" {
+		return spec.CurrentSourcePath
+	}
+	return sourcePath
+}
+
 // ErrRewindStoredBotSourceUnresolved is returned when --auto meets a run
 // served by a STORED bot tier (a team bot or a platform override) without
 // the caller naming where that bot's current source is.
@@ -49,8 +63,11 @@ var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run record
 // The pivot lands on the entry node, every downstream output is dropped and its
 // artifacts tombstoned — an authoritative-looking answer built on nothing.
 //
-// A caller that HAS resolved the stored bot's current version passes its path
-// as RewindSpec.SourcePath, and --auto proceeds normally.
+// A caller that HAS materialized the stored bot's current version names it in
+// RewindSpec.CurrentSourcePath (the server does, from the botsource row), and
+// --auto proceeds normally. Naming SourcePath lifts the refusal too — an
+// operator who points the rewind at a file has stated where the current source
+// is — but it is the wrong lever for a materialization: see CurrentSourcePath.
 var ErrRewindStoredBotSourceUnresolved = errors.New("runview: rewind: this run was served by a stored bot, whose current source is not on this filesystem — name the node with --node")
 
 // DeclChange is one differing top-level declaration between the source a
@@ -94,11 +111,8 @@ func resolveAutoPivotForRun(run *store.Run, sourcePath string, sourcePathNamedBy
 	// Both sides of the diff have to be the same artifact. A stored tier's
 	// current source does not live on this filesystem, and the path resolved
 	// for such a run is the baked twin — see ErrRewindStoredBotSourceUnresolved.
-	if !sourcePathNamedByCaller {
-		switch run.BotSourceTier {
-		case store.BotSourceTierTeam, store.BotSourceTierPlatform:
-			return "", nil, ErrRewindStoredBotSourceUnresolved
-		}
+	if !sourcePathNamedByCaller && run.ServedByStoredBot() {
+		return "", nil, ErrRewindStoredBotSourceUnresolved
 	}
 	var oldFile *ast.File
 	if len(run.WorkflowSources) > 0 {

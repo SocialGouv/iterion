@@ -25,7 +25,7 @@ func (*operatorResumePublisher) CancelRunWithReason(context.Context, string, sto
 	return nil
 }
 
-func (p *operatorResumePublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
+func (p *operatorResumePublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, *CompiledSource) error {
 	p.resumeCalls++
 	return nil
 }

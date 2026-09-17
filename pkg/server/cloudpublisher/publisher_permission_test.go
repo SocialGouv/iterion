@@ -81,7 +81,7 @@ func TestSubmitResumeReplaysPermissionOverride(t *testing.T) {
 	if err := p.SubmitResume(ctx, runview.ResumeSpec{
 		RunID: "run-permission-resume", FilePath: "wf.bot", Source: source,
 		Answers: map[string]any{"message": "continue"},
-	}, wf, "hash"); err != nil {
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil {

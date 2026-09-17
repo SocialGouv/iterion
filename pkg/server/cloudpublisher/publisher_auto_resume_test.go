@@ -41,7 +41,7 @@ func TestSubmitResume_AutomaticRefusesCancelled(t *testing.T) {
 		Automatic: true,
 	}
 
-	err = p.SubmitResume(ctx, spec, wf, "hash")
+	err = p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"})
 	if err == nil || !strings.Contains(err.Error(), "not auto-resumable") {
 		t.Fatalf("SubmitResume(automatic, cancelled) = %v, want a refusal naming auto-resume", err)
 	}
@@ -57,7 +57,7 @@ func TestSubmitResume_AutomaticRefusesCancelled(t *testing.T) {
 	}
 
 	spec.Automatic = false
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("operator resume of a cancelled run must still proceed: %v", err)
 	}
 	if publishes != 1 {
