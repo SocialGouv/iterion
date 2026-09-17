@@ -1239,6 +1239,22 @@ exit 0`
 		}
 	})
 
+	// Provider model ids carry : and @. Refusing one would not drop a flag, it
+	// would degrade the whole deep scan to deepsec_unavailable -- an artificial
+	// limit on the operator, on the most expensive component of the run.
+	t.Run("a real provider model id is not refused", func(t *testing.T) {
+		for _, model := range []string{
+			"us.anthropic.claude-opus-4-8-v1:0",
+			"anthropic/claude-opus-4@20250101",
+			"zai/glm-5.2",
+		} {
+			got := run(t, "codex", model)
+			if !strings.Contains(got, "--model "+model) {
+				t.Errorf("model %q never reached deepsec: %q", model, got)
+			}
+		}
+	})
+
 	t.Run("an operator choice reaches deepsec", func(t *testing.T) {
 		got := run(t, "codex", "gpt-6-astra")
 		if !strings.Contains(got, "--agent codex") || !strings.Contains(got, "--model gpt-6-astra") {
@@ -1349,6 +1365,10 @@ func TestDeepsecRefusesAnAgentThatIsNotOneArgument(t *testing.T) {
 		{"codex --dangerously-skip", "", "deepsec_agent"},
 		{"codex;rm -rf /", "", "deepsec_agent"},
 		{"", "gpt-6 --wide-open", "deepsec_model"},
+		{"", "gpt*6", "deepsec_model"},
+		{"", "gpt?6", "deepsec_model"},
+		{"", "gpt[6]", "deepsec_model"},
+		{"", "gpt\t6", "deepsec_model"},
 		// A leading dash needs no space to do harm: `--agent --some-flag` reads
 		// as two flags to any parser, and the agent name silently becomes
 		// whatever argument follows. The charset alone admits it.

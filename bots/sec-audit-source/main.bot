@@ -2912,9 +2912,18 @@ esac
 case "$DS_MODEL" in
   -*)
     err_envelope "deepsec_model cannot begin with a dash, it would reach deepsec as a second FLAG rather than as a model name: $DS_MODEL" ;;
-  *[!A-Za-z0-9._/-]*)
-    err_envelope "deepsec_model is not usable as a single argument: $DS_MODEL" ;;
 esac
+# A DENY-list, and deliberately so: an unquoted expansion is subject to exactly
+# two things -- word splitting on IFS, and pathname expansion -- so whitespace
+# and the three glob characters are the complete set that can turn one argument
+# into something else. Nothing is re-parsed, so a quote or a dollar reaches
+# deepsec as a literal and is its business to reject. An ALLOW-list here would
+# be an artificial limit: provider model ids legitimately carry : and @
+# (us.anthropic.claude-opus-4-8-v1:0, anthropic/claude-opus-4@20250101), and
+# refusing one degrades the WHOLE deep scan rather than one flag.
+if [ "$DS_MODEL" != "$(printf "%s" "$DS_MODEL" | tr -d "[:space:]*?[")" ]; then
+  err_envelope "deepsec_model carries whitespace or a glob character, which would not survive as one argument: $DS_MODEL"
+fi
 # An explicit agent is an operator choice and outranks the gateway probe --
 # never replace what was asked for with what was detected.
 if [ -n "$DS_AGENT" ]; then
