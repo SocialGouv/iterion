@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.161.0](https://github.com/SocialGouv/iterion/compare/v3.160.0...v3.161.0) (2026-09-17)
+
+### Features
+
+* **secrets:** a team's own LLM key can name the workloads it funds ([#1370](https://github.com/SocialGouv/iterion/issues/1370)) ([1f73589](https://github.com/SocialGouv/iterion/commit/1f73589ea4ea6172660b2b45c4a6117991d8158c)), references [#1363](https://github.com/SocialGouv/iterion/issues/1363) [#1368](https://github.com/SocialGouv/iterion/issues/1368) [#1368](https://github.com/SocialGouv/iterion/issues/1368) [#1368](https://github.com/SocialGouv/iterion/issues/1368)
+
+    <details><summary>why</summary>
+
+    A key for provider P, once on a team, funded whatever that team ran. The only dials were scope (who may SEE it) and a concurrency ceiling; nothing said what a key was FOR. `is_default: false` reads like a reserve and is not one — keyRank is a preference order, and rank 3 is selected whenever it is the only visible key of its provider. Measured: a key added for one bot served two runs of a different bot within four hours.
+
+    </details>
+
 ## [3.160.0](https://github.com/SocialGouv/iterion/compare/v3.159.1...v3.160.0) (2026-09-17)
 
 ### Features
