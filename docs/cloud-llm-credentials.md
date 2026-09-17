@@ -154,6 +154,13 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   rotating the refresh token) every tick. Nothing is in flight and
   retrying does not help — re-connect the credential, which clears the
   cool-down, or wait for the instant in the message.
+  For a credential whose provider never states a deadline that hour is not
+  a hiccup, it is the **steady state**: the record is always due, so it is
+  renewed hourly for as long as it is connected. That is the price of it
+  staying alive — the alternative is to stop renewing it and let it die at
+  an hour nobody can predict, which is what used to happen. A credential
+  that states its deadline is renewed once per token lifetime instead, so
+  it is worth connecting one that does.
   That worker sees the records `DueForRefresh` returns: those expiring
   within its lead, **and those whose deadline is unknown**. The second
   half matters because `access_token_expires_at` is best-effort — it is

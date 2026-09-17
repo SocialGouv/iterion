@@ -116,6 +116,14 @@ func TestMemoryOAuthStoreDueForRefresh(t *testing.T) {
 	if err := store.Upsert(ctx, OAuthRecord{UserID: "b", Kind: OAuthKindCodex}); err != nil {
 		t.Fatal(err)
 	}
+	// Exactly ON the cutoff. The Mongo twin selects with `$lt`, so this store
+	// must be strict too: a deadline equal to the cutoff is not yet past, and
+	// the two stores answering differently at the boundary is the kind of
+	// divergence only the backend nobody tests locally would show.
+	atCutoff := now.Add(5 * time.Minute)
+	if err := store.Upsert(ctx, OAuthRecord{UserID: "c", Kind: OAuthKindCodex, AccessTokenExpiresAt: &atCutoff}); err != nil {
+		t.Fatal(err)
+	}
 	got, err := store.DueForRefresh(ctx, now.Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("due for refresh: %v", err)
@@ -132,6 +140,10 @@ func TestMemoryOAuthStoreDueForRefresh(t *testing.T) {
 	}
 	if due["a/codex"] {
 		t.Errorf("a record expiring two hours out is due at a five-minute cutoff: %+v", got)
+	}
+	if due["c/codex"] {
+		t.Errorf("a deadline exactly ON the cutoff is due — Mongo's $lt says it is not, so the two stores "+
+			"disagree about which records the sweep renews: %+v", got)
 	}
 	if len(got) != 2 {
 		t.Errorf("due = %d records, want exactly the two above: %+v", len(got), got)

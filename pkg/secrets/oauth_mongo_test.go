@@ -175,18 +175,28 @@ func TestMongoOAuth_EveryClearableFieldClearsThroughUpsert(t *testing.T) {
 //
 // Two spellings of "no deadline", both reachable in production: an explicit
 // null, which is what the re-connect above writes, and a missing key, which is
-// every record stored before the field existed. The far-future record is the
-// control: a selector that answered "everything" would satisfy the first two
-// assertions while meaning nothing.
+// every record stored before the field existed. The other two records are what
+// stop this from proving nothing: `dave`, due by his deadline, covers the
+// branch the selector KEPT — without him, replacing `$lt` with a second copy
+// of the null predicate (production stops renewing every credential with a
+// known imminent expiry) leaves the suite green — and `bob`, four hours out,
+// catches a selector that answers "everything".
 func TestMongoOAuth_ARecordWithNoDeadlineIsStillDueForRefresh(t *testing.T) {
 	s, ctx := mongoOAuthStore(t)
 	now := time.Now().UTC()
+	soon := now.Add(5 * time.Minute)
 	later := now.Add(4 * time.Hour)
 
 	if err := s.Upsert(ctx, OAuthRecord{
 		UserID: "alice", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed"),
 	}); err != nil {
 		t.Fatalf("upsert null-expiry: %v", err)
+	}
+	if err := s.Upsert(ctx, OAuthRecord{
+		UserID: "dave", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed"),
+		AccessTokenExpiresAt: &soon,
+	}); err != nil {
+		t.Fatalf("upsert imminent-expiry: %v", err)
 	}
 	if err := s.Upsert(ctx, OAuthRecord{
 		UserID: "bob", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed"),
@@ -219,6 +229,10 @@ func TestMongoOAuth_ARecordWithNoDeadlineIsStillDueForRefresh(t *testing.T) {
 	if !seen["carol"] {
 		t.Error("a record with NO access_token_expires_at key is not due — every credential stored before " +
 			"the field existed is invisible to the refresh worker for good")
+	}
+	if !seen["dave"] {
+		t.Error("a record expiring in five minutes is not due at a 30-minute cutoff — the selector lost the " +
+			"branch it was built for, and no credential is renewed before it expires")
 	}
 	if seen["bob"] {
 		t.Error("a record expiring in four hours is due at a 30-minute cutoff — this selector returns " +

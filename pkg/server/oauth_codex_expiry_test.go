@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -417,5 +418,85 @@ func TestCodexConnect_AnExpiredCredentialIsRefreshedWithoutWaitingForTheTicker(t
 				"and every run launched until then is handed a token that cannot serve it")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// syncBuf collects log output from the handler goroutine. A test observer fed
+// by another goroutine takes a mutex, always — the -race job is a required
+// check and has reddened tests written without one.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A record stored without a deadline has two very different futures, and the
+// connect log is where an operator learns which one they got: one is renewed
+// on the next sweep and learns its deadline there, the other can never be
+// stamped by anything and dies at an hour nobody can predict. Saying the same
+// sentence for both is how the second case goes unnoticed until a run fails
+// its first LLM call.
+//
+// The wording IS the contract here: this is a diagnostic whose only consumer
+// reads it as prose.
+func TestCodexConnect_UnstampableRecordSaysWhetherAnythingCanRenewIt(t *testing.T) {
+	cases := []struct {
+		name         string
+		refreshToken string
+		want         string
+		reject       string
+	}{
+		{
+			name:         "refreshable",
+			refreshToken: `"refresh_token":"rt",`,
+			want:         "treats it as due",
+			reject:       "NO refresh token",
+		},
+		{
+			name:         "nothing can renew it",
+			refreshToken: "",
+			want:         "NO refresh token",
+			reject:       "treats it as due",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, hs, signer, oauthStore := oauthTestServer(t)
+			var logs syncBuf
+			srv.logger = iterlog.New(iterlog.LevelWarn, &logs)
+			jo := oauthJWT(t, signer, "jo")
+
+			blob := `{"tokens":{"access_token":"opaque-not-a-jwt-token",` + tc.refreshToken +
+				`"account_id":"acct-1"},"auth_mode":"chatgpt"}`
+			code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/credentials", jo, blob)
+			if code != http.StatusOK {
+				t.Fatalf("upload = %d body=%s, want 200", code, body)
+			}
+			rec, err := oauthStore.Get(t.Context(), "jo", secrets.OAuthKindCodex)
+			if err != nil {
+				t.Fatalf("store Get: %v", err)
+			}
+			if rec.AccessTokenExpiresAt != nil {
+				t.Fatalf("expiry = %s, want none — this test is about the unstampable record", rec.AccessTokenExpiresAt)
+			}
+			got := logs.String()
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("connect log does not say %q, so the operator cannot tell this case from the other:\n%s", tc.want, got)
+			}
+			if strings.Contains(got, tc.reject) {
+				t.Errorf("connect log says %q, which belongs to the OTHER case:\n%s", tc.reject, got)
+			}
+		})
 	}
 }

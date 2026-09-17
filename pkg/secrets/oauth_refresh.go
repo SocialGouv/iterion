@@ -262,22 +262,29 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		// not the token).
 		//
 		// When NEITHER is readable the expiry is left as it stands, which
-		// is emphatically not "unstamped": the record was selected because
-		// its stored expiry is already past, so leaving it means the record
-		// stays inside the sweep's window and every 10-minute tick runs
-		// this exchange again — rotating the refresh token at OpenAI
-		// forever. Truth is not invented to escape that (the field is the
-		// token's actual deadline, exposed under that name); the record
-		// gets a SCHEDULING cool-down instead, which is a retry cadence and
-		// says nothing about how long the token lives.
+		// is emphatically not "unstamped": truth is not invented to escape
+		// the scheduling problem (the field is the token's actual deadline,
+		// exposed under that name). The cool-down below answers it instead.
 		if t := codexRefreshedExpiry(res, updated); !t.IsZero() {
 			rec.AccessTokenExpiresAt = &t
-		} else {
-			next := now.Add(undatableRefreshBackoff)
-			rec.RefreshNotBefore = &next
 		}
 	default:
 		return fmt.Errorf("secrets: RefreshRecord unsupported kind %q", rec.Kind)
+	}
+	// A refresh that leaves no deadline in the future — the exchange stated
+	// none, or restated one already past — leaves the record DUE, since that
+	// is exactly what DueForRefresh selects. Without a cool-down the next
+	// sweep runs this exchange again, ten minutes later, forever, rotating a
+	// provider refresh token each time.
+	//
+	// Decided here rather than per kind: the arm above had it and the
+	// anthropic one did not, so the same undatable exchange converged for
+	// codex and looped for claude_code. A cool-down is a retry CADENCE and
+	// says nothing about how long the token lives, so it is the same answer
+	// for every kind — including the next one.
+	if rec.AccessTokenExpiresAt == nil || !rec.AccessTokenExpiresAt.After(now) {
+		next := now.Add(undatableRefreshBackoff)
+		rec.RefreshNotBefore = &next
 	}
 	rec.LastRefreshedAt = &now
 	rec.UpdatedAt = now
@@ -375,10 +382,16 @@ func NewRefreshClaimOwner() (string, error) {
 
 // undatableRefreshBackoff is how long the sweep leaves a record alone after
 // a refresh that SUCCEEDED but yielded no readable deadline. It is a retry
-// cadence, not a claimed token lifetime — the record keeps its truthful
-// (past) expiry, so nothing downstream is told the token lives an hour.
-// An hour keeps such a credential rotating often enough to stay usable
-// while removing 5 of every 6 exchanges the 10-minute sweep would run.
+// cadence, not a claimed token lifetime — the record keeps whatever its
+// deadline truthfully is (past, or unknown), so nothing downstream is told
+// the token lives an hour.
+//
+// It is also the STEADY state of a credential that can never state a
+// deadline: the hourly exchange is what keeps it alive, since the only
+// alternative is to stop renewing it and let it die at an hour nobody can
+// predict. An hour removes 5 of every 6 exchanges the 10-minute sweep would
+// run, and bounds the window in which a second holder (audit row B2) could
+// race this one.
 const undatableRefreshBackoff = time.Hour
 
 // codexRefreshedExpiry resolves the access-token deadline to store after a

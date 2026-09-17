@@ -167,11 +167,13 @@ type OAuthRecord struct {
 	// exchange instead of overwriting the credential that replaced it.
 	//
 	// RefreshNotBefore doubles as a cool-down when no owner holds it: a
-	// refresh that succeeded but yielded no readable expiry leaves the
-	// record inside DueForRefresh's window forever — under either spelling
-	// of "no readable expiry", a stored deadline already past or none at
-	// all — and without a cool-down every sweep would re-run the exchange
-	// (and rotate the refresh token) every 10 minutes for good.
+	// refresh that succeeded but yielded no deadline in the FUTURE leaves
+	// the record inside DueForRefresh's window — under either spelling, a
+	// stored deadline already past or none at all — and without a cool-down
+	// every sweep would re-run the exchange (and rotate the refresh token)
+	// every 10 minutes for good. RefreshRecord sets it for every kind,
+	// outside the per-kind switch: one arm having it and the other not is
+	// exactly how that loop lived unnoticed.
 	//
 	// No bson omitempty on either: the Mongo store writes through $set, so
 	// an omitted key would leave a stale claim in place — the trap already
@@ -1313,9 +1315,16 @@ func (s *MongoOAuthStore) DueForRefresh(ctx context.Context, t time.Time) ([]OAu
 	// (what an Upsert writes when the blob states no deadline) and a missing
 	// key (records written before the field existed).
 	//
-	// access_expiry_partial serves the first branch. The second reaches
-	// documents that index deliberately excludes, so this sweep scans the
-	// collection — one document per (owner, kind, rank), every 10 minutes.
+	// This scans the collection, and access_expiry_partial no longer serves
+	// it: Mongo uses an index for an $or only when EVERY branch is
+	// indexable, and the null branch matches documents the partial filter
+	// ($exists: true) excludes. Measured by explain — SUBPLAN → COLLSCAN,
+	// where the old single-branch selector took an IXSCAN. Affordable
+	// because the collection holds one document per (owner, kind, rank) and
+	// this runs every 10 minutes; a credential that is never renewed is not.
+	// Redefining that index would need an explicit DropOne first —
+	// CreateMany answers IndexOptionsConflict and EnsureSchema swallows it,
+	// so a changed definition silently would not apply.
 	cur, err := s.coll.Find(ctx, bson.M{"$or": []bson.M{
 		{"access_token_expires_at": bson.M{"$lt": t}},
 		{"access_token_expires_at": nil},
