@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.159.0](https://github.com/SocialGouv/iterion/compare/v3.158.0...v3.159.0) (2026-09-17)
+
+### Features
+
+* **bots:** wave 3a of the catalogue on dsl: 2 — nine small bundles ([#1344](https://github.com/SocialGouv/iterion/issues/1344)) ([#1361](https://github.com/SocialGouv/iterion/issues/1361)) ([7e67663](https://github.com/SocialGouv/iterion/commit/7e67663f5e803903c1f6e499a9cb20d74202fa4f)), references [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1282](https://github.com/SocialGouv/iterion/issues/1282)
+
+    <details><summary>why</summary>
+
+    vuln-watch, issue-triage, arbitrate, feed-watch, devbox-setup, review-env, revi-converse, wiki-gen and modernize move to profile 2, by the migrator and nothing else: `dsl: 2` at the head of nine files, no literal re-spelled, the program proven unchanged by the migrator apart from the one change of meaning the profile carries — the blank lines the authors wrote inside 17 prompts (66 in all: wiki-gen 14, modernize 12, revi-converse 10, review-env 8, arbitrate 6, feed-watch 6, devbox-setup 6,…
+
+    </details>
+
 ## [3.158.0](https://github.com/SocialGouv/iterion/compare/v3.157.0...v3.158.0) (2026-09-17)
 
 ### Features
