@@ -102,6 +102,15 @@ reaches its runs. Two consequences worth knowing:
 - Enablement of *installed* plugins stays **global per instance**. For a
   **team-scoped, private** plugin see the next section.
 
+**The mirror never prunes.** A skill mirrored into a workspace stays there once
+its source is renamed, removed or disabled: nothing walks `.claude/skills/` to
+drop a file whose name no longer appears in what the run mirrored
+(`ClearSkillTierMarkers` clears the per-pass tier sidecars, not the files or
+their `.sha256` markers). A stale copy is inert for `claude_code`, which
+discovers only the `<name>/SKILL.md` directory form — but `claw` resolves a flat
+`<name>.md` too, and will keep offering it under its old name. In a persistent
+workspace, delete it by hand; a run in a fresh checkout never sees one.
+
 ### Org-private plugins from a git repo (ADR-080)
 
 Installing a plugin into a cloud pod's iterion home is **not durable** — the pod
