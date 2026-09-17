@@ -439,5 +439,8 @@ workflow whats_next:
   ## The loop's exhaustion exit: once conversation_loop is spent the
   ## back-edge above is declined whatever the operator typed, and without
   ## this edge the run dies of LOOP_EXHAUSTED instead of ending. The session
-  ## ends here; the operator re-seeds a new one (C145, #1293).
+  ## ends here: the cap is consulted when leaving `chat`, so the operator's
+  ## message at the 1000th turn is read and not answered — a lifetime guard,
+  ## not a farewell (a closing turn would be a product choice, not a repair).
+  ## The operator re-seeds a new session (C145, #1293).
   chat -> done

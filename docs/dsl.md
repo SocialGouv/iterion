@@ -1143,6 +1143,8 @@ fixer -> run_tests as fix_passes(3)   # the back-edge, taken while iterations re
 fixer -> fix_passes_exhausted         # fires once they are spent (or when the budget cannot fund another)
 ```
 
+Migration note: older runtimes read a node's fallbacks in source order, so a bare exit written *above* the loop back-edge ended the run after one pass — the loop was dead code. The order no longer decides: a `.bot` that relied on that accidental one-shot now loops as written, up to its cap. Write the exit below the back-edge anyway; it reads as what it is.
+
 A loop back-edge does not count toward [C010](references/diagnostics.md) (one unconditional edge per node), so this pair is the one legal shape with two unconditional edges; the bare edge also serves a conditional back-edge (`… when not approved as fix(3)`) once its cap is reached. Route it to a typed `fail <name>:` when exhaustion is a refusal, or onward when the work banked so far should still be delivered.
 
 A bounded loop or foreach may live wholly inside one `fan_out_all`, `fan_out_each`, or `llm` `multi: true` branch. Every branch/item owns independent counters, loop snapshots, outputs, artifact allocations, and a durable cursor; siblings may therefore finish after different numbers of iterations, and a restart or human pause resumes the same local scope without replaying completed iterations. The collector becomes ready only after those local lifecycles terminate, under the existing `wait_all` / `best_effort` policy.
