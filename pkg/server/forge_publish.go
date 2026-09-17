@@ -499,6 +499,14 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 	// in forge_publish_gate_test.go keep them disjoint), but one shared
 	// deadline would make that a load-bearing coincidence: a hung assigner
 	// would hand the withdrawal an already-dead context.
+	//
+	// They stay SEQUENTIAL in one goroutine, which means a panic in the first
+	// skips the second (goSafe recovers at the top, not between them). Left
+	// that way deliberately: on a given provider only one of the two resolves
+	// a capability at all, and the withdrawal is idempotent — the next
+	// publish on that PR withdraws what this one missed. A recover between
+	// the halves would buy nothing an already best-effort, self-healing call
+	// does not already have.
 	settleParent := context.WithoutCancel(r.Context())
 	saCtx, saCancel := context.WithTimeout(settleParent, 30*time.Second)
 	s.goSafe("forge-publish-reviewer-settle", func() {
