@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.154.2](https://github.com/SocialGouv/iterion/compare/v3.154.1...v3.154.2) (2026-09-17)
+
+### Bug Fixes
+
+* **server:** join the background loops the shutdown cancels ([#1346](https://github.com/SocialGouv/iterion/issues/1346)) ([819d6a5](https://github.com/SocialGouv/iterion/commit/819d6a5ea89b814ac1c3226770147006cfe8722e)), closes [#1257](https://github.com/SocialGouv/iterion/issues/1257)
+
+    <details><summary>why</summary>
+
+    A loop stopped by a cancel alone returns after its cancel did, so the process could exit between a claim and its release, or mid-write into a store already being torn down — a write the grace period never covered.
+
+    </details>
+
 ## [3.154.1](https://github.com/SocialGouv/iterion/compare/v3.154.0...v3.154.1) (2026-09-17)
 
 ### Bug Fixes
