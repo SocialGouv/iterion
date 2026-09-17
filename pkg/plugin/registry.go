@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -88,9 +89,49 @@ func (p *Plugin) MirrorFiles(kind MirrorKind) ([]SkillFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: read %s %q: %w", p.Name(), kind.Name, rel, err)
 		}
-		out = append(out, SkillFile{Name: filepath.Base(rel), Content: data})
+		out = append(out, SkillFile{Name: mirrorFileName(rel, kind.Dir, p.Name()), Content: data})
 	}
 	return out, nil
+}
+
+// mirrorFileName is the name a contributed markdown file mirrors under. It is
+// the base name, except for the two shapes where the base name is the constant
+// "SKILL.md" and the real name is carried elsewhere:
+//
+//   - the Agent Skills DIRECTORY form "<name>/SKILL.md" — what `npx skills add`
+//     publishes and claude_code's Skill tool discovers — names it after the
+//     DIRECTORY;
+//   - a root-form pack, whose whole source tree is one "SKILL.md" (or one
+//     "skills/SKILL.md"), names it after the PLUGIN.
+//
+// On the base name alone both shapes mirror as one file called "SKILL.md": the
+// skill is named "SKILL", and the next pack of either shape overwrites it.
+//
+// The plugin name goes through NormalizeName because, unlike a base name, it is
+// NOT structurally one path element: a hand-written plugin.yaml `name:` is
+// never normalized (only synthesized manifests are) and Validate only rejects
+// it empty. The callers join this value onto the workspace's .claude/<kind>/,
+// so an unnormalized "../x" would write outside it — and an ordinary scoped
+// name like "org/pack" would fail run setup on a directory that does not exist.
+func mirrorFileName(rel, kindDir, pluginName string) string {
+	slash := filepath.ToSlash(rel)
+	base := path.Base(slash)
+	parent := path.Base(path.Dir(slash))
+	named := parent != "" && parent != "." && parent != "/" && !strings.EqualFold(parent, kindDir)
+	switch {
+	case named && strings.EqualFold(base, "SKILL.md"):
+		// Case-insensitive HERE only: a pack authored on a case-insensitive
+		// filesystem ships "skill.md", and the directory still carries the
+		// name, so nothing is lost by accepting either spelling.
+		return parent + ".md"
+	case !named && base == "SKILL.md" && pluginName != "":
+		// Exact match only: with no directory to fall back on, a lowercase
+		// "skill.md" is far likelier to be a file genuinely called "skill"
+		// — a `commands/skill.md` slash command, say — than the sentinel,
+		// and renaming it to the plugin's name would publish it as `/<plugin>`.
+		return NormalizeName(pluginName) + ".md"
+	}
+	return base
 }
 
 // SkillFiles reads the plugin's contributed skill files (back-compat shorthand).

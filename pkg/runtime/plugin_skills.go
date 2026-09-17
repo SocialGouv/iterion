@@ -66,6 +66,22 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 		destDir := filepath.Join(workDir, ".claude", kind.Dir)
 		markerDir := filepath.Join(destDir, bundleMirrorMarkerDir)
 		dirsReady := false
+		// Which plugin already claimed each mirrored name in THIS pass, and
+		// which destinations were already reported. Two plugins contributing
+		// one name land on one destination at the same tier, where
+		// reconcileSkillFile's precedence guard does not apply: it overwrites
+		// without a word, and the winner is the order Enabled() returns
+		// (alphabetical by plugin name). The overwrite stays — refusing it
+		// would break a workspace that relies on the incumbent — but it stops
+		// being silent, and the destination is reported once.
+		//
+		// The cloud twin (mirrorInjectedPluginFiles) carries neither yet, and
+		// is NOT covered by cloudpublisher's dedup: replaceContribution runs
+		// only over locally installed plugins, while team-scoped git-hosted
+		// sources are appended unconditionally — so two teams' packs claiming
+		// one name still substitute silently there.
+		claimed := map[string]string{}
+		reported := map[string]bool{}
 
 		for _, p := range enabled {
 			files, ferr := p.MirrorFiles(kind)
@@ -101,8 +117,29 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				if rerr != nil {
 					return nil, fmt.Errorf("runtime/plugin: mirror %s %q from %q: %w", kind.Name, f.Name, p.Name(), rerr)
 				}
-				if kind.Name == "skill" && outcome != skillOutcomeShadowed {
+				// Reports the COLLISION, never the winner. Two earlier
+				// versions of this warning inferred which bytes landed from
+				// the outcome enum and were wrong both times — a shadow can
+				// equally mean a diverged workspace copy or a higher-tier
+				// incumbent, and "neither landed" is false when one plugin's
+				// content matched it. Who resolved the destination is stated
+				// by reconcileSkillFile, on its own line, from what it did;
+				// this line says only what it knows for certain. Silent when
+				// the bytes are identical: nothing was lost, so there is
+				// nothing to rename.
+				if prev, dup := claimed[f.Name]; dup && logger != nil && outcome != skillOutcomeUpToDate {
+					if prev == p.Name() {
+						logger.Warn("runtime/plugin: plugin %q contributes two %ss that mirror to the same name %q — one destination, so one of them is lost; rename one",
+							p.Name(), kind.Name, f.Name)
+					} else {
+						logger.Warn("runtime/plugin: %s %q is contributed by both %q and %q — one name, one destination at %s; which contribution survives is decided by the mirror, not by either plugin; rename one",
+							kind.Name, f.Name, prev, p.Name(), destPath)
+					}
+				}
+				claimed[f.Name] = p.Name()
+				if kind.Name == "skill" && outcome != skillOutcomeShadowed && !reported[destPath] {
 					owned = append(owned, destPath)
+					reported[destPath] = true
 				}
 			}
 		}
