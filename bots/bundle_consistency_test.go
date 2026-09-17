@@ -32,7 +32,8 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 	// remaining single-file catalog bots under examples/ are loose .bot
 	// files with no manifest, so they have nothing to cross-check.
 	// The bundle manifest (dispatch_vars, invocations) binds to the bundle's
-	// entry workflow — its main.bot — not to sibling workflows.
+	// entry workflow — its main.bot — not to sibling workflows; the syntax
+	// floor (Input.Syntax) alone reads every root-level .bot of the bundle.
 	teamBots, err := filepath.Glob("*/main.bot")
 	if err != nil {
 		t.Fatalf("glob: %v", err)

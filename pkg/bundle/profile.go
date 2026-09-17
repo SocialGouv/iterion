@@ -27,8 +27,9 @@ const (
 // of its own, launched by path or declared by another bot, that no edge
 // from main.bot reaches. files maps a bundle-relative path to its
 // content, as a bot source carries it. declaredBy names the files that
-// declare the profile returned. unread names the children whose source lies
-// beyond the files — a sibling bundle (`../other/main.bot`, a child shape
+// declare the profile returned. unread names the sources that lie beyond the
+// files — a root entry whose target does, or a child in a sibling bundle
+// (`../other/main.bot`, a child shape
 // the runner resolves within the bundle's collection), an absolute path —
 // so a profile of 1 never passes for "checked" when part of the executable
 // sources was not read; the caller reports them (C253). A child that is
