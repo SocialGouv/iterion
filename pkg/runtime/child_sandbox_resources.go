@@ -16,16 +16,52 @@ import (
 
 const childResourceIOTimeout = 30 * time.Second
 
+// sharedClaudeRoot is the in-sandbox path of the shared workspace's `.claude`
+// directory, for the two places that read or reset a child's borrowed
+// resources.
+//
+// It applies the rule containerWorkspaceFolder already states: an explicit
+// WorkspaceFolder wins, an empty one means "the same absolute path as on the
+// host". A driver with no host filesystem — the kubernetes one — cannot
+// bind-mount anything, so it COPIES the workspace to that same absolute path
+// inside the pod and leaves WorkspaceFolder empty. Empty is therefore a normal
+// state on the driver production runs on, not a missing value.
+//
+// The refusal is kept for the state that really is broken: no absolute path on
+// either side. Joining an empty workspace yields the RELATIVE ".claude", which
+// resolves against whatever cwd the exec lands in — a silent wrong target for
+// a recursive delete.
+func (e *Engine) sharedClaudeRoot() (string, error) {
+	workspace := e.sharedWorkspaceFolder()
+	if workspace == "" {
+		workspace = e.workDir
+	}
+	if !path.IsAbs(workspace) {
+		return "", fmt.Errorf("child resources: no absolute shared workspace path "+
+			"(sandbox workspace folder %q, engine work dir %q) — a relative root "+
+			"would resolve against the exec's cwd",
+			e.sharedWorkspaceFolder(), e.workDir)
+	}
+	return path.Join(workspace, ".claude"), nil
+}
+
+func (e *Engine) sharedWorkspaceFolder() string {
+	if e.sharedSandbox == nil {
+		return ""
+	}
+	return e.sharedSandbox.WorkspaceFolder
+}
+
 func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName string) (func() error, error) {
 	shared := e.sharedSandbox
 	if shared == nil || shared.Run == nil || !sharedSandboxIsCopyBased(shared.Run) {
 		return func() error { return nil }, nil
 	}
-	if shared.WorkspaceFolder == "" {
-		return nil, fmt.Errorf("child resources: shared sandbox has no workspace path")
+	root, err := e.sharedClaudeRoot()
+	if err != nil {
+		return nil, err
 	}
 	backup := path.Join("/tmp", backupName)
-	root := path.Join(shared.WorkspaceFolder, ".claude")
 	runScript := func(ctx context.Context, script string) error {
 		res, err := shared.Run.Exec(ctx, []string{"sh", "-c", script, "sh", root, backup}, sandbox.ExecOpts{})
 		if err != nil {
@@ -38,7 +74,7 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 	}
 	cctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
-	err := runScript(cctx, `set -eu
+	err = runScript(cctx, `set -eu
 mkdir -p "$2"
 for name in skills commands agents settings.json; do
  if test -e "$1/$name" || test -L "$1/$name"; then cp -a "$1/$name" "$2/$name"; fi
@@ -67,7 +103,10 @@ func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
-	root := path.Join(e.sharedSandbox.WorkspaceFolder, ".claude")
+	root, err := e.sharedClaudeRoot()
+	if err != nil {
+		return err
+	}
 	res, err := e.sharedSandbox.Run.Exec(ctx, []string{"sh", "-c", `set -eu
 for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`, "sh", root}, sandbox.ExecOpts{})
 	if err != nil {
