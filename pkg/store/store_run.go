@@ -137,6 +137,9 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 // finalize path concurrent with an engine status update, would
 // otherwise read-modify-write through each other and lose fields.
 func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
+	if err := GuardProjectedWrite(r); err != nil {
+		return err
+	}
 	if r.Status != RunStatusRunning {
 		r.AwaitAnswersWaits = nil
 	}
@@ -350,6 +353,20 @@ func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error)
 	}
 	healRun(r)
 	return r, nil
+}
+
+var _ RunListingStore = (*FilesystemRunStore)(nil)
+
+// LoadRunForListing is LoadRun without the recorded workflow source
+// (store.RunListingStore). The decode still reads the whole file — this
+// backend has no projection — but the text is dropped before the record is
+// returned, so a listing holding hundreds of them holds none of it.
+func (s *FilesystemRunStore) LoadRunForListing(ctx context.Context, id string) (*Run, error) {
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return stripRecordedSource(r), nil
 }
 
 // UpdateRunStatus updates the status (and optional error) of a run.

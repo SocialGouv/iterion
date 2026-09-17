@@ -98,6 +98,78 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
+}
+
+// testRunListingProjection pins store.RunListingStore on every backend: the
+// projection itself, the marker that keeps an empty source unambiguous, and
+// the refusal that stops a projected record from being written back.
+//
+// Deliberately NOT skippable the way an optional capability usually is. A
+// backend that stops implementing the interface — a renamed method, a drifted
+// signature — would otherwise fall back to whole-document loads and lose the
+// projection with nothing red.
+func testRunListingProjection(t *testing.T, s store.RunStore) {
+	t.Helper()
+	lister := store.AsRunListingStore(s)
+	if lister == nil {
+		t.Fatalf("%T does not implement store.RunListingStore — every listing would silently load whole documents", s)
+	}
+	ctx := testCtx()
+	const (
+		id       = "run_listing_projection"
+		main     = "workflow w:\n  entry: a\n  a -> done\n"
+		fragment = "agent a:\n  model: \"claude-opus-5\"\n"
+	)
+	if _, err := s.CreateRun(ctx, id, "w", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	seeded, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	seeded.WorkflowSource = main
+	seeded.WorkflowSources = []store.WorkflowSourceFile{
+		{Path: "main.bot", Text: main},
+		{Path: "lib/nodes.bot", Text: fragment},
+	}
+	if err := s.SaveRun(ctx, seeded); err != nil {
+		t.Fatalf("SaveRun(seed): %v", err)
+	}
+
+	projected, err := lister.LoadRunForListing(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRunForListing: %v", err)
+	}
+	if projected.WorkflowSource != "" || len(projected.WorkflowSources) != 0 {
+		t.Errorf("a listing load carried %d bytes and %d file(s) of recorded source",
+			len(projected.WorkflowSource), len(projected.WorkflowSources))
+	}
+	if !projected.SourceOmitted {
+		t.Error("a listing load did not mark SourceOmitted — its empty source is indistinguishable from a run that recorded none")
+	}
+	// It drops the source and nothing else.
+	if projected.WorkflowName != "w" || projected.Status == "" {
+		t.Errorf("the projection dropped more than the source: name=%q status=%q", projected.WorkflowName, projected.Status)
+	}
+
+	// Writing a projected record back is REFUSED: every SaveRun here replaces
+	// the document, so accepting it would drop the recorded source for good.
+	if err := s.SaveRun(ctx, projected); !errors.Is(err, store.ErrRunProjected) {
+		t.Errorf("SaveRun of a projected record returned %v; want ErrRunProjected", err)
+	}
+	after, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun(after): %v", err)
+	}
+	if after.WorkflowSource != main || len(after.WorkflowSources) != 2 {
+		t.Errorf("the recorded source did not survive: %d bytes, %d file(s)", len(after.WorkflowSource), len(after.WorkflowSources))
+	}
+	// Covers the bson half as well as the json one: SourceOmitted describes a
+	// copy in flight, never the run.
+	if after.SourceOmitted {
+		t.Error("SourceOmitted survived the round trip — a listing's shortcut became a property of the run")
+	}
 }
 
 func testWatcherCursorStore(t *testing.T, s store.RunStore) {

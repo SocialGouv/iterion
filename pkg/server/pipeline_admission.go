@@ -330,8 +330,16 @@ func (s *Server) finishedForksByIssue(ctx context.Context, rs store.RunStore) ma
 		}
 		return byIssue
 	}
+	// Projected: this index is memoized for a TTL, so without it the text of
+	// every finished fork's unit stays reachable long after the request that
+	// built it — retention a listing does not even have. Its consumers read
+	// ID / WorkDir / CreatedAt.
+	load := rs.LoadRun
+	if lister := store.AsRunListingStore(rs); lister != nil {
+		load = lister.LoadRunForListing
+	}
 	for _, id := range ids {
-		r, err := rs.LoadRun(ctx, id)
+		r, err := load(ctx, id)
 		if err != nil || r == nil {
 			continue
 		}

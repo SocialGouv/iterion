@@ -681,6 +681,15 @@ type Run struct {
 	// the main alone. A list, not a map: a path holds dots, which a BSON
 	// key cannot.
 	WorkflowSources []WorkflowSourceFile `json:"workflow_sources,omitempty" bson:"workflow_sources,omitempty"`
+	// SourceOmitted marks a record that came from a LISTING, whose
+	// projection left the two fields above unread. It exists so their zero
+	// value keeps ONE meaning: without it, an empty WorkflowSource would say
+	// both "this run recorded none" and "this copy never loaded it", and a
+	// reader cannot tell a run that cannot be auto-rewound from one it simply
+	// was not asked about.
+	//
+	// Never persisted, and never set by a whole load.
+	SourceOmitted bool `json:"-" bson:"-"`
 	// Preset is the in-source preset name selected at launch via
 	// `--preset <name>` (or the studio Launch modal). Persisted so
 	// `iterion resume` re-applies the same parameter set without the

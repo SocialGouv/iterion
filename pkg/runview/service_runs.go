@@ -119,9 +119,23 @@ func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store
 	if err != nil {
 		return nil, err
 	}
+	// The records a listing returns are LIGHT: the recorded workflow source is
+	// the heaviest thing on a run document — the text of the unit it executed,
+	// hundreds of kilobytes for real bots — and no consumer of a listing reads
+	// it (they all become RunHeaders, which carry neither field). Loading it
+	// here means holding every byte of every matching run for the length of the
+	// request, on a path one caller invokes with no limit at all.
+	//
+	// Records come back with SourceOmitted set, so a reader that needs the
+	// source knows to ask for the whole run rather than read an empty string as
+	// "this run recorded none".
+	load := s.store.LoadRun
+	if lister := store.AsRunListingStore(s.store); lister != nil {
+		load = lister.LoadRunForListing
+	}
 	out := make([]*store.Run, 0, len(ids))
 	for _, id := range ids {
-		r, err := s.store.LoadRun(ctx, id)
+		r, err := load(ctx, id)
 		if err != nil {
 			// A single corrupt run.json shouldn't break the whole listing.
 			s.logSkippedRun(id, err)
