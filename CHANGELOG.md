@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.162.0](https://github.com/SocialGouv/iterion/compare/v3.161.1...v3.162.0) (2026-09-17)
+
+### Features
+
+* **agents:** publish the adversarial review loop as a skill, and require it here ([#1372](https://github.com/SocialGouv/iterion/issues/1372)) ([c6538b7](https://github.com/SocialGouv/iterion/commit/c6538b7aa68184bbed2cd2b69305009ccbf92a33))
+
+    <details><summary>why</summary>
+
+    iterion mirrors a plugin's contributed markdown into a run workspace's .claude/<kind>/ at run start, naming each file by its base name. That is right for the flat shape every builtin ships (skills/graphify.md) and wrong for the two shapes where the base name is the constant "SKILL.md" and the real name lives elsewhere: the Agent Skills DIRECTORY form <name>/SKILL.md — what `npx skills add` publishes and what claude_code's Skill tool discovers — and a root-form pack whose whole tree is one…
+
+    </details>
+
+### Bug Fixes
+
+* **cloud:** rewind --auto compares two sides, and cloud broke both ([#1376](https://github.com/SocialGouv/iterion/issues/1376)) ([a586284](https://github.com/SocialGouv/iterion/commit/a586284274f889b26261bddd62eed309d5525704)), closes [#1381](https://github.com/SocialGouv/iterion/issues/1381), references [#1352](https://github.com/SocialGouv/iterion/issues/1352) [#1226](https://github.com/SocialGouv/iterion/issues/1226) [#1352](https://github.com/SocialGouv/iterion/issues/1352) [#1352](https://github.com/SocialGouv/iterion/issues/1352) [#1226](https://github.com/SocialGouv/iterion/issues/1226)
+
+    <details><summary>why</summary>
+
+    INCOMPLETE — committed to survive a session break, not to be pushed.
+
+    </details>
+
 ## [3.161.1](https://github.com/SocialGouv/iterion/compare/v3.161.0...v3.161.1) (2026-09-17)
 
 ### Bug Fixes
