@@ -88,6 +88,32 @@ type ReviewerAssigner interface {
 	AddSelfAsPullReviewer(ctx context.Context, repo string, number int) error
 }
 
+// ReviewRequestWithdrawer closes the gesture ReviewerAssigner opens, on the
+// forge that cannot close it itself. GitHub lifts a review request only when
+// the REQUESTED account submits the review; on a github_app connection the
+// review is posted by <app_slug>[bot] — and a GitHub App cannot be a
+// reviewer at all (forge restriction) — so the pending request SURVIVES the
+// review answering it. Without this the "review requested" pastille stays
+// forever and the gesture is not repeatable: the operator has to remove and
+// re-add the reviewer by hand between two requests.
+//
+// Implemented by the github admin and App clients only. GitLab is the
+// deliberate non-implementation with the opposite reason: it is the forge
+// whose request iterion has to CREATE (see ReviewerAssigner), and its
+// reviewer role is what makes the native button exist there — withdrawing it
+// would dismantle the affordance. Forgejo is an accepted gap (its
+// re-request lane is not wired either).
+type ReviewRequestWithdrawer interface {
+	// WithdrawPullReviewRequests removes the named logins from the pull
+	// request's requested reviewers and returns the ones actually removed.
+	// Additive-safe BY CONTRACT: it reads the pending set first and only
+	// withdraws the intersection, so it can never drop a reviewer it was
+	// not named — nor call the forge at all when none of the logins is
+	// pending, which is what makes a second publish on the same PR a no-op
+	// instead of a 422.
+	WithdrawPullReviewRequests(ctx context.Context, repo string, number int, logins []string) ([]string, error)
+}
+
 // FoldCommentsMarkdown renders inline comments as a markdown list for
 // inclusion in a review's summary body — the fallback when a forge rejects
 // (some of) the inline anchors. Suggestions are kept as plain fenced code
