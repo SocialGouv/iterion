@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -183,5 +184,99 @@ func TestAnOpenKeyIsNeitherWithheldNorAnnounced(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "WITHHELD") {
 		t.Fatalf("an unscoped key was reported as withheld:\n%s", buf.String())
+	}
+}
+
+// The audience's canonicalisation must not reach the OTHER readers of the same
+// bot id. Two stores match it EXACTLY and have no folding write edge: bot
+// secret bindings (stored raw from the route's path value) and credpool
+// pledges (rows written before canonicalBotIDs existed). A stored bot may
+// legitimately be named `my_bot` — botsource.ValidSlug admits `_` — so folding
+// the shared variable made a REQUIRED secret resolve to nothing and blocked the
+// launch, and let an `optional: true` one run unauthenticated.
+//
+// This is a REGRESSION test: it passed before the fold was introduced, failed
+// with it, and passes again now that the fold belongs to the audience alone.
+func TestTheAudienceFoldDoesNotReachBotSecretBindings(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	const underscoreBot = "my_bot"
+
+	generic := secrets.NewMemoryGenericSecretStore()
+	secretID := secrets.NewGenericSecretID()
+	sealedSecret, err := secrets.SealGenericSecret(sealer, secretID, []byte("bound-token"))
+	if err != nil {
+		t.Fatalf("SealGenericSecret: %v", err)
+	}
+	if err := generic.Create(context.Background(), secrets.GenericSecret{
+		ID: secretID, ScopeTeamID: "team1", Name: "org_forge_token",
+		SealedSecret: sealedSecret, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("generic Create: %v", err)
+	}
+	bindings := secrets.NewMemoryBotSecretBindingStore()
+	if err := bindings.Create(context.Background(), secrets.BotSecretBinding{
+		ID: "binding-1", TenantID: "team1", BotID: underscoreBot,
+		SecretID: secretID, SecretNameForWorkflow: "forge_token",
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("binding Create: %v", err)
+	}
+
+	p, _, _, _ := audiencePublisher(t)
+	p.genericSecrets = generic
+	p.botBindings = bindings
+	wf := &ir.Workflow{Name: "w", Secrets: map[string]*ir.Secret{"forge_token": {}}}
+
+	ctx := store.WithTenant(context.Background(), "team1")
+	if _, err := p.resolveAndSealCredentials(ctx, "run-binding", "", "team1", "owner1", underscoreBot,
+		wf, nil, nil, model.ModelOverrides{}, nil); err != nil {
+		t.Fatalf("a binding on a bot named %q stopped resolving — the audience's fold reached a store that matches exactly: %v", underscoreBot, err)
+	}
+}
+
+// One withheld key cannot tell "once per key" from "once, full stop". Two keys
+// can, and the difference matters: a team that scopes several keys would be
+// told about one of them and left to wonder about the rest.
+func TestEveryWithheldKeyIsNamed(t *testing.T) {
+	p, sealer, keys, buf := audiencePublisher(t)
+	seedScopedKey(t, keys, sealer, "team1", secrets.ProviderAnthropic, "anthropic-audit-only", []string{"sec-audit-source"})
+	seedScopedKey(t, keys, sealer, "team1", secrets.ProviderOpenAI, "openai-audit-only", []string{"sec-audit-source"})
+
+	resolveWithBot(t, p, sealer, "run-two", "review-pr", nil)
+	log := buf.String()
+	for _, want := range []string{"anthropic-audit-only", "openai-audit-only"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("the log does not name %q — only the first withholding was reported.\nlog:\n%s", want, log)
+		}
+	}
+	if n := strings.Count(log, "WITHHELD"); n != 2 {
+		t.Fatalf("WITHHELD appears %d times, want 2 (one per key, no more, no fewer):\n%s", n, log)
+	}
+}
+
+// The pin diagnostic must name the pin that its OWN audience refused, never a
+// pin that happens to coexist with some other withheld key. A false, confident
+// line pointing at the wrong cause is worse than no line: it sends the operator
+// to edit an audience that was never involved.
+func TestAHealthyPinIsNotBlamedOnAnotherKeysAudience(t *testing.T) {
+	p, sealer, keys, buf := audiencePublisher(t)
+	// Withheld, and NOT the pinned one.
+	seedScopedKey(t, keys, sealer, "team1", secrets.ProviderOpenAI, "openai-audit-only", []string{"sec-audit-source"})
+	open := seedScopedKey(t, keys, sealer, "team1", secrets.ProviderAnthropic, "anthropic-open", nil)
+
+	bundle := resolveWithBot(t, p, sealer, "run-healthy-pin", "review-pr",
+		map[string]string{string(secrets.ProviderAnthropic): open.ID})
+	if bundle.APIKeys[secrets.ProviderAnthropic] == "" {
+		t.Fatalf("the healthy pinned key did not fund the run")
+	}
+	log := buf.String()
+	if strings.Contains(log, "does NOT lift an audience") {
+		t.Fatalf("a healthy pin was reported as refused by an audience it never had:\n%s", log)
+	}
+	if !strings.Contains(log, "openai-audit-only") {
+		t.Fatalf("the genuinely withheld key went unreported:\n%s", log)
 	}
 }

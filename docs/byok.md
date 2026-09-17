@@ -133,6 +133,20 @@ case-insensitive match there would silently widen an audience, and `sec` would
 open a key scoped to `sec-audit-source`. The same fold is applied to
 `credpool.Pledge.Bots` at its own write route, for the same reason.
 
+The fold belongs to the audience **alone**. The same bot id also reaches bot
+secret bindings and the credential pool, and both match it EXACTLY with no
+folding write edge — a stored bot may legitimately be named `my_bot`
+(`botsource.ValidSlug` admits `_`). Folding the shared value made a *required*
+secret resolve to nothing and blocked the launch; an `optional: true` one let
+the bot run unauthenticated. A fold belongs to the reader whose write edge folds
+too, and to nobody else.
+
+One residual, narrow and known: `my-bot` and `my_bot` are distinct stored bots
+(`botsource` uniqueness is `(tenant_id, slug)`, exact) that fold to one
+audience entry, so a key scoped to either funds both. Both belong to the same
+team, so this widens a team's key to that team's own other bot. The root is
+`ValidSlug` admitting a spelling everything else folds — #1368.
+
 ### What this is NOT: an authorisation boundary
 
 `bots` expresses **operator intent** — it keeps a team's own workloads off a key

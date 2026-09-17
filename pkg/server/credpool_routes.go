@@ -694,5 +694,15 @@ func canonicalBotIDs(in []string) []string {
 		seen[b] = true
 		out = append(out, b)
 	}
+	if len(out) == 0 {
+		// A list of nothing but blanks — `--bots ""` yields exactly that
+		// through cobra's StringSliceVar. Returning the empty list would
+		// turn "only these bots" into "every bot": the donor's credential
+		// would silently widen to the whole pool, which is the opposite of
+		// what they typed and the opposite of what this route did before
+		// canonicalisation existed. Keep the pledge closed on the input as
+		// given; the donor sees `bots` unchanged in the response.
+		return in
+	}
 	return out
 }

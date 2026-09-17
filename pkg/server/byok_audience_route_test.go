@@ -70,3 +70,31 @@ func TestAnOversizedAudienceIsRefused(t *testing.T) {
 		t.Fatalf("an audience at the ceiling was refused: %v", err)
 	}
 }
+
+// The pledge route's canonicaliser shares the BYOK edge's folding and NOT its
+// refusal — a donor's typo must not become a 400 on a route that never had one.
+// But it must not become the opposite either: `--bots ""` yields `[""]` through
+// cobra's StringSliceVar, and folding that to an empty list would turn "only
+// these bots" into "every bot", silently widening a donor's credential to the
+// whole pool. Closed on the input as given is the only reading that is neither
+// a new refusal nor a new hole.
+func TestABlankOnlyPledgeAudienceStaysClosed(t *testing.T) {
+	for _, in := range [][]string{{""}, {"  "}, {"", "\t"}} {
+		got := canonicalBotIDs(in)
+		if len(got) == 0 {
+			t.Fatalf("canonicalBotIDs(%#v) = %#v — a blank audience widened the pledge to every bot", in, got)
+		}
+	}
+}
+
+// And the ordinary path still folds, or the pledge would carry a spelling the
+// launch never resolves to.
+func TestAPledgeAudienceIsCanonicalised(t *testing.T) {
+	got := canonicalBotIDs([]string{"App_Dev", "  app-dev  ", "APP DEV", ""})
+	if len(got) != 1 || got[0] != "app-dev" {
+		t.Fatalf("canonicalBotIDs = %#v, want exactly [app-dev]", got)
+	}
+	if canonicalBotIDs(nil) != nil {
+		t.Fatalf("an absent audience must stay absent")
+	}
+}

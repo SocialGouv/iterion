@@ -427,14 +427,21 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 		return credResolution{}, nil
 	}
-	// Canonicalise ONCE, here: every tier below reads this same variable, so
-	// the six Resolve sites and both shared tiers compare the same spelling
-	// the write routes stored. `feature_dev`, `Feature Dev` and `feature-dev`
-	// name one bundle everywhere else in the repo (botregistry.NormalizeName,
-	// used by ResolveBotPath); an audience that disagreed with that would
-	// stop funding a bot the moment someone typed it differently, and the
-	// bill would move to the next tier without a word.
-	botID = botregistry.NormalizeName(botID)
+	// The BYOK audience — and ONLY it — compares canonical spellings.
+	//
+	// A previous revision folded `botID` itself. That was a defect: the same
+	// variable feeds two other stores that match it EXACTLY and have no
+	// folding write edge. `ResolveGenericWithBindings` reads bot secret
+	// bindings, stored raw from the route's path value, and `acquireFromPool`
+	// reads pledge rows written before canonicalBotIDs existed. A stored bot
+	// may legitimately be named `my_bot` (botsource.ValidSlug admits `_`), so
+	// folding the shared variable made a REQUIRED secret resolve to nothing
+	// and blocked the launch — and, for an `optional: true` secret, let the
+	// bot run unauthenticated instead.
+	//
+	// A fold belongs to the reader whose write edge folds too. Everyone else
+	// keeps the raw value.
+	audienceBotID := botregistry.NormalizeName(botID)
 	bundle := secrets.RunBundle{
 		APIKeys:            map[secrets.Provider]string{},
 		GenericSecrets:     map[string]string{},
@@ -458,7 +465,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	skippedForfaits := map[string]skippedForfait{}
 	// Every tier's walk reports here what its audience kept out, so the one
 	// thing a refusal does not leave behind — a trace — exists by the end.
-	withheld := newAudienceWithholdings(botID)
+	withheld := newAudienceWithholdings(audienceBotID)
+	// Deferred, not called after the walk: a walk that returns an error exits
+	// before any trailing statement, and a launch that fails while a key was
+	// withheld is exactly when the reason matters most. Said once, whichever
+	// way the function leaves — mid-walk it would cry wolf on every launch of
+	// a team that scopes its keys at all.
+	defer func() { withheld.warn(p, runID) }()
 	res := credResolution{}
 	err := walkCredentialTiers(func() bool { return len(bundle.APIKeys) > 0 || len(bundle.OAuthCredentials) > 0 },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
@@ -478,7 +491,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// Evidence-based skip: a key the provider freshly refused is
 					// passed over so the priority walk yields the next key of that
 					// provider — the BYOK tier becomes an ordered fallback chain.
-					resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, allKnownProviders, overrides, p.sealer,
+					resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, allKnownProviders, overrides, p.sealer,
 						p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips), withheld.note)
 					if err != nil {
 						return fmt.Errorf("cloudpublisher: resolve creds: %w", err)
@@ -503,7 +516,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// with an empty wire fails on a no-credential auth error nothing
 					// retries (or silently spends the runner pod's ambient env).
 					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
-						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, refused, overrides, p.sealer, nil, withheld.note)
+						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, refused, overrides, p.sealer, nil, withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
 						}
@@ -678,7 +691,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
 
 			case credentialTierPool:
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -734,7 +747,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
 				}
 
 			case credentialTierRestore:
@@ -793,11 +806,6 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if err != nil {
 		return credResolution{}, err
 	}
-	// After the walk, not during it: a key withheld at the tenant tier is
-	// routine when a later tier funds the run, and warning mid-walk would cry
-	// wolf on every launch of a team that scopes its keys at all. Said once
-	// here, it answers "why is our key not funding this run" for good.
-	withheld.warn(p, runID)
 	res.skippedReopensAt = skips.earliest
 
 	// Record which review families the resolved credentials back — every
