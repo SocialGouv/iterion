@@ -31,19 +31,36 @@ const childResourceIOTimeout = 30 * time.Second
 // either side. Joining an empty workspace yields the RELATIVE ".claude", which
 // resolves against whatever cwd the exec lands in — a silent wrong target for
 // a recursive delete.
-func (e *Engine) sharedClaudeRoot() (string, error) {
-	workspace := e.sharedWorkspaceFolder()
+//
+// The host-side derivation holds only while every copy-based driver honours
+// same-absolute-path, and the Run handle exposes no accessor to ask it — the
+// refresher addresses files RELATIVE to a root it never surfaces. Worse, the
+// interface doc points the other way: RunInfo.WorkspacePath says the driver
+// copies "at [Spec.WorkspaceFolder] (default `/workspace`)". A second
+// copy-based driver written against that sentence would copy to a fixed root,
+// and this fallback would then name a path that is simply ABSENT from the
+// sandbox. So the scripts below assert the root before touching it: the
+// mismatch becomes a named refusal instead of a reset of the wrong tree.
+func (e *Engine) sharedClaudeRoot() (workspace, claudeRoot string, err error) {
+	workspace = e.sharedWorkspaceFolder()
 	if workspace == "" {
 		workspace = e.workDir
 	}
 	if !path.IsAbs(workspace) {
-		return "", fmt.Errorf("child resources: no absolute shared workspace path "+
+		return "", "", fmt.Errorf("child resources: no absolute shared workspace path "+
 			"(sandbox workspace folder %q, engine work dir %q) — a relative root "+
 			"would resolve against the exec's cwd",
 			e.sharedWorkspaceFolder(), e.workDir)
 	}
-	return path.Join(workspace, ".claude"), nil
+	return workspace, path.Join(workspace, ".claude"), nil
 }
+
+// assertWorkspaceRoot is the first line of both scripts. `set -eu` alone would
+// let a missing root pass: `cp` of nothing and `rm -rf` of nothing both exit 0,
+// so the wrong-root case would read as a clean no-op.
+const assertWorkspaceRoot = `test -d "$3" || { echo "shared workspace root $3 is absent from the sandbox — ` +
+	`the driver copied the workspace somewhere else" >&2; exit 3; }
+`
 
 func (e *Engine) sharedWorkspaceFolder() string {
 	if e.sharedSandbox == nil {
@@ -57,13 +74,13 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 	if shared == nil || shared.Run == nil || !sharedSandboxIsCopyBased(shared.Run) {
 		return func() error { return nil }, nil
 	}
-	root, err := e.sharedClaudeRoot()
+	workspace, root, err := e.sharedClaudeRoot()
 	if err != nil {
 		return nil, err
 	}
 	backup := path.Join("/tmp", backupName)
 	runScript := func(ctx context.Context, script string) error {
-		res, err := shared.Run.Exec(ctx, []string{"sh", "-c", script, "sh", root, backup}, sandbox.ExecOpts{})
+		res, err := shared.Run.Exec(ctx, []string{"sh", "-c", script, "sh", root, backup, workspace}, sandbox.ExecOpts{})
 		if err != nil {
 			return err
 		}
@@ -75,7 +92,7 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 	cctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
 	err = runScript(cctx, `set -eu
-mkdir -p "$2"
+`+assertWorkspaceRoot+`mkdir -p "$2"
 for name in skills commands agents settings.json; do
  if test -e "$1/$name" || test -L "$1/$name"; then cp -a "$1/$name" "$2/$name"; fi
 done`)
@@ -86,7 +103,7 @@ done`)
 		ctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
 		defer cancel()
 		return runScript(ctx, `set -eu
-for name in skills commands agents settings.json; do
+`+assertWorkspaceRoot+`for name in skills commands agents settings.json; do
  rm -rf "$1/$name"
  if test -e "$2/$name" || test -L "$2/$name"; then mkdir -p "$1"; cp -a "$2/$name" "$1/$name"; fi
 done
@@ -103,12 +120,13 @@ func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
-	root, err := e.sharedClaudeRoot()
+	workspace, root, err := e.sharedClaudeRoot()
 	if err != nil {
 		return err
 	}
 	res, err := e.sharedSandbox.Run.Exec(ctx, []string{"sh", "-c", `set -eu
-for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`, "sh", root}, sandbox.ExecOpts{})
+` + assertWorkspaceRoot + `for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`,
+		"sh", root, "", workspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err
 	}

@@ -119,3 +119,43 @@ func TestNoAbsolutePathAnywhereIsStillRefused(t *testing.T) {
 		t.Fatal("the reset accepted a relative root — this is the recursive delete")
 	}
 }
+
+// A second copy-based driver that copies to a FIXED root — the shape
+// RunInfo.WorkspacePath's own doc invites, "copies this into the sandbox at
+// [Spec.WorkspaceFolder] (default `/workspace`)" — must be refused BY NAME,
+// not silently reset somewhere else.
+//
+// The handle exposes no accessor for its root (the refresher addresses files
+// relative to a root it never surfaces), so the derivation cannot ask. It
+// asserts instead: a root the sandbox does not have is a named refusal.
+//
+// Without the assertion this test passes vacuously: `set -eu` lets both halves
+// through, since `cp` of nothing and `rm -rf` of nothing each exit 0 — the
+// wrong-root case reads as a clean no-op, which is the silent failure the
+// review asked about.
+func TestAWorkspaceRootTheSandboxDoesNotHaveIsRefusedByName(t *testing.T) {
+	// The driver's copy lives here; the engine will derive the host path below,
+	// which is exactly what a fixed-root driver would make absent in the pod.
+	elsewhere := t.TempDir()
+	writeClaudeFile(t, elsewhere, ".claude/skills/kept/SKILL.md", "in the pod")
+
+	absent := filepath.Join(t.TempDir(), "copied-somewhere-else")
+	e := k8sShapedEngine(t, absent, copySandboxRun{root: elsewhere})
+
+	_, err := e.snapshotSharedChildResources(context.Background(), "backup-wrong-root")
+	if err == nil {
+		t.Fatal("the snapshot accepted a workspace root absent from the sandbox")
+	}
+	if !strings.Contains(err.Error(), "absent from the sandbox") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+
+	if err := e.clearBorrowedSandboxResources(context.Background()); err == nil {
+		t.Fatal("the reset accepted a workspace root absent from the sandbox — " +
+			"this is the silent wrong-tree reset")
+	}
+	// And it touched nothing where the copy actually is.
+	if _, err := os.Stat(filepath.Join(elsewhere, ".claude", "skills", "kept", "SKILL.md")); err != nil {
+		t.Errorf("the refused reset still deleted from the real copy: %v", err)
+	}
+}
