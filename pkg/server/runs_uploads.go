@@ -575,7 +575,7 @@ const uploadReaperInterval = 10 * time.Minute
 // runStagedUploadReaper drives reapStagedUploads on a fixed interval
 // until the server shuts down. Spawned as a goroutine from
 // ListenAndServe.
-func (s *Server) runStagedUploadReaper() {
+func (s *Server) runStagedUploadReaper(ctx context.Context) {
 	// Fire once on startup so a freshly restarted server reclaims dirs
 	// older than the TTL without waiting a full interval.
 	s.reapStagedUploads()
@@ -583,7 +583,7 @@ func (s *Server) runStagedUploadReaper() {
 	defer t.Stop()
 	for {
 		select {
-		case <-s.shutdown:
+		case <-ctx.Done():
 			return
 		case <-t.C:
 			s.reapStagedUploads()

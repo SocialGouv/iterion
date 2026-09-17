@@ -435,6 +435,18 @@ type Server struct {
 	// server's state.
 	shutdown chan struct{}
 
+	// bgWorkers holds one entry per live loop started through goUntilShutdown,
+	// so the shutdown can join them after the HTTP drain instead of cancelling
+	// them and exiting while a write is still in flight. bgJoined records that
+	// the join already happened, after which a loop must not be started at all.
+	// Both guarded by stateMu.
+	bgWorkers []backgroundWorker
+	bgJoined  bool
+	// bgJoinBudget overrides defaultBackgroundJoinBudget; zero means the
+	// default. Set by tests that must not race the budget with their own
+	// observation window.
+	bgJoinBudget time.Duration
+
 	// readyzInflight holds the names of readiness checks whose previous
 	// probe has not returned yet. A driver that ignores its context never
 	// returns, and the kubelet re-probes every few seconds — so without

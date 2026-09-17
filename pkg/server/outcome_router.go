@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/alert"
-	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -98,7 +97,7 @@ func (s *Server) startOutcomeRouter() {
 			s.outcomeRouterCancel = cancel
 		}
 	}
-	errtrack.Go("server.outcomeRouterSweep", s.outcomeRouterSweepLoop)
+	s.goUntilShutdown("server.outcomeRouterSweep", s.outcomeRouterSweepLoop)
 	if s.logger != nil {
 		s.logger.Info("server: outcome router attached (policy-carrying terminal runs are decided by their launch-frozen contract)")
 	}
@@ -117,15 +116,18 @@ func (s *Server) attachOutcomeRouter(bus eventbus.Bus) (func(), error) {
 // outcomeRouterSweepLoop is the source-of-truth net: every interval it
 // re-offers every policy-carrying terminal run in the window. The
 // registry claim makes a double offer cost one read.
-func (s *Server) outcomeRouterSweepLoop() {
+func (s *Server) outcomeRouterSweepLoop(ctx context.Context) {
 	t := time.NewTicker(routerSweepInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-s.shutdown:
+		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.outcomeRouterSweepPass(context.Background())
+			// The pass runs detached: a shutdown must stop the loop from
+			// taking new work, not cut a decision it already began writing.
+			// The join is what bounds it.
+			s.outcomeRouterSweepPass(context.WithoutCancel(ctx))
 		}
 	}
 }

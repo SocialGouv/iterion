@@ -141,12 +141,15 @@ func TestRestartAssistantMissionsReturnsThePreviousLoopToJoin(t *testing.T) {
 }
 
 // The shutdown joins the mission sweep after the HTTP drain: a sweep that
-// returns within the budget is gone when Shutdown returns; one that does
-// not is not waited for past 250ms, so the exit sequence keeps the
-// arithmetic of its grace period.
+// returns within the budget is gone when Shutdown returns; one that does not
+// is not waited for past backgroundJoinBudget, which every background loop
+// shares, so the exit sequence keeps the arithmetic of its grace period.
 func TestShutdownJoinsTheMissionSweepWithinItsBudget(t *testing.T) {
 	t.Run("a sweep that returns is joined", func(t *testing.T) {
 		srv := newMissionTestServer(t)
+		// Well past the 100ms the sweep parks for below, so a starved machine
+		// can only make this test wait longer, never decide it the other way.
+		srv.bgJoinBudget = 30 * time.Second
 		p := newParkingMissions(t)
 		srv.restartAssistantMissions(srv.runs, srv.assistantWatches, p)
 		awaitEntered(t, p)

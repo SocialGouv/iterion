@@ -44,13 +44,13 @@ func (s *Server) dispatcherActivelyLaunching() bool {
 // Ready) whenever a concurrency slot is free. Without it, "ready" tickets
 // would sit forever unless the operator ran a full `iterion dispatch`.
 // Stops when the server shuts down.
-func (s *Server) runPipelineAdmissionLoop() {
+func (s *Server) runPipelineAdmissionLoop(ctx context.Context) {
 	s.admitReadyPipelines() // drain any boot-time backlog immediately
 	t := time.NewTicker(pipelineAdmissionInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-s.shutdown:
+		case <-ctx.Done():
 			return
 		case <-t.C:
 			s.admitReadyPipelines()
