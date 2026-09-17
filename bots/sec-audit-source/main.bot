@@ -192,6 +192,28 @@ vars:
   ## json.dumps LENGTHS (characters, not bytes), so an export heavy in
   ## non-ASCII can overshoot the number set here.
   deepsec_bank_max_bytes: int  = 524288
+  ## Which agent plugin deepsec investigates with, and on which model.
+  ##
+  ## deepsec has its OWN backend system, unrelated to iterion's: it drives
+  ## `claude`, `codex` or `pi` from inside this tool node, and each resolves its
+  ## own credentials. Empty keeps the historical behaviour exactly -- the
+  ## gateway probe below, falling back to `--agent claude` -- so nothing moves
+  ## for a run that does not set these.
+  ##
+  ## `codex` is the route onto the ChatGPT subscription rather than the shared
+  ## Claude one: deepsec reads ~/.codex/auth.json when no OPENAI_API_KEY is set
+  ## (packages/processor/src/agents/codex-sdk.ts), and the platform mounts that
+  ## file into the sandbox. It matters because the deep scan is the dominant
+  ## consumer of a pass -- measured, 79 of 102 minutes -- and nothing in the
+  ## engine meters it: no usage_progress, absent from backends_used, and
+  ## max_cost_usd does not bound it. Which subscription it draws on is
+  ## therefore an operator decision, not an implementation detail.
+  ##
+  ## The value is not checked against a list of known agents, only against a
+  ## charset: deepsec is the authority on which plugins exist, and enumerating
+  ## them here would refuse the next one it ships.
+  deepsec_agent:       string = ""
+  deepsec_model:       string = ""
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial
   ## "disprove" voters; majority vote drives the final verdict
@@ -2825,7 +2847,7 @@ compute deepsec_gate:
 ## untrusted-input boundary the triage prompt already applies to
 ## semgrep/gosec output.
 tool run_deepsec_scanner:
-  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} bash -c '
+  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} DS_AGENT={{vars.deepsec_agent}} DS_MODEL={{vars.deepsec_model}} bash -c '
 set +e
 mkdir -p "$(dirname "$OUT_JSON")"
 
@@ -2863,10 +2885,29 @@ if ! command -v deepsec >/dev/null 2>&1; then
 fi
 
 # ── provider selection ───────────────────────────────────────────
-if [ -n "${AI_GATEWAY_API_KEY:-}" ] || [ -n "${DEEPSEC_API_KEY:-}" ]; then
+# Both values reach deepsec as bare words in an unquoted expansion, so they are
+# held to a charset that cannot split into a second argument. A refusal, not a
+# silent trim: a pass that runs on an agent nobody chose is the class of quiet
+# substitution this node exists to refuse elsewhere.
+case "$DS_AGENT" in
+  *[!A-Za-z0-9._-]*)
+    err_envelope "deepsec_agent is not usable as a single argument: $DS_AGENT" ;;
+esac
+case "$DS_MODEL" in
+  *[!A-Za-z0-9._/-]*)
+    err_envelope "deepsec_model is not usable as a single argument: $DS_MODEL" ;;
+esac
+# An explicit agent is an operator choice and outranks the gateway probe --
+# never replace what was asked for with what was detected.
+if [ -n "$DS_AGENT" ]; then
+  AGENT_ARGS="--agent $DS_AGENT"
+elif [ -n "${AI_GATEWAY_API_KEY:-}" ] || [ -n "${DEEPSEC_API_KEY:-}" ]; then
   AGENT_ARGS=""    # gateway preflight picks the model
 else
   AGENT_ARGS="--agent claude"
+fi
+if [ -n "$DS_MODEL" ]; then
+  AGENT_ARGS="$AGENT_ARGS --model $DS_MODEL"
 fi
 
 # ── state dirs under scan_dir ─────────────────────────────────────
@@ -2890,6 +2931,10 @@ case "${RUN_ID:-}" in
 esac
 LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 mkdir -p "$DSW" "$LOG_DIR"
+# Which agent actually ran is not derivable from the envelope: deepsec is not in
+# backends_used and the engine meters none of it. env.log is the one log that
+# travels in errors[] unconditionally, so the answer leaves the pod with it.
+echo "[deepsec] agent_args=$AGENT_ARGS" >>"$LOG_DIR/env.log"
 
 cd "$WS" || err_envelope "workspace_dir unreadable: $WS"
 

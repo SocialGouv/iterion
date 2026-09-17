@@ -914,6 +914,13 @@ func runDeepsecNodeErrs(t *testing.T, dir, runID, deepsecStub string) (map[strin
 
 func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string, env ...string) (map[string]any, []string, string) {
 	t.Helper()
+	return runDeepsecNodeAgent(t, dir, runID, "", "", deepsecStub, env...)
+}
+
+// runDeepsecNodeAgent is runDeepsecNodeFull with the two deepsec-side provider
+// vars under the caller's control. Empty/empty is the historical shape.
+func runDeepsecNodeAgent(t *testing.T, dir, runID, agent, model, deepsecStub string, env ...string) (map[string]any, []string, string) {
+	t.Helper()
 	body := secToolCommand(t, "run_deepsec_scanner")
 
 	scanDir, ws, stubs := filepath.Join(dir, "scan"), filepath.Join(dir, "ws"), filepath.Join(dir, "bin", runID)
@@ -942,6 +949,13 @@ func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string, env ...str
 		"{{vars.deepsec_process_limit}}": "0",
 		"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
 		"{{run.id}}":                     runID,
+		// These two ARE shell-quoted, unlike everything above, because the
+		// property under test is precisely what the node does with a value
+		// carrying shell syntax — and there the runtime's escaping IS the
+		// mechanism. Quoting here models it; leaving them bare would break the
+		// harness's own command line and prove nothing about the node.
+		"{{vars.deepsec_agent}}": shellQuote(agent),
+		"{{vars.deepsec_model}}": shellQuote(model),
 	} {
 		rendered = strings.ReplaceAll(rendered, ref, val)
 	}
@@ -1178,6 +1192,101 @@ exit 0`)
 		t.Errorf("the reader broke and said why, and the envelope carries none of it: %q\n"+
 			"the report will banner UNKNOWN (counter_failed) with no evidence, and the log dies "+
 			"with the pod", joined)
+	}
+}
+
+// deepsec has its own backend system, and which one it investigates with
+// decides which subscription the pass drains -- the deep scan being the
+// dominant consumer (79 of 102 minutes, measured) and metered by nothing in the
+// engine. The node used to hardcode that choice: gateway if a key happened to
+// be in the environment, `--agent claude` otherwise, with no way to ask for
+// anything else. These assert the choice by what deepsec is actually INVOKED
+// with, never by reading the body.
+func TestDeepsecAgentSelectionReachesTheCommandLine(t *testing.T) {
+	// The stub records every argv it is called with, one invocation per line.
+	const recorder = `printf '%s\n' "$*" >> "$DS_ARGV_LOG"
+case "$1" in
+  export) prev=""; for a in "$@"; do case "$prev" in --out) echo '[]' > "$a";; esac; prev="$a"; done ;;
+esac
+exit 0`
+
+	run := func(t *testing.T, agent, model string, env ...string) string {
+		t.Helper()
+		dir := t.TempDir()
+		log := filepath.Join(dir, "argv.log")
+		env = append(env, "DS_ARGV_LOG="+log)
+		runDeepsecNodeAgent(t, dir, "agent-test", agent, model, recorder, env...)
+		raw, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatalf("deepsec was never invoked (%v) — the node refused before reaching it", err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(line, "process") {
+				return line
+			}
+		}
+		t.Fatalf("no `deepsec process` invocation recorded, got:\n%s", raw)
+		return ""
+	}
+
+	t.Run("unset keeps the historical claude route", func(t *testing.T) {
+		got := run(t, "", "")
+		if !strings.Contains(got, "--agent claude") {
+			t.Errorf("process was invoked as %q — a run that sets nothing must keep the exact route it had before these vars existed", got)
+		}
+		if strings.Contains(got, "--model") {
+			t.Errorf("process was invoked as %q — an unset model must leave deepsec its own default, not pin one", got)
+		}
+	})
+
+	t.Run("an operator choice reaches deepsec", func(t *testing.T) {
+		got := run(t, "codex", "gpt-6-astra")
+		if !strings.Contains(got, "--agent codex") || !strings.Contains(got, "--model gpt-6-astra") {
+			t.Errorf("process was invoked as %q — the pass runs on an agent and a model nobody asked for", got)
+		}
+		if strings.Contains(got, "--agent claude") {
+			t.Errorf("process was invoked as %q — both agents on one command line", got)
+		}
+	})
+
+	// The gateway probe is a DETECTION; the var is a DECISION. Detection must
+	// never overrule a decision, or an operator who asked for one subscription
+	// silently pays from another.
+	t.Run("an explicit agent outranks a gateway key in the environment", func(t *testing.T) {
+		got := run(t, "codex", "", "AI_GATEWAY_API_KEY=sk-present")
+		if !strings.Contains(got, "--agent codex") {
+			t.Errorf("process was invoked as %q — a key in the environment overrode what the operator asked for", got)
+		}
+	})
+
+	t.Run("a gateway key alone still yields to the gateway preflight", func(t *testing.T) {
+		got := run(t, "", "", "DEEPSEC_API_KEY=sk-present")
+		if strings.Contains(got, "--agent") {
+			t.Errorf("process was invoked as %q — the gateway preflight is meant to pick, so nothing must be pinned for it", got)
+		}
+	})
+}
+
+// Both values land in an UNQUOTED expansion on deepsec's command line, so a
+// value carrying a space or a flag would become a second argument. The node
+// refuses instead of trimming: a pass that ran on an agent nobody chose is the
+// same quiet substitution this node refuses everywhere else.
+func TestDeepsecRefusesAnAgentThatIsNotOneArgument(t *testing.T) {
+	for _, tc := range []struct{ agent, model, want string }{
+		{"codex --dangerously-skip", "", "deepsec_agent"},
+		{"codex;rm -rf /", "", "deepsec_agent"},
+		{"", "gpt-6 --wide-open", "deepsec_model"},
+	} {
+		dir := t.TempDir()
+		cov, errs, _ := runDeepsecNodeAgent(t, dir, "refusal-test", tc.agent, tc.model, `exit 0`)
+		if cov["source"] != "deepsec_unavailable" {
+			t.Errorf("agent=%q model=%q ran anyway: %v", tc.agent, tc.model, cov)
+			continue
+		}
+		joined := strings.Join(errs, " ")
+		if !strings.Contains(joined, tc.want) {
+			t.Errorf("agent=%q model=%q refused without naming %s: %q", tc.agent, tc.model, tc.want, joined)
+		}
 	}
 }
 
