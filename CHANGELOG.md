@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.160.0](https://github.com/SocialGouv/iterion/compare/v3.159.1...v3.160.0) (2026-09-17)
+
+### Features
+
+* **bots:** wave 3b of the catalogue on dsl: 2 — fourteen small bundles ([#1344](https://github.com/SocialGouv/iterion/issues/1344)) ([#1369](https://github.com/SocialGouv/iterion/issues/1369)) ([4c00b5c](https://github.com/SocialGouv/iterion/commit/4c00b5c4985bb226bceac0f69f234521cf4cc104)), references [#1293](https://github.com/SocialGouv/iterion/issues/1293) [#1367](https://github.com/SocialGouv/iterion/issues/1367) [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1367](https://github.com/SocialGouv/iterion/issues/1367)
+
+    <details><summary>why</summary>
+
+    bmady, evolve, golden-master (its four files), instrument, product-docs, adr-rechallenge, e2e-coverage, test-coverage, feature-gap-fill, supply-shield, supply-shield-cve, rgaa-audit, ultra11y and dep-update-guard declare profile 2: the paragraph breaks their authors wrote inside 127 prompts (572 blank lines) now reach the models. The migrator changed nothing else (no backslash literal to re-spell); every manifest gets a patch bump, a changelog line and the >= 3.141.0 engine floor.
+
+    </details>
+
 ## [3.159.1](https://github.com/SocialGouv/iterion/compare/v3.159.0...v3.159.1) (2026-09-17)
 
 ### Bug Fixes
