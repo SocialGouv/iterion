@@ -8,6 +8,115 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-17 — second real MR, 10 findings on 117 files, and a `covered` verdict nobody ever sees (run 01a0aa97)
+
+- Status: **validated** — second unattended review on the same third-party
+  repository, this time on a substantial branch.
+- Note on redaction: this entry deliberately describes the findings **by class**
+  and names no customer symbol or ticket content, pending the arbitration the
+  2026-09-16 entry raised (its reviewer asked whether quoting a private ticket
+  into a public repo was agreed). The two entries sit side by side on purpose:
+  one cites, one does not.
+- Subject: `demat-amiante!5` (`feature/DAM-1978` → `main`, **117 files**),
+  opened 14:19:28Z, reviewed at **14:32** — 13 minutes, unattended.
+- Result: **10 findings — 2 critical, 3 high, 5 medium**, plus 3 questions. The
+  classes are what matter, and several are the kind a human review misses on a
+  117-file branch:
+  - **credentials built and never attached** — a
+    `setDefaultCredentialsProvider` call removed, leaving the provider a dead
+    local: every request to the secured backend goes out unauthenticated. Fails
+    closed on a secured cluster (401), and **silently succeeds** on a permissive
+    one. Same family as an inert guard: the code reads as if it authenticates.
+  - **trust-all TLS client with hostname verification disabled**, committed to
+    production code, and **certificate validation disabled for SMTP in all
+    environments**.
+  - **a perimeter filter that fails OPEN** on any exception — a security
+    boundary that widens when it breaks.
+  - a placeholder default removed for a property defined nowhere; a
+    delete-then-insert on identical primary keys; an index dropped outright
+    during a reindex, so searches fail for the whole run; a mail dispatched
+    before its enclosing transaction commits.
+- **The finding of the day is about OUR product, not theirs.** The run produced
+  a `covered` ticket verdict — verified in the `converge` artifact — and the
+  published review shows **no ticket section at all**. That is not a defect: the
+  renderer only prints `ticket_gaps`, i.e. verdicts that are neither `covered`
+  nor `unverifiable`, with the reasoning stated in the code — *"a missing ticket
+  is not itself a defect to correct"*. So a review titled "N problems to fix"
+  stays free of noise. The consequence is worth knowing: **a positive verdict
+  exists only inside the run artifact**, invisible to the team the answer would
+  reassure. Whether "yes, this delivers what the ticket asked" deserves one line
+  in the review is a product call, not a bug (→ arbitration).
+- Secret hygiene on 279 KB of events, positive controls first: `DAM-1978` ×33,
+  `keyset` ×30, `reindex` ×59, the Jira host ×6, the service-account email ×3,
+  `tracker_token` ×3 — token **0 in all eight forms**. Script:
+  `/tmp/iterion-e2e-ticket/secret-audit.py` (counts only, never a fragment).
+- Cost: 60 385 tokens (49 897 review opus-5 high + 10 488 sonnet synthesis) for
+  117 files — roughly double the 34 660 of the 22-file MR, so cost tracks scope
+  far more gently than file count does.
+- Lessons for next run: (a) the bot is now a **multi-file bundle**
+  (`lib/nodes.bot`, `lib/schemas.bot`, `lib/prompts.bot` behind includes) — a
+  grep over `main.bot` alone finds a field "missing" that is alive three files
+  away, which is exactly how this entry nearly became a false bug report;
+  (b) when a rendered section is absent, read the RENDERER before the producer:
+  here the producer was right and the filter was deliberate.
+
+## 2026-09-16 — ticket conformance CLOSED on a real third-party MR: a Jira verdict nobody configured a reference for (run 01a0a72c)
+
+- Status: **validated** — the end-to-end case open since 2026-09-08 (a real
+  merge request, a real private Jira ticket, a verdict that cites the ticket's
+  own content) is closed, unattended, on someone else's repository.
+- Subject: `…/dematamiante/code/demat-amiante!4` "Release 1.18"
+  (`release-1.18` → `main`, 22 files, head `433773805b2d`), opened 22:25:20Z by
+  the product's own developer. Reviewed automatically at 02:15:07Z — no
+  operator involved, no `/revi`.
+- The verdict, and why it is the interesting part:
+
+  > `DAM-2009: partial` — the indexing hot spot is genuinely fixed
+  > (`PdreDao.findAllPhaseTravauxInPdreIds` now filters on the requested PDRE
+  > ids instead of scanning every PDRE's planning/phases, **directly targeting
+  > the ~17h indexing and memory pressure reported in the ticket**), but the ES
+  > timeout tuning shipped alongside it is inert (wrong property key) and the
+  > other reported symptoms (**PDRE stuck "en transmission", 502s, OOM
+  > restarts**) are not addressed by this diff.
+
+  The bolded facts exist only inside the private Jira issue — they are the
+  proof the fetch happened, not an inference from the diff.
+- **It found the ticket where the recipe does not look.** The verdict says so
+  itself: *"the MR title, empty body, and branch name release-1.18 carry no
+  ticket reference themselves"* — every source
+  [skills/ticket-context.md](../../bots/review-pr/skills/ticket-context.md)
+  enumerates was empty. It recovered `DAM-2009` from the **merge commit
+  subject** (`4337738 "Merge branch 'feature/DAM-2009'"`). That path is not in
+  the skill; the reviewer went past the recipe rather than reporting
+  `unverifiable`. Worth folding back into the skill as a named source (a
+  release MR aggregating feature branches is the common shape), instead of
+  leaving it to each reviewer's initiative.
+- Finding raised, and it is a real one: `Rd75e47 [medium]` — the new
+  `elasticsearch.socket.timeout` key is **inert**, the wired key being
+  `elasticsearch.timeout.socket`. A mitigation that reads as shipped and
+  changes nothing: same class as a guard matching nothing. Its open questions
+  push further — the existing value lives in `docker.properties` while
+  `livraison.properties` defines no ES key at all, *"so the DAM-2009 mitigation
+  may not reach production"*.
+- Secret hygiene, measured on the run's 160 KB of events, positive controls
+  first so the zero means something: `DAM-2009` ×40, `PdreDao` ×40, the Jira
+  host ×2, the service-account email ×2, `tracker_token` ×2 — and the token
+  itself **0** in eight forms (verbatim, first/last 8 chars, `ATATT` prefix,
+  base64 of the token, base64 of `user:token`, url-escaped, json-escaped).
+- Cost: **34 660 tokens** total — 28 875 for the Claude review (opus-5, effort
+  high) + 5 785 for the sonnet-5 synthesis. Mono topology.
+- What made this run possible where 2026-09-10's could not: the MR stayed
+  **open**. The previous one lived 72 seconds and the review was cancelled
+  mid-flight. Nothing was fixed in between — the difference is entirely the
+  author's merge timing, which is worth remembering before reading a silent
+  repo as a broken integration.
+- Lessons for next run: (a) add "commit subjects of the range under review" to
+  the skill's extraction sources — this run proves it pays; (b) a release MR is
+  a legitimate conformance subject and will often carry several ticket keys, so
+  the per-ticket verdict shape holds; (c) the integration had moved to its own
+  team (`PIC DematAmiante`) — look for the run on the team that OWNS the
+  integration, not the one that used to.
+
 ## 2026-09-15 — a stale base widened the scope onto an already-merged PR (runs `01a0a3eb`, `01a0a403`, `01a0a414`)
 
 - Status: **partial → fixed**. Five launches on three PRs. Two were perfect, one
@@ -438,6 +547,49 @@ usage, not proof of source access or test coverage.
 - Verify the binary before trusting a local `validate`: a v3.69 CLI reported
   `E002` on a bot the v3.140 build compiles cleanly, on the UNMODIFIED file —
   the control that separated "my edit broke it" from "my tool is stale".
+
+## 2026-09-10 — the first REAL merge request on demat-amiante: wiring proven, review impossible (run 01a08b60)
+
+- Status: **inconclusive by process, not by defect** — the run was launched
+  correctly and killed by a merge 71 s later.
+- What was being waited for: since 2026-09-08 the only merge requests on
+  `…/dematamiante/code/demat-amiante` were two test MRs. `!3
+  [DAM-2009] : Add code from Capg for version v1.18.12` is the first one
+  carrying real work (22 files, `feature/DAM-2009` → `release-1.18`).
+- The timeline, to the second:
+
+  | instant | event |
+  |---|---|
+  | 12:52:05 | MR opened |
+  | **12:52:06** | **Revi launched by the webhook** (run `01a08b60`) |
+  | 12:53:17 | MR **merged** by its author |
+  | — | run `cancelled`: `pull request closed or merged — nothing left to review` |
+
+- What this DOES prove, and it is not nothing: the webhook fires in **one
+  second**; the migration of the integration to its own team (`PIC
+  DematAmiante`) carried everything with it — the Jira secret
+  (`jira_dam_token`, same fingerprint), the `tracker_token` binding with
+  `allowed_hosts=[jira-mcas.atlassian.net]`, and the launch vars; and the
+  run received every input the ticket check needs: `tracker_api_base`,
+  `tracker_user`, `source_branch: feature/DAM-2009`, and `scope_notes`
+  opening on `[DAM-2009]`.
+- What it does NOT prove: the verdict itself. The run holds **3 events**,
+  all sandbox startup — no node ran, no tracker call was made. Saying "the
+  token never leaked" here would be true and worthless: nothing was
+  fetched. The end-to-end verdict on a real MR is still unobserved.
+- The real obstacle is a process one, and it is structural: a review takes
+  5–15 minutes, this MR lived **72 seconds**, and the integration runs
+  `gate_enabled: false`, so nothing asked the author to wait. On a repo
+  where MRs are merged on open, an asynchronous reviewer can never pay for
+  itself — the fix is a decision (enable the gate, or agree to wait), not
+  a patch.
+- Lessons for next run: (a) look for the run on the team that OWNS the
+  integration — this one had moved to `PIC DematAmiante`, and
+  `runs list` on the old team showed nothing, which reads exactly like
+  "the webhook is broken"; (b) a `cancelled` run with a handful of
+  sandbox events is the signature of a merge racing the review, not of a
+  wiring fault; (c) before concluding on a silent repo, check the
+  integration still lives where you last left it.
 
 ## 2026-09-09 — forge-native ticket context: the first `covered` verdict, and the [high] the feature found in itself (run 01a085b8, PR #1017)
 
