@@ -16,18 +16,80 @@ import (
 
 const childResourceIOTimeout = 30 * time.Second
 
+// sharedClaudeRoot is the in-sandbox path of the shared workspace's `.claude`
+// directory, for the two places that read or reset a child's borrowed
+// resources.
+//
+// An explicit WorkspaceFolder wins, an empty one means "the same absolute path
+// as on the host" — the rule containerWorkspaceFolder states. A driver with no
+// host filesystem cannot bind-mount anything, so it COPIES the workspace to
+// that same absolute path and leaves WorkspaceFolder empty. Empty is a normal
+// state on the driver production runs on, not a missing value, and that is the
+// case this function exists to stop refusing.
+//
+// The refusal is kept for the state that really is broken: no absolute path on
+// either side. Joining an empty workspace yields the RELATIVE ".claude", which
+// resolves against whatever cwd the exec lands in — a silent wrong target for
+// a recursive delete.
+//
+// KNOWN GAP, review finding R9e4d97, deliberately not closed here. When a bot
+// DECLARES `sandbox.workspace_folder:`, the kubernetes driver's two roots
+// diverge: populate copies to info.WorkspacePath (driver.go:611) while the pod
+// manifest mounts the volume at Spec.WorkspaceFolder (manifest.go:266). This
+// derivation follows the manifest, so it would address the mount point while
+// the files sit in the copy — and since the mount exists, the assert below
+// passes and both callers become quiet no-ops.
+//
+// Inverting the preference here was tried and is NOT the answer: it makes
+// TestTheCopyAChildReadsMatchesTheHostAfterAdoption fail, which pins the
+// opposite. The two cannot both be satisfied while the driver disagrees with
+// itself, so the question belongs to the driver — should the manifest follow
+// info.WorkspacePath too? — and not to a guess made here.
+func (e *Engine) sharedClaudeRoot() (workspace, claudeRoot string, err error) {
+	workspace = e.sharedWorkspaceFolder()
+	if workspace == "" {
+		workspace = e.workDir
+	}
+	if !path.IsAbs(workspace) {
+		return "", "", fmt.Errorf("child resources: no absolute shared workspace path "+
+			"(sandbox workspace folder %q, engine work dir %q) — a relative root "+
+			"would resolve against the exec's cwd",
+			e.sharedWorkspaceFolder(), e.workDir)
+	}
+	return workspace, path.Join(workspace, ".claude"), nil
+}
+
+// assertWorkspaceRoot is the first line of both scripts. `set -eu` alone would
+// let a missing root pass: `cp` of nothing and `rm -rf` of nothing both exit 0,
+// so the wrong-root case would read as a clean no-op.
+//
+// It catches a root the sandbox does not have at all. It does NOT certify that
+// the root is the right one — an existing-but-wrong directory passes. That is
+// why the derivation above mirrors the driver rather than guessing, and why
+// this assert is the floor and not the guarantee.
+const assertWorkspaceRoot = `test -d "$3" || { echo "shared workspace root $3 is absent from the sandbox — ` +
+	`the driver copied the workspace somewhere else" >&2; exit 3; }
+`
+
+func (e *Engine) sharedWorkspaceFolder() string {
+	if e.sharedSandbox == nil {
+		return ""
+	}
+	return e.sharedSandbox.WorkspaceFolder
+}
+
 func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName string) (func() error, error) {
 	shared := e.sharedSandbox
 	if shared == nil || shared.Run == nil || !sharedSandboxIsCopyBased(shared.Run) {
 		return func() error { return nil }, nil
 	}
-	if shared.WorkspaceFolder == "" {
-		return nil, fmt.Errorf("child resources: shared sandbox has no workspace path")
+	workspace, root, err := e.sharedClaudeRoot()
+	if err != nil {
+		return nil, err
 	}
 	backup := path.Join("/tmp", backupName)
-	root := path.Join(shared.WorkspaceFolder, ".claude")
 	runScript := func(ctx context.Context, script string) error {
-		res, err := shared.Run.Exec(ctx, []string{"sh", "-c", script, "sh", root, backup}, sandbox.ExecOpts{})
+		res, err := shared.Run.Exec(ctx, []string{"sh", "-c", script, "sh", root, backup, workspace}, sandbox.ExecOpts{})
 		if err != nil {
 			return err
 		}
@@ -38,8 +100,8 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 	}
 	cctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
-	err := runScript(cctx, `set -eu
-mkdir -p "$2"
+	err = runScript(cctx, `set -eu
+`+assertWorkspaceRoot+`mkdir -p "$2"
 for name in skills commands agents settings.json; do
  if test -e "$1/$name" || test -L "$1/$name"; then cp -a "$1/$name" "$2/$name"; fi
 done`)
@@ -50,7 +112,7 @@ done`)
 		ctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
 		defer cancel()
 		return runScript(ctx, `set -eu
-for name in skills commands agents settings.json; do
+`+assertWorkspaceRoot+`for name in skills commands agents settings.json; do
  rm -rf "$1/$name"
  if test -e "$2/$name" || test -L "$2/$name"; then mkdir -p "$1"; cp -a "$2/$name" "$1/$name"; fi
 done
@@ -67,9 +129,13 @@ func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
-	root := path.Join(e.sharedSandbox.WorkspaceFolder, ".claude")
+	workspace, root, err := e.sharedClaudeRoot()
+	if err != nil {
+		return err
+	}
 	res, err := e.sharedSandbox.Run.Exec(ctx, []string{"sh", "-c", `set -eu
-for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`, "sh", root}, sandbox.ExecOpts{})
+` + assertWorkspaceRoot + `for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`,
+		"sh", root, "", workspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err
 	}

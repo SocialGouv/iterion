@@ -327,9 +327,33 @@ type RunInfo struct {
 	FriendlyName string
 
 	// WorkspacePath is the host path that becomes the sandbox
-	// workspace (typically a git worktree). The driver bind-mounts
-	// or copies this into the sandbox at [Spec.WorkspaceFolder]
-	// (default `/workspace`).
+	// workspace (typically a git worktree). The driver bind-mounts or
+	// copies it in AT THIS SAME ABSOLUTE PATH.
+	//
+	// Same-absolute-path is a requirement, not a convenience: a bot's
+	// tool and agent nodes address the workspace by the host path
+	// ({{run.worktree}} / PROJECT_DIR), so a driver that lands it
+	// somewhere else — `/workspace`, say — makes `git -C <worktree>`
+	// hit a path the sandbox does not have (exit 128). The docker
+	// driver bind-mounts at the host path for this reason
+	// (containerWorkspaceFolder states the same rule), and the
+	// kubernetes driver overrides its own default with this field
+	// before starting the pod.
+	//
+	// KNOWN INCONSISTENCY, kubernetes only, when a bot DECLARES
+	// `sandbox.workspace_folder:`. The copy follows this field
+	// (driver.go:611, unconditional once it is non-empty) but the pod
+	// manifest mounts the volume at [Spec.WorkspaceFolder]
+	// (manifest.go:266, which re-overrides the root it was handed at
+	// driver.go:657). Files therefore land beside the mount rather than
+	// in it. Whether the manifest should follow this field too is open;
+	// until it is settled, do not read either path as authoritative for
+	// the other. Raised as review finding R9e4d97 on the child-resource
+	// code that has to pick one.
+	//
+	// `/workspace` survives as docker's LegacyDefaultWorkspace and as
+	// the kubernetes default before that override, for bots that
+	// declare it explicitly.
 	WorkspacePath string
 
 	// ProxyEndpoint, if non-empty, is the URL of the iterion network
