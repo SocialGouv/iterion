@@ -223,6 +223,21 @@ the key, its audience and the refused bot — and a **pin** the audience refuses
 gets its own line, because a pin does not lift an audience and losing silently
 is the failure `warnRefusedPins` exists to prevent.
 
+**Where to read it**, precisely, because "the acquisition trace" means two
+surfaces and neither is the run's own event log:
+
+- the **server log**, one `WARN` per withheld key, naming the run id;
+- the **credential preview** (`GET …/credential-preview`), where the key appears
+  with `state: "bot_filtered"` and the reason — the operator-facing answer, and
+  the only one reachable without server-log access.
+
+There is deliberately no run-scoped record: `cred_fingerprints` on the run
+document names what was GRANTED, not what was refused, and no credential event
+exists in `events.jsonl`. This is the same shape the credential pool already
+has — its own `StatusBotFiltered` reaches a run-named `Warn` through
+`pledgeSkipSummary` plus the preview, and nothing else. A per-run credential
+trace would improve both at once and belongs to neither alone.
+
 **`{"bots": null}` is a no-op, not a clear.** The field is a pointer, so `null`
 and an absent field are indistinguishable after decoding. Send `[]` to lift an
 audience. The response body always echoes the stored list, so the outcome is
