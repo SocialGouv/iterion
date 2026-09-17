@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.156.0](https://github.com/SocialGouv/iterion/compare/v3.155.0...v3.156.0) (2026-09-17)
+
+### Features
+
+* **sec-audit-source:** let the operator choose which agent the deep scan runs on ([#1347](https://github.com/SocialGouv/iterion/issues/1347)) ([ccc6490](https://github.com/SocialGouv/iterion/commit/ccc6490407d60646fbac261352386d42f149370a))
+
+    <details><summary>why</summary>
+
+    deepsec has its own backend system, unrelated to iterion's: it drives `claude`, `codex` or `pi` from inside this tool node, each resolving its own credentials. The node hardcoded that choice -- gateway if a key happened to be in the environment, `--agent claude` otherwise -- with no override. That is a constant bounding operator work with no escape hatch.
+
+    </details>
+
+### Performance Improvements
+
+* **runview:** a run listing no longer carries the source its runs executed ([#1355](https://github.com/SocialGouv/iterion/issues/1355)) ([aa0ce3f](https://github.com/SocialGouv/iterion/commit/aa0ce3f0242d68d703236bf9aa1987a28bfc572c)), closes [#1351](https://github.com/SocialGouv/iterion/issues/1351)
+
+    <details><summary>why</summary>
+
+    ListRunRecordsCtx lists ids then loads every run WHOLE, and its own Limit truncates only afterwards — so the heaviest field on the document decides what a request costs. That field is the recorded workflow source: the text of the unit the run executed, 100-520 KB for the real bots in this catalog. No consumer of a listing reads it; they all become RunHeaders, which carry neither field. One caller, the board projection, lists with no limit and retains every record. The finished-forks index is…
+
+    </details>
+
 ## [3.155.0](https://github.com/SocialGouv/iterion/compare/v3.154.2...v3.155.0) (2026-09-17)
 
 ### Features
