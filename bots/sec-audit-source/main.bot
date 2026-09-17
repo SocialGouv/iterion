@@ -3412,6 +3412,14 @@ fi
 # so several names are tried; and when none answers, the message says which
 # ones were tried and what the directory actually holds. A diagnostic that
 # fails must name what it saw, never just "unreadable".
+#
+# Re-emitted at the TAIL, and that placement is the point: env.log travels as
+# its last 1500 characters only, while the copy written at startup sits at the
+# head. Anything appended in between -- the counter_failed branch pours a Python
+# traceback in there -- evicts it, and precisely in the failure where the
+# question "which agent ran?" is asked. deepsec is absent from backends_used, so
+# this line is the only answer that exists.
+echo "[deepsec] agent_args=$AGENT_ARGS" >>"$LOG_DIR/env.log"
 ERR_JSON=$(printf "%s" "$ERRS" | LOG_DIR="$LOG_DIR" python3 -c "
 import json, os, sys
 e = sys.stdin.read().strip().split()

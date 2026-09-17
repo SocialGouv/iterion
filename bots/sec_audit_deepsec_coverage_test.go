@@ -1267,6 +1267,47 @@ exit 0`
 	})
 }
 
+// Which agent ran is not derivable from the envelope — deepsec is absent from
+// backends_used and the engine meters none of it — so the line echoed into
+// env.log is the only record that exists. env.log travels as its LAST 1500
+// characters, and the counter_failed branch pours a Python traceback into that
+// same file: written only at the head, the record is evicted precisely in the
+// failure where someone asks which agent ran.
+func TestDeepsecAgentRecordSurvivesALogThatOverflowsTheTail(t *testing.T) {
+	dir := t.TempDir()
+
+	// A reader that dies loudly: its traceback lands in coverage.log, which the
+	// counter_failed branch appends to env.log, filling the tail window.
+	realPython, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	stubs := filepath.Join(dir, "bin", "tail-test")
+	stubBin(t, stubs, "python3", `case "$*" in
+  *steps_failed*)
+    i=0
+    while [ $i -lt 60 ]; do
+      echo '  File "reader", line 1, in <module>   SYNTHETIC-PADDING-XXXXXXXXXXXXXXXXXXXXXXXXXX' >&2
+      i=$((i+1))
+    done
+    echo "RuntimeError: SYNTHETIC-READER-BOOM" >&2
+    exit 3 ;;
+esac
+exec `+realPython+` "$@"`)
+
+	_, errs, _ := runDeepsecNodeAgent(t, dir, "tail-test", "codex", "gpt-6-astra", `
+prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+exit 0`)
+
+	joined := strings.Join(errs, " ")
+	if !strings.Contains(joined, "SYNTHETIC-READER-BOOM") {
+		t.Fatalf("the harness did not actually overflow the tail — this test proves nothing: %q", joined)
+	}
+	if !strings.Contains(joined, "agent_args=--agent codex") {
+		t.Errorf("the traceback evicted the record of which agent ran, and it is the only one that exists: %q", joined)
+	}
+}
+
 // Both values land in an UNQUOTED expansion on deepsec's command line, so a
 // value carrying a space or a flag would become a second argument. The node
 // refuses instead of trimming: a pass that ran on an agent nobody chose is the
