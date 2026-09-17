@@ -212,7 +212,7 @@ prompt campaign_system:
      have not built and tested green.
 
   3. COMMIT EACH SITE AS YOU FINISH IT — never batch. Stage everything
-     including new files (`git add -A -- ':/' ':(exclude,top).claude'`, so a change that ADDS files actually
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name), so a change that ADDS files actually
      lands) and commit before moving on. git IS your durable state: an
      interrupted run keeps every site you committed, and a fresh pass just
      reads `git log` and continues where you left off. Do NOT keep a separate

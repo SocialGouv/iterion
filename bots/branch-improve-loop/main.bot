@@ -357,7 +357,7 @@ prompt campaign_system:
      tested green.
 
   3. COMMIT EACH FIX AS YOU FINISH IT — never batch. Stage everything
-     including new files (`git add -A -- ':/' ':(exclude,top).claude'`, so a fix that ADDS a test/helper
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name), so a fix that ADDS a test/helper
      actually lands) and commit before moving on. git IS your durable state:
      an interrupted run keeps every fix you committed, and a fresh pass just
      reads `git log`, re-diffs the branch, and continues where you left off.
@@ -1788,17 +1788,18 @@ def is_scaffold(line):
     # iterion lays the bundle's skills (and plugin commands, agents,
     # settings) under <workspace>/.claude/ at run start: written by the
     # engine, never by a pass, never the run's work (#1364) -- the rule
-    # finalize applies to the wip bank (runOutputPaths), narrowed here to
-    # what is UNTRACKED: a tracked file under .claude/ that was modified is
-    # somebody's uncommitted work, which this reader exists to protect. A
-    # rename is judged on its destination; a quoted path is unquoted.
+    # finalize applies to the wip bank (runOutputPaths), tracked or not:
+    # the engine rewrites a tracked settings.json to inject plugin hooks,
+    # and a reader that refused on that write would stop every run on a
+    # repository that commits it. A rename is judged on its destination;
+    # a quoted path is unquoted.
     path = line[3:]
     if ' -> ' in path:
         path = path.split(' -> ', 1)[1]
     path = path.strip()
     if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
         path = path[1:-1]
-    return line[:2] == '??' and path.startswith('.claude/')
+    return path.startswith('.claude/')
 st = git('status', '--porcelain')
 dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not is_scaffold(l)]
 if st.returncode != 0:

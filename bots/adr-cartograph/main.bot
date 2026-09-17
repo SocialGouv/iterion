@@ -308,7 +308,7 @@ prompt campaign_system:
      authorship — an ADR whose Context/Decision cannot cite the code
      you read is a façade.
 
-  3. COMMIT EACH ADR AS YOU FINISH IT — never batch. `git add -A -- ':/' ':(exclude,top).claude'`
+  3. COMMIT EACH ADR AS YOU FINISH IT — never batch. `git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name)
      then commit before moving on. git IS your durable state: an
      interrupted run keeps every ADR you committed, and a fresh pass
      re-manifests and continues.

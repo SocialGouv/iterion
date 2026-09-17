@@ -1453,7 +1453,7 @@ prompt p2_campaign_system:
      build → run the affected tests → COMMIT with a semantic message
      (`fix(review): <precise issue>` or the `type(scope):` that
      fits). Validation BEFORE each commit.
-  3. COMMIT EACH FIX AS YOU FINISH IT (`git add -A -- ':/' ':(exclude,top).claude'` so new files
+  3. COMMIT EACH FIX AS YOU FINISH IT (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name) so new files
      land) — git is the durable state; a later pass reads `git log`
      and continues.
      CAPTURE THE STATUS, THEN FILTER — never let a pipe decide
@@ -2918,8 +2918,10 @@ printf '{"success":true,"output":"committed %s","sha":"%s"}\n' "$SHA" "$SHA"
 ## starting state.
 ##
 ## The deterministic implementation is git-canonical:
-##   1. git reset --hard HEAD         — discard all tracked-file changes
-##                                      (manifests, lockfiles, source).
+##   1. git reset -q HEAD + git checkout -- . ':(exclude).claude'
+##                                    — discard all tracked-file changes
+##                                      (manifests, lockfiles, source) but
+##                                      the engine's .claude/ tree.
 ##   2. git clean -fd -- . ':(exclude).claude' — remove every untracked file +
 ##                                      directory the upgrade introduced
 ##                                      (build artefacts, generated
@@ -2950,9 +2952,11 @@ tool revert_changes:
   output: revert_result
   command: `set -uo pipefail
 cd {{input.workspace_dir}} >&2
-echo "revert: git reset --hard HEAD" >&2
-if ! git reset --hard HEAD >&2; then
-  printf '{"success":false,"output":"git reset --hard failed"}\n'
+echo "revert: reset the index, restore every tracked file but .claude/" >&2
+# The engine injects plugin hooks into a tracked .claude/settings.json: a hard
+# reset would drop them for every later node. Same tree, that directory kept.
+if ! git reset -q HEAD >&2 || ! git checkout -- . ':(exclude).claude' >&2; then
+  printf '{"success":false,"output":"the reset of tracked files failed"}\n'
   exit 1
 fi
 echo "revert: clean untracked files, sparing .claude/" >&2

@@ -220,7 +220,7 @@ prompt campaign_system:
      you have not seen pass.
 
   3. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
-     including new files (`git add -A -- ':/' ':(exclude,top).claude'`, so NEW test files actually land)
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name), so NEW test files actually land)
      and commit before moving on. git IS your durable state: an
      interrupted run keeps every test you committed, and a fresh pass
      just reads `git log` and continues where you left off. Do NOT keep a

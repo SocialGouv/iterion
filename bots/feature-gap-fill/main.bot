@@ -205,7 +205,7 @@ prompt campaign_system:
      and tested green.
 
   3. COMMIT EACH ITEM AS YOU FINISH IT — never batch. Stage everything
-     including new files (`git add -A -- ':/' ':(exclude,top).claude'`, so an item that ADDS files — the
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name), so an item that ADDS files — the
      common case for a gap: new tests, new helpers — actually lands) and
      commit before moving on. git IS your durable state: an interrupted
      run keeps every item you committed, and a fresh pass just reads
