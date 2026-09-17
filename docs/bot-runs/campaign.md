@@ -5,6 +5,52 @@ in a bounded loop, judging progress in git, and executing the golden-master
 ledger's announced re-records between runs. Not one LLM node of its own.
 See [bots/campaign/](../../bots/campaign/).
 
+## 2026-09-17 — profile 2: a one-lot programme through the whole loop, parked on the handoff review whose instructions carry their paragraphs (run 01a0af0c-cb11)
+
+- Status: **validated** — preflight, one `modernize` lot through the subbot,
+  observe, steward, the exhausted loop gate, finalize, the handoff review
+  acknowledged, done. Two earlier attempts refused at the child's oracle gate
+  (below).
+- Versions: bot campaign 0.1.1 (`dsl: 2`, wave 2 of #1344) · iterion
+  `853b5ce28` (branch build v3.154.1 + the wave-1 runtime fix) · child
+  `modernize` from the same catalogue (profile 1, not yet migrated),
+  claude_code + claude-opus-5 through the host's Anthropic-compatible facade.
+- Method: CLI `iterion run <bundle>/main.bot --sandbox none` launched FROM a
+  scratch copy of the greet project seeded with `.modernize/plan.yaml` (one
+  lot: a docstring and type hints on `greeting()`, exit gate = the unit tests
+  and a docstring check) and a `.golden-master/` oracle whose
+  `verify-oracle.sh` runs the CLI and prints a gate-mode JSON report;
+  `--store-dir` the operator's workspace store, `--var governance=bot --var
+  escalation=handoff --var max_lots=1 --var lot_max_passes=2`, caps
+  `--max-cost-usd 8 --max-duration 30m`, `ITERION_BIN` the branch binary; the
+  handoff answered by `iterion resume --answer ack=…`.
+- Result: the child landed the lot in two passes (campaign $0.44 + $0.68,
+  gate green, oracle green, references untouched, `mark_done`); the campaign
+  observed `moved: true`, the steward recorded 0 acts and 0 escalations, the
+  loop gate declared the programme exhausted (`max_lots` 1), finalize wrote
+  `.modernize/campaign/handoff.md` (1 done, 0 blocked, oracle green) and the
+  run parked on `handoff_review`. ≈ $1.15 for this attempt; ≈ $0.45 for the
+  two refused ones.
+- Value: the supervisor's whole graph live on profile 2, the subbot seam
+  included; the run's `events.jsonl` carries the rendered handoff
+  instructions with `blocked lots.\n\nAcknowledge to close the run.`, the
+  paragraph break the profile-1 lexer used to fold.
+- Findings / misses: two refusals were mine, not the bot's — the scratch
+  oracle first printed prose (`ORACLE_NOT_RUN: the gate wrapper exited 0
+  without printing a report`), then a report whose `mode` was not `gate`
+  (`a subset or a non-gate run, not a verdict on the tree`): the gate reads
+  the LAST JSON object on stdout and takes it as a verdict only in gate mode,
+  exactly as the modernize contract says. Not exercised: `escalate` (the other
+  prompt the profile touches; it needs a rebaseline request under
+  `escalation: interactive`) and `governance: human`.
+- Engine hardening: none needed.
+- Lessons for next run: a scratch oracle is three lines and one JSON object —
+  `{"mode": "gate", "ok": true, "stable": true, …}` — and the refusal
+  messages say what is missing. And `iterion resume` does not inherit the
+  launch's `--sandbox none`: the acknowledgement re-provisioned a sandbox (the
+  bot's devbox realised inside a container) before the final `done` — set
+  `ITERION_SANDBOX_DEFAULT=none` on the resume of a host run.
+
 ## 2026-08-12 — third dogfood: the refusal and governance paths, exercised on purpose (runs 019ff5aa, 019ff5b3)
 
 - Status: **the falsification matrix is closed** except the engine-level

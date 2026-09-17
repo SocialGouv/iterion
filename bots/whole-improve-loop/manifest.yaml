@@ -1,7 +1,11 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.4.0
+version: 2.4.1
+## 2.4.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside thirteen prompts (47 in all) now reach
+## the models as blank lines instead of being folded away by the profile-1
+## lexer. No instruction changed.
 ## 2.4.0 — the entry precondition's refusal is a NAMED fail node
 ## (`workspace_not_a_repo`, code WORKSPACE_NOT_A_REPO, terminal), so the
 ## code reaches the RUN's own `failure_code` / `error` — read by `iterion
@@ -122,3 +126,9 @@ invocations:
 launch:
   primary: [improvement_prompt]
   hidden: [source_issue_ref]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

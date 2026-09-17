@@ -1,7 +1,11 @@
 name: sec-audit-deps
 display_name: Depsy
 icon: 📦
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside three prompts (20 in all) now reach the
+## models as blank lines instead of being folded away by the profile-1
+## lexer. No instruction changed.
 ## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
 ## the sec-image pin (scanner toolchain); claude install gate, ~/.claude
 ## mount and CLAUDE_CONFIG_DIR removed — platform defaults cover them.
@@ -55,3 +59,9 @@ invocations:
 launch:
   primary: [severity_threshold]
   hidden: [scanner_version]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

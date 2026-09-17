@@ -1,5 +1,47 @@
 # Seki + deepsec — validation
 
+## 2026-09-17 — profile 2: detect, triage, voter and report-card prompts reach the models with their paragraphs (run 01a0aef1-e5a6)
+
+- Status: **validated** — a complete, healthy audit of a three-file scratch
+  repository: three candidates triaged, a full pool of three voters, a clean
+  card, no issue created.
+- Versions: bot sec-audit-source 0.1.2 (`dsl: 2` and the fix loop's exhaustion
+  exit, wave 2 of #1344) · iterion `853b5ce28` (branch build v3.154.1 + the
+  wave-1 runtime fix) · the bot's own sec sandbox image
+  (`iterion-sandbox-sec:edge`, present locally) · `--backend claude_code
+  --model claude-opus-5` on every LLM node (the GPT route detect_tech takes by
+  default is spent until 2026-09-20), served through the host's
+  Anthropic-compatible facade (z.ai).
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of
+  the greet project (a one-file Python CLI with its test), `--store-dir` the
+  operator's workspace store, `--var severity_threshold=high --var
+  enable_project_context=false`, caps `--max-cost-usd 8 --max-duration 30m`,
+  `ITERION_BIN` the branch binary. No remediation (default).
+- Result: **finished**, **$1.20** (detect_tech $0.16 · triage $0.35 · voters
+  $0.14 + $0.17 + $0.19 · report_card $0.19), 13 min of audit after 23 min of
+  sandbox post-create (the bot's devbox realised inside the container —
+  semgrep and its Python tree — then the image's codex install; the profile is
+  cached on the host for the next run). `scan_health` healthy, not degraded;
+  the generic scanners found 0 raw findings; triage still produced three
+  candidates, the three voters dismissed all three unanimously; the report
+  card wrote `.sec-audit/findings.md` in the run's worktree and created no
+  board issue.
+- Value: the audit spine live on profile 2 — inventory, `detect_tech`,
+  scanners, `scan_health`, `cap_findings`, `plan_shards`, `triage`, three
+  `voter_v*` judges, `aggregate_votes`, `report_card`; the run's
+  `events.jsonl` carries the rendered report-card prompt with `board.label
+  only.\n\nYour job:`, the paragraph break the profile-1 lexer used to fold.
+- Findings / misses: the new exhaustion exit is unreachable on a clean repo
+  (the fix loop needs confirmed findings and `remediate=true`); its proof is
+  the strict dry run and a runtime replica of the shape in both edge orders
+  (the local adversarial round of the wave). The sandbox's cold post-create
+  nearly ate the run's 30-minute wall: the budget clock starts at "Run
+  started", after provisioning, which is what saved it.
+- Engine hardening: none needed.
+- Lessons for next run: keep `ITERION_SANDBOX_POST_CREATE_TIMEOUT` and
+  `--max-duration` generous on a cold sec sandbox; route `detect_tech` with
+  `ITERION_SEC_AUDIT_DETECT_BACKEND`/`_MODEL` when the GPT forfait is closed.
+
 ## 2026-06-26 — convergence campaign: Seki-aligned security pass (runs 019f02e7 → 019f039e)
 Goal (operator): iterate Seki → fix every bot bug blocking completion + every real
 security issue → re-run, until **2 consecutive complete runs with no new real issues**,

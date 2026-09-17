@@ -89,6 +89,8 @@
 ## review-loop bots. 11 nodes → 6.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 

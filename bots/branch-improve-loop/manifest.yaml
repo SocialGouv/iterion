@@ -1,7 +1,11 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.8.0
+version: 1.8.1
+## 1.8.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside fifteen prompts (65 in all) now reach
+## the models as blank lines instead of being folded away by the profile-1
+## lexer. No instruction changed.
 ## 1.8.0 — deterministic workflow delivery preflight before plan/campaign.
 ## The current runtime token must prove workflows:write; installation grants
 ## are not evidence. Missing proof refuses typed before any analysis.
@@ -237,3 +241,9 @@ invocations:
 launch:
   primary: [base_ref, pilot]
   hidden: [source_issue_ref]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

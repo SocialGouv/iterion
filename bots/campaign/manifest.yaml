@@ -1,7 +1,11 @@
 name: campaign
 display_name: Campy
 icon: 🧭
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks written inside two prompts (3 in all) now reach the model as blank
+## lines instead of being folded away by the profile-1 lexer. No
+## instruction changed.
 description: |
   Supervises a WHOLE modernisation programme, lot after lot, by running the
   modernize bot as a subbot in a bounded loop — and holding the separation
@@ -38,3 +42,9 @@ schema_version: 1
 
 launch:
   primary: [governance, escalation, max_lots, plan_path]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"
