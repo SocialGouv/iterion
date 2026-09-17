@@ -1798,7 +1798,7 @@ def is_scaffold(line):
         path = path[1:-1]
     return path.startswith('.claude/')
 st = git('status', '--porcelain')
-dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not (l[:2] == '??' and is_scaffold(l))]
+dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not is_scaffold(l)]
 if st.returncode != 0:
     print(json.dumps({'honoured': False, 'reason': 'declined but the working tree could not be read: ' + (st.stderr or '').strip()[-200:]}))
     raise SystemExit(0)

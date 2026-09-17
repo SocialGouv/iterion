@@ -96,8 +96,14 @@ func TestWholeTreeStagingExcludesTheScaffold(t *testing.T) {
 	// list: any whole-tree staging, marking or cleaning, wherever the
 	// repository is named; the pathspec anchors the tree at the repository
 	// root so a copy run from a subdirectory covers everything.
-	staging := regexp.MustCompile(`\badd -[AN]\b|\bclean -fd\b|'clean', '-fd'`)
-	excluded := regexp.MustCompile(`(?:add -[AN]|clean -fd) -- ':/' ':\(exclude,top\)\.claude'|'clean', '-fd', '--', ':/', ':\(exclude,top\)\.claude'`)
+	// A clean stays scoped to the workspace as a bare `git clean` is (`-- .`,
+	// the mirror excluded relative to it); staging and marking are repo-wide
+	// as a bare `git add -A` is (`':/'`, the root mirror excluded).
+	// A whole-tree checkout (`checkout -- .`, the revert of every tracked
+	// file) spares the engine's tree the same way: the settings hooks it
+	// injects and the operator's own tracked files under .claude/ survive.
+	staging := regexp.MustCompile(`\badd -[AN]\b|\bclean -fd\b|'clean', '-fd'|"checkout", "--", "\."|'checkout', '--', '\.'`)
+	excluded := regexp.MustCompile(`add -[AN] -- ':/' ':\(exclude,top\)\.claude'|clean -fd -- \. ':\(exclude\)\.claude'|'clean', '-fd', '--', '\.', ':\(exclude\)\.claude'|"checkout", "--", "\.", ":\(exclude\)\.claude"|'checkout', '--', '\.', ':\(exclude\)\.claude'`)
 	sites := 0
 	for _, rel := range files {
 		src, err := os.ReadFile(rel)

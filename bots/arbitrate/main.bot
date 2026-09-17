@@ -273,7 +273,7 @@ tool consign:
     ## THE SEPARATION GUARD. The judge is read-only by contract; if the tree
     ## carries ANY change before consignment, the judge (or something in this
     ## run) edited the repository, and nothing it decided can be trusted.
-    dirty = [l for l in git("status", "--porcelain").splitlines() if l.strip() and not (l[:2] == "??" and is_scaffold(l))]
+    dirty = [l for l in git("status", "--porcelain").splitlines() if l.strip() and not is_scaffold(l)]
     if dirty:
         die("the tree is dirty before consignment (%s) — a judge that edits "
             "the repository is not a judge; refusing every verdict of this run."

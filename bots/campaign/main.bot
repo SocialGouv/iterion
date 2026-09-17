@@ -258,7 +258,7 @@ tool preflight:
     # not work in flight — the one exclusion every status read here carries.
     dirty = [l for l in st.stdout.splitlines() if l.strip()
              and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
-             and not (l[:2] == "??" and is_scaffold(l))]
+             and not is_scaffold(l)]
     if dirty:
         refuse("the workspace has %d uncommitted change(s) at campaign start "
                "(e.g. %s). A supervisor only ever acts between runs on "
@@ -547,7 +547,7 @@ tool steward:
                 continue
             # iterion's own scaffold under .claude/ (skills, plugin files):
             # laid by the engine at run start, never the run's work (#1364).
-            if line[:2] == "??" and p.startswith(".claude/"):
+            if p.startswith(".claude/"):
                 continue
             paths.append(p)
         return sorted(set(paths))
@@ -556,7 +556,9 @@ tool steward:
         # Only the record's own writes exist: the tree was verified clean
         # before it ran. Tracked files go back to HEAD; files the record
         # CREATED are removed one by one — never a recursive clean.
-        git("checkout", "--", ".")
+        # iterion's own tree under .claude/ (skills, plugin files, the settings
+        # hooks it injects) is never the record's write, and never reverted here.
+        git("checkout", "--", ".", ":(exclude).claude")
         for p in observed:
             full = os.path.join(ws, p)
             ls = git("ls-files", "--error-unmatch", p)
@@ -823,7 +825,7 @@ tool finalize:
     # is execution machinery, not an uncommitted change.
     dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()
              and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
-             and not (l[:2] == "??" and is_scaffold(l))]
+             and not is_scaffold(l)]
 
     plan = {}
     yq = find_yq()

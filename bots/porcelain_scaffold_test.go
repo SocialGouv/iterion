@@ -119,24 +119,80 @@ func TestDeclineProbeLeavesTheScaffoldOut(t *testing.T) {
 	if res.Honoured || !strings.Contains(res.Reason, "half.py") || strings.Contains(res.Reason, ".claude") {
 		t.Fatalf("a real leftover must void the decline and be the one named, got %+v", res)
 	}
-	// The scaffold is the engine's only while UNTRACKED: a tracked file under
-	// .claude/ that the run modified is the run's touch, and voids the decline.
+	// The whole .claude/ tree is the engine's, tracked or not — it rewrites a
+	// tracked settings.json itself when plugins inject hooks — so a modified
+	// tracked file under it is not the run's touch either (finalize's rule).
 	if err := os.Remove(filepath.Join(ws, "half.py")); err != nil {
 		t.Fatal(err)
 	}
 	gittest.Run(t, ws, "add", "-f", filepath.Join(".claude", "settings.json"))
 	gittest.Run(t, ws, "commit", "-q", "-m", "track the settings")
 	head = strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
-	runScaffoldJSON(t, expand(), &res)
-	if !res.Honoured {
-		t.Fatalf("a tracked, unmodified settings file beside the untracked mirror must still honour the decline, got %+v", res)
-	}
-	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"edited\": true}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"hooks\": {}}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runScaffoldJSON(t, expand(), &res)
-	if res.Honoured || !strings.Contains(res.Reason, ".claude/settings.json") {
-		t.Fatalf("a modified tracked .claude/ file is the run's touch and must void the decline, got %+v", res)
+	if !res.Honoured {
+		t.Fatalf("a modified tracked file under .claude/ is the engine's business and must not void the decline, got %+v", res)
+	}
+}
+
+// sec-audit-source's prepare_branch stashes the operator's work in flight
+// before it branches; the scaffold is neither work nor stashed, and a stash
+// that saved nothing must not be recorded — the later pop would take
+// somebody else's stash.
+func TestPrepareBranchRecordsOnlyItsOwnStash(t *testing.T) {
+	for _, bin := range []string{"python3", "git", "sh"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not on PATH", bin)
+		}
+	}
+	tpl := toolCommand(t, "sec-audit-source/main.bot", "prepare_branch")
+	expand := func(ws string) string {
+		s := strings.ReplaceAll(tpl, "{{vars.workspace_dir}}", ws)
+		return strings.ReplaceAll(s, "{{run.id}}", "01a0-test-run")
+	}
+	type prepared struct {
+		Prepared bool   `json:"prepared"`
+		Stashed  bool   `json:"stashed"`
+		StashRef string `json:"stash_ref"`
+		Note     string `json:"note"`
+	}
+
+	// A foreign stash sits on top; the only dirt is the scaffold (and a
+	// modified tracked file under it): nothing of the operator's to stash.
+	ws := scaffoldRepo(t)
+	if err := os.WriteFile(filepath.Join(ws, "wip.txt"), []byte("theirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, ws, "stash", "push", "--include-untracked", "-m", "somebody else's", "--", "wip.txt")
+	foreign := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "stash@{0}"))
+	gittest.Run(t, ws, "add", "-f", filepath.Join(".claude", "settings.json"))
+	gittest.Run(t, ws, "commit", "-q", "-m", "track the settings")
+	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"hooks\": {}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var res prepared
+	runScaffoldJSON(t, expand(ws), &res)
+	if !res.Prepared || res.Stashed || res.StashRef != "" {
+		t.Fatalf("with nothing of the operator's to stash, no stash may be recorded (the foreign one is %s), got %+v", foreign[:8], res)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".claude", "skills", "bot.md")); err != nil {
+		t.Fatalf("the scaffold must stay in place: %v", err)
+	}
+
+	// The operator's own edit is stashed, and the record is that stash.
+	ws = scaffoldRepo(t)
+	if err := os.WriteFile(filepath.Join(ws, "README.md"), []byte("baseline\ntheirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runScaffoldJSON(t, expand(ws), &res)
+	top := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "stash@{0}"))
+	if !res.Prepared || !res.Stashed || res.StashRef != top {
+		t.Fatalf("the operator's edit must be stashed and recorded as the top stash %s, got %+v", top[:8], res)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".claude", "skills", "bot.md")); err != nil {
+		t.Fatalf("the scaffold must stay in place: %v", err)
 	}
 }
 

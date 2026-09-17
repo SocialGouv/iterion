@@ -326,7 +326,7 @@ def worktree_dirty():
         return True
     for line in p.stdout.splitlines():
         path = line[3:].strip() if len(line) > 3 else ''
-        if not path or (line[:2] == '??' and is_scaffold(line)):
+        if not path or is_scaffold(line):
             continue
         if cache_abs and os.path.abspath(path) == cache_abs:
             continue
@@ -566,7 +566,7 @@ try:
     st = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], capture_output=True, text=True, check=True).stdout
     for l in st.splitlines():
         pth = l[3:].strip() if len(l) > 3 else ''
-        if pth and not (l[:2] == '??' and is_scaffold(l)):
+        if pth and not is_scaffold(l):
             changed.add(pth)
 except Exception:
     pass

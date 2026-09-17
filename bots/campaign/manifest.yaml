@@ -3,7 +3,8 @@ display_name: Campy
 icon: 🧭
 version: 0.1.2
 ## 0.1.2 — preflight, the steward's observed writes and finalize no longer count
-## iterion's `.claude/` scaffold as work in flight (#1364).
+## iterion's `.claude/` scaffold as work in flight, and the steward's revert
+## leaves that tree alone (#1364).
 ## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks written inside two prompts (3 in all) now reach the model as blank
 ## lines instead of being folded away by the profile-1 lexer. No

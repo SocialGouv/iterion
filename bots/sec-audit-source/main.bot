@@ -4807,17 +4807,23 @@ def is_scaffold(line):
         path = path[1:-1]
     return path.startswith('.claude/')
 status = run(['git', '-C', ws, 'status', '--porcelain'])
-dirty = any(l.strip() and not (l[:2] == '??' and is_scaffold(l)) for l in (status.stdout or '').splitlines())
+dirty = any(l.strip() and not is_scaffold(l) for l in (status.stdout or '').splitlines())
 stash_ref = ''
 if dirty:
     sp = run(['git', '-C', ws, 'stash', 'push', '--include-untracked', '-m', 'seki-prepare-branch ' + suffix, '--', ':/', ':(exclude,top).claude'])
     if sp.returncode != 0:
         result['note'] = 'prepare_branch: stash failed: ' + (sp.stderr or '').strip()[:200]
         print(json.dumps(result)); sys.exit(0)
-    refp = run(['git', '-C', ws, 'rev-parse', 'stash@{0}'])
-    stash_ref = (refp.stdout or '').strip()
-    result['stashed'] = True
-    result['stash_ref'] = stash_ref
+    # A pathspec-limited push that matched nothing saves nothing and exits 0:
+    # the top stash is then somebody else's. Record ours only when it is ours.
+    top = run(['git', '-C', ws, 'stash', 'list', '--format=%gs', '--max-count=1'])
+    if ('seki-prepare-branch ' + suffix) in (top.stdout or ''):
+        refp = run(['git', '-C', ws, 'rev-parse', 'stash@{0}'])
+        stash_ref = (refp.stdout or '').strip()
+        result['stashed'] = True
+        result['stash_ref'] = stash_ref
+    else:
+        result['note'] = 'prepare_branch: nothing to stash outside the scaffold; the tree keeps its changes'
 # Create + checkout the temp branch off current HEAD.
 cb = run(['git', '-C', ws, 'checkout', '-b', final])
 if cb.returncode != 0:
@@ -5268,10 +5274,10 @@ def revert():
             subprocess.run(['git', '-C', ws, 'checkout', '--'] + existing, capture_output=True, timeout=120)
             subprocess.run(['git', '-C', ws, 'clean', '-f', '--'] + existing, capture_output=True, timeout=120)
         else:
-            subprocess.run(['git', '-C', ws, 'checkout', '--', '.'], capture_output=True, timeout=120)
+            subprocess.run(['git', '-C', ws, 'checkout', '--', '.', ':(exclude).claude'], capture_output=True, timeout=120)
             # The skills mirror under .claude/ belongs to the engine, not to the
             # finding: a clean that deleted it would strip the next agent node.
-            subprocess.run(['git', '-C', ws, 'clean', '-fd', '--', ':/', ':(exclude,top).claude'], capture_output=True, timeout=120)
+            subprocess.run(['git', '-C', ws, 'clean', '-fd', '--', '.', ':(exclude).claude'], capture_output=True, timeout=120)
         return True
     except Exception:
         return False

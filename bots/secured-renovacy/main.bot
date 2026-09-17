@@ -2920,7 +2920,7 @@ printf '{"success":true,"output":"committed %s","sha":"%s"}\n' "$SHA" "$SHA"
 ## The deterministic implementation is git-canonical:
 ##   1. git reset --hard HEAD         — discard all tracked-file changes
 ##                                      (manifests, lockfiles, source).
-##   2. git clean -fd -- ':/' ':(exclude,top).claude' — remove every untracked file +
+##   2. git clean -fd -- . ':(exclude).claude' — remove every untracked file +
 ##                                      directory the upgrade introduced
 ##                                      (build artefacts, generated
 ##                                      configs, etc.). Honours .gitignore
@@ -2958,7 +2958,7 @@ fi
 echo "revert: clean untracked files, sparing .claude/" >&2
 # The skills mirror under .claude/ belongs to the engine, not to the upgrade:
 # a clean that deleted it would leave every later agent node without skills.
-if ! git clean -fd -- ':/' ':(exclude,top).claude' >&2; then
+if ! git clean -fd -- . ':(exclude).claude' >&2; then
   printf '{"success":false,"output":"the clean of untracked files failed (worktree may still be dirty)"}\n'
   exit 1
 fi

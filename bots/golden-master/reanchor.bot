@@ -187,14 +187,14 @@ tool reanchor_base:
     notice = ""
     if head.returncode != 0:
         notice = "git cannot answer on %s: %s" % (ws, (head.stderr or "").strip())
-    elif dirty.returncode == 0 and any(l.strip() and not (l[:2] == '??' and is_scaffold(l)) for l in dirty.stdout.splitlines()):
+    elif dirty.returncode == 0 and any(l.strip() and not is_scaffold(l) for l in dirty.stdout.splitlines()):
         # Said, not refused. The parent commits its lot before verifying, so a
         # dirty tree here means something else is in flight — and the repair
         # would be indistinguishable from it in the diff.
         notice = ("the workspace was already dirty when this repair started (%d path(s)). "
                   "The scope check below compares HEAD to the working tree, so those "
                   "changes will be read as this repair's."
-                  % len([l for l in dirty.stdout.splitlines() if l.strip() and not (l[:2] == '??' and is_scaffold(l))]))
+                  % len([l for l in dirty.stdout.splitlines() if l.strip() and not is_scaffold(l)]))
 
     print(json.dumps({"head": head.stdout.strip(), "dirty": dirty.stdout.strip(),
                       "wanted": wanted, "notice": notice}))
@@ -259,7 +259,7 @@ tool reanchor_verify:
     if code != 0:
         problems.append("git cannot answer on %s: %s" % (ws, err.strip()))
     else:
-        paths = sorted(l[3:] for l in out.splitlines() if l.strip() and not (l[:2] == '??' and is_scaffold(l)))
+        paths = sorted(l[3:] for l in out.splitlines() if l.strip() and not is_scaffold(l))
         report["committed"] = not paths
         if paths:
             problems.append(
