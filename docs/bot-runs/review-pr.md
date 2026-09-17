@@ -8,6 +8,58 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-17 — second real MR, 10 findings on 117 files, and a `covered` verdict nobody ever sees (run 01a0aa97)
+
+- Status: **validated** — second unattended review on the same third-party
+  repository, this time on a substantial branch.
+- Note on redaction: this entry deliberately describes the findings **by class**
+  and names no customer symbol or ticket content, pending the arbitration the
+  2026-09-16 entry raised (its reviewer asked whether quoting a private ticket
+  into a public repo was agreed). The two entries sit side by side on purpose:
+  one cites, one does not.
+- Subject: `demat-amiante!5` (`feature/DAM-1978` → `main`, **117 files**),
+  opened 14:19:28Z, reviewed at **14:32** — 13 minutes, unattended.
+- Result: **10 findings — 2 critical, 3 high, 5 medium**, plus 3 questions. The
+  classes are what matter, and several are the kind a human review misses on a
+  117-file branch:
+  - **credentials built and never attached** — a
+    `setDefaultCredentialsProvider` call removed, leaving the provider a dead
+    local: every request to the secured backend goes out unauthenticated. Fails
+    closed on a secured cluster (401), and **silently succeeds** on a permissive
+    one. Same family as an inert guard: the code reads as if it authenticates.
+  - **trust-all TLS client with hostname verification disabled**, committed to
+    production code, and **certificate validation disabled for SMTP in all
+    environments**.
+  - **a perimeter filter that fails OPEN** on any exception — a security
+    boundary that widens when it breaks.
+  - a placeholder default removed for a property defined nowhere; a
+    delete-then-insert on identical primary keys; an index dropped outright
+    during a reindex, so searches fail for the whole run; a mail dispatched
+    before its enclosing transaction commits.
+- **The finding of the day is about OUR product, not theirs.** The run produced
+  a `covered` ticket verdict — verified in the `converge` artifact — and the
+  published review shows **no ticket section at all**. That is not a defect: the
+  renderer only prints `ticket_gaps`, i.e. verdicts that are neither `covered`
+  nor `unverifiable`, with the reasoning stated in the code — *"a missing ticket
+  is not itself a defect to correct"*. So a review titled "N problems to fix"
+  stays free of noise. The consequence is worth knowing: **a positive verdict
+  exists only inside the run artifact**, invisible to the team the answer would
+  reassure. Whether "yes, this delivers what the ticket asked" deserves one line
+  in the review is a product call, not a bug (→ arbitration).
+- Secret hygiene on 279 KB of events, positive controls first: `DAM-1978` ×33,
+  `keyset` ×30, `reindex` ×59, the Jira host ×6, the service-account email ×3,
+  `tracker_token` ×3 — token **0 in all eight forms**. Script:
+  `/tmp/iterion-e2e-ticket/secret-audit.py` (counts only, never a fragment).
+- Cost: 60 385 tokens (49 897 review opus-5 high + 10 488 sonnet synthesis) for
+  117 files — roughly double the 34 660 of the 22-file MR, so cost tracks scope
+  far more gently than file count does.
+- Lessons for next run: (a) the bot is now a **multi-file bundle**
+  (`lib/nodes.bot`, `lib/schemas.bot`, `lib/prompts.bot` behind includes) — a
+  grep over `main.bot` alone finds a field "missing" that is alive three files
+  away, which is exactly how this entry nearly became a false bug report;
+  (b) when a rendered section is absent, read the RENDERER before the producer:
+  here the producer was right and the filter was deliberate.
+
 ## 2026-09-16 — ticket conformance CLOSED on a real third-party MR: a Jira verdict nobody configured a reference for (run 01a0a72c)
 
 - Status: **validated** — the end-to-end case open since 2026-09-08 (a real
