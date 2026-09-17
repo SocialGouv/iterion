@@ -126,6 +126,98 @@ func (a *AppClient) CreatePullReview(ctx context.Context, repo string, number in
 	return rest.CreatePullReview(ctx, repo, number, in)
 }
 
+// requestedReviewersWire is the shape of GET .../pulls/{n}/requested_reviewers.
+// `teams` is decoded and deliberately IGNORED: ReviewRequestLogins names user
+// accounts (on GitHub only a User can be a requested reviewer that the lane
+// can arm), and a team request is somebody else's decision to leave alone.
+type requestedReviewersWire struct {
+	Users []struct {
+		Login string `json:"login"`
+	} `json:"users"`
+}
+
+// WithdrawPullReviewRequests removes the named logins from the PR's requested
+// reviewers — the closing half of the re-request gesture, which GitHub will
+// not perform itself (see forge.ReviewRequestWithdrawer).
+//
+// Read-then-intersect, not a blind DELETE: GitHub 422s a removal naming an
+// account that is not currently requested, so the pending set is fetched
+// first and only the intersection is withdrawn. An empty intersection
+// returns early with NO write at all, which is what makes the call idempotent
+// across repeated publishes on the same pull request.
+//
+// Both round-trips report through refusal(), so a connection short of
+// pull_requests:write yields a *forge.PermissionError naming the grant
+// instead of an opaque 403.
+func (c *AdminClient) WithdrawPullReviewRequests(ctx context.Context, repo string, number int, logins []string) ([]string, error) {
+	if len(logins) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]struct{}, len(logins))
+	for _, l := range logins {
+		if l = strings.TrimSpace(l); l != "" {
+			want[strings.ToLower(l)] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+
+	prPath := "/repos/" + repo + "/pulls/" + strconv.Itoa(number) + "/requested_reviewers"
+	var pending requestedReviewersWire
+	code, body, err := c.doErr(ctx, http.MethodGet, prPath, nil, &pending)
+	if err != nil {
+		return nil, err
+	}
+	if code/100 != 2 {
+		return nil, refusal("GET requested reviewers", code, body, "pull_requests:read")
+	}
+
+	// Keep the forge's OWN casing in the payload: GitHub matches the login
+	// case-insensitively, but echoing what it reported keeps the log and the
+	// returned set readable against the PR.
+	var remove []string
+	seen := make(map[string]struct{}, len(pending.Users))
+	for _, u := range pending.Users {
+		key := strings.ToLower(u.Login)
+		if _, ok := want[key]; !ok {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		remove = append(remove, u.Login)
+	}
+	if len(remove) == 0 {
+		return nil, nil
+	}
+
+	dcode, dbody, derr := c.doErr(ctx, http.MethodDelete, prPath, map[string]any{"reviewers": remove}, nil)
+	if derr != nil {
+		return nil, derr
+	}
+	if dcode/100 != 2 {
+		return nil, refusal("DELETE requested reviewers", dcode, dbody, "pull_requests:write")
+	}
+	return remove, nil
+}
+
+// WithdrawPullReviewRequests on an App connection rides the scoped
+// pull_requests:write profile — ONE mint for both halves (write implies the
+// read the pending-set fetch needs), and a grant the installation never
+// approved is refused at the mint as a typed *forge.PermissionError rather
+// than as a 403 on the wire. Deliberately not the broad management token
+// rest() hands out: this is a narrow write on a path the runtime profile
+// already covers.
+func (a *AppClient) WithdrawPullReviewRequests(ctx context.Context, repo string, number int, logins []string) ([]string, error) {
+	c, err := a.scopedREST(ctx, PullWriteInstallationPermissions())
+	if err != nil {
+		return nil, err
+	}
+	return c.WithdrawPullReviewRequests(ctx, repo, number, logins)
+}
+
 // ListPRReviewComments on an App connection reads the thread under the
 // pull_requests:read profile — the review-thread reply gate resolves its
 // client through the covering connection, which is an App connection by
