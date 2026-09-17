@@ -75,6 +75,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // Raises Testing Library's async-query timeout for the jsdom files; a
+    // no-op under the Node environment. See src/test/setup.ts for why.
+    setupFiles: ["src/test/setup.ts"],
   },
   // Pre-bundle the run-console deps at boot so Vite doesn't trip on
   // its own race when discovering them on-the-fly (the "file does not

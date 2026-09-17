@@ -201,7 +201,7 @@ describe("AssistantFileChangeOffer", () => {
     render(<AssistantFileChangeOffer runId="assistant-retry" revision={1} />);
     fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
 
-    await waitFor(() => expect(runs.deliverHostEvent).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    await waitFor(() => expect(runs.deliverHostEvent).toHaveBeenCalledTimes(2));
   });
 
   it("caps failure receipts after two delivered recovery turns", async () => {

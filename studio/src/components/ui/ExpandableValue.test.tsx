@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import {
   COLLAPSE_MAX_CHARS,
@@ -146,7 +146,7 @@ describe("<ExpandableValue />", () => {
     const writeText = stubClipboard();
     render(<ExpandableValue value={{ tempo: 120 }} label="options" />);
     fireEvent.click(screen.getByRole("button", { name: "Copy options" }));
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('{\n  "tempo": 120\n}'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('{\n  "tempo": 120\n}'));
   });
 
   it("copies the CURRENTLY SHOWN form, not always the pretty one", async () => {
@@ -154,7 +154,7 @@ describe("<ExpandableValue />", () => {
     render(<ExpandableValue value={{ tempo: 120 }} label="options" />);
     fireEvent.click(screen.getByRole("button", { name: "Show raw options" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy options" }));
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('{"tempo":120}'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('{"tempo":120}'));
   });
 
   it("renders as a <dd> when the caller is inside a <dl>", () => {
