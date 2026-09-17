@@ -22,8 +22,10 @@ const (
 )
 
 // MaxSyntaxProfile is the highest `dsl: N` profile declared by a bundle's
-// executable sources: its main.bot and every child a `subbot source:`
-// reaches from it, transitively. files maps a bundle-relative path to its
+// executable sources: its main.bot, every child a `subbot source:` reaches
+// from it, transitively, and every other .bot at the bundle root — an entry
+// of its own, launched by path or declared by another bot, that no edge
+// from main.bot reaches. files maps a bundle-relative path to its
 // content, as a bot source carries it. declaredBy names the files that
 // declare the profile returned. unread names the children whose source lies
 // beyond the files — a sibling bundle (`../other/main.bot`, a child shape
@@ -38,7 +40,13 @@ const (
 // — which is what a declared `requires.iterion` floor exists to refuse at
 // admission instead.
 func MaxSyntaxRequirements(files map[string]string) SyntaxRequirements {
-	return walkSyntax(func(rel string) (string, sourceState) {
+	var entries []string
+	for rel := range files {
+		if isRootEntry(rel) {
+			entries = append(entries, rel)
+		}
+	}
+	return walkSyntax(entries, func(rel string) (string, sourceState) {
 		if escapesBundle(rel) {
 			return "", sourceOutside
 		}
@@ -61,7 +69,15 @@ func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
 		root = filepath.Clean(dir) // not there: every source of it is missing
 		collection = filepath.Dir(root)
 	}
-	return walkSyntax(func(rel string) (string, sourceState) {
+	var entries []string
+	if dents, err := os.ReadDir(root); err == nil {
+		for _, d := range dents {
+			if !d.IsDir() && isRootEntry(d.Name()) {
+				entries = append(entries, d.Name())
+			}
+		}
+	}
+	return walkSyntax(entries, func(rel string) (string, sourceState) {
 		if strings.HasPrefix(rel, "../../") || rel == "../.." {
 			return "", sourceOutside // two levels up leaves the collection by construction
 		}
@@ -94,7 +110,15 @@ func within(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements {
+// isRootEntry reports a bundle-relative slash path that is a .bot file at
+// the bundle root other than main.bot: an entry of its own (a child another
+// bot declares, or a workflow launched by path), never a fragment — those
+// live under lib/ and are reached through imports.
+func isRootEntry(rel string) bool {
+	return rel != MainBotFile && !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".bot")
+}
+
+func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
 	var declaredBy, unread, importedBy, contractedBy []string
 	visited := map[string]bool{}
@@ -173,6 +197,12 @@ func walkSyntax(read func(rel string) (string, sourceState)) SyntaxRequirements 
 		}
 	}
 	visit(MainBotFile)
+	// The root's other .bot files execute under this bundle's manifest
+	// without any edge from main.bot reaching them, so the floor counts
+	// them the same way.
+	for _, e := range slices.Sorted(slices.Values(entries)) {
+		visit(e)
+	}
 	declaredBy = slices.Compact(slices.Sorted(slices.Values(declaredBy)))
 	unread = slices.Compact(slices.Sorted(slices.Values(unread)))
 	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))

@@ -58,7 +58,7 @@ launch:
   primary: [surface_scope, mutation_floor, min_corpus]
   hidden: [source_issue_ref]
 
-## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## Profile 2 (`dsl: 2` at the head of each of the four .bot files): a runner older than the
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:

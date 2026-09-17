@@ -89,10 +89,12 @@ func TestMaxSyntaxProfileReadsASiblingAndNamesWhatItCannot(t *testing.T) {
 		t.Fatalf("symlink out: profile %d by %v unread %v", profile, by, unread)
 	}
 	// Two levels up leave the collection by construction; an absolute path
-	// is never read.
+	// is never read. The link left at the bundle root is an entry of its
+	// own now that nothing declares it — still beyond the collection, still
+	// named.
 	_ = os.WriteFile(filepath.Join(main, "main.bot"), []byte("subbot up:\n  source: \"../../x/main.bot\"\n\nsubbot abs:\n  source: \"/etc/x.bot\"\n\nworkflow w:\n  entry: up\n  up -> abs\n  abs -> done\n"), 0o644)
 	_, _, unread = MaxSyntaxProfileDir(main)
-	if !reflect.DeepEqual(unread, []string{"../../x/main.bot", "/etc/x.bot"}) {
+	if !reflect.DeepEqual(unread, []string{"../../x/main.bot", "/etc/x.bot", "link.bot"}) {
 		t.Fatalf("escapes: unread %v", unread)
 	}
 }
