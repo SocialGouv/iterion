@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.157.0](https://github.com/SocialGouv/iterion/compare/v3.156.0...v3.157.0) (2026-09-17)
+
+### Features
+
+* **bots:** wave 2 of the catalogue on dsl: 2 — whole-improve-loop, branch-improve-loop, sec-audit-source, sec-audit-deps, campaign ([#1344](https://github.com/SocialGouv/iterion/issues/1344)) ([#1358](https://github.com/SocialGouv/iterion/issues/1358)) ([6426aa6](https://github.com/SocialGouv/iterion/commit/6426aa68f4ae7d2fe49cf8f7023fb5ec396f3849)), references [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1293](https://github.com/SocialGouv/iterion/issues/1293) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1293](https://github.com/SocialGouv/iterion/issues/1293)
+
+    <details><summary>why</summary>
+
+    The dispatcher-mirrored bots and the campaign supervisor move to profile 2, by the migrator and nothing else: `dsl: 2` at the head of five files, no literal re-spelled, the program proven unchanged by the migrator apart from the one change of meaning the profile carries — the blank lines the authors wrote inside 52 prompts (sec-audit-source 19 / 129, branch-improve-loop 15 / 65, whole-improve-loop 13 / 47, sec-audit-deps 3 / 20, campaign 2 / 3) now reach the models as paragraph breaks instead…
+
+    </details>
+
 ## [3.156.0](https://github.com/SocialGouv/iterion/compare/v3.155.0...v3.156.0) (2026-09-17)
 
 ### Features
