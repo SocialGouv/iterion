@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.159.1](https://github.com/SocialGouv/iterion/compare/v3.159.0...v3.159.1) (2026-09-17)
+
+### Bug Fixes
+
+* **secrets:** a credential field that omitempty drops can be set but never cleared ([#1223](https://github.com/SocialGouv/iterion/issues/1223)) ([6dcc5e4](https://github.com/SocialGouv/iterion/commit/6dcc5e49c33a503f5aab02085e36161444b424cf)), references [#1220](https://github.com/SocialGouv/iterion/issues/1220)
+
+    <details><summary>why</summary>
+
+    MongoOAuthStore commits a record through $set, where an omitted key keeps the OLD value, while Upsert is a FULL replace — the connect/paste path builds the record from the blob it was handed and stores the whole thing. A bson `omitempty` therefore makes a field ONE-WAY: writable when non-zero, impossible to clear. The memory twin replaces its map entry outright and clears correctly, which is exactly why no in-memory test sees it.
+
+    </details>
+
 ## [3.159.0](https://github.com/SocialGouv/iterion/compare/v3.158.0...v3.159.0) (2026-09-17)
 
 ### Features
