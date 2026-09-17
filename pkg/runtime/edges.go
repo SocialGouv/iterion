@@ -72,6 +72,11 @@ func (e *Engine) edgeConditionHolds(edge *ir.Edge, fromNodeID, logPrefix string,
 func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) (*ir.Edge, error) {
 	var unconditional, elseEdge *ir.Edge
 	var unconditionalErr, elseErr error
+	// loopFallback is the first unconditional loop edge that holds and has
+	// budget: the fallback that wins over the node's other fallbacks — its
+	// exhaustion exit, an `else` — whatever order they are written in. A
+	// loop is left once it is spent, never because its exit was read first.
+	var loopFallback *ir.Edge
 	var exprCtx *expr.Context
 	// exhausted names the first loop edge declined at its cap or out of
 	// fuel: when nothing else matches, that is what the run died of.
@@ -172,6 +177,16 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					noteDecline(d)
 					continue
 				}
+				// The loop edge holds and has budget. Without a `when` it is
+				// a fallback, and the one fallback that wins: the bare exit
+				// beside it is for the spent loop. A `when` on the loop edge
+				// keeps the conditional rules below.
+				if edge.Condition == "" && edge.Expression == nil {
+					if loopFallback == nil {
+						loopFallback = edge
+					}
+					continue
+				}
 			}
 		}
 
@@ -237,6 +252,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		}
 	}
 
+	if loopFallback != nil {
+		return loopFallback, nil
+	}
 	if elseEdge != nil {
 		return elseEdge, elseErr
 	}

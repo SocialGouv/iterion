@@ -91,6 +91,45 @@ func TestALoopSpentWithNoExitFailsAsLoopExhausted(t *testing.T) {
 	}
 }
 
+// A loop edge with budget left is taken before its exhaustion exit whatever
+// order the two are written in: the exit is for the spent loop, and a bare
+// edge written above the loop edge does not turn a 1000-turn conversation
+// into a one-shot. Two orders, one outcome.
+func TestALoopEdgeWithBudgetWinsOverItsExitInEitherOrder(t *testing.T) {
+	never := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
+	for name, edges := range map[string]string{
+		"loop edge first": "  assess -> check as retry(2)\n  assess -> done\n",
+		"exit first":      "  assess -> done\n  assess -> check as retry(2)\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var checks int
+			exec := newStubExecutor()
+			exec.on("check", func(in map[string]any) (map[string]any, error) {
+				checks++
+				return never(in)
+			})
+			exec.on("assess", never)
+			s := tmpStore(t)
+			src := strings.Replace(spentLoopBot, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", edges, 1)
+			eng := New(compileBotText(t, src), s, exec)
+			if err := eng.Run(context.Background(), "run-order", nil); err != nil {
+				t.Fatalf("the run did not reach done: %v", err)
+			}
+			run, err := s.LoadRun(context.Background(), "run-order")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != store.RunStatusFinished {
+				t.Fatalf("the run ended %q", run.Status)
+			}
+			// The entry crossing plus the two the loop allows, then the exit.
+			if checks != 3 {
+				t.Fatalf("check ran %d times, want 3: the loop edge did not win over its exit", checks)
+			}
+		})
+	}
+}
+
 // The engine says why it declined a loop edge at its cap, as an event a
 // reader of the run can tell apart: a bounded loop's cap, an unbounded
 // loop's fuel.

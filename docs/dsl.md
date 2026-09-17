@@ -1136,7 +1136,7 @@ The compiler refuses undeclared references and definitely non-integer cap types.
 
 Expression caps require a runner from the release that introduced queue schema **v15** — that is this feature's floor, not the version in flight. A publisher emits `queue.SchemaVersion` and a runner accepts down to `queue.MinSchemaVersion`, so read those two constants in [pkg/queue/types.go](../pkg/queue/types.go) before sequencing a mixed-fleet deploy: this page cannot track them, and a stale number here is the exact failure the [queue rollout contract](cloud-queue-schema-rollout.md) exists to prevent. A runner below the floor rejects the message before compilation.
 
-**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `LOOP_EXHAUSTED` — `iterion validate` names the shape beforehand ([C145](references/diagnostics.md)). The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
+**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `LOOP_EXHAUSTED` — `iterion validate` names the shape beforehand ([C145](references/diagnostics.md)). The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit** — taken once the loop is spent, whatever order the two edges are written in (a loop edge with budget left wins over the node's other fallbacks):
 
 ```iter fragment:edges
 fixer -> run_tests as fix_passes(3)   # the back-edge, taken while iterations remain
