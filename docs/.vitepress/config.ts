@@ -178,6 +178,7 @@ const sidebar = [
     text: 'Author .bot workflows',
     items: [
       { text: 'DSL guide', link: '/dsl' },
+      { text: "What's new in the DSL (2026-09)", link: '/dsl-whats-new' },
       { text: 'DSL grammar (readable)', link: '/references/dsl-grammar' },
       { text: 'V1 grammar scope', link: '/grammar/V1_SCOPE' },
       { text: 'Diagnostics catalogue', link: '/references/diagnostics' },
