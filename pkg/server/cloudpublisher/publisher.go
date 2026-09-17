@@ -2603,11 +2603,20 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// before any of this; failing the resume over it would cost the operator
 	// their resume, and on the sweeper path one of a finite number of retry
 	// attempts.
+	//
+	// And only when there IS a source to pair the hash with. A compile that
+	// busts the 1 MiB cap records nothing, so there is no pair to protect and
+	// the hash write buys the run nothing — while it would still overwrite a
+	// legacy bare digest, retiring the LegacyBareDigestMatches waiver that
+	// stands in for it. Leaving the older pair whole is also coherent on the
+	// other side: it describes a revision this attempt is not executing, so a
+	// forced resume clearing it is doing exactly its job.
 	if cs != nil {
-		srcText, srcFiles := runtime.RecordedSourcesOf(cs.Main, cs.Files)
-		if serr := p.store.SetRunRecordedSource(ctx, spec.RunID, srcText, srcFiles, hash); serr != nil && p.logger != nil {
-			p.logger.Warn("cloudpublisher: record the source resumed for %s: %v — this run keeps the previous "+
-				"attempt's baseline, so `rewind --auto` on it may refuse or target from the wrong revision", spec.RunID, serr)
+		if srcText, srcFiles := runtime.RecordedSourcesOf(cs.Main, cs.Files); srcText != "" {
+			if serr := p.store.SetRunRecordedSource(ctx, spec.RunID, srcText, srcFiles, hash); serr != nil && p.logger != nil {
+				p.logger.Warn("cloudpublisher: record the source resumed for %s: %v — this run keeps the previous "+
+					"attempt's baseline, so `rewind --auto` on it may refuse or target from the wrong revision", spec.RunID, serr)
+			}
 		}
 	}
 	if err := p.publish(ctx, msg); err != nil {
