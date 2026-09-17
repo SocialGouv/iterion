@@ -60,11 +60,14 @@ reference, the [CLI reference](cli-reference.md) the commands, and the
 
 ## Start from a shape that works
 
-- `iterion bots templates` and `bots create --template <id>`: eleven
-  templates compiled in CI, six of them composite canonical shapes — a campaign
+- `iterion bots templates` and `bots create --template <id>`: fourteen
+  templates compiled in CI, nine of them composite canonical shapes — a campaign
   with a verify gate and a bounded loop, a reviewer fan-out with a deterministic
   convergence, plan → human gate → implement, a scheduled digest, one subbot
-  per ticket, a verified action with a postcondition. Since v3.140.0.
+  per ticket, a verified action with a postcondition, asynchronous questions
+  with one sync point, a bundle whose prompts and skills live outside the
+  workflow file (since v3.140.0), and a bot in several files on `import` (since
+  v3.145.0).
 - The rules the grammar does not show are written in the skill, one bullet
   each: a loop's exhaustion exit, a `tool`'s stdout-JSON contract, `outputs.*`
   without threading, `expr:` is an expression and not a template, the `loop.`
@@ -138,15 +141,16 @@ ten-requirement bot from a fresh session, first draft before any `validate`:
 
 | Probe | Model | Errors at first draft | Read before the first line | Minutes | Rounds to green |
 |---|---|---|---|---|---|
-| 2026-09-09, before the programme | opus, sonnet | 0, 0 | the whole documentation, ~213k and ~278k tokens | 20, 37 | 0, 0 |
+| 2026-09-09, before the programme | opus, sonnet | 0, 0 | the whole documentation, ~2 300 and ~2 500 lines (~213k and ~278k session tokens) | 20, 37 | 0, 0 |
 | 2026-09-10, registry and gallery | opus, sonnet | 0, 0 | 1 509 and 2 497 lines | 12, 16 | 1, 1 |
-| 2026-09-16, the complete DSL, a mid-size model (haiku 4.5) reading the skill and three templates | haiku | 4 (graph semantics), 0 lexical | 1 113 lines | 3.5 | 2 |
-| 2026-09-16, the same with no access to the documentation or the catalogue | haiku | 4 (graph semantics), 0 lexical | ~1 200 lines | 4 | 2 |
+| 2026-09-16, the complete DSL, a mid-size model (haiku 4.5) reading the skill and three templates | haiku | 4 (one graph, three template-for-expression), 0 lexical | 1 113 lines | 3.5 | 2 |
+| 2026-09-16, the same with no access to the documentation or the catalogue | haiku | 4 (graph and reference), 0 lexical | ~1 200 lines | ~4 | 2 |
 
 Held: no lexical or keyword-collision error at all, even from a mid-size model
 reading only the skill; the cost of entry went from a session of reading to a
-few minutes; the errors left are graph semantics (exhaustiveness, a loop's
-exit, a condition's field), and the diagnostics have them fixed in one round.
+few minutes; the errors left are semantic (exhaustiveness, a loop's exit, a
+condition's field, the loop namespace, a template written where an expression
+goes), and the diagnostics have them fixed in one round.
 Not held yet: the target of at most two semantic errors at the first draft
 (four on haiku), and `--strict` stays a per-bot gate on the catalogue until the
 dry run crosses a bounded loop a few times only (#1307).

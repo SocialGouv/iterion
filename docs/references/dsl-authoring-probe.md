@@ -105,6 +105,8 @@ change in the file, one `validate` round.
 | 2026-09-09, spec 1, same | claude-sonnet-4-6 (Claude Code) | 215 | 0 | ~278k total, ~2 500 lines | 37 | 0 |
 | 2026-09-10, spec 1, the gallery + the "Start from a template" section (#1114, before the rules below were written) | the harness's `opus` label (self-reported "Claude Opus 4.5"), Claude Agent SDK subagent | 229 | 0 (and 0 warnings) | 189k total, **1 509 lines** | 12 | 1 (green first draft) |
 | 2026-09-10, spec 1, same | the harness's `sonnet` label (self-reported "Claude Sonnet 5"), same | 199 | 0 (and 0 warnings) | 245k total, 2 497 lines | 16 | 1 (green first draft) |
+| 2026-09-16, spec 1, the lot 4 build (`e652e78ed`: the dry run, `fmt`/`fix`, C145–C147, the skill's "Rules the grammar does not show"), standard protocol | `claude-haiku-4-5-20251001`, Claude Agent SDK subagent | 217 | 4 (C010; C040 ×2, C033) and 2 warnings (C145, C137) | not captured, 1 113 lines | 3.5 | 2 |
+| 2026-09-16, spec 1, same build, reading capped to the skill and three gallery shapes (no docs, no catalogue, no source) | same | 239 | 4 (C012; C029 ×2, C014) and 2 warnings (C145, C137) | not captured, ~1 200 lines | ~4 | 2 |
 
 The 2026-09-09 drafts were correct; both cost a whole session of reading
 before the first line, and both agents had to guess the same unwritten
@@ -128,6 +130,21 @@ and the same on the mid-size model. Reached on errors and rounds by both;
 the reading target is the next probe's, to be measured with the rules
 section in place. Artifacts: the drafts, ledgers and `validate` outputs of
 both 2026-09-10 runs are attached to #1110.
+
+On 2026-09-16, with the rules section in place and the lot 4 diagnostics, the
+mid-size model read 1 113 lines (the reading target, held) and made no L or K
+error in either run, the one capped to the skill and three shapes included.
+Each draft had four errors: the standard one a second unconditional edge (C010)
+and three templates written where an expression goes (`{{outputs.x}}` inside
+an `expr:`, C040 ×2, and inside a loop cap, C033 — D, the plan's own example);
+the capped one exhaustiveness (C012), a condition's field (C014) and
+`{{outputs.loop.iteration}}` for `{{loop.<name>.iteration}}` (C029 ×2 — the one
+rule the skill did not state; its line landed with #1336). Every one was fixed
+in one `validate` round with no further reading; the S target of at most two
+is missed by the capped run only. The standard draft's `--strict` dry run then
+refused deliberately at its entry gate on `vars.release_tag`, the gallery's
+idiom, with no way to hand it a value — which is why `validate --var` exists
+(#1332). Artifacts of both runs are attached to #1110.
 
 ## Reporting
 
