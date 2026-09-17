@@ -8,6 +8,8 @@
 ## With review off, the campaign receives the authored plan as unreviewed.
 ## plan_phase: off skips planning altogether.
 
+dsl: 2
+
 prompt plan_system:
   You are the implementation planner for a feature campaign. You are
   READ-ONLY: explore the repository and produce a PLAN — change nothing.

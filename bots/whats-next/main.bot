@@ -40,6 +40,8 @@
 ##     --var initial_message="quels tickets pour un quickwin ?"
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## Optional standing constraints for the session ("focus reliability",
@@ -412,8 +414,9 @@ workflow whats_next:
     quick_replies: "{{outputs.nexie.quick_replies}}"
   }
 
-  ## Explicit close — the ONLY path to Done. Everything else loops
-  ## back to the chat pause.
+  ## Explicit close — the path to Done a turn can choose. Everything
+  ## else loops back to the chat pause, until the conversation's
+  ## lifetime cap below ends the session the same way.
   gate -> done when is_close
 
   gate -> chat with {
@@ -432,3 +435,9 @@ workflow whats_next:
     _session_id:          "{{outputs.nexie._session_id}}",
     _session_fingerprint: "{{outputs.nexie._session_fingerprint}}"
   } as conversation_loop(1000)
+
+  ## The loop's exhaustion exit: once conversation_loop is spent the
+  ## back-edge above is declined whatever the operator typed, and without
+  ## this edge the run dies of LOOP_EXHAUSTED instead of ending. The session
+  ## ends here; the operator re-seeds a new one (C145, #1293).
+  chat -> done

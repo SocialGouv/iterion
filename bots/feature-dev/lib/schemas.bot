@@ -2,6 +2,8 @@
 
 ## campaign's input: the deterministic gate's failure log from the PREVIOUS
 ## pass (empty on the first pass and on a green-but-more-work continuation).
+dsl: 2
+
 schema campaign_input:
   fail_log: string
   ## Plan-phase hand-off (empty when the phase is off / skipped / on

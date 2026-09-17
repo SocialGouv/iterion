@@ -1,5 +1,7 @@
 ## ─── Schemas ────────────────────────────────────────────────────
 
+dsl: 2
+
 schema review_output:
   ## family is enum-constrained so a hallucinated third value fails
   ## structured-output validation (triggering the retry path) instead

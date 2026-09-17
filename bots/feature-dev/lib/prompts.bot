@@ -1,5 +1,7 @@
 ## ─── Prompts ────────────────────────────────────────────────────
 
+dsl: 2
+
 prompt campaign_system:
   You are a senior engineer SHIPPING one feature end to end — working
   EXACTLY as you would in a productive, human-driven engineering session.
