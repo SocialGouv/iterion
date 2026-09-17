@@ -1281,6 +1281,22 @@ exit 0`
 			t.Errorf("process was invoked as %q — the gateway preflight is meant to pick, so nothing must be pinned for it", got)
 		}
 	})
+
+	// Pinning a model WITHOUT an agent, on the gateway route: the flag must
+	// travel alone. deepsec reads opts.model before resolving the agent
+	// (`opts.model ?? defaultModelForAgent(agentType)`), so it is honoured —
+	// but what this asserts is what the NODE emits, which is the half that can
+	// regress here. Emitting a bare `--agent` or dropping the model would fail
+	// the whole process step rather than lose one flag.
+	t.Run("a model pins alone on the gateway route", func(t *testing.T) {
+		got := run(t, "", "gpt-6-astra", "AI_GATEWAY_API_KEY=sk-present")
+		if !strings.Contains(got, "--model gpt-6-astra") {
+			t.Errorf("process was invoked as %q — the operator pinned a model and the gateway preflight picked its own", got)
+		}
+		if strings.Contains(got, "--agent") {
+			t.Errorf("process was invoked as %q — nothing must pin an agent on the gateway route", got)
+		}
+	})
 }
 
 // Which agent ran is not derivable from the envelope — deepsec is absent from
