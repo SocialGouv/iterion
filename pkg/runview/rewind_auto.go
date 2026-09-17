@@ -64,10 +64,10 @@ func currentSourcePath(spec RewindSpec, sourcePath string) string {
 // artifacts tombstoned — an authoritative-looking answer built on nothing.
 //
 // A caller that HAS materialized the stored bot's current version names it in
-// RewindSpec.AutoDiffSourcePath (the server does, from the botsource row), and
+// RewindSpec.CurrentSourcePath (the server does, from the botsource row), and
 // --auto proceeds normally. Naming SourcePath lifts the refusal too — an
 // operator who points the rewind at a file has stated where the current source
-// is — but it is the wrong lever for a materialization: see AutoDiffSourcePath.
+// is — but it is the wrong lever for a materialization: see CurrentSourcePath.
 var ErrRewindStoredBotSourceUnresolved = errors.New("runview: rewind: this run was served by a stored bot, whose current source is not on this filesystem — name the node with --node")
 
 // DeclChange is one differing top-level declaration between the source a

@@ -801,9 +801,14 @@ func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunC
 // every other targeted patch, so a status transition racing it is never
 // disturbed.
 //
-// $unset rather than $set "" for an empty source: the fields are omitempty,
-// so a stored empty and an absent key already mean the same thing, and
-// unsetting keeps the document in the shape a launch writes.
+// $unset rather than $set "" for an empty value: the fields are omitempty, so
+// a stored empty and an absent key already mean the same thing, and unsetting
+// keeps the document in the shape a launch writes.
+//
+// All THREE keys are written every call, empty included. The caller states a
+// whole triple, and skipping the empty hash left the previous revision's hash
+// beside a restored older source — the mismatched pair this write exists to
+// prevent — whenever a rollback put back a document that predates hashes.
 func (s *Store) SetRunRecordedSource(ctx context.Context, id, src string, files []store.WorkflowSourceFile, hash string) error {
 	set := bson.M{"updated_at": time.Now().UTC()}
 	unset := bson.M{}
@@ -819,6 +824,8 @@ func (s *Store) SetRunRecordedSource(ctx context.Context, id, src string, files 
 	}
 	if hash != "" {
 		set["workflow_hash"] = hash
+	} else {
+		unset["workflow_hash"] = ""
 	}
 	update := bson.M{"$set": set}
 	if len(unset) > 0 {

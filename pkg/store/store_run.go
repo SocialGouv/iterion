@@ -1067,11 +1067,12 @@ func (s *FilesystemRunStore) SetRunRecordedSource(_ context.Context, runID, src 
 	if err != nil {
 		return err
 	}
+	// All three, empty included: the caller states a whole triple, and a hash
+	// left standing beside a replaced source is the mismatched pair this write
+	// exists to prevent.
 	r.WorkflowSource = src
 	r.WorkflowSources = files
-	if hash != "" {
-		r.WorkflowHash = hash
-	}
+	r.WorkflowHash = hash
 	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)
 }

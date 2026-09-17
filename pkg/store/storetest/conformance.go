@@ -164,6 +164,24 @@ func testSetRunRecordedSource(t *testing.T, s store.RunStore) {
 		t.Errorf("hash = %q after the clear, want hash-2", got.WorkflowHash)
 	}
 
+	// An empty hash clears too: the triple is written whole every call. A
+	// rollback restoring a document that predates hashes would otherwise leave
+	// the revision it is undoing standing beside the source it put back — the
+	// mismatched pair this write exists to prevent.
+	if err := s.SetRunRecordedSource(ctx, id, main, files, ""); err != nil {
+		t.Fatalf("SetRunRecordedSource(no hash): %v", err)
+	}
+	if got, err = s.LoadRun(ctx, id); err != nil {
+		t.Fatalf("LoadRun after the hashless write: %v", err)
+	}
+	if got.WorkflowHash != "" {
+		t.Errorf("hash = %q, want cleared: the caller stated a triple with no hash, and the one left standing "+
+			"names a revision this source is not", got.WorkflowHash)
+	}
+	if got.WorkflowSource != main {
+		t.Errorf("source = %q, want the one the same call stated", got.WorkflowSource)
+	}
+
 	if err := s.SetRunRecordedSource(ctx, "run_recorded_source_missing", main, nil, "h"); !errors.Is(err, store.ErrRunNotFound) {
 		t.Errorf("SetRunRecordedSource on a missing run returned %v; want ErrRunNotFound", err)
 	}

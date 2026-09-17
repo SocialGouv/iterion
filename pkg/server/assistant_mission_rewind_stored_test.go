@@ -140,3 +140,48 @@ workflow target:
 			"baked twin, where `second` runs first. Outputs: %v", rewound.Checkpoint.Outputs)
 	}
 }
+
+// And when that resolution FAILS, the mission must reject — never proceed with
+// an empty path.
+//
+// Nothing downstream would catch it: ErrRewindStoredBotSourceUnresolved is
+// raised by the --auto pivot resolver alone, and the apply always names an
+// explicit node. An empty CurrentSourcePath there falls back to the baked
+// twin, computes the drop set in another program, and reports a SUCCEEDED
+// receipt. ExpectedPivot guards the pivot's name, not the graph.
+//
+// The row is deleted after the run was launched from it — one of three
+// reachable causes, alongside a store blip and a failed materialization, all
+// of which the HTTP endpoint on this server answers 503/400.
+func TestAssistantMissionRewind_RejectsWhenTheStoredBotCannotBeResolved(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.botSources = botsource.NewMemoryStore()
+	srv.cfg.Mode = "cloud"
+	ctx := context.Background()
+
+	const runID = "mission-unresolvable-target"
+	if _, err := srv.runs.RunStore().CreateRun(ctx, runID, "target", nil); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := srv.runs.RunStore().LoadRun(ctx, runID)
+	// A stored-bot run whose row does not exist: deleted after the launch.
+	target.FilePath = "bots/vanished/main.bot"
+	target.BotSourceTier, target.BotSourceTenant = store.BotSourceTierTeam, "t1"
+	target.Status = store.RunStatusFailedResumable
+	target.Checkpoint = &store.Checkpoint{NodeID: "repair", Outputs: map[string]map[string]any{"repair": {"v": 1}}}
+	if err := srv.runs.RunStore().SaveRun(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+
+	coord := &assistantMissionCoordinator{server: srv, runs: srv.runs, watches: srv.assistantWatches,
+		missions: srv.assistantMissions, worker: "test-worker"}
+	path, release, err := coord.rewindCurrentSource(ctx, runID)
+	defer release()
+	if err == nil {
+		t.Fatalf("resolution returned %q and no error — the mission would rewind against the baked catalog twin "+
+			"and drop the wrong nodes, on a receipt that reports success", path)
+	}
+	if path != "" {
+		t.Errorf("path = %q beside an error, want empty", path)
+	}
+}

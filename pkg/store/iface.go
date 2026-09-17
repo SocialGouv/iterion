@@ -118,6 +118,11 @@ type RunStore interface {
 	// (restampWorkflowSource) and a forced cloud resume used to wipe the
 	// pair — a run could be rewound once and never again.
 	//
+	// It writes all THREE keys every call, empty included: the caller states
+	// a whole triple. Skipping an empty hash left the previous revision's
+	// hash standing beside a restored older source — the mismatched pair
+	// this write exists to prevent.
+	//
 	// Empty src with no files is a legal clear: the compile busted the
 	// 1 MiB cap, which costs the run auto-targetability and nothing else.
 	// Granular for the same reason as the budget setters: the resume has

@@ -320,12 +320,16 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 	if receipt.State == assistantmission.ReceiptPrepared && receipt.Action == assistantmission.ActionRewind {
 		auto, _ := proposal.Args["auto"].(bool)
 		node, _ := proposal.Args["node_id"].(string)
-		currentPath, releaseBot := c.rewindCurrentSource(mctx, m.TargetRunID)
+		currentPath, releaseBot, srcErr := c.rewindCurrentSource(mctx, m.TargetRunID)
 		defer releaseBot()
-		pivot, pivotErr := c.runs.ResolveRewindPivot(mctx, runview.RewindSpec{
-			RunID: m.TargetRunID, Auto: auto, NodeID: node,
-			CurrentSourcePath: currentPath, RestoreScope: runview.RestoreScopeNone,
-		})
+		var pivot *runview.RewindPivot
+		pivotErr := srcErr
+		if pivotErr == nil {
+			pivot, pivotErr = c.runs.ResolveRewindPivot(mctx, runview.RewindSpec{
+				RunID: m.TargetRunID, Auto: auto, NodeID: node,
+				CurrentSourcePath: currentPath, RestoreScope: runview.RestoreScopeNone,
+			})
+		}
 		if pivotErr != nil || pivot.NodeID == pivot.EntryNodeID {
 			receipt.State = assistantmission.ReceiptRejected
 			if pivotErr != nil {
@@ -355,19 +359,29 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 // preview named a pivot from the real one: a pivot decided in one program and
 // applied in another.
 //
-// Resolution failures are deliberately swallowed: the Rewind/ResolveRewindPivot
-// call that follows meets the same refusal and turns any error into a rejected
-// receipt carrying its text, which is the mission's only channel to the
-// assistant. This surface never names a source of its own, so the resolution
-// is always wanted.
-func (c *assistantMissionCoordinator) rewindCurrentSource(ctx context.Context, runID string) (string, func()) {
+// A resolution failure is an ERROR, never an empty path. Nothing downstream
+// would catch it: ErrRewindStoredBotSourceUnresolved is raised by the --auto
+// pivot resolver alone, and the apply always builds a spec with an explicit
+// NodeID, so an empty CurrentSourcePath there falls back to the baked twin and
+// computes the drop set in another program — reported as a SUCCEEDED receipt.
+// ExpectedPivot does not catch it either: it guards the pivot's name, not the
+// graph its blast radius comes from. A store blip, a deleted row or a failed
+// materialization must reject the receipt, exactly as the HTTP endpoint on
+// this server answers 503/400.
+//
+// This surface never names a source of its own, so the resolution is always
+// wanted.
+func (c *assistantMissionCoordinator) rewindCurrentSource(ctx context.Context, runID string) (string, func(), error) {
 	release := func() {}
 	target, err := c.runs.RunStore().LoadRun(ctx, runID)
 	if err != nil {
-		return "", release
+		return "", release, fmt.Errorf("load the run to rewind: %w", err)
 	}
-	path, rel, _ := c.server.currentStoredBotSource(ctx, target, true)
-	return path, rel
+	path, rel, err := c.server.currentStoredBotSource(ctx, target, true)
+	if err != nil {
+		return "", release, fmt.Errorf("resolve the bot's current source: %w", err)
+	}
+	return path, rel, nil
 }
 
 func (c *assistantMissionCoordinator) reconcileDelivery(ctx context.Context, m *assistantmission.Mission, receipt *assistantmission.DeliveryReceipt, assistantID string, update func(assistantmission.Mission) bool) bool {
@@ -410,11 +424,17 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 		case assistantmission.ActionResume:
 			_, err = c.runs.Resume(ctx, runview.ResumeSpec{RunID: m.TargetRunID, FilePath: target.FilePath, ExpectedStatus: r.ExpectedStatus, ReceiptID: r.ID})
 		case assistantmission.ActionRewind:
-			currentPath, releaseBot := c.rewindCurrentSource(ctx, m.TargetRunID)
-			_, err = c.runs.Rewind(ctx, runview.RewindSpec{
-				RunID: m.TargetRunID, NodeID: r.ExpectedPivot, ExpectedPivot: r.ExpectedPivot,
-				CurrentSourcePath: currentPath, RestoreScope: runview.RestoreScopeNone, ReceiptID: r.ID,
-			})
+			currentPath, releaseBot, srcErr := c.rewindCurrentSource(ctx, m.TargetRunID)
+			if srcErr != nil {
+				// No fallback: an empty path here would rewind against the
+				// baked twin and drop the wrong nodes, with nothing red.
+				err = srcErr
+			} else {
+				_, err = c.runs.Rewind(ctx, runview.RewindSpec{
+					RunID: m.TargetRunID, NodeID: r.ExpectedPivot, ExpectedPivot: r.ExpectedPivot,
+					CurrentSourcePath: currentPath, RestoreScope: runview.RestoreScopeNone, ReceiptID: r.ID,
+				})
+			}
 			releaseBot()
 		}
 		if err != nil {
