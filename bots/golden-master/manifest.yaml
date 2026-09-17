@@ -1,7 +1,13 @@
 name: golden-master
 display_name: Goldy
 icon: 🪞
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside eight prompts across main.bot, extend.bot and reanchor.bot (47 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## sync-harness.bot has no prompt. The header sits on each of the four
+## files.
+## No instruction changed.
 description: |
   Builds a behavioural non-regression net for an EXISTING application, and
   PROVES it is not blind. Records what the app observably does (HTTP responses
@@ -51,3 +57,9 @@ invocations:
 launch:
   primary: [surface_scope, mutation_floor, min_corpus]
   hidden: [source_issue_ref]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

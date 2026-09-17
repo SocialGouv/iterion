@@ -1,7 +1,11 @@
 name: instrument
 display_name: Obsy
 icon: 📡
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside eight prompts (38 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 ## 0.1.0 — initial release. ADR-058 minimal-framing shape (the proven
 ## feature-dev/branch-improve-loop chassis): ONE adaptive `campaign`
 ## agent + the deterministic build/test gate + the in-loop adversarial
@@ -73,3 +77,9 @@ invocations:
 launch:
   primary: [mission_notes, scope, dsn_env_var]
   hidden: [source_issue_ref]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

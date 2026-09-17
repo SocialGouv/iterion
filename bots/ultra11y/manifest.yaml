@@ -1,7 +1,11 @@
 name: ultra11y
 display_name: Ally
 icon: 🦮
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside four prompts (20 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 ## 0.1.1 — audit_args is string[] so `--graph` is its own argv. A joined
 ## string was interpolated as one token and the engine reported 0 files.
 ## Also: NC normativeRef is the criterion id (`1.3.5`), not a W3C
@@ -100,3 +104,9 @@ invocations:
 ## --var / bot_args).
 launch:
   primary: [scope_notes, standard, pr_url, base_ref]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

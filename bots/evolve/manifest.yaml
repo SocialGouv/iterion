@@ -1,7 +1,13 @@
 name: evolve
 display_name: Evoly
 icon: 🧬
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside eighteen prompts (47 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## The vision loop gains its exhaustion exit (C145, #1293): ten revisions
+## without the operator's approval end the run typed VISION_NOT_CONVERGED.
+## No instruction changed.
 description: |
   Strategic / architectural / visionary partner. On a mature, stable
   repository, Evoly surveys the codebase, accumulates a long-horizon
@@ -70,3 +76,9 @@ enabled: true
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [scope_notes]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

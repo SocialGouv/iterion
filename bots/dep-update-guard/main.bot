@@ -51,6 +51,8 @@
 ## adaptive agents read them and adapt to whatever repo the PR targets.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 secrets:
   ## Forge API token, mounted read-only as a FILE (path/env only, never
   ## read into a prompt). Used to (a) push the alignment commit onto the

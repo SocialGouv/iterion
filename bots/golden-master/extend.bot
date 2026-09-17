@@ -27,6 +27,8 @@
 ## can write through it — the check is the boundary.
 ## ═══════════════════════════════════════════════════════════════════
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   oracle_dir:    string = ".golden-master"

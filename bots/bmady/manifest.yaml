@@ -1,7 +1,14 @@
 name: bmady
 display_name: Bmady
 icon: 🎭
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside fifteen prompts (71 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## Two bounded loops gain their exhaustion exit (C145, #1293): the fifth
+## PRD revision goes to the architect as it stands, the fifth architecture
+## revision to story selection.
+## No instruction changed.
 description: |
   BMAD-METHOD-inspired agile delivery bot. Runs a structured
   multi-persona pipeline — Analyst → PM → Architect → Dev → QA —
@@ -49,3 +56,9 @@ invocations:
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [brief]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

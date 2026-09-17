@@ -27,6 +27,8 @@
 ## out of bounds, and naming them is the failure.
 ## ═══════════════════════════════════════════════════════════════════
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   oracle_dir:    string = ".golden-master"
