@@ -7,6 +7,8 @@
 ## reviewers + emit and finish fast. Only skips when the merge-base resolves
 ## AND the diff is empty; on any ambiguity (e.g. base_ref absent) it runs
 ## the reviewers — never wrongly skips a real review.
+dsl: 2
+
 tool diff_precheck:
   ## Carries reviewed_sha, the revision the findings anchor to, and
   ## base_sha — the ONE resolved base every consumer diffs against.

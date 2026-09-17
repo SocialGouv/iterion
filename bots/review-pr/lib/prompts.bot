@@ -1,5 +1,7 @@
 ## ─── Prompts ────────────────────────────────────────────────────
 
+dsl: 2
+
 prompt review_system:
   You are an EXTREMELY demanding, methodical code reviewer performing
   a PRODUCTION-READY review of the changes on the current branch. You
@@ -447,4 +449,3 @@ prompt emit_user:
 
   Merge, dedupe, threshold, cap, publish, and report per your
   instructions.
-

@@ -967,8 +967,10 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 // current node, threading the runState so expression-form `when` clauses
 // can resolve `{{loop.*}}` / `{{run.*}}` namespaces and so loop edges
 // snapshot the source node's output as `loop.<name>.previous_output` for
-// the next iteration. Conditional edges are checked first; the first
-// matching unconditional edge serves as fallback. When a loop's counter is
+// the next iteration. Conditional edges are checked first; among the
+// fallbacks, an iteration edge with work left (a loop back-edge with
+// budget, a foreach back-edge with an element left) wins, then `else`,
+// then the first bare unconditional edge written. When a loop's counter is
 // exhausted that edge is skipped — enabling graceful exit patterns like
 // `fix_loop -> outer_loop` or `loop_edge -> done`.
 func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string]any) (string, error) {

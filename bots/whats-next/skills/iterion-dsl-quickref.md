@@ -315,7 +315,7 @@ src -> dst                                        # unconditional
 src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
 src -> dst when "!approved && length(blockers) > 0"   # expression
-src -> dst else                                   # explicit fallback: fires only when no sibling `when` matched
+src -> dst else                                   # explicit fallback: fires only when no sibling `when` matched and no back-edge with work left
 src -> dst as loop_name(10)                       # bounded loop (literal cap — UNQUOTED int)
 src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap; quote ONLY a template)
 src -> dst as loop_name(unbounded)                # unbounded: runs until a when-exit; fuel from budget.max_iterations
@@ -570,7 +570,9 @@ shipped bots, so they are written here:
   (a failing test suite) so it exits 0 and reports `passed: false`.
 - **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
   `src -> exit` is the one legal pair of unconditional edges (the back-edge is
-  exempt from C010); without the bare edge a spent loop leaves the node with
+  exempt from C010, and wins over the exit and any `else` as long as the
+  engine still takes it, whatever order they are written in); without the
+  bare edge a spent loop leaves the node with
   no edge to take and the run fails `LOOP_EXHAUSTED` (the log names the
   exhausted loop; `validate` warns C145 beforehand). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
   of the body — so a var that counts passes feeds the cap as `passes - 1`

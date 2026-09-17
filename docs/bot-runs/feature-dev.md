@@ -1,5 +1,47 @@
 # Featurly — `feature-dev` run bilans
 
+## 2026-09-17 — profile 2: plan, campaign, verify and review prompts reach the models with their paragraphs (run 01a0ae61-558e)
+
+- Status: **validated** — converged in two passes on a scratch repository,
+  every LLM node of the graph exercised but the peer review (off by var).
+- Versions: bot feature-dev 2.5.1 (`dsl: 2` on `main.bot` and the three
+  `lib/` fragments, wave 1 of #1344) · iterion `d5b7db09f` (branch build
+  v3.154.1+54527ba05).
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM the scratch
+  repository `/tmp/iterion-probe-fd` (a one-file Python CLI with its test),
+  `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--merge-into none`, `--var plan_review=off --var max_passes=2`, caps
+  `--max-cost-usd 8 --max-duration 30m`, `ITERION_BIN` the branch binary.
+  Feature prompt: a `--shout` flag printing the greeting in upper case, with
+  a unit test and a README line. claude_code + claude-opus-5 on every node,
+  served through the host's Anthropic-compatible facade (z.ai).
+- Result: **converged**, ~10 min, **$2.28** (plan $0.38 · campaign $0.64 +
+  $0.52 · verify_build $0.29 · review $0.17 + $0.27). Pass 1 shipped the
+  feature in three commits (feat, test, docs), one per slice, tree green after
+  each; the deterministic gate then found the tree dirty (`__pycache__/` from
+  the test run, `.claude/` from the skills mirror) and pass 2 fixed exactly
+  that with a `.gitignore` commit; the in-loop review was clean both times.
+  Four commits on the storage branch `iterion/run/magneto-slam-distortpedal-e7d0`
+  (`6f6f7c1`), merged nowhere.
+- Value: every LLM node of the migrated bot live on profile 2, with its
+  deterministic gates between them — `workspace_probe`
+  → `plan` (plan_system / plan_user with their paragraphs) → `campaign` →
+  `verify_build` → `verify_run` → `review` → `gate` → `mr_gate` → `done`; the
+  run's `events.jsonl` carries the rendered campaign prompt with
+  `you own this pass end to end.\n\nTHE FEATURE is in your user prompt`, the
+  paragraph break the profile-1 lexer used to fold.
+- Findings / misses: a first launch from the iterion worktree (run
+  `01a0ae5f-a55f…`, cancelled at its plan node) anchored `worktree: auto` on
+  the worktree's repository, not on `--var workspace_dir` — the engine's
+  worktree follows the working directory; launch from the repository the
+  campaign must work on. Its preserved worktree sits under the operator's
+  store (`.iterion/worktrees/01a0ae5f-a55f-7baf-a3e0-67772aa03b20`). The
+  `plan_review` path was not exercised (no second family credentialed today).
+- Engine hardening: none needed.
+- Lessons for next run: `cd` into the target repository before `iterion run`;
+  a scratch repository with a real test suite is enough to prove a bot's
+  graph, at a fraction of a real feature's cost.
+
 ## 2026-08-27 — Plan phase cross-model LIVE: gpt-5.6-sol peer-reviews the plan, claude challenges and integrates (runs 01a04514 skip-path, 01a04520 full-path)
 
 - Status: **validated** (both plan-phase paths of ADR-091 proven live —

@@ -6,6 +6,44 @@ cycle per ADR-075). See [bots/whats-next/](../../bots/whats-next/).
 Bilans before 2026-07-07 cover the v1 form state machine (survey →
 priorities form → roadmap → review form → emit → dispatch pickers).
 
+## 2026-09-17 — profile 2: the system prompt reaches the model with its paragraphs (run 01a0ae5f-39d4)
+
+- Status: **validated** — two turns, the conversation loop crossed once, the
+  session closed by the operator's word.
+- Versions: bot whats-next 0.3.1 (`dsl: 2`, wave 1 of #1344) · iterion
+  `d5b7db09f` (branch build v3.154.1+54527ba05).
+- Method: CLI `iterion run` from the worktree, `--store-dir` the operator's
+  workspace store, `--sandbox none`, `ITERION_BIN` the branch binary (the
+  board MCP subprocess runs it), a French seed asking for the repository's
+  state in three sentences and a recommendation, caps `--max-cost-usd 4
+  --max-duration 12m`. claude_code + claude-opus-5 (21 tools, 2 MCP servers),
+  served through the Anthropic-compatible facade configured on this host
+  (z.ai), as the run's provenance events record.
+  Turn 2 by `iterion resume --answer message=…` asking to close.
+- Result: turn 1 in 45 s / 61 958 tokens / $0.34 — the branch, the 13
+  uncommitted files and the last commit named exactly, a recommendation in the
+  right order (validate and test, commit, then the local adversarial round),
+  four aligned quick replies, `close: false`, pause at `chat`. Turn 2 in 18 s /
+  32 475 tokens / $0.17 — `chat -> nexie` crossed (`conversation_loop` 1/1000),
+  `close: true`, `gate -> done`. Total ≈ $0.51.
+- Value: the live proof that profile 2 changes what the model reads and
+  nothing else — the run's `events.jsonl` carries the rendered system prompt
+  with `not like a workflow.\n\nAnchor every file read…`, the paragraph break
+  the profile-1 lexer used to fold; the reply itself was grounded in the
+  harness's git snapshot — Bash is denied to Nexie, her two tool calls were
+  greps — with no invention.
+- Findings / misses: a first attempt (run `01a0ae5c-38e1…`, cancelled) ran
+  under the environment's default sandbox and spent its first two minutes
+  realising iterion's whole `devbox.json` inside the container before the
+  first turn — for a read-only chat bot that only reads the workspace and the
+  board, `--sandbox none` is the dial. The new loop-exhaustion exit
+  (`chat -> done` at the 1000th turn, C145 / #1293) is not reachable live; its
+  proof is the dry run, whose false-bias pass crosses the loop to its cap and
+  leaves by that edge.
+- Engine hardening: none needed.
+- Lessons for next run: launch with `--sandbox none`; pass `ITERION_BIN` so the
+  board MCP advertises the branch's tools.
+
 ## 2026-07-16 — v3 first study turn: adaptive pivot instead of re-study (run 019f69c8)
 
 - Status: **validated (turn 1, high value)** — the fan-out path stayed

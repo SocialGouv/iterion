@@ -8,6 +8,49 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-17 — profile 2: Revi reviews the migration that moved it to profile 2 (run 01a0ae61-aeb4)
+
+- Status: **validated** — a local mono review of this branch's own diff,
+  0 findings, the review prompts rendered with their paragraphs.
+- Versions: bot review-pr 0.9.4 (`dsl: 2` on `main.bot` and the three `lib/`
+  fragments, wave 1 of #1344) · iterion `d5b7db09f` (branch build
+  v3.154.1+54527ba05) · claude_code — `reviewer_claude` on claude-opus-5,
+  `converge` on claude-sonnet-5 — through the host's Anthropic-compatible
+  facade (z.ai).
+- Method: CLI `iterion run` from the worktree, `--store-dir` the operator's
+  workspace store, `ITERION_BIN` the branch binary, `--var base_ref=origin/main
+  --var review_mode=mono --var mono_family=claude --var post_to_board=false
+  --var ticket_context=off`, no `pr_url` (nothing published), caps
+  `--max-cost-usd 6 --max-duration 25m`. The bot's own `sandbox: auto` ran it
+  in the slim image (`repo_devbox` off).
+- Result: `diff_precheck` resolved base `54527ba05` → reviewed `d5b7db09f`,
+  13 files; `reviewer_claude` 79 408 tokens / $1.14, `converge` $0.28 —
+  **$1.42, ~9.5 min**, `total_findings: 0`. The reviewer's summary: the nine
+  `dsl: 2` headers correctly placed, the `chat -> done` exit matching the C145
+  runtime contract, the 3.141.0 floor equal to the profile's release, the
+  corpus gate's byte-idempotency branch sound. Its first `StructuredOutput`
+  was refused by the schema (`scanned_areas` as `[category, path]` pairs
+  instead of strings) and it corrected itself on the retry; the pacer's steer
+  arrived after the fix and cost nothing.
+- Value: the production reviewer's whole mono topology live on profile 2 —
+  `diff_precheck` → `tier_expand` → `topology` → `reviewer_claude` →
+  `merge_reviews` → `converge` → `pr_gate` → `done`; the run's `events.jsonl`
+  carries the rendered review_system prompt with `bot's job.\n\nREVIEW SCOPE`,
+  the paragraph break the profile-1 lexer used to fold. What Revi did NOT see
+  — the exhaustion exit kept correct by source order alone — the local
+  adversarial round found the same hour and this branch fixes in the runtime.
+- Findings / misses: `--var report_path=/tmp/…` is a path INSIDE the
+  sandbox; the report landed in the run's worktree at `tmp/revi-wave1/`, which
+  the finalize then wip-banked as `0e0b683` on the storage branch
+  `iterion/run/boreal-drift-fuzzgremlin-497e` — a report path must stay under
+  the bot's default (`.review-pr/findings.md`, workspace-relative and
+  ignored) or the run banks its own report as work.
+- Engine hardening: `pkg/runtime/edges.go` — a loop edge with budget left
+  wins over the node's other fallbacks whatever the order they are written in
+  (found by the local adversarial round on this run's own subject).
+- Lessons for next run: leave `report_path` at its default; a mono claude
+  review of a 13-file catalogue diff costs ~$1.40 and ten minutes.
+
 ## 2026-09-15 — a stale base widened the scope onto an already-merged PR (runs `01a0a3eb`, `01a0a403`, `01a0a414`)
 
 - Status: **partial → fixed**. Five launches on three PRs. Two were perfect, one

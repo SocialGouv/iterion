@@ -1012,7 +1012,8 @@ type Edge struct {
 	To   string      // target node name (can be "done" or "fail")
 	When *WhenClause // optional condition
 	// IsElse marks the explicit fallback edge: it fires only when no
-	// sibling `when` edge from the same source matched. Semantically the
+	// sibling `when` edge from the same source matched and no loop or
+	// foreach back-edge from the same source still has work. Semantically the
 	// role a bare unconditional edge already plays next to conditional
 	// siblings — `else` states the intent and is validated (exactly one
 	// per source, requires conditional siblings, mutually exclusive with

@@ -1,7 +1,12 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.5.0
+version: 2.5.1
+## 2.5.1 — DSL profile 2 (`dsl: 2` at the head of main.bot and of each
+## lib/ fragment): the paragraph breaks the authors wrote inside fifteen
+## prompts (the plan phase, campaign, verify, review, finalize_mr,
+## persy_policy — 55 in all) now reach the models as blank lines instead
+## of being folded away by the profile-1 lexer. No instruction changed.
 ## A bot in several files (`import "lib/…"` at the head of main.bot): a runner
 ## older than the release that reads `import` would fail at its first parse of
 ## a fragment — the floor keeps such a runner from admitting the bundle.

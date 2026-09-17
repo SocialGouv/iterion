@@ -121,6 +121,8 @@
 ## remaining enhancement.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 import "lib/schemas.bot"
 import "lib/prompts.bot"
 import "lib/nodes.bot"

@@ -140,6 +140,11 @@ the syntax that drifted apart are the defect this closes.
 - `dsl: 2` and `import` are additive to the catalogue: the 35 shipped bots
   stay v1 until migrated in a reviewed lot of their own, and
   `catalog_parse_compile_test.go` stays the floor at every step.
+  Wave 1 of that migration (#1344, 2026-09-17) moved the three bots
+  production runs — `review-pr`, `whats-next`, `feature-dev` — by the
+  migrator alone, each proven by the strict dry run and a live run
+  (`docs/bot-runs/`), the corpus gate taking a profile-2 file back
+  byte-identical; the remaining bundles follow wave by wave.
 - A reader of a `.bot` learns its reading from its first line, and an
   agent authoring one is told which build to validate against
   (`requires.iterion`, C138/C040 for a builtin the floor lacks).
