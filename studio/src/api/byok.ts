@@ -31,6 +31,12 @@ export interface ApiKeyView {
    * key, executing a model node). Absent when the server could not count.
    */
   alive_runs?: number;
+  /**
+   * Workload audience: the bot ids whose runs may draw on this key. An empty
+   * list funds every bot. Always present on the wire — a restriction that is
+   * invisible in the UI is one an operator cannot verify or undo.
+   */
+  bots: string[];
 }
 
 export type OAuthKind = "claude_code" | "codex";
@@ -104,6 +110,8 @@ export async function createApiKey(scope: ApiKeyScope, input: {
   name: string;
   secret: string;
   is_default?: boolean;
+  /** Workload audience; omitted or empty funds every bot. */
+  bots?: string[];
 }): Promise<ApiKeyView> {
   return send(apiKeyBase(scope), {
     method: "POST",
@@ -118,7 +126,14 @@ export async function listMyApiKeys(): Promise<ApiKeyView[]> {
 export async function updateApiKey(
   scope: ApiKeyScope,
   keyID: string,
-  input: { name?: string; is_default?: boolean; secret?: string },
+  /**
+   * `bots` replaces the workload audience wholesale: an empty array CLEARS it
+   * (back to "every bot"), omitting the field leaves it alone. Present here so
+   * an audience set through the API is not one the studio can only display —
+   * a restriction that cannot be lifted from the UI that shows it is a key an
+   * operator has to delete and recreate.
+   */
+  input: { name?: string; is_default?: boolean; secret?: string; bots?: string[] },
 ): Promise<ApiKeyView> {
   return send(`${apiKeyBase(scope)}/${encodeURIComponent(keyID)}`, {
     method: "PATCH",

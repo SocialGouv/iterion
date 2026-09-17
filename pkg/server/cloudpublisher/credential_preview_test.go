@@ -112,7 +112,7 @@ func bundleDescriptions(b secrets.RunBundle) []string {
 }
 
 func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
-	for _, scenario := range []string{"pool", "pool_suppressed_by_other_wire", "platform_same_wire", "org", "org_denied", "all_closed_restore", "pinned_blocked_key", "ranked_accounts"} {
+	for _, scenario := range []string{"pool", "pool_suppressed_by_other_wire", "platform_same_wire", "org", "org_denied", "all_closed_restore", "pinned_blocked_key", "ranked_accounts", "bot_filtered", "bot_filtered_only_key"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 12, MaxConcurrentRuns: 3})
 			p := f.pub
@@ -153,6 +153,17 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 					keys, _ := p.apiKeys.ListByTeam(t.Context(), poolTeam, "")
 					spec.Launch.KeyOverrides = map[string]string{"anthropic": keys[0].ID}
 				}
+			case "bot_filtered", "bot_filtered_only_key":
+				// A key whose workload audience does not name this launch's bot.
+				// The preview must SHOW it — a key that vanishes reads as a key
+				// that was deleted — and must never predict it, including through
+				// the restore stage, where the live resolver's own gate is least
+				// obvious.
+				p.credPool = nil
+				seedScopedKey(t, p.apiKeys, p.sealer, poolTeam, secrets.ProviderAnthropic, "scoped-elsewhere", []string{"sec-audit-source"})
+				if scenario == "bot_filtered" {
+					seedKey(t, p.apiKeys, p.sealer, poolTeam, secrets.ProviderAnthropic, "open-sibling")
+				}
 			case "ranked_accounts":
 				owner := secrets.OrgOwnerKey(poolTeam)
 				seedOAuth(t, p.oauthForfait, p.sealer, owner, "sk-first")
@@ -178,13 +189,20 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			record, err := f.rs.Get(ctx, res.secretsRef)
-			if err != nil {
-				t.Fatal(err)
-			}
-			bundle, err := secrets.OpenRunBundle(f.sealer, "oracle-run", record.SealedBundle)
-			if err != nil {
-				t.Fatal(err)
+			// An empty ref is a legitimate oracle answer: the walk funded
+			// nothing. Treating it as an error would make "no credential"
+			// unexpressible, which is exactly the outcome an audience
+			// produces when it withholds a team's only key.
+			var bundle secrets.RunBundle
+			if res.secretsRef != "" {
+				record, err := f.rs.Get(ctx, res.secretsRef)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bundle, err = secrets.OpenRunBundle(f.sealer, "oracle-run", record.SealedBundle)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if !reflect.DeepEqual(selectedDescriptions(preview), bundleDescriptions(bundle)) {
 				t.Fatalf("preview=%v live=%v", selectedDescriptions(preview), bundleDescriptions(bundle))
@@ -197,6 +215,30 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				}
 				if bundle.OAuthFingerprints["claude_code"] != "rank-one" {
 					t.Fatal("live rank oracle disagrees")
+				}
+			}
+			if scenario == "bot_filtered" || scenario == "bot_filtered_only_key" {
+				// The oracle above already proves preview and live AGREE. What it
+				// cannot prove is that the agreement is the audience's doing: a
+				// preview that dropped the candidate entirely would agree too,
+				// and would tell the operator their key had vanished.
+				var filtered *runview.CredentialPreviewCandidate
+				for i := range preview.Candidates {
+					if preview.Candidates[i].Label == "scoped-elsewhere" {
+						filtered = &preview.Candidates[i]
+					}
+				}
+				if filtered == nil {
+					t.Fatalf("the out-of-audience key is absent from the preview — it reads as deleted: %+v", preview.Candidates)
+				}
+				if filtered.Selected {
+					t.Fatalf("the preview predicts a key the live walk refuses: %+v", filtered)
+				}
+				if filtered.State != "bot_filtered" {
+					t.Fatalf("state = %q, want bot_filtered so the reason is legible: %+v", filtered.State, filtered)
+				}
+				if !strings.Contains(filtered.Reason, "workload audience") {
+					t.Fatalf("the reason does not name the audience: %q", filtered.Reason)
 				}
 			}
 			if scenario == "all_closed_restore" {

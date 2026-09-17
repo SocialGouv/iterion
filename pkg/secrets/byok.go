@@ -204,6 +204,60 @@ type ApiKey struct {
 	// no other tier could serve its wire — progress beats the ceiling
 	// when the alternative is a run with no credential at all.
 	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
+	// Bots is the key's WORKLOAD audience: the bot ids whose runs may draw
+	// on it. Empty admits every bot, so a key written before this field
+	// existed keeps funding exactly what it funded yesterday — naming one
+	// bot is what turns enforcement on, never a migration.
+	//
+	// Entries are CANONICAL bot ids (botregistry.NormalizeName: lower-case,
+	// trimmed, `_` and spaces folded to `-`). This package cannot call that
+	// helper — botregistry depends on it — so the canonical form is imposed
+	// by the two edges instead: the write routes normalise what they store,
+	// and the publisher normalises the run's bot id once before the walk.
+	// The comparison below is therefore EXACT on purpose. Matching leniently
+	// here would be a second spelling rule competing with botregistry's, and
+	// a prefix or case-insensitive match would silently widen the audience —
+	// `sec` would open a key scoped to `sec-audit-source`.
+	//
+	// Unlike MaxConcurrentRuns this is a GATE, not a ceiling: it is checked
+	// inside Resolve rather than through the usable-predicate, so neither an
+	// explicit pin nor the refused-key restore can hand the key to a bot its
+	// operator did not name. A scope says who may SEE a key; this says what
+	// it is FOR, and the two are independent — a team-wide key can fund one
+	// bot, and a personal key can fund all of them.
+	Bots []string `bson:"bots,omitempty" json:"bots,omitempty"`
+}
+
+// ServesBotForLaunch reports whether this key's audience admits botID.
+//
+// An empty allow-list admits everything. A non-empty one refuses a run that
+// names NO bot: an operator who wrote "this key funds the audit" did not mean
+// "and also anything launched without naming a bot", and an inline `.bot` a
+// requester uploaded is exactly that shape. Same rule, and same reason, as
+// credpool.Pledge.AvailableForLaunch.
+//
+// What this is NOT: an authorisation boundary. The bot id reaching it is a
+// label the launch request asserts — the server only derives it from its own
+// catalogue when the request did not carry inline source (pkg/server/
+// runs_launch.go). So the audience expresses OPERATOR INTENT against the
+// workloads a deployment actually runs; it does not withstand a caller who
+// crafts an API request naming someone else's bot. Two features already trust
+// that same string (bot secret bindings and credpool pledges); making it an
+// identity is one change at the launch chokepoint, tracked separately.
+func (k ApiKey) ServesBotForLaunch(botID string) bool {
+	if len(k.Bots) == 0 {
+		return true
+	}
+	return botID != "" && k.listsBot(botID)
+}
+
+func (k ApiKey) listsBot(botID string) bool {
+	for _, b := range k.Bots {
+		if b == botID {
+			return true
+		}
+	}
+	return false
 }
 
 // ApiKeyStore is the persistence interface for BYOK records.
@@ -301,10 +355,12 @@ func Resolve(
 	ctx context.Context,
 	store ApiKeyStore,
 	teamID, userID string,
+	botID string,
 	providers []Provider,
 	keyOverrides map[Provider]string,
 	sealer Sealer,
 	usable func(ApiKey) bool,
+	onWithheld func(ApiKey),
 ) (map[Provider]Resolution, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("secrets: team id required for resolve")
@@ -320,6 +376,23 @@ func Resolve(
 	for _, candidate := range OrderedAPIKeyCandidates(visible, userID, providers, keyOverrides) {
 		k := candidate.Key
 		if _, already := out[k.Provider]; already {
+			continue
+		}
+		// The workload audience is checked BEFORE the pin exemption, and
+		// inside Resolve rather than through the usable-predicate, because
+		// it is a gate and not an optimisation: the refused-key restore
+		// re-resolves with a nil predicate, so an audience expressed there
+		// would hand the key out on exactly the path it exists to close.
+		//
+		// onWithheld carries the fact out to whoever can say it: a key
+		// dropped here leaves NO other trace — the walk simply yields the
+		// next key, or nothing, and a caller reading an empty result cannot
+		// tell "no key" from "a key I refused". The withheld key travels
+		// with the refusal rather than being reconstructed from its absence.
+		if !k.ServesBotForLaunch(botID) {
+			if onWithheld != nil {
+				onWithheld(k)
+			}
 			continue
 		}
 		if !candidate.Pinned && usable != nil && !usable(k) {

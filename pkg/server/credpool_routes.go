@@ -202,6 +202,19 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID, p.PoolID, p.UserID, p.Credential = pledgeID, poolID, id.UserID, cred
+	// Stored EXACTLY as the donor sent them. A fold here would be half a fold:
+	// `credpool.Pledge.servesBot` compares against the launch bot id raw, and
+	// the publisher deliberately hands the pool that raw value (bot secret
+	// bindings read it too, and they match exactly). Folding only the write
+	// edge made a pledge naming a non-canonical stored slug — `my_bot`, which
+	// botsource.ValidSlug admits — stop serving the bot it named, silently,
+	// with the bill moving to another tier. Worse, `pkg/cli/remote_pool.go`
+	// re-sends `current.Bots` on every pledge PUT, so merely toggling
+	// `enabled` would have rewritten a working row into a non-matching one.
+	//
+	// Folding BOTH edges here is the other legitimate answer, and it is the
+	// one #1368 carries: it needs a canonical bot id at the source rather
+	// than a third private spelling rule.
 	p.Limits, p.Window, p.Bots = req.Limits, req.Window, req.Bots
 	if req.Enabled != nil {
 		p.Enabled = *req.Enabled

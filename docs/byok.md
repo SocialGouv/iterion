@@ -53,6 +53,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
 | `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
 | `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
+| `bots` | optional **workload audience**: the bot ids whose runs may draw on this key. Empty admits every bot. See [Workload audience](#workload-audience--what-a-key-is-for) |
 | `expires_at` | optional |
 
 - Interface: `ApiKeyStore` (Create/Get/GetOwned/Update/Delete/ListByTeam/ListByUser/MarkUsed/MarkFingerprintUsed/ClearDefault) — [pkg/secrets/byok.go](../pkg/secrets/byok.go). `GetOwned` is the credential pool's cross-tenant read, bounded by ownership; `MarkFingerprintUsed` the runner's metering bump.
@@ -96,6 +97,151 @@ only when **all three** hold:
 
 Everything uncertain counts (over-protection), never the reverse: a count
 error leaves the ceiling unapplied for that resolution and is logged.
+
+## Workload audience — what a key is FOR
+
+A scope says who may SEE a key. `bots` says what it FUNDS, and the two are
+independent: a team-wide key can fund a single bot, and a personal key can
+fund all of them.
+
+**Empty admits every bot.** Naming one is what turns enforcement on — never a
+migration — so every key written before the field existed funds exactly what it
+funded yesterday. Same asymmetry, and same reason, as
+`platformcfg.PlatformCredentials.Enforce`.
+
+Three properties decide where it is enforced, and they are the whole design:
+
+1. **It is a gate, not a ceiling.** `max_concurrent_runs` rides
+   `apiKeyUsable`, whose refusals the refused-key restore deliberately undoes
+   — progress beats a soft cap. An audience must survive that path, so it is
+   checked inside `secrets.Resolve` itself.
+2. **A pin does not lift it.** `key_overrides` is honoured over the
+   usable-predicate by design; the audience is read *before* that exemption,
+   or "pin the key" would be the documented way around it.
+3. **A run that names no bot is refused** when the allow-list is non-empty.
+   An operator who wrote "this key funds the audit" did not also mean "and
+   anything launched without naming a bot", and an inline `.bot` a requester
+   uploaded is exactly that shape.
+
+**Bot ids are compared EXACTLY, on their canonical spelling.** The rest of the
+engine treats `app-dev`, `app_dev`, `App Dev` and `APP-DEV` as one bundle
+(`botregistry.NormalizeName`, used by `ResolveBotPath`), and the launch request
+carries whichever the caller typed. So the two edges fold: the write routes
+canonicalise what they store, and the publisher canonicalises the run's bot id
+once before the walk. The predicate itself stays exact — a prefix or
+case-insensitive match there would silently widen an audience, and `sec` would
+open a key scoped to `sec-audit-source`. The fold belongs to this audience **alone**, and the rule it obeys is worth
+stating once because it has now been broken in both directions:
+
+> **A credential's write edge and its read edge must agree.** Fold both, or
+> fold neither.
+
+| Credential | write edge | read edge |
+|---|---|---|
+| `ApiKey.Bots` | folded (`normalizeBotAudience`) | folded (`audienceBotID`) |
+| `BotSecretBinding.BotID` | raw (route path value) | raw (`botID`) |
+| `credpool.Pledge.Bots` | raw (donor's list, verbatim) | raw (`Pledge.servesBot`) |
+
+Both halves were paid for. Folding the *shared* `botID` reached bot secret
+bindings, which match exactly: a **required** secret resolved to nothing and
+blocked the launch, and an `optional: true` one let the bot run unauthenticated.
+Then folding only the pledge's *write* route made a donor's pledge stop serving
+the bot it named — and because `pkg/cli/remote_pool.go` re-sends the stored list
+on every pledge PUT, merely toggling `enabled` would have rewritten a working
+row into a non-matching one. A stored bot may legitimately be named `my_bot`
+(`botsource.ValidSlug` admits `_`), so neither case is hypothetical.
+
+Folding the pledge's two edges together is the other legitimate answer; it needs
+a canonical bot id at the source rather than a third private spelling rule, and
+that is #1368.
+
+One residual of the fold this file does keep, narrow and known: `my-bot` and
+`my_bot` are distinct stored bots (`botsource` uniqueness is `(tenant_id, slug)`,
+exact) that collapse to one **audience** entry, so a key scoped to either funds
+both. Both belong to the same team, so it widens a team's key to that team's own
+other bot. Same root, same ticket.
+
+### What this is NOT: an authorisation boundary
+
+`bots` expresses **operator intent** — it keeps a team's own workloads off a key
+meant for one of them. It does not withstand a caller who crafts an API request.
+The server derives the bot id from its own catalogue only when the request did
+not carry inline `source`; with `source` set, `bot_id` travels as the requester
+typed it (`pkg/server/runs_launch.go`). Two features already trust that same
+string — bot secret bindings and `credpool.Pledge.Bots` — so making it an
+identity is one change at the launch chokepoint, tracked separately rather than
+patched here in a third place.
+
+Read it as a budget and blast-radius control, not as a permission.
+
+**The practical consequence, before you scope a key.** A launch that names no
+bot is refused by any non-empty audience — and today the studio's main launch
+form uploads the bundle's bytes as inline `source` without a `bot_id`
+(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`). So scoping a key
+makes it invisible to those launches, whatever bot they run, and the wire is
+filled by the org tier, the pool or the platform key instead. The log says so on
+every affected run (see the withholding line below), which is how you will find
+it; the durable fix is #1368. Until then, scope keys on teams whose runs are
+launched by `bot_id` — webhooks, triggers, schedules and the CLI all are.
+
+An audience narrows WHICH key serves, never whether the walk continues: the
+next key of that provider, then the next tier, still get their turn.
+
+```sh
+# this key funds the security audit and nothing else
+iterion remote api PATCH /api/teams/<team>/api-keys/<key> \
+  --data '{"bots":["sec-audit-source"]}'
+# lift it again — an empty list, not a list of blanks (which is refused)
+iterion remote api PATCH /api/teams/<team>/api-keys/<key> --data '{"bots":[]}'
+```
+
+The same field exists one tier over as `credpool.Pledge.Bots`, for a donor
+lending a credential to strangers. It is carried here so that a team aiming
+its OWN key has the vocabulary the donor already had.
+
+**Where it stops, said plainly.** `bots` governs the walk in `secrets.Resolve`
+— the team, org and platform **API-key** tiers, and every one of their restore
+lanes. Two things it does not reach:
+
+- **OAuth forfaits.** The field lives on `secrets.ApiKey`; the tenant, team, org
+  and platform *forfait* tiers open `OAuthRecord`s and are not gated. A team
+  funded by a Claude Code subscription gets nothing from this feature — on the
+  same anthropic wire it believes it just restricted. An `OAuthRecord` twin is
+  the real answer and is a separate change.
+- **A key PLEDGED to the credential pool.** The pool opens a lent key through
+  `GetOwned`, outside this walk, and applies the pledge's own `Bots`. So a
+  personal key scoped to one bot and then pledged is served to whatever the
+  PLEDGE admits. Which audience should win — or whether they should intersect,
+  as `IntersectHosts` does for egress — is an open decision; until it is taken,
+  set the audience on the pledge as well as on the key.
+
+**A withheld key is announced, never silent.** Narrowing an audience does not
+stop the excluded run: it walks down to the next key, the org tier, the pool,
+the platform key, and finally the runner pod's ambient env. The bill moves, and
+possibly the vendor. So the publisher logs each withholding once per run, naming
+the key, its audience and the refused bot — and a **pin** the audience refuses
+gets its own line, because a pin does not lift an audience and losing silently
+is the failure `warnRefusedPins` exists to prevent.
+
+**Where to read it**, precisely, because "the acquisition trace" means two
+surfaces and neither is the run's own event log:
+
+- the **server log**, one `WARN` per withheld key, naming the run id;
+- the **credential preview** (`GET …/credential-preview`), where the key appears
+  with `state: "bot_filtered"` and the reason — the operator-facing answer, and
+  the only one reachable without server-log access.
+
+There is deliberately no run-scoped record: `cred_fingerprints` on the run
+document names what was GRANTED, not what was refused, and no credential event
+exists in `events.jsonl`. This is the same shape the credential pool already
+has — its own `StatusBotFiltered` reaches a run-named `Warn` through
+`pledgeSkipSummary` plus the preview, and nothing else. A per-run credential
+trace would improve both at once and belongs to neither alone.
+
+**`{"bots": null}` is a no-op, not a clear.** The field is a pointer, so `null`
+and an absent field are indistinguishable after decoding. Send `[]` to lift an
+audience. The response body always echoes the stored list, so the outcome is
+never in doubt.
 
 ## Resolution — `secrets.Resolve`
 
