@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.161.1](https://github.com/SocialGouv/iterion/compare/v3.161.0...v3.161.1) (2026-09-17)
+
+### Bug Fixes
+
+* **studio:** Testing Library's 1 s async budget is a wall clock, not a work budget ([#1378](https://github.com/SocialGouv/iterion/issues/1378)) ([402e843](https://github.com/SocialGouv/iterion/commit/402e843f560c4484fe96d173c67acc54c1df906a))
+
+    <details><summary>why</summary>
+
+    `CredentialPreview.test.tsx` went red on CI with "Unable to find role=option and name 'Revi (review-pr)'" on a head whose only change was a markdown file, while the same tests pass locally in ~200 ms and passed on the previous head with byte-identical studio code (zero studio commits on main since that base). findBy* and waitFor give up after 1 s by default, and that second is wall clock: a loaded runner spends it (the job took 13m50s for 239 files) and the failure then reads exactly like a…
+
+    </details>
+
 ## [3.161.0](https://github.com/SocialGouv/iterion/compare/v3.160.0...v3.161.0) (2026-09-17)
 
 ### Features
