@@ -1276,6 +1276,12 @@ func TestDeepsecRefusesAnAgentThatIsNotOneArgument(t *testing.T) {
 		{"codex --dangerously-skip", "", "deepsec_agent"},
 		{"codex;rm -rf /", "", "deepsec_agent"},
 		{"", "gpt-6 --wide-open", "deepsec_model"},
+		// A leading dash needs no space to do harm: `--agent --some-flag` reads
+		// as two flags to any parser, and the agent name silently becomes
+		// whatever argument follows. The charset alone admits it.
+		{"--some-flag", "", "deepsec_agent"},
+		{"-a", "", "deepsec_agent"},
+		{"", "--some-flag", "deepsec_model"},
 	} {
 		dir := t.TempDir()
 		cov, errs, _ := runDeepsecNodeAgent(t, dir, "refusal-test", tc.agent, tc.model, `exit 0`)

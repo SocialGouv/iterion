@@ -2885,15 +2885,21 @@ if ! command -v deepsec >/dev/null 2>&1; then
 fi
 
 # ── provider selection ───────────────────────────────────────────
-# Both values reach deepsec as bare words in an unquoted expansion, so they are
-# held to a charset that cannot split into a second argument. A refusal, not a
-# silent trim: a pass that runs on an agent nobody chose is the class of quiet
+# Both values reach deepsec as bare words in an unquoted expansion, so neither may
+# split into a second argument NOR pass for a flag: a leading dash is refused
+# first (--agent --some-flag reads as two flags to any parser, and the agent name
+# silently becomes whatever follows), then the charset. A refusal, not a silent
+# trim: a pass that runs on an agent nobody chose is the class of quiet
 # substitution this node exists to refuse elsewhere.
 case "$DS_AGENT" in
+  -*)
+    err_envelope "deepsec_agent cannot begin with a dash, it would reach deepsec as a second FLAG rather than as an agent name: $DS_AGENT" ;;
   *[!A-Za-z0-9._-]*)
     err_envelope "deepsec_agent is not usable as a single argument: $DS_AGENT" ;;
 esac
 case "$DS_MODEL" in
+  -*)
+    err_envelope "deepsec_model cannot begin with a dash, it would reach deepsec as a second FLAG rather than as a model name: $DS_MODEL" ;;
   *[!A-Za-z0-9._/-]*)
     err_envelope "deepsec_model is not usable as a single argument: $DS_MODEL" ;;
 esac
