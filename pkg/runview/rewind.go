@@ -157,21 +157,30 @@ type RewindSpec struct {
 	// operator rewinds precisely because they edited it, and the resume
 	// that follows executes the new graph too.
 	SourcePath string
-	// AutoDiffSourcePath names where the source as it is NOW lives, when
-	// that is NOT where SourcePath resolves. It is read by --auto's diff,
-	// and by nothing else.
+	// CurrentSourcePath names where the source as it is NOW lives, when that
+	// is NOT where SourcePath resolves. It supersedes SourcePath for
+	// EVERYTHING that means "the program as it is now" — the compile that
+	// yields the graph and its revision, and the --auto diff — and for
+	// nothing else.
 	//
 	// It exists for the cloud shape: a run served by a STORED bot tier has
 	// no current source on this filesystem, and resolveWorkflowPath answers
-	// such a run with the BAKED catalog twin — a fallback written so the
+	// such a run with the BAKED catalog twin, a fallback written so the
 	// studio's diagram view has something compilable to draw. A caller that
 	// HAS materialized the bot's current version (the server, from the
-	// botsource store) names it here.
+	// botsource row) names it here.
 	//
-	// Deliberately not folded into SourcePath: that one also tells the
-	// workspace revert which files to leave alone, so pointing it at a
-	// materialization would quietly change what a restore protects.
-	AutoDiffSourcePath string
+	// It is deliberately NOT SourcePath, because that name carries a second
+	// job: it is handed to the workspace revert as a file to leave alone.
+	// Pointing that at a temporary materialization would quietly change what
+	// a restore protects. The two roles coincide for a local run and
+	// diverge for a stored-bot one, which is the whole reason for a second
+	// field — and why redirecting only HALF of the first role (the diff,
+	// leaving the compile on the baked twin) produced a pivot computed in
+	// one program and applied to another: measured at both an under-drop
+	// (stale downstream output survives) and an over-drop (an UPSTREAM
+	// node's artifact tombstoned), both reported with auto_targeted true.
+	CurrentSourcePath string
 	// ExpectedPivot is an optional host-side guard evaluated after auto
 	// resolution and fan-out promotion, immediately before mutation.
 	ExpectedPivot string
@@ -217,9 +226,13 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	if sourcePath == "" {
 		return nil, fmt.Errorf("runview: rewind: run %s has no workflow source path — pass one explicitly", spec.RunID)
 	}
-	wf, _, err := CompileWorkflowWithHash(sourcePath)
+	// ONE resolution of "the program as it is now", shared by the compile
+	// below and the --auto diff. They must be the same artifact: a pivot
+	// named in one program and applied to another drops the wrong nodes.
+	currentPath := currentSourcePath(spec, sourcePath)
+	wf, _, err := CompileWorkflowWithHash(currentPath)
 	if err != nil {
-		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w", sourcePath, spec.NodeID, err)
+		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w", currentPath, spec.NodeID, err)
 	}
 	executed := map[string]bool{}
 	for id := range cp.Outputs {
@@ -241,14 +254,14 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		pivot, changes, err = resolveAutoPivotForRun(run, autoDiffPath(spec, sourcePath), spec.SourcePath != "" || spec.AutoDiffSourcePath != "", wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, currentPath, spec.SourcePath != "" || spec.CurrentSourcePath != "", wf, executed)
 		if err != nil {
 			return nil, err
 		}
 		autoTargeted = true
 	}
 	if _, ok := wf.Nodes[pivot]; !ok {
-		return nil, fmt.Errorf("runview: rewind: node %q is not in workflow %s", pivot, sourcePath)
+		return nil, fmt.Errorf("runview: rewind: node %q is not in workflow %s", pivot, currentPath)
 	}
 	if !executed[pivot] {
 		return nil, fmt.Errorf("%w: %q (reached: %s)", ErrRewindNodeNotReached, pivot, joinSorted(setKeys(executed)))
@@ -410,10 +423,16 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if sourcePath == "" {
 		return nil, fmt.Errorf("runview: rewind: run %s has no workflow source path — pass one explicitly", spec.RunID)
 	}
-	wf, currentRevision, _, err := CompileWorkflowPath(sourcePath)
+	// ONE resolution of "the program as it is now", shared by this compile,
+	// its revision and the --auto diff below. sourcePath keeps its OTHER
+	// job — the file the workspace revert must leave alone — and the two
+	// diverge exactly when a stored bot's current version had to be
+	// materialized somewhere else.
+	currentPath := currentSourcePath(spec, sourcePath)
+	wf, currentRevision, _, err := CompileWorkflowPath(currentPath)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
-			sourcePath, spec.NodeID, err)
+			currentPath, spec.NodeID, err)
 	}
 	// Nodes this run actually executed — the search space for --auto and
 	// the validity domain for an explicit --node.
@@ -443,7 +462,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		pivot, changes, err = resolveAutoPivotForRun(run, autoDiffPath(spec, sourcePath), spec.SourcePath != "" || spec.AutoDiffSourcePath != "", wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, currentPath, spec.SourcePath != "" || spec.CurrentSourcePath != "", wf, executed)
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +470,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 
 	if _, ok := wf.Nodes[pivot]; !ok {
-		return nil, fmt.Errorf("runview: rewind: node %q is not in workflow %s", pivot, sourcePath)
+		return nil, fmt.Errorf("runview: rewind: node %q is not in workflow %s", pivot, currentPath)
 	}
 	// The pivot must be a node the run actually reached. Without this a
 	// typo silently parks the run on a node that never ran, and the

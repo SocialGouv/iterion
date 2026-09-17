@@ -235,6 +235,34 @@ const (
 	BotSourceTierBaked = "baked"
 )
 
+// ServedByStoredBot reports whether this run's bundle came from a botsource
+// ROW — a team bot or a platform override — rather than from a file on the
+// pod. It is the question every caller that needs the bot's CURRENT source
+// has to ask, because for a stored row there is none on this filesystem:
+// resolveWorkflowPath answers with the baked catalog twin.
+//
+// It reads BOTH fields, and that is the whole point of having it. Their
+// empty values disagree: BotSourceTier is empty for a launch that predates
+// the stamp as well as for a loose .bot, while BotSourceTenant is set for
+// exactly the stored rows. A guard on the tier alone therefore misses every
+// pre-stamp stored run — measured, on a rewind --auto that then diffed a team
+// bot against the baked twin, landed on the ENTRY node and tombstoned all
+// four executed nodes' artifacts, reporting auto_targeted true.
+func (r *Run) ServedByStoredBot() bool {
+	if r == nil {
+		return false
+	}
+	switch r.BotSourceTier {
+	case BotSourceTierTeam, BotSourceTierPlatform:
+		return true
+	case BotSourceTierBaked:
+		// Explicitly the image's own catalog: on the filesystem by
+		// definition, whatever a stale tenant stamp beside it might say.
+		return false
+	}
+	return r.BotSourceTenant != ""
+}
+
 // The credential-resolution tiers a run can be FUNDED by, persisted on
 // Run.CredentialTiers. Same rule as the bot tiers above: the vocabulary
 // lives beside the field, so the publisher that computes it and the log
@@ -662,11 +690,14 @@ type Run struct {
 	// launched to address. It is generic orchestration metadata: no bot id or
 	// repair policy is encoded here.
 	Delegation *RunDelegation `json:"delegation,omitempty" bson:"delegation,omitempty"`
-	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
-	// answers "did the source change since?"; this answers "which node
-	// changed", which is what `iterion rewind --auto` needs to target the
-	// edit. FilePath cannot serve: by the time you rewind, that file holds
-	// the NEW version — the whole reason you are rewinding.
+	// WorkflowSource is the .bot text of the program this run is EXECUTING:
+	// captured at launch, and re-stamped by every resume that takes the run
+	// (by the engine locally, by the publisher on cloud, where the queue
+	// message carries no files). WorkflowHash answers "did the source change
+	// since?"; this answers "which node changed", which is what
+	// `iterion rewind --auto` needs to target the edit. FilePath cannot
+	// serve: by the time you rewind, that file holds the NEW version — the
+	// whole reason you are rewinding.
 	//
 	// Best-effort and size-capped (see runtime.maxPersistedWorkflowSource):
 	// an unreadable or oversized source simply disables auto-targeting,

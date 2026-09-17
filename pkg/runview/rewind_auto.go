@@ -37,12 +37,16 @@ var ErrRewindAmbiguous = errors.New("runview: rewind: the edit affects independe
 // or nowhere; the operator names the node instead.
 var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run recorded its main file but not the fragments it imports — name the node with --node")
 
-// autoDiffPath is where --auto reads the source as it is NOW: the caller's
+// currentSourcePath is where the program as it is NOW lives: the caller's
 // materialization of a stored bot's current version when it named one, else
-// the path every other part of the rewind uses.
-func autoDiffPath(spec RewindSpec, sourcePath string) string {
-	if spec.AutoDiffSourcePath != "" {
-		return spec.AutoDiffSourcePath
+// the path the run resolves to.
+//
+// Every consumer of "now" reads this — the compile that yields the graph and
+// its revision, and the --auto diff. Redirecting one and not the other
+// computes a pivot in one program and applies it to another.
+func currentSourcePath(spec RewindSpec, sourcePath string) string {
+	if spec.CurrentSourcePath != "" {
+		return spec.CurrentSourcePath
 	}
 	return sourcePath
 }
@@ -107,11 +111,8 @@ func resolveAutoPivotForRun(run *store.Run, sourcePath string, sourcePathNamedBy
 	// Both sides of the diff have to be the same artifact. A stored tier's
 	// current source does not live on this filesystem, and the path resolved
 	// for such a run is the baked twin — see ErrRewindStoredBotSourceUnresolved.
-	if !sourcePathNamedByCaller {
-		switch run.BotSourceTier {
-		case store.BotSourceTierTeam, store.BotSourceTierPlatform:
-			return "", nil, ErrRewindStoredBotSourceUnresolved
-		}
+	if !sourcePathNamedByCaller && run.ServedByStoredBot() {
+		return "", nil, ErrRewindStoredBotSourceUnresolved
 	}
 	var oldFile *ast.File
 	if len(run.WorkflowSources) > 0 {

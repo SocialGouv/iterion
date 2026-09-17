@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -327,21 +328,36 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 	// which --auto refuses to diff against (ErrRewindStoredBotSourceUnresolved).
 	// Re-resolve the SAME row at its current version and hand --auto that —
 	// the resume path already does exactly this to replay a stored bot.
-	autoDiffPath, releaseBot, berr := s.currentStoredBotSource(r.Context(), runMeta, req.Auto && sourcePath == "")
+	currentPath, releaseBot, berr := s.currentStoredBotSource(r.Context(), runMeta, req.Auto && sourcePath == "")
 	if berr != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "resolve the bot's current source: %v", berr)
+		// resolveResumeBot types its failures, and flattening them all into
+		// 400 tells an operator a Mongo blip is their fault and answers a
+		// deleted row with advice about relaunching. A rewind has its own
+		// way out of both — `--node` needs no current source at all — so
+		// each says which.
+		switch {
+		case errors.Is(berr, errResumeResolveTransient):
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable,
+				"resolve the bot's current source: %v — transient, retry; `--node` does not need it", berr)
+		case errors.Is(berr, botsource.ErrNotFound):
+			s.httpErrorFor(w, r, http.StatusBadRequest,
+				"resolve the bot's current source: the stored bot this run was served by no longer exists, so "+
+					"`--auto` has nothing to compare against — rewind with an explicit node instead")
+		default:
+			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve the bot's current source: %v", berr)
+		}
 		return
 	}
 	defer releaseBot()
 	result, err := s.runs.Rewind(r.Context(), runview.RewindSpec{
-		RunID:              id,
-		NodeID:             req.NodeID,
-		Auto:               req.Auto,
-		Force:              req.Force,
-		KeepFiles:          req.KeepFiles,
-		RestoreScope:       restoreScope,
-		SourcePath:         sourcePath,
-		AutoDiffSourcePath: autoDiffPath,
+		RunID:             id,
+		NodeID:            req.NodeID,
+		Auto:              req.Auto,
+		Force:             req.Force,
+		KeepFiles:         req.KeepFiles,
+		RestoreScope:      restoreScope,
+		SourcePath:        sourcePath,
+		CurrentSourcePath: currentPath,
 	})
 	if err != nil {
 		switch {

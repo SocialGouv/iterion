@@ -100,7 +100,7 @@ func TestRewindAuto_RefusesAStoredBotWhoseCurrentSourceIsNotNamed(t *testing.T) 
 }
 
 // The server resolves a stored bot's CURRENT version into a temporary
-// materialization and names it in AutoDiffSourcePath. Two properties, and the
+// materialization and names it in CurrentSourcePath. Two properties, and the
 // second is the reason the field exists at all.
 //
 // It lifts the refusal, like SourcePath — the refusal is about not knowing
@@ -113,7 +113,7 @@ func TestRewindAuto_RefusesAStoredBotWhoseCurrentSourceIsNotNamed(t *testing.T) 
 // SourcePath also tells the workspace revert which files to leave alone, so
 // pointing THAT at a temporary directory would quietly change what a restore
 // protects.
-func TestRewindAuto_AutoDiffSourcePathIsTheSideTheDiffReads(t *testing.T) {
+func TestRewindAuto_CurrentSourcePathIsTheSideTheDiffReads(t *testing.T) {
 	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
 	st := svc.RunStore()
 	ctx := context.Background()
@@ -144,12 +144,93 @@ func TestRewindAuto_AutoDiffSourcePathIsTheSideTheDiffReads(t *testing.T) {
 		t.Fatalf("write materialization: %v", err)
 	}
 
-	result, err := svc.Rewind(ctx, RewindSpec{RunID: runID, Auto: true, AutoDiffSourcePath: current})
+	result, err := svc.Rewind(ctx, RewindSpec{RunID: runID, Auto: true, CurrentSourcePath: current})
 	if err != nil {
 		t.Fatalf("Rewind with a materialized current source: %v", err)
 	}
 	if result.NodeID != "implement" || !result.AutoTargeted {
-		t.Fatalf("pivot = %q (auto %v), want implement — the diff did not read AutoDiffSourcePath",
+		t.Fatalf("pivot = %q (auto %v), want implement — the diff did not read CurrentSourcePath",
 			result.NodeID, result.AutoTargeted)
+	}
+}
+
+// The pivot is named in one program and APPLIED in another unless both come
+// from the same source. `--auto` has two consumers of "the source as it is
+// now": the diff that names the changed declaration, and the compile that
+// yields the graph — the graph deciding what is downstream of the pivot,
+// which outputs are dropped and which artifacts are tombstoned.
+//
+// Redirecting only the diff is not a partial fix, it is a different defect.
+// Here the run executed the TEAM program (survey → plan → implement →
+// verify); the baked twin on this filesystem is the catalog's own, with the
+// middle two swapped. A graph taken from the twin puts `implement` UPSTREAM
+// of `plan`, so editing `plan` drops one node too few and `implement`'s stale
+// output survives the rewind that exists to remove it — reported with
+// auto_targeted true and a changes list that reads authoritative.
+func TestRewindAuto_TheGraphComesFromTheSameSourceAsTheDiff(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	st := svc.RunStore()
+	ctx := context.Background()
+
+	// The baked catalog twin: same declarations, a different program. It is
+	// what resolveWorkflowPath answers for a stored-tier run, and what this
+	// rewind must NOT take its topology from.
+	twin := strings.NewReplacer(
+		"survey -> plan", "survey -> implement",
+		"plan -> implement", "implement -> plan",
+		"implement -> verify", "plan -> verify",
+	).Replace(autoBot)
+	if twin == autoBot {
+		t.Fatal("the fixture no longer carries the edges this test swaps")
+	}
+	if err := os.WriteFile(botPath, []byte(twin), 0o644); err != nil {
+		t.Fatalf("write the baked twin: %v", err)
+	}
+
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.BotSourceTier = store.BotSourceTierTeam
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// The team bot at its current version: what the run executed, with one
+	// declaration edited.
+	current := filepath.Join(t.TempDir(), "main.bot")
+	edited := strings.Replace(autoBot,
+		"agent plan:\n  model: \"claude-opus-4-7\"",
+		"agent plan:\n  model: \"claude-opus-5\"", 1)
+	if edited == autoBot {
+		t.Fatal("the fixture no longer carries the declaration this test edits")
+	}
+	if err := os.WriteFile(current, []byte(edited), 0o644); err != nil {
+		t.Fatalf("write the materialization: %v", err)
+	}
+
+	result, err := svc.Rewind(ctx, RewindSpec{RunID: runID, Auto: true, CurrentSourcePath: current})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.NodeID != "plan" {
+		t.Fatalf("pivot = %q, want plan", result.NodeID)
+	}
+	dropped := map[string]bool{}
+	for _, n := range result.DroppedNodes {
+		dropped[n] = true
+	}
+	if !dropped["implement"] {
+		t.Errorf("dropped = %v — `implement` runs AFTER `plan` in the program this run executed, so its stale "+
+			"output survives a rewind whose whole purpose is to remove it. The graph was taken from the baked twin, "+
+			"where the two are swapped", result.DroppedNodes)
+	}
+	for _, want := range []string{"plan", "verify"} {
+		if !dropped[want] {
+			t.Errorf("dropped = %v, want %s among them", result.DroppedNodes, want)
+		}
+	}
+	if dropped["survey"] {
+		t.Errorf("dropped = %v — `survey` is UPSTREAM of the edit and must survive it", result.DroppedNodes)
 	}
 }

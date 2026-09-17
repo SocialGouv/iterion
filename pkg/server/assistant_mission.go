@@ -320,7 +320,26 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 	if receipt.State == assistantmission.ReceiptPrepared && receipt.Action == assistantmission.ActionRewind {
 		auto, _ := proposal.Args["auto"].(bool)
 		node, _ := proposal.Args["node_id"].(string)
-		pivot, pivotErr := c.runs.ResolveRewindPivot(mctx, runview.RewindSpec{RunID: m.TargetRunID, Auto: auto, NodeID: node, RestoreScope: runview.RestoreScopeNone})
+		// The same materialization the HTTP rewind resolves. A run served by
+		// a stored bot has no current source on this pod, so without it an
+		// --auto preview is refused (ErrRewindStoredBotSourceUnresolved) for
+		// runs the endpoint on this very server handles — and the assistant
+		// would read "this run cannot be rewound" as a fact about the run
+		// rather than about the surface it asked through.
+		//
+		// A resolution failure is deliberately not handled here: the pivot
+		// call below meets the same refusal and already turns any error into
+		// a rejected receipt carrying its text.
+		var currentPath string
+		releaseBot := func() {}
+		if target, terr := c.runs.RunStore().LoadRun(mctx, m.TargetRunID); terr == nil {
+			currentPath, releaseBot, _ = c.server.currentStoredBotSource(mctx, target, auto)
+		}
+		defer releaseBot()
+		pivot, pivotErr := c.runs.ResolveRewindPivot(mctx, runview.RewindSpec{
+			RunID: m.TargetRunID, Auto: auto, NodeID: node,
+			CurrentSourcePath: currentPath, RestoreScope: runview.RestoreScopeNone,
+		})
 		if pivotErr != nil || pivot.NodeID == pivot.EntryNodeID {
 			receipt.State = assistantmission.ReceiptRejected
 			if pivotErr != nil {

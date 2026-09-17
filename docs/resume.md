@@ -457,9 +457,13 @@ iterion rewind --run-id RUN_ID --node implement
 
 ### `--auto`: rewind to the node you edited
 
-`--auto` diffs the workflow source the run executed against the source on disk
+`--auto` diffs the workflow source the run executed against the source as it is
 now, and rewinds to the earliest node the edit affects — so the loop is *edit,
-rewind, resume*, with nothing to translate by hand. It prints what it detected,
+rewind, resume*, with nothing to translate by hand. "As it is now" is the file
+on disk for a local run, and for a run served by a **stored bot** (a team bot
+or a platform override) the server re-resolves that bot's row at its current
+version: such a bot has no file on the pod, and the path resolves to the baked
+catalog twin, which is a different program. It prints what it detected,
 so you can confirm it understood the change before resuming.
 
 A bot in several files (`import "lib/x.bot"`) records every file of its unit
@@ -486,19 +490,23 @@ feature exists to prevent. Nodes the run never executed are ignored, and edits
 on independent fan-out branches are refused with the candidates named, since no
 single pivot covers them.
 
-Iterating repeatedly is safe: the source is re-stamped on each resume that
-executes a changed workflow, so the second rewind of a session diffs against
-what the first one actually ran rather than re-reporting its edits.
+Iterating repeatedly is safe: the source is re-stamped as each resume takes
+the run, so the second rewind of a session diffs against what the first one
+actually ran rather than re-reporting its edits.
 
 That re-stamp has two authors, because the text lives in two different places.
 A **local** resume is stamped by the engine, which compiled the file itself. A
-**cloud** resume is stamped by the publisher, before it enqueues: the queue
-message carries the compiled IR and the identity hash and never the files, so
-the runner's engine has no text of its own to record. It writes the source
-together with that compile's hash — a source stored beside another revision's
-hash is a false baseline, which a forced resume clears on purpose.
+**cloud** resume is stamped by the publisher, immediately before it enqueues:
+the queue message carries the compiled IR and the identity hash and never the
+files, so the runner's engine has no text of its own to record. It writes the
+source together with that compile's hash — a source stored beside another
+revision's hash is a false baseline, which a forced resume clears on purpose.
+A cloud resume that is refused (credentials, a queue outage) puts the previous
+baseline back with the status, so only an attempt that actually reached a
+runner moves it.
 
-`--auto` needs `Run.WorkflowSource`, the `.bot` text captured at launch
+`--auto` needs `Run.WorkflowSource`, the `.bot` text of the program the run is
+executing — captured at launch and re-stamped by each resume
 (`WorkflowHash` only answers *whether* the source changed, never *which node*).
 Runs started before that capture existed refuse `--auto` and still accept
 `--node`. Comments and line shifts are not changes: the comparison runs on the

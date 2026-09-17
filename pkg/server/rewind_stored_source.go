@@ -33,9 +33,7 @@ func (s *Server) currentStoredBotSource(ctx context.Context, run *store.Run, wan
 	if !wanted || run == nil {
 		return "", noop, nil
 	}
-	switch run.BotSourceTier {
-	case store.BotSourceTierTeam, store.BotSourceTierPlatform:
-	default:
+	if !run.ServedByStoredBot() {
 		return "", noop, nil
 	}
 	lb, err := s.resolveResumeBot(ctx, run.BotSourceTenant, run.FilePath)

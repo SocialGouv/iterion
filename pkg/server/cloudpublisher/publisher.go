@@ -2431,32 +2431,21 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			[]store.RunStatus{store.RunStatusQueued}); rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}
+		// The rewind baseline goes back with the status. The source is
+		// stamped just before the publish, so a publish that fails leaves the
+		// document describing an attempt that never ran — and `rewind --auto`
+		// would then diff against a program no run executed, which drops too
+		// FEW nodes and leaves stale state behind. That is the direction this
+		// whole feature exists to prevent, and unlike a refusal it is silent.
+		//
+		// A no-op for every return above the stamp: it writes back what is
+		// already there.
+		if rsErr := p.store.SetRunRecordedSource(rollbackCtx, spec.RunID,
+			prior.WorkflowSource, prior.WorkflowSources, prior.WorkflowHash); rsErr != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: restore the rewind baseline of %s after a refused resume: %v — "+
+				"`rewind --auto` on it would target from a revision this run never executed", spec.RunID, rsErr)
+		}
 	}()
-
-	// The text this resume compiled, stamped WITH the hash of that same
-	// compile — the pair `rewind --auto` diffs against, and its only chance
-	// on this path. The queue message carries the IR and the hash, never the
-	// files, so the runner's engine has nothing of its own to record
-	// (restampWorkflowSource returns early on an empty source) and a FORCED
-	// resume actively CLEARS the stored pair when the hash beside it names
-	// another revision. Stamping both together is what makes that condition
-	// false: the clear exists to drop a source that no longer describes the
-	// accepted revision, and after this write it does describe it.
-	//
-	// Before the publish, not after: a runner may claim the attempt the
-	// instant it lands on the queue, and a forced resume that claims first
-	// wipes the pair — the defect this repairs. The cost of being early is a
-	// publish failure leaving the doc describing an attempt that never ran,
-	// which is fail-SAFE: --auto then finds no change and refuses, where
-	// being late loses the source for good.
-	var srcText string
-	var srcFiles []store.WorkflowSourceFile
-	if cs != nil {
-		srcText, srcFiles = runtime.RecordedSourcesOf(cs.Main, cs.Files)
-	}
-	if serr := p.store.SetRunRecordedSource(ctx, spec.RunID, srcText, srcFiles, hash); serr != nil {
-		return fmt.Errorf("cloudpublisher: record resume source for %s: %w", spec.RunID, serr)
-	}
 
 	rawBudget := runview.MergeBudgetOverrides(budgetOverridesFromRun(prior.BudgetOverrides), spec.Budget)
 	if rawBudget != nil && rawBudget.UnlimitedWorkflow && (prior.BudgetOverrides == nil || !prior.BudgetOverrides.UnlimitedWorkflow) {
@@ -2577,6 +2566,38 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		RepoURL: prior.RepoURL,
 		RepoSHA: prior.RepoSHA,
 		BotID:   prior.BotID,
+	}
+	// The text this resume compiled, stamped WITH the hash of that same
+	// compile — the pair `rewind --auto` diffs against, and its only chance on
+	// this path. The queue message carries the IR and the hash, never the
+	// files, so the runner's engine has nothing of its own to record
+	// (restampWorkflowSource returns early on an empty source) and a FORCED
+	// resume actively CLEARS the stored pair when the hash beside it names
+	// another revision. Stamping both together is what makes that condition
+	// false: the clear drops a source that no longer describes the accepted
+	// revision, and after this write it does describe it.
+	//
+	// The position is exact on both sides. AFTER every refusal above —
+	// credentials, contributions, the budget patch — because each returns
+	// while rolling the STATUS back and could not roll this back: the doc
+	// would keep describing an attempt that never ran, and a later --auto
+	// would diff against a program no run executed, dropping too few nodes
+	// and leaving stale state behind (the direction this feature exists to
+	// prevent). BEFORE the publish, because a runner may claim the attempt
+	// the instant it lands on the queue and a forced resume that claims first
+	// wipes the pair.
+	//
+	// Best-effort, like every other granular write here: not recording the
+	// source costs this run its auto-targetability, which is what it had
+	// before any of this; failing the resume over it would cost the operator
+	// their resume, and on the sweeper path one of a finite number of retry
+	// attempts.
+	if cs != nil {
+		srcText, srcFiles := runtime.RecordedSourcesOf(cs.Main, cs.Files)
+		if serr := p.store.SetRunRecordedSource(ctx, spec.RunID, srcText, srcFiles, hash); serr != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: record the source resumed for %s: %v — this run keeps the previous "+
+				"attempt's baseline, so `rewind --auto` on it may refuse or target from the wrong revision", spec.RunID, serr)
+		}
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		return fmt.Errorf("cloudpublisher: republish: %w", err)
