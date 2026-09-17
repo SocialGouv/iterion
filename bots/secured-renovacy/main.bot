@@ -2789,6 +2789,10 @@ tool prepare_commit:
       // cleaned up errors with "pathspec did not match any files".
       // Drop them defensively.
       if (/^\.iterion-script-/.test(p)) continue;
+      // iterion's own scaffold under .claude/ (skills, plugin files): laid
+      // by the engine at run start, never the run's work (#1364) -- the
+      // rule the commit scripts' `git add` and finalize apply.
+      if (/^\.claude\//.test(p)) continue;
       if (CACHE_SEGMENTS.test(p)) continue;
       if (seen.has(p)) continue;
       seen.add(p);

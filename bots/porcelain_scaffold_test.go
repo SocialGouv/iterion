@@ -121,19 +121,35 @@ func TestDeclineProbeLeavesTheScaffoldOut(t *testing.T) {
 	}
 }
 
-// Every porcelain read in the catalogue is classified: it applies the
-// scaffold rule (the node's text carries the helper or the pathspec), reads
-// tracked files only, or is named below with the reason it is unaffected.
-// A new reader that does none of these fails here until it is classified.
+// Every read of the working tree's dirt in the catalogue — `git status
+// --porcelain`, `git ls-files --others` — is classified AT THE READ: the read
+// line or the statements that consume it (the next sixteen lines) use the
+// scaffold rule, the read lists tracked files only, or the read is named
+// below with the reason the scaffold cannot reach what it decides. A node
+// that carries one filtered read does not clear its other reads; a new
+// reader fails here until it is classified.
 func TestPorcelainReadersAreClassified(t *testing.T) {
 	unaffected := map[string]string{
-		"modernize/main.bot:lot_verify": "scoped to a lot's own paths by pathspec",
+		"modernize/main.bot:lot_verify:code, log, _ = run(\"git -c core.quotePath=false status --porcelain -- %s\"":                                           "scoped to the lot's own paths by pathspec",
+		"golden-master/extend.bot:extend_base:dirty = subprocess.run([\"git\", \"-C\", ws, \"status\", \"--porcelain\", \"-z\"],":                             "filtered where the -z tokens are parsed, below the window",
+		"test-coverage/main.bot:verify_run:for line in git(['status', '--porcelain']).splitlines():":                                                          "asks only whether an untracked path matches the test-file regex",
+		"e2e-coverage/main.bot:verify_run:for line in git(['status', '--porcelain']).splitlines():":                                                           "asks only whether an untracked path matches the test-file regex",
+		"branch-improve-loop/main.bot:delivery_probe:changed += git('ls-files', '--others', '--exclude-standard', '-z')":                                      "asks only whether a .github/workflows/ path changed",
+		"golden-master/main.bot:oracle_run:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                                  "a tree fingerprint, only ever compared with itself",
+		"golden-master/sync-harness.bot:sync_harness:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                        "a tree fingerprint, only ever compared with itself",
+		"golden-master/main.bot:oracle_run:p = subprocess.run([\"git\", \"-C\", ws, \"--no-optional-locks\", \"status\", \"--porcelain\", \"-z\"],":           "a path set compared before and after a mutant: the scaffold cancels",
+		"golden-master/sync-harness.bot:sync_harness:p = subprocess.run([\"git\", \"-C\", ws, \"--no-optional-locks\", \"status\", \"--porcelain\", \"-z\"],": "a path set compared before and after a mutant: the scaffold cancels",
+		"golden-master/main.bot:oracle_run:\"gm-applied\" in sub(\"git\", \"status\", \"--porcelain\").stdout],":                                              "looks for one marker path",
+		"secured-renovacy/main.bot:prepare_commit:const untracked = execSync(`git -C \"${workspaceDir}\" ls-files --others --exclude-standard`, EXEC_OPTS);":  "filtered where the file list is built, twenty lines below (`/^\\.claude\\//`)",
+		"golden-master/sync-harness.bot:sync_harness:\"gm-applied\" in sub(\"git\", \"status\", \"--porcelain\").stdout],":                                    "looks for one marker path",
 	}
 	header := regexp.MustCompile(`^(tool|script|agent|compute|human|subbot|judge|router) ([a-z_]+):`)
-	prose := regexp.MustCompile(`^\s*(#|//|""")|test -z on|probe = |1\. .git status|Run .git status|Split BEFORE|and .git diff HEAD`)
-	// A USE of the rule, never its definition: `def is_scaffold(line):` left
-	// in a script whose read stopped calling it must not pass.
-	rule := regexp.MustCompile(`(?:not|or|and) is_scaffold\(|\.startswith\(['"]\.claude/['"]\)|exclude,top\)\.claude`)
+	read := regexp.MustCompile(`--porcelain|ls-files.{0,12}--others`)
+	prose := regexp.MustCompile(`^\s*(#|//|""")|test -z on|probe = |1\. .git status|Run .git status|Split BEFORE|and .git diff HEAD|The earlier .git status`)
+	// A USE of the rule — never the helper's definition, which sits above
+	// every read and would clear them all.
+	rule := regexp.MustCompile(`(?:not|or|and) is_scaffold\(|\.startswith\(['"]\.claude/['"]\)|exclude,top\)\.claude|\^\\\.claude\\/`)
+	const window = 16
 	var files []string
 	if err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -146,63 +162,52 @@ func TestPorcelainReadersAreClassified(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	reads := 0
+	reads, named := 0, 0
 	for _, rel := range files {
 		src, err := os.ReadFile(rel)
 		if err != nil {
 			t.Fatal(err)
 		}
 		lines := strings.Split(string(src), "\n")
-		// The text of each node, by name, to look the rule up in.
-		nodeOf := make([]string, len(lines))
-		bodies := map[string]*strings.Builder{}
 		node := ""
-		inHelper := false // the helper's own definition is not a use of it
 		for i, line := range lines {
 			if m := header.FindStringSubmatch(line); m != nil {
 				node = m[2]
-				bodies[node] = &strings.Builder{}
 			}
-			nodeOf[i] = node
-			if strings.Contains(line, "def is_scaffold(") {
-				inHelper = true
-			}
-			if inHelper {
-				if strings.Contains(line, "return path.startswith('.claude/')") {
-					inHelper = false
-				}
-				continue
-			}
-			if b, ok := bodies[node]; ok {
-				b.WriteString(line)
-				b.WriteByte('\n')
-			}
-		}
-		for i, line := range lines {
-			if !strings.Contains(line, "--porcelain") || prose.MatchString(line) {
+			if !read.MatchString(line) || prose.MatchString(line) {
 				continue
 			}
 			reads++
 			if strings.Contains(line, "--untracked-files=no") {
 				continue // tracked files only: the untracked scaffold is invisible to it
 			}
-			if rule.MatchString(line) {
-				continue // the read itself carries the pathspec (an instruction, a shell command)
+			key := filepath.ToSlash(rel) + ":" + node + ":" + strings.TrimSpace(line)
+			nodeEnd := len(lines)
+			for j := i + 1; j < len(lines); j++ {
+				if header.MatchString(lines[j]) {
+					nodeEnd = j
+					break
+				}
 			}
-			key := filepath.ToSlash(rel) + ":" + nodeOf[i]
-			if _, ok := unaffected[key]; ok {
+			if reason, ok := unaffected[key]; ok {
+				named++
+				// A reader named as "filtered … below" is held to it: the rule
+				// must appear between the read and the end of its node.
+				if strings.HasPrefix(reason, "filtered") && !rule.MatchString(strings.Join(lines[i:nodeEnd], "\n")) {
+					t.Errorf("%s:%d (node %s) is named as filtered below the read, but no use of the rule follows it in the node", rel, i+1, node)
+				}
 				continue
 			}
-			body := ""
-			if b, ok := bodies[nodeOf[i]]; ok {
-				body = b.String()
+			end := i + window
+			if end > nodeEnd {
+				end = nodeEnd
 			}
-			if !rule.MatchString(body) {
-				t.Errorf("%s:%d (node %s) reads porcelain without the scaffold rule: %s", rel, i+1, nodeOf[i], strings.TrimSpace(line))
+			if !rule.MatchString(strings.Join(lines[i:end], "\n")) {
+				t.Errorf("%s:%d (node %s) reads the tree's dirt without the scaffold rule at the read: %s", rel, i+1, node, strings.TrimSpace(line))
 			}
 		}
 	}
-	if reads < 30 {
-		t.Errorf("only %d porcelain reads found — the walk no longer covers the catalogue", reads)
+	if reads < 30 || named != len(unaffected) {
+		t.Errorf("%d reads found, %d of %d named readers matched — the walk or the names no longer cover the catalogue", reads, named, len(unaffected))
 	}
 }
