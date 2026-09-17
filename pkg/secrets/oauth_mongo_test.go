@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -150,7 +151,8 @@ func TestMongoOAuth_EveryClearableFieldClearsThroughUpsert(t *testing.T) {
 		t.Errorf("scopes = %v, want cleared", got.Scopes)
 	}
 	if got.AccessTokenExpiresAt != nil {
-		t.Errorf("access_token_expires_at = %v, want cleared — the refresh worker selects on it", got.AccessTokenExpiresAt)
+		t.Errorf("access_token_expires_at = %v, want cleared — it is the deadline of the token this "+
+			"re-connect REPLACED, so a record that keeps it states a lifetime no token has", got.AccessTokenExpiresAt)
 	}
 	if got.LastRefreshedAt != nil {
 		t.Errorf("last_refreshed_at = %v, want cleared — a stale one reads as 'renewed then' on a record that was pasted", got.LastRefreshedAt)
@@ -160,6 +162,67 @@ func TestMongoOAuth_EveryClearableFieldClearsThroughUpsert(t *testing.T) {
 	}
 	if string(got.SealedPayload) != "sealed-2" {
 		t.Errorf("sealed_payload = %q, want the re-connected blob", got.SealedPayload)
+	}
+}
+
+// Clearing that deadline is only affordable because the sweep still finds the
+// record afterwards — and on Mongo that is not free. Comparison operators are
+// TYPE-BRACKETED: `$lt` against a Date matches Dates and nothing else, so a
+// selector built from `$lt` alone cannot return a null-valued record at ANY
+// cutoff, ever. The record would leave the refresh sweep for good on the very
+// path that is supposed to renew it — the outage of #1220 reached from the
+// other end.
+//
+// Two spellings of "no deadline", both reachable in production: an explicit
+// null, which is what the re-connect above writes, and a missing key, which is
+// every record stored before the field existed. The far-future record is the
+// control: a selector that answered "everything" would satisfy the first two
+// assertions while meaning nothing.
+func TestMongoOAuth_ARecordWithNoDeadlineIsStillDueForRefresh(t *testing.T) {
+	s, ctx := mongoOAuthStore(t)
+	now := time.Now().UTC()
+	later := now.Add(4 * time.Hour)
+
+	if err := s.Upsert(ctx, OAuthRecord{
+		UserID: "alice", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed"),
+	}); err != nil {
+		t.Fatalf("upsert null-expiry: %v", err)
+	}
+	if err := s.Upsert(ctx, OAuthRecord{
+		UserID: "bob", Kind: OAuthKindClaudeCode, SealedPayload: []byte("sealed"),
+		AccessTokenExpiresAt: &later,
+	}); err != nil {
+		t.Fatalf("upsert future-expiry: %v", err)
+	}
+	// Written by hand because no current writer can produce it: a document
+	// whose key is absent, as every record stored under the old omitempty tag.
+	if _, err := s.coll.InsertOne(ctx, bson.M{
+		"_id": OAuthRecordID("carol", OAuthKindCodex, 0), "user_id": "carol",
+		"kind": string(OAuthKindCodex), "sealed_payload": []byte("sealed"),
+		"created_at": now, "updated_at": now,
+	}); err != nil {
+		t.Fatalf("insert legacy record: %v", err)
+	}
+
+	due, err := s.DueForRefresh(ctx, now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatalf("DueForRefresh: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, r := range due {
+		seen[r.UserID] = true
+	}
+	if !seen["alice"] {
+		t.Error("a record whose access_token_expires_at is NULL is not due — a re-connect that states no " +
+			"deadline drops the credential out of the sweep permanently, and only a human can renew it again")
+	}
+	if !seen["carol"] {
+		t.Error("a record with NO access_token_expires_at key is not due — every credential stored before " +
+			"the field existed is invisible to the refresh worker for good")
+	}
+	if seen["bob"] {
+		t.Error("a record expiring in four hours is due at a 30-minute cutoff — this selector returns " +
+			"everything, so the two assertions above prove nothing")
 	}
 }
 

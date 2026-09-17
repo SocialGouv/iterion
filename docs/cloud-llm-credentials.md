@@ -154,26 +154,28 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   rotating the refresh token) every tick. Nothing is in flight and
   retrying does not help — re-connect the credential, which clears the
   cool-down, or wait for the instant in the message.
-  That worker only ever sees records `ExpiringBefore` returns, which
-  requires `access_token_expires_at` to exist. It is now stamped from the
-  access token's own `exp` claim at connect and after each refresh — but
-  real `~/.codex/auth.json` blobs carry no `expires_in`, so a record
-  connected by an OLDER build has **no** stored expiry and is skipped
-  forever. Symptom: a run failing its first LLM call with `authentication
-  token is expired` while the studio shows the credential present
-  (measured: ten days). Fix is one call — re-upload it, which stamps the
-  field:
+  That worker sees the records `DueForRefresh` returns: those expiring
+  within its lead, **and those whose deadline is unknown**. The second
+  half matters because `access_token_expires_at` is best-effort — it is
+  stamped from the access token's own `exp` claim at connect and after
+  each refresh, but real `~/.codex/auth.json` blobs carry no `expires_in`,
+  so records connected by an OLDER build carry no expiry at all. While the
+  sweep required the field to exist those records were skipped forever:
+  a run failing its first LLM call with `authentication token is expired`
+  while the studio showed the credential present (measured: ten days).
+  They are now renewed on the next pass, which is also when they get a
+  deadline. Re-uploading still works and is instant:
   ```bash
   iterion remote admin llm oauth set codex --from-file ~/.codex/auth.json
   ```
-  Check first with `iterion remote api GET /api/admin/llm/oauth/connections`:
-  a codex entry whose `access_token_expires_at` is absent is one of these.
   A credential whose token states no readable deadline logs a Warn at
-  connect (`stored WITHOUT an access-token expiry`) and needs a manual
-  re-connect whenever it expires. One whose token is expired AND carries
-  no refresh token logs a louder one (`NO refresh token`): it is stored,
-  but nothing can renew it and every run drawing it dies on its first LLM
-  call — re-run `codex login` and upload again.
+  connect (`stored WITHOUT an access-token expiry`) naming what happens
+  next: the sweep treats it as due and it learns its deadline there. One
+  that ALSO carries no refresh token logs the version that has no way out
+  — nothing can renew it, so nothing can stamp it either, and every run
+  drawing it dies on its first LLM call. Re-run `codex login` and upload
+  again; `iterion remote api GET /api/admin/llm/oauth/connections` lists
+  them (`refreshable: false`, no `access_token_expires_at`).
   You do **not** have to wait a sweep for a credential you connected
   already expired: the connect fires one refresh immediately (best-effort,
   off the request), and the server also sweeps once at boot rather than

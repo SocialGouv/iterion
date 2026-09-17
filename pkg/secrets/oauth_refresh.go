@@ -249,12 +249,12 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 			return serr
 		}
 		rec.SealedPayload = sealed
-		// Stamping the new expiry is what keeps the record SELECTABLE: the
-		// worker sweeps ExpiringBefore, which skips any record whose
-		// access_token_expires_at is absent. Leaving it unchanged after a
-		// successful refresh would refresh the record once and then lose
-		// sight of it — the token endpoint is not required to return
-		// expires_in, and nothing else recomputes the value.
+		// Stamping the new expiry is what puts the record back on a normal
+		// cadence: the worker sweeps DueForRefresh, which reads an absent
+		// expiry as DUE, so leaving it unchanged after a successful refresh
+		// keeps the record in the window and re-runs this exchange every
+		// tick — the token endpoint is not required to return expires_in,
+		// and nothing else recomputes the value.
 		//
 		// So fall back to the access token's own `exp` claim, which is the
 		// blob's only self-contained deadline (`expires_in` is relative to

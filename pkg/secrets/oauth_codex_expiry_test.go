@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// A codex refresh must leave the record SELECTABLE for the next sweep.
-// The worker only ever sees records ExpiringBefore returns, and that query
-// requires access_token_expires_at to exist — so a refresh that renews the
-// token but leaves the stored expiry untouched refreshes the record once
-// and then loses sight of it for good.
+// A codex refresh must leave the record SCHEDULED for the next sweep.
+// DueForRefresh reads a deadline that is absent, or past, as due — so a
+// refresh that renews the token but leaves the stored expiry untouched puts
+// the record straight back in the window, re-running the exchange (and
+// rotating the refresh token at OpenAI) on every pass.
 //
 // The token endpoint is not required to send expires_in (and the real one
 // does not always), so the fallback is the new access token's own `exp`
@@ -51,8 +51,8 @@ func TestRefreshRecord_CodexStampsExpiryFromTheNewTokenWhenTheResponseStatesNone
 		t.Fatalf("RefreshRecord: %v", err)
 	}
 	if rec.AccessTokenExpiresAt == nil {
-		t.Fatal("no expiry stamped after a successful refresh — ExpiringBefore will never return " +
-			"this record again, so the forfait silently stops being refreshed")
+		t.Fatal("no expiry stamped after a successful refresh — the record stays due forever, so every " +
+			"sweep re-runs the exchange and rotates the refresh token for nothing")
 	}
 	if got := rec.AccessTokenExpiresAt.UTC(); !got.Equal(newExp) {
 		t.Errorf("stamped expiry = %s, want the refreshed token's own exp %s", got, newExp)

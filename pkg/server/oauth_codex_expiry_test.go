@@ -28,17 +28,18 @@ func codexJWTAccessToken(t *testing.T, exp time.Time) string {
 	return enc([]byte(`{"alg":"none"}`)) + "." + enc(claims) + ".sig"
 }
 
-// Connecting a codex forfait must leave a record the refresh worker can
-// actually SEE. The worker sweeps OAuthStore.ExpiringBefore, whose query
-// requires access_token_expires_at to exist — so a record connected
-// without that field is invisible to it forever and can only be renewed by
-// a human re-paste.
+// Connecting a codex forfait must leave a record the refresh worker
+// schedules on the token's own deadline. The connect path stamped the
+// field only from `expires_in`, which real ~/.codex/auth.json blobs never
+// carry — and while OAuthStore's selector also required the field to
+// exist, that made the record invisible to the worker for good: ten days
+// of a dead forfait, renewable only by a human re-paste.
 //
-// That was the hole: the connect path stamped the field only from
-// `expires_in`, which real ~/.codex/auth.json blobs never carry. The
-// oracle here is deliberately ExpiringBefore itself rather than the field:
-// asserting the stamp alone would not prove the record became sweepable,
-// which is the property the ten-day dead forfait actually lacked.
+// The oracle is deliberately the selector rather than the field: asserting
+// the stamp alone would not prove what the record does in the sweep. It
+// takes TWO cutoffs, since an unknown deadline now reads as due — the
+// record must be absent while its token is still fresh, and present once
+// the cutoff passes its deadline.
 func TestCodexConnect_LeavesARecordTheRefreshWorkerCanSee(t *testing.T) {
 	_, hs, signer, oauthStore := oauthTestServer(t)
 	jo := oauthJWT(t, signer, "jo")
@@ -57,33 +58,47 @@ func TestCodexConnect_LeavesARecordTheRefreshWorkerCanSee(t *testing.T) {
 		t.Fatalf("store Get: %v", err)
 	}
 	if rec.AccessTokenExpiresAt == nil {
-		t.Fatal("stored codex record carries no access-token expiry — ExpiringBefore can never " +
-			"return it, so the refresh worker will never renew this forfait")
+		t.Fatal("stored codex record carries no access-token expiry — nothing states when this " +
+			"forfait dies, and the sweep can only renew it by treating it as due on every pass")
 	}
 	if got := rec.AccessTokenExpiresAt.UTC(); !got.Equal(exp) {
 		t.Errorf("stored expiry = %s, want the access token's own exp claim %s", got, exp)
 	}
 
-	// The property that matters: the worker's own selector reaches it.
-	found, err := oauthStore.ExpiringBefore(t.Context(), exp.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("ExpiringBefore: %v", err)
+	// The property that matters, through the worker's own selector: the stamp
+	// SCHEDULES the record. Both cutoffs are needed — an unknown deadline reads
+	// as due at every one of them, so the second assertion alone would pass on
+	// a record carrying no expiry at all, and the first is what a stamp taken
+	// from the wrong clock (the exchange's, not the token's) reddens.
+	if seen := dueForRefresh(t, oauthStore, exp.Add(-time.Hour)); seen {
+		t.Error("a record whose token lives another hour is already due — its stored deadline is not the " +
+			"token's, so the sweep re-runs the exchange every pass and rotates the refresh token for nothing")
 	}
-	var seen bool
-	for _, r := range found {
-		if r.UserID == "jo" && r.Kind == secrets.OAuthKindCodex {
-			seen = true
-		}
-	}
-	if !seen {
+	if seen := dueForRefresh(t, oauthStore, exp.Add(time.Minute)); !seen {
 		t.Error("the refresh worker's sweep does not return the codex record just connected")
 	}
 }
 
+// dueForRefresh reports whether jo's codex record is in the sweep at cutoff.
+func dueForRefresh(t *testing.T, store secrets.OAuthStore, cutoff time.Time) bool {
+	t.Helper()
+	found, err := store.DueForRefresh(t.Context(), cutoff)
+	if err != nil {
+		t.Fatalf("DueForRefresh: %v", err)
+	}
+	for _, r := range found {
+		if r.UserID == "jo" && r.Kind == secrets.OAuthKindCodex {
+			return true
+		}
+	}
+	return false
+}
+
 // A blob whose access token carries no readable `exp` must not be stamped
-// with an invented deadline. Leaving the field nil is honest — the record
-// stays out of the sweep, which is a visible gap — where a guessed expiry
-// would put a dead token in front of a run claiming to be valid.
+// with an invented deadline. Leaving the field nil is honest: the field is
+// the token's actual deadline, exposed under that name, and a guessed one
+// would put a dead token in front of a run claiming to be valid. Nothing is
+// lost by saying "unknown" — the sweep reads it as due.
 func TestCodexConnect_UnreadableExpiryIsNotInvented(t *testing.T) {
 	_, hs, signer, oauthStore := oauthTestServer(t)
 	jo := oauthJWT(t, signer, "jo")
@@ -101,6 +116,13 @@ func TestCodexConnect_UnreadableExpiryIsNotInvented(t *testing.T) {
 	if rec.AccessTokenExpiresAt != nil {
 		t.Errorf("expiry = %s, want nil: nothing in the blob states when this token dies",
 			rec.AccessTokenExpiresAt)
+	}
+	// Honest is not the same as abandoned. This record carries a refreshToken,
+	// so the sweep must reach it and give it a deadline on its next pass —
+	// that is what pays for refusing to invent one here.
+	if !dueForRefresh(t, oauthStore, time.Now()) {
+		t.Error("a record whose token states no deadline is not due — nothing will ever refresh it, " +
+			"and the forfait dies with no one able to say when")
 	}
 }
 

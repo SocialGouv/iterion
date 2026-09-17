@@ -17,7 +17,7 @@ import (
 //
 // It covers BOTH personal and org-scoped records uniformly: org records
 // are ordinary OAuthRecords keyed under OrgOwnerKey(tenant), so they
-// surface from ExpiringBefore like any other — and the org credential is
+// surface from DueForRefresh like any other — and the org credential is
 // exactly the one that powers 24/7 automation, so keeping it fresh is the
 // whole point.
 type OAuthRefreshWorker struct {
@@ -51,7 +51,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		lead = 30 * time.Minute
 	}
 	cutoff := time.Now().Add(lead).UTC()
-	recs, err := w.Store.ExpiringBefore(ctx, cutoff)
+	recs, err := w.Store.DueForRefresh(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("secrets: oauth refresh sweep: %w", err)
 	}
@@ -88,10 +88,13 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		// only while that claim still holds.
 		//
 		// Removing the skip was necessary but NOT sufficient: this loop
-		// only ever sees what ExpiringBefore returns, which requires
-		// access_token_expires_at to exist. Stamping it from the access
-		// token's own `exp` claim — at connect and after each refresh — is
-		// what actually puts a codex record in front of this code.
+		// only ever sees what DueForRefresh returns, and that selector
+		// used to require access_token_expires_at to exist — so a record
+		// the connect path could not stamp never reached this code at
+		// all. It now reads an unknown expiry as due, which is what makes
+		// a codex record reachable here whether or not it states a
+		// deadline; stamping from the token's own `exp` claim decides
+		// WHEN it is refreshed, no longer WHETHER.
 		//
 		// Still open (audit row B2 / native:fc0c51d4): a sandboxed codex
 		// reader is permitted to rotate its own writable copy in place, so
