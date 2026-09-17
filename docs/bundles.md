@@ -182,7 +182,13 @@ bot in several files, read since v3.145.0). A cloud runner receives the main
 workflow as an AST but parses a subbot child, and a fragment, as text with
 its own binary, so a build older than the release fails at that parse — after
 admission, on a pod. `iterion validate` says so (C252), and a push refuses
-the bundle without the floor (409, `--force` overrides).
+the bundle without the floor (409, `--force` overrides). The sources counted
+are `main.bot`, the fragments it imports, the children it declares, and
+every other `.bot` at the bundle root — an entry of its own, launched by
+path or declared by another bot, that no edge from `main.bot` reaches. A
+source the walk cannot read — a child in a sibling bundle, a root entry or
+a child that is a link out of the collection — is named (C253) rather than
+taken for profile 1.
 
 Four surfaces honour it, all through the same predicate
 (`bundle.CheckManifestEngine`):

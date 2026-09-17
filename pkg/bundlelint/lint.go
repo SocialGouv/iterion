@@ -146,10 +146,11 @@ const (
 	// runner's own binary, and a build older than the profile fails at that
 	// parse — which a declared floor refuses at admission instead.
 	DiagProfileNeedsFloor Code = "C252"
-	// DiagProfileChildUnread: a subbot child's source lies beyond what the
-	// profile walk could read — a sibling bundle, an absolute path, a link
-	// out of the collection — so the profile reported for the bundle does
-	// not speak for that child. A warning: a child written in a newer
+	// DiagProfileChildUnread: an executable source lies beyond what the
+	// profile walk could read — a root-level entry or a subbot child that
+	// is a link out of the collection, a child in a sibling bundle or at an
+	// absolute path — so the profile reported for the bundle does not
+	// speak for that source. A warning: a source written in a newer
 	// profile than a runner reads fails at that runner's parse.
 	DiagProfileChildUnread Code = "C253"
 )
@@ -698,8 +699,9 @@ func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequir
 	*diags = append(*diags, Diag{Code: DiagProfileNeedsFloor, Severity: SeverityWarning, Field: "requires.iterion", Message: msg, Hint: hint})
 }
 
-// checkProfileUnread names the subbot children whose syntax profile could
-// not be read (C253) — a sibling bundle, an absolute path, a link out of the
+// checkProfileUnread names the executable sources whose syntax profile
+// could not be read (C253) — a subbot child in a sibling bundle or at an
+// absolute path, a root entry or a child that is a link out of the
 // collection — so a profile of 1 is never taken for "checked" when part of
 // the executable sources was not.
 func checkProfileUnread(diags *[]Diag, unread []string) {
@@ -709,8 +711,8 @@ func checkProfileUnread(diags *[]Diag, unread []string) {
 	*diags = append(*diags, Diag{
 		Code: DiagProfileChildUnread, Severity: SeverityWarning,
 		Field:   "requires.iterion",
-		Message: fmt.Sprintf("subbot child(ren) not read for their syntax profile, being outside the bundle: %s", strings.Join(unread, ", ")),
-		Hint:    "a child written in a newer profile than a runner reads fails at that runner's parse: declare `requires.iterion` for the newest profile among them, or bring the child inside the bundle",
+		Message: fmt.Sprintf("executable source(s) not read for their syntax profile, resolving beyond the bundle's collection: %s", strings.Join(unread, ", ")),
+		Hint:    "a source written in a newer profile than a runner reads fails at that runner's parse: declare `requires.iterion` for the newest profile among them, or make the source resolve inside the bundle",
 	})
 }
 

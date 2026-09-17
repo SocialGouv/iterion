@@ -6,6 +6,40 @@ Functional, business-audience product documentation generated and maintained
 in a dedicated docs repository from a multi-repo product catalog. Newest run
 first.
 
+## 2026-09-17 — profile 2: a one-product catalog documented in French from a local source snapshot, converged (run 01a0afa6-aafb)
+
+- Status: **validated end to end** — `catalog_ingest` → `scan_hints` → `campaign` (cut once
+  by the wall, then complete) → `scope_check` → `page_lint` → `gate` converged → `mr_gate`
+  (off) → `publish_gate` (off) → done.
+- Versions: bot product-docs 1.1.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch DOCS repository holding `catalog.yaml` (one product `greet`,
+  `docs.product_dir: produits/greet`, one source repository given as a local path to the
+  scratch greeter, `ref: main`), a skeleton `produits/greet/index.md` and an editorial
+  override `.product-docs/ton-et-style.md`; `--var catalog_path=catalog.yaml --var
+  product_id=greet --var max_passes=1`, `--store-dir` the operator's workspace store,
+  `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every
+  LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20). The
+  first campaign died at the 10-minute wall with three pages already committed; resumed with
+  `--max-duration 30m --max-cost-usd 3`.
+- Result: $1.70 recorded (the cut attempt's spend is not), 20 min 10 s from launch to done.
+  The campaign loaded the docs repository's own editorial rule before the bundle defaults,
+  grounded every claim by reading the whole source AND running the CLI (help text quoted
+  verbatim, the three refusals reproduced), wrote the pages in French for the non-technical
+  reader — a glossary, a help page, the greeting journey, a blocking case (a composed name
+  written without quotes) found by execution, not by reading — and reported
+  `drift_remaining` and `unread_sources` empty; the deterministic scope and lint gates passed,
+  `converged: true`. Storage branch `iterion/run/01a0afa6-aafb-7a59-a87f-1ea7948a9d00` →
+  `e3490f3` (four docs commits across the two attempts).
+- Value: the six prompts' paragraph breaks reach the models (proven in the run's
+  `events.jsonl` for `campaign_system` and `campaign_user`, twice each; the MR and publish
+  prompts were not rendered, both gates off), and the bot's grounding contract held on a
+  source it could only read as a snapshot: `catalog_ingest` copies sources without `.git`, the
+  agent's first `git log` failed with exit 128 and it fell back to reading files — by design.
+- Findings / misses: none bot-side.
+- Engine hardening: none needed.
+- Lessons for next run: `--max-duration 25m` for one full pass; the cheapest fixture is a
+  catalog entry whose `url` is a local path; pass `--merge-into none` again on resume.
+
 ## 2026-09-04 — first run on the prod instance: the datalab URL brought back, then re-published by the bot (run 01a06baa)
 
 - Status: **validated on prod** — first `product_docs` run ever on the cloud

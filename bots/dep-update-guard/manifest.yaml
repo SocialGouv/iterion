@@ -1,7 +1,11 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.7
+version: 2.7.8
+## 2.7.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside nine prompts (30 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 ## 2.7.7 -- verify-build skill §1c: timeouts are a strictness axis. The verify
 ## sandbox runs 2-5x slower than CI, and go test's implicit 10m per-binary
 ## timeout manufactured hold_unstable on four consecutive Actions-pin bumps
@@ -242,3 +246,9 @@ invocations:
 launch:
   primary: [pr_url]
   hidden: [pr_author]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

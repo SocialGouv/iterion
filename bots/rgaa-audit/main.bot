@@ -33,6 +33,8 @@
 ## verifies the audit actually consulted the criteria.
 ## ─────────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## Free-text scope hint from the operator / dispatched issue (e.g.

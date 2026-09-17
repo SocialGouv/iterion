@@ -53,6 +53,8 @@
 ## bundled skills. Adding a framework costs zero DSL edits.
 ## ─────────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 secrets:
   ## Forge API token for forge-side needs OTHER than posting — cloning a
   ## private repo on a cloud runner, chiefly. This bot does not POST a

@@ -24,6 +24,8 @@
 ## last commit — the commit step runs only AFTER the human ships.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   ## ${PROJECT_DIR} resolves to the run worktree under worktree: auto
   ## (do NOT override with a literal repo root — that aims agents at
@@ -601,6 +603,13 @@ workflow bmady:
     refinement:     "{{outputs.derive_prd.action}}",
     feedback:       "{{outputs.derive_prd.feedback}}"
   }
+  ## The loop's exhaustion exit (C145, #1293): after the fifth revision the
+  ## PRD goes to the architect as it stands — the loop bounds the argument,
+  ## the programme still ships with what it has.
+  derive_prd -> architect with {
+    prd:      "{{outputs.pm}}",
+    analysis: "{{outputs.analyst}}"
+  }
 
   ## ── Phase 3 : Architecture (+ approve/reject loop) ──────────────
   architect -> approve_arch with {
@@ -617,6 +626,12 @@ workflow bmady:
     prd:      "{{outputs.pm}}",
     analysis: "{{outputs.analyst}}",
     feedback: "{{outputs.approve_arch.feedback}}"
+  }
+  ## The loop's exhaustion exit (C145, #1293): after the fifth revision the
+  ## architecture goes to story selection as it stands.
+  approve_arch -> select_stories with {
+    stories:          "{{outputs.pm.stories}}",
+    architecture_doc: "{{outputs.architect.architecture_doc}}"
   }
 
   ## ── Phase 4 : Story selection → implement ───────────────────────

@@ -81,6 +81,8 @@
 ## pattern), and commits each item in stride. 12 nodes → 5.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 

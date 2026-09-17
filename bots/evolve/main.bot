@@ -27,6 +27,8 @@
 ##     board), runs in the operator's tree like Nexie, and keeps the
 ##     native ask_user MCP tool (sandboxing degrades it to a JSON fallback).
 
+dsl: 2
+
 vars:
   ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer, "dual"
   ## runs both and cross-confirms. Dual costs a full reviewer pass per
@@ -848,6 +850,13 @@ agent load_nexie_handoff:
 
 ## ─── Workflow ─────────────────────────────────────────────────────
 
+## The vision loop's typed refusal, reached only once refine_loop is spent.
+fail vision_not_converged:
+  description: "ten revisions of the vision without the operator's approval"
+  code: VISION_NOT_CONVERGED
+  message: "the vision was revised ten times without the operator's approval — relaunch with a clearer brief, or approve at the review"
+  resumable: false
+
 workflow evolve:
   entry: survey
 
@@ -960,6 +969,12 @@ workflow evolve:
     vision: "{{outputs.revise_vision}}",
     review: "{{outputs.aggregate_review}}"
   } as refine_loop(10)
+
+  ## The loop's exhaustion exit (C145, #1293): ten revisions without the
+  ## operator's approval end the run typed, instead of LOOP_EXHAUSTED — an
+  ## operator who keeps rejecting is answered by a clearer brief, never by
+  ## proposals built on a vision they refused.
+  revise_vision -> vision_not_converged
 
   ## Proposals → backlog tickets → home base.
   propose_evolutions -> emit_backlog with {

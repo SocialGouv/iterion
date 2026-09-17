@@ -30,6 +30,9 @@
 ## commit is the net owner's maintenance act, landed on the base branch by
 ## the party that owns landings — this bot never pushes.
 ## ═══════════════════════════════════════════════════════════════════
+
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   oracle_dir:    string = ".golden-master"

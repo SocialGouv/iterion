@@ -59,6 +59,36 @@ func TestMaxSyntaxProfileDirReadsTheBundle(t *testing.T) {
 	}
 }
 
+// A .bot beside main.bot is an entry of its own — nothing from main.bot
+// reaches it, and it executes under the same manifest — so its profile
+// counts; a fragment under lib/ that nothing imports does not, nor does a
+// file that is not a workflow.
+func TestMaxSyntaxProfileCountsTheRootSiblingEntries(t *testing.T) {
+	files := map[string]string{
+		"main.bot":      "agent a:\n  description: \"x\"\n",
+		"extend.bot":    "dsl: 2\nagent b:\n  description: \"x\"\n",
+		"lib/frag.bot":  "dsl: 2\nagent c:\n  description: \"x\"\n",
+		"README.bot.md": "dsl: 2\n",
+	}
+	profile, by, unread := MaxSyntaxProfile(files)
+	if profile != 2 || !reflect.DeepEqual(by, []string{"extend.bot"}) || len(unread) != 0 {
+		t.Fatalf("map form: profile %d by %v unread %v", profile, by, unread)
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for rel, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(rel)), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile, by, unread = MaxSyntaxProfileDir(dir)
+	if profile != 2 || !reflect.DeepEqual(by, []string{"extend.bot"}) || len(unread) != 0 {
+		t.Fatalf("dir form: profile %d by %v unread %v", profile, by, unread)
+	}
+}
+
 // A bundle's profile is the highest over every file of every unit it
 // executes: a fragment the main imports counts, under its own name, and a
 // child a fragment declares is followed like one the main declares.

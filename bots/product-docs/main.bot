@@ -92,6 +92,8 @@
 ## reports NO undeclared cycle — this is the only declared loop.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   ## The DOCS repository — this run's workspace and the ONLY tree the
   ## bot writes to. Source repositories are cloned out of tree.

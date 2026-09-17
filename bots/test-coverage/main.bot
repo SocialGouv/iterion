@@ -77,6 +77,8 @@
 ## judgment. 13 nodes → 5.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   ## ${PROJECT_DIR} resolves to the run worktree under worktree: auto
   ## (do NOT override with a literal repo root — that aims agents at the

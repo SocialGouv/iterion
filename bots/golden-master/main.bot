@@ -16,6 +16,8 @@
 ## milestone, pages carrying not one character.
 ## ═══════════════════════════════════════════════════════════════════
 
+dsl: 2
+
 vars:
   ## Free-text scope for the corpus. Empty = the campaign picks the surface.
   ## Deliberately not an enum of frameworks: this bot is repo-agnostic and all

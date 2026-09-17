@@ -22,6 +22,8 @@
 ##    evidence per claim — no speculative "maybe X is better now".
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   ## ${PROJECT_DIR} is the workspace root the engine launches against.
   ## On a sandboxed run it resolves to the in-container mount point;

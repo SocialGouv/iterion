@@ -70,6 +70,8 @@
 ## the per-run `mission_notes` var, never in this file.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 

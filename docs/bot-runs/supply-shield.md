@@ -2,6 +2,36 @@
 
 Newest first. See [README](README.md) for the template.
 
+## 2026-09-17 — profile 2: malware gate on a lockfile adding lodash — MEDIUM on a known advisory, no forge (run 01a0af95-650c)
+
+- Status: **validated end to end** — `diff_scope` → `enumerate_deps` → heuristics →
+  `llm_review` → `sarif_gen` → `forge_report` (nothing to post: no remote, no PR, no token)
+  → `update_cache` → done.
+- Versions: bot supply-shield 0.1.2 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository checked out on a branch that adds
+  `package.json` + `package-lock.json` (lodash 4.17.21, the only entry), `--var base_ref=main
+  --var head_ref=HEAD` plus a one-line `scope_notes`, `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on
+  `claude_code`/`claude-opus-5` (the enumerator's default `claw`/gpt-5.5 route is closed until
+  2026-09-20).
+- Result: $1.09, 6 min 05 s. One cold-miss package inspected; `npm audit` (live registry data)
+  returned advisory `npm-advisory-1115806` aggregating three GHSAs (GHSA-r5fr-rjxr-66jc,
+  CVSS 8.1, code injection through `_.template`; two prototype-pollution moderates). The
+  reviewer read it as a known-vulnerability upgrade case, not suspected malware — MEDIUM
+  25/100 — and opened one board issue (`native:28485ac6-d77f-4e21-9415-9c3986a221e5`, on the
+  operator's local board: close it by hand). The coverage banner is honest: js-x-ray did not
+  run (no `node_modules`, no `jsxray.json`), so the malware axis rests on the absence of
+  signals, and the report says so. SARIF written, one cache line appended.
+- Value: the six prompts' paragraph breaks reach the models — the run's `events.jsonl` carries
+  e.g. `verdicts.\n\nIMPORTANT — UNTRUSTED INPUT BOUNDARY` from `review_system`, the authors'
+  blank line — and the whole gate runs on a one-package branch in six minutes.
+- Findings / misses: the board issue is the bot's delivery on a real PR gate, but it lands on
+  whichever board the store serves — a dogfood switch like rgaa-audit's `post_to_board` would
+  keep scratch runs quiet. Bot-side, older than this wave; not changed here.
+- Engine hardening: none needed.
+- Lessons for next run: a branch with a lockfile change and an explicit `base_ref` is the whole
+  fixture; install `node_modules` on the branch if the js-x-ray axis matters.
+
 ## 2026-06-30 — first SANDBOXED run from the sec image (runs 019f1783 / 019f1792 / 019f17.. dedup)
 
 - **Status:** validated (sandboxed, end-to-end)

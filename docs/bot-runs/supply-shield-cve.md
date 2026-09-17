@@ -2,6 +2,32 @@
 
 Newest first. See [README](README.md) for the template.
 
+## 2026-09-17 — profile 2: CVE gate on the same lockfile — three advisories validated, MEDIUM (run 01a0af95-6521)
+
+- Status: **validated end to end** — `diff_scope` → `enumerate_deps` → scanners →
+  `llm_review` → `sarif_gen` → `forge_report` (nothing to post: no remote, no PR, no token)
+  → `update_cache` → done.
+- Versions: bot supply-shield-cve 0.1.2 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: the supply-shield fixture (a scratch greeter repository on a branch adding
+  `package.json` + `package-lock.json` with lodash 4.17.21), `--var base_ref=main --var
+  head_ref=HEAD` plus a one-line `scope_notes`, `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on
+  `claude_code`/`claude-opus-5` (the enumerator's default `claw`/gpt-5.5 route is closed until
+  2026-09-20).
+- Result: $1.02, 6 min 32 s. Coverage healthy (2/2 scanners: the trivy + osv floor and
+  `npm audit`); the floor corroborated nothing, `npm audit` alone carried the three GHSAs
+  (GHSA-r5fr-rjxr-66jc high 8.1, GHSA-f23m-r3pf-42rh and GHSA-xxjr-mmjv-4gpg moderate 6.5),
+  all applicable to a production dependency at 4.17.21 — MEDIUM, one board issue
+  (`native:2daada7d-7368-414b-bfe5-028b04c732f4`, on the operator's local board: close it by
+  hand), the aggregation note written. SARIF written, one cache line appended.
+- Value: the six prompts' paragraph breaks reach the models (proven in the run's `events.jsonl`
+  for the three system prompts a node rendered; the user prompts' first break sits next to a
+  `{"{"}…}` value and is not a static witness), and the reviewer names its sole source instead of
+  claiming corroboration it did not get.
+- Findings / misses: same board-emission remark as supply-shield; nothing new.
+- Engine hardening: none needed.
+- Lessons for next run: unchanged from supply-shield — the fixture is the branch.
+
 ## 2026-06-30 — first SANDBOXED run from the sec image (runs 019f17ab + dedup run)
 
 - **Status:** validated (sandboxed, end-to-end)

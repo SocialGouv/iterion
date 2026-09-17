@@ -10,6 +10,36 @@ to the ADR, then a second commit-or-skip gate (the note is optional). Uses
 `interaction: human` (not the heavier `interaction: review`); claude_code only
 (no forfait dependency).
 
+## 2026-09-17 — profile 2: a full re-challenge on a one-ADR repository, the addendum committed (run 01a0af95-64fb)
+
+- Status: **validated end to end** — `load_adr` → `survey_code` → `frame_arguments` →
+  `human_decision` (addendum) → `write_addendum` → `human_commit_gate` (commit) →
+  `commit_changes` → done.
+- Versions: bot adr-rechallenge 0.1.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch greeter repository
+  (seven files, one ADR forbidding third-party imports, a `requirements.txt` pinning
+  `requests` that nothing consumes), `--var adr_path=docs/adr/0001-standard-library-only.md` plus a one-line `scope_notes`,
+  `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps
+  `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5`
+  (the GPT forfait is closed until 2026-09-20). The two gates answered with
+  `iterion resume --answer decision=addendum …` then `--answer commit=true …`.
+- Result: three LLM nodes, $1.10, 9 min 54 s of wall including the two pauses. `survey_code`
+  found the one real signal (the pin is attributed to "optional tooling scripts" that do not
+  exist in the tree), `frame_arguments` argued keep / change / addendum without pre-deciding
+  ("no signal worth a change proposal"), `write_addendum` produced a dated eight-line note that
+  reconfirms the decision and names the record error, committed as `9c65ec1` on the run
+  worktree (detached HEAD, one file changed).
+- Value: the ten prompts' paragraph breaks reach the models — the run's `events.jsonl` carries
+  the authors' blank lines as `\n\n` for seven of the eight prompts visited nodes rendered
+  (`addendum_user` has no paragraph break to witness; `ticket_*` belong to the `change`
+  route, not taken). The bot's contract holds: the human owns
+  the decision, the addendum corrects the record instead of re-litigating the ADR.
+- Findings / misses: none bot-side. A resume does not carry `--merge-into none` — finalize
+  reported "merge into main pending UI confirmation" after the second gate; nothing merged.
+- Engine hardening: none needed.
+- Lessons for next run: a repository with one ADR and one commit exercises every node; the
+  addendum commit lives on the run worktree — read it there, or launch with `--merge-into`.
+
 ## 2026-06-14 — first dogfood, re-challenge ADR-008 (run 019ec5bc)
 
 - **Status: validated** — full human-in-the-loop cycle exercised end-to-end;

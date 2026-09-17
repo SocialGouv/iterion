@@ -8,6 +8,46 @@ backlog tickets + findings for Nexie. See
 
 ---
 
+## 2026-09-17 — profile 2: a one-quarter vision on a toy CLI, four operator questions, three tickets, closed at the continue gate (run 01a0afa6-aaf5)
+
+- Status: **validated end to end** — `survey` → `investigate` (four `ask_user` questions,
+  one at a time) → `synthesize_vision` → `review_claude` (mono) → `human_review_vision`
+  (approved) → `carry_vision` → `propose_evolutions` → `emit_backlog` (3 tickets) →
+  `ask_continue` (done) → done. The new `revise_vision -> vision_not_converged` exit was not
+  reached — the vision was approved on its first turn; the strict dry run is its witness (the
+  all-false pass ends `failed` on the declared fail node where main's copy died
+  LOOP_EXHAUSTED).
+- Versions: bot evolve 0.1.1 (`dsl: 2` + the VISION_NOT_CONVERGED exit, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository (a one-file CLI, one ADR, three stray
+  branches), `--var review_mode=mono --var mono_family=claude --var scope_notes="A tiny
+  standard-library greeter CLI. Propose at most two evolutions; keep the vision to one
+  page."`, `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on
+  `claude_code`/`claude-opus-5` (the eight `claw`/gpt-5.5 nodes overridden; the forfait is
+  closed until 2026-09-20). The four in-agent questions and the two gates answered with
+  `iterion resume --answer ask_user_response=… / approved=true … / action=done`; the pauses
+  count against the wall, so the run was resumed past the 10-minute cap twice
+  (`--max-duration 40m --max-cost-usd 4`).
+- Result: $2.93, 47 min 09 s from launch to done including six pauses. The survey read the
+  repository as experimental (one commit, no CI, three branches pulling apart) and the
+  investigator asked exactly the questions that decide a vision — real tool or toy,
+  distribution story, which candidate branch leads, horizon — before writing "greet —
+  one-quarter vision: shrink, then ship"; the claude reviewer raised no blocking concern; the
+  proposals became three self-contained tickets on the operator's local board
+  (`native:30c7877c…`, `native:644e86c1…`, `native:7a2d2bea…` — collapse to one lineage,
+  every behaviour has a witness, ship `greet.pyz` — each with a suggested bot and typed
+  `bot_args`; close them by hand). No commit, as expected of a vision run.
+- Value: the eighteen prompts' paragraph breaks reach the models — proven in the run's
+  `events.jsonl` for ten rendered prompts (`investigate_system` six times); the GPT reviewer,
+  the revision and the Nexie hand-off prompts were not rendered on this route — and the
+  bot's discipline held on a toy: it asked before spending a vision, and its tickets carry
+  the arbitrations the operator gave.
+- Findings / misses: none bot-side. The `investigate` agent's questions pause the run like a
+  human node does; on a 10-minute wall they alone consume it.
+- Engine hardening: none needed.
+- Lessons for next run: `--max-duration 45m` from the start when the operator answers by hand;
+  a resume does not carry `--merge-into none` (seen on the other resumed runs of this wave).
+
 ## 2026-06-22 — PARKED: gpt-5.5 forfait context-overflow in review fan-out (run 019ef05e-90ff)
 
 - Status: **partial / parked** — survey + investigate (operator elicitation) completed; **`aggregate_review` (wait_all) failed: 2 branches `context_length_exceeded`** on the gpt-5.5 reviewer.
