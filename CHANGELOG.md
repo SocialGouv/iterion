@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.155.0](https://github.com/SocialGouv/iterion/compare/v3.154.2...v3.155.0) (2026-09-17)
+
+### Features
+
+* **bots:** wave 1 of the catalogue on dsl: 2 — review-pr, whats-next, feature-dev ([#1344](https://github.com/SocialGouv/iterion/issues/1344)) ([#1353](https://github.com/SocialGouv/iterion/issues/1353)) ([c1fe2a0](https://github.com/SocialGouv/iterion/commit/c1fe2a020039b6dc041949ec347ada7d52698e42)), references [#1206](https://github.com/SocialGouv/iterion/issues/1206) [#1159](https://github.com/SocialGouv/iterion/issues/1159) [#1293](https://github.com/SocialGouv/iterion/issues/1293) [#1301](https://github.com/SocialGouv/iterion/issues/1301) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1293](https://github.com/SocialGouv/iterion/issues/1293) [#1293](https://github.com/SocialGouv/iterion/issues/1293) [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1349](https://github.com/SocialGouv/iterion/issues/1349)
+
+    <details><summary>why</summary>
+
+    The dry run over the corpus required every file to change, which was true while no shipped bot declared `dsl: 2`. The catalogue now migrates wave by wave (#1344), so a file already on profile 2 must come back byte-identical, with no change and no prompt reported — the same lines the first prepared lot (#1206) wrote, so the two rebase cleanly.
+
+    </details>
+
 ## [3.154.2](https://github.com/SocialGouv/iterion/compare/v3.154.1...v3.154.2) (2026-09-17)
 
 ### Bug Fixes
