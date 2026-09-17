@@ -1,5 +1,38 @@
 # Billy — branch-improvement validation
 
+## 2026-09-17 — profile 2: triage, campaign, verify and review prompts reach the models with their paragraphs (run 01a0aef1-3182)
+
+- Status: **validated** — a branch diff reviewed and improved in one pass on
+  a scratch repository, the in-loop review clean.
+- Versions: bot branch-improve-loop 1.8.1 (`dsl: 2`, wave 2 of #1344) ·
+  iterion `853b5ce28` (branch build v3.154.1 + the wave-1 runtime fix) ·
+  claude_code + claude-opus-5 on every node, served through the host's
+  Anthropic-compatible facade (z.ai) as the run's provenance records.
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of
+  the greet project checked out on `feat/shout` (one commit over `main`: a
+  `--shout` flag and its unit test), `--store-dir` the operator's workspace
+  store, `--sandbox none --merge-into none`, `--var base_ref=main --var
+  pilot=end --var plan_review=off --var max_passes=2 --var gate_enabled=false`,
+  caps `--max-cost-usd 6 --max-duration 25m`, `ITERION_BIN` the branch binary.
+  No PR, nothing published.
+- Result: **branch_clean**, ~7.7 min, **$1.41** (plan $0.25 · campaign $0.62
+  · verify_build $0.30 · review $0.24), 166 569 tokens. The triage plan named
+  the branch's one real gap — the new test covered `greeting()` only, not the
+  CLI wiring of the flag — and the campaign closed it in one commit; the
+  deterministic gate green, the adversarial in-loop review clean, no decline.
+  Storage branch `iterion/run/molten-plunge-vortexvape-321c` (`f085500`),
+  merged nowhere.
+- Value: the branch loop live on profile 2 — workspace probe, delivery
+  preflight, `plan` → `campaign` → `verify_probe` → `verify_build` →
+  `verify_run` → `review` → `gate` → `done`; the run's `events.jsonl` carries
+  the rendered campaign prompt with `end to end.\n\nTHE SCOPE is the BRANCH
+  DIFF`, the paragraph break the profile-1 lexer used to fold.
+- Findings / misses: none on the bot. Not exercised: the peer review of the
+  plan (off by var), the delivery tail (no PR, gate off), the decline path.
+- Engine hardening: none needed.
+- Lessons for next run: a two-commit scratch branch is enough to prove the
+  loop's shape; the delivery tail needs a real forge and a real PR.
+
 ## 2026-09-09 — #1028: lazy cloud home, bank recovered after quota stop
 
 - Status: **bank recovered; delivery review interrupted by provider quota**.

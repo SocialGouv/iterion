@@ -13,6 +13,38 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-09-17 — profile 2: the plan, campaign and verify prompts reach the models with their paragraphs (run 01a0aef0-ec3c)
+
+- Status: **validated** — converged in one pass on a scratch repository, the
+  axis applied and merged.
+- Versions: bot whole-improve-loop 2.4.1 (`dsl: 2`, wave 2 of #1344) ·
+  iterion `853b5ce28` (branch build v3.154.1 + the wave-1 runtime fix) ·
+  claude_code + claude-opus-5 on every node, served through the host's
+  Anthropic-compatible facade (z.ai) as the run's provenance records.
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of
+  the greet project (`/tmp/iterion-probe-willy`, a one-file Python CLI with
+  its test), `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--var plan_review=off --var max_passes=2`, caps `--max-cost-usd 6
+  --max-duration 25m`, `ITERION_BIN` the branch binary. Axis: a docstring and
+  complete type hints on every function of greet.py and test_greet.py,
+  behaviour unchanged.
+- Result: **converged**, ~9.5 min, **$1.27** (plan $0.28 · campaign $0.71 ·
+  verify_build $0.28), 110 806 tokens. The plan's baseline read matched
+  reality; the campaign applied the axis in three commits, one per site, the
+  verify gate green; the run's branch was squashed into the scratch `main` as
+  `2f4719d`.
+- Value: the whole loop live on profile 2 — `workspace_probe` → `plan` →
+  `plan_review_topology` → `campaign` → `verify_probe` → `verify_build` →
+  `verify_run` → `gate` → `done`; the run's `events.jsonl` carries the rendered
+  campaign prompt with `you own this pass end to end.\n\nTHE AXIS is in your
+  user prompt`, the paragraph break the profile-1 lexer used to fold.
+- Findings / misses: none on the bot. Not exercised: the peer review of the
+  plan (off by var; no second family credentialed today) and the PR
+  finalisation (`open_mr` false).
+- Engine hardening: none needed.
+- Lessons for next run: a scratch repository with a real test suite proves the
+  loop for about a dollar.
+
 ## 2026-08-10 — answer-folding proven live: a mid-pass steer pivots the axis (run 019fed38)
 
 - Status: **validated** — closes the one link the morning's twin runs

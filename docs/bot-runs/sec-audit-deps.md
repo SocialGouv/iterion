@@ -13,6 +13,40 @@ Read-only (no code edits). See [bots/sec-audit-deps/](../../bots/sec-audit-deps/
 > /typosquat-corpus malware signals — so a run still self-labels with a
 > "⚠ Coverage" banner for partial coverage, but it is no longer a 0-finding scaffold.
 
+## 2026-09-17 — profile 2: enumerate and review prompts reach the models with their paragraphs (run 01a0aef1-77e6)
+
+- Status: **validated** — the whole pipeline end to end on a dependency-free
+  scratch repository, an honest zero.
+- Versions: bot sec-audit-deps 0.1.2 (`dsl: 2`, wave 2 of #1344) · iterion
+  `853b5ce28` (branch build v3.154.1 + the wave-1 runtime fix) · the bot's own
+  sec sandbox image (`iterion-sandbox-sec:edge`, present locally) ·
+  `--backend claude_code --model claude-opus-5` on every LLM node (the GPT
+  forfait the bot routes to by default is spent until 2026-09-20), served
+  through the host's Anthropic-compatible facade (z.ai).
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of
+  the greet project (a one-file Python CLI, no lockfile), `--store-dir` the
+  operator's workspace store, `--var severity_threshold=high`, caps
+  `--max-cost-usd 5 --max-duration 25m`, `ITERION_BIN` the branch binary.
+- Result: **finished**, ~10 min, **$0.74** (enumerate_deps $0.23 · llm_review
+  $0.51). `enumerate_deps` found no manifest and said so; the ecosystem
+  heuristics ran in 59 ms, the generic heuristics (trivy over the tree) in
+  300 s; `llm_review` reviewed 0 packages — "pending[] was empty and both
+  heuristics returned zero signals with zero errors — verified correct" — and
+  wrote the report to the run's `.sec-audit/deps-findings.md`; no issue
+  created, the cache updated.
+- Value: the pipeline live on profile 2 — `enumerate_deps` → `normalize_deps`
+  → `run_eco_heuristics` → `run_generic_heuristics` → `filter_cached` →
+  `llm_review` → `update_cache` → `done`; the run's `events.jsonl` carries the
+  rendered review prompt with `per-package verdicts.\n\nIMPORTANT — UNTRUSTED
+  INPUT BOUNDARY`, the paragraph break the profile-1 lexer used to fold.
+- Findings / misses: a repository without dependencies proves the graph and
+  the prompts, not the reviewer's judgement on a real package; the coverage
+  banner logic was not exercised (no ecosystem detected).
+- Engine hardening: none needed.
+- Lessons for next run: pick a scratch repository with one lockfile to see a
+  package reviewed; the generic trivy pass costs five minutes even on three
+  files.
+
 ## 2026-06-13 (retest) — 2 engine bugs root-caused & fixed (runs 019ec1b1→019ec1d3)
 
 - Status: **engine-unblocked.** Sandboxed claw now runs end-to-end; the SCA
