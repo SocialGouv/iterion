@@ -1453,7 +1453,7 @@ prompt p2_campaign_system:
      build → run the affected tests → COMMIT with a semantic message
      (`fix(review): <precise issue>` or the `type(scope):` that
      fits). Validation BEFORE each commit.
-  3. COMMIT EACH FIX AS YOU FINISH IT (`git add -A` so new files
+  3. COMMIT EACH FIX AS YOU FINISH IT (`git add -A -- . ':(exclude).claude'` so new files
      land) — git is the durable state; a later pass reads `git log`
      and continues.
      CAPTURE THE STATUS, THEN FILTER — never let a pipe decide
@@ -1548,7 +1548,9 @@ prompt p2_verify_user:
   MANDATORY (skill section 1b): if the repo's own CI enforces a
   codegen-drift gate (git diff --exit-code after a regen/vendor step,
   a drift-check task, test -z on git status --porcelain), verify.sh
-  MUST mirror it — run the regen command(s), then fail on drift; the
+  MUST mirror it — run the regen command(s), then fail on drift — with
+  iterion's `.claude/` scaffold left out of any porcelain check
+  (`git status --porcelain -- . ':(exclude).claude'`); the
   deterministic precheck rejects a gateless verify.sh otherwise.
 
 schema ecosystem_profile:
@@ -2878,8 +2880,8 @@ fi
 # NOT be enumerated here — a bare git-add-all would stage millions
 # of untracked cache files. The exclude list mirrors prepare_commit
 # JS tool's universal cache-dir set.
-if git status --porcelain -- . ':(exclude)go' ':(exclude)target' ':(exclude).cargo' ':(exclude)node_modules' ':(exclude).yarn/cache' ':(exclude).yarn/unplugged' ':(exclude).yarn/install-state.gz' ':(exclude)__pycache__' ':(exclude).venv' ':(exclude)venv' ':(exclude).cache' ':(exclude).iterion' | grep -q .; then
-  git add -A >&2
+if git status --porcelain -- . ':(exclude).claude' ':(exclude)go' ':(exclude)target' ':(exclude).cargo' ':(exclude)node_modules' ':(exclude).yarn/cache' ':(exclude).yarn/unplugged' ':(exclude).yarn/install-state.gz' ':(exclude)__pycache__' ':(exclude).venv' ':(exclude)venv' ':(exclude).cache' ':(exclude).iterion' | grep -q .; then
+  git add -A -- . ':(exclude).claude' >&2
 # Belt-and-suspenders (Revi review finding): git add -A respects .gitignore, so
 # ignored caches at ANY depth (node_modules, go/, target/, …) are already skipped
 # — that's the primary guard and why the brittle :(exclude) pathspec form was
@@ -3094,12 +3096,27 @@ def masked_pipelines(text):
         if masked:
             bad.append(s[:200])
     return bad
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, and dropped from what this gate judges --
+    # the rule finalize applies to the wip bank (runOutputPaths), read
+    # here for the precheck and for the drift tail alike (a build that
+    # writes under .claude/ is not caught either). A rename is judged
+    # on its destination; a quoted path is unquoted.
+    path = line[3:]
+    if ' -> ' in path:
+        path = path.split(' -> ', 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+        path = path[1:-1]
+    return path.startswith('.claude/')
 def tree_state():
     try:
         p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
         if p.returncode != 0:
             return None
-        return set(l for l in p.stdout.splitlines() if l.strip())
+        return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
     except Exception:
         return None
 # Deterministic exit-status-masking precheck. A verify script whose gate is
@@ -3711,7 +3728,7 @@ SUBJECT="chore(deps): batch update ${COUNT} patch upgrades"
 # Cache-exclusion pathspecs (see commit_changes for rationale): keep
 # any stray toolchain cache OUT of the staged set, regardless of
 # whether the sandbox env block was correctly applied upstream.
-git add -A >&2
+git add -A -- . ':(exclude).claude' >&2
 # Belt-and-suspenders (Revi review finding): git add -A respects .gitignore, so
 # ignored caches at ANY depth (node_modules, go/, target/, …) are already skipped
 # — that's the primary guard and why the brittle :(exclude) pathspec form was
@@ -4123,7 +4140,7 @@ COUNT=$(printf '%s' "$MEMBERS" | jq 'length' 2>/dev/null || echo '?')
 BODY=$(printf '%s' "$MEMBERS" | jq -r '.[] | "- \(.name // "?") \(.current // "?") -> \(.target // "?")"' 2>/dev/null || true)
 SUBJECT="chore(deps): update ${FAMILY}/* family (${COUNT} packages)"
 # Cache-exclusion pathspecs (see commit_changes for rationale).
-git add -A >&2
+git add -A -- . ':(exclude).claude' >&2
 # Belt-and-suspenders (Revi review finding): git add -A respects .gitignore, so
 # ignored caches at ANY depth (node_modules, go/, target/, …) are already skipped
 # — that's the primary guard and why the brittle :(exclude) pathspec form was

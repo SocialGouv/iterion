@@ -192,7 +192,51 @@ func TestVerifyRunRefusesDirtyTree(t *testing.T) {
 					t.Errorf("clean tree must not carry net_dirty=true, got %+v", res)
 				}
 			})
+
+			// iterion mirrors the bundle's skills (and plugin commands, agents,
+			// settings) into <workspace>/.claude/ at run start. On a repository
+			// that does not ignore `.claude/`, `git status --porcelain` lists it
+			// untracked — engine scaffold, not a pass's leftover. The gate must
+			// judge what the RUN produced, as finalize does (#1364).
+			t.Run("the_engines_scaffold_alone_is_not_dirty", func(t *testing.T) {
+				ws, scratch := setupDirtyRepo(t, "README.md")
+				gittest.Run(t, ws, "checkout", "--", "README.md")
+				writeScaffold(t, ws)
+				res := runVerifyRun(t, cmd, ws, scratch)
+				if !res.Passed || res.NetDirty {
+					t.Fatalf("the engine's .claude/ scaffold alone must not refuse the gate, got %+v", res)
+				}
+			})
+
+			t.Run("scaffold_beside_a_real_edit_is_refused_without_naming_it", func(t *testing.T) {
+				ws, scratch := setupDirtyRepo(t, "README.md")
+				writeScaffold(t, ws)
+				res := runVerifyRun(t, cmd, ws, scratch)
+				if res.Passed || !res.NetDirty {
+					t.Fatalf("a real uncommitted edit beside the scaffold must still refuse, got %+v", res)
+				}
+				if !strings.Contains(res.LogTail, "README.md") || strings.Contains(res.LogTail, ".claude") {
+					t.Errorf("log_tail must name the edit and not the scaffold, got %q", res.LogTail)
+				}
+			})
 		})
+	}
+}
+
+// writeScaffold lays what iterion mirrors into a run workspace before the
+// first node: a bundle skill and a plugin settings file under .claude/.
+func writeScaffold(t *testing.T, ws string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(ws, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range map[string]string{
+		filepath.Join(".claude", "skills", "bot.md"): "# a mirrored skill\n",
+		filepath.Join(".claude", "settings.json"):    "{}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(ws, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

@@ -1,7 +1,10 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.3.0
+version: 0.3.1
+## 0.3.1 — the verify gate's clean-tree precheck no longer counts the `.claude/`
+## scaffold iterion mirrors into the worktree as the pass's uncommitted work;
+## the deterministic commit and the commit instruction exclude it (#1364); the bundle's skill says the same.
 ## 0.3.0 — the plan phase runs by default on every deployment: `plan_review`
 ## gates ONLY the cross-model peer review (the plan_topology gate no longer
 ## skips planning when it resolves off); the new `plan_phase` (on|off) is

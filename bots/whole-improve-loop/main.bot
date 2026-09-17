@@ -54,7 +54,7 @@
 ##
 ## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign commits
 ## the UNCOMMITTED working tree AFTER its own build+test passes, staging
-## untracked files (`git add -A`) so a change that ADDS files actually lands;
+## untracked files (`git add -A -- . ':(exclude).claude'`) so a change that ADDS files actually lands;
 ## the deterministic verify gate then re-checks the committed tree.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
@@ -212,7 +212,7 @@ prompt campaign_system:
      have not built and tested green.
 
   3. COMMIT EACH SITE AS YOU FINISH IT — never batch. Stage everything
-     including new files (`git add -A`, so a change that ADDS files actually
+     including new files (`git add -A -- . ':(exclude).claude'`, so a change that ADDS files actually
      lands) and commit before moving on. git IS your durable state: an
      interrupted run keeps every site you committed, and a fresh pass just
      reads `git log` and continues where you left off. Do NOT keep a separate
@@ -475,7 +475,9 @@ prompt verify_user:
   MANDATORY (skill section 1b): if the repo's own CI enforces a
   codegen-drift gate (git diff --exit-code after a regen/vendor step, a
   drift-check task, test -z on git status --porcelain), verify.sh MUST
-  mirror it — run the repo's regen command(s), then fail on drift. The
+  mirror it — run the repo's regen command(s), then fail on drift — with
+  iterion's `.claude/` scaffold left out of any porcelain check
+  (`git status --porcelain -- . ':(exclude).claude'`). The
   deterministic precheck rejects a gateless verify.sh in that case
   (exit 3) and the loop burns a full pass re-learning this.
 
@@ -1051,12 +1053,27 @@ def masked_pipelines(text):
         if masked:
             bad.append(s[:200])
     return bad
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, and dropped from what this gate judges --
+    # the rule finalize applies to the wip bank (runOutputPaths), read
+    # here for the precheck and for the drift tail alike (a build that
+    # writes under .claude/ is not caught either). A rename is judged
+    # on its destination; a quoted path is unquoted.
+    path = line[3:]
+    if ' -> ' in path:
+        path = path.split(' -> ', 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+        path = path[1:-1]
+    return path.startswith('.claude/')
 def tree_state():
     try:
         p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
         if p.returncode != 0:
             return None
-        return set(l for l in p.stdout.splitlines() if l.strip())
+        return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
     except Exception:
         return None
 # Deterministic exit-status-masking precheck. A verify script whose gate is

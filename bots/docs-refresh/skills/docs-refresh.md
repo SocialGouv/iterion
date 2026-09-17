@@ -45,7 +45,7 @@ obligation generators:
    sees it.
 5. **Commit one aligned document at a time.** Use
    `docs(<area>): <alignment>` and end the body with `Bot: docs-refresh`.
-   Stage new files too (`git add -A`). Git is the durable work ledger across
+   Stage new files too (`git add -A -- . ':(exclude).claude'`). Git is the durable work ledger across
    continuation passes.
 6. **Record every adjudication.** A dismissal that is not written to the
    dismissals ledger comes back to you next pass; a promise that is not

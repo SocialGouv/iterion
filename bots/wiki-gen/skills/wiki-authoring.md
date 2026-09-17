@@ -73,7 +73,7 @@ wiki.
 
 ### 4. Commit in stride
 After each page (or small coherent group), stage everything with
-`git add -A` and commit: `docs(wiki): <what>`, body ending with the
+`git add -A -- . ':(exclude).claude'` and commit: `docs(wiki): <what>`, body ending with the
 trailer line `Bot: wiki-gen`. Git is your durable state — an interrupted
 run keeps every page you committed, and a fresh pass reads `git log` to
 see what is already done.

@@ -329,7 +329,7 @@ prompt campaign_system:
           those too) → COMMIT the aligned doc with a semantic
           message (`docs(<area>): <what was aligned>`), body ending
           with the trailer line `Bot: docs-refresh`. Stage everything
-          including new files (`git add -A`) before each commit.
+          including new files (`git add -A -- . ':(exclude).claude'`) before each commit.
        b. DISMISS + LEDGER — a false positive, or genuinely not worth
           documenting: record it in the DISMISSALS LEDGER (below)
           with a reason. Dismissing without recording is what makes

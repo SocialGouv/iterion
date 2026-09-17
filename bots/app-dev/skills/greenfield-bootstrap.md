@@ -91,7 +91,7 @@ test commands) — `docs(readme): run and test commands`.
 
 `feat(scope):` one coherent feature slice · `test(scope):` tests beyond
 a slice's own · `fix(scope):` red-gate fixes · `docs(...)` README/ADRs ·
-`chore(...)` config/deps. Stage with `git add -A` before EVERY commit
+`chore(...)` config/deps. Stage with `git add -A -- . ':(exclude).claude'` before EVERY commit
 (greenfield adds files constantly; an unstaged new file is invisible to
 diffs and to the verify gate's drift check).
 

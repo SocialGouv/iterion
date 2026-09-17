@@ -15,6 +15,35 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
 
 ---
 
+## 2026-09-17 — #1364 witness: the same pass on the same scratch, the gate now passes over the skills mirror (run 01a0b013-a3df)
+
+- Status: **validated end to end** — `campaign` (1 commit) → `verify_build` → `verify_run`
+  `passed: true` → `gate` `converged: true` → done. The morning's run on this bot
+  (`01a0af9e-967d`, below) ended `converged: false` on `NET DIRTY … ?? .claude/`; this one
+  runs the fixed gate on a tree that carries the same untracked mirror.
+- Versions: bot test-coverage 2.3.2 (the verify gate's clean-tree precheck drops iterion's
+  `.claude/` scaffold, #1364; `dsl: 2` since wave 3b) · iterion `4c00b5c49` (main after
+  wave 3b) for the bots with the #1364 change applied on top; the engine the branch binary
+  `v3.158.0+c488486e2-dirty` (main's engine, a bots-only branch), served through the host's
+  Anthropic-compatible facade (z.ai) as the run's provenance records.
+- Method: the wave-3b recipe on a fresh copy of the scratch greeter — `--var test_unit=true
+  --var plan_phase=off --var max_passes=1 --var target="greet.py error paths and the main()
+  exit codes"`, `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--merge-into none`, every LLM node on `claude_code`/`claude-opus-5` — with caps sized from
+  the morning's numbers, `--max-cost-usd 3 --max-duration 20m`, so no resume.
+- Result: $1.53, 10 min 41 s. The campaign locked the error paths and exit codes down in one
+  commit (`coverage_complete: true`), `verify_build` wrote and ran `verify.sh`, `verify_run`
+  judged HEAD with the mirror untracked beside it and passed (exit 0, the suite green), the
+  gate converged on the first pass. Storage branch `iterion/run/neon-glide-jadeshred-3598` →
+  `c6e8cc3` (named by run name: no resume, #1366).
+- Value: the witness the ticket asked for — same bot, same scratch shape, same flags, the
+  only change the gate's reading of the scaffold — and the paragraph breaks of the two
+  rendered prompts still reach the model.
+- Findings / misses: none.
+- Engine hardening: none; the rule lives in the bots, mirroring finalize's.
+- Lessons for next run: `--max-cost-usd 3 --max-duration 20m` is the right size for one pass
+  of this bot on a small repository.
+
 ## 2026-09-17 — profile 2: seven behaviours locked in three commits, the exhaustion exit delivered on a spent budget (run 01a0af9e-967d)
 
 - Status: **campaign validated, gate refused by #1364** — `campaign` (3 commits) →
