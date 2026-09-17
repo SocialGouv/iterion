@@ -633,12 +633,18 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		// A unit that does not load stays BOUND, deliberately: saveUnit
-		// already refuses it server-side, naming the fragment at fault, and
-		// the document here is marshalled with provenance — unbinding it
-		// would leave a buffer that Save cannot place and Save-As refuses,
-		// for a main the loader read whole.
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path), Bindable: true})
+		// A unit that does not LOAD stays writable, deliberately: saveUnit
+		// refuses the write server-side, naming the fragment at fault, and
+		// the document is marshalled with provenance, which Save As refuses.
+		//
+		// A main that did not PARSE is another matter, and this branch is
+		// reached for one — a syntax error whose `import` line survived the
+		// salvage. The verdict is the main's own parse, the way
+		// /api/examples answers for the same file: the merged document is
+		// then a salvage too, and Download, Copy source and the Source view
+		// have to be told, or they hand the author a program missing what
+		// the parser could not read.
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path), Bindable: !parseHasErrors(pr.Diagnostics)})
 		return
 	}
 	docJSON, err := ast.MarshalFile(pr.File)

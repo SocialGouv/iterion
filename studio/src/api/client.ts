@@ -286,7 +286,15 @@ export function importsFragments(source: string): boolean {
 export async function parseUnit(
   files: Record<string, string>,
   main: string,
-): Promise<{ document: IterDocument; diagnostics: string[]; unit?: UnitInfo }> {
+): Promise<{
+  document: IterDocument;
+  diagnostics: string[];
+  unit?: UnitInfo;
+  /** False when the MAIN's own parse left errors: the merged document is
+   *  then a salvage. A unit that merely fails to LOAD stays true — its
+   *  write back is refused server-side, naming the fragment. */
+  bindable?: boolean;
+}> {
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ files, main }),
@@ -470,7 +478,18 @@ export async function openFile(
       // with that file as its main, so the fragments its imports reach
       // are in the document.
       const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
-      return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit, bindable: true };
+      // The server's verdict, not a hardcoded true: a unit that does not
+      // LOAD stays writable — its write back is refused there, naming the
+      // fragment — but a main that did not PARSE makes the merged document a
+      // salvage, and the sites that export it have to be told.
+      return {
+        source,
+        document: parsed.document,
+        diagnostics: parsed.diagnostics,
+        path,
+        unit: parsed.unit,
+        bindable: parsed.bindable !== false,
+      };
     }
     const parsed = await parseSource(source);
     // The verdict travels with the answer, the way /api/files/open carries it

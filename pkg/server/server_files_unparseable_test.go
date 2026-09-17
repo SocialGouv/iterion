@@ -13,24 +13,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
-// openFileFor posts one path to /api/files/open and decodes the answer.
-func openFileFor(t *testing.T, s *Server, path string) struct {
+// openedFile is what /api/files/open answers, named once: the shape was
+// spelled twice — the return type and the decode target — and a field added
+// to one of them compiles into a test that silently reads the zero value.
+type openedFile struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
 	Bindable          bool            `json:"bindable"`
-} {
+	Unit              *unitInfo       `json:"unit"`
+}
+
+// openFileFor posts one path to /api/files/open and decodes the answer.
+func openFileFor(t *testing.T, s *Server, path string) openedFile {
 	t.Helper()
-	var out struct {
-		Source            string          `json:"source"`
-		Document          json.RawMessage `json:"document"`
-		Diagnostics       []string        `json:"diagnostics"`
-		Path              string          `json:"path"`
-		ConfirmedDiskPath string          `json:"confirmed_disk_path"`
-		Bindable          bool            `json:"bindable"`
-	}
+	var out openedFile
 	body, err := json.Marshal(openFileRequest{Path: path})
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +86,54 @@ func TestAFileThatDoesNotParseIsNotWritable(t *testing.T) {
 	}
 }
 
+// TestAMainThatDoesNotParseIsASalvageOnEveryRoute.
+//
+// A main whose syntax broke but whose `import` line survived the salvage is
+// served as a UNIT: the merged document is that salvage plus the fragments.
+// The three routes that answer for it must say the same thing, or the same
+// file is a salvage on one and the program on another — and the sites that
+// export it (Download, Copy source, the Source view) follow whichever route
+// opened it, so a disagreement hands the author a .bot missing the region
+// the parser could not read.
+func TestAMainThatDoesNotParseIsASalvageOnEveryRoute(t *testing.T) {
+	// The import survives; the declaration under it does not parse.
+	frag := unit.FragmentDir + "/nodes.bot"
+	main := "import \"" + frag + "\"\n\nworkflow k:\n  entry: done\n\nagent broken\n  not a declaration\n"
+
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, unit.FragmentDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "k.bot"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, frag), []byte("prompt p:\n  Hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{WorkDir: workdir}}
+
+	opened := openFileFor(t, s, "k.bot")
+	if opened.Unit == nil {
+		t.Fatalf("the fixture is not the case under test: it did not open as a unit (diags %v)", opened.Diagnostics)
+	}
+	if opened.Bindable {
+		t.Error("/api/files/open called a unit whose main did not parse the program")
+	}
+
+	// Same file, same verdict, through /api/parse on the files map — the
+	// route a cloud bot source takes.
+	parsed := parseFor(t, parseRequest{
+		Files: map[string]string{"k.bot": main, frag: "prompt p:\n  Hello\n"},
+		Main:  "k.bot",
+	})
+	if parsed.Unit == nil {
+		t.Fatalf("the files-map fixture did not parse as a unit (diags %v)", parsed.Diagnostics)
+	}
+	if parsed.Bindable {
+		t.Error("/api/parse called a unit whose main did not parse the program")
+	}
+}
+
 // TestAFileThatParsesIsStillWritable is the end state the check drives
 // toward. Without it, refusing every write would look exactly as green.
 func TestAFileThatParsesIsStillWritable(t *testing.T) {
@@ -136,19 +183,16 @@ func TestOnlyAnErrorUnbinds(t *testing.T) {
 }
 
 // parseFor posts one body to /api/parse and decodes the answer.
-func parseFor(t *testing.T, req parseRequest) struct {
+type parsedProgram struct {
 	Document    json.RawMessage `json:"document"`
 	Diagnostics []string        `json:"diagnostics"`
 	Unit        *unitInfo       `json:"unit"`
 	Bindable    bool            `json:"bindable"`
-} {
+}
+
+func parseFor(t *testing.T, req parseRequest) parsedProgram {
 	t.Helper()
-	var out struct {
-		Document    json.RawMessage `json:"document"`
-		Diagnostics []string        `json:"diagnostics"`
-		Unit        *unitInfo       `json:"unit"`
-		Bindable    bool            `json:"bindable"`
-	}
+	var out parsedProgram
 	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatal(err)
