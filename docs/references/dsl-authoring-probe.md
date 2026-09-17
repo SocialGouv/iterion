@@ -108,6 +108,10 @@ change in the file, one `validate` round.
 | 2026-09-16, spec 1, the lot 4 build (`e652e78ed`: the dry run, `fmt`/`fix`, C145–C147, the skill's "Rules the grammar does not show"), standard protocol | `claude-haiku-4-5-20251001`, Claude Agent SDK subagent | 217 | 4 (C010; C040 ×2, C033) and 2 warnings (C145, C137) | not captured, 1 113 lines | 3.5 | 2 |
 | 2026-09-16, spec 1, same build, reading capped to the skill and three gallery shapes (no docs, no catalogue, no source) | same | 239 | 4 (C012; C029 ×2, C014) and 2 warnings (C145, C137) | not captured, ~1 200 lines | ~4 | 2 |
 
+Rounds count the agent's `validate` runs up to and including the green one; a
+0 means the protocol forbade the agent to validate, and the draft was green
+when validated afterwards.
+
 The 2026-09-09 drafts were correct; both cost a whole session of reading
 before the first line, and both agents had to guess the same unwritten
 rules (the loop-exhaustion exit, the tool's stdout-JSON contract,

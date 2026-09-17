@@ -5,7 +5,9 @@ reworked with one measurable goal: an agent given the skill writes a complex,
 correct bot on its first draft, and a human reads a `.bot` without guessing.
 This page is the tour of what landed; the [DSL guide](dsl.md) is the language
 reference, the [CLI reference](cli-reference.md) the commands, and the
-[diagnostics catalogue](references/diagnostics.md) every code named below.
+[diagnostics catalogue](references/diagnostics.md) every `C` code named below;
+the parse-stage `E0xx` codes are in
+[`pkg/dsl/parser/diagnostic.go`](../pkg/dsl/parser/diagnostic.go).
 
 ## A version in the file
 
@@ -53,7 +55,8 @@ reference, the [CLI reference](cli-reference.md) the commands, and the
   section and the studio editor's keyword module. A stale rendering fails CI;
   `iterion dsl spec --write` regenerates.
 - An unknown property names the closest accepted one and the block it belongs
-  to (E012, C135); a node may carry any name but `done` and `fail`; `#` opens
+  to (E012), and an unknown tool name the nearest built-in (C135); a node may
+  carry any name but `done` and `fail`; `#` opens
   a comment. Every diagnostic carries `file:line:column`, a title and a `fix:`,
   and `validate --json` returns them as objects (code, severity, position,
   message, hint, node, edge). Since v3.128.0.
@@ -139,21 +142,26 @@ reference, the [CLI reference](cli-reference.md) the commands, and the
 The [authoring probe](references/dsl-authoring-probe.md) writes the same
 ten-requirement bot from a fresh session, first draft before any `validate`:
 
-| Probe | Model | Errors at first draft | Read before the first line | Minutes | Rounds to green |
+| Probe | Model | Errors at first draft | Read before the first line | Minutes | `validate` rounds to green |
 |---|---|---|---|---|---|
 | 2026-09-09, before the programme | opus, sonnet | 0, 0 | the whole documentation, ~2 300 and ~2 500 lines (~213k and ~278k session tokens) | 20, 37 | 0, 0 |
 | 2026-09-10, registry and gallery | opus, sonnet | 0, 0 | 1 509 and 2 497 lines | 12, 16 | 1, 1 |
 | 2026-09-16, the complete DSL, a mid-size model (haiku 4.5) reading the skill and three templates | haiku | 4 (one graph, three template-for-expression), 0 lexical | 1 113 lines | 3.5 | 2 |
 | 2026-09-16, the same with no access to the documentation or the catalogue | haiku | 4 (graph and reference), 0 lexical | ~1 200 lines | ~4 | 2 |
 
+Rounds count the agent's `validate` runs up to and including the green one;
+the 2026-09-09 agents were forbidden to validate, so their rounds read 0 and
+their drafts were green when validated afterwards.
+
 Held: no lexical or keyword-collision error at all, even from a mid-size model
 reading only the skill; the cost of entry went from a session of reading to a
 few minutes; the errors left are semantic (exhaustiveness, a loop's exit, a
 condition's field, the loop namespace, a template written where an expression
 goes), and the diagnostics have them fixed in one round.
-Not held yet: the target of at most two semantic errors at the first draft
-(four on haiku), and `--strict` stays a per-bot gate on the catalogue until the
-dry run crosses a bounded loop a few times only (#1307).
+Not held yet: the target of at most two semantic errors at the first draft is
+missed by the capped haiku run (four at the draft; the standard run holds it),
+and `--strict` stays a per-bot gate on the catalogue until the dry run crosses
+a bounded loop a few times only (#1307).
 
 ## Compatibility
 
