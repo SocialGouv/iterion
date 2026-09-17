@@ -327,9 +327,22 @@ type RunInfo struct {
 	FriendlyName string
 
 	// WorkspacePath is the host path that becomes the sandbox
-	// workspace (typically a git worktree). The driver bind-mounts
-	// or copies this into the sandbox at [Spec.WorkspaceFolder]
-	// (default `/workspace`).
+	// workspace (typically a git worktree). The driver bind-mounts or
+	// copies this into the sandbox at [Spec.WorkspaceFolder] when one
+	// is declared, and otherwise AT THIS SAME ABSOLUTE PATH.
+	//
+	// Same-absolute-path is a requirement, not a convenience: a bot's
+	// tool and agent nodes address the workspace by the host path
+	// ({{run.worktree}} / PROJECT_DIR), so a driver that lands it
+	// somewhere else — `/workspace`, say — makes `git -C <worktree>`
+	// hit a path the sandbox does not have (exit 128). The docker
+	// driver bind-mounts at the host path for this reason
+	// (containerWorkspaceFolder states the same rule), and the
+	// kubernetes driver overrides its own default with
+	// WorkspacePath before starting the pod.
+	//
+	// `/workspace` survives only as docker's LegacyDefaultWorkspace,
+	// for bots that declare it explicitly.
 	WorkspacePath string
 
 	// ProxyEndpoint, if non-empty, is the URL of the iterion network
