@@ -308,7 +308,7 @@ prompt campaign_system:
      authorship — an ADR whose Context/Decision cannot cite the code
      you read is a façade.
 
-  3. COMMIT EACH ADR AS YOU FINISH IT — never batch. `git add -A -- . ':(exclude).claude'`
+  3. COMMIT EACH ADR AS YOU FINISH IT — never batch. `git add -A -- ':/' ':(exclude,top).claude'`
      then commit before moving on. git IS your durable state: an
      interrupted run keeps every ADR you committed, and a fresh pass
      re-manifests and continues.
@@ -455,7 +455,7 @@ prompt verify_user:
   a drift-check task, test -z on git status --porcelain), verify.sh
   MUST mirror it — run the regen command(s), then fail on drift — with
   iterion's `.claude/` scaffold left out of any porcelain check
-  (`git status --porcelain -- . ':(exclude).claude'`); the
+  (`git status --porcelain -- ':/' ':(exclude,top).claude'`); the
   deterministic precheck rejects a gateless verify.sh otherwise.
 
 

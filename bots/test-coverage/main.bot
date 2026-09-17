@@ -56,7 +56,7 @@
 ##
 ## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign
 ## commits the UNCOMMITTED working tree AFTER the suite passes, staging
-## untracked files (`git add -A -- . ':(exclude).claude'`) so NEW test files actually land; the
+## untracked files (`git add -A -- ':/' ':(exclude,top).claude'`) so NEW test files actually land; the
 ## deterministic gate then re-checks the committed tree AND its diff.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
@@ -220,7 +220,7 @@ prompt campaign_system:
      you have not seen pass.
 
   3. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
-     including new files (`git add -A -- . ':(exclude).claude'`, so NEW test files actually land)
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'`, so NEW test files actually land)
      and commit before moving on. git IS your durable state: an
      interrupted run keeps every test you committed, and a fresh pass
      just reads `git log` and continues where you left off. Do NOT keep a

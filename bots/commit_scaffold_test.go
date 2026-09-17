@@ -88,10 +88,10 @@ func TestWholeTreeStagingExcludesTheScaffold(t *testing.T) {
 	// A site that FORBIDS the practice is not a site of it.
 	exempt := map[string]string{"product-docs/main.bot": "never `git add -A`"}
 	// `git add -A`, `git -C <dir> add -A`: any whole-tree staging, wherever
-	// the repository is named; the exclusion may be quoted either way (a
-	// Python string in a gate message cannot hold the single quotes).
+	// the repository is named; the pathspec anchors the tree at the
+	// repository root so a copy run from a subdirectory stages everything.
 	staging := regexp.MustCompile(`\badd -A\b`)
-	excluded := regexp.MustCompile(`\badd -A -- \. ['"]:\(exclude\)\.claude['"]`)
+	excluded := regexp.MustCompile(`\badd -A -- ':/' ':\(exclude,top\)\.claude'`)
 	sites := 0
 	for _, rel := range files {
 		src, err := os.ReadFile(rel)

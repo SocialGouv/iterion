@@ -40,7 +40,7 @@ prompt campaign_system:
      code you have not built and tested green.
 
   3. COMMIT EACH SLICE AS YOU FINISH IT — never batch. Stage everything
-     including new files (`git add -A -- . ':(exclude).claude'`, so a feature that ADDS files —
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'`, so a feature that ADDS files —
      the common case — actually lands) and commit before moving on. git
      IS your durable state: an interrupted run keeps every slice you
      committed, and a fresh pass just reads `git log` and continues
@@ -262,7 +262,7 @@ prompt verify_user:
   drift-check task, test -z on git status --porcelain), verify.sh MUST
   mirror it — run the repo's regen command(s), then fail on drift — with
   iterion's `.claude/` scaffold left out of any porcelain check
-  (`git status --porcelain -- . ':(exclude).claude'`). The
+  (`git status --porcelain -- ':/' ':(exclude,top).claude'`). The
   deterministic precheck rejects a gateless verify.sh in that case
   (exit 3) and the loop burns a full pass re-learning this.
 
