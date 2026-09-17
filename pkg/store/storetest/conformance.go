@@ -99,6 +99,74 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
 	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
+	t.Run("RecordedSourceSetter", func(t *testing.T) { testSetRunRecordedSource(t, factory(t)) })
+}
+
+// testSetRunRecordedSource pins the granular write a cloud resume uses to
+// stamp the source it compiled beside the hash of that same compile.
+//
+// Three properties, each a defect it repairs: the pair lands TOGETHER (a
+// source whose neighbouring hash names another revision is exactly what the
+// engine's forced-resume path clears, so writing them apart leaves a window
+// where that clear fires); it disturbs nothing else (the resume has already
+// CAS-transitioned the doc to `queued`, which a whole-document write from a
+// copy loaded before that would revert); and an empty source CLEARS the
+// stored one instead of leaving the previous attempt's text beside the new
+// hash.
+func testSetRunRecordedSource(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const (
+		id   = "run_recorded_source_setter"
+		main = "workflow w:\n  entry: a\n  a -> done\n"
+		frag = "agent a:\n  model: \"claude-opus-5\"\n"
+	)
+	if _, err := s.CreateRun(ctx, id, "w", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
+		t.Fatalf("UpdateRunStatus(queued): %v", err)
+	}
+	files := []store.WorkflowSourceFile{{Path: "main.bot", Text: main}, {Path: "lib/nodes.bot", Text: frag}}
+	if err := s.SetRunRecordedSource(ctx, id, main, files, "hash-1"); err != nil {
+		t.Fatalf("SetRunRecordedSource: %v", err)
+	}
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.WorkflowSource != main {
+		t.Errorf("recorded source = %q, want the text this attempt compiled", got.WorkflowSource)
+	}
+	if len(got.WorkflowSources) != 2 || got.WorkflowSources[0].Path != "main.bot" {
+		t.Errorf("recorded files = %+v, want the unit, main first", got.WorkflowSources)
+	}
+	if got.WorkflowHash != "hash-1" {
+		t.Errorf("hash = %q, want hash-1 from the SAME call: a source stored beside another revision's hash is what a forced resume clears", got.WorkflowHash)
+	}
+	if got.Status != store.RunStatusQueued {
+		t.Errorf("status = %s, want queued — this write must not disturb the CAS transition the resume already made", got.Status)
+	}
+
+	// An empty source is a legal clear (the compile busted the 1 MiB cap):
+	// keeping the previous attempt's text beside the new hash would make
+	// `rewind --auto` diff against a program this run never executed.
+	if err := s.SetRunRecordedSource(ctx, id, "", nil, "hash-2"); err != nil {
+		t.Fatalf("SetRunRecordedSource(clear): %v", err)
+	}
+	if got, err = s.LoadRun(ctx, id); err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.WorkflowSource != "" || len(got.WorkflowSources) != 0 {
+		t.Errorf("source survived a clearing write: %d bytes, %d file(s)", len(got.WorkflowSource), len(got.WorkflowSources))
+	}
+	if got.WorkflowHash != "hash-2" {
+		t.Errorf("hash = %q after the clear, want hash-2", got.WorkflowHash)
+	}
+
+	if err := s.SetRunRecordedSource(ctx, "run_recorded_source_missing", main, nil, "h"); !errors.Is(err, store.ErrRunNotFound) {
+		t.Errorf("SetRunRecordedSource on a missing run returned %v; want ErrRunNotFound", err)
+	}
 }
 
 // testRunListingProjection pins store.RunListingStore on every backend: the

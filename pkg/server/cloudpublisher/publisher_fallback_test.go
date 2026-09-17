@@ -125,7 +125,7 @@ func TestSubmitResumeReplaysRunDocFallback(t *testing.T) {
 	}
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil {

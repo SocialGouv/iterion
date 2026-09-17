@@ -192,7 +192,7 @@ func (refusingPublisher) CancelRun(context.Context, string) error { return nil }
 func (refusingPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
-func (refusingPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, string) error {
+func (refusingPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, *runview.CompiledSource) error {
 	return nil
 }
 

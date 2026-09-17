@@ -490,6 +490,14 @@ Iterating repeatedly is safe: the source is re-stamped on each resume that
 executes a changed workflow, so the second rewind of a session diffs against
 what the first one actually ran rather than re-reporting its edits.
 
+That re-stamp has two authors, because the text lives in two different places.
+A **local** resume is stamped by the engine, which compiled the file itself. A
+**cloud** resume is stamped by the publisher, before it enqueues: the queue
+message carries the compiled IR and the identity hash and never the files, so
+the runner's engine has no text of its own to record. It writes the source
+together with that compile's hash — a source stored beside another revision's
+hash is a false baseline, which a forced resume clears on purpose.
+
 `--auto` needs `Run.WorkflowSource`, the `.bot` text captured at launch
 (`WorkflowHash` only answers *whether* the source changed, never *which node*).
 Runs started before that capture existed refuse `--auto` and still accept

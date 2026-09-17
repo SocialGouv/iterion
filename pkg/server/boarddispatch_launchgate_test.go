@@ -56,7 +56,7 @@ func (*countingPublisher) CancelRun(context.Context, string) error { return nil 
 func (*countingPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
-func (*countingPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, string) error {
+func (*countingPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, *runview.CompiledSource) error {
 	return nil
 }
 

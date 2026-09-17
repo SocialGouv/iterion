@@ -109,7 +109,7 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 		Source: "workflow wf:\n  entry: done\n",
 		Budget: &ir.BudgetOverrides{MaxCostUSD: 120},
 	}
-	if err := p.SubmitResume(tctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(tctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	msg := lastPublished(t, published)
@@ -139,7 +139,7 @@ func TestSubmitResume_AskLessResumeRestampsTheDocWhenTheAllowanceShrinks(t *test
 	tctx := seedDonorRun(t, st, runID, &store.RunBudget{MaxCostUSD: 120}, &store.RunBudgetOverrides{MaxCostUSD: 120})
 	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20}}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"} // ask-less
-	if err := p.SubmitResume(tctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(tctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	msg := lastPublished(t, published)
@@ -167,7 +167,7 @@ func TestSubmitResume_AskLessResumeRestampsTheDocWhenTheAllowanceRecovers(t *tes
 	tctx := seedDonorRun(t, st, runID, &store.RunBudget{MaxCostUSD: 5}, &store.RunBudgetOverrides{MaxCostUSD: 120})
 	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20}}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"} // ask-less
-	if err := p.SubmitResume(tctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(tctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	msg := lastPublished(t, published)

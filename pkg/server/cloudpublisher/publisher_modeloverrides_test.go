@@ -158,7 +158,7 @@ func TestSubmitResumeReplaysTheLaunchedModelOverrides(t *testing.T) {
 		FilePath: "wf.bot",
 		Source:   src,
 		Answers:  map[string]any{"chat": "and then?"},
-	}, wf, "hash"); err != nil {
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestSubmitResumeWithoutModelOverridesStaysNil(t *testing.T) {
 		t.Fatalf("fail: %v", err)
 	}
 	published = nil
-	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: "run-2", FilePath: "wf.bot", Source: src}, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: "run-2", FilePath: "wf.bot", Source: src}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil {
@@ -315,7 +315,7 @@ func TestSubmitResumeReplaysRunDocOverrides(t *testing.T) {
 	}
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil {

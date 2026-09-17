@@ -1056,6 +1056,26 @@ func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, 
 	return s.SaveRun(ctx, r)
 }
 
+// SetRunRecordedSource stamps the executed source and the hash of that same
+// compile in one write (see RunStore). Load-modify-save under the store
+// mutex, like the budget patches, so a status transition racing it is never
+// reverted.
+func (s *FilesystemRunStore) SetRunRecordedSource(_ context.Context, runID, src string, files []WorkflowSourceFile, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.WorkflowSource = src
+	r.WorkflowSources = files
+	if hash != "" {
+		r.WorkflowHash = hash
+	}
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // SetRunLLMIdle toggles the model-idle marker (see RunStore). Load-modify-
 // save under the store mutex, like the budget patches, so a status
 // transition racing this write is never reverted.

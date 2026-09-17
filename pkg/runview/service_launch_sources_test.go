@@ -24,7 +24,7 @@ func (p *sourceCapturingPublisher) CancelRun(context.Context, string) error { re
 func (p *sourceCapturingPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
-func (p *sourceCapturingPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
+func (p *sourceCapturingPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, *CompiledSource) error {
 	return nil
 }
 

@@ -2351,10 +2351,14 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
-func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) (retErr error) {
+func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, cs *runview.CompiledSource) (retErr error) {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
+	}
+	var hash string
+	if cs != nil {
+		hash = cs.Hash
 	}
 	// Capture the prior status so we can roll back to the right
 	// resumable state if publish fails — the user could be resuming
@@ -2428,6 +2432,31 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}
 	}()
+
+	// The text this resume compiled, stamped WITH the hash of that same
+	// compile — the pair `rewind --auto` diffs against, and its only chance
+	// on this path. The queue message carries the IR and the hash, never the
+	// files, so the runner's engine has nothing of its own to record
+	// (restampWorkflowSource returns early on an empty source) and a FORCED
+	// resume actively CLEARS the stored pair when the hash beside it names
+	// another revision. Stamping both together is what makes that condition
+	// false: the clear exists to drop a source that no longer describes the
+	// accepted revision, and after this write it does describe it.
+	//
+	// Before the publish, not after: a runner may claim the attempt the
+	// instant it lands on the queue, and a forced resume that claims first
+	// wipes the pair — the defect this repairs. The cost of being early is a
+	// publish failure leaving the doc describing an attempt that never ran,
+	// which is fail-SAFE: --auto then finds no change and refuses, where
+	// being late loses the source for good.
+	var srcText string
+	var srcFiles []store.WorkflowSourceFile
+	if cs != nil {
+		srcText, srcFiles = runtime.RecordedSourcesOf(cs.Main, cs.Files)
+	}
+	if serr := p.store.SetRunRecordedSource(ctx, spec.RunID, srcText, srcFiles, hash); serr != nil {
+		return fmt.Errorf("cloudpublisher: record resume source for %s: %w", spec.RunID, serr)
+	}
 
 	rawBudget := runview.MergeBudgetOverrides(budgetOverridesFromRun(prior.BudgetOverrides), spec.Budget)
 	if rawBudget != nil && rawBudget.UnlimitedWorkflow && (prior.BudgetOverrides == nil || !prior.BudgetOverrides.UnlimitedWorkflow) {

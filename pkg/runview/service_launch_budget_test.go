@@ -172,7 +172,7 @@ func (p *stubLaunchPublisher) CancelRun(context.Context, string) error { return 
 func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
-func (p *stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
+func (p *stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, *CompiledSource) error {
 	return nil
 }
 

@@ -113,7 +113,7 @@ func TestSubmitResume_PersistsMergedAskOntoRunDoc(t *testing.T) {
 		Source: "workflow wf:\n  entry: done\n",
 		Budget: &ir.BudgetOverrides{MaxCostUSD: 120},
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	got, err := st.LoadRun(ctx, runID)
@@ -164,7 +164,7 @@ func TestSubmitResume_StampsTheMergedCapOnTheDocSnapshot(t *testing.T) {
 		Source: "workflow wf:\n  entry: done\n",
 		Budget: &ir.BudgetOverrides{MaxDuration: "4h"},
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	got, err := st.LoadRun(ctx, runID)
@@ -212,7 +212,7 @@ func TestSubmitResume_LeavesDocBudgetIntactWithoutOverride(t *testing.T) {
 		publishRun: func(context.Context, *queue.RunMessage) error { return nil },
 	}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if err := p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	got, err := st.LoadRun(ctx, runID)
@@ -262,7 +262,7 @@ func TestSubmitResumeMergesPartialSpecBudgetOverDocAsk(t *testing.T) {
 		Source: "workflow wf:\n  entry: done\n",
 		Budget: &ir.BudgetOverrides{MaxDuration: "4h"},
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil || published.Budget == nil {
@@ -313,7 +313,7 @@ func TestSubmitResumeThisResumeBudgetBeatsDocReplay(t *testing.T) {
 		Source: "workflow wf:\n  entry: done\n",
 		Budget: &ir.BudgetOverrides{MaxDuration: "4h"},
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil || published.Budget == nil {
@@ -352,7 +352,7 @@ func TestSubmitResumeReplaysTheLaunchBudgetAsk(t *testing.T) {
 	// replay must beat it, not inherit it.
 	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxDuration: "4h"}}
 	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil {
@@ -380,7 +380,7 @@ func TestSubmitResumePersistsUnlimitedWorkflowActivation(t *testing.T) {
 		RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n",
 		Budget: &ir.BudgetOverrides{UnlimitedWorkflow: true},
 	}
-	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+	if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	if published == nil || published.Budget == nil || !published.Budget.UnlimitedWorkflow {

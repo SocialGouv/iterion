@@ -3,7 +3,9 @@ package runview
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -95,4 +97,59 @@ func TestRewindAuto_RefusesAStoredBotWhoseCurrentSourceIsNotNamed(t *testing.T) 
 			}
 		}
 	})
+}
+
+// The server resolves a stored bot's CURRENT version into a temporary
+// materialization and names it in AutoDiffSourcePath. Two properties, and the
+// second is the reason the field exists at all.
+//
+// It lifts the refusal, like SourcePath — the refusal is about not knowing
+// where the current source is, never about the tier.
+//
+// And it is the side --auto READS. The run's own path still resolves to the
+// baked twin, which here is unedited: a diff taken there finds no change and
+// refuses. Finding the pivot proves the diff read the materialization and not
+// the path every other part of the rewind uses — which matters because
+// SourcePath also tells the workspace revert which files to leave alone, so
+// pointing THAT at a temporary directory would quietly change what a restore
+// protects.
+func TestRewindAuto_AutoDiffSourcePathIsTheSideTheDiffReads(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	st := svc.RunStore()
+	ctx := context.Background()
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.BotSourceTier = store.BotSourceTierTeam
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// What the server materializes from the botsource row: the same bot, at
+	// its current version, in a directory of its own. The run's own file is
+	// left alone — it stands for the baked twin, which did not change.
+	current := filepath.Join(t.TempDir(), "main.bot")
+	b, err := os.ReadFile(botPath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	edited := strings.Replace(string(b),
+		"agent implement:\n  model: \"claude-opus-4-7\"",
+		"agent implement:\n  model: \"claude-opus-5\"", 1)
+	if edited == string(b) {
+		t.Fatal("the fixture no longer carries the declaration this test edits")
+	}
+	if err := os.WriteFile(current, []byte(edited), 0o644); err != nil {
+		t.Fatalf("write materialization: %v", err)
+	}
+
+	result, err := svc.Rewind(ctx, RewindSpec{RunID: runID, Auto: true, AutoDiffSourcePath: current})
+	if err != nil {
+		t.Fatalf("Rewind with a materialized current source: %v", err)
+	}
+	if result.NodeID != "implement" || !result.AutoTargeted {
+		t.Fatalf("pivot = %q (auto %v), want implement — the diff did not read AutoDiffSourcePath",
+			result.NodeID, result.AutoTargeted)
+	}
 }
