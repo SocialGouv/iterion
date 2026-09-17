@@ -63,9 +63,12 @@ func FindPageSorted[T any](ctx context.Context, coll *mongo.Collection, filter b
 // mapping mongo.ErrNoDocuments to the caller's notFoundErr sentinel and
 // wrapping any other failure with errMsg. It is the shared shape behind
 // the many "get X [by Y]" methods across iterion's Mongo-backed stores.
-func FindOne[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, notFoundErr error, errMsg string) (T, error) {
+//
+// opts reach the driver untouched, so a getter that needs a projection stays
+// one call rather than a copy of this body.
+func FindOne[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, notFoundErr error, errMsg string, opts ...options.Lister[options.FindOneOptions]) (T, error) {
 	var out T
-	err := coll.FindOne(ctx, filter).Decode(&out)
+	err := coll.FindOne(ctx, filter, opts...).Decode(&out)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return out, notFoundErr
 	}

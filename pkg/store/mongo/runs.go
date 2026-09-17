@@ -100,6 +100,31 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	return &r, nil
 }
 
+var _ store.RunListingStore = (*Store)(nil)
+
+// LoadRunForListing is LoadRun with the recorded workflow source projected
+// away server-side (store.RunListingStore), so the text of the unit a run
+// executed neither crosses the wire nor is held by a listing that never reads
+// it. Same tenant filter and the same deleted / schema-version refusals as
+// LoadRun: a projection must not become a second, laxer door.
+func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, error) {
+	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
+		fmt.Errorf("store/mongo: run %s not found: %w", id, store.ErrRunNotFound),
+		fmt.Sprintf("store/mongo: load run %s for listing", id),
+		options.FindOne().SetProjection(bson.M{"workflow_source": 0, "workflow_sources": 0}))
+	if err != nil {
+		return nil, err
+	}
+	if r.DeletedAt != nil {
+		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
+	}
+	if r.SchemaVersion > SchemaVersion {
+		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
+	}
+	r.SourceOmitted = true
+	return &r, nil
+}
+
 // DeleteRun permanently removes a run and all of its data: the run
 // document, its events, seq counter, interactions, queued user-messages
 // (Mongo), and every artifact + attachment blob. Tenant-scoped when the
@@ -218,6 +243,12 @@ func notDeleted(filter bson.M) bson.M {
 // SaveRun replaces the run document atomically. Tenant-scoped
 // callers can only overwrite documents belonging to their tenant.
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
+	// preserveUnknownBSON keeps only fields this struct does NOT know, so a
+	// blanked-but-known workflow_source is dropped rather than preserved: the
+	// projection must not reach a whole-document replace.
+	if err := store.GuardProjectedWrite(r); err != nil {
+		return err
+	}
 	if r.Status != store.RunStatusRunning {
 		r.AwaitAnswersWaits = nil
 	}
