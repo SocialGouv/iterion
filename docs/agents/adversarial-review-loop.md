@@ -1,188 +1,184 @@
-# The local adversarial review loop — break your own diff before the gate does
+# The local adversarial round — what iterion requires, and who pays for it
 
-This is the round a developer (or an agent session) runs on their own change
-**before pushing it to the merge gate**. It is not a code-review checklist and
-not a second opinion: it is a subagent whose job is to **refute the change**,
-followed by a verification pass that judges the subagent as harshly as it
-judged the code.
+**The protocol itself lives in
+[`skills/adversarial-review-loop/SKILL.md`](../../skills/adversarial-review-loop/SKILL.md)**:
+scoping a round, the seven things the subagent prompt must carry, verifying the
+fix harder than the finding, the two blocking conditions (class, mutation), the
+three exits from a loop that stopped converging, the upstream plan review, and
+the journal/retro discipline that keeps it honest. It is written to be portable
+— iterion publishes it as an agent skill, and it is installable in any
+repository ([docs/skill.md](../skill.md)).
 
-**Why it is required rather than encouraged.** Measured on this repo: a fresh
-line pushed straight to the gate took **five consecutive `revi/review`
-verdicts at ≥ 1 medium, about six hours of merge-queue time**, against **one
-15-minute local round followed by a first verdict at 0 findings**. The gate is
-a slow, shared, serialized reviewer. Spending its cycles on findings a local
-round would have caught costs everyone else's queue time too.
+This page carries what is true **here**: that the round is required, how many
+rounds you are authorized to spend, who pays for them, and where the loop meets
+the Revi gate. The merge contract it serves is in
+[review-and-merge.md](review-and-merge.md).
 
-The contract this serves is in [review-and-merge.md](review-and-merge.md).
+## Why it is required rather than encouraged
 
----
+Measured on this repo: a fresh line pushed straight to the gate took **five
+consecutive `revi/review` verdicts at ≥ 1 medium, about six hours of
+merge-queue time**, against **one 15-minute local round followed by a first
+verdict at 0 findings**. The gate is a slow, shared, serialized reviewer.
+Spending its cycles on findings a local round would have caught costs everyone
+else's queue time too.
 
-## 1. Scope the round, and say the budget out loud
+## When — a feature is delivered *through* the loop, not reviewed at the end
 
-Default scope is the change itself:
+The round before the push is the last one, not the only one.
+
+1. **Upstream, on a substantial plan** (multi-file, a migration, a new
+   surface): a plan review by a model of **another family**, its feedback
+   integrated with an explicit adopted / adjusted / dismissed disposition. The
+   automated embodiment of the same idea lives in this repo:
+   `plan_review` in [bots/feature-dev/main.bot](../../bots/feature-dev/main.bot),
+   resolved by [`pkg/reviewtopology`](../../pkg/reviewtopology) (ADR-052) —
+   which also fails *loudly* when only one model family is credentialed,
+   rather than shipping an unreviewed plan in silence.
+2. **While the diff grows**: a round per coherent slice, so a defect is
+   attacked while its context is still loaded.
+3. **Before the push**: a round on the whole diff, then a re-attack of the
+   fixes' own diff (§ 5 of the skill) — the fixes are new surface, and two
+   consecutive red gate verdicts on this repo landed on fixes, not on the
+   original change.
+
+## The round budget
+
+Announce it at round 1 from the file count, never as a silent default:
 
 ```sh
-git diff @{upstream}...HEAD      # falls back to main...HEAD, then HEAD~1
-git diff HEAD                    # plus the working tree when it is dirty
+root=$(git rev-parse --show-toplevel) &&
+base=$(git merge-base origin/main HEAD) &&
+{ git -C "$root" diff --name-only "$base"
+  git -C "$root" ls-files --others --exclude-standard
+} | sort -u | wc -l
 ```
 
-Anything else — a module, a file, the whole repo — is a deliberate widening,
-stated in the round's recap.
+Every shorter spelling was measured wrong on the change that introduced this
+page: `origin/main...HEAD` answered **0** (three dots compare commits, so
+nothing uncommitted counts), the local `main...HEAD` answered **1554** (a
+seven-day-old local branch), `@{upstream}` is *fatal* on a worktree branch, and
+`git diff` alone never sees an untracked file — here that hid the new skill,
+which was the point of the change. Without the `&&` chain a failed `merge-base`
+still prints a plausible count on stdout; without `git -C "$root"`, running
+from a package subdirectory drops every untracked file outside it.
 
-**Announce the budget from the scope at round 1, never as a silent default:**
+Read the list, not just the count: incidental churn (a lockfile a tool rewrote)
+counts as a file and is not part of your change.
 
-```sh
-git diff --name-only <base>...HEAD | wc -l
+| Changed files at round 1 | Opening estimate | Ceiling of **local** rounds |
+|---|---|---|
+| ≤ 8 | ~3 | **5** |
+| 9–25 | ~6 | **20** |
+| > 25 | ~8 | **50** |
+
+The bands are read on the file count alone, so exactly one row matches. One
+adjustment, and only one: **blocking code in a small diff — a hook, a lint, a
+guard, a filter — raises the first row's ceiling from 5 to 10**, because a
+false positive there breaks as much as a hole and is harder to see. The wider
+bands already have the room.
+
+Two numbers, two jobs, and neither is a schedule.
+
+The **estimate is an opening prediction**, not a rule: how many rounds a change
+needs depends on much more than its file count — how blocking the code is, how
+new the surface is, how much of it the loop just rewrote. Announcing one makes
+the cost visible; being wrong about it is normal. Observed convergence across
+the loops behind this protocol, this repo among them: **1, 3, 4, 5, 5, 6, 8**
+local rounds.
+
+**What decides the next round is the findings, not the counter.** While rounds
+keep returning high or critical findings that survive verification, another
+round is worth its cost — stopping on the estimate would ship what the next
+round would have caught. The **ceiling** is the cost bound: how many local
+rounds you may spend before this change becomes everyone else's problem.
+
+Four rules keep the ceiling honest at both ends:
+
+- **It counts LOCAL rounds only.** A `revi/review` verdict is logged like a
+  round but never budgeted — on one long branch, 6 local rounds were announced
+  and held while **20 gate cycles** were paid. That branch is what the tripwire
+  below now forbids: it predates it, and today it would have stopped at 3.
+- **Passing the estimate closes nothing, and neither does reaching it**: say
+  where things stand, what is left, and extend (+4 rounds) toward the ceiling.
+- **The stop criterion never moves** — no unassumed high or critical left, and
+  then the gate's verdict is what closes (§ 8 of the skill).
+- **The ceiling never authorizes a non-converging loop.** Two rounds in a row
+  whose highs land on the previous round's fixes means the loop is auditing its
+  own output: requalify the scope, change the approach, or switch to a test of
+  the guarantee. Never "one more round".
+
+## Who pays what — the reason the ceiling is generous
+
+A local round is paid by the plan of whoever is coding. A gate cycle is paid by
+the **shared forfait / platform credential** that funds this repo's runs, and
+by the merge queue everyone shares. Spending 20 local rounds to save 10 gate
+cycles is a good trade for every other contributor.
+
+It is the same economics that put the fixer campaign on pause: `/billy`'s
+verify gate re-runs the full build+test (~10 min a pass) on that shared
+credential, so `auto_fix_on_gate_failure` is **off** here — see
+[the pause and its re-arm procedure](review-and-merge.md#billy-is-paused).
+**Findings are the developer's to fix**, by hand or through another local
+round.
+
+**Tripwire on the other side of the ladder:** at the **third** `revi/review`
+verdict with findings on the same PR, stop pushing. What remains is local-round
+work — on one lot, 67 % of the gate's findings were regressions of earlier
+fixes, against 16 % locally.
+
+## Say what the review cost, in the commit
+
+Two git trailers, on every commit that ships reviewed work:
+
+```
+Adversarial-Rounds: 3 local (announced 3, ceiling 5)
+Adversarial-Model: claude-opus-5[1m]
 ```
 
-A wide scope means **several subagents launched in parallel in one message,
-one per surface** — a single agent over a large scope skims and reports naming
-conventions. A single agent is right only when the round is bounded to code
-the loop itself just rewrote: a terminal verification round (the previous
-round's diff alone), or a **consolidation round** (all the fixes re-read as
-ONE diff — its own target being the interactions *between* fixes, which no
-isolated diff shows).
+`Adversarial-Rounds` counts the **local** rounds actually run on this change,
+with the announcement and the ceiling in parentheses. `Adversarial-Model` names
+the model that ran them — several, comma-separated, when a cross-family plan
+review took part; `Co-Authored-By` already names the *authoring* model, which is
+a different fact.
 
-## 2. The subagent prompt carries seven things. None is optional.
+A change nobody attacked writes it explicitly:
 
-Each of these was paid for by a wasted round.
+```
+Adversarial-Rounds: 0 (trivial: typo)
+```
 
-1. **The posture.** "You are trying to BREAK and refute this, not to validate
-   it. A report saying 'this looks solid', with no executed proof, is worth
-   nothing."
-2. **What the code does and which failure mode counts.** Data leak? Crash?
-   False positive? Corruption? Without this it reports style and naming.
-3. **The obligation to prove by EXECUTING** — command, input, observed output.
-   A theoretical finding does not count. If it claims a bypass, it must first
-   show the system actually does what it claims to do.
-4. **The already-fixed list and the assumed list** — decisions taken,
-   deliberate limits, non-goals. Without it half the round re-treads settled
-   ground and the report is unreadable.
-5. **The output format** — severity (critical / high / medium / low), proof,
-   **minimal** fix, worst first.
-6. **"If you find nothing high or critical, say so explicitly."** This is the
-   loop's only stop signal: an empty report is not a signal, a sentence is.
-7. **"Return a partial report early"** and **"modify no file in the repo; your
-   scripts go in a temp directory."** An agent that explores silently for a
-   long time can die having returned nothing — and the fixing is yours, not
-   its.
+**What survives the squash, exactly.** GitHub special-cases `Co-Authored-By:`:
+it dedupes those lines and re-emits them as the squashed message's last
+paragraph. Nothing else gets that treatment, so on a multi-commit PR these two
+trailers land mid-body, inside the `* ` bullets, where `git interpret-trailers`
+no longer parses them — measured on `7e67663f5`, whose body carries four
+inline `Co-Authored-By:` lines and whose `%(trailers)` prints one. They stay
+**greppable** (`git log --grep='Adversarial-Rounds:' origin/main`) and readable
+by a human, and they parse as real trailers only when the PR squashes a single
+commit. If you want the count to parse on `main`, put it in the squash message
+too.
 
-## 3. On return: verify the finding AND its proposed fix, before touching code
+An absent trailer is indistinguishable from an oversight — which is exactly the
+ambiguity the signal exists to remove. The trailers are a claim, greppable and
+falsifiable, not a decoration: a `3` that no journal line backs is the next
+round's finding.
 
-**The proposed fix is refuted more often than the finding.** Measured across
-115 rounds: **48 refuted fixes for 26 refuted findings** — hardening that
-starts refusing legitimate input, a ceiling that closes the service, a
-predicate widened past its subject. A true finding plus a wrong fix, shipped,
-is a real defect signed by your hand.
+## Where the loop meets the gate
 
-**Every sentence a fix writes** — an invariant comment, a godoc, a commit
-message, a doc line — is an assertion to execute in the same round. Otherwise
-it is the next round's finding.
-
-## 4. Two blocking conditions before a finding counts as handled
-
-Each has cost whole rounds, repeatedly.
-
-**(a) The class, not the site.** A finding is not handled until the `grep` for
-its class has been **rendered** — the count and the verdict go in the round
-recap, at authoring time as much as at fixing time (see the repo rule on
-fixing at the class). The class is an inventory, not a regex: the **call
-sites** of the touched seam, the **structural peers** of the fixed site, the
-**twins of the fixed path** (other I/O, sibling outputs, failure branches — a
-fix that bounds, folds or distinguishes creates its own class), the
-**constructors** of the touched value (not its readers), the **doctrine
-already written** elsewhere in the repo, and the **pre-existing uses** of any
-primitive the fix introduces.
-
-When the fix is a **choke point** — one guard every path crosses — it is
-proved on the **complete enumeration** of what it claims to cover, each case
-listed and executed, never on the reported site alone. A guard proved on one
-case and covering the rest "by construction" has been bypassed on later rounds
-by other cases from that same enumeration.
-
-**(b) Does the mutation go red?** Put the defect back, require red **on that
-test's own assertion**, restore. A test nobody has seen fail proves nothing.
-And **mutate in the production path, never in the double**: if the oracle does
-not honour the channel under test (a filesystem store that ignores the context
-cannot observe a deadline), the bound is decorative even though the test is
-red.
-
-## 5. Re-attack the fix's diff before the gate
-
-One agent, bounded to the diff of the fix itself. **The gate closes a loop; it
-is not the reviewer of each individual fix** — five consecutive gate verdicts
-at ≥ 1 medium is what skipping this looks like.
-
-## 6. Feed the next round
-
-Move handled findings into "already fixed" and argued refusals into "assumed".
-That list is the input to the next round's prompt — keeping it current **is**
-the work. A refusal parked in "assumed" that rests on a technical fact (out of
-scope, load-bearing, impossible in production) carries its **executed proof**;
-otherwise it is a debt, and the next round refutes it.
-
-**One of the most frequent round-N+1 findings is a regression from round N.**
-Start each round by re-reading what the previous one rewrote, and tell the
-subagent: "absolute priority, these functions were just rewritten."
-
-## 7. Non-convergence has three exits, and "one more round" is not one
-
-**Two rounds in a row whose high findings land on the previous round's fixes
-means the loop is auditing its own output.** Measured four times: 8 rounds of
-false positives from the same guard, "each round found one more spelling";
-8 rounds at a FLAT severity profile (2·2·2·1·2·2·3·2); 5 then 7 successive
-bypasses of the previous round's defence. **A healthy loop decreases in
-severity.**
-
-The three exits:
-
-- **Requalify the scope** — a file that contains its own guards attacks itself.
-- **Change the approach** rather than add an Nth patch.
-- **Switch to a test of the GUARANTEE** — run the whole product under the
-  hostile conditions the guard claims to neutralise and require the verdict —
-  instead of enumerating the spellings the guard must recognise. A guard that
-  ENUMERATES forbidden spellings never converges: the adversary is arbitrary
-  text, so each round widens the pattern and the next finds one more way to
-  write it.
-
-Two demands that come with that switch: **check the bench can BITE** (a bench
-that cannot go red is not a bench), and **stack the layers in order** — the
-refusal carries the diagnosis, a check outlives the refusal, a floor outlives
-the check; verify each by deleting the one above it.
-
-## 8. Exiting the loop
-
-**The gate's verdict closes the loop, not the round that declares it done.**
-A sterile local round is the signal that it is time to push, never a stop
+**The gate's verdict closes the loop, not the round that declares it done.** A
+sterile local round is the signal that it is time to push, never a stop
 criterion: rounds a "sterile" criterion called finished have been followed by
-real findings from the reviewer — the criterion counted rounds, the gate
-counts defects.
+real findings from the reviewer — the criterion counted rounds, the gate counts
+defects. Logged here: 8 gate verdicts, 0 false positives, **4 classes** the
+internal rounds had skirted, including a HIGH after a closure had been
+declared.
 
-So: push, then wait for `revi/review`. Its verdict is logged like a round and
-its findings follow the same rules (class, mutation, verified fix). **Its
-`questions`** — the falsifiability channel, non-blocking — **are
-documentation findings**: each gets either a doc fix or an argued refusal in
-the recap, never silence.
+Revi's `questions` channel is non-blocking, and that is not permission to
+ignore it: each question is **executed** (≤ 5 min) before any decision, and
+gets a fix in code or docs, or a written refusal in the recap — never silence.
+On PR #1292, whose 20 verdicts raised 34 questions between them, 2 were real
+code defects — found by executing them, not by reading them.
 
-Where no reviewer is available, a local round of the full PR stands in for the
-gate, and the recap says so.
-
-## What makes the loop useless
-
-- Fixing without having reproduced — you are coding against a false hypothesis.
-- Not passing on the "assumed" list — the next round re-reports the same
-  findings.
-- Treating a false positive as less serious than a hole: in anything that
-  **blocks** (a hook, a guard, a lint, a filter) a false positive breaks as
-  much as a vulnerability, and it is harder to see.
-- Concluding on an empty report without having demanded the sentence "nothing
-  high or critical": a silent agent is not an agent that found nothing.
-- Fixing an inconvenient test in the direction that suits you: when an
-  expectation is wrong, correct it toward the **real** behaviour, never toward
-  green.
-
-## Short recap every round
-
-Handled / dismissed (with the reason) / remaining. When the budget is spent,
-**do not conclude that it is finished**: say where things stand, what is left,
-and ask.
+Gate mechanics, merge queue, admin bypass and the release path:
+[review-and-merge.md](review-and-merge.md).

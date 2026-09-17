@@ -20,6 +20,16 @@ that touches the operator's store.
   `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
   The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
   sweeps `_test.go` and fails a new site that assembles its own argv.
+- **`task check` can go red on the HOST git rather than on your change.** The
+  assistant's attested authoring commits use guarded ref transactions, which
+  need **git ≥ 2.46**, and `devbox.json` pins no git — the tests run against
+  whatever the host provides. On an older git (2.43 on Debian 12) `pkg/server`
+  fails with 23 red tests, all `TestAuthoringGit*` / `TestAssistantDependency*`
+  and all carrying the same sentence: *"attested authoring commits require Git
+  2.46 or newer for guarded ref transactions"*. That is a real refusal from the
+  code under test, not a flake — and it is unrelated to whatever you changed.
+  Read the message before hunting a regression; CI runs a newer git, so the
+  required `test` check stays green.
 - **A run's workspace must be a repository the TEST owns.** An engine built
   without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
   inside the developer's checkout — so `worktree: auto` (the IR default)

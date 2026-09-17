@@ -116,7 +116,7 @@ More than a DAG runner: Iterion is built for long, autonomous, multi-agent work 
 - ☁️ **Multi-tenant agent control plane** — Self-hostable Helm deployment (MongoDB + S3 + NATS JetStream, KEDA-scaled runners, per-run Kubernetes sandboxes) with org → team tenancy, repo-first forge integrations, schedules/triggers/webhooks, bound credentials, quotas/metering, audit, SSO, PATs, SMTP onboarding, and a typed remote CLI — see the [Iterion Cloud overview](docs/cloud-overview.md)
 - 🧩 **Skills, plugins, and marketplace** — Package bot resources, install project/global skills, contribute MCP/rewriter/skill/hook/lifecycle plugins, and distribute bots or plugins through one registry model
 - 🧰 **TypeScript SDK** — [`@iterion/sdk`](sdks/typescript/) wraps the CLI with typed `run` / `resume` / `events` streaming for Node, Deno, and Bun apps
-- 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents
+- 🧠 **AI agent skills** — Install in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents: the `.bot` DSL reference, and the repo-agnostic [adversarial review loop](docs/skill.md#adversarial-review-loop--ship-a-change-through-a-loop) this project ships its own changes through
 
 ---
 
