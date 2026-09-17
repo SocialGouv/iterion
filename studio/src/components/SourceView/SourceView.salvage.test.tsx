@@ -90,6 +90,37 @@ describe("the Source view of a salvaged file", () => {
     await waitFor(() => expect(store.getState().salvaged).toBe(false));
   });
 
+  // The refusal on every write sends the author HERE, and this view shows
+  // the file as it is on disk — which does not carry canvas edits. Applying
+  // replaces them, so the loss would sit on the guided path.
+  it("asks before replacing canvas edits with the file's text", async () => {
+    const store = salvagedStore();
+    api.parseSource.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+    });
+    // The author edited the canvas: the buffer moved past its saved mark.
+    store.getState().setDocument(createEmptyDocument());
+    expect(store.getState().isDirty()).toBe(true);
+
+    render(
+      <DocumentStoreProvider store={store}>
+        <SourceView />
+      </DocumentStoreProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    // Nothing applied yet: the question is asked first.
+    expect(await screen.findByText(/changes you made in the canvas/i)).toBeTruthy();
+    expect(api.parseSource).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(api.parseSource).toHaveBeenCalled());
+  });
+
   // A repair that still does not parse leaves the refusal in place — and
   // must leave the author's OWN text on screen. The buffer is still a
   // salvage, so the sync re-runs; without the applied text becoming the

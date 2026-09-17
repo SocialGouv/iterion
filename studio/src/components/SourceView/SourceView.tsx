@@ -6,6 +6,7 @@ import * as api from "@/api/client";
 import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "@/lib/iterLanguage";
 import { registerIterCompletionProvider } from "@/lib/iterMonacoCompletion";
 import { applyParsedSource } from "@/lib/salvage";
+import { useConfirm } from "@/hooks/useConfirm";
 import { Button } from "@/components/ui/Button";
 
 export default function SourceView() {
@@ -18,6 +19,8 @@ export default function SourceView() {
   const currentSource = useDocumentStore((s) => s.currentSource);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const setSalvaged = useDocumentStore((s) => s.setSalvaged);
+  const isDirty = useDocumentStore((s) => s.isDirty);
+  const { confirm, dialog } = useConfirm();
   const [source, setSource] = useState("");
   const [editing, setEditing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -54,6 +57,23 @@ export default function SourceView() {
   }, [document, editing, unit, salvaged, currentSource]);
 
   const handleApply = useCallback(async () => {
+    // While salvaged this view shows the FILE's text, which does not carry
+    // canvas edits — currentSource is the last opened/saved text, and a node
+    // edit never touches it. Applying would replace the canvas with a text
+    // that predates it, and the refusal on every write sends the author
+    // HERE, so the loss sits on the guided path. Asked only in that case:
+    // unsalvaged, the text is the document unparsed and there is nothing to
+    // lose, and text-only edits leave the buffer clean.
+    if (salvaged && isDirty()) {
+      const go = await confirm({
+        title: "Replace the canvas with this text?",
+        message:
+          "This is the file as it is on disk. It does not include the changes you made in the canvas, and applying replaces them.",
+        confirmLabel: "Replace",
+        confirmVariant: "danger",
+      });
+      if (!go) return;
+    }
     try {
       const result = await api.parseSource(source);
       // The way out of a salvage, and the only one: text that parses whole
@@ -72,7 +92,7 @@ export default function SourceView() {
     } catch (err) {
       setParseError(err instanceof Error ? err.message : "Parse failed");
     }
-  }, [source, setDocument, setDiagnostics, setSalvaged, setCurrentSource]);
+  }, [source, setDocument, setDiagnostics, setSalvaged, setCurrentSource, salvaged, isDirty, confirm]);
 
   const handleEditorWillMount = useCallback((monaco: Monaco) => {
     if (!monaco.languages.getLanguages().some((l: { id: string }) => l.id === ITER_LANGUAGE_ID)) {
@@ -147,6 +167,7 @@ export default function SourceView() {
           }}
         />
       </div>
+      {dialog}
     </div>
   );
 }
