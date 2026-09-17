@@ -20,27 +20,31 @@ const childResourceIOTimeout = 30 * time.Second
 // directory, for the two places that read or reset a child's borrowed
 // resources.
 //
-// It applies the rule containerWorkspaceFolder already states: an explicit
-// WorkspaceFolder wins, an empty one means "the same absolute path as on the
-// host". A driver with no host filesystem — the kubernetes one — cannot
-// bind-mount anything, so it COPIES the workspace to that same absolute path
-// inside the pod and leaves WorkspaceFolder empty. Empty is therefore a normal
-// state on the driver production runs on, not a missing value.
+// An explicit WorkspaceFolder wins, an empty one means "the same absolute path
+// as on the host" — the rule containerWorkspaceFolder states. A driver with no
+// host filesystem cannot bind-mount anything, so it COPIES the workspace to
+// that same absolute path and leaves WorkspaceFolder empty. Empty is a normal
+// state on the driver production runs on, not a missing value, and that is the
+// case this function exists to stop refusing.
 //
 // The refusal is kept for the state that really is broken: no absolute path on
 // either side. Joining an empty workspace yields the RELATIVE ".claude", which
 // resolves against whatever cwd the exec lands in — a silent wrong target for
 // a recursive delete.
 //
-// The host-side derivation holds only while every copy-based driver honours
-// same-absolute-path, and the Run handle exposes no accessor to ask it — the
-// refresher addresses files RELATIVE to a root it never surfaces. Worse, the
-// interface doc points the other way: RunInfo.WorkspacePath says the driver
-// copies "at [Spec.WorkspaceFolder] (default `/workspace`)". A second
-// copy-based driver written against that sentence would copy to a fixed root,
-// and this fallback would then name a path that is simply ABSENT from the
-// sandbox. So the scripts below assert the root before touching it: the
-// mismatch becomes a named refusal instead of a reset of the wrong tree.
+// KNOWN GAP, review finding R9e4d97, deliberately not closed here. When a bot
+// DECLARES `sandbox.workspace_folder:`, the kubernetes driver's two roots
+// diverge: populate copies to info.WorkspacePath (driver.go:611) while the pod
+// manifest mounts the volume at Spec.WorkspaceFolder (manifest.go:266). This
+// derivation follows the manifest, so it would address the mount point while
+// the files sit in the copy — and since the mount exists, the assert below
+// passes and both callers become quiet no-ops.
+//
+// Inverting the preference here was tried and is NOT the answer: it makes
+// TestTheCopyAChildReadsMatchesTheHostAfterAdoption fail, which pins the
+// opposite. The two cannot both be satisfied while the driver disagrees with
+// itself, so the question belongs to the driver — should the manifest follow
+// info.WorkspacePath too? — and not to a guess made here.
 func (e *Engine) sharedClaudeRoot() (workspace, claudeRoot string, err error) {
 	workspace = e.sharedWorkspaceFolder()
 	if workspace == "" {
@@ -58,6 +62,11 @@ func (e *Engine) sharedClaudeRoot() (workspace, claudeRoot string, err error) {
 // assertWorkspaceRoot is the first line of both scripts. `set -eu` alone would
 // let a missing root pass: `cp` of nothing and `rm -rf` of nothing both exit 0,
 // so the wrong-root case would read as a clean no-op.
+//
+// It catches a root the sandbox does not have at all. It does NOT certify that
+// the root is the right one — an existing-but-wrong directory passes. That is
+// why the derivation above mirrors the driver rather than guessing, and why
+// this assert is the floor and not the guarantee.
 const assertWorkspaceRoot = `test -d "$3" || { echo "shared workspace root $3 is absent from the sandbox — ` +
 	`the driver copied the workspace somewhere else" >&2; exit 3; }
 `
