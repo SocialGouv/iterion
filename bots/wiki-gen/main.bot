@@ -16,6 +16,8 @@
 ## already current for the exact HEAD — a scheduled run on an unchanged
 ## repo finishes at zero LLM cost.
 
+dsl: 2
+
 ## ─── Vars ────────────────────────────────────────────────────────
 vars:
   ## The workspace to document. Defaults to ${PROJECT_DIR} — resolved by

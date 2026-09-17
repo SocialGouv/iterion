@@ -1,5 +1,25 @@
 # vuln-watch (Senti) — run log
 
+## 2026-09-17 — profile 2: nothing the model reads changes (run 01a0af4f-0b9b)
+
+- Status: **the file has no prompt** — the profile-2 header changes the file's reading and nothing
+  a model receives; the run on a bare scratch refused at `plan`.
+- Versions: bot vuln-watch 0.1.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: CLI `iterion run <bundle>/main.bot --var dry_run=true` launched FROM a scratch copy of
+  the greet project with no `vuln-watch.json` and no `inventory.json`, `--store-dir` the
+  operator's workspace store, `--sandbox none`.
+- Result: `plan` (a Python tool node) exited 1 twice and the run **failed** — the bot's
+  preflight on a workspace without its configuration. Zero LLM, $0.
+- Value: what wave 3a proves for this bot is the dry run — `validate --exec --strict` identical
+  before and after the migration but for C144 — and the migrator's own verification that the
+  program is byte-identical apart from prompt bodies, of which it has none.
+- Findings / misses: the refusal is a plain script failure, not a typed `fail` node — a
+  workspace without config reads as "script failed: exit status 1" in the studio; the bot's own
+  choice, older than this wave. A real watch needs an inventory and the KEV/EPSS sources.
+- Engine hardening: none needed.
+- Lessons for next run: seed `vuln-watch.json` + `inventory.json` first; the preflight will not
+  say what is missing in its status.
+
 ## 2026-08-27 — prod wiring, first live alerts (runs 01a04222 / 01a04232 / 01a04234)
 
 - Status: **validated** — Senti is live on the cloud instance, hourly at `17 * * * *`.

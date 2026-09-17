@@ -55,6 +55,8 @@
 ## host (stdlib only — urllib + xml.etree; no pip installs).
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 secrets:
   ## JSON map of webhook name → incoming-webhook URL, e.g.
   ##   {"mattermost_dev": "https://mm.example.com/hooks/abc..."}

@@ -26,6 +26,8 @@
 ## only on their conjunction.
 ## ═══════════════════════════════════════════════════════════════════
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## DNS-safe name for the environment; empty = derive from the repo name.

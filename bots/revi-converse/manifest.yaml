@@ -1,7 +1,11 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside two prompts (10 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 description: |
   Conversational sibling of Revi (review-pr). Triggered when an
   authorized forge user asks a focused QUESTION on an open pull
@@ -55,3 +59,9 @@ invocations:
 launch:
   primary: [converse_question, pr_url]
   hidden: [discussion_id, trigger_note, thread_context, replier]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

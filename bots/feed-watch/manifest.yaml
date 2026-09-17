@@ -1,7 +1,11 @@
 name: feed-watch
 display_name: Vigie
 icon: 🔭
-version: 1.6.0
+version: 1.6.1
+## 1.6.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside two prompts (6 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 description: |
   Universal feed-watch + digest bot (Huginn-style veille pipeline as a
   single bot). Two run modes over one file-backed state in the target
@@ -81,3 +85,9 @@ config_share:
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [mode, category]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

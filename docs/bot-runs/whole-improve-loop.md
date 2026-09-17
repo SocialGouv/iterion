@@ -18,7 +18,7 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
 - Status: **validated** — converged in one pass on a scratch repository, the
   axis applied and merged.
 - Versions: bot whole-improve-loop 2.4.1 (`dsl: 2`, wave 2 of #1344) ·
-  iterion `853b5ce28` (branch build v3.154.1 + the wave-1 runtime fix) ·
+  iterion `853b5ce28` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main was at v3.155.0) ·
   claude_code + claude-opus-5 on every node, served through the host's
   Anthropic-compatible facade (z.ai) as the run's provenance records.
 - Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of

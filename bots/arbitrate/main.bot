@@ -21,6 +21,8 @@
 ## artifact), who and when. A decision that is not consigned does not exist.
 ## ═══════════════════════════════════════════════════════════════════
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## The programme contract (lot statuses + per-lot reports live next to it).

@@ -4,6 +4,29 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-09-17 — profile 2: a zero-LLM collect and a dry-run digest whose synthesis prompt reaches the model with its paragraphs (runs 01a0af56-04dd, 01a0af56-922b)
+
+- Status: **validated** — both modes end to end on a one-feed fixture, nothing delivered.
+- Versions: bot feed-watch 1.6.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · synthesis on claude_code +
+  claude-opus-5 (the bot's default).
+- Method: a scratch copy of the greet project seeded with `feed-watch.json` (one category
+  `iterion`, one public feed — this repository's GitHub releases Atom — one sink by name, no
+  `webhooks` secret bound), then CLI `iterion run <bundle>/main.bot --var mode=collect` and
+  `--var mode=digest --var category=iterion --var dry_run=true`, `--store-dir` the operator's
+  workspace store, `--sandbox none`, caps `--max-cost-usd 2 --max-duration 10m`.
+- Result: collect **finished** in a second, $0 — 10 new items, 0 duplicates, `pending:
+  {"iterion": 10}`; digest **finished**, **$0.30** (synthesize, 25 140 tokens) — one digest of the
+  ten releases (3.153 → 3.157: the dry-run lineage, the catalogue waves), `verify_message` green,
+  `notify` in dry run: "1 sink × up to 1 message prepared, nothing posted".
+- Value: both graphs live on profile 2; the digest run's `events.jsonl` carries the rendered
+  synthesis prompt with `Slack markdown).\n\nINPUT (structured):`, the paragraph break the
+  profile-1 lexer used to fold. A first launch on the bare scratch (no config) refused at `plan`
+  as the bot promises ("config problems fail HERE").
+- Findings / misses: delivery and the silence alert not exercised (no webhook, dry run).
+- Engine hardening: none needed.
+- Lessons for next run: the one-feed fixture is three lines of JSON; the releases feed makes a
+  digest anyone can check.
+
 ## 2026-08-31 — the five silent Monday digests, and the cross-family fallback born from them (runs 01a05667…/01a05690…, canary 01a058a5)
 
 - Status: **resolved** (same-day delivery) + fallback shipped and proven live

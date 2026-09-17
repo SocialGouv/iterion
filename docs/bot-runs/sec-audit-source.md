@@ -6,8 +6,7 @@
   repository: three candidates triaged, a full pool of three voters, a clean
   card, no issue created.
 - Versions: bot sec-audit-source 0.1.2 (`dsl: 2` and the fix loop's exhaustion
-  exit, wave 2 of #1344) · iterion `853b5ce28` (branch build v3.154.1 + the
-  wave-1 runtime fix) · the bot's own sec sandbox image
+  exit, wave 2 of #1344) · iterion `853b5ce28` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main was at v3.155.0) · the bot's own sec sandbox image
   (`iterion-sandbox-sec:edge`, present locally) · `--backend claude_code
   --model claude-opus-5` on every LLM node (the GPT route detect_tech takes by
   default is spent until 2026-09-20), served through the host's

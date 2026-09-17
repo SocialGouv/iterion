@@ -12,6 +12,8 @@
 ## gate). See skills/devbox-setup.md for the authoring playbook.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   ## Repo to set up. Defaults to the run's project dir.
   workspace_dir: string = "${PROJECT_DIR}"

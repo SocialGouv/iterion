@@ -1,7 +1,11 @@
 name: issue-triage
 display_name: Triagy
 icon: 🏷️
-version: 0.2.0
+version: 0.2.1
+## 0.2.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside one prompt (4 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 description: |
   Lightweight single-shot card triage. ONE cheap read-classify-stamp
   agent: reads a fresh board card, classifies it against the generated
@@ -38,3 +42,9 @@ dispatch_vars:
 
 launch:
   primary: [issue_id]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

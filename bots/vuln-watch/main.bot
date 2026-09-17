@@ -55,6 +55,8 @@
 ## host. See skills/senti-config.md.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 secrets:
   ## JSON map of webhook name → incoming-webhook URL (same contract as
   ## feed-watch). Config sinks reference entries by NAME so URLs never

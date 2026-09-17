@@ -19,6 +19,8 @@
 ## human who never opens this file.
 ## ═══════════════════════════════════════════════════════════════════
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## The programme contract, versioned in the TARGET repo.

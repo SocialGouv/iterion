@@ -12,7 +12,7 @@ See [bots/campaign/](../../bots/campaign/).
   acknowledged, done. Two earlier attempts refused at the child's oracle gate
   (below).
 - Versions: bot campaign 0.1.1 (`dsl: 2`, wave 2 of #1344) · iterion
-  `853b5ce28` (branch build v3.154.1 + the wave-1 runtime fix) · child
+  `853b5ce28` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main was at v3.155.0) · child
   `modernize` from the same catalogue (profile 1, not yet migrated),
   claude_code + claude-opus-5 through the host's Anthropic-compatible facade.
 - Method: CLI `iterion run <bundle>/main.bot --sandbox none` launched FROM a

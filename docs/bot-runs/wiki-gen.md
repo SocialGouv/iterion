@@ -6,6 +6,26 @@ Wikky generates and incrementally maintains a navigable, Open-Knowledge-Format
 wiki for any repository. See [the bot README](../../bots/wiki-gen/README.md) and
 its skills (`wiki-authoring`, `okf-format`). Newest run first.
 
+## 2026-09-17 — profile 2: the author prompt reaches the model with its paragraphs (run 01a0af4e-f21d)
+
+- Status: **validated** — a three-page wiki written and gated in one pass on a scratch repository.
+- Versions: bot wiki-gen 1.0.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
+  claude-sonnet-5 (`ITERION_WIKI_MODEL_CLAUDE`).
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of the greet project,
+  `--store-dir` the operator's workspace store, `--sandbox none --merge-into none`,
+  `--var scope_notes="A two-page wiki: the greet CLI and how it is tested." --var max_passes=1`,
+  caps `--max-cost-usd 3 --max-duration 15m`, `ITERION_BIN` the branch binary.
+- Result: **finished**, ~3.5 min, **$0.40** (author, 57 459 tokens): `wiki/greet-cli.md`,
+  `wiki/testing.md` and the index, `wiki_complete: true`, the deterministic gate green;
+  storage branch `iterion/run/boreal-snap-midnightkazoo-a44c`, merged nowhere.
+- Value: the bot's graph live on profile 2 (`scan_repo` → `author` → the gate); the run's
+  `events.jsonl` carries the rendered author prompt with `end to end.\n\nTHE MISSION`, the
+  paragraph break the profile-1 lexer used to fold.
+- Findings / misses: none on the bot. Not exercised: the incremental-update path
+  (`wiki_exists` true) and a gate failure feeding a second pass.
+- Engine hardening: none needed.
+- Lessons for next run: sonnet is enough for a tiny repository; keep `max_passes=1` for a smoke.
+
 ## 2026-07-20 — first dogfood on iterion, self-host wiki (runs 019f7f82 + 019f7f8a)
 - Status: validated
 - Versions: bot 1.0.0 · iterion @ e8c1692 (base) — bot source on branch `worktree-doki-noop-gate`

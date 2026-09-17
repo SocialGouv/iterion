@@ -1,7 +1,11 @@
 name: arbitrate
 display_name: Themis
 icon: ⚖️
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside two prompts (6 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer.
+## No instruction changed.
 description: |
   Judges the divergence cases a modernisation programme leaves blocked, by
   applying the target repository's own written arbitration doctrine — and
@@ -28,3 +32,9 @@ when_to_use: |
   an unmeasured case escalates by construction.
 author: SocialGouv (devthejo) — arbitrate/main.bot
 schema_version: 1
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

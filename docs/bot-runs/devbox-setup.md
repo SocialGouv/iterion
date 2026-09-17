@@ -2,6 +2,27 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-09-17 — profile 2: detect and generate prompts reach the models with their paragraphs (run 01a0af4e-e3e6)
+
+- Status: **validated** — a devbox.json written for a scratch repository, verified, banked.
+- Versions: bot devbox-setup 0.1.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` for the bots; the engine the branch binary `v3.154.1+d5b7db09f` carrying the first wave-1 runtime fix (main is at v3.157.0 with both), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code + claude-opus-5.
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of the greet project
+  (a one-file Python CLI with its test), `--store-dir` the operator's workspace store,
+  `--sandbox none --merge-into none`, caps `--max-cost-usd 3 --max-duration 15m`,
+  `ITERION_BIN` the branch binary.
+- Result: **finished**, ~2 min, **$0.34** (detect_stack $0.14 · generate_devbox $0.20). The
+  detection named a stdlib-only Python CLI with unittest tests; the generator wrote a pinned,
+  minimal `devbox.json` (`python3@3.12`), `verify_devbox` accepted it; storage branch
+  `iterion/run/synth-snap-distortcat-152d`, merged nowhere.
+- Value: the bot's whole graph live on profile 2; the run's `events.jsonl` carries the rendered
+  generate prompt with `other configs.\n\nIf a devbox.json already exists`, the paragraph break
+  the profile-1 lexer used to fold.
+- Findings / misses: none on the bot. Not exercised: the "existing devbox.json, add only the
+  missing" branch and the Playwright/non-Nix notes.
+- Engine hardening: none needed.
+- Lessons for next run: a three-file repository is enough to see the two prompts; the pinned
+  version the generator picks is worth reading before merging.
+
 ## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
 - Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
 - Versions: bot v0.1.0 (unchanged) · iterion worktree branch (rollout of 2026-07-07, see git log)
