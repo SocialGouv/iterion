@@ -42,6 +42,8 @@
 ## See bots/sec-audit-deps/README.md.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir:       string = "${PROJECT_DIR}"
   severity_threshold:  string = "medium"

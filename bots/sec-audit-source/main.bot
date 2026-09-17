@@ -35,6 +35,8 @@
 ## See bots/sec-audit-source/README.md.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir:       string = "${PROJECT_DIR}"
   scope_notes:         string = ""
@@ -5850,6 +5852,14 @@ workflow sec_audit_source:
     to_fix:    "{{outputs.remediation_plan.to_fix}}",
     max:       "{{vars.max_fix_per_run}}"
   }
+
+  ## The loop's exhaustion exit (C145, #1293): fix_loop's 500 is a safety
+  ## net above vars.max_fix_per_run — select_finding ends the loop by
+  ## has_more long before it — but a spent loop with no edge left would
+  ## kill the run with LOOP_EXHAUSTED instead of delivering what it banked.
+  ## Spent, the run leaves by the same exit fan as `not has_more`;
+  ## exit_router re-reads remediation_mode_gate and needs no input.
+  fix_ledger -> exit_router
 
   ## ── D5b exit fan ────────────────────────────────────────────────
   ##
