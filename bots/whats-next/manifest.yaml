@@ -1,6 +1,6 @@
 name: whats-next
 display_name: Nexie
-icon: "\U0001F9ED"
+icon: 🧭
 version: 0.3.1
 ## 0.3.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the nine
 ## paragraph breaks written inside nexie_system now reach the model as
@@ -35,16 +35,19 @@ when_to_use: |
   bot.
 author: SocialGouv (devthejo) — whats-next/main.bot
 schema_version: 1
+
 dispatch_vars:
   initial_message: |-
     {{issue.title}}
 
     {{issue.body}}
+
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are internal plumbing kept out of
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [initial_message]
+
 ## Nexie is a CONVERSATIONAL bot: the studio hosts her in the assistant
 ## dock rather than launching her through the generic run form. This block
 ## IS the studio's chat registry — before it, the surface was a const in
