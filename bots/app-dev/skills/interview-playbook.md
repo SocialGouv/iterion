@@ -102,7 +102,7 @@ every later pass, and any resumed run) re-reads it from the tree:
 
 ```sh
 cd <workspace> && (git init -b main 2>/dev/null || true) \
-  && git add -A \
+  && git add -A -- ':/' ':(exclude,top).claude' \
   && (git diff --cached --quiet || git commit -m "docs(spec): SPEC.md from operator interview")
 ```
 

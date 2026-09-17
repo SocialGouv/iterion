@@ -65,10 +65,10 @@
 ## committed fix (git is the state).
 ##
 ## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign runs
-## `git add -N .` BEFORE diffing so a branch that ADDS files shows those files
+## `git add -N -- ':/' ':(exclude,top).claude'` BEFORE diffing so a branch that ADDS files shows those files
 ## in `git diff` (untracked files are otherwise invisible to `git diff`), and
 ## commits the UNCOMMITTED working tree AFTER its own build+test passes,
-## staging untracked files (`git add -A`) so a fix that adds files actually
+## staging untracked files (`git add -A -- ':/' ':(exclude,top).claude'`) so a fix that adds files actually
 ## lands; the deterministic verify gate then re-checks the committed tree.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
@@ -318,7 +318,7 @@ prompt campaign_system:
 
   THE SCOPE is the BRANCH DIFF, not the whole codebase. You are reviewing and
   improving the changes THIS branch introduces over `base_ref` (in your user
-  prompt). FIRST read the diff — run `git add -N .` (intent-to-add, so any NEW
+  prompt). FIRST read the diff — run `git add -N -- ':/' ':(exclude,top).claude'` (intent-to-add, so any NEW
   files the branch adds show up) then
   `git diff $(git merge-base <base_ref> HEAD)` (merge-base vs WORKING TREE, so
   your OWN uncommitted fixes stay visible; the commit-only `<base_ref>...HEAD`
@@ -357,7 +357,7 @@ prompt campaign_system:
      tested green.
 
   3. COMMIT EACH FIX AS YOU FINISH IT — never batch. Stage everything
-     including new files (`git add -A`, so a fix that ADDS a test/helper
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name), so a fix that ADDS a test/helper
      actually lands) and commit before moving on. git IS your durable state:
      an interrupted run keeps every fix you committed, and a fresh pass just
      reads `git log`, re-diffs the branch, and continues where you left off.
@@ -548,7 +548,7 @@ prompt campaign_user:
   prompt says `{{vars.base_ref}}`, use whichever of the two refs
   `git rev-parse --verify` accepts; do not fetch to find out.)
 
-  Read the diff first: `git add -N .` then
+  Read the diff first: `git add -N -- ':/' ':(exclude,top).claude'` then
   `git diff $(git merge-base {{vars.base_ref}} HEAD)` (merge-base vs WORKING
   TREE — a prior pass's uncommitted fixes stay in scope; commit-only
   `{{vars.base_ref}}...HEAD` would hide them). Enumerate the footprint with
@@ -723,7 +723,11 @@ prompt verify_user:
   MANDATORY (skill section 1b): if the repo's own CI enforces a
   codegen-drift gate (git diff --exit-code after a regen/vendor step, a
   drift-check task, test -z on git status --porcelain), verify.sh MUST
-  mirror it — run the repo's regen command(s), then fail on drift. The
+  mirror it — run the repo's regen command(s), then fail on drift — with
+  iterion's `.claude/` scaffold left out of BOTH forms — `git status
+  --porcelain -- ':/' ':(exclude,top).claude'` and `git diff --exit-code
+  -- ':/' ':(exclude,top).claude'` (a mirror marked intent-to-add stays
+  in the index, so a bare diff stays red on it). The
   deterministic precheck rejects a gateless verify.sh in that case
   (exit 3) and the loop burns a full pass re-learning this.
 
@@ -1057,7 +1061,7 @@ prompt plan_system:
   You are the triage planner for a branch-review campaign. You are
   READ-ONLY: read the branch diff and produce a PLAN — change nothing.
 
-  Read the diff first: `git add -N .` then
+  Read the diff first: `git add -N -- ':/' ':(exclude,top).claude'` then
   `git diff $(git merge-base <base_ref> HEAD)` (merge-base vs WORKING
   TREE). That diff is the scope — do NOT plan changes to pre-existing
   code the branch didn't touch. Then write the plan as a MAP, not a
@@ -1131,7 +1135,7 @@ prompt plan_review_user:
   BRANCH BASE: {{vars.base_ref}} (on a cloud checkout a non-default
   base exists only as `origin/{{vars.base_ref}}` — use whichever of the
   two refs `git rev-parse --verify` accepts; do not fetch)
-  Read the diff yourself: `git add -N .` then
+  Read the diff yourself: `git add -N -- ':/' ':(exclude,top).claude'` then
   `git diff $(git merge-base {{vars.base_ref}} HEAD)` — or, on a large
   diff (see below), the stat + targeted per-file hunks instead.
 
@@ -1780,8 +1784,24 @@ if not entry or not head:
 if head != entry:
     print(json.dumps({'honoured': False, 'reason': 'declined but HEAD moved from ' + entry[:12] + ' to ' + head[:12] + ': the pass committed work, so it did have something to fix'}))
     raise SystemExit(0)
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, never the run's work (#1364) -- the rule
+    # finalize applies to the wip bank (runOutputPaths), tracked or not:
+    # the engine rewrites a tracked settings.json to inject plugin hooks,
+    # and a reader that refused on that write would stop every run on a
+    # repository that commits it. A rename is judged on its destination;
+    # a quoted path is unquoted.
+    path = line[3:]
+    if ' -> ' in path:
+        path = path.split(' -> ', 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+        path = path[1:-1]
+    return path.startswith('.claude/')
 st = git('status', '--porcelain')
-dirty = [l for l in (st.stdout or '').splitlines() if l.strip()]
+dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not is_scaffold(l)]
 if st.returncode != 0:
     print(json.dumps({'honoured': False, 'reason': 'declined but the working tree could not be read: ' + (st.stderr or '').strip()[-200:]}))
     raise SystemExit(0)
@@ -1957,12 +1977,27 @@ def masked_pipelines(text):
         if masked:
             bad.append(s[:200])
     return bad
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, and dropped from what this gate judges --
+    # the rule finalize applies to the wip bank (runOutputPaths), read
+    # here for the precheck and for the drift tail alike (a build that
+    # writes under .claude/ is not caught either). A rename is judged
+    # on its destination; a quoted path is unquoted.
+    path = line[3:]
+    if ' -> ' in path:
+        path = path.split(' -> ', 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+        path = path[1:-1]
+    return path.startswith('.claude/')
 def tree_state():
     try:
         p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
         if p.returncode != 0:
             return None
-        return set(l for l in p.stdout.splitlines() if l.strip())
+        return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
     except Exception:
         return None
 # Deterministic exit-status-masking precheck. A verify script whose gate is

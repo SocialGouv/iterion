@@ -1,7 +1,10 @@
 name: instrument
 display_name: Obsy
 icon: 📡
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
+## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
+## and the commit instruction excludes it (#1364).
 ## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside eight prompts (38 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

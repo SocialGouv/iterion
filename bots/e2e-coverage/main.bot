@@ -246,7 +246,7 @@ prompt campaign_system:
      its test.
 
   4. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
-     including new files (`git add -A`) and commit before moving on.
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name)) and commit before moving on.
      git IS your durable state: an interrupted run keeps every
      committed test, and a fresh pass reads the matrix + `git log` and
      continues where you left off.
@@ -987,12 +987,27 @@ else:
             if masked:
                 bad.append(s[:200])
         return bad
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, and dropped from what this gate judges --
+        # the rule finalize applies to the wip bank (runOutputPaths), read
+        # here for the precheck and for the drift tail alike (a build that
+        # writes under .claude/ is not caught either). A rename is judged
+        # on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     def tree_state():
         try:
             p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
             if p.returncode != 0:
                 return None
-            return set(l for l in p.stdout.splitlines() if l.strip())
+            return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
         except Exception:
             return None
     # Deterministic exit-status-masking precheck. A verify script whose gate is
@@ -1409,12 +1424,14 @@ for line in git(['diff', diff_base, '--numstat']).splitlines():
             pass
 untracked_test = False
 for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??' and rx.search(line[3:]):
+    # A mirrored skill (.claude/skills/verify-tests.md) is not a test the
+    # pass wrote: the scaffold never satisfies the new-test floor (#1364).
+    if line[:2].strip() == '??' and not line[3:].strip().startswith('.claude/') and rx.search(line[3:]):
         untracked_test = True
         break
 new_test_code = added > 0 or untracked_test
 if not new_test_code:
-    out = out + chr(10) + '[gate] note: no new test code detected vs the run base (fine for a pure inventory/mapping pass; otherwise your tests never landed -- git add -A and commit).'
+    out = out + chr(10) + '[gate] note: no new test code detected vs the run base (fine for a pure inventory/mapping pass; otherwise your tests never landed -- commit them, staging everything but the .claude/ scaffold).'
 
 print(json.dumps({'passed': passed, 'skipped': skipped, 'matrix_ok': matrix_ok, 'matrix_rows': matrix_rows, 'uncovered_rows': uncovered, 'scoped': scoped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
 "`

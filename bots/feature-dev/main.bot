@@ -60,7 +60,7 @@
 ##
 ## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign
 ## commits the UNCOMMITTED working tree AFTER its own build+test passes,
-## staging untracked files (`git add -A`) so a feature that ADDS files
+## staging untracked files (`git add -A -- ':/' ':(exclude,top).claude'`) so a feature that ADDS files
 ## (the common case) actually lands; the deterministic verify gate then
 ## re-checks the committed tree.
 ##

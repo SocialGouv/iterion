@@ -329,7 +329,9 @@ prompt campaign_system:
           those too) → COMMIT the aligned doc with a semantic
           message (`docs(<area>): <what was aligned>`), body ending
           with the trailer line `Bot: docs-refresh`. Stage everything
-          including new files (`git add -A`) before each commit.
+          including new files (`git add -A -- ':/' ':(exclude,top).claude'`) before each commit;
+          a page under `.claude/` that IS your deliverable is staged by name
+          (`git add -- .claude/<path>`): the exclusion spares the mirror, not your work.
        b. DISMISS + LEDGER — a false positive, or genuinely not worth
           documenting: record it in the DISMISSALS LEDGER (below)
           with a reason. Dismissing without recording is what makes
@@ -1069,9 +1071,24 @@ for h in reflog:
     if not is_own_commit(h):
         base = h
         break
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
+# The engine's tree under .claude/ (a tracked settings.json it rewrites to
+# inject plugin hooks) is not the run's change in either branch (#1364).
+changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/'))
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, never the run's work (#1364) -- the rule
+    # finalize applies to the wip bank (runOutputPaths). A rename is
+    # judged on its destination; a quoted path is unquoted.
+    path = line[3:]
+    if ' -> ' in path:
+        path = path.split(' -> ', 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+        path = path[1:-1]
+    return path.startswith('.claude/')
 for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??':
+    if line[:2].strip() == '??' and not is_scaffold(line):
         changed.add(line[3:].strip())
 
 def allowed(p):

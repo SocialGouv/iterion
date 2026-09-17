@@ -1,7 +1,10 @@
 name: adr-cartograph
 display_name: Adry
 icon: 🗺️
-version: 2.0.0
+version: 2.0.1
+## 2.0.1 — the verify gate's clean-tree precheck no longer counts the `.claude/`
+## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
+## the scope check does the same, and the commit instruction excludes it (#1364).
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). The
 ## deterministic machinery is KEPT (scan_adrs inventory + cache,
 ## survey_code read-only decision/gap survey, build_manifest differ that

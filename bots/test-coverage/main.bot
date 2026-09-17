@@ -56,7 +56,7 @@
 ##
 ## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign
 ## commits the UNCOMMITTED working tree AFTER the suite passes, staging
-## untracked files (`git add -A`) so NEW test files actually land; the
+## untracked files (`git add -A -- ':/' ':(exclude,top).claude'`) so NEW test files actually land; the
 ## deterministic gate then re-checks the committed tree AND its diff.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
@@ -220,7 +220,7 @@ prompt campaign_system:
      you have not seen pass.
 
   3. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
-     including new files (`git add -A`, so NEW test files actually land)
+     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name), so NEW test files actually land)
      and commit before moving on. git IS your durable state: an
      interrupted run keeps every test you committed, and a fresh pass
      just reads `git log` and continues where you left off. Do NOT keep a
@@ -927,12 +927,27 @@ else:
             if masked:
                 bad.append(s[:200])
         return bad
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, and dropped from what this gate judges --
+        # the rule finalize applies to the wip bank (runOutputPaths), read
+        # here for the precheck and for the drift tail alike (a build that
+        # writes under .claude/ is not caught either). A rename is judged
+        # on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     def tree_state():
         try:
             p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
             if p.returncode != 0:
                 return None
-            return set(l for l in p.stdout.splitlines() if l.strip())
+            return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
         except Exception:
             return None
     # Deterministic exit-status-masking precheck. A verify script whose gate is
@@ -1104,12 +1119,14 @@ for line in git(['diff', diff_base, '--numstat']).splitlines():
             pass
 untracked_test = False
 for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??' and rx.search(line[3:]):
+    # A mirrored skill (.claude/skills/verify-tests.md) is not a test the
+    # pass wrote: the scaffold never satisfies the new-test floor (#1364).
+    if line[:2].strip() == '??' and not line[3:].strip().startswith('.claude/') and rx.search(line[3:]):
         untracked_test = True
         break
 new_test_code = added > 0 or untracked_test
 if not new_test_code:
-    out = out + chr(10) + '[gate] no genuinely-new test code detected in this run (neither committed nor in the working tree) -- write real tests and git add -A; see the test-coverage skill mutation rule.'
+    out = out + chr(10) + '[gate] no genuinely-new test code detected in this run (neither committed nor in the working tree) -- write real tests and commit them (everything but the .claude/ scaffold); see the test-coverage skill mutation rule.'
 
 print(json.dumps({'passed': passed, 'skipped': skipped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
 "`

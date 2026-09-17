@@ -59,7 +59,7 @@ route ─ interview ─▶ interviewer ⇄ interview_chat   (Nexie loop, session
   from slice 0. There is no operator branch to protect yet, so
   `--merge-into` is a no-op on that first run. Launch from a **fresh,
   dedicated directory** (its pre-existing files would be swept into the
-  scaffold commit by `git add -A`).
+  scaffold commit by `git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name)).
 - **Re-runs (brownfield)**: the workspace is now a git repo → normal
   worktree isolation, storage branch + best-effort FF; the contract's
   brownfield check makes the campaign evolve instead of re-scaffold.

@@ -1,7 +1,10 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.7
+version: 3.5.8
+## 3.5.8 — the commit instruction excludes the `.claude/` scaffold iterion
+## mirrors into the worktree, and the scope check leaves it out (#1364); the
+## bundle's skill says the same.
 ## 3.5.7 — scan_hints stops manufacturing the same false positives every
 ## pass. A link written `/dsl` is SITE-absolute: every static-site
 ## generator routes it from the site root, but `os.path.join` drops

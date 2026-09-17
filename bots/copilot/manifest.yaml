@@ -1,7 +1,9 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.2.6
+version: 0.2.7
+## 0.2.7 — the authoring skill's intent-to-add example leaves iterion's `.claude/`
+## scaffold out (#1364).
 ## 0.2.6 — both GPT agents fall back to Claude Opus through Claw on quota,
 ## unavailable models, or exhausted transient retries, keeping their separate
 ## persisted conversations and operator answers. Override the fallback with

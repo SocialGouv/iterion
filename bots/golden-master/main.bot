@@ -2626,6 +2626,22 @@ tool oracle_run:
         return code == 0 and bool(out.strip())
 
 
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths), tracked or not:
+        # the engine rewrites a tracked settings.json to inject plugin hooks,
+        # and a reader that refused on that write would stop every run on a
+        # repository that commits it. A rename is judged on its destination;
+        # a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     def workspace_dirty_paths(ws):
         """The paths git reports as NOT committed, sorted.
 
@@ -2652,7 +2668,7 @@ tool oracle_run:
                            capture_output=True, text=True)
         if p.returncode != 0:
             return []
-        return sorted(l[3:] for l in p.stdout.splitlines() if l.strip())
+        return sorted(l[3:] for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
 
 
     def holdout_committed_entries(gm_dir):
