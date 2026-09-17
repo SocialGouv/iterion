@@ -476,21 +476,37 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		GateError:         gate.errText,
 	})
 
-	// Self-assign the connection's identity as an MR reviewer — what makes
-	// the forge-native "Re-request review" button exist on the reviewed MR
-	// (clicking it on the bot reviewer relaunches the review through the
-	// inbound webhook's on-demand lane). STRICTLY behind the gate status and
-	// the response: it is cosmetic, and its up-to-three forge round-trips
-	// must never sit in front of a required check (a client disconnect in
-	// that window used to kill the gate post on a review that had landed).
-	// Detached from the request context (a disconnect must not cancel it),
-	// bounded, and recover-carrying via goSafe. Providers whose admin client
-	// doesn't carry the capability are a deliberate non-implementation — see
-	// forge.ReviewerAssigner.
-	saCtx, saCancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
-	s.goSafe("forge-publish-self-assign", func() {
+	// Reviewer bookkeeping — the two halves of the re-request gesture, one
+	// per forge. GitLab's request has to be OPENED (self-assign as reviewer:
+	// what makes the forge-native "Re-request review" button exist on the
+	// reviewed MR, clicking it relaunching through the inbound webhook's
+	// on-demand lane). GitHub's has to be CLOSED (withdraw the armed logins'
+	// pending request, which GitHub never lifts by itself because the review
+	// is posted by the App, not by the requested account) — without which
+	// the pastille stays pending forever and re-adding the reviewer is not a
+	// repeatable gesture.
+	//
+	// STRICTLY behind the gate status and the response: both are cosmetic,
+	// and their forge round-trips must never sit in front of a required
+	// check (a client disconnect in that window used to kill the gate post
+	// on a review that had landed). Detached from the request context (a
+	// disconnect must not cancel them), bounded, and recover-carrying via
+	// goSafe. Providers whose admin client doesn't carry a capability are a
+	// deliberate non-implementation — see forge.ReviewerAssigner and
+	// forge.ReviewRequestWithdrawer.
+	// Each half takes its OWN deadline off the one detached parent. They are
+	// never both implemented on a single provider today (the capability pins
+	// in forge_publish_gate_test.go keep them disjoint), but one shared
+	// deadline would make that a load-bearing coincidence: a hung assigner
+	// would hand the withdrawal an already-dead context.
+	settleParent := context.WithoutCancel(r.Context())
+	saCtx, saCancel := context.WithTimeout(settleParent, 30*time.Second)
+	s.goSafe("forge-publish-reviewer-settle", func() {
 		defer saCancel()
 		s.selfAssignReviewer(saCtx, conn, grant.Repo, number)
+		wCtx, wCancel := context.WithTimeout(settleParent, 30*time.Second)
+		defer wCancel()
+		s.withdrawReviewRequests(wCtx, conn, grant, number)
 	})
 }
 
@@ -545,6 +561,102 @@ func (s *Server) selfAssignReviewer(ctx context.Context, conn forge.Connection, 
 	if s.logger != nil {
 		s.logger.Debug("forge publish: %s %s#%d: bot self-assigned as reviewer", conn.Provider, repo, number)
 	}
+}
+
+// withdrawReviewRequests closes the gesture that armed this review: it
+// removes the webhook's ReviewRequestLogins from the PR's requested
+// reviewers, through the forge.ReviewRequestWithdrawer capability. On GitHub
+// nothing else will — a review request is lifted only when the REQUESTED
+// account submits the review, and the review is posted by <app_slug>[bot] —
+// so without this the "review requested" pastille stays pending forever and
+// re-adding the reviewer is not a repeatable gesture.
+//
+// Best-effort by contract, exactly like selfAssignReviewer: the review and
+// the gate status already landed, so nothing here may fail the publish.
+// The armed logins are resolved BEFORE any forge round-trip, so a webhook
+// that never armed the lane — the overwhelming majority — costs two store
+// reads and no forge call at all.
+//
+// It fires on EVERY successful publish, not only on the deliveries the
+// re-request lane launched: the handler has no notion of which lane produced
+// the review, a /revi comment or a board launch leaves an equally pending
+// request when one was standing, and the read-then-intersect contract makes
+// a withdrawal with nothing to withdraw a no-op.
+//
+// The forgeReviewRequestWithdrawerFor field is a test seam; nil uses the
+// real admin client.
+func (s *Server) withdrawReviewRequests(ctx context.Context, conn forge.Connection, grant ForgePublishGrant, number int) {
+	logins, ok := s.armedReviewRequestLogins(ctx, grant)
+	if !ok {
+		return
+	}
+
+	var rw forge.ReviewRequestWithdrawer
+	if s.forgeReviewRequestWithdrawerFor != nil {
+		rw = s.forgeReviewRequestWithdrawerFor(ctx, conn)
+	} else {
+		admin, err := s.forgeAdminFor(ctx, conn)
+		if err != nil {
+			s.logWarn("forge publish: %s %s#%d: cannot resolve admin client to withdraw the review request: %v",
+				conn.Provider, grant.Repo, number, err)
+			return
+		}
+		rw, _ = admin.(forge.ReviewRequestWithdrawer)
+	}
+	if rw == nil {
+		s.logDebug("forge publish: %s carries no review-request withdrawal capability — the forge lifts the request itself when the requested account posts (see forge.ReviewRequestWithdrawer)", conn.Provider)
+		return
+	}
+
+	removed, err := rw.WithdrawPullReviewRequests(ctx, grant.Repo, number, logins)
+	if err != nil {
+		// A connection short of the grant lands here as a
+		// *forge.PermissionError naming pull_requests:write. The review is
+		// already published and the gate already posted — degrading either
+		// over a pending pastille would be the worse failure.
+		s.logWarn("forge publish: %s %s#%d: review request not withdrawn for %v (the request stays pending, so the reviewer must be removed by hand before it can be re-added; needs pull_requests:write): %v",
+			conn.Provider, grant.Repo, number, logins, err)
+		return
+	}
+	if len(removed) == 0 {
+		s.logDebug("forge publish: %s %s#%d: none of %v had a pending review request — nothing to withdraw",
+			conn.Provider, grant.Repo, number, logins)
+		return
+	}
+	s.logDebug("forge publish: %s %s#%d: withdrew the review request of %v — the gesture is re-armable",
+		conn.Provider, grant.Repo, number, removed)
+}
+
+// armedReviewRequestLogins resolves the review identities the publish grant's
+// repo has armed, via the webhook config behind its integration row. false
+// (with a Debug) when the lane is not armed — which is the common case and
+// must cost no forge round-trip.
+//
+// Read WITHOUT the tenant filter and cross-checked against the grant's team
+// after the fact, the way repoLaunchPolicy does: the store is keyed by the
+// grant's own tenant, and a config answering for another one would arm this
+// repo's write from a different team's settings.
+func (s *Server) armedReviewRequestLogins(ctx context.Context, grant ForgePublishGrant) ([]string, bool) {
+	if s.forgeIntegrations == nil || s.webhookConfigs == nil {
+		return nil, false
+	}
+	integration, err := s.forgeIntegrations.GetByConnRepo(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID, grant.Repo)
+	if err != nil || integration.WebhookID == "" {
+		s.logDebug("forge publish: %s: no webhook integration behind the publish grant — no review request to withdraw", grant.Repo)
+		return nil, false
+	}
+	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), integration.WebhookID)
+	if err != nil || cfg.TenantID != grant.TeamID {
+		s.logDebug("forge publish: %s: webhook config %s unreadable or foreign to team %s — no review request to withdraw",
+			grant.Repo, integration.WebhookID, grant.TeamID)
+		return nil, false
+	}
+	logins := cfg.NormalizedReviewRequestLogins()
+	if len(logins) == 0 {
+		s.logDebug("forge publish: %s: review_request_logins is empty — the re-request lane is not armed, nothing to withdraw", grant.Repo)
+		return nil, false
+	}
+	return logins, true
 }
 
 // gateClientFor resolves a connection's forgeGateClient. The forgeGateClientFor
