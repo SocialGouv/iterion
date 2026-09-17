@@ -410,6 +410,45 @@ func TestLoadExampleRefusesToWriteAFileThatDoesNotParse(t *testing.T) {
 	}
 }
 
+// A unit can fail to LOAD without its main having failed to PARSE — a
+// missing fragment, an import cycle, a duplicate declaration. The main was
+// read whole there, so calling its document a salvage would tell the author
+// their file did not parse when it did, and leave them a buffer the studio
+// refuses to write anywhere. The save is refused all the same, by saveUnit,
+// which names the fragment at fault.
+func TestLoadExampleSeparatesAUnitThatDoesNotLoadFromAMainThatDoesNotParse(t *testing.T) {
+	workDir := t.TempDir()
+	examples := filepath.Join(workDir, "catalog")
+	if err := os.MkdirAll(filepath.Join(examples, "gone"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The main parses whole; the fragment it imports is not there.
+	main := "import \"" + unit.FragmentDir + "/missing.bot\"\n\nworkflow g:\n  entry: done\n"
+	if err := os.WriteFile(filepath.Join(examples, "gone", "main.bot"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hs := exampleServer(t, workDir, examples)
+
+	var got oneProgram
+	if code, body := getExampleJSON(t, hs.URL+"/api/examples/gone/main.bot", &got); code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	if len(got.Diagnostics) == 0 {
+		t.Fatal("the fixture is not the case under test: the unit loaded")
+	}
+	if !got.Bindable {
+		t.Error("a unit whose main parsed whole was reported as an unreadable file")
+	}
+	if got.Path != "catalog/gone/main.bot" {
+		t.Errorf("path = %q, want the main's own path", got.Path)
+	}
+	// The diagnostics name the fragment, which is what tells the author what
+	// to do — the file itself is fine.
+	if !strings.Contains(strings.Join(got.Diagnostics, " "), "missing.bot") {
+		t.Errorf("the diagnostics do not name the missing fragment: %v", got.Diagnostics)
+	}
+}
+
 // A catalog file that is a symlink to another file of the working
 // directory is never bound to that other file's path: the studio would
 // open and save it under the example's name.

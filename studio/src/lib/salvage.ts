@@ -8,10 +8,17 @@ import type { IterDocument } from "@/api/types";
  * the author wrote with the parser's reading of it, silently and totally for
  * that region — the loss #1251 is about.
  *
- * The refusal is on the three sites that WRITE a document (the toolbar's
- * Save, the assistant's commit, Save As), never on the ones that ask which
- * file this is: unbinding the path to stop a write took the file's identity
- * away from every reader of it, which is a second loss by another road.
+ * The refusal is on every site that hands the document out AS the program —
+ * the three that write it (the toolbar's Save, the assistant's commit, Save
+ * As) and the two that export it (Download, Copy source), since a .bot on
+ * the author's disk or in their clipboard is trusted the same way. It is
+ * never on the sites that ask which FILE this is: unbinding the path to stop
+ * a write took the file's identity from every reader of it, which is a
+ * second loss by another road.
+ *
+ * The enumeration is `api.unparse(document)`'s call sites, minus the two
+ * that only display: the Source view (which shows the file's own text while
+ * salvaged) and the assistant's context snapshot.
  *
  * It lifts by itself: a parse of the buffer that comes back whole clears the
  * flag, so repairing the text in the Source view makes Save work again. That

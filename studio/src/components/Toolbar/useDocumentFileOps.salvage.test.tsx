@@ -31,6 +31,8 @@ function Harness() {
   return (
     <>
       <button onClick={() => void ops.handleSave()}>Save</button>
+      <button onClick={() => void ops.handleDownload()}>Download</button>
+      <button onClick={() => void ops.handleCopySource()}>Copy</button>
       <input
         aria-label="import"
         type="file"
@@ -100,6 +102,30 @@ describe("the toolbar's Save", () => {
     await waitFor(() => expect(api.parseSource).toHaveBeenCalled());
     await waitFor(() => expect(store.getState().salvaged).toBe(true));
     expect(store.getState().currentFilePath).toBeNull();
+  });
+
+  // Download and Copy hand the document out AS the program: a .bot on the
+  // author's disk under a name they trust, or text they will paste into one.
+  // Same harm as a save, so the same refusal — the class is every site that
+  // materialises the document, not only the ones that write to the workspace.
+  it.each([
+    ["Download", "downloads"],
+    ["Copy", "copies"],
+  ])("refuses to export a salvage when the author %s it", async (button) => {
+    const store = salvagedStore("bots/x/main.bot");
+    api.unparse.mockResolvedValue("workflow x:\n  entry: done\n");
+    render(
+      <DocumentStoreProvider store={store}>
+        <Harness />
+      </DocumentStoreProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: button }));
+
+    await waitFor(() => expect(useUIStore.getState().toasts.length).toBeGreaterThan(0));
+    const toasts = useUIStore.getState().toasts;
+    expect(toasts[toasts.length - 1]?.message).toMatch(/did not parse/i);
+    expect(api.unparse).not.toHaveBeenCalled();
   });
 
   it("writes one that is not a salvage", async () => {

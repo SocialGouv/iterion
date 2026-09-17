@@ -320,6 +320,15 @@ export function useDocumentFileOps({
 
   const handleDownload = useCallback(async () => {
     if (!document) return;
+    // A .bot on the author's disk, under a name they will trust, is the same
+    // harm as a save: the salvage is the program minus what the parser could
+    // not read, and nothing on the file says so.
+    const refusal = salvageRefusal(documentStore.getState());
+    if (refusal) {
+      addToast(refusal, "warning", { persistent: true });
+      openDiagnosticsPanel();
+      return;
+    }
     try {
       const source = await api.unparse(document);
       const blob = new Blob([source], { type: "text/plain" });
@@ -329,10 +338,18 @@ export function useDocumentFileOps({
       console.error("Download failed:", err);
       addToast("Download failed", "error");
     }
-  }, [document, addToast]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel]);
 
   const handleCopySource = useCallback(async () => {
     if (!document) return;
+    // Same harm, one step removed: the text goes to a file or a message
+    // next, and it is the program minus what the parser could not read.
+    const refusal = salvageRefusal(documentStore.getState());
+    if (refusal) {
+      addToast(refusal, "warning", { persistent: true });
+      openDiagnosticsPanel();
+      return;
+    }
     try {
       const source = await api.unparse(document);
       await navigator.clipboard.writeText(source);
@@ -341,7 +358,7 @@ export function useDocumentFileOps({
       console.error("Copy failed:", err);
       addToast("Copy failed", "error");
     }
-  }, [document, addToast]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel]);
 
   const handleAddWorkflow = useCallback(() => {
     if (!document) return;
