@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.158.0](https://github.com/SocialGouv/iterion/compare/v3.157.0...v3.158.0) (2026-09-17)
+
+### Features
+
+* **cloud:** record on the run what a cloud launch compiled ([#1226](https://github.com/SocialGouv/iterion/issues/1226), step 2/3) ([#1357](https://github.com/SocialGouv/iterion/issues/1357)) ([3371fdb](https://github.com/SocialGouv/iterion/commit/3371fdbc4ac10838c72861ab5ea3a8bb0fcb5932)), references [#1351](https://github.com/SocialGouv/iterion/issues/1351)
+
+    <details><summary>why</summary>
+
+    The queue message carries the compiled IR and the identity hash, never the text, and a runner pod has no filesystem the launch touched — so a cloud run recorded no workflow_source and `rewind --auto` had nothing to diff against. The cloud branch of Launch already held the compile result and kept only its hash.
+
+    </details>
+
 ## [3.157.0](https://github.com/SocialGouv/iterion/compare/v3.156.0...v3.157.0) (2026-09-17)
 
 ### Features
