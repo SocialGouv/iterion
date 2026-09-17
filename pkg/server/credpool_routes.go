@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -203,14 +202,20 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID, p.PoolID, p.UserID, p.Credential = pledgeID, poolID, id.UserID, cred
-	p.Limits, p.Window = req.Limits, req.Window
-	// Canonical bot ids, like the BYOK audience and for the same reason: the
-	// launch path hands the pool whatever spelling the requester typed, and
-	// botregistry treats `app_dev`, `App Dev` and `app-dev` as one bundle. A
-	// donor writing one spelling would otherwise stop serving the bot they
-	// meant the moment someone typed another, and the run would be funded by
-	// a different pledge without a word.
-	p.Bots = canonicalBotIDs(req.Bots)
+	// Stored EXACTLY as the donor sent them. A fold here would be half a fold:
+	// `credpool.Pledge.servesBot` compares against the launch bot id raw, and
+	// the publisher deliberately hands the pool that raw value (bot secret
+	// bindings read it too, and they match exactly). Folding only the write
+	// edge made a pledge naming a non-canonical stored slug — `my_bot`, which
+	// botsource.ValidSlug admits — stop serving the bot it named, silently,
+	// with the bill moving to another tier. Worse, `pkg/cli/remote_pool.go`
+	// re-sends `current.Bots` on every pledge PUT, so merely toggling
+	// `enabled` would have rewritten a working row into a non-matching one.
+	//
+	// Folding BOTH edges here is the other legitimate answer, and it is the
+	// one #1368 carries: it needs a canonical bot id at the source rather
+	// than a third private spelling rule.
+	p.Limits, p.Window, p.Bots = req.Limits, req.Window, req.Bots
 	if req.Enabled != nil {
 		p.Enabled = *req.Enabled
 	}
@@ -673,36 +678,4 @@ func (s *Server) toPoolView(r *http.Request, pool credpool.Pool, withDonors bool
 		})
 	}
 	return v
-}
-
-// canonicalBotIDs folds a donor-supplied bot list into the spelling the
-// launch path resolves to, dropping blanks and repeats. Unlike the BYOK
-// audience's edge it does NOT refuse a blank-only list: a pledge's `bots` has
-// always been a plain optional filter, and turning a donor's typo into a 400
-// on the pledge route would be a behaviour change beyond this fix.
-func canonicalBotIDs(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(in))
-	seen := make(map[string]bool, len(in))
-	for _, raw := range in {
-		b := botregistry.NormalizeName(raw)
-		if b == "" || seen[b] {
-			continue
-		}
-		seen[b] = true
-		out = append(out, b)
-	}
-	if len(out) == 0 {
-		// A list of nothing but blanks — `--bots ""` yields exactly that
-		// through cobra's StringSliceVar. Returning the empty list would
-		// turn "only these bots" into "every bot": the donor's credential
-		// would silently widen to the whole pool, which is the opposite of
-		// what they typed and the opposite of what this route did before
-		// canonicalisation existed. Keep the pledge closed on the input as
-		// given; the donor sees `bots` unchanged in the response.
-		return in
-	}
-	return out
 }

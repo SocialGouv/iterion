@@ -130,22 +130,36 @@ carries whichever the caller typed. So the two edges fold: the write routes
 canonicalise what they store, and the publisher canonicalises the run's bot id
 once before the walk. The predicate itself stays exact — a prefix or
 case-insensitive match there would silently widen an audience, and `sec` would
-open a key scoped to `sec-audit-source`. The same fold is applied to
-`credpool.Pledge.Bots` at its own write route, for the same reason.
+open a key scoped to `sec-audit-source`. The fold belongs to this audience **alone**, and the rule it obeys is worth
+stating once because it has now been broken in both directions:
 
-The fold belongs to the audience **alone**. The same bot id also reaches bot
-secret bindings and the credential pool, and both match it EXACTLY with no
-folding write edge — a stored bot may legitimately be named `my_bot`
-(`botsource.ValidSlug` admits `_`). Folding the shared value made a *required*
-secret resolve to nothing and blocked the launch; an `optional: true` one let
-the bot run unauthenticated. A fold belongs to the reader whose write edge folds
-too, and to nobody else.
+> **A credential's write edge and its read edge must agree.** Fold both, or
+> fold neither.
 
-One residual, narrow and known: `my-bot` and `my_bot` are distinct stored bots
-(`botsource` uniqueness is `(tenant_id, slug)`, exact) that fold to one
-audience entry, so a key scoped to either funds both. Both belong to the same
-team, so this widens a team's key to that team's own other bot. The root is
-`ValidSlug` admitting a spelling everything else folds — #1368.
+| Credential | write edge | read edge |
+|---|---|---|
+| `ApiKey.Bots` | folded (`normalizeBotAudience`) | folded (`audienceBotID`) |
+| `BotSecretBinding.BotID` | raw (route path value) | raw (`botID`) |
+| `credpool.Pledge.Bots` | raw (donor's list, verbatim) | raw (`Pledge.servesBot`) |
+
+Both halves were paid for. Folding the *shared* `botID` reached bot secret
+bindings, which match exactly: a **required** secret resolved to nothing and
+blocked the launch, and an `optional: true` one let the bot run unauthenticated.
+Then folding only the pledge's *write* route made a donor's pledge stop serving
+the bot it named — and because `pkg/cli/remote_pool.go` re-sends the stored list
+on every pledge PUT, merely toggling `enabled` would have rewritten a working
+row into a non-matching one. A stored bot may legitimately be named `my_bot`
+(`botsource.ValidSlug` admits `_`), so neither case is hypothetical.
+
+Folding the pledge's two edges together is the other legitimate answer; it needs
+a canonical bot id at the source rather than a third private spelling rule, and
+that is #1368.
+
+One residual of the fold this file does keep, narrow and known: `my-bot` and
+`my_bot` are distinct stored bots (`botsource` uniqueness is `(tenant_id, slug)`,
+exact) that collapse to one **audience** entry, so a key scoped to either funds
+both. Both belong to the same team, so it widens a team's key to that team's own
+other bot. Same root, same ticket.
 
 ### What this is NOT: an authorisation boundary
 
