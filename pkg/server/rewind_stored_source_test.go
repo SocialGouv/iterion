@@ -59,18 +59,21 @@ func TestCurrentStoredBotSource_ResolvesTheSameRowAtItsCurrentVersion(t *testing
 	}
 }
 
-// Two refusals, both deliberate, because materializing a bundle is real work
-// and a wrong answer here is worse than none.
+// Two abstentions, both deliberate: a run on a tier that IS on this
+// filesystem resolves through the ordinary path, and a caller that named a
+// source itself has overridden this resolution outright. The answer is the
+// empty path, which leaves every other part of the rewind as it was.
 //
-// A run on a tier that IS on this filesystem resolves through the ordinary
-// path; a rewind that names its node needs no diff at all. In both cases the
-// answer is the empty path, which leaves every other part of the rewind
-// exactly as it was.
+// Note which case is NOT here. A `--node` rewind names its own pivot but
+// still derives its blast radius — the dropped outputs, the tombstoned
+// artifacts — from the graph this source compiles to. Gating on Auto is
+// exactly what left it computing that from the baked twin.
 func TestCurrentStoredBotSource_AnswersNothingWhenItIsNotItsJob(t *testing.T) {
 	s, _, _ := newBotSourceTestServer(t)
 	s.cfg.Mode = "cloud"
 	ctx := context.Background()
 
+	stored := &store.Run{ID: "r", FilePath: "bots/shared/main.bot", BotSourceTier: store.BotSourceTierTeam, BotSourceTenant: "t1"}
 	cases := []struct {
 		name   string
 		run    *store.Run
@@ -78,7 +81,7 @@ func TestCurrentStoredBotSource_AnswersNothingWhenItIsNotItsJob(t *testing.T) {
 	}{
 		{"a baked-catalog run", &store.Run{ID: "r", FilePath: "bots/shared/main.bot", BotSourceTier: store.BotSourceTierBaked}, true},
 		{"a local run with no tier", &store.Run{ID: "r", FilePath: "main.bot"}, true},
-		{"a --node rewind on a stored tier", &store.Run{ID: "r", FilePath: "bots/shared/main.bot", BotSourceTier: store.BotSourceTierTeam, BotSourceTenant: "t1"}, false},
+		{"the caller named a source itself", stored, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,8 +91,36 @@ func TestCurrentStoredBotSource_AnswersNothingWhenItIsNotItsJob(t *testing.T) {
 			}
 			defer release()
 			if path != "" {
-				t.Errorf("resolved %q — a bundle was materialized for a rewind that never diffs it", path)
+				t.Errorf("resolved %q — a bundle was materialized where the rewind does not use one", path)
 			}
 		})
+	}
+}
+
+// A run launched BEFORE the tier stamp existed carries only BotSourceTenant,
+// and it is still a stored-bot run: its source is a row, not a file. A guard
+// on the tier alone passed it straight through to the baked twin — measured
+// at a pivot on the ENTRY node with all four executed nodes dropped and their
+// artifacts tombstoned, reported auto_targeted.
+func TestCurrentStoredBotSource_ARunPredatingTheTierStampIsStillStored(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	s.cfg.Mode = "cloud"
+	ctx := context.Background()
+	if _, err := s.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "shared",
+		Files: map[string]string{botsource.MainBotFile: testBotMain},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No BotSourceTier: the launch predates the stamp.
+	run := &store.Run{ID: "r1", FilePath: "bots/shared/main.bot", BotSourceTenant: "t1"}
+	path, release, err := s.currentStoredBotSource(ctx, run, true)
+	if err != nil {
+		t.Fatalf("currentStoredBotSource: %v", err)
+	}
+	defer release()
+	if path == "" {
+		t.Fatal("no current source resolved — the run's bundle is a stored row, so the rewind would compute " +
+			"its graph from the baked catalog twin: a different program")
 	}
 }

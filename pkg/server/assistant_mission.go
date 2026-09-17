@@ -333,7 +333,10 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 		var currentPath string
 		releaseBot := func() {}
 		if target, terr := c.runs.RunStore().LoadRun(mctx, m.TargetRunID); terr == nil {
-			currentPath, releaseBot, _ = c.server.currentStoredBotSource(mctx, target, auto)
+			// Wanted for a --node preview too: the pivot is named, but the
+			// graph that decides its blast radius still comes from this
+			// source. This surface never names a source of its own.
+			currentPath, releaseBot, _ = c.server.currentStoredBotSource(mctx, target, true)
 		}
 		defer releaseBot()
 		pivot, pivotErr := c.runs.ResolveRewindPivot(mctx, runview.RewindSpec{

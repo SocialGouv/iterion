@@ -127,3 +127,61 @@ func TestSubmitResume_ARefusedResumeLeavesTheRewindBaselineAlone(t *testing.T) {
 		t.Errorf("recorded files = %+v, want the launch's", r.WorkflowSources)
 	}
 }
+
+// ...but a publish can report an error AFTER the message landed — an ack
+// timeout, a context cancelled past the send. The runner then claims and
+// executes the revision this call published, which is why the status rollback
+// beside the restore is a queued-only CAS: it must not overwrite a run
+// somebody else now owns.
+//
+// The baseline has to follow that CAS. Restoring it unconditionally describes
+// the run as executing a revision it is not — the same silent mis-target as
+// the case above, from the other side, and this one lands on a run that is
+// actually running.
+func TestSubmitResume_APublishThatLandedAnywayKeepsTheNewBaseline(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team", "alice")
+	const runID = "run-resume-landed-anyway"
+	const launched = "workflow w:\n  entry: a\n  a -> done\n"
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: runID, TenantID: "team", OwnerID: "alice",
+		Status:         store.RunStatusPausedOperator,
+		WorkflowHash:   "hash-at-launch",
+		WorkflowSource: launched,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	p := &Publisher{store: st}
+	// The message landed: a runner claimed the attempt (queued → running)
+	// before the client learned the publish failed.
+	p.publishRun = func(context.Context, *queue.RunMessage) error {
+		if err := st.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+			t.Errorf("simulate the runner claim: %v", err)
+		}
+		return errors.New("ack timeout")
+	}
+
+	const edited = "workflow w:\n  entry: a\n  a -> b\n  b -> done\n"
+	cs := &runview.CompiledSource{Hash: "hash-now-running", Main: "main.bot", Files: map[string]string{"main.bot": edited}}
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: runID, FilePath: "main.bot", Source: edited},
+		&ir.Workflow{Name: "w"}, cs); err == nil {
+		t.Fatal("SubmitResume returned nil, want the publish error")
+	}
+
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != store.RunStatusRunning {
+		t.Fatalf("status = %s, want running — the rollback CAS must not have applied", r.Status)
+	}
+	if r.WorkflowSource != edited || r.WorkflowHash != cs.Hash {
+		t.Errorf("baseline = hash %q / %q, want the revision the runner is EXECUTING — the restore ran even "+
+			"though the rollback did not, so the doc now describes a program this run is not running",
+			r.WorkflowHash, r.WorkflowSource)
+	}
+}

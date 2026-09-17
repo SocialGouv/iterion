@@ -328,21 +328,26 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 	// which --auto refuses to diff against (ErrRewindStoredBotSourceUnresolved).
 	// Re-resolve the SAME row at its current version and hand --auto that —
 	// the resume path already does exactly this to replay a stored bot.
-	currentPath, releaseBot, berr := s.currentStoredBotSource(r.Context(), runMeta, req.Auto && sourcePath == "")
+	// Whenever the caller did not name a source itself — NOT only for --auto.
+	// The diff is the visible consumer, but the same compile yields the graph
+	// that decides what is downstream of the pivot, so a `--node` rewind of a
+	// stored-bot run computed its drop set from the baked twin: a different
+	// program, and the same destructive wrong-graph answer.
+	currentPath, releaseBot, berr := s.currentStoredBotSource(r.Context(), runMeta, sourcePath == "")
 	if berr != nil {
-		// resolveResumeBot types its failures, and flattening them all into
-		// 400 tells an operator a Mongo blip is their fault and answers a
-		// deleted row with advice about relaunching. A rewind has its own
-		// way out of both — `--node` needs no current source at all — so
-		// each says which.
+		// resolveResumeBot types its failures, and flattening them into one
+		// 400 tells an operator a store blip is their fault. Neither case can
+		// be served from the baked twin — that is the defect above — so both
+		// refuse, and each names the way out it actually has.
 		switch {
 		case errors.Is(berr, errResumeResolveTransient):
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable,
-				"resolve the bot's current source: %v — transient, retry; `--node` does not need it", berr)
+				"resolve the bot's current source: %v — transient, retry", berr)
 		case errors.Is(berr, botsource.ErrNotFound):
 			s.httpErrorFor(w, r, http.StatusBadRequest,
-				"resolve the bot's current source: the stored bot this run was served by no longer exists, so "+
-					"`--auto` has nothing to compare against — rewind with an explicit node instead")
+				"resolve the bot's current source: the stored bot this run was served by was deleted, so nothing "+
+					"here holds the program it ran — pass source_path to name a copy, or fork the run instead. "+
+					"Rewinding against the baked catalog bot of the same name would drop the wrong nodes")
 		default:
 			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve the bot's current source: %v", berr)
 		}

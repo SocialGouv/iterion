@@ -2427,19 +2427,30 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		}
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
-		if _, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
-			[]store.RunStatus{store.RunStatusQueued}); rbErr != nil {
+		rolledBack, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
+			[]store.RunStatus{store.RunStatusQueued})
+		if rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}
-		// The rewind baseline goes back with the status. The source is
-		// stamped just before the publish, so a publish that fails leaves the
-		// document describing an attempt that never ran — and `rewind --auto`
-		// would then diff against a program no run executed, which drops too
-		// FEW nodes and leaves stale state behind. That is the direction this
-		// whole feature exists to prevent, and unlike a refusal it is silent.
+		// The rewind baseline goes back with the status — and ONLY with it.
+		// The source is stamped just before the publish, so a publish that
+		// fails leaves the document describing an attempt that never ran, and
+		// `rewind --auto` would then diff against a program no run executed:
+		// too FEW nodes dropped, stale state left behind, silently.
+		//
+		// Conditional on that CAS for the symmetric reason. It is queued-only
+		// precisely because a publish can report an error AFTER the message
+		// landed — an ack timeout, a context cancelled past the send. The
+		// runner then claims and executes the revision this call published,
+		// the rollback correctly does nothing, and putting the previous pair
+		// back would describe the run as executing a revision it is not: the
+		// same silent mis-target, from the other side.
 		//
 		// A no-op for every return above the stamp: it writes back what is
 		// already there.
+		if !rolledBack {
+			return
+		}
 		if rsErr := p.store.SetRunRecordedSource(rollbackCtx, spec.RunID,
 			prior.WorkflowSource, prior.WorkflowSources, prior.WorkflowHash); rsErr != nil && p.logger != nil {
 			p.logger.Warn("cloudpublisher: restore the rewind baseline of %s after a refused resume: %v — "+
