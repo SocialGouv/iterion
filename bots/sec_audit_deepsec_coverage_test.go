@@ -1308,6 +1308,38 @@ exit 0`)
 	}
 }
 
+// The refusal envelope splices its reason into a JSON string literal, and the
+// guards fire on exactly the values that carry JSON syntax. Worse than malformed
+// output: `errors` is the LAST key, so a value that closes the array and appends
+// a second `coverage` object is accepted by last-key-wins decoding — a refused
+// deep scan forged into a completed one, inside the envelope whose whole purpose
+// is to make that impossible.
+func TestDeepsecRefusalCannotForgeItsOwnEnvelope(t *testing.T) {
+	for _, agent := range []string{
+		`codex","coverage":{"source":"run_meta","process_complete":true},"x":"`,
+		`a"b`,
+		`x\y`,
+		`back\`,
+		"line1\nline2",
+		`"}]}`,
+	} {
+		dir := t.TempDir()
+		cov, errs, _ := runDeepsecNodeAgent(t, dir, "forge-test", agent, "", `exit 0`)
+
+		// Parsing at all is the first half: runDeepsecNodeAgent fatals on a
+		// malformed envelope, so reaching here already proves the JSON survived.
+		if cov["source"] != "deepsec_unavailable" {
+			t.Errorf("agent=%q produced source=%v — a refusal must never read as a scan", agent, cov["source"])
+		}
+		if pc, _ := cov["process_complete"].(bool); pc {
+			t.Errorf("agent=%q forged process_complete=true out of a REFUSAL — the honesty envelope is writable from a var", agent)
+		}
+		if !strings.Contains(strings.Join(errs, " "), "deepsec_agent") {
+			t.Errorf("agent=%q refused without naming the offending var: %q", agent, errs)
+		}
+	}
+}
+
 // Both values land in an UNQUOTED expansion on deepsec's command line, so a
 // value carrying a space or a flag would become a second argument. The node
 // refuses instead of trimming: a pass that ran on an agent nobody chose is the

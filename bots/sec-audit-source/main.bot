@@ -2861,7 +2861,19 @@ fi
 
 # ── graceful-degrade probe ────────────────────────────────────────
 err_envelope() {
-  REASON="$1"
+  # The reason is spliced into a JSON string literal below, and some callers pass
+  # a value that was REFUSED for carrying arbitrary syntax -- the charset guards
+  # fire on exactly those. A quote, a backslash or a control byte would emit
+  # malformed JSON, which this node declares as scanner_output, so the refusal
+  # would be lost to a parse error that never names the offending var. And
+  # "errors" is the LAST key: a crafted value could close the array and append a
+  # second "coverage" object, which last-key-wins decoders accept -- forging a
+  # refused deep scan into a completed one, inside the very envelope that exists
+  # to make that impossible. Strip rather than escape: this is a diagnostic, and
+  # a lossy reason that parses beats an exact one that does not. Non-ASCII in a
+  # path is preserved; only the two structural characters and the control range
+  # go.
+  REASON=$(printf "%s" "$1" | tr -d "\\\\\"" | tr -d "\000-\037")
   printf "{\"scanner\":\"deepsec\",\"subscanners\":[],\"json_paths\":{},\"finding_count\":0,\"coverage\":{\"source\":\"deepsec_unavailable\",\"steps_failed\":null,\"candidates_found\":null,\"candidate_files\":null,\"files_processed\":null,\"scan_phase\":null,\"process_phase\":null,\"process_limit\":null,\"limit_truncated\":null,\"process_failed\":false,\"process_complete\":false},\"errors\":[\"deepsec unavailable: %s\"]}\n" "$REASON"
   exit 0
 }
