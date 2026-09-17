@@ -17,6 +17,8 @@
 ## repo finishes at zero LLM cost.
 
 ## ─── Vars ────────────────────────────────────────────────────────
+dsl: 2
+
 vars:
   ## The workspace to document. Defaults to ${PROJECT_DIR} — resolved by
   ## the engine to the worktree (worktree: auto). Omit the override so it

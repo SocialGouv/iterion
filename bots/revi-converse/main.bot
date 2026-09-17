@@ -36,6 +36,8 @@
 ## §A4 and the §8 note in skills/forge-reply.md.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 secrets:
   ## Forge API token used to POST the answer note. Mounted as a FILE
   ## the agent passes to curl by path — never read into a prompt or
