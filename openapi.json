@@ -3445,6 +3445,12 @@
           "alive_runs": {
             "type": "integer"
           },
+          "bots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "created_at": {
             "type": "string"
           },
@@ -3487,7 +3493,8 @@
           "provider",
           "name",
           "is_default",
-          "created_at"
+          "created_at",
+          "bots"
         ],
         "type": "object"
       },
@@ -3685,6 +3692,12 @@
       },
       "createApiKeyReq": {
         "properties": {
+          "bots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "is_default": {
             "type": "boolean"
           },
@@ -4656,6 +4669,12 @@
       },
       "updateApiKeyReq": {
         "properties": {
+          "bots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "is_default": {
             "type": "boolean"
           },

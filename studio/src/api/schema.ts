@@ -7066,6 +7066,7 @@ export interface components {
         };
         apiKeyView: {
             alive_runs?: number;
+            bots: string[];
             created_at: string;
             fingerprint?: string;
             id: string;
@@ -7140,6 +7141,7 @@ export interface components {
             warnings?: string[];
         };
         createApiKeyReq: {
+            bots?: string[];
             is_default?: boolean;
             max_concurrent_runs?: number;
             name: string;
@@ -7419,6 +7421,7 @@ export interface components {
             status: string;
         };
         updateApiKeyReq: {
+            bots?: string[];
             is_default?: boolean;
             max_concurrent_runs?: number;
             name?: string;

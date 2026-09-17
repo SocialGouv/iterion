@@ -204,6 +204,54 @@ type ApiKey struct {
 	// no other tier could serve its wire — progress beats the ceiling
 	// when the alternative is a run with no credential at all.
 	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
+	// Bots is the key's WORKLOAD audience: the bot ids whose runs may draw
+	// on it. Empty admits every bot, so a key written before this field
+	// existed keeps funding exactly what it funded yesterday — naming one
+	// bot is what turns enforcement on, never a migration.
+	//
+	// Unlike MaxConcurrentRuns this is a GATE, not a ceiling: it is checked
+	// inside Resolve rather than through the usable-predicate, so neither an
+	// explicit pin nor the refused-key restore can hand the key to a bot its
+	// operator did not name. A scope says who may SEE a key; this says what
+	// it is FOR, and the two are independent — a team-wide key can fund one
+	// bot, and a personal key can fund all of them.
+	Bots []string `bson:"bots,omitempty" json:"bots,omitempty"`
+}
+
+// ServesBot reports whether this key's audience admits botID, as a STATUS
+// view asks it: an empty allow-list admits everything, and an empty bot id
+// means "not asking about a particular bot", so the allow-list is ignored.
+//
+// The launch path must NOT use this one — see ServesBotForLaunch.
+func (k ApiKey) ServesBot(botID string) bool {
+	if len(k.Bots) == 0 || botID == "" {
+		return true
+	}
+	return k.listsBot(botID)
+}
+
+// ServesBotForLaunch is ServesBot as the RESOLUTION path must ask it.
+//
+// The difference is the empty bot id. A run launched from an inline `.bot`
+// the requester uploaded carries no bot id — it is the arbitrary-code case —
+// so treating "no bot id" as "ignore the allow-list" there would hand a key
+// scoped to `bots: [sec-audit-source]` to any file a requester cares to
+// submit. The one input the requester fully controls fails CLOSED. Same rule,
+// and same reason, as credpool.Pledge.AvailableForLaunch.
+func (k ApiKey) ServesBotForLaunch(botID string) bool {
+	if len(k.Bots) == 0 {
+		return true
+	}
+	return botID != "" && k.listsBot(botID)
+}
+
+func (k ApiKey) listsBot(botID string) bool {
+	for _, b := range k.Bots {
+		if b == botID {
+			return true
+		}
+	}
+	return false
 }
 
 // ApiKeyStore is the persistence interface for BYOK records.
@@ -301,6 +349,7 @@ func Resolve(
 	ctx context.Context,
 	store ApiKeyStore,
 	teamID, userID string,
+	botID string,
 	providers []Provider,
 	keyOverrides map[Provider]string,
 	sealer Sealer,
@@ -320,6 +369,14 @@ func Resolve(
 	for _, candidate := range OrderedAPIKeyCandidates(visible, userID, providers, keyOverrides) {
 		k := candidate.Key
 		if _, already := out[k.Provider]; already {
+			continue
+		}
+		// The workload audience is checked BEFORE the pin exemption, and
+		// inside Resolve rather than through the usable-predicate, because
+		// it is a gate and not an optimisation: the refused-key restore
+		// re-resolves with a nil predicate, so an audience expressed there
+		// would hand the key out on exactly the path it exists to close.
+		if !k.ServesBotForLaunch(botID) {
 			continue
 		}
 		if !candidate.Pinned && usable != nil && !usable(k) {

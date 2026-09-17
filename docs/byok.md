@@ -53,6 +53,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
 | `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
 | `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
+| `bots` | optional **workload audience**: the bot ids whose runs may draw on this key. Empty admits every bot. See [Workload audience](#workload-audience--what-a-key-is-for) |
 | `expires_at` | optional |
 
 - Interface: `ApiKeyStore` (Create/Get/GetOwned/Update/Delete/ListByTeam/ListByUser/MarkUsed/MarkFingerprintUsed/ClearDefault) — [pkg/secrets/byok.go](../pkg/secrets/byok.go). `GetOwned` is the credential pool's cross-tenant read, bounded by ownership; `MarkFingerprintUsed` the runner's metering bump.
@@ -96,6 +97,59 @@ only when **all three** hold:
 
 Everything uncertain counts (over-protection), never the reverse: a count
 error leaves the ceiling unapplied for that resolution and is logged.
+
+## Workload audience — what a key is FOR
+
+A scope says who may SEE a key. `bots` says what it FUNDS, and the two are
+independent: a team-wide key can fund a single bot, and a personal key can
+fund all of them.
+
+**Empty admits every bot.** Naming one is what turns enforcement on — never a
+migration — so every key written before the field existed funds exactly what it
+funded yesterday. Same asymmetry, and same reason, as
+`platformcfg.PlatformCredentials.Enforce`.
+
+Three properties decide where it is enforced, and they are the whole design:
+
+1. **It is a gate, not a ceiling.** `max_concurrent_runs` rides
+   `apiKeyUsable`, whose refusals the refused-key restore deliberately undoes
+   — progress beats a soft cap. An audience must survive that path, so it is
+   checked inside `secrets.Resolve` itself.
+2. **A pin does not lift it.** `key_overrides` is honoured over the
+   usable-predicate by design; the audience is read *before* that exemption,
+   or "pin the key" would be the documented way around it.
+3. **A run that names no bot is refused** when the allow-list is non-empty.
+   An inline `.bot` a requester uploaded carries no bot id — the
+   arbitrary-code case — so the one input the requester fully controls fails
+   closed. `ApiKey.ServesBot` is the status reading (an empty bot id ignores
+   the list); `ApiKey.ServesBotForLaunch` is the resolution one. The split
+   mirrors `credpool.Pledge.Available` / `AvailableForLaunch` exactly, because
+   it is the same question about the same situation.
+
+An audience narrows WHICH key serves, never whether the walk continues: the
+next key of that provider, then the next tier, still get their turn.
+
+```sh
+# this key funds the security audit and nothing else
+iterion remote api PATCH /api/teams/<team>/api-keys/<key> \
+  --data '{"bots":["sec-audit-source"]}'
+# lift it again — an empty list, not a list of blanks (which is refused)
+iterion remote api PATCH /api/teams/<team>/api-keys/<key> --data '{"bots":[]}'
+```
+
+The same field exists one tier over as `credpool.Pledge.Bots`, for a donor
+lending a credential to strangers. It is carried here so that a team aiming
+its OWN key has the vocabulary the donor already had.
+
+**Where it stops, said plainly.** `bots` governs the walk in `secrets.Resolve`
+— the team, org and platform API-key tiers. It does **not** reach a key the
+owner has PLEDGED to the credential pool: the pool opens a pledged key through
+`GetOwned`, outside that walk, and applies the pledge's own `Bots` instead. So
+a personal key scoped to one bot and then pledged is served to whatever the
+PLEDGE admits. Which of the two audiences should win — or whether they should
+intersect, as `IntersectHosts` does for egress — is an open decision, not an
+oversight; until it is taken, set the audience on the pledge as well as on the
+key.
 
 ## Resolution — `secrets.Resolve`
 

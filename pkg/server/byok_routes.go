@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -56,6 +58,10 @@ type apiKeyView struct {
 	// fingerprint (which names a slot, not a credential).
 	RefusedUntil  *string `json:"refused_until,omitempty"`
 	RefusedReason string  `json:"refused_reason,omitempty"`
+	// Bots is the key's workload audience — empty means every bot. Always
+	// emitted, including empty, because "this key funds everything" is the
+	// answer a reader most needs and the one an omitted field hides.
+	Bots []string `json:"bots"`
 }
 
 type createApiKeyReq struct {
@@ -67,6 +73,9 @@ type createApiKeyReq struct {
 	// once (0 = uncapped) — the operator-side answer to providers whose
 	// fair-usage limits publish no numeric bound.
 	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
+	// Bots restricts which bot ids may draw on this key. Omitted or empty
+	// admits every bot — see secrets.ApiKey.Bots.
+	Bots []string `json:"bots,omitempty"`
 }
 
 type updateApiKeyReq struct {
@@ -74,6 +83,11 @@ type updateApiKeyReq struct {
 	IsDefault         *bool   `json:"is_default,omitempty"`
 	Secret            *string `json:"secret,omitempty"` // rotate
 	MaxConcurrentRuns *int    `json:"max_concurrent_runs,omitempty"`
+	// Bots replaces the audience wholesale. A pointer to a nil-or-empty
+	// slice CLEARS it (back to "every bot"); an absent field leaves it
+	// alone — the distinction `omitempty` on a plain slice cannot make,
+	// and the one that decides whether an audience can ever be lifted.
+	Bots *[]string `json:"bots,omitempty"`
 }
 
 func (s *Server) toApiKeyView(ctx context.Context, k secrets.ApiKey) apiKeyView {
@@ -90,6 +104,7 @@ func (s *Server) toApiKeyView(ctx context.Context, k secrets.ApiKey) apiKeyView 
 
 		MaxConcurrentRuns: k.MaxConcurrentRuns,
 		AliveRuns:         s.aliveRunsFor(ctx, k),
+		Bots:              append([]string{}, k.Bots...),
 	}
 	if ref := s.refusalFor(ctx, k); ref.Refused() {
 		until := ref.Until.UTC().Format(time.RFC3339)
@@ -300,6 +315,11 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		httpError(w, http.StatusBadRequest, "max_concurrent_runs must be >= 0 (0 = uncapped)")
 		return
 	}
+	bots, berr := normalizeBotAudience(req.Bots)
+	if berr != nil {
+		httpError(w, http.StatusBadRequest, "%s", berr.Error())
+		return
+	}
 	keyID := secrets.NewApiKeyID()
 	sealed, err := secrets.SealAPIKey(s.sealer, keyID, []byte(req.Secret))
 	if err != nil {
@@ -321,6 +341,7 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		Fingerprint:  secrets.FingerprintSHA256(req.Secret),
 
 		MaxConcurrentRuns: req.MaxConcurrentRuns,
+		Bots:              bots,
 	}
 	// The EXPLICIT scope, not the path: on the org-credential route {id}
 	// is an org id while the row belongs under the reserved org-tier
@@ -338,6 +359,47 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 	}
 	s.auditApiKey(r, teamID, "created", keyID, map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""})
 	writeJSON(w, s.toApiKeyView(r.Context(), key))
+}
+
+// maxBotAudienceEntries bounds a key's workload audience. An allow-list is
+// read on every credential resolution, so it is not a place for an unbounded
+// operator-supplied list; the ceiling is far above any real deployment's bot
+// roster and exists to make the refusal explicit rather than to ration.
+const maxBotAudienceEntries = 128
+
+// normalizeBotAudience trims, de-duplicates and validates a submitted
+// workload audience.
+//
+// It refuses rather than repairs in the one case that matters: a list the
+// caller filled with nothing but blanks. Dropping those silently would turn
+// "only these bots" into "every bot" — the exact widening the field exists
+// to prevent — and an operator who mistyped would learn it from a key that
+// funds everything. An ABSENT or genuinely empty list is a different thing
+// and stays legal: that is how an audience is lifted.
+func normalizeBotAudience(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if len(in) > maxBotAudienceEntries {
+		return nil, fmt.Errorf("bots: at most %d entries (got %d)", maxBotAudienceEntries, len(in))
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		b := strings.TrimSpace(raw)
+		if b == "" {
+			continue
+		}
+		if seen[b] {
+			continue
+		}
+		seen[b] = true
+		out = append(out, b)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("bots: every entry is blank — send an empty list to clear the audience, not a list of blanks")
+	}
+	return out, nil
 }
 
 // refuseApiKey answers a BYOK shape refusal (create or rotate): 400 with
@@ -414,6 +476,14 @@ func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 	}
 	if req.IsDefault != nil {
 		key.IsDefault = *req.IsDefault
+	}
+	if req.Bots != nil {
+		bots, berr := normalizeBotAudience(*req.Bots)
+		if berr != nil {
+			httpError(w, http.StatusBadRequest, "%s", berr.Error())
+			return
+		}
+		key.Bots = bots
 	}
 	if err := s.apiKeys.Update(ctx, key); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())

@@ -466,7 +466,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// Evidence-based skip: a key the provider freshly refused is
 					// passed over so the priority walk yields the next key of that
 					// provider — the BYOK tier becomes an ordered fallback chain.
-					resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer,
+					resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, allKnownProviders, overrides, p.sealer,
 						p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips))
 					if err != nil {
 						return fmt.Errorf("cloudpublisher: resolve creds: %w", err)
@@ -491,7 +491,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// with an empty wire fails on a no-credential auth error nothing
 					// retries (or silently spends the runner pod's ambient env).
 					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
-						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, refused, overrides, p.sealer, nil)
+						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, refused, overrides, p.sealer, nil)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
 						}
@@ -666,7 +666,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
 
 			case credentialTierPool:
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -722,7 +722,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
 				}
 
 			case credentialTierRestore:
@@ -1095,7 +1095,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait) {
 	if p.sealer == nil {
 		return
 	}
@@ -1122,7 +1122,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 		}
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
-			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer,
+			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, missing, nil, p.sealer,
 				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
@@ -1165,7 +1165,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			// instead, behind any tenant key of the same provider, whose
 			// restore takes precedence.
 			if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
-				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", refused, nil, p.sealer, nil)
+				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, refused, nil, p.sealer, nil)
 				if ferr != nil {
 					p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
 				}
