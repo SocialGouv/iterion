@@ -340,6 +340,7 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, runview.ErrRewindNodeNotReached),
 			errors.Is(err, runview.ErrRewindNoSourceRecorded),
 			errors.Is(err, runview.ErrRewindUnitSourcesIncomplete),
+			errors.Is(err, runview.ErrRewindStoredBotSourceUnresolved),
 			errors.Is(err, runview.ErrRewindNoChange),
 			errors.Is(err, runview.ErrRewindAmbiguous),
 			errors.Is(err, runtime.ErrArtifactContractIncompatible):
