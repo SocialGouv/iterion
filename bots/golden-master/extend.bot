@@ -269,7 +269,10 @@ tool extend_base:
         i = 0
         while i < len(toks):
             xy, path = toks[i][:2], toks[i][3:]
-            dirty_paths.append(path)
+            # iterion's own scaffold under .claude/ (skills, plugin files):
+            # laid by the engine at run start, never the run's work (#1364).
+            if not path.startswith('.claude/'):
+                dirty_paths.append(path)
             i += 1
             if ("R" in xy or "C" in xy) and i < len(toks):
                 dirty_paths.append(toks[i])
@@ -525,13 +528,26 @@ tool extend_verify:
 
     # 1. Committed. The verdict below reads git; uncommitted work is a tree
     #    the verdict never sees.
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths). A rename is
+        # judged on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     code, out, err = git("status", "--porcelain")
     if code != 0:
         problems.append("git cannot answer on %s: %s" % (ws, err.strip()))
     else:
-        report["committed"] = not out.strip()
-        if out.strip():
-            paths = sorted(l[3:] for l in out.splitlines() if l.strip())
+        paths = sorted(l[3:] for l in out.splitlines() if l.strip() and not is_scaffold(l))
+        report["committed"] = not paths
+        if paths:
             problems.append("the extension is NOT COMMITTED (%d path(s): %s). "
                             "Commit, then verify."
                             % (len(paths), ", ".join(paths[:12])))

@@ -235,6 +235,19 @@ tool preflight:
                "a net would report lots done against nothing; build the net "
                "first (golden-master bot)." % out["verify_path"])
 
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths). A rename is
+        # judged on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
                         capture_output=True, text=True, timeout=60)
     if st.returncode != 0:
@@ -244,7 +257,8 @@ tool preflight:
     # script tool ALWAYS sees that one untracked path. Execution machinery,
     # not work in flight — the one exclusion every status read here carries.
     dirty = [l for l in st.stdout.splitlines() if l.strip()
-             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")]
+             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
+             and not is_scaffold(l)]
     if dirty:
         refuse("the workspace has %d uncommitted change(s) at campaign start "
                "(e.g. %s). A supervisor only ever acts between runs on "
@@ -531,6 +545,10 @@ tool steward:
             # execution machinery, never part of an observed diff.
             if os.path.basename(p).startswith(".iterion-script-"):
                 continue
+            # iterion's own scaffold under .claude/ (skills, plugin files):
+            # laid by the engine at run start, never the run's work (#1364).
+            if p.startswith(".claude/"):
+                continue
             paths.append(p)
         return sorted(set(paths))
 
@@ -787,11 +805,25 @@ tool finalize:
             return cand
         return ""
 
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths). A rename is
+        # judged on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     head = git("rev-parse", "HEAD").stdout.strip()
     # Same exclusion as preflight: the engine's own materialised node script
     # is execution machinery, not an uncommitted change.
     dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()
-             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")]
+             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
+             and not is_scaffold(l)]
 
     plan = {}
     yq = find_yq()

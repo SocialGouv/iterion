@@ -3,7 +3,8 @@ display_name: Wikky
 icon: 📖
 version: 1.0.3
 ## 1.0.3 — the commit instruction excludes the `.claude/` scaffold iterion
-## mirrors into the worktree (#1364); the bundle's skill says the same.
+## mirrors into the worktree, and the scan's dirty-tree read and the wiki's scope
+## check leave it out (#1364); the bundle's skill says the same.
 ## 1.0.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside two prompts (14 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

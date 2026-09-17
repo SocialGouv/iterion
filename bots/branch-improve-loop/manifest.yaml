@@ -4,7 +4,7 @@ icon: 🌿
 version: 1.8.2
 ## 1.8.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
-## and the commit instruction excludes it (#1364).
+## the decline probe does the same, and the commit instruction excludes it (#1364).
 ## 1.8.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside fifteen prompts (65 in all) now reach
 ## the models as blank lines instead of being folded away by the profile-1

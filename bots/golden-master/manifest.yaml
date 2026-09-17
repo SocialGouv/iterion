@@ -1,7 +1,10 @@
 name: golden-master
 display_name: Goldy
 icon: 🪞
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — the committed-tree guards of the oracle harness, the extension and
+## the repair no longer count iterion's `.claude/` scaffold as uncommitted work
+## (#1364).
 ## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside eight prompts across main.bot, extend.bot and reanchor.bot (47 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

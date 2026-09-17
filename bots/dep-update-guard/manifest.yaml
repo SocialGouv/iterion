@@ -3,7 +3,7 @@ display_name: Vetty
 icon: 💂
 version: 2.7.9
 ## 2.7.9 — the verify instruction's mirrored drift gate leaves iterion's `.claude/`
-## scaffold out of its porcelain check (#1364).
+## scaffold out of its porcelain check, as does the gate's drift tail (#1364).
 ## 2.7.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside nine prompts (30 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

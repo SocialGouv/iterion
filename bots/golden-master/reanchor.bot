@@ -166,6 +166,19 @@ tool reanchor_base:
     ws = {{vars.workspace_dir}}
     wanted = [m.get("id") for m in ({{vars.invalid}} or []) if m.get("id")]
 
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths). A rename is
+        # judged on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     head = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
                           capture_output=True, text=True)
     dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
@@ -174,14 +187,14 @@ tool reanchor_base:
     notice = ""
     if head.returncode != 0:
         notice = "git cannot answer on %s: %s" % (ws, (head.stderr or "").strip())
-    elif dirty.returncode == 0 and dirty.stdout.strip():
+    elif dirty.returncode == 0 and any(l.strip() and not is_scaffold(l) for l in dirty.stdout.splitlines()):
         # Said, not refused. The parent commits its lot before verifying, so a
         # dirty tree here means something else is in flight — and the repair
         # would be indistinguishable from it in the diff.
         notice = ("the workspace was already dirty when this repair started (%d path(s)). "
                   "The scope check below compares HEAD to the working tree, so those "
                   "changes will be read as this repair's."
-                  % len([l for l in dirty.stdout.splitlines() if l.strip()]))
+                  % len([l for l in dirty.stdout.splitlines() if l.strip() and not is_scaffold(l)]))
 
     print(json.dumps({"head": head.stdout.strip(), "dirty": dirty.stdout.strip(),
                       "wanted": wanted, "notice": notice}))
@@ -229,13 +242,26 @@ tool reanchor_verify:
     # 1. Committed. Mutant reverts restore HEAD, so anything uncommitted is
     #    destroyed the moment the harness applies its first mutant below — and
     #    the verdict would then describe a tree that never existed.
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths). A rename is
+        # judged on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
     code, out, err = git("status", "--porcelain")
     if code != 0:
         problems.append("git cannot answer on %s: %s" % (ws, err.strip()))
     else:
-        report["committed"] = not out.strip()
-        if out.strip():
-            paths = sorted(l[3:] for l in out.splitlines() if l.strip())
+        paths = sorted(l[3:] for l in out.splitlines() if l.strip() and not is_scaffold(l))
+        report["committed"] = not paths
+        if paths:
             problems.append(
                 "the repair is NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, "
                 "so this work is destroyed by the very check meant to accept it. Commit, "
