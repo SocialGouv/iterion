@@ -1245,7 +1245,9 @@ def git(args):
 
 reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
 base = reflog[-1] if reflog else 'HEAD'
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
+# The engine's tree under .claude/ (a tracked settings.json it rewrites to
+# inject plugin hooks) is not the run's change in either branch (#1364).
+changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/'))
 def is_scaffold(line):
     # iterion lays the bundle's skills (and plugin commands, agents,
     # settings) under <workspace>/.claude/ at run start: written by the

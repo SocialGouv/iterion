@@ -1119,7 +1119,9 @@ for line in git(['diff', diff_base, '--numstat']).splitlines():
             pass
 untracked_test = False
 for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??' and rx.search(line[3:]):
+    # A mirrored skill (.claude/skills/verify-tests.md) is not a test the
+    # pass wrote: the scaffold never satisfies the new-test floor (#1364).
+    if line[:2].strip() == '??' and not line[3:].strip().startswith('.claude/') and rx.search(line[3:]):
         untracked_test = True
         break
 new_test_code = added > 0 or untracked_test

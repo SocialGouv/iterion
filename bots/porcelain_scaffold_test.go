@@ -83,6 +83,21 @@ func TestScopeChecksLeaveTheScaffoldOut(t *testing.T) {
 			if res.ScopeOK || len(res.OutOfScope) != 1 || res.OutOfScope[0] != "stray.py" {
 				t.Fatalf("a stray file must still be out of scope, and only it, got %+v", res)
 			}
+			// The engine rewrites a tracked .claude/settings.json to inject plugin
+			// hooks: that modification reaches the diff branch of the check and is
+			// not the run's change either (the gates' whole-tree rule).
+			if err := os.Remove(filepath.Join(ws, "stray.py")); err != nil {
+				t.Fatal(err)
+			}
+			gittest.Run(t, ws, "add", "-f", filepath.Join(".claude", "settings.json"))
+			gittest.Run(t, ws, "commit", "-q", "-m", "track the settings")
+			if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"hooks\": {}}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runScaffoldJSON(t, expand(ws), &res)
+			if !res.ScopeOK || len(res.OutOfScope) != 0 {
+				t.Fatalf("a tracked settings.json the engine rewrote must stay in scope, got %+v", res)
+			}
 		})
 	}
 }
@@ -211,8 +226,6 @@ func TestPorcelainReadersAreClassified(t *testing.T) {
 	unaffected := map[string]string{
 		"modernize/main.bot:lot_verify:code, log, _ = run(\"git -c core.quotePath=false status --porcelain -- %s\"":                                           "scoped to the lot's own paths by pathspec",
 		"golden-master/extend.bot:extend_base:dirty = subprocess.run([\"git\", \"-C\", ws, \"status\", \"--porcelain\", \"-z\"],":                             "filtered where the -z tokens are parsed, below the window",
-		"test-coverage/main.bot:verify_run:for line in git(['status', '--porcelain']).splitlines():":                                                          "asks only whether an untracked path matches the test-file regex",
-		"e2e-coverage/main.bot:verify_run:for line in git(['status', '--porcelain']).splitlines():":                                                           "asks only whether an untracked path matches the test-file regex",
 		"branch-improve-loop/main.bot:delivery_probe:changed += git('ls-files', '--others', '--exclude-standard', '-z')":                                      "asks only whether a .github/workflows/ path changed",
 		"golden-master/main.bot:oracle_run:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                                  "a tree fingerprint, only ever compared with itself",
 		"golden-master/sync-harness.bot:sync_harness:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                        "a tree fingerprint, only ever compared with itself",

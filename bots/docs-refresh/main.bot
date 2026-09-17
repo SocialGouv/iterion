@@ -1071,7 +1071,9 @@ for h in reflog:
     if not is_own_commit(h):
         base = h
         break
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
+# The engine's tree under .claude/ (a tracked settings.json it rewrites to
+# inject plugin hooks) is not the run's change in either branch (#1364).
+changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/'))
 def is_scaffold(line):
     # iterion lays the bundle's skills (and plugin commands, agents,
     # settings) under <workspace>/.claude/ at run start: written by the
