@@ -114,6 +114,16 @@ export function useDocumentSaveAs() {
       setError("The editor document is unavailable.");
       return;
     }
+    // Re-read HERE, next to the write, not only when the dialog opened: the
+    // author spends seconds typing a name, and an external write reaching the
+    // watcher in that window swaps the document for a salvage. A check that
+    // ran at the dialog certifies the state the name was chosen in, not the
+    // one about to be written.
+    const refusal = salvageRefusal(state);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
 
     const path = trimmed.endsWith(".bot") ? trimmed : `${trimmed}.bot`;
     const savedGeneration = state._generation;

@@ -137,6 +137,23 @@ describe("useDocumentSaveAs", () => {
     expect(refused[refused.length - 1]?.message).toMatch(/did not parse/i);
   });
 
+  // The refusal at the dialog certifies the state the NAME was chosen in.
+  // Typing a filename takes seconds, and an external write reaching the
+  // watcher in that window swaps the document for a salvage — so the check
+  // has to run again next to the write.
+  it("refuses a document that became a salvage while the dialog was open", async () => {
+    const store = documentStore();
+    render(<Harness store={store} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    await screen.findByRole("dialog");
+    store.getState().setSalvaged(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/did not parse/i);
+    expect(api.saveFile).not.toHaveBeenCalled();
+  });
+
   it("does not open a filesystem Save As dialog in cloud mode", async () => {
     const store = documentStore();
     useServerInfoStore.setState({ info: { mode: "cloud" } as never });
