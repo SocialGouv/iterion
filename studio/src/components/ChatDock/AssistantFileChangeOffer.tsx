@@ -32,6 +32,7 @@ import {
   resolveEditorSession,
 } from "@/lib/chatDock/editorSession";
 import { useUIStore } from "@/store/ui";
+import { applyOpenedFile } from "@/lib/openedFile";
 
 import AssistantTextDiffDialog from "./AssistantTextDiffDialog";
 
@@ -293,11 +294,10 @@ export default function AssistantFileChangeOffer({
         warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
         return false;
       }
-      store.setDocument(result.document);
-      store.setUnit(result.unit ?? null);
-      store.setDiagnostics(result.diagnostics);
-      store.setCurrentSource(result.source);
-      store.markSaved();
+      // Through the shared helper: the write Copi just made may have left
+      // the file unparseable, and the reload has to say so — marking the
+      // salvage saved is how the next Ctrl+S would have written it back.
+      applyOpenedFile(result, store);
       setReloadWarning(null);
       return true;
     } catch {

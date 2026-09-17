@@ -11,6 +11,7 @@ import { errorMessage } from "@/lib/errorHints";
 import type { IterDocument } from "@/api/types";
 
 import { defaultStringFor } from "@/components/shared/VarFieldInput";
+import { salvageRefusal } from "@/lib/salvage";
 import { useDocumentStore } from "@/store/document";
 
 import { type LLMNode } from "./ModelOverridesSection";
@@ -31,6 +32,8 @@ export function useLaunchDoc(
   // off Source). Also lets a fresh local buffer launch before its first
   // save.
   const storeDocument = useDocumentStore((s) => s.document);
+  const salvaged = useDocumentStore((s) => s.salvaged);
+  const storeUnit = useDocumentStore((s) => s.unit);
   // Pristine-buffer detection: the document store initializes with a
   // default scaffold document (createEmptyDocument), so `storeDocument`
   // is never null — a bare deep-link to /runs/new would otherwise
@@ -68,6 +71,16 @@ export function useLaunchDoc(
       if (noSource) return;
       if (!storeDocument) {
         onError("No workflow to launch — open or write one in the editor first.");
+        return;
+      }
+      // A salvaged buffer is the program MINUS the region the parser could
+      // not read. Launching it loses no bytes — it RUNS a workflow the
+      // author never wrote, at real cost, and the run's report gives no
+      // sign of what is missing. The harshest of the six, so the same
+      // refusal covers it.
+      const refusal = salvageRefusal({ salvaged, unit: storeUnit });
+      if (refusal) {
+        onError(refusal);
         return;
       }
       let cancelled = false;
@@ -108,7 +121,7 @@ export function useLaunchDoc(
     return () => {
       cancelled = true;
     };
-  }, [filePath, noSource, onError, setCurrentSource, storeDocument]);
+  }, [filePath, noSource, onError, setCurrentSource, storeDocument, salvaged, storeUnit]);
 
   // The full declared field list. Progressive-disclosure bucketing
   // (primary / bot options / auto) happens in LaunchView via

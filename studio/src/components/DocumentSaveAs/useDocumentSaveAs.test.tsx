@@ -120,6 +120,40 @@ describe("useDocumentSaveAs", () => {
     expect(api.saveFile).not.toHaveBeenCalled();
   });
 
+  // Writing a salvage to a NEW file leaves the original whole, but hands the
+  // author a copy missing the region the parser could not read, under the
+  // name they chose — a loss they have no reason to suspect. The three sites
+  // that write a document share this refusal.
+  it("refuses a document the parser only salvaged", async () => {
+    const store = documentStore();
+    store.getState().setSalvaged(true);
+    render(<Harness store={store} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.saveFile).not.toHaveBeenCalled();
+    const refused = useUIStore.getState().toasts;
+    expect(refused[refused.length - 1]?.message).toMatch(/did not parse/i);
+  });
+
+  // The refusal at the dialog certifies the state the NAME was chosen in.
+  // Typing a filename takes seconds, and an external write reaching the
+  // watcher in that window swaps the document for a salvage — so the check
+  // has to run again next to the write.
+  it("refuses a document that became a salvage while the dialog was open", async () => {
+    const store = documentStore();
+    render(<Harness store={store} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    await screen.findByRole("dialog");
+    store.getState().setSalvaged(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/did not parse/i);
+    expect(api.saveFile).not.toHaveBeenCalled();
+  });
+
   it("does not open a filesystem Save As dialog in cloud mode", async () => {
     const store = documentStore();
     useServerInfoStore.setState({ info: { mode: "cloud" } as never });

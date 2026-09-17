@@ -27,6 +27,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { findDraftBotSource } from "@/api/runs/artifacts";
 import { editorDraftKey } from "@/hooks/useDraftBot";
+import { applyOpenedFile } from "@/lib/openedFile";
+import { applyParsedSource } from "@/lib/salvage";
 import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
@@ -129,12 +131,11 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         // Another path (deep link, Save As) may have bound the file
         // while the fetch was in flight — don't clobber it.
         if (s.currentFilePath !== file) {
-          s.setDocument(result.document);
-          s.setCurrentFilePath(result.path);
-          s.setCurrentSource(result.source);
-          s.setUnit(result.unit ?? null);
-          s.setDiagnostics(result.diagnostics);
-          s.markSaved();
+          // Through the shared helper: a file that does not parse comes with
+          // the word that its document is a SALVAGE, which is what refuses
+          // the write. Hand-rolled setters here were one of the sites that
+          // kept marking such a document saved.
+          applyOpenedFile(result, s);
         }
         setLoadState("ready");
       })
@@ -224,7 +225,10 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         ) {
           return; // they started typing while we were parsing
         }
-        st2.setDocument(parsed.document);
+        // Document and verdict together: a draft whose source does not parse
+        // whole is a salvage, and writing it back would drop what the parser
+        // could not read.
+        applyParsedSource(parsed, st2);
         st2.setCurrentSource(source);
         st2.setDiagnostics(parsed.diagnostics);
         appliedRef.current = source;

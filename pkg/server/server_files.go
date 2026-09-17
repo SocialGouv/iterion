@@ -633,7 +633,18 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path)})
+		// A unit that does not LOAD stays writable, deliberately: saveUnit
+		// refuses the write server-side, naming the fragment at fault, and
+		// the document is marshalled with provenance, which Save As refuses.
+		//
+		// A main that did not PARSE is another matter, and this branch is
+		// reached for one — a syntax error whose `import` line survived the
+		// salvage. The verdict is the main's own parse, the way
+		// /api/examples answers for the same file: the merged document is
+		// then a salvage too, and Download, Copy source and the Source view
+		// have to be told, or they hand the author a program missing what
+		// the parser could not read.
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path), Bindable: !parseHasErrors(pr.Diagnostics)})
 		return
 	}
 	docJSON, err := ast.MarshalFile(pr.File)
@@ -641,19 +652,42 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	writeJSON(w, struct {
-		Source            string          `json:"source"`
-		Document          json.RawMessage `json:"document"`
-		Diagnostics       []string        `json:"diagnostics,omitempty"`
-		Path              string          `json:"path"`
-		ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
-	}{
+	writeJSON(w, openFileResponse{
 		Source:            string(data),
 		Document:          json.RawMessage(docJSON),
 		Diagnostics:       diags,
 		Path:              req.Path,
 		ConfirmedDiskPath: confirmedDiskPath,
+		// The document is what the parser SALVAGED when the parse left
+		// errors — the file minus the region it could not read.
+		Bindable: !parseHasErrors(pr.Diagnostics),
 	})
+}
+
+// openFileResponse is the open response of a bot in one file. The path is
+// answered whether or not the file parses — the editor is ABOUT that file,
+// and the watcher, the tab binding, the validation scope and the assistant's
+// perimeter all read it. Bindable false says the document is the salvage, so
+// the three sites that write a document refuse it; it lifts when a parse of
+// the buffer comes back whole.
+type openFileResponse struct {
+	Source            string          `json:"source"`
+	Document          json.RawMessage `json:"document"`
+	Diagnostics       []string        `json:"diagnostics,omitempty"`
+	Path              string          `json:"path,omitempty"`
+	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	Bindable          bool            `json:"bindable"`
+}
+
+// parseHasErrors reports whether a parse left errors — the state in which the
+// AST is what the parser could salvage rather than what the file holds.
+func parseHasErrors(diags []parser.Diagnostic) bool {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {

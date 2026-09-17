@@ -6,6 +6,7 @@ import type { DocumentStore } from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
+import { salvageRefusal } from "@/lib/salvage";
 
 export interface DocumentSaveAsResult {
   path: string;
@@ -69,6 +70,15 @@ export function useDocumentSaveAs() {
         );
         return false;
       }
+      // A salvage is refused here too: writing it to a NEW file leaves the
+      // original whole but hands the author a copy missing the region the
+      // parser could not read, under the name they chose — a loss they have
+      // no reason to suspect.
+      const refusal = salvageRefusal(request.store.getState());
+      if (refusal) {
+        addToast(refusal, "warning", { persistent: true });
+        return false;
+      }
       if (!request.store.getState().document) return false;
       pending.current = request;
       setFileName(suggestedFileName(request.store));
@@ -102,6 +112,16 @@ export function useDocumentSaveAs() {
     }
     if (!state.document) {
       setError("The editor document is unavailable.");
+      return;
+    }
+    // Re-read HERE, next to the write, not only when the dialog opened: the
+    // author spends seconds typing a name, and an external write reaching the
+    // watcher in that window swaps the document for a salvage. A check that
+    // ran at the dialog certifies the state the name was chosen in, not the
+    // one about to be written.
+    const refusal = salvageRefusal(state);
+    if (refusal) {
+      setError(refusal);
       return;
     }
 

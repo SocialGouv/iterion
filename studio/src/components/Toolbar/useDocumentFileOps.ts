@@ -28,6 +28,7 @@ import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import { errorMessage, toastError } from "@/lib/errorHints";
 import { openExampleIntoStore } from "@/lib/openExample";
+import { applyParsedSource, salvageRefusal } from "@/lib/salvage";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
@@ -64,6 +65,7 @@ export interface UseDocumentFileOpsResult {
   handleAddWorkflow: () => void;
   handleRemoveWorkflow: () => void;
 }
+import { applyOpenedFile } from "@/lib/openedFile";
 
 export function useDocumentFileOps({
   confirm,
@@ -76,6 +78,7 @@ export function useDocumentFileOps({
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
+  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
@@ -135,13 +138,16 @@ export function useDocumentFileOps({
       try {
         if (kind === "file") {
           const result = await api.openFile(path);
-          setDocument(result.document);
-          setDiagnostics(result.diagnostics);
-          setCurrentFilePath(result.path);
-          setCurrentSource(result.source);
-          setUnit(result.unit ?? null);
-          pushRecent(result.path);
-          markSaved();
+          applyOpenedFile(result, {
+            setDocument,
+            setDiagnostics,
+            setCurrentSource,
+            setCurrentFilePath,
+            setSalvaged,
+            setUnit,
+            markSaved,
+          });
+          if (result.path) pushRecent(result.path);
         } else {
           // The shared helper binds the path the server names for a file
           // inside the workspace, else bots/<name> (so Save works and the
@@ -153,6 +159,7 @@ export function useDocumentFileOps({
             setDiagnostics,
             setCurrentSource,
             setCurrentFilePath,
+            setSalvaged,
             setUnit,
             markSaved,
           });
@@ -181,6 +188,7 @@ export function useDocumentFileOps({
       setDocument,
       setDiagnostics,
       setCurrentFilePath,
+      setSalvaged,
       setCurrentSource,
       setUnit,
       markSaved,
@@ -207,9 +215,14 @@ export function useDocumentFileOps({
       const text = await file.text();
       try {
         const result = await api.parseSource(text);
-        setDocument(result.document);
         setDiagnostics(result.diagnostics);
+        // The path first — it clears the salvage flag — then the document and
+        // the verdict together. Unbinding does NOT protect an import: Save As
+        // is the only write an unbound buffer offers, and it would put a file
+        // missing what the parser could not read under the name the author
+        // chose.
         setCurrentFilePath(null);
+        applyParsedSource(result, { setDocument, setSalvaged });
         // Imported files are off-disk; the original text is the source.
         setCurrentSource(text);
       } catch (err) {
@@ -223,6 +236,7 @@ export function useDocumentFileOps({
       setDiagnostics,
       setCurrentFilePath,
       setCurrentSource,
+      setSalvaged,
       confirmDiscard,
       addToast,
     ],
@@ -257,6 +271,12 @@ export function useDocumentFileOps({
       addToast(READ_ONLY_MSG, "warning");
       return;
     }
+    const refusal = salvageRefusal(documentStore.getState());
+    if (refusal) {
+      addToast(refusal, "warning", { persistent: true });
+      openDiagnosticsPanel();
+      return;
+    }
     if (currentFilePath) {
       try {
         // A bot in several files presents the revision it was opened at,
@@ -287,6 +307,7 @@ export function useDocumentFileOps({
     READ_ONLY_MSG,
     saveAs,
     documentStore,
+    openDiagnosticsPanel,
   ]);
 
   // Always opens the Save As dialog regardless of whether a file path
@@ -299,6 +320,15 @@ export function useDocumentFileOps({
 
   const handleDownload = useCallback(async () => {
     if (!document) return;
+    // A .bot on the author's disk, under a name they will trust, is the same
+    // harm as a save: the salvage is the program minus what the parser could
+    // not read, and nothing on the file says so.
+    const refusal = salvageRefusal(documentStore.getState());
+    if (refusal) {
+      addToast(refusal, "warning", { persistent: true });
+      openDiagnosticsPanel();
+      return;
+    }
     try {
       const source = await api.unparse(document);
       const blob = new Blob([source], { type: "text/plain" });
@@ -308,10 +338,18 @@ export function useDocumentFileOps({
       console.error("Download failed:", err);
       addToast("Download failed", "error");
     }
-  }, [document, addToast]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel]);
 
   const handleCopySource = useCallback(async () => {
     if (!document) return;
+    // Same harm, one step removed: the text goes to a file or a message
+    // next, and it is the program minus what the parser could not read.
+    const refusal = salvageRefusal(documentStore.getState());
+    if (refusal) {
+      addToast(refusal, "warning", { persistent: true });
+      openDiagnosticsPanel();
+      return;
+    }
     try {
       const source = await api.unparse(document);
       await navigator.clipboard.writeText(source);
@@ -320,7 +358,7 @@ export function useDocumentFileOps({
       console.error("Copy failed:", err);
       addToast("Copy failed", "error");
     }
-  }, [document, addToast]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel]);
 
   const handleAddWorkflow = useCallback(() => {
     if (!document) return;

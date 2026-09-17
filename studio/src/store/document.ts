@@ -60,6 +60,13 @@ interface DocumentState {
    *  `warnings`. Empty for parser-only responses. */
   issues: DiagnosticIssue[];
   currentFilePath: string | null;
+  /** True when `document` is what the parser SALVAGED — the file minus the
+   *  region it could not read — rather than the file. The path stays: this
+   *  tab is still about that file, and everything that asks WHICH file goes
+   *  on working. What it forbids is WRITING: a save would put the salvage
+   *  over what the author wrote. Cleared by a parse of the buffer that comes
+   *  back whole. */
+  salvaged: boolean;
   // Cached so cloud-mode launch/resume can pass it inline. Updated on
   // openFile / saveFile / parseSource; null otherwise.
   currentSource: string | null;
@@ -78,6 +85,7 @@ interface DocumentState {
   setDocument: (doc: IterDocument) => void;
   setDiagnostics: (d: string[], w?: string[], issues?: DiagnosticIssue[]) => void;
   setCurrentFilePath: (path: string | null) => void;
+  setSalvaged: (salvaged: boolean) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
   markSaved: () => void;
@@ -234,6 +242,7 @@ export function createDocumentStore() {
   warnings: [],
   issues: [],
   currentFilePath: null,
+  salvaged: false,
   currentSource: null,
   unit: null,
   _generation: 0,
@@ -251,7 +260,10 @@ export function createDocumentStore() {
       warnings: warnings ?? [],
       issues: issues ?? [],
     }),
-  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null }),
+  // A new file is a new program: whatever the last one salvaged says nothing
+  // about this one, so the flag is dropped with the unit.
+  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null, salvaged: false }),
+  setSalvaged: (salvaged) => set({ salvaged }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),

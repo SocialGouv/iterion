@@ -663,9 +663,13 @@ type unitOpenResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics,omitempty"`
-	Path              string          `json:"path"`
+	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	Unit              *unitInfo       `json:"unit"`
+	// Bindable is false when the file does not parse: the document is then
+	// what the parser SALVAGED, and binding it would make the next save
+	// write that back over what the author wrote.
+	Bindable bool `json:"bindable"`
 }
 
 // parseUnitFiles parses a bot in several files, given as a files map, as its
@@ -696,7 +700,18 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
 	}
 	info := unitInfoOf(u, main)
 	info.Root = ""
-	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info})
+	// A unit stays writable even when it does not LOAD — the posture
+	// /api/files/open holds for a unit on disk. The write back goes through
+	// unparseUnitFiles, which refuses one that does not load and names the
+	// fragment at fault, so nothing lands on the author's files; refusing
+	// here would leave a buffer no save could place.
+	//
+	// A main that did not PARSE is another matter: the merged document is
+	// then the main's salvage plus the fragments, so it is a salvage, and
+	// the verdict says so — the same rule as /api/files/open and
+	// /api/examples for a unit on disk.
+	mainParse := parser.Parse(main, req.Files[main])
+	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info, Bindable: !parseHasErrors(mainParse.Diagnostics)})
 }
 
 // unparseUnitFiles writes a document of a bot in several files back into

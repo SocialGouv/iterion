@@ -42,6 +42,14 @@ type parseResponse struct {
 	Issues      []DiagnosticDTO `json:"issues,omitempty"`
 	// Unit is set when the request parsed a bot in several files.
 	Unit *unitInfo `json:"unit,omitempty"`
+	// Bindable is false when the parse left errors: the document is then
+	// what the parser SALVAGED, not the source, and a caller that builds an
+	// open answer out of this parse must bind no path to it — the next save
+	// would write the salvage back over what the author wrote. It is the
+	// verdict /api/files/open applies to a file on disk, for the callers
+	// that hold their source themselves: a cloud bot source is fetched and
+	// parsed here, never opened through /api/files/open.
+	Bindable bool `json:"bindable"`
 }
 
 // DiagnosticDTO is the wire-safe shape of an ir.Diagnostic. It carries the
@@ -152,6 +160,7 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, parseResponse{
 		Document:    json.RawMessage(docJSON),
 		Diagnostics: diags,
+		Bindable:    !parseHasErrors(pr.Diagnostics),
 	})
 }
 
@@ -527,11 +536,11 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 
 // exampleResponse is what /api/examples/{name} answers for one program:
 // its text and document, the diagnostics, and — for a file inside the
-// working directory that parses — the path the studio opens and saves it
-// by with the disk path /api/files/open confirms for it. Bindable is false
-// when the file does not parse: the studio then binds no path at all, so a
-// save asks where instead of landing on the file as the author wrote it —
-// its bots/<name> fallback would name that very file in the default layout.
+// working directory — the path the studio opens and saves it by with the
+// disk path /api/files/open confirms for it. Bindable is false when the file
+// does not parse: the path still names the file the answer was read from,
+// since the editor is ABOUT that file, and what the flag forbids is writing
+// the document back — it is the salvage, not the file.
 type exampleResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
@@ -551,11 +560,12 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 	bindable := true
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
-		// A file that does not parse is never bound to its path: the
-		// document the parser salvaged is not the file, and a save of it
-		// would replace what the author wrote with what the parser kept.
+		// A file that does not parse keeps its path — the editor is about
+		// that file — and is declared unbindable: the document is what the
+		// parser salvaged, and writing it back would replace what the author
+		// wrote with what the parser kept.
 		if d.Severity == parser.SeverityError {
-			rel, confirmed, bindable = "", "", false
+			bindable = false
 		}
 	}
 
@@ -610,17 +620,26 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		return
 	}
 	if u.HasErrors() {
-		// A unit that does not load is never bound to its files: the studio
-		// gets the main's text and the program the loader salvaged, with the
-		// diagnostics, no path or unit, and the word that nothing is to be
-		// bound — a save of it asks where, never lands on the files as the
-		// author wrote them.
+		// A unit that does not load is served as the main's text and the
+		// program the loader merged of it, with the diagnostics and no unit —
+		// there is no revision to present. The main still names its path: the
+		// editor is about that file, and the watcher, the tab binding and the
+		// validation scope all read it.
 		docJSON, err := ast.MarshalFile(u.Merged)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags})
+		rel, confirmed, _ := s.workDirRelative(abs, name)
+		// Bindable is the MAIN's own parse, not u.HasErrors(): a unit also
+		// fails to load on a missing fragment, an import cycle or a duplicate
+		// declaration, and in those the main was read whole — calling it a
+		// salvage would tell the author their file did not parse when it did,
+		// and leave a buffer with nowhere to go. A save is refused all the
+		// same, by saveUnit, which names the fragment at fault. Same posture
+		// as /api/files/open and parseUnitFiles.
+		mainParse := parser.Parse(name, string(data))
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Bindable: !parseHasErrors(mainParse.Diagnostics)})
 		return
 	}
 	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {
@@ -629,7 +648,7 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel)})
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel), Bindable: true})
 		return
 	}
 	flat, err := flatProgram(name, u.Merged)

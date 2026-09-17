@@ -232,6 +232,40 @@ describe("EditorChangeOffer", () => {
     );
   });
 
+  // The buffer holds what the parser SALVAGED of a file it could not read
+  // whole. Saving it puts that reading over what the author wrote — the same
+  // refusal the toolbar's Save and Save As carry.
+  it("refuses to save a buffer the parser only salvaged", async () => {
+    const { store } = await liveProposal();
+    store.getState().setSalvaged(true);
+    // A save-only turn: nothing is applied, so the buffer written is the
+    // salvage itself.
+    proposal.current.source = null;
+    proposal.current.saveIntent = "explicit";
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save current file" }));
+
+    expect(await screen.findByText(/did not parse/i)).toBeTruthy();
+    expect(api.saveFile).not.toHaveBeenCalled();
+  });
+
+  // And the way out: a proposal that parses whole makes the document the
+  // program again, so the file Copi just repaired becomes writable.
+  it("ends the salvage when a proposal parses whole", async () => {
+    const { store } = await liveProposal();
+    store.getState().setSalvaged(true);
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(apply);
+
+    await waitFor(() => expect(store.getState().salvaged).toBe(false));
+  });
+
   it("offers one confirmed apply-and-save action", async () => {
     const { store } = await liveProposal();
     proposal.current.saveIntent = "explicit";

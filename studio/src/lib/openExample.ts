@@ -12,6 +12,9 @@ export interface ExampleTargetStore {
   setDiagnostics: (diagnostics: string[]) => void;
   setCurrentSource: (source: string | null) => void;
   setCurrentFilePath: (path: string | null) => void;
+  /** Set AFTER the path, which clears it: the document of an example that
+   *  does not parse is a salvage, and writing it back is refused. */
+  setSalvaged: (salvaged: boolean) => void;
   /** A bot in several files binds its unit: the document is the merged
    *  program, its source view is read-only, a save presents the revision.
    *  Bound AFTER the path, which clears it. */
@@ -24,10 +27,8 @@ export interface ExampleTargetStore {
  * `"feature-dev/main.bot"`) and apply it to `store`.
  *
  * Binds `currentFilePath` to the path the server names — a file inside the
- * workspace that parses clean — to nothing when the server says the file is
- * not bindable (it does not parse: a save then asks where, and Run stays
- * disabled, which is honest for a file that cannot run), else to
- * `bots/<name>`, where a save of the one program lands; BEFORE `markSaved()`
+ * workspace — else to `bots/<name>`, where a save of the one program lands;
+ * BEFORE `markSaved()`
  * so the freshly-loaded state is the clean saved baseline AND the Run button
  * enables immediately (otherwise it stays disabled with "Save the workflow
  * first to launch a run"). Keeps the example's `source` + `diagnostics` so
@@ -42,13 +43,12 @@ export async function openExampleIntoStore(name: string, store: ExampleTargetSto
   store.setDocument(result.document);
   store.setDiagnostics(result.diagnostics);
   store.setCurrentSource(result.source);
-  // The path first: setting it clears the unit, so the unit is bound after
-  // it. A file inside the workspace that parses clean names the path the
-  // studio opens and saves it by; one that does not parse binds NOTHING —
-  // bots/<name> would name that very file in the default layout, and a
-  // save would replace what the author wrote with what the parser kept;
-  // anything else binds bots/<name>, where a save of the one program lands.
-  store.setCurrentFilePath(result.path ?? (result.bindable === false ? null : `bots/${name}`));
+  // The path first: setting it clears the unit and the salvage flag, so both
+  // are set after it. An example that does not parse still names its file —
+  // the editor is about that file — and is marked a SALVAGE instead, which
+  // is what refuses the write.
+  store.setCurrentFilePath(result.path ?? `bots/${name}`);
+  store.setSalvaged(result.bindable === false);
   store.setUnit(result.unit ?? null);
   store.markSaved();
   return result;

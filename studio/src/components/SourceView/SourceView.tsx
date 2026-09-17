@@ -5,6 +5,8 @@ import { useThemeStore } from "@/store/theme";
 import * as api from "@/api/client";
 import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "@/lib/iterLanguage";
 import { registerIterCompletionProvider } from "@/lib/iterMonacoCompletion";
+import { applyParsedSource } from "@/lib/salvage";
+import { useConfirm } from "@/hooks/useConfirm";
 import { Button } from "@/components/ui/Button";
 
 export default function SourceView() {
@@ -13,6 +15,12 @@ export default function SourceView() {
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const setDocument = useDocumentStore((s) => s.setDocument);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
+  const salvaged = useDocumentStore((s) => s.salvaged);
+  const currentSource = useDocumentStore((s) => s.currentSource);
+  const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
+  const isDirty = useDocumentStore((s) => s.isDirty);
+  const { confirm, dialog } = useConfirm();
   const [source, setSource] = useState("");
   const [editing, setEditing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -20,9 +28,20 @@ export default function SourceView() {
 
   // Sync document → source (when not in editing mode)
   useEffect(() => {
-    if (editing || !document) return;
+    if (editing) return;
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
+      // A salvaged document is the file MINUS the region the parser could
+      // not read: rendering it back would show the author a text their own
+      // file does not contain, and hide the very lines they have to fix. The
+      // file's text is what is shown, and editing it here is the way out —
+      // an Apply that parses whole clears the flag and Save works again.
+      if (salvaged) {
+        setSource(currentSource ?? "");
+        setParseError(null);
+        return;
+      }
+      if (!document) return;
       try {
         const result = await api.unparse(document, unit ? { flatten: true } : undefined);
         setSource(result);
@@ -35,19 +54,45 @@ export default function SourceView() {
       }
     }, 500);
     return () => clearTimeout(debounceRef.current);
-  }, [document, editing, unit]);
+  }, [document, editing, unit, salvaged, currentSource]);
 
   const handleApply = useCallback(async () => {
+    // While salvaged this view shows the FILE's text, which does not carry
+    // canvas edits — currentSource is the last opened/saved text, and a node
+    // edit never touches it. Applying would replace the canvas with a text
+    // that predates it, and the refusal on every write sends the author
+    // HERE, so the loss sits on the guided path. Asked only in that case:
+    // unsalvaged, the text is the document unparsed and there is nothing to
+    // lose, and text-only edits leave the buffer clean.
+    if (salvaged && isDirty()) {
+      const go = await confirm({
+        title: "Replace the canvas with this text?",
+        message:
+          "This is the file as it is on disk. It does not include the changes you made in the canvas, and applying replaces them.",
+        confirmLabel: "Replace",
+        confirmVariant: "danger",
+      });
+      if (!go) return;
+    }
     try {
       const result = await api.parseSource(source);
-      setDocument(result.document);
+      // The way out of a salvage, and the only one: text that parses whole
+      // makes the document the program again, so a save may write it. The
+      // canvas cannot do this — it never held the region the parser could
+      // not read — which is why the refusal points here.
+      applyParsedSource(result, { setDocument, setSalvaged });
       setDiagnostics(result.diagnostics);
+      // The applied text becomes the buffer's own. A repair that does not
+      // parse YET leaves the document a salvage, and the sync above would
+      // otherwise put the text this view opened with back over what the
+      // author just typed — the loss, inside the way out of it.
+      setCurrentSource(source);
       setParseError(null);
       setEditing(false);
     } catch (err) {
       setParseError(err instanceof Error ? err.message : "Parse failed");
     }
-  }, [source, setDocument, setDiagnostics]);
+  }, [source, setDocument, setDiagnostics, setSalvaged, setCurrentSource, salvaged, isDirty, confirm]);
 
   const handleEditorWillMount = useCallback((monaco: Monaco) => {
     if (!monaco.languages.getLanguages().some((l: { id: string }) => l.id === ITER_LANGUAGE_ID)) {
@@ -122,6 +167,7 @@ export default function SourceView() {
           }}
         />
       </div>
+      {dialog}
     </div>
   );
 }

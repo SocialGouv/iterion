@@ -354,13 +354,16 @@ func TestLoadExampleNamesADiskBotInOneFileInsideTheWorkDir(t *testing.T) {
 	assertOneProgram(t, served, "")
 }
 
-// A file that does not parse is never bound to its path, in one file or
-// several: the studio gets what the parser salvaged, with the diagnostics,
-// and no path or unit — a save of it goes to a new file, never over what
-// the author wrote.
-func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
+// A file that does not parse is never WRITABLE, in one file or several: the
+// studio gets what the parser salvaged, with the diagnostics and the word
+// that it is a salvage, so no save puts it over what the author wrote. The
+// path still travels — the editor is about that file.
+func TestLoadExampleRefusesToWriteAFileThatDoesNotParse(t *testing.T) {
 	workDir := t.TempDir()
-	examples := filepath.Join(workDir, "bots")
+	// Deliberately NOT bots/: the path asserted below is then the file the
+	// server READ, and no longer coincides with the studio's bots/<name>
+	// fallback — which names where a save would LAND, not the file read.
+	examples := filepath.Join(workDir, "catalog")
 	if err := os.MkdirAll(filepath.Join(examples, "one"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -380,18 +383,69 @@ func TestLoadExampleBindsNoPathToAFileThatDoesNotParse(t *testing.T) {
 		if len(got.Diagnostics) == 0 {
 			t.Errorf("%s: a file that does not parse was served without a diagnostic", name)
 		}
-		if got.Path != "" || got.ConfirmedDiskPath != "" || got.Unit != nil {
-			t.Errorf("%s: a file that does not parse was bound to its path: path %q confirmed %q unit %v", name, got.Path, got.ConfirmedDiskPath, got.Unit != nil)
-		}
-		// The studio's bots/<name> fallback would name the very file in
-		// the default layout: the server has to say the file is not
-		// bindable, and keep the text the source pane shows.
+		// The document a save would write is the salvage, so the answer has
+		// to say so — the studio's bots/<name> fallback would otherwise name
+		// that very file in the default layout.
 		if got.Bindable {
 			t.Errorf("%s: a file that does not parse was declared bindable", name)
+		}
+		// Refusing the WRITE is not refusing to name the file. The path is
+		// what the watcher, the tab binding, the validation scope and the
+		// assistant's perimeter read; taken away, each of them falls back to
+		// some other file, which is a second loss by another road.
+		if want := "catalog/" + name; got.Path != want {
+			t.Errorf("%s: a file that does not parse lost its path: got %q want %q", name, got.Path, want)
+		}
+		if got.ConfirmedDiskPath == "" {
+			t.Errorf("%s: a file that does not parse lost its confirmed disk path", name)
+		}
+		// No unit: there is no revision to present for a unit that does not
+		// load, and a save is refused before it needs one.
+		if got.Unit != nil {
+			t.Errorf("%s: a unit that does not load was served with unit info", name)
 		}
 		if got.Source == "" || !strings.Contains(got.Source, "!!!") {
 			t.Errorf("%s: the served text is not the file's: %q", name, got.Source)
 		}
+	}
+}
+
+// A unit can fail to LOAD without its main having failed to PARSE — a
+// missing fragment, an import cycle, a duplicate declaration. The main was
+// read whole there, so calling its document a salvage would tell the author
+// their file did not parse when it did, and leave them a buffer the studio
+// refuses to write anywhere. The save is refused all the same, by saveUnit,
+// which names the fragment at fault.
+func TestLoadExampleSeparatesAUnitThatDoesNotLoadFromAMainThatDoesNotParse(t *testing.T) {
+	workDir := t.TempDir()
+	examples := filepath.Join(workDir, "catalog")
+	if err := os.MkdirAll(filepath.Join(examples, "gone"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The main parses whole; the fragment it imports is not there.
+	main := "import \"" + unit.FragmentDir + "/missing.bot\"\n\nworkflow g:\n  entry: done\n"
+	if err := os.WriteFile(filepath.Join(examples, "gone", "main.bot"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hs := exampleServer(t, workDir, examples)
+
+	var got oneProgram
+	if code, body := getExampleJSON(t, hs.URL+"/api/examples/gone/main.bot", &got); code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	if len(got.Diagnostics) == 0 {
+		t.Fatal("the fixture is not the case under test: the unit loaded")
+	}
+	if !got.Bindable {
+		t.Error("a unit whose main parsed whole was reported as an unreadable file")
+	}
+	if got.Path != "catalog/gone/main.bot" {
+		t.Errorf("path = %q, want the main's own path", got.Path)
+	}
+	// The diagnostics name the fragment, which is what tells the author what
+	// to do — the file itself is fine.
+	if !strings.Contains(strings.Join(got.Diagnostics, " "), "missing.bot") {
+		t.Errorf("the diagnostics do not name the missing fragment: %v", got.Diagnostics)
 	}
 }
 
