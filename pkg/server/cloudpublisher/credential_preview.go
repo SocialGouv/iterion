@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -30,6 +31,9 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 		api: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider]int{}, skippedOAuth: map[string]int{}, accountGroups: map[string]string{},
 	}
 	x.orgID = p.orgIDForTeam(ctx, spec.Context.TeamID)
+	// The same canonicalisation the live walk applies, or the preview would
+	// answer for a spelling the launch never uses.
+	previewBotID := botregistry.NormalizeName(spec.Context.BotID)
 	wants, routes := wantsFor(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback))
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
@@ -40,7 +44,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	err := walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
-			if err := x.apiStage("", spec.Context.TeamID, spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), spec.Context.BotID, spec.Launch.KeyOverrides, false, true); err != nil {
+			if err := x.apiStage("", spec.Context.TeamID, spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), previewBotID, spec.Launch.KeyOverrides, false, true); err != nil {
 				return fmt.Errorf("credential metadata unavailable")
 			}
 		case credentialTierOAuth:
@@ -48,7 +52,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.oauthStage("team", secrets.OrgOwnerKey(spec.Context.TeamID), usagecap.TenantScope(spec.Context.TeamID), false, true)
 		case credentialTierOrg:
 			if p.orgCredentialAudience(ctx, x.orgID, spec.Context.TeamID) {
-				if err := x.apiStage("org", secrets.OrgTierTenantID(x.orgID), "", usagecap.OrgScope(x.orgID), spec.Context.BotID, nil, true, active); err != nil {
+				if err := x.apiStage("org", secrets.OrgTierTenantID(x.orgID), "", usagecap.OrgScope(x.orgID), previewBotID, nil, true, active); err != nil {
 					x.warn("Org API-key metadata unavailable; selection is conditional.")
 				}
 				x.oauthStage("org", secrets.OrgTierOwnerKey(x.orgID), usagecap.OrgScope(x.orgID), true, active)
@@ -84,7 +88,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			}
 		case credentialTierPlatform:
 			if p.platformAudienceAllows(ctx, "", x.orgID, spec.Context.TeamID) {
-				if err := x.apiStage("platform", secrets.PlatformTenantID, "", usagecap.ScopePlatform, spec.Context.BotID, nil, true, active); err != nil {
+				if err := x.apiStage("platform", secrets.PlatformTenantID, "", usagecap.ScopePlatform, previewBotID, nil, true, active); err != nil {
 					x.warn("Platform API-key metadata unavailable; selection is conditional.")
 				}
 				x.oauthStage("platform", secrets.PlatformOwnerKey, usagecap.ScopePlatform, true, active)
@@ -256,12 +260,12 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 		// otherwise would be a confident lie about the next launch.
 		outOfAudience := !k.ServesBotForLaunch(botID)
 		if outOfAudience {
+			// The route refuses an empty bot_id with a 400 before this runs
+			// (pkg/server/credential_preview.go), so there is no "named no
+			// bot" arm here: a branch that cannot execute reads as a
+			// behaviour and is worse than its absence.
 			c.State = string(credpool.StatusBotFiltered)
-			if botID == "" {
-				c.Reason += " This key names the bots it funds, and this launch names no bot."
-			} else {
-				c.Reason += " This key's workload audience does not name bot " + botID + "."
-			}
+			c.Reason += " This key's workload audience does not name bot " + botID + "."
 		}
 		if !active || byWire && x.taken(string(k.Provider)) {
 			c.Selection = "not_consulted"

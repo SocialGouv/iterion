@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -202,7 +203,14 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID, p.PoolID, p.UserID, p.Credential = pledgeID, poolID, id.UserID, cred
-	p.Limits, p.Window, p.Bots = req.Limits, req.Window, req.Bots
+	p.Limits, p.Window = req.Limits, req.Window
+	// Canonical bot ids, like the BYOK audience and for the same reason: the
+	// launch path hands the pool whatever spelling the requester typed, and
+	// botregistry treats `app_dev`, `App Dev` and `app-dev` as one bundle. A
+	// donor writing one spelling would otherwise stop serving the bot they
+	// meant the moment someone typed another, and the run would be funded by
+	// a different pledge without a word.
+	p.Bots = canonicalBotIDs(req.Bots)
 	if req.Enabled != nil {
 		p.Enabled = *req.Enabled
 	}
@@ -665,4 +673,26 @@ func (s *Server) toPoolView(r *http.Request, pool credpool.Pool, withDonors bool
 		})
 	}
 	return v
+}
+
+// canonicalBotIDs folds a donor-supplied bot list into the spelling the
+// launch path resolves to, dropping blanks and repeats. Unlike the BYOK
+// audience's edge it does NOT refuse a blank-only list: a pledge's `bots` has
+// always been a plain optional filter, and turning a donor's typo into a 400
+// on the pledge route would be a behaviour change beyond this fix.
+func canonicalBotIDs(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		b := botregistry.NormalizeName(raw)
+		if b == "" || seen[b] {
+			continue
+		}
+		seen[b] = true
+		out = append(out, b)
+	}
+	return out
 }

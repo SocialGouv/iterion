@@ -31,6 +31,12 @@ export interface ApiKeyView {
    * key, executing a model node). Absent when the server could not count.
    */
   alive_runs?: number;
+  /**
+   * Workload audience: the bot ids whose runs may draw on this key. An empty
+   * list funds every bot. Always present on the wire — a restriction that is
+   * invisible in the UI is one an operator cannot verify or undo.
+   */
+  bots: string[];
 }
 
 export type OAuthKind = "claude_code" | "codex";

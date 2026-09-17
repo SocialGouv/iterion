@@ -18,7 +18,7 @@ func mkAudienceKey(t *testing.T, st *MemoryApiKeyStore, sealer Sealer, name stri
 // walk found none.
 func resolvedID(t *testing.T, st *MemoryApiKeyStore, sealer Sealer, botID string, pins map[Provider]string, usable func(ApiKey) bool) string {
 	t.Helper()
-	out, err := Resolve(t.Context(), st, "t", "", botID, []Provider{ProviderAnthropic}, pins, sealer, usable)
+	out, err := Resolve(t.Context(), st, "t", "", botID, []Provider{ProviderAnthropic}, pins, sealer, usable, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -129,31 +129,44 @@ func TestAScopedKeyStepsAsideForTheNextKey(t *testing.T) {
 	}
 }
 
-// ServesBot and ServesBotForLaunch differ on ONE input, and the difference is
-// the whole safety argument. A table that exercised only one of them would let
-// the two collapse into each other unnoticed.
-func TestTheStatusReadingAndTheLaunchReadingDifferOnlyOnAnEmptyBotID(t *testing.T) {
+// The predicate matches EXACTLY, and every row that is false here is a way an
+// audience could be silently widened. The first table of this test used two
+// bot ids with no shared prefix and no case variance: it proved membership and
+// nothing else, and two widening mutations — a prefix match, and a
+// case-insensitive one — stayed green under it. Both are the change a
+// maintainer "harmonising" this with the repo's tolerant bot-name lookup would
+// make, so each now has its row.
+//
+// Canonicalisation is a separate mechanism, tested at the edges that apply it
+// (normalizeBotAudience and the publisher's single fold). It is deliberately
+// NOT done here: two spelling rules competing inside one comparison is how the
+// tolerant and the exact reading drift apart.
+func TestTheAudiencePredicateMatchesExactlyAndNothingNear(t *testing.T) {
 	scoped := ApiKey{Bots: []string{"sec-audit-source"}}
 	open := ApiKey{}
 
 	cases := []struct {
-		name              string
-		key               ApiKey
-		botID             string
-		status, forLaunch bool
+		name  string
+		key   ApiKey
+		botID string
+		want  bool
 	}{
-		{"scoped key, named bot", scoped, "sec-audit-source", true, true},
-		{"scoped key, other bot", scoped, "review-pr", false, false},
-		{"scoped key, no bot id", scoped, "", true, false},
-		{"open key, any bot", open, "review-pr", true, true},
-		{"open key, no bot id", open, "", true, true},
+		{"the named bot", scoped, "sec-audit-source", true},
+		{"an unrelated bot", scoped, "review-pr", false},
+		{"no bot id at all", scoped, "", false},
+		{"a PREFIX of the named bot", scoped, "sec-audit", false},
+		{"a one-character prefix", scoped, "s", false},
+		{"the named bot with a suffix", scoped, "sec-audit-source-v2", false},
+		{"a case variant", scoped, "Sec-Audit-Source", false},
+		{"an upper-case variant", scoped, "SEC-AUDIT-SOURCE", false},
+		{"an underscore variant", scoped, "sec_audit_source", false},
+		{"surrounding whitespace", scoped, " sec-audit-source ", false},
+		{"open key, any bot", open, "review-pr", true},
+		{"open key, no bot id", open, "", true},
 	}
 	for _, tc := range cases {
-		if got := tc.key.ServesBot(tc.botID); got != tc.status {
-			t.Errorf("%s: ServesBot=%v want %v", tc.name, got, tc.status)
-		}
-		if got := tc.key.ServesBotForLaunch(tc.botID); got != tc.forLaunch {
-			t.Errorf("%s: ServesBotForLaunch=%v want %v", tc.name, got, tc.forLaunch)
+		if got := tc.key.ServesBotForLaunch(tc.botID); got != tc.want {
+			t.Errorf("%s: ServesBotForLaunch(%q)=%v want %v", tc.name, tc.botID, got, tc.want)
 		}
 	}
 }

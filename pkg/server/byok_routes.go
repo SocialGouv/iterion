@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -386,7 +386,11 @@ func normalizeBotAudience(in []string) ([]string, error) {
 	out := make([]string, 0, len(in))
 	seen := make(map[string]bool, len(in))
 	for _, raw := range in {
-		b := strings.TrimSpace(raw)
+		// The canonical form botregistry imposes everywhere a bot is named,
+		// so an operator writing `Feature_Dev` scopes the same bot the
+		// launch path resolves to `feature-dev`. The resolver compares
+		// exactly; canonicalising is this edge's job, not its job.
+		b := botregistry.NormalizeName(raw)
 		if b == "" {
 			continue
 		}

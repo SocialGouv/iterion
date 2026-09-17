@@ -72,6 +72,7 @@ func (p *Publisher) orgCredentialAudience(ctx context.Context, orgID, teamID str
 func (p *Publisher) fillFromOrg(
 	ctx context.Context,
 	runID, orgID, tenantID, botID string,
+	withheld *audienceWithholdings,
 	bundle *secrets.RunBundle,
 	apiKeyFPs map[secrets.Provider]string,
 	skips *skipTracker,
@@ -109,7 +110,7 @@ func (p *Publisher) fillFromOrg(
 		if len(missing) > 0 {
 			octx := store.WithTenant(ctx, orgScope)
 			resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, missing, nil, p.sealer,
-				p.apiKeyUsable(octx, meter, runID, skips))
+				p.apiKeyUsable(octx, meter, runID, skips), withheld.note)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
 			} else {
@@ -144,7 +145,7 @@ func (p *Publisher) fillFromOrg(
 				// omitting it here is what turned a recoverable park into an
 				// outright refusal for an org-funded team.
 				if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
-					fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, refused, nil, p.sealer, nil)
+					fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, refused, nil, p.sealer, nil, withheld.note)
 					if ferr != nil {
 						p.logger.Warn("cloudpublisher: org refused-key fallback resolve: %v", ferr)
 					}

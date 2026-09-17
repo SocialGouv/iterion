@@ -50,7 +50,7 @@ func TestResolve_PrioritizesUserOverTeam(t *testing.T) {
 	mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team-default", "sk-team-default", true)
 	user := mkKey(t, store, sealer, "team", "alice", ProviderOpenAI, "alice-default", "sk-alice-default", true)
 
-	got, err := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderOpenAI}, nil, sealer, nil)
+	got, err := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderOpenAI}, nil, sealer, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestResolve_FallsBackToTeam(t *testing.T) {
 	sealer := newSealer(t)
 	team := mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team-default", "sk-team-default", true)
 
-	got, _ := Resolve(context.Background(), store, "team", "bob", "", []Provider{ProviderOpenAI}, nil, sealer, nil)
+	got, _ := Resolve(context.Background(), store, "team", "bob", "", []Provider{ProviderOpenAI}, nil, sealer, nil, nil)
 	r := got[ProviderOpenAI]
 	if r.KeyID != team.ID || string(r.Plaintext) != "sk-team-default" || r.SourceScope != "team" {
 		t.Fatalf("expected team default, got %+v", r)
@@ -84,7 +84,7 @@ func TestResolve_OverrideWins(t *testing.T) {
 	got, _ := Resolve(context.Background(), store, "team", "alice", "",
 		[]Provider{ProviderOpenAI},
 		map[Provider]string{ProviderOpenAI: other.ID},
-		sealer, nil)
+		sealer, nil, nil)
 	r := got[ProviderOpenAI]
 	if r.KeyID != other.ID || string(r.Plaintext) != "sk-other" {
 		t.Fatalf("override should win: got %s, default was %s", r.KeyID, def.ID)
@@ -96,7 +96,7 @@ func TestResolve_HidesOtherUsersKeys(t *testing.T) {
 	sealer := newSealer(t)
 	mkKey(t, store, sealer, "team", "carol", ProviderOpenAI, "carol-only", "sk-carol", true)
 
-	got, _ := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderOpenAI}, nil, sealer, nil)
+	got, _ := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderOpenAI}, nil, sealer, nil, nil)
 	if _, ok := got[ProviderOpenAI]; ok {
 		t.Fatalf("alice should not see carol's user-scoped key")
 	}
@@ -108,7 +108,7 @@ func TestResolve_OmitsProviderWhenNoKey(t *testing.T) {
 	mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team", "sk-t", true)
 
 	got, _ := Resolve(context.Background(), store, "team", "alice", "",
-		[]Provider{ProviderOpenAI, ProviderAnthropic}, nil, sealer, nil)
+		[]Provider{ProviderOpenAI, ProviderAnthropic}, nil, sealer, nil, nil)
 	if _, ok := got[ProviderAnthropic]; ok {
 		t.Fatal("anthropic should be omitted (no key)")
 	}
@@ -211,7 +211,7 @@ func TestResolve_UserNonDefaultBeatsTeamDefault(t *testing.T) {
 	mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team-default", "sk-team", true)
 	user := mkKey(t, store, sealer, "team", "alice", ProviderOpenAI, "alice-plain", "sk-alice", false)
 
-	got, err := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderOpenAI}, nil, sealer, nil)
+	got, err := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderOpenAI}, nil, sealer, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestResolve_UsablePredicateWalksToTheNextKey(t *testing.T) {
 
 	refuse := map[string]bool{first.ID: true}
 	got, err := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderZAI}, nil, sealer,
-		func(k ApiKey) bool { return !refuse[k.ID] })
+		func(k ApiKey) bool { return !refuse[k.ID] }, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestResolve_UsablePredicateWalksToTheNextKey(t *testing.T) {
 	// Every key refused: the provider is OMITTED, so the later credential
 	// tiers get their turn — an empty slot beats a poisoned one.
 	got, err = Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderZAI}, nil, sealer,
-		func(ApiKey) bool { return false })
+		func(ApiKey) bool { return false }, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestResolve_UsablePredicateDoesNotFilterPins(t *testing.T) {
 
 	got, err := Resolve(context.Background(), store, "team", "alice", "", []Provider{ProviderZAI},
 		map[Provider]string{ProviderZAI: pinned.ID}, sealer,
-		func(ApiKey) bool { return false })
+		func(ApiKey) bool { return false }, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

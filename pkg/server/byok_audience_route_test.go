@@ -19,6 +19,13 @@ func TestBotAudienceIsNormalisedAtTheEdge(t *testing.T) {
 		{"trimmed", []string{"  sec-audit-source  "}, []string{"sec-audit-source"}},
 		{"de-duplicated, order kept", []string{"a", "b", "a"}, []string{"a", "b"}},
 		{"blanks among real entries are dropped", []string{"a", "   ", "b"}, []string{"a", "b"}},
+		// Canonicalised to the spelling the launch path resolves to. The
+		// resolver compares exactly, so an operator writing `Feature_Dev`
+		// would otherwise scope a bot that never launches under that name —
+		// and the key would quietly fund nothing while another tier paid.
+		{"upper case folded", []string{"Feature_Dev"}, []string{"feature-dev"}},
+		{"spaces folded to dashes", []string{"App Dev"}, []string{"app-dev"}},
+		{"spellings of one bot collapse", []string{"app-dev", "App_Dev", "APP DEV"}, []string{"app-dev"}},
 	}
 	for _, tc := range cases {
 		got, err := normalizeBotAudience(tc.in)

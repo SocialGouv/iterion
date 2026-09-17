@@ -29,6 +29,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -426,6 +427,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 		return credResolution{}, nil
 	}
+	// Canonicalise ONCE, here: every tier below reads this same variable, so
+	// the six Resolve sites and both shared tiers compare the same spelling
+	// the write routes stored. `feature_dev`, `Feature Dev` and `feature-dev`
+	// name one bundle everywhere else in the repo (botregistry.NormalizeName,
+	// used by ResolveBotPath); an audience that disagreed with that would
+	// stop funding a bot the moment someone typed it differently, and the
+	// bill would move to the next tier without a word.
+	botID = botregistry.NormalizeName(botID)
 	bundle := secrets.RunBundle{
 		APIKeys:            map[secrets.Provider]string{},
 		GenericSecrets:     map[string]string{},
@@ -447,6 +456,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	apiKeyFPs := map[secrets.Provider]string{}
 
 	skippedForfaits := map[string]skippedForfait{}
+	// Every tier's walk reports here what its audience kept out, so the one
+	// thing a refusal does not leave behind — a trace — exists by the end.
+	withheld := newAudienceWithholdings(botID)
 	res := credResolution{}
 	err := walkCredentialTiers(func() bool { return len(bundle.APIKeys) > 0 || len(bundle.OAuthCredentials) > 0 },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
@@ -467,7 +479,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// passed over so the priority walk yields the next key of that
 					// provider — the BYOK tier becomes an ordered fallback chain.
 					resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, allKnownProviders, overrides, p.sealer,
-						p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips))
+						p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips), withheld.note)
 					if err != nil {
 						return fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 					}
@@ -481,7 +493,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						apiKeyFPs[prov] = r.Fingerprint
 						usedIDs = append(usedIDs, r.KeyID)
 					}
-					p.warnRefusedPins(ctx, runID, tenantID, overrides, resolved)
+					p.warnRefusedPins(ctx, runID, tenantID, overrides, resolved, withheld)
 					// A provider whose EVERY key was refused resolves to nothing under
 					// the predicate. Remember what an unfiltered walk would have chosen:
 					// if the end of the resolution finds that wire still empty — no
@@ -491,7 +503,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// with an empty wire fails on a no-credential auth error nothing
 					// retries (or silently spends the runner pod's ambient env).
 					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
-						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, refused, overrides, p.sealer, nil)
+						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, botID, refused, overrides, p.sealer, nil, withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
 						}
@@ -666,7 +678,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
 
 			case credentialTierPool:
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -722,7 +734,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
 				}
 
 			case credentialTierRestore:
@@ -781,6 +793,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if err != nil {
 		return credResolution{}, err
 	}
+	// After the walk, not during it: a key withheld at the tenant tier is
+	// routine when a later tier funds the run, and warning mid-walk would cry
+	// wolf on every launch of a team that scopes its keys at all. Said once
+	// here, it answers "why is our key not funding this run" for good.
+	withheld.warn(p, runID)
 	res.skippedReopensAt = skips.earliest
 
 	// Record which review families the resolved credentials back — every
@@ -1095,7 +1112,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait) {
 	if p.sealer == nil {
 		return
 	}
@@ -1123,7 +1140,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
 			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, missing, nil, p.sealer,
-				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips))
+				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips), withheld.note)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 			} else {
@@ -1165,7 +1182,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			// instead, behind any tenant key of the same provider, whose
 			// restore takes precedence.
 			if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
-				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, refused, nil, p.sealer, nil)
+				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, refused, nil, p.sealer, nil, withheld.note)
 				if ferr != nil {
 					p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
 				}
@@ -1545,10 +1562,27 @@ func (p *Publisher) evaluateCredentialWindows(ctx context.Context, readings []us
 // wall on every delivery and nothing said why. Warning is the whole change;
 // the pin still wins.
 //
+// A pin the WORKLOAD AUDIENCE withheld is the same failure wearing a
+// different cause, and it is the one the audience introduced: that pin does
+// NOT win — the gate is read before the exemption — so the operator gets
+// neither their key nor a word about it, which is precisely the silence this
+// function was written to end. It is reported first, because "your pin was
+// refused" outranks "your pin is rate-limited".
+//
 // Nothing is logged for a healthy pin, so the line means something when it
 // appears.
-func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution) {
-	if len(overrides) == 0 || p.usageCaps == nil {
+func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution, withheld *audienceWithholdings) {
+	if len(overrides) == 0 {
+		return
+	}
+	for prov, keyID := range overrides {
+		if withheld.holds(keyID) {
+			p.logger.Warn(
+				"cloudpublisher: run %s pinned api key %s for %s, but its workload audience does not name this run's bot — the pin does NOT lift an audience, and the walk moved on",
+				runID, keyID, prov)
+		}
+	}
+	if p.usageCaps == nil {
 		return
 	}
 	for prov, keyID := range overrides {

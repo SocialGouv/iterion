@@ -32,7 +32,7 @@ func TestOrderedAPIKeysMatchesResolveAndKeepsInput(t *testing.T) {
 		if !reflect.DeepEqual(rows, before) {
 			t.Fatal("ordering mutated caller metadata")
 		}
-		real, err := Resolve(t.Context(), st, "t", "alice", "", []Provider{ProviderAnthropic}, tc.pins, sealer, func(k ApiKey) bool { return k.ID != primary.ID })
+		real, err := Resolve(t.Context(), st, "t", "alice", "", []Provider{ProviderAnthropic}, tc.pins, sealer, func(k ApiKey) bool { return k.ID != primary.ID }, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -119,12 +119,42 @@ Three properties decide where it is enforced, and they are the whole design:
    usable-predicate by design; the audience is read *before* that exemption,
    or "pin the key" would be the documented way around it.
 3. **A run that names no bot is refused** when the allow-list is non-empty.
-   An inline `.bot` a requester uploaded carries no bot id — the
-   arbitrary-code case — so the one input the requester fully controls fails
-   closed. `ApiKey.ServesBot` is the status reading (an empty bot id ignores
-   the list); `ApiKey.ServesBotForLaunch` is the resolution one. The split
-   mirrors `credpool.Pledge.Available` / `AvailableForLaunch` exactly, because
-   it is the same question about the same situation.
+   An operator who wrote "this key funds the audit" did not also mean "and
+   anything launched without naming a bot", and an inline `.bot` a requester
+   uploaded is exactly that shape.
+
+**Bot ids are compared EXACTLY, on their canonical spelling.** The rest of the
+engine treats `app-dev`, `app_dev`, `App Dev` and `APP-DEV` as one bundle
+(`botregistry.NormalizeName`, used by `ResolveBotPath`), and the launch request
+carries whichever the caller typed. So the two edges fold: the write routes
+canonicalise what they store, and the publisher canonicalises the run's bot id
+once before the walk. The predicate itself stays exact — a prefix or
+case-insensitive match there would silently widen an audience, and `sec` would
+open a key scoped to `sec-audit-source`. The same fold is applied to
+`credpool.Pledge.Bots` at its own write route, for the same reason.
+
+### What this is NOT: an authorisation boundary
+
+`bots` expresses **operator intent** — it keeps a team's own workloads off a key
+meant for one of them. It does not withstand a caller who crafts an API request.
+The server derives the bot id from its own catalogue only when the request did
+not carry inline `source`; with `source` set, `bot_id` travels as the requester
+typed it (`pkg/server/runs_launch.go`). Two features already trust that same
+string — bot secret bindings and `credpool.Pledge.Bots` — so making it an
+identity is one change at the launch chokepoint, tracked separately rather than
+patched here in a third place.
+
+Read it as a budget and blast-radius control, not as a permission.
+
+**The practical consequence, before you scope a key.** A launch that names no
+bot is refused by any non-empty audience — and today the studio's main launch
+form uploads the bundle's bytes as inline `source` without a `bot_id`
+(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`). So scoping a key
+makes it invisible to those launches, whatever bot they run, and the wire is
+filled by the org tier, the pool or the platform key instead. The log says so on
+every affected run (see the withholding line below), which is how you will find
+it; the durable fix is #1368. Until then, scope keys on teams whose runs are
+launched by `bot_id` — webhooks, triggers, schedules and the CLI all are.
 
 An audience narrows WHICH key serves, never whether the walk continues: the
 next key of that provider, then the next tier, still get their turn.
@@ -142,14 +172,33 @@ lending a credential to strangers. It is carried here so that a team aiming
 its OWN key has the vocabulary the donor already had.
 
 **Where it stops, said plainly.** `bots` governs the walk in `secrets.Resolve`
-— the team, org and platform API-key tiers. It does **not** reach a key the
-owner has PLEDGED to the credential pool: the pool opens a pledged key through
-`GetOwned`, outside that walk, and applies the pledge's own `Bots` instead. So
-a personal key scoped to one bot and then pledged is served to whatever the
-PLEDGE admits. Which of the two audiences should win — or whether they should
-intersect, as `IntersectHosts` does for egress — is an open decision, not an
-oversight; until it is taken, set the audience on the pledge as well as on the
-key.
+— the team, org and platform **API-key** tiers, and every one of their restore
+lanes. Two things it does not reach:
+
+- **OAuth forfaits.** The field lives on `secrets.ApiKey`; the tenant, team, org
+  and platform *forfait* tiers open `OAuthRecord`s and are not gated. A team
+  funded by a Claude Code subscription gets nothing from this feature — on the
+  same anthropic wire it believes it just restricted. An `OAuthRecord` twin is
+  the real answer and is a separate change.
+- **A key PLEDGED to the credential pool.** The pool opens a lent key through
+  `GetOwned`, outside this walk, and applies the pledge's own `Bots`. So a
+  personal key scoped to one bot and then pledged is served to whatever the
+  PLEDGE admits. Which audience should win — or whether they should intersect,
+  as `IntersectHosts` does for egress — is an open decision; until it is taken,
+  set the audience on the pledge as well as on the key.
+
+**A withheld key is announced, never silent.** Narrowing an audience does not
+stop the excluded run: it walks down to the next key, the org tier, the pool,
+the platform key, and finally the runner pod's ambient env. The bill moves, and
+possibly the vendor. So the publisher logs each withholding once per run, naming
+the key, its audience and the refused bot — and a **pin** the audience refuses
+gets its own line, because a pin does not lift an audience and losing silently
+is the failure `warnRefusedPins` exists to prevent.
+
+**`{"bots": null}` is a no-op, not a clear.** The field is a pointer, so `null`
+and an absent field are indistinguishable after decoding. Send `[]` to lift an
+audience. The response body always echoes the stored list, so the outcome is
+never in doubt.
 
 ## Resolution — `secrets.Resolve`
 
