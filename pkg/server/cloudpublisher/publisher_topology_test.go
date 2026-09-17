@@ -37,7 +37,7 @@ func launchTopologyRun(t *testing.T, p *Publisher, wf *ir.Workflow, runID string
 		FilePath: "w.bot",
 		Source:   "workflow w:\n  start -> done\n",
 	}
-	if _, err := p.SubmitLaunch(ctx, runID, spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, runID, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if len(published) != 1 {

@@ -396,7 +396,7 @@ func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) 
 	wf := &ir.Workflow{Name: "wf"}
 	if _, err := p.SubmitLaunch(ctx, "run-w1", runview.LaunchSpec{
 		FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
-	}, wf, "hash"); err != nil {
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	run, err := rs.LoadRun(ctx, "run-w1")

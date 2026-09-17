@@ -200,7 +200,7 @@ func TestSubmitLaunch_RunLevelFallbackReachesTheWants(t *testing.T) {
 		Source:   "workflow wf:\n  a -> done\n",
 		Fallback: []runview.FallbackEntry{{Backend: "claude_code", Provider: "anthropic"}},
 	}
-	if _, err := f.pub.SubmitLaunch(ctx, "run-fb-1", spec, wf, "hash"); err != nil {
+	if _, err := f.pub.SubmitLaunch(ctx, "run-fb-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	log := buf.String()

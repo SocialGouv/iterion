@@ -70,14 +70,14 @@ func TestSubmitLaunchStampsOrgID(t *testing.T) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}
-	if _, err := p.SubmitLaunch(ctx, "run-1", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if len(published) != 1 || published[0].OrgID != "org-1" {
 		t.Fatalf("published OrgID = %+v, want org-1", published)
 	}
 	// Second launch for the same team hits the cache, not the resolver.
-	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch #2: %v", err)
 	}
 	if resolver.calls != 1 {

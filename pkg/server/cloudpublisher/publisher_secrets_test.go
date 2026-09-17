@@ -89,7 +89,7 @@ func TestSubmitLaunchPersistsWebhookRepoAndBotMetadata(t *testing.T) {
 		RepoRef:  "refs/merge-requests/7/head",
 		BotID:    "review-pr",
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-webhook", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-webhook", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	r, err := st.LoadRun(ctx, "run-webhook")
@@ -169,7 +169,7 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 		RepoRef:  "refs/merge-requests/7/head",
 		BotID:    "review-pr",
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-resume", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-resume", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if err := st.UpdateRunStatus(ctx, "run-resume", store.RunStatusFailedResumable, "needs retry"); err != nil {
@@ -288,7 +288,7 @@ func TestSubmitLaunch_RequiredSecretUnresolved_NoRunRecord(t *testing.T) {
 		Source:   "workflow canary:\n  start -> done\n",
 		BotID:    "canary",
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-canary", spec, wf, "hash"); err == nil {
+	if _, err := p.SubmitLaunch(ctx, "run-canary", spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil {
 		t.Fatal("expected SubmitLaunch to fail for an unresolved required secret")
 	} else if !strings.Contains(err.Error(), "test_e2e_canary") {
 		t.Fatalf("error should name the secret, got %q", err.Error())

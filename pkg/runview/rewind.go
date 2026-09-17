@@ -226,7 +226,7 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, spec.SourcePath != "", wf, executed)
 		if err != nil {
 			return nil, err
 		}
@@ -428,7 +428,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, spec.SourcePath != "", wf, executed)
 		if err != nil {
 			return nil, err
 		}

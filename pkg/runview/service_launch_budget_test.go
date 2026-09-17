@@ -164,7 +164,7 @@ type stubLaunchPublisher struct {
 	lastSpec *LaunchSpec
 }
 
-func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ string) (int, error) {
+func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ *CompiledSource) (int, error) {
 	p.lastSpec = &spec
 	return 1, nil
 }

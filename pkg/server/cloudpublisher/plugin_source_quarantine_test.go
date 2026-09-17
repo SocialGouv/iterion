@@ -114,7 +114,7 @@ func TestSubmitLaunch_BrokenPluginSourceIsSkippedNotFatal(t *testing.T) {
 		pluginSources: &pluginsource.Resolver{Store: sources, Fetcher: &pluginsource.Fetcher{CacheDir: t.TempDir()}},
 	}
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
-	if _, err := p.SubmitLaunch(ctx, "run-quarantine", runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}, &ir.Workflow{Name: "wf"}, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-quarantine", runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}, &ir.Workflow{Name: "wf"}, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("one team's broken plugin source failed the launch: %v", err)
 	}
 	r, err := st.LoadRun(ctx, "run-quarantine")

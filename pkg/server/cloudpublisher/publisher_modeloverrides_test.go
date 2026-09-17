@@ -42,7 +42,7 @@ func TestSubmitLaunchCarriesModelOverrides(t *testing.T) {
 			{Selector: "judge", Provider: "anthropic"},
 		},
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-1", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestSubmitLaunchWithoutModelOverridesStaysNil(t *testing.T) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}
-	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	r, err := st.LoadRun(ctx, "run-2")
@@ -145,7 +145,7 @@ func TestSubmitResumeReplaysTheLaunchedModelOverrides(t *testing.T) {
 			{Selector: "*", Model: "openai/gpt-5.5", Backend: "claw", Effort: "high"},
 		},
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-1", launch, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-1", launch, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if err := st.UpdateRunStatus(ctx, "run-1", store.RunStatusPausedWaitingHuman, ""); err != nil {
@@ -192,7 +192,7 @@ func TestSubmitResumeWithoutModelOverridesStaysNil(t *testing.T) {
 	}
 	wf := &ir.Workflow{Name: "wf"}
 	src := "workflow wf:\n  start -> done\n"
-	if _, err := p.SubmitLaunch(ctx, "run-2", runview.LaunchSpec{FilePath: "wf.bot", Source: src}, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-2", runview.LaunchSpec{FilePath: "wf.bot", Source: src}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if err := st.UpdateRunStatus(ctx, "run-2", store.RunStatusFailedResumable, "boom"); err != nil {
@@ -240,7 +240,7 @@ func TestSubmitLaunchCarriesAgentAndJudgeOverrides(t *testing.T) {
 			{Selector: "judge", Model: "claude-opus-5"},
 		},
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-mo-1", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-mo-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if published == nil {
@@ -276,7 +276,7 @@ func TestSubmitLaunchWithoutOverridesPublishesNone(t *testing.T) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}
-	if _, err := p.SubmitLaunch(ctx, "run-mo-2", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-mo-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if published == nil || published.ModelOverrides != nil {

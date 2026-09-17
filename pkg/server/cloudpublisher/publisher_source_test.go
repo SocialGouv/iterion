@@ -36,7 +36,7 @@ func TestSubmitLaunchStampsSourceRef(t *testing.T) {
 			ScheduleName: "feed-watch",
 		},
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-1", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	r, err := st.LoadRun(ctx, "run-1")
@@ -70,7 +70,7 @@ func TestSubmitLaunchWithoutSourceRefLeavesSourceNil(t *testing.T) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}
-	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	r, err := st.LoadRun(ctx, "run-2")

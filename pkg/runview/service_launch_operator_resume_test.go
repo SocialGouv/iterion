@@ -16,7 +16,7 @@ type operatorResumePublisher struct {
 	resumeCalls int
 }
 
-func (*operatorResumePublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, string) (int, error) {
+func (*operatorResumePublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (int, error) {
 	return 1, nil
 }
 

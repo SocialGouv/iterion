@@ -92,6 +92,50 @@ func TestResolveResumeSourceExplicitPathDoesNotUsePersistedFallback(t *testing.T
 	}
 }
 
+// The cloud branch's persisted-source fallback is gated like its local
+// sibling: an EXPLICIT file_path is authoritative, so a path this pod cannot
+// resolve fails closed instead of quietly resuming on the launch snapshot.
+//
+// The branch was dead while cloud run documents carried no WorkflowSource.
+// Recording it at launch wakes it — which is why the gate belongs with the
+// stamp rather than after it.
+func TestResolveResumeSourceCloudExplicitPathDoesNotUsePersistedFallback(t *testing.T) {
+	newCloud := func() *Server {
+		return New(Config{
+			WorkDir:                 t.TempDir(),
+			StoreDir:                filepath.Join(t.TempDir(), ".iterion"),
+			SkipProjectRegistration: true,
+			Mode:                    "cloud",
+		}, iterlog.New(iterlog.LevelError, os.Stderr))
+	}
+	// Names no catalog bot, so the resolver finds nothing and the fallback is
+	// the only thing that could answer.
+	const explicitPath = "/somewhere/else/attacker.bot"
+	const persistedSource = "workflow launched:\n  entry: done\n"
+
+	_, _, _, err := newCloud().resolveResumeSourceWithFallback(
+		context.Background(), "", explicitPath, "", persistedSource, false,
+	)
+	if err == nil {
+		t.Fatal("an explicit file_path this pod cannot resolve resumed on the launch snapshot instead of failing closed")
+	}
+	if !strings.Contains(err.Error(), "source or a catalog bot is required") {
+		t.Errorf("refusal = %v, want the cloud source-required message", err)
+	}
+
+	// And the fallback still answers the case it exists for: an IMPLICIT
+	// resume (no file_path in the request) of an inline-source cloud launch.
+	_, resolvedSource, _, err := newCloud().resolveResumeSourceWithFallback(
+		context.Background(), "", explicitPath, "", persistedSource, true,
+	)
+	if err != nil {
+		t.Fatalf("an implicit resume was refused: %v", err)
+	}
+	if resolvedSource != persistedSource {
+		t.Errorf("resolved source = %q, want the persisted launch snapshot", resolvedSource)
+	}
+}
+
 func TestResolveLegacyCatalogResumeRebindsCurrentCatalogSource(t *testing.T) {
 	workDir := t.TempDir()
 	storeDir := filepath.Join(t.TempDir(), ".iterion")
