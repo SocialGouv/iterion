@@ -185,7 +185,7 @@ The machinery stays guarded non-vacuously by
 still binding for anything that diffs code): judge the WORKING TREE
 (`git diff HEAD`, or `git diff <base>` for branch/run scopes), never
 `HEAD^...HEAD`; and make untracked files visible before diffing (`git
-add -N .`, or `git add -A -- ':/' ':(exclude,top).claude'` before each in-stride commit — a change that
+add -N -- ':/' ':(exclude,top).claude'`, or `git add -A -- ':/' ':(exclude,top).claude'` before each in-stride commit — a change that
 ADDS files is otherwise invisible to the diff). Both failure modes were
 observed live in the v1 reviewer loops (a reviewer concluding "the
 feature isn't implemented" and looping forever — see

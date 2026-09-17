@@ -258,7 +258,7 @@ tool preflight:
     # not work in flight — the one exclusion every status read here carries.
     dirty = [l for l in st.stdout.splitlines() if l.strip()
              and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
-             and not is_scaffold(l)]
+             and not (l[:2] == "??" and is_scaffold(l))]
     if dirty:
         refuse("the workspace has %d uncommitted change(s) at campaign start "
                "(e.g. %s). A supervisor only ever acts between runs on "
@@ -547,7 +547,7 @@ tool steward:
                 continue
             # iterion's own scaffold under .claude/ (skills, plugin files):
             # laid by the engine at run start, never the run's work (#1364).
-            if p.startswith(".claude/"):
+            if line[:2] == "??" and p.startswith(".claude/"):
                 continue
             paths.append(p)
         return sorted(set(paths))
@@ -823,7 +823,7 @@ tool finalize:
     # is execution machinery, not an uncommitted change.
     dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()
              and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
-             and not is_scaffold(l)]
+             and not (l[:2] == "??" and is_scaffold(l))]
 
     plan = {}
     yq = find_yq()

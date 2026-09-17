@@ -119,6 +119,25 @@ func TestDeclineProbeLeavesTheScaffoldOut(t *testing.T) {
 	if res.Honoured || !strings.Contains(res.Reason, "half.py") || strings.Contains(res.Reason, ".claude") {
 		t.Fatalf("a real leftover must void the decline and be the one named, got %+v", res)
 	}
+	// The scaffold is the engine's only while UNTRACKED: a tracked file under
+	// .claude/ that the run modified is the run's touch, and voids the decline.
+	if err := os.Remove(filepath.Join(ws, "half.py")); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, ws, "add", "-f", filepath.Join(".claude", "settings.json"))
+	gittest.Run(t, ws, "commit", "-q", "-m", "track the settings")
+	head = strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+	runScaffoldJSON(t, expand(), &res)
+	if !res.Honoured {
+		t.Fatalf("a tracked, unmodified settings file beside the untracked mirror must still honour the decline, got %+v", res)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"edited\": true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runScaffoldJSON(t, expand(), &res)
+	if res.Honoured || !strings.Contains(res.Reason, ".claude/settings.json") {
+		t.Fatalf("a modified tracked .claude/ file is the run's touch and must void the decline, got %+v", res)
+	}
 }
 
 // Every read of the working tree's dirt in the catalogue — `git status

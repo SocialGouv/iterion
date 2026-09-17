@@ -438,10 +438,10 @@ run's cumulative series — **never `git diff HEAD^...HEAD`** (the last
 reviewer_gpt diffed `HEAD^...HEAD`, reported "feature not implemented"
 against work that was plainly present, split the cross-family verdict
 and oscillated forever. Same family of bug: `git diff HEAD` omits
-*untracked* files — new files must be `git add -N`/`git add -A`'d
+*untracked* files — new files must be marked or staged first (`git add -N -- ':/' ':(exclude,top).claude'`, `git add -A -- ':/' ':(exclude,top).claude'` — iterion's skills mirror left out)
 before diffing or a change that ADDS files reads as missing. The v2
 campaign contracts bake `git add -A` into the per-unit commit step.
-From ONE branch only: two parallel reviewers each running `git add -N .`
+From ONE branch only: two parallel reviewers each running `git add -N -- ':/' ':(exclude,top).claude'`
 contend for `.git/index.lock` — fatal for the loser, whose empty report
 then reads as an approve — so a read-only branch reads untracked files
 with `git ls-files --others --exclude-standard -z | xargs -0 -I{} git

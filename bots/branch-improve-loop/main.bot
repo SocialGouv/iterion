@@ -65,7 +65,7 @@
 ## committed fix (git is the state).
 ##
 ## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign runs
-## `git add -N .` BEFORE diffing so a branch that ADDS files shows those files
+## `git add -N -- ':/' ':(exclude,top).claude'` BEFORE diffing so a branch that ADDS files shows those files
 ## in `git diff` (untracked files are otherwise invisible to `git diff`), and
 ## commits the UNCOMMITTED working tree AFTER its own build+test passes,
 ## staging untracked files (`git add -A -- ':/' ':(exclude,top).claude'`) so a fix that adds files actually
@@ -318,7 +318,7 @@ prompt campaign_system:
 
   THE SCOPE is the BRANCH DIFF, not the whole codebase. You are reviewing and
   improving the changes THIS branch introduces over `base_ref` (in your user
-  prompt). FIRST read the diff — run `git add -N .` (intent-to-add, so any NEW
+  prompt). FIRST read the diff — run `git add -N -- ':/' ':(exclude,top).claude'` (intent-to-add, so any NEW
   files the branch adds show up) then
   `git diff $(git merge-base <base_ref> HEAD)` (merge-base vs WORKING TREE, so
   your OWN uncommitted fixes stay visible; the commit-only `<base_ref>...HEAD`
@@ -548,7 +548,7 @@ prompt campaign_user:
   prompt says `{{vars.base_ref}}`, use whichever of the two refs
   `git rev-parse --verify` accepts; do not fetch to find out.)
 
-  Read the diff first: `git add -N .` then
+  Read the diff first: `git add -N -- ':/' ':(exclude,top).claude'` then
   `git diff $(git merge-base {{vars.base_ref}} HEAD)` (merge-base vs WORKING
   TREE — a prior pass's uncommitted fixes stay in scope; commit-only
   `{{vars.base_ref}}...HEAD` would hide them). Enumerate the footprint with
@@ -724,8 +724,10 @@ prompt verify_user:
   codegen-drift gate (git diff --exit-code after a regen/vendor step, a
   drift-check task, test -z on git status --porcelain), verify.sh MUST
   mirror it — run the repo's regen command(s), then fail on drift — with
-  iterion's `.claude/` scaffold left out of any porcelain check
-  (`git status --porcelain -- ':/' ':(exclude,top).claude'`). The
+  iterion's `.claude/` scaffold left out of BOTH forms — `git status
+  --porcelain -- ':/' ':(exclude,top).claude'` and `git diff --exit-code
+  -- ':/' ':(exclude,top).claude'` (a mirror marked intent-to-add stays
+  in the index, so a bare diff stays red on it). The
   deterministic precheck rejects a gateless verify.sh in that case
   (exit 3) and the loop burns a full pass re-learning this.
 
@@ -1059,7 +1061,7 @@ prompt plan_system:
   You are the triage planner for a branch-review campaign. You are
   READ-ONLY: read the branch diff and produce a PLAN — change nothing.
 
-  Read the diff first: `git add -N .` then
+  Read the diff first: `git add -N -- ':/' ':(exclude,top).claude'` then
   `git diff $(git merge-base <base_ref> HEAD)` (merge-base vs WORKING
   TREE). That diff is the scope — do NOT plan changes to pre-existing
   code the branch didn't touch. Then write the plan as a MAP, not a
@@ -1133,7 +1135,7 @@ prompt plan_review_user:
   BRANCH BASE: {{vars.base_ref}} (on a cloud checkout a non-default
   base exists only as `origin/{{vars.base_ref}}` — use whichever of the
   two refs `git rev-parse --verify` accepts; do not fetch)
-  Read the diff yourself: `git add -N .` then
+  Read the diff yourself: `git add -N -- ':/' ':(exclude,top).claude'` then
   `git diff $(git merge-base {{vars.base_ref}} HEAD)` — or, on a large
   diff (see below), the stat + targeted per-file hunks instead.
 
@@ -1796,7 +1798,7 @@ def is_scaffold(line):
         path = path[1:-1]
     return path.startswith('.claude/')
 st = git('status', '--porcelain')
-dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not is_scaffold(l)]
+dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not (l[:2] == '??' and is_scaffold(l))]
 if st.returncode != 0:
     print(json.dumps({'honoured': False, 'reason': 'declined but the working tree could not be read: ' + (st.stderr or '').strip()[-200:]}))
     raise SystemExit(0)

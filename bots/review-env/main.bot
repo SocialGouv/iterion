@@ -213,7 +213,7 @@ tool preflight:
         return path.startswith('.claude/')
     st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
                         capture_output=True, text=True, timeout=60)
-    out["dirty"] = len([l for l in st.stdout.splitlines() if l.strip() and not is_scaffold(l)])
+    out["dirty"] = len([l for l in st.stdout.splitlines() if l.strip() and not (l[:2] == "??" and is_scaffold(l))])
     print(json.dumps(out))
 
 agent deploy:

@@ -74,7 +74,7 @@ deterministic `workspace_probe` entry precondition and the plan phase —
 both described under their own headings below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
-  runs `git add -N .` then reads the branch diff, builds a living todo list of
+  runs `git add -N -- ':/' ':(exclude,top).claude'` then reads the branch diff, builds a living todo list of
   the real issues in the diff, and fixes them one at a time — locate → smallest
   fix → build → test → **commit** (`git add -A -- ':/' ':(exclude,top).claude'` incl. untracked, semantic
   message) — until a fresh re-review finds no real issue left. It emits a
@@ -140,7 +140,7 @@ never inside the target worktree).
 ## Right artifact (anti-Goodhart)
 
 `git diff` omits **untracked** files, so a branch that ADDS files would be
-reviewed incomplete. The campaign runs `git add -N .` (intent-to-add) BEFORE
+reviewed incomplete. The campaign runs `git add -N -- ':/' ':(exclude,top).claude'` (intent-to-add) BEFORE
 diffing so new files show in the branch diff, and commits the uncommitted
 working tree after its own build+test passes, staging untracked files
 (`git add -A -- ':/' ':(exclude,top).claude'`) so a fix that adds a test/helper actually lands. The

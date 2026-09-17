@@ -415,8 +415,10 @@ prompt verify_user:
   codegen-drift gate (git diff --exit-code after a regen/vendor step, a
   drift-check task, test -z on git status --porcelain), verify.sh MUST
   mirror it — run the repo's regen command(s), then fail on drift — with
-  iterion's `.claude/` scaffold left out of any porcelain check
-  (`git status --porcelain -- ':/' ':(exclude,top).claude'`). The
+  iterion's `.claude/` scaffold left out of BOTH forms — `git status
+  --porcelain -- ':/' ':(exclude,top).claude'` and `git diff --exit-code
+  -- ':/' ':(exclude,top).claude'` (a mirror marked intent-to-add stays
+  in the index, so a bare diff stays red on it). The
   deterministic precheck rejects a gateless verify.sh in that case
   (exit 3) and the loop burns a full pass re-learning this.
 

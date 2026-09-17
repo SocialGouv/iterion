@@ -4807,7 +4807,7 @@ def is_scaffold(line):
         path = path[1:-1]
     return path.startswith('.claude/')
 status = run(['git', '-C', ws, 'status', '--porcelain'])
-dirty = any(l.strip() and not is_scaffold(l) for l in (status.stdout or '').splitlines())
+dirty = any(l.strip() and not (l[:2] == '??' and is_scaffold(l)) for l in (status.stdout or '').splitlines())
 stash_ref = ''
 if dirty:
     sp = run(['git', '-C', ws, 'stash', 'push', '--include-untracked', '-m', 'seki-prepare-branch ' + suffix, '--', ':/', ':(exclude,top).claude'])
@@ -5269,7 +5269,9 @@ def revert():
             subprocess.run(['git', '-C', ws, 'clean', '-f', '--'] + existing, capture_output=True, timeout=120)
         else:
             subprocess.run(['git', '-C', ws, 'checkout', '--', '.'], capture_output=True, timeout=120)
-            subprocess.run(['git', '-C', ws, 'clean', '-fd'], capture_output=True, timeout=120)
+            # The skills mirror under .claude/ belongs to the engine, not to the
+            # finding: a clean that deleted it would strip the next agent node.
+            subprocess.run(['git', '-C', ws, 'clean', '-fd', '--', ':/', ':(exclude,top).claude'], capture_output=True, timeout=120)
         return True
     except Exception:
         return False

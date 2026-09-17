@@ -2431,7 +2431,7 @@ def workspace_dirty_paths(ws):
                        capture_output=True, text=True)
     if p.returncode != 0:
         return []
-    return sorted(l[3:] for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))
+    return sorted(l[3:] for l in p.stdout.splitlines() if l.strip() and not (l[:2] == '??' and is_scaffold(l)))
 
 
 def holdout_committed_entries(gm_dir):

@@ -1549,8 +1549,10 @@ prompt p2_verify_user:
   codegen-drift gate (git diff --exit-code after a regen/vendor step,
   a drift-check task, test -z on git status --porcelain), verify.sh
   MUST mirror it — run the regen command(s), then fail on drift — with
-  iterion's `.claude/` scaffold left out of any porcelain check
-  (`git status --porcelain -- ':/' ':(exclude,top).claude'`); the
+  iterion's `.claude/` scaffold left out of BOTH forms — `git status
+  --porcelain -- ':/' ':(exclude,top).claude'` and `git diff --exit-code
+  -- ':/' ':(exclude,top).claude'` (a mirror marked intent-to-add stays
+  in the index, so a bare diff stays red on it); the
   deterministic precheck rejects a gateless verify.sh otherwise.
 
 schema ecosystem_profile:
@@ -2918,7 +2920,7 @@ printf '{"success":true,"output":"committed %s","sha":"%s"}\n' "$SHA" "$SHA"
 ## The deterministic implementation is git-canonical:
 ##   1. git reset --hard HEAD         — discard all tracked-file changes
 ##                                      (manifests, lockfiles, source).
-##   2. git clean -fd                  — remove every untracked file +
+##   2. git clean -fd -- ':/' ':(exclude,top).claude' — remove every untracked file +
 ##                                      directory the upgrade introduced
 ##                                      (build artefacts, generated
 ##                                      configs, etc.). Honours .gitignore
@@ -2953,9 +2955,11 @@ if ! git reset --hard HEAD >&2; then
   printf '{"success":false,"output":"git reset --hard failed"}\n'
   exit 1
 fi
-echo "revert: git clean -fd" >&2
-if ! git clean -fd >&2; then
-  printf '{"success":false,"output":"git clean -fd failed (worktree may still be dirty)"}\n'
+echo "revert: clean untracked files, sparing .claude/" >&2
+# The skills mirror under .claude/ belongs to the engine, not to the upgrade:
+# a clean that deleted it would leave every later agent node without skills.
+if ! git clean -fd -- ':/' ':(exclude,top).claude' >&2; then
+  printf '{"success":false,"output":"the clean of untracked files failed (worktree may still be dirty)"}\n'
   exit 1
 fi
 INSTALL_CMD={{input.install_cmd_hint}}

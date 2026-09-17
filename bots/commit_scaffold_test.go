@@ -86,12 +86,18 @@ func TestWholeTreeStagingExcludesTheScaffold(t *testing.T) {
 	}
 	files = append(files, "../docs/agents/bot-authoring.md")
 	// A site that FORBIDS the practice is not a site of it.
-	exempt := map[string]string{"product-docs/main.bot": "never `git add -A`"}
-	// `git add -A`, `git -C <dir> add -A`: any whole-tree staging, wherever
-	// the repository is named; the pathspec anchors the tree at the
-	// repository root so a copy run from a subdirectory stages everything.
-	staging := regexp.MustCompile(`\badd -A\b`)
-	excluded := regexp.MustCompile(`\badd -A -- ':/' ':\(exclude,top\)\.claude'`)
+	exempt := map[string]string{
+		"product-docs/main.bot":                     "never `git add -A`",
+		"whats-next/skills/iterion-dsl-quickref.md": "never `git add -N .`",
+	}
+	// `git add -A`, `git -C <dir> add -A`, `git add -N` (intent-to-add: a
+	// marked scaffold keeps `git diff --exit-code` red), `git clean -fd`
+	// (which would delete the mirror outright), in shell or as a subprocess
+	// list: any whole-tree staging, marking or cleaning, wherever the
+	// repository is named; the pathspec anchors the tree at the repository
+	// root so a copy run from a subdirectory covers everything.
+	staging := regexp.MustCompile(`\badd -[AN]\b|\bclean -fd\b|'clean', '-fd'`)
+	excluded := regexp.MustCompile(`(?:add -[AN]|clean -fd) -- ':/' ':\(exclude,top\)\.claude'|'clean', '-fd', '--', ':/', ':\(exclude,top\)\.claude'`)
 	sites := 0
 	for _, rel := range files {
 		src, err := os.ReadFile(rel)
