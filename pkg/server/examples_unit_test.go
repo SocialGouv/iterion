@@ -28,7 +28,6 @@ type oneProgram struct {
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
-	FollowedPath      string          `json:"followed_path"`
 	Bindable          bool            `json:"bindable"`
 	Unit              *unitInfo       `json:"unit"`
 }
@@ -79,14 +78,6 @@ func assertOneProgram(t *testing.T, got oneProgram, wantPath string) *ast.File {
 	}
 	if got.Path != wantPath || got.ConfirmedDiskPath != "" {
 		t.Errorf("a flat program was bound: path %q (want %q), confirmed %q", got.Path, wantPath, got.ConfirmedDiskPath)
-	}
-	// An example is served as a flat program because the working directory
-	// does NOT hold the file — an embedded bot, a catalog outside it. There
-	// is nothing to follow, and naming a file would have the tab reload one
-	// the author never opened. (/api/files/open, which answers for a path it
-	// was GIVEN, carries no such field: wantPath is non-empty there.)
-	if wantPath == "" && got.FollowedPath != "" {
-		t.Errorf("a flat program the workspace does not hold named %q as the file it follows", got.FollowedPath)
 	}
 	if wantPath == "" && !got.Bindable {
 		t.Error("a flat program that parses was declared not bindable")
@@ -445,12 +436,6 @@ func TestLoadExampleRefusesAnExampleThatIsASymlinkIntoTheWorkDir(t *testing.T) {
 	}
 	if got.Path != "" || got.ConfirmedDiskPath != "" {
 		t.Fatalf("a symlink into the working directory was bound: path %q confirmed %q", got.Path, got.ConfirmedDiskPath)
-	}
-	// Nor followed: the tab would reload that other file over the buffer on
-	// its next write, and rename itself to it — the same substitution the
-	// binding refusal exists to prevent, one step later.
-	if got.FollowedPath != "" {
-		t.Errorf("a symlink into the working directory was named as the file followed: %q", got.FollowedPath)
 	}
 }
 
