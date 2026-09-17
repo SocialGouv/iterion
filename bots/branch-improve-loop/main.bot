@@ -1788,15 +1788,17 @@ def is_scaffold(line):
     # iterion lays the bundle's skills (and plugin commands, agents,
     # settings) under <workspace>/.claude/ at run start: written by the
     # engine, never by a pass, never the run's work (#1364) -- the rule
-    # finalize applies to the wip bank (runOutputPaths). A rename is
-    # judged on its destination; a quoted path is unquoted.
+    # finalize applies to the wip bank (runOutputPaths), narrowed here to
+    # what is UNTRACKED: a tracked file under .claude/ that was modified is
+    # somebody's uncommitted work, which this reader exists to protect. A
+    # rename is judged on its destination; a quoted path is unquoted.
     path = line[3:]
     if ' -> ' in path:
         path = path.split(' -> ', 1)[1]
     path = path.strip()
     if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
         path = path[1:-1]
-    return path.startswith('.claude/')
+    return line[:2] == '??' and path.startswith('.claude/')
 st = git('status', '--porcelain')
 dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not is_scaffold(l)]
 if st.returncode != 0:

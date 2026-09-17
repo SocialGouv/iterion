@@ -84,7 +84,7 @@ func TestWholeTreeStagingExcludesTheScaffold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files = append(files, "../docs/agents/bot-authoring.md")
+	files = append(files, "../docs/agents/bot-authoring.md", "../docs/workflow_authoring_pitfalls.md")
 	// A site that FORBIDS the practice is not a site of it.
 	exempt := map[string]string{
 		"product-docs/main.bot":                     "never `git add -A`",

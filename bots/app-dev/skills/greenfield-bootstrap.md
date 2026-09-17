@@ -91,7 +91,7 @@ test commands) — `docs(readme): run and test commands`.
 
 `feat(scope):` one coherent feature slice · `test(scope):` tests beyond
 a slice's own · `fix(scope):` red-gate fixes · `docs(...)` README/ADRs ·
-`chore(...)` config/deps. Stage with `git add -A -- ':/' ':(exclude,top).claude'` before EVERY commit
+`chore(...)` config/deps. Stage with `git add -A -- ':/' ':(exclude,top).claude'` before EVERY commit — a file under `.claude/` that IS your deliverable is staged by name (`git add -- .claude/<path>`): the exclusion spares the mirror, not your work
 (greenfield adds files constantly; an unstaged new file is invisible to
 diffs and to the verify gate's drift check).
 

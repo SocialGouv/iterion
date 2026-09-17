@@ -119,21 +119,25 @@ func TestDeclineProbeLeavesTheScaffoldOut(t *testing.T) {
 	if res.Honoured || !strings.Contains(res.Reason, "half.py") || strings.Contains(res.Reason, ".claude") {
 		t.Fatalf("a real leftover must void the decline and be the one named, got %+v", res)
 	}
-	// The whole .claude/ tree is the engine's, tracked or not — it rewrites a
-	// tracked settings.json itself when plugins inject hooks — so a modified
-	// tracked file under it is not the run's touch either (finalize's rule).
+	// The scaffold is the engine's only while UNTRACKED: a tracked file under
+	// .claude/ that was modified is uncommitted work — the run's here — and
+	// the probe exists to refuse on exactly that.
 	if err := os.Remove(filepath.Join(ws, "half.py")); err != nil {
 		t.Fatal(err)
 	}
 	gittest.Run(t, ws, "add", "-f", filepath.Join(".claude", "settings.json"))
 	gittest.Run(t, ws, "commit", "-q", "-m", "track the settings")
 	head = strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
-	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"hooks\": {}}\n"), 0o644); err != nil {
+	runScaffoldJSON(t, expand(), &res)
+	if !res.Honoured {
+		t.Fatalf("a tracked, unmodified settings file beside the untracked mirror must still honour the decline, got %+v", res)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{\"edited\": true}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runScaffoldJSON(t, expand(), &res)
-	if !res.Honoured {
-		t.Fatalf("a modified tracked file under .claude/ is the engine's business and must not void the decline, got %+v", res)
+	if res.Honoured || !strings.Contains(res.Reason, ".claude/settings.json") {
+		t.Fatalf("a modified tracked .claude/ file is uncommitted work and must void the decline, got %+v", res)
 	}
 }
 

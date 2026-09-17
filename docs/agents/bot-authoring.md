@@ -191,7 +191,8 @@ observed live in the v1 reviewer loops (a reviewer concluding "the
 feature isn't implemented" and looping forever — see
 [docs/bot-runs/feature-dev.md](../bot-runs/feature-dev.md)); the v2
 contracts bake the `git add -A -- ':/' ':(exclude,top).claude'`-then-commit unit in (iterion's
-skills mirror is never the run's work), and any new
+skills mirror is never the run's work; a file under `.claude/` that IS the
+deliverable is staged by name, `git add -- .claude/<path>`), and any new
 reviewer you author must anchor the same way.
 
 ## Catalog bots are repo-agnostic
