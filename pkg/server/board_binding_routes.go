@@ -10,7 +10,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
-	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 )
@@ -350,9 +349,7 @@ func (s *Server) startBoardSync() {
 		CardsFor:       s.cloudCardsFor,
 		Logger:         s.logger,
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.boardSyncCancel = cancel
-	errtrack.Go("server.boardSync", func() { w.Run(ctx) })
+	s.boardSyncCancel = s.goUntilShutdown("server.boardSync", w.Run)
 	if s.logger != nil {
 		s.logger.Info("server: project-board reconciliation started (per-team interval, elected per tenant)")
 	}

@@ -83,10 +83,10 @@ func (s *Server) StartEmbedded() error {
 			return
 		}
 		if s.runs != nil {
-			errtrack.Go("server.stagedUploadReaper", s.runStagedUploadReaper)
+			s.goUntilShutdown("server.stagedUploadReaper", s.runStagedUploadReaper)
 		}
 		if s.pipelineAdmissionEnabled() {
-			errtrack.Go("server.pipelineAdmissionLoop", s.runPipelineAdmissionLoop)
+			s.goUntilShutdown("server.pipelineAdmissionLoop", s.runPipelineAdmissionLoop)
 		}
 		s.wirePipelineReservations(s.runs)
 		if s.runs != nil && s.cfg.NativeTrackerStore != nil {
@@ -214,13 +214,13 @@ func (s *Server) ListenAndServe() error {
 	// is best-effort — it walks the staging root, deletes dirs older
 	// than uploadStagingTTL, and stops when s.shutdown closes.
 	if s.runs != nil {
-		errtrack.Go("server.stagedUploadReaper", s.runStagedUploadReaper)
+		s.goUntilShutdown("server.stagedUploadReaper", s.runStagedUploadReaper)
 	}
 	// Studio's built-in pipeline launcher: start ready tickets (dragged into
 	// Todo) when a concurrency slot frees. Only when no external dispatcher
 	// owns the board (which would otherwise race to claim the same tickets).
 	if s.pipelineAdmissionEnabled() {
-		errtrack.Go("server.pipelineAdmissionLoop", s.runPipelineAdmissionLoop)
+		s.goUntilShutdown("server.pipelineAdmissionLoop", s.runPipelineAdmissionLoop)
 	}
 	// Teach the run service's concurrency gate about slots held open by
 	// pipelines that died and need a human. Wired regardless of the admission
@@ -288,13 +288,7 @@ func (s *Server) ListenAndServe() error {
 	// in-memory store grows unbounded under brute-force attempts
 	// or distracted users.
 	if mss, ok := s.oidcStates.(*oidc.MemoryStateStore); ok {
-		errtrack.Go("server.oidcStateSweeper", func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.oidcStateSweeper", func(ctx context.Context) {
 			mss.StartSweeper(ctx, 0) // 0 = use store TTL as interval
 		})
 	}
@@ -311,13 +305,7 @@ func (s *Server) ListenAndServe() error {
 			SecurityMinter: s.forgeSecurityTokenMinter,
 			Lead:           forgeRefreshLead,
 		}
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.forgeTokenRefresh", func(ctx context.Context) {
 			// Boot sweep: a rolling deploy re-phases the ticker below onto the
 			// new pod's start time, so a token that was about to be refreshed by
 			// the old replica's next tick could otherwise sit dying until this
@@ -337,65 +325,41 @@ func (s *Server) ListenAndServe() error {
 					}
 				}
 			}
-		}()
+		})
 	}
 	s.startOAuthForfaitRefresh()
 	// Forge → board issue sync (cloud only): periodically mirror every
 	// sync-enabled repo's forge issues onto its team board. Off unless a
 	// cloud board + the integration store are wired. See board_forge.go.
 	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.forgeBoardIssueSync", func(ctx context.Context) {
 			s.runBoardSyncWorker(ctx, 5*time.Minute)
-		}()
+		})
 	}
 	// Orphan-run sweeper (cloud only): flips queued/running rows whose
 	// runner died without a terminal write to failed_resumable. Needs
 	// both the Mongo store (stale scan capability) and the queue (KV
 	// lease check) — silently absent otherwise (local mode).
 	if lister, ok := s.cfg.Store.(staleRunLister); ok && s.queue != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.queueSweeper", func(ctx context.Context) {
 			s.runQueueSweeper(ctx, lister, s.queue)
-		}()
+		})
 	}
 	// Abandoned-lease sweeper: gives a lending contributor back the
 	// concurrency slot of a run whose pod died without reporting.
 	if s.credPool != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.credPoolSweeper", func(ctx context.Context) {
 			s.runCredPoolSweeper(ctx)
-		}()
+		})
 	}
 	// Retry sweeper (cloud only): resumes runs whose provider quota window
 	// has reopened. Needs only the store — unlike the orphan sweeper it
 	// asks no question of the queue, because the retry instant was decided
 	// when the run failed. Multi-replica-safe via the store CAS.
 	if lister, ok := s.cfg.Store.(retryDueLister); ok && s.runs != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.retrySweeper", func(ctx context.Context) {
 			s.runRetrySweeper(ctx, lister)
-		}()
+		})
 	} else if s.cfg.ScheduledBots != nil {
 		// Cloud mode without the capability: a type assertion that quietly
 		// fails here (a store wrapped in a decorator, say) means every
@@ -411,15 +375,9 @@ func (s *Server) ListenAndServe() error {
 	// nobody answers blocks a pull request indefinitely, and a dropped event
 	// leaves no trace saying so.
 	if lister, ok := s.cfg.Store.(gateSweepLister); ok && s.forgePublishTokens != nil && s.forgeConnections != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.gateSweeper", func(ctx context.Context) {
 			s.runGateSweeper(ctx, lister)
-		}()
+		})
 	} else if s.cfg.ScheduledBots != nil && s.forgePublishTokens != nil {
 		// Cloud mode with gating wired but no sweep: the event path is then the
 		// SOLE trigger, and its misses are exactly the invisible ones.
@@ -430,26 +388,14 @@ func (s *Server) ListenAndServe() error {
 	// their quiet window (webhooks_debounce.go). Multi-replica-safe via the
 	// store lease. Absent when no deferred store is wired or the window is 0.
 	if s.webhookDeferred != nil && s.syncDebounce > 0 {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.webhookDeferSweeper", func(ctx context.Context) {
 			s.runWebhookDeferSweeper(ctx)
-		}()
+		})
 	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
 	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).
 	if s.cfg.ScheduledBots != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.cloudScheduler", func(ctx context.Context) {
 			(&cloudsched.Ticker{
 				Store:    s.cfg.ScheduledBots,
 				Launch:   s.launchScheduledBot,
@@ -458,20 +404,14 @@ func (s *Server) ListenAndServe() error {
 				Audit:    s.cloudScheduleAudit,
 				Interval: schedulerTickInterval(),
 			}).Run(ctx)
-		}()
+		})
 	}
 	// Org purge sweeper: nightly hard-purge of soft-deleted orgs past their
 	// grace. Idempotent across replicas (no leader election needed).
 	if s.cfg.OrgPurgeSweeper != nil {
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
+		s.goUntilShutdown("server.orgPurgeSweeper", func(ctx context.Context) {
 			s.cfg.OrgPurgeSweeper.Run(ctx)
-		}()
+		})
 	}
 	// Cloud board dispatcher: claim + run eligible cards across all tenants.
 	// Multi-replica-safe via the per-card Claim CAS (no leader election).
@@ -598,13 +538,7 @@ func (s *Server) startOAuthForfaitRefresh() {
 	if worker == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go func() {
-			<-s.shutdown
-			cancel()
-		}()
+	s.goUntilShutdown("server.oauthForfaitRefresh", func(ctx context.Context) {
 		sweep := func() {
 			if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
 				s.logger.Warn("oauth-forfait refresh: %v", err)
@@ -632,7 +566,7 @@ func (s *Server) startOAuthForfaitRefresh() {
 				sweep()
 			}
 		}
-	}()
+	})
 }
 
 // startUserNotify builds the usernotify dispatcher (web-push sink), attaches
@@ -673,12 +607,7 @@ func (s *Server) startUserNotify() {
 
 	if s.cfg.NotifiableRuns != nil {
 		sweeper := usernotify.NewSweeper(s.userNotify, s.cfg.NotifiableRuns, s.logger)
-		sweepCtx, cancelSweep := context.WithCancel(context.Background())
-		go func() {
-			<-s.shutdown
-			cancelSweep()
-		}()
-		go sweeper.Start(sweepCtx)
+		s.goUntilShutdown("server.userNotifySweep", sweeper.Start)
 	}
 	s.logger.Info("server: user notifications enabled (web push)")
 }
@@ -733,12 +662,9 @@ func (s *Server) startOperatorAlerts() {
 		}
 	}
 	if s.cfg.NotifiableRuns != nil {
-		sweepCtx, cancelSweep := context.WithCancel(context.Background())
-		go func() {
-			<-s.shutdown
-			cancelSweep()
-		}()
-		go d.RunOpsSweep(sweepCtx, s.cfg.NotifiableRuns)
+		s.goUntilShutdown("server.opsAlertsSweep", func(ctx context.Context) {
+			d.RunOpsSweep(ctx, s.cfg.NotifiableRuns)
+		})
 	}
 	s.logger.Info("server: operator alerts enabled (parked/failed runs → webhook)")
 }
@@ -894,21 +820,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// only requirement is that the PROCESS not exit mid-release, and the
 	// dispatcher drains while HTTP connections wind down.
 	err := s.server.Shutdown(ctx)
-	// The two assistant coordinators were cancelled above; their loops are
-	// joined here, after the drain, each within 250ms of a context that
-	// still has time — so the process does not exit while a sweep is
-	// mid-write, and a sweep that ignores its cancel cannot hold the exit.
-	for _, done := range []<-chan struct{}{watchDone, missionDone} {
-		if done == nil || ctx.Err() != nil {
-			continue
-		}
-		joinCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
-		select {
-		case <-done:
-		case <-joinCtx.Done():
-		}
-		cancel()
-	}
+	// Every background loop is joined here, after the drain: the two assistant
+	// coordinators cancelled above, plus everything started through
+	// goUntilShutdown. One budget covers them all at once — so the process does
+	// not exit while a sweep is mid-write, and a sweep that ignores its cancel
+	// cannot hold the exit.
+	s.joinBackgroundWorkers(ctx,
+		backgroundWorker{name: "server.assistantWatch", done: watchDone},
+		backgroundWorker{name: "server.assistantMissions", done: missionDone},
+	)
 	s.stateMu.RLock()
 	boardDone := s.boardDispDone
 	s.stateMu.RUnlock()
