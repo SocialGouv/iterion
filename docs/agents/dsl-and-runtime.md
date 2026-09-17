@@ -73,7 +73,7 @@ scopes). See [docs/memory-and-knowledge.md](../memory-and-knowledge.md).
 src -> dst                              # default edge
 src -> dst when <field>                 # conditional (boolean field from src output)
 src -> dst when not <field>             # negated condition
-src -> dst else                         # explicit fallback (fires only when no sibling `when` matched)
+src -> dst else                         # explicit fallback (fires only when no sibling `when` matched and no back-edge with work left)
 src -> dst as loop_name(5)              # bounded loop (max 5 iterations)
 src -> dst with {field: "{{ref}}"}      # data mapping
 ```

@@ -107,6 +107,45 @@ func TestAScopedForeachNameStillBindsItsElement(t *testing.T) {
 	}
 }
 
+// A foreach back-edge with an element left wins over the exit beside it,
+// whatever order the two are written in: the exit is for the spent
+// collection, and an exit written above the back-edge does not stop the
+// iteration after its first element.
+func TestAForeachBackEdgeWithAnElementLeftWinsOverItsExitInEitherOrder(t *testing.T) {
+	for name, swap := range map[string]bool{"back-edge first": false, "exit first": true} {
+		t.Run(name, func(t *testing.T) {
+			wf := foreachWorkflow()
+			if swap {
+				// [entry->proc, proc->proc foreach, proc->done] becomes
+				// [entry->proc, proc->done, proc->proc foreach].
+				wf.Edges[1], wf.Edges[2] = wf.Edges[2], wf.Edges[1]
+			}
+			var mu sync.Mutex
+			var got []string
+			exec := newStubExecutor()
+			exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"items": []any{
+					map[string]any{"id": "a"}, map[string]any{"id": "b"}, map[string]any{"id": "c"},
+				}}, nil
+			})
+			exec.on("proc", func(input map[string]any) (map[string]any, error) {
+				id, _ := input["id"].(string)
+				mu.Lock()
+				got = append(got, id)
+				mu.Unlock()
+				return map[string]any{"ok": true}, nil
+			})
+			s := tmpStore(t)
+			if err := New(wf, s, exec).Run(context.Background(), "run-foreach-order", nil); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != 3 {
+				t.Fatalf("proc ran %d times (%v), want 3: the back-edge did not win over its exit", len(got), got)
+			}
+		})
+	}
+}
+
 // TestForeachSequential verifies the body runs once per element, in order, with
 // the element bound under each.<name>.
 func TestForeachSequential(t *testing.T) {

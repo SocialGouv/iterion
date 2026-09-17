@@ -72,11 +72,16 @@ func (e *Engine) edgeConditionHolds(edge *ir.Edge, fromNodeID, logPrefix string,
 func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) (*ir.Edge, error) {
 	var unconditional, elseEdge *ir.Edge
 	var unconditionalErr, elseErr error
-	// loopFallback is the first unconditional loop edge that holds and has
-	// budget: the fallback that wins over the node's other fallbacks — its
-	// exhaustion exit, an `else` — whatever order they are written in. A
-	// loop is left once it is spent, never because its exit was read first.
+	// loopFallback is the first unconditional iteration edge — a loop
+	// back-edge with budget, a foreach back-edge with an element left — and
+	// the fallback that wins over the node's other fallbacks (its exhaustion
+	// exit, an `else`) whatever order they are written in: an iteration is
+	// left once it is spent, never because its exit was read first. Like
+	// the other slots it carries a deferred cap error, so a loop edge whose
+	// cap cannot resolve fails the run in either order instead of losing
+	// the error to an exit written above it.
 	var loopFallback *ir.Edge
+	var loopFallbackErr error
 	var exprCtx *expr.Context
 	// exhausted names the first loop edge declined at its cap or out of
 	// fuel: when nothing else matches, that is what the run died of.
@@ -119,8 +124,8 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 						if elseEdge == nil {
 							elseEdge, elseErr = edge, capErr
 						}
-					} else if unconditional == nil {
-						unconditional, unconditionalErr = edge, capErr
+					} else if loopFallback == nil {
+						loopFallback, loopFallbackErr = edge, capErr
 					}
 					continue
 				}
@@ -180,8 +185,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				// The loop edge holds and has budget. Without a `when` it is
 				// a fallback, and the one fallback that wins: the bare exit
 				// beside it is for the spent loop. A `when` on the loop edge
-				// keeps the conditional rules below.
-				if edge.Condition == "" && edge.Expression == nil {
+				// keeps the conditional rules below; an `else` loop edge keeps
+				// the `else` slot.
+				if edge.Condition == "" && edge.Expression == nil && !edge.IsElse {
 					if loopFallback == nil {
 						loopFallback = edge
 					}
@@ -199,6 +205,14 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				if idx := rs.loopCounters[foreachCounterKey(edge.ForeachName)]; idx+1 >= count {
 					e.logger.Warn("%s: node %q: edge to %q skipped — foreach %q exhausted (%d/%d)",
 						logPrefix, fromNodeID, edge.To, edge.ForeachName, idx+1, count)
+					continue
+				}
+				// An element is left: the iteration wins over the node's
+				// fallbacks, as a loop edge with budget does.
+				if edge.Condition == "" && edge.Expression == nil && !edge.IsElse {
+					if loopFallback == nil {
+						loopFallback = edge
+					}
 					continue
 				}
 			}
@@ -253,7 +267,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 	}
 
 	if loopFallback != nil {
-		return loopFallback, nil
+		return loopFallback, loopFallbackErr
 	}
 	if elseEdge != nil {
 		return elseEdge, elseErr

@@ -130,6 +130,67 @@ func TestALoopEdgeWithBudgetWinsOverItsExitInEitherOrder(t *testing.T) {
 	}
 }
 
+// The same with an `else` exit: before, the `else` slot was read before any
+// unconditional fallback, so a loop edge beside `-> x when ok` + `-> y else`
+// was dead code. Two orders, one outcome — the loop crosses, then the `else`.
+func TestALoopEdgeWithBudgetWinsOverAnElseExitInEitherOrder(t *testing.T) {
+	never := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
+	for name, edges := range map[string]string{
+		"loop edge first": "  assess -> check as retry(2)\n  assess -> done when ok\n  assess -> giveup else\n  giveup -> done\n",
+		"else exit first": "  assess -> done when ok\n  assess -> giveup else\n  assess -> check as retry(2)\n  giveup -> done\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var checks, giveups int
+			exec := newStubExecutor()
+			exec.on("check", func(in map[string]any) (map[string]any, error) {
+				checks++
+				return never(in)
+			})
+			exec.on("assess", never)
+			exec.on("giveup", func(map[string]any) (map[string]any, error) {
+				giveups++
+				return map[string]any{}, nil
+			})
+			s := tmpStore(t)
+			src := strings.Replace(spentLoopBot, "workflow w:\n", "tool giveup:\n  command: \"true\"\n\nworkflow w:\n", 1)
+			src = strings.Replace(src, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", edges, 1)
+			eng := New(compileBotText(t, src), s, exec)
+			if err := eng.Run(context.Background(), "run-else-order", nil); err != nil {
+				t.Fatalf("the run did not reach done: %v", err)
+			}
+			if checks != 3 || giveups != 1 {
+				t.Fatalf("check ran %d times and giveup %d, want 3 and 1: the loop edge did not win over the else exit", checks, giveups)
+			}
+		})
+	}
+}
+
+// A loop edge whose cap cannot resolve at the crossing fails the run — in
+// either order. Before, the failure was deferred into the same first-wins
+// slot as the bare exit: written below the exit, the edge and its error
+// were simply never read.
+func TestALoopEdgeWhoseCapCannotResolveFailsTheRunInEitherOrder(t *testing.T) {
+	// `cap` is declared int but never produced: the cap resolves to nil.
+	noCap := func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil }
+	for name, edges := range map[string]string{
+		"loop edge first": "  assess -> check as broken(\"{{outputs.assess.cap}}\")\n  assess -> done\n",
+		"exit first":      "  assess -> done\n  assess -> check as broken(\"{{outputs.assess.cap}}\")\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			exec := newStubExecutor()
+			exec.on("check", noCap)
+			exec.on("assess", noCap)
+			s := tmpStore(t)
+			src := strings.Replace(spentLoopBot, "schema verdict:\n  ok: bool\n", "schema verdict:\n  ok: bool\n  cap: int\n", 1)
+			src = strings.Replace(src, "  assess -> check when not ok as retry(2)\n  assess -> done when ok\n", edges, 1)
+			err := New(compileBotText(t, src), s, exec).Run(context.Background(), "run-cap-order", nil)
+			if err == nil || !strings.Contains(err.Error(), `loop "broken"`) {
+				t.Fatalf("the unresolvable cap did not fail the run: %v", err)
+			}
+		})
+	}
+}
+
 // The engine says why it declined a loop edge at its cap, as an event a
 // reader of the run can tell apart: a bounded loop's cap, an unbounded
 // loop's fuel.

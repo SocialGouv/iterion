@@ -1082,7 +1082,8 @@ type Edge struct {
 	ExpressionSrc string // original source string preserved for unparse/debug
 
 	// IsElse marks the explicit fallback edge (`src -> dst else`): taken
-	// only when no conditional sibling matched. Runtime-wise it plays
+	// only when no conditional sibling matched and no loop or foreach
+	// back-edge from the node still has work. Runtime-wise it plays
 	// the same role as a bare unconditional edge among conditional
 	// siblings — the compiler validates the stricter contract (C015/
 	// C039/C040) and IsConditional stays false (else is guardless).
