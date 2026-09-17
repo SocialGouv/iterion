@@ -30,7 +30,7 @@ func TestSubmitLaunchCarriesPermissionOverride(t *testing.T) {
 		Source:     "workflow wf:\n  start -> done\n",
 		Permission: "deny",
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-permission", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-permission", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 
@@ -70,7 +70,7 @@ func TestSubmitResumeReplaysPermissionOverride(t *testing.T) {
 	source := "workflow wf:\n  start -> done\n"
 	if _, err := p.SubmitLaunch(ctx, "run-permission-resume", runview.LaunchSpec{
 		FilePath: "wf.bot", Source: source, Permission: "ask",
-	}, wf, "hash"); err != nil {
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if err := st.UpdateRunStatus(ctx, "run-permission-resume", store.RunStatusPausedWaitingHuman, ""); err != nil {

@@ -35,7 +35,7 @@ type spinePublisher struct {
 	owner    string
 }
 
-func (p *spinePublisher) SubmitLaunch(ctx context.Context, _ string, _ runview.LaunchSpec, _ *ir.Workflow, _ string) (int, error) {
+func (p *spinePublisher) SubmitLaunch(ctx context.Context, _ string, _ runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
 	p.mu.Lock()
 	p.launches++
 	p.tenant, _ = store.TenantFromContext(ctx)

@@ -1945,11 +1945,24 @@ func credentialTierForSlot(bundle secrets.RunBundle, grant *credpool.Grant, slot
 // Tenant and owner identifiers are pulled from ctx (stamped by the
 // server's auth middleware) and propagate to both the persisted Run
 // document and the NATS message so the runner can verify isolation.
-func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (pos int, retErr error) {
+func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (pos int, retErr error) {
 	// 1. Build the run doc (status=queued + workflow_hash + file_path so
 	//    List endpoints see it instantly and Resume can reload the
 	//    workflow). It is PERSISTED only once everything the queue message
 	//    needs has resolved — see the choke point before SaveRun.
+	var hash string
+	// The text of what was compiled, stamped HERE because nothing downstream
+	// can: the queue message carries the IR and the identity hash, never the
+	// files, so the runner's engine records nothing and leaves whatever this
+	// document already holds (engine_run.go writes the pair only when it has
+	// one). Same helper as a local launch, so the 1 MiB cap and the main-first
+	// ordering are one rule rather than two.
+	var srcText string
+	var srcFiles []store.WorkflowSourceFile
+	if cs != nil {
+		hash = cs.Hash
+		srcText, srcFiles = runtime.RecordedSourcesOf(cs.Main, cs.Files)
+	}
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
@@ -1961,6 +1974,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		ID:            runID,
 		WorkflowName:  wf.Name,
 		WorkflowHash:  hash,
+		// What `rewind --auto` diffs the current file against to name the
+		// changed node. Empty when the compile busted the cap: that costs the
+		// run auto-targetability and nothing else.
+		WorkflowSource:  srcText,
+		WorkflowSources: srcFiles,
 		// The build that RESOLVED and COMPILED this workflow. A local
 		// launch gets it from CreateRun; the cloud path builds its own doc
 		// and never stamped it, so every queued run carried an empty

@@ -44,7 +44,13 @@ type LaunchPublisher interface {
 	// SubmitLaunch persists the run as queued in the cloud store
 	// and publishes a RunMessage. Returns the 1-based queue position
 	// at submission time.
-	SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, hash string) (int, error)
+	//
+	// cs is what the launch COMPILED: its identity hash AND the unit's files.
+	// The files matter as much as the hash — the queue message carries the
+	// compiled IR and never the text, so a runner pod cannot record what it
+	// executed, and `rewind --auto` has nothing to diff against unless the
+	// publisher stamps the pair on the run document here.
+	SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, cs *CompiledSource) (int, error)
 	// CancelRun signals the runner pool to abort the run. Idempotent —
 	// flips the Mongo doc to cancelled regardless of whether a runner
 	// is currently holding the lease.
@@ -165,7 +171,6 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err != nil {
 			return nil, err
 		}
-		hash := cs.Hash
 		// Fail before persisting/publishing a queued run. The runner repeats
 		// this check in BuildExecutor, but discovering an unsafe backend only
 		// after queue admission would leave a paid launch to fail remotely.
@@ -177,7 +182,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 			return nil, err
 		}
-		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
+		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, cs)
 		if err != nil {
 			return nil, err
 		}

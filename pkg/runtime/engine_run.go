@@ -82,6 +82,19 @@ func sameSourceFiles(a, b []store.WorkflowSourceFile) bool {
 	return slices.Equal(sa, sb)
 }
 
+// RecordedSourcesOf orders a unit's files main first, the rest by path, under
+// one cap for the whole; a unit of one file records its main alone. It is what
+// a launcher that holds the files its compile read — the cloud publisher, which
+// stamps the pair on the run document its runner will never be able to read
+// from disk — must use, so both paths cap and order identically.
+//
+// Returns an empty source when the main is absent from files or the whole busts
+// maxPersistedWorkflowSource: past the cap nothing is recorded, which leaves
+// `rewind --auto` unavailable for that run and nothing else.
+func RecordedSourcesOf(main string, files map[string]string) (string, []store.WorkflowSourceFile) {
+	return sourcesOf(main, files)
+}
+
 // sourcesOf orders a unit's files main first, the rest by path, under one
 // cap for the whole; a unit of one file records its main alone.
 func sourcesOf(main string, files map[string]string) (string, []store.WorkflowSourceFile) {

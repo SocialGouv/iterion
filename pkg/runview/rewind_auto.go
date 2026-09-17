@@ -37,6 +37,22 @@ var ErrRewindAmbiguous = errors.New("runview: rewind: the edit affects independe
 // or nowhere; the operator names the node instead.
 var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run recorded its main file but not the fragments it imports — name the node with --node")
 
+// ErrRewindStoredBotSourceUnresolved is returned when --auto meets a run
+// served by a STORED bot tier (a team bot or a platform override) without
+// the caller naming where that bot's current source is.
+//
+// resolveWorkflowPath answers such a run with the BAKED catalog twin — it
+// exists for the studio's diagram view, which wants something compilable to
+// draw. That substitution is harmless for a picture and wrong for a rewind: a
+// team bot exists precisely to differ from the baked one, so the diff would be
+// between two unrelated programs, and every declaration would read as changed.
+// The pivot lands on the entry node, every downstream output is dropped and its
+// artifacts tombstoned — an authoritative-looking answer built on nothing.
+//
+// A caller that HAS resolved the stored bot's current version passes its path
+// as RewindSpec.SourcePath, and --auto proceeds normally.
+var ErrRewindStoredBotSourceUnresolved = errors.New("runview: rewind: this run was served by a stored bot, whose current source is not on this filesystem — name the node with --node")
+
 // DeclChange is one differing top-level declaration between the source a
 // run executed and the source on disk now.
 type DeclChange struct {
@@ -71,9 +87,18 @@ func (c DeclChange) String() string { return c.Kind + " " + c.Name + " (" + c.Ch
 // re-executing a node that did not need it, while a false negative would
 // test the new configuration against stale downstream state — the exact
 // failure this feature exists to prevent.
-func resolveAutoPivotForRun(run *store.Run, sourcePath string, wf *ir.Workflow, executed map[string]bool) (string, []DeclChange, error) {
+func resolveAutoPivotForRun(run *store.Run, sourcePath string, sourcePathNamedByCaller bool, wf *ir.Workflow, executed map[string]bool) (string, []DeclChange, error) {
 	if strings.TrimSpace(run.WorkflowSource) == "" {
 		return "", nil, ErrRewindNoSourceRecorded
+	}
+	// Both sides of the diff have to be the same artifact. A stored tier's
+	// current source does not live on this filesystem, and the path resolved
+	// for such a run is the baked twin — see ErrRewindStoredBotSourceUnresolved.
+	if !sourcePathNamedByCaller {
+		switch run.BotSourceTier {
+		case store.BotSourceTierTeam, store.BotSourceTierPlatform:
+			return "", nil, ErrRewindStoredBotSourceUnresolved
+		}
 	}
 	var oldFile *ast.File
 	if len(run.WorkflowSources) > 0 {

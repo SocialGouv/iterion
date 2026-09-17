@@ -70,7 +70,7 @@ func runLaunchRollbackSuite(t *testing.T, st store.RunStore) {
 
 	t.Run("a contribution failure leaves no queued row", func(t *testing.T) {
 		p := launchRollbackPublisher(t, st)
-		if _, err := p.SubmitLaunch(ctx, "run-contrib-fail", spec, wf, "hash"); err == nil {
+		if _, err := p.SubmitLaunch(ctx, "run-contrib-fail", spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil {
 			t.Fatal("SubmitLaunch succeeded with an unlistable plugin-source store")
 		}
 		if r := assertNoOrphanQueuedRow(t, ctx, st, "run-contrib-fail"); r != nil {
@@ -84,7 +84,7 @@ func runLaunchRollbackSuite(t *testing.T, st store.RunStore) {
 		p := launchRollbackPublisher(t, st)
 		p.pluginSources = nil
 		p.publishRun = func(context.Context, *queue.RunMessage) error { return errors.New("nats: no responders") }
-		if _, err := p.SubmitLaunch(ctx, "run-publish-fail", spec, wf, "hash"); err == nil {
+		if _, err := p.SubmitLaunch(ctx, "run-publish-fail", spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil {
 			t.Fatal("SubmitLaunch succeeded with a failing publisher")
 		}
 		r := assertNoOrphanQueuedRow(t, ctx, st, "run-publish-fail")
@@ -105,7 +105,7 @@ func runLaunchRollbackSuite(t *testing.T, st store.RunStore) {
 	t.Run("a successful launch stays queued", func(t *testing.T) {
 		p := launchRollbackPublisher(t, st)
 		p.pluginSources = nil
-		if _, err := p.SubmitLaunch(ctx, "run-ok", spec, wf, "hash"); err != nil {
+		if _, err := p.SubmitLaunch(ctx, "run-ok", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 			t.Fatalf("SubmitLaunch: %v", err)
 		}
 		r, err := st.LoadRun(ctx, "run-ok")

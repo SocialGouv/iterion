@@ -185,7 +185,7 @@ func TestBoardDispatcher_DispatchListingHonoursTheBackoff(t *testing.T) {
 // — the shape a sealing failure or a queue outage takes at the run service.
 type refusingPublisher struct{ err error }
 
-func (p refusingPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, string) (int, error) {
+func (p refusingPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (int, error) {
 	return 0, p.err
 }
 func (refusingPublisher) CancelRun(context.Context, string) error { return nil }

@@ -42,7 +42,7 @@ type tierPublisher struct {
 	onLaunch func(runID string)
 }
 
-func (p *tierPublisher) SubmitLaunch(_ context.Context, runID string, spec runview.LaunchSpec, _ *ir.Workflow, _ string) (int, error) {
+func (p *tierPublisher) SubmitLaunch(_ context.Context, runID string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
 	p.mu.Lock()
 	p.specs = append(p.specs, spec)
 	p.mu.Unlock()

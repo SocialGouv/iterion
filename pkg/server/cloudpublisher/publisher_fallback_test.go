@@ -43,7 +43,7 @@ func TestSubmitLaunchCarriesRunFallback(t *testing.T) {
 			{Backend: "claw", Model: "openai/gpt-5.5"},
 		},
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-fb-1", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-fb-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if published == nil {
@@ -85,7 +85,7 @@ func TestSubmitLaunchWithoutFallbackPublishesNone(t *testing.T) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}
-	if _, err := p.SubmitLaunch(ctx, "run-fb-2", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-fb-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if published == nil || published.Fallback != nil {

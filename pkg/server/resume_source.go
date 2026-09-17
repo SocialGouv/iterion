@@ -118,11 +118,15 @@ func (s *Server) resolveResumeSourceWithFallback(ctx context.Context, botSourceT
 			source = lb.Source
 			filePath = lb.Path
 		}
-		if source == "" && persistedSource != "" {
+		if allowPersistedFallback && source == "" && persistedSource != "" {
 			// Not a resolvable bot and the caller brought nothing — an
 			// inline-source cloud launch. The persisted launch snapshot is
 			// the trusted source to resume on (same rationale as the
 			// dispatcher-worktree fallback below).
+			//
+			// Gated like that one: an EXPLICIT file_path is authoritative, so
+			// a path this pod cannot resolve must fail closed rather than
+			// quietly resume on a snapshot the caller did not name.
 			source = persistedSource
 		}
 		if source == "" {

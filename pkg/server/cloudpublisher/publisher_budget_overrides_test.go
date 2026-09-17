@@ -39,7 +39,7 @@ func TestSubmitLaunchPersistsTheBudgetAsk(t *testing.T) {
 		Source:   "workflow wf:\n  start -> done\n",
 		Budget:   &ir.BudgetOverrides{MaxDuration: "8h", MaxCostUSD: 120},
 	}
-	if _, err := p.SubmitLaunch(ctx, "run-bo-1", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-bo-1", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if published == nil {
@@ -73,7 +73,7 @@ func TestSubmitLaunchWithoutBudgetAskPersistsNone(t *testing.T) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxDuration: "4h"}}
 	spec := runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n"}
-	if _, err := p.SubmitLaunch(ctx, "run-bo-2", spec, wf, "hash"); err != nil {
+	if _, err := p.SubmitLaunch(ctx, "run-bo-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
 	if published == nil || published.Budget != nil {
