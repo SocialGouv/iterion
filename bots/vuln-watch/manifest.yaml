@@ -2,9 +2,10 @@ name: vuln-watch
 display_name: Senti
 icon: 🛡️
 version: 0.1.1
-## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
-## reading of the file; it has no prompt, so nothing the models read
-## changes.
+## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the header pins
+## the profile-2 reading of the file; it has no prompt, so nothing the
+## models read changes — migrated with the rest of the catalogue, for one
+## reading everywhere.
 description: |
   Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). One
   deterministic run mode over a git-versioned state in the target
