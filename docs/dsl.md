@@ -4,7 +4,7 @@
 
 Source files end in `.bot`; deterministic bundles end in `.botz`.
 
-This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [property reference](references/dsl-properties.md) (every kind's properties, generated from the parser's own registry), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth; an unknown property (E012) names the closest accepted one and the block it belongs to, from that same registry.
+This page is the language guide; [what's new in the DSL](dsl-whats-new.md) is the tour of the 2026-09 authoring-first programme — the `dsl: 2` profile, `import`, the dry run, `fmt`/`fix`, the contract, the skill — with what it measured. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [property reference](references/dsl-properties.md) (every kind's properties, generated from the parser's own registry), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth; an unknown property (E012) names the closest accepted one and the block it belongs to, from that same registry.
 
 A `.bot` file travels through a fixed pipeline before it runs:
 
