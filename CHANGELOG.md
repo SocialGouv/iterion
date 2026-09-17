@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.154.1](https://github.com/SocialGouv/iterion/compare/v3.154.0...v3.154.1) (2026-09-17)
+
+### Bug Fixes
+
+* **studio:** a file that does not parse is not bound to its path ([#1327](https://github.com/SocialGouv/iterion/issues/1327)) ([21dd205](https://github.com/SocialGouv/iterion/commit/21dd205eea477c393ae06addd0d272dbfa7b2af1)), closes [#1251](https://github.com/SocialGouv/iterion/issues/1251), references [#1251](https://github.com/SocialGouv/iterion/issues/1251) [#1251](https://github.com/SocialGouv/iterion/issues/1251) [#1326](https://github.com/SocialGouv/iterion/issues/1326)
+
+    <details><summary>why</summary>
+
+    A `.bot` the parser could not read whole opened as the document it SALVAGED — the file minus the region it could not read — bound to its own path and marked saved. The first Save wrote that document back, and what the author wrote was gone. Silently, and totally, for the unreadable part.
+
+    </details>
+
 ## [3.154.0](https://github.com/SocialGouv/iterion/compare/v3.153.1...v3.154.0) (2026-09-16)
 
 ### Features
