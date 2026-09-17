@@ -92,14 +92,9 @@ export async function captureActiveEditorDocument(
   const sessionId = tokenForTab(tabId);
   let authoring: AssistantAuthoringSnapshot | undefined;
   let sharedBundle: api.SharedBundleFileMetadata | undefined;
-  // The file this tab FOLLOWS, not the one a save lands on: a file that does
-  // not parse is unbound, and it is exactly the file an author asks Copi to
-  // repair. Gating on the binding would take the authoring perimeter away
-  // precisely there.
-  const followedPath = state.currentFilePath ?? state.watchedFilePath;
-  if (followedPath) {
+  if (state.currentFilePath) {
     try {
-      authoring = await snapshotAssistantAuthoring(followedPath);
+      authoring = await snapshotAssistantAuthoring(state.currentFilePath);
       authoring = await enrichAttachedBotFiles(authoring, attached);
       for (const key of authoringBySessionRevision.keys()) {
         if (key.startsWith(`${sessionId}:`)) authoringBySessionRevision.delete(key);
@@ -113,9 +108,9 @@ export async function captureActiveEditorDocument(
       // remains useful on its own, so an unavailable authoring snapshot is not
       // allowed to suppress the editor marker.
     }
-    if (isSharedBundleFilePath(followedPath)) {
+    if (isSharedBundleFilePath(state.currentFilePath)) {
       try {
-        const metadata = await api.getFileDependencyMetadata(followedPath);
+        const metadata = await api.getFileDependencyMetadata(state.currentFilePath);
         sharedBundle = metadata.shared_bundle;
       } catch {
         // Metadata enriches Copi's context but is not required to capture the
@@ -126,7 +121,7 @@ export async function captureActiveEditorDocument(
   return {
     sessionId,
     revision: state._generation,
-    file: followedPath,
+    file: state.currentFilePath,
     complete,
     sourceLength: source.length,
     dirty: state.isDirty(),

@@ -6,6 +6,7 @@ import type { DocumentStore } from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
+import { salvageRefusal } from "@/lib/salvage";
 
 export interface DocumentSaveAsResult {
   path: string;
@@ -67,6 +68,15 @@ export function useDocumentSaveAs() {
           "Save As isn't available for a bot in several files — save it in place; its fragments stay in lib/.",
           "warning",
         );
+        return false;
+      }
+      // A salvage is refused here too: writing it to a NEW file leaves the
+      // original whole but hands the author a copy missing the region the
+      // parser could not read, under the name they chose — a loss they have
+      // no reason to suspect.
+      const refusal = salvageRefusal(request.store.getState());
+      if (refusal) {
+        addToast(refusal, "warning", { persistent: true });
         return false;
       }
       if (!request.store.getState().document) return false;

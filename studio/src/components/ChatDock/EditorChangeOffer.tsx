@@ -32,6 +32,7 @@ import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
+import { applyParsedSource, salvageRefusal } from "@/lib/salvage";
 
 type ActionState = "idle" | "applying" | "applied" | "saving" | "saved" | "error";
 
@@ -140,6 +141,8 @@ export default function EditorChangeOffer({
         );
       }
       if (!state.document) throw new Error("The editor document is unavailable.");
+      const refusal = salvageRefusal(state);
+      if (refusal) throw new Error(refusal);
 
       setAction("saving");
       const savedGeneration = state._generation;
@@ -296,7 +299,10 @@ export default function EditorChangeOffer({
           );
         }
         const state = afterValidation.store.getState();
-        state.setDocument(parsed.document);
+        // Document and verdict together: a proposal that parses whole ends
+        // the salvage, so a buffer opened on an unreadable file becomes
+        // writable again — that is how Copi repairs one.
+        applyParsedSource(parsed, state);
         const after = afterValidation.store.getState();
         after.setCurrentSource(proposal.source);
         after.setDiagnostics(

@@ -39,31 +39,28 @@ describe("openExampleIntoStore", () => {
     expect(store.getState().unit).toEqual(unit);
   });
 
-  it("binds nothing for an example the server says is not bindable — a save must ask where", async () => {
+  it("keeps the path of an example that does not parse, and marks it a salvage", async () => {
     loadExample.mockResolvedValue({
       source: "workflow y:\n  entry: done\n!!! broken @@@\n",
       document,
       diagnostics: ["y/main.bot:3:1: error [E001]: unexpected character"],
+      path: "catalog/y/main.bot",
       bindable: false,
-      followed_path: "bots/y/main.bot",
     });
     const store = createDocumentStore();
-    store.getState().setCurrentFilePath("bots/y/main.bot");
     await openExampleIntoStore("y/main.bot", store.getState());
-    expect(store.getState().currentFilePath).toBeNull();
+    // The editor is about that file: the watcher, the tab binding and the
+    // validation scope all read the path. What is refused is the write.
+    expect(store.getState().currentFilePath).toBe("catalog/y/main.bot");
+    expect(store.getState().salvaged).toBe(true);
     expect(store.getState().unit).toBeNull();
     expect(store.getState().currentSource).toBe("workflow y:\n  entry: done\n!!! broken @@@\n");
-    // Unbound, still followed: the write that repairs the file reaches this
-    // tab and rebinds it. Unfollowed, the tab never sees that write, and the
-    // next remount applies the file it still names over the repair.
-    expect(store.getState().watchedFilePath).toBe("bots/y/main.bot");
   });
 
-  // The server names no file for a program the workspace does not hold — an
-  // embedded bot, a catalog outside it. `bots/<name>` is where a save would
-  // LAND, not a file to reload from: following it would reload some other
-  // file over this buffer, the very loss this rule exists to prevent.
-  it("follows nothing when the server names no file for an unbindable program", async () => {
+  // A program the workspace does not hold — an embedded bot, a catalog
+  // outside it — is named bots/<name>, where a save of it would LAND. It is
+  // still a salvage, so no save reaches that file either.
+  it("falls back to bots/<name> for an unparseable program with no workspace path", async () => {
     loadExample.mockResolvedValue({
       source: "workflow z:\n  entry: done\n!!! broken @@@\n",
       document,
@@ -71,10 +68,9 @@ describe("openExampleIntoStore", () => {
       bindable: false,
     });
     const store = createDocumentStore();
-    store.getState().setCurrentFilePath("bots/old/main.bot");
     await openExampleIntoStore("z/main.bot", store.getState());
-    expect(store.getState().currentFilePath).toBeNull();
-    expect(store.getState().watchedFilePath).toBeNull();
+    expect(store.getState().currentFilePath).toBe("bots/z/main.bot");
+    expect(store.getState().salvaged).toBe(true);
   });
 
   it("binds bots/<name> and no unit for an example served as one program", async () => {
@@ -84,8 +80,7 @@ describe("openExampleIntoStore", () => {
     store.getState().setUnit({ root: "bots/old", main: "main.bot", revision: "r0", files: [] });
     await openExampleIntoStore("feature-dev/main.bot", store.getState());
     expect(store.getState().currentFilePath).toBe("bots/feature-dev/main.bot");
-    // A bound tab follows what it bound, never a second path.
-    expect(store.getState().watchedFilePath).toBe("bots/feature-dev/main.bot");
+    expect(store.getState().salvaged).toBe(false);
     expect(store.getState().unit).toBeNull();
   });
 });

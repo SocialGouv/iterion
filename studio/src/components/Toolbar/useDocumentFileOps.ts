@@ -28,6 +28,7 @@ import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import { errorMessage, toastError } from "@/lib/errorHints";
 import { openExampleIntoStore } from "@/lib/openExample";
+import { salvageRefusal } from "@/lib/salvage";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
@@ -77,7 +78,7 @@ export function useDocumentFileOps({
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
-  const setWatchedFilePath = useDocumentStore((s) => s.setWatchedFilePath);
+  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
@@ -137,20 +138,15 @@ export function useDocumentFileOps({
       try {
         if (kind === "file") {
           const result = await api.openFile(path);
-          applyOpenedFile(
-            result,
-            {
-              setDocument,
-              setDiagnostics,
-              setCurrentSource,
-              setCurrentFilePath,
-              setWatchedFilePath,
-              setUnit,
-              markSaved,
-            },
-            path,
-          );
-          // Only a file that bound: a recent row is a path to reopen by.
+          applyOpenedFile(result, {
+            setDocument,
+            setDiagnostics,
+            setCurrentSource,
+            setCurrentFilePath,
+            setSalvaged,
+            setUnit,
+            markSaved,
+          });
           if (result.path) pushRecent(result.path);
         } else {
           // The shared helper binds the path the server names for a file
@@ -163,7 +159,7 @@ export function useDocumentFileOps({
             setDiagnostics,
             setCurrentSource,
             setCurrentFilePath,
-            setWatchedFilePath,
+            setSalvaged,
             setUnit,
             markSaved,
           });
@@ -192,7 +188,7 @@ export function useDocumentFileOps({
       setDocument,
       setDiagnostics,
       setCurrentFilePath,
-      setWatchedFilePath,
+      setSalvaged,
       setCurrentSource,
       setUnit,
       markSaved,
@@ -269,6 +265,12 @@ export function useDocumentFileOps({
       addToast(READ_ONLY_MSG, "warning");
       return;
     }
+    const refusal = salvageRefusal(documentStore.getState());
+    if (refusal) {
+      addToast(refusal, "warning", { persistent: true });
+      openDiagnosticsPanel();
+      return;
+    }
     if (currentFilePath) {
       try {
         // A bot in several files presents the revision it was opened at,
@@ -299,6 +301,7 @@ export function useDocumentFileOps({
     READ_ONLY_MSG,
     saveAs,
     documentStore,
+    openDiagnosticsPanel,
   ]);
 
   // Always opens the Save As dialog regardless of whether a file path

@@ -120,6 +120,23 @@ describe("useDocumentSaveAs", () => {
     expect(api.saveFile).not.toHaveBeenCalled();
   });
 
+  // Writing a salvage to a NEW file leaves the original whole, but hands the
+  // author a copy missing the region the parser could not read, under the
+  // name they chose — a loss they have no reason to suspect. The three sites
+  // that write a document share this refusal.
+  it("refuses a document the parser only salvaged", async () => {
+    const store = documentStore();
+    store.getState().setSalvaged(true);
+    render(<Harness store={store} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.saveFile).not.toHaveBeenCalled();
+    const refused = useUIStore.getState().toasts;
+    expect(refused[refused.length - 1]?.message).toMatch(/did not parse/i);
+  });
+
   it("does not open a filesystem Save As dialog in cloud mode", async () => {
     const store = documentStore();
     useServerInfoStore.setState({ info: { mode: "cloud" } as never });

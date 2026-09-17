@@ -646,32 +646,31 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	if parseHasErrors(pr.Diagnostics) {
-		// The document is what the parser SALVAGED — the file minus the
-		// region it could not read. Bound and marked saved, the next save
-		// writes that back and the author's text is gone. So nothing is
-		// bound, and a save asks where.
-		confirmedDiskPath, req.Path = "", ""
-	}
 	writeJSON(w, openFileResponse{
 		Source:            string(data),
 		Document:          json.RawMessage(docJSON),
 		Diagnostics:       diags,
 		Path:              req.Path,
 		ConfirmedDiskPath: confirmedDiskPath,
+		// The document is what the parser SALVAGED when the parse left
+		// errors — the file minus the region it could not read.
+		Bindable: !parseHasErrors(pr.Diagnostics),
 	})
 }
 
-// openFileResponse is the open response of a bot in one file. Path is empty
-// when the file does not parse — see the comment where it is cleared — and
-// its absence IS the answer: there is no fallback path to bind instead, as
-// there is for an example served as bots/<name>.
+// openFileResponse is the open response of a bot in one file. The path is
+// answered whether or not the file parses — the editor is ABOUT that file,
+// and the watcher, the tab binding, the validation scope and the assistant's
+// perimeter all read it. Bindable false says the document is the salvage, so
+// the three sites that write a document refuse it; it lifts when a parse of
+// the buffer comes back whole.
 type openFileResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics,omitempty"`
 	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
+	Bindable          bool            `json:"bindable"`
 }
 
 // parseHasErrors reports whether a parse left errors — the state in which the

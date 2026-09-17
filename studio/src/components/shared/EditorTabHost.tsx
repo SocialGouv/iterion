@@ -27,13 +27,14 @@ import { useQuery } from "@tanstack/react-query";
 
 import { findDraftBotSource } from "@/api/runs/artifacts";
 import { editorDraftKey } from "@/hooks/useDraftBot";
+import { applyOpenedFile } from "@/lib/openedFile";
+import { applyParsedSource } from "@/lib/salvage";
 import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 import { botDisplayLabel } from "@/lib/botLabel";
 import { toastError } from "@/lib/errorHints";
 import { Button, EmptyState } from "@/components/ui";
-import { applyOpenedFile } from "@/lib/openedFile";
 
 const EditorView = lazy(() => import("@/components/EditorView"));
 
@@ -61,13 +62,6 @@ interface Props {
 // EditorTabHost owns one editor subtree's local state: it instantiates
 // (or fetches from registry) the tab's DocumentStore + SelectionStore,
 // plumbs them through Context so every component below reads its own
-// The file a tab FOLLOWS: the one it hydrated from, whether or not the
-// document is bound to it. A file that does not parse is unbound and still
-// hydrated.
-function followedPath(s: { currentFilePath: string | null; watchedFilePath: string | null }) {
-  return s.currentFilePath ?? s.watchedFilePath;
-}
-
 // per-tab data, and triggers the initial `api.openFile` hydration when
 // a file path is provided. While that hydration is in flight it shows a
 // spinner — never the untitled scaffold the store initializes with —
@@ -89,11 +83,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
   const tab = useTabsStore((s) => s.tabs.find((t) => t.id === tabId));
 
   const [loadState, setLoadState] = useState<LoadState>(() => {
-    // The FOLLOWED file, not the bound one: a tab whose file does not parse
-    // is unbound, and comparing the binding would make it never count as
-    // hydrated — every remount would re-fetch and replace the author's
-    // in-progress repair with the salvaged document from disk.
-    if (file) return followedPath(docStore.getState()) !== file ? "loading" : "ready";
+    if (file) return docStore.getState().currentFilePath !== file ? "loading" : "ready";
     // A fresh store has a null source; anything else means the tab already
     // carries a document we must not replace.
     if (draft) return docStore.getState().currentSource === null ? "loading" : "ready";
@@ -126,7 +116,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
   // through the per-tab store via Context.
   useEffect(() => {
     if (!file) return;
-    if (followedPath(docStore.getState()) === file) {
+    if (docStore.getState().currentFilePath === file) {
       setLoadState("ready");
       return;
     }
@@ -140,8 +130,12 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         const s = docStore.getState();
         // Another path (deep link, Save As) may have bound the file
         // while the fetch was in flight — don't clobber it.
-        if (followedPath(s) !== file) {
-          applyOpenedFile(result, s, file);
+        if (s.currentFilePath !== file) {
+          // Through the shared helper: a file that does not parse comes with
+          // the word that its document is a SALVAGE, which is what refuses
+          // the write. Hand-rolled setters here were one of the sites that
+          // kept marking such a document saved.
+          applyOpenedFile(result, s);
         }
         setLoadState("ready");
       })
@@ -231,7 +225,10 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         ) {
           return; // they started typing while we were parsing
         }
-        st2.setDocument(parsed.document);
+        // Document and verdict together: a draft whose source does not parse
+        // whole is a salvage, and writing it back would drop what the parser
+        // could not read.
+        applyParsedSource(parsed, st2);
         st2.setCurrentSource(source);
         st2.setDiagnostics(parsed.diagnostics);
         appliedRef.current = source;
@@ -378,19 +375,12 @@ function TabLoadErrorState({
 //
 // Uses botDisplayLabel so a bundle's `main.bot` shows the persona
 // display_name (e.g. "Featurly") / technical id ("feature-dev") rather
-// than the non-distinctive basename "main.bot". Only acts when the path is
-// non-null. Resetting label/params whenever path is null would race the
-// openFile resolution on every new tab open and clobber values set by the
-// caller.
-//
-// The FOLLOWED path, not the bound one: a file that does not parse is
-// unbound, and the picker touches no tab state, so `tab.params.file` would
-// stay on the PREVIOUS file. The next remount then sees the two disagree,
-// re-hydrates from the old file over the author's in-progress repair, and
-// retitles the tab to it — the loss this branch exists to stop, reached from
-// the other side.
+// than the non-distinctive basename "main.bot". Only acts when
+// `currentFilePath` is non-null. Resetting label/params whenever path is
+// null would race the openFile resolution on every new tab open and
+// clobber values set by the caller.
 function TabBindingSync({ tabId }: { tabId: string }) {
-  const path = useDocumentStore((s) => s.currentFilePath ?? s.watchedFilePath);
+  const path = useDocumentStore((s) => s.currentFilePath);
   const bots = useBotsStore((s) => s.bots);
   const fetchBots = useBotsStore((s) => s.fetch);
   useEffect(() => {

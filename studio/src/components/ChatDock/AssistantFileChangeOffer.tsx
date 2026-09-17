@@ -32,9 +32,9 @@ import {
   resolveEditorSession,
 } from "@/lib/chatDock/editorSession";
 import { useUIStore } from "@/store/ui";
+import { applyOpenedFile } from "@/lib/openedFile";
 
 import AssistantTextDiffDialog from "./AssistantTextDiffDialog";
-import { applyOpenedFile } from "@/lib/openedFile";
 
 type State = "idle" | "previewing" | "ready" | "saving" | "saved" | "error";
 
@@ -268,13 +268,9 @@ export default function AssistantFileChangeOffer({
     if (!activeTarget || !proposal.sessionId || proposal.revision === null) return true;
     const current = resolveEditorSession(proposal.sessionId);
     const before = current?.store.getState();
-    // The followed file, not the bound one: a tab whose file stopped
-    // parsing is still this tab's file, and the assistant's next write may
-    // be the one that repairs it.
-    const path = before?.currentFilePath ?? before?.watchedFilePath;
+    const path = before?.currentFilePath;
     if (
       !current ||
-      !before ||
       !path ||
       !isEditorSessionActive(proposal.sessionId) ||
       before._generation !== proposal.revision ||
@@ -291,16 +287,17 @@ export default function AssistantFileChangeOffer({
         !after ||
         !isEditorSessionActive(proposal.sessionId) ||
         !store ||
-        (store.currentFilePath ?? store.watchedFilePath) !== path ||
+        store.currentFilePath !== path ||
         store._generation !== proposal.revision ||
         store.isDirty()
       ) {
         warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
         return false;
       }
-      // Same helper as every other reload: the assistant's write may have
-      // left the file unparseable, and it must then unbind like any other.
-      applyOpenedFile(result, store, path);
+      // Through the shared helper: the write Copi just made may have left
+      // the file unparseable, and the reload has to say so — marking the
+      // salvage saved is how the next Ctrl+S would have written it back.
+      applyOpenedFile(result, store);
       setReloadWarning(null);
       return true;
     } catch {

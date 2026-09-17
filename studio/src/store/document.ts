@@ -60,11 +60,13 @@ interface DocumentState {
    *  `warnings`. Empty for parser-only responses. */
   issues: DiagnosticIssue[];
   currentFilePath: string | null;
-  /** The file this tab FOLLOWS, bound or not. It tracks currentFilePath, and
-   *  survives a file being unbound because it stopped parsing — the watcher
-   *  reads it so an unparseable file is still followed, and rebinds on the
-   *  write that makes it parse again. */
-  watchedFilePath: string | null;
+  /** True when `document` is what the parser SALVAGED — the file minus the
+   *  region it could not read — rather than the file. The path stays: this
+   *  tab is still about that file, and everything that asks WHICH file goes
+   *  on working. What it forbids is WRITING: a save would put the salvage
+   *  over what the author wrote. Cleared by a parse of the buffer that comes
+   *  back whole. */
+  salvaged: boolean;
   // Cached so cloud-mode launch/resume can pass it inline. Updated on
   // openFile / saveFile / parseSource; null otherwise.
   currentSource: string | null;
@@ -83,9 +85,7 @@ interface DocumentState {
   setDocument: (doc: IterDocument) => void;
   setDiagnostics: (d: string[], w?: string[], issues?: DiagnosticIssue[]) => void;
   setCurrentFilePath: (path: string | null) => void;
-  /** Sets the followed file. Called with the path that was OPENED, which is
-   *  the same as currentFilePath except when the file does not parse. */
-  setWatchedFilePath: (path: string | null) => void;
+  setSalvaged: (salvaged: boolean) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
   markSaved: () => void;
@@ -242,7 +242,7 @@ export function createDocumentStore() {
   warnings: [],
   issues: [],
   currentFilePath: null,
-  watchedFilePath: null,
+  salvaged: false,
   currentSource: null,
   unit: null,
   _generation: 0,
@@ -260,13 +260,10 @@ export function createDocumentStore() {
       warnings: warnings ?? [],
       issues: issues ?? [],
     }),
-  // watchedFilePath follows the binding, null included: File→New, Import and
-  // Start-blank unbind and stop there, and a tab that kept following the
-  // previous file would auto-reload it over the new document. The one case
-  // where the two differ — a file that does not parse — is set explicitly by
-  // applyOpenedFile, right after this.
-  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null, watchedFilePath: currentFilePath }),
-  setWatchedFilePath: (watchedFilePath) => set({ watchedFilePath }),
+  // A new file is a new program: whatever the last one salvaged says nothing
+  // about this one, so the flag is dropped with the unit.
+  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null, salvaged: false }),
+  setSalvaged: (salvaged) => set({ salvaged }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),

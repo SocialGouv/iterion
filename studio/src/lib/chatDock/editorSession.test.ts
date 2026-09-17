@@ -54,31 +54,31 @@ describe("active editor session snapshots", () => {
     expect(resolveEditorSession(snapshot.sessionId)?.tabId).toBe(tabId);
   });
 
-  // A file that does not parse is UNBOUND — and it is exactly the file an
-  // author asks Copi to repair. Keyed on the binding, the snapshot would be
-  // null there: the offer renders "no longer available", and Copi can
-  // neither preview nor commit a fix on the one file that needs one.
+  // A file that does not parse is exactly the file an author asks Copi to
+  // repair. Taking its path away to stop a save would take the perimeter with
+  // it: the offer renders "no longer available", and Copi can neither
+  // preview nor commit a fix on the one file that needs one.
   it("keeps the authoring perimeter on a file that does not parse", async () => {
     api.unparse.mockResolvedValue("workflow broken:\n  entry: a\n");
     const tabId = useTabsStore
       .getState()
       .openTab("editor", { file: "bots/broken/main.bot" }, "broken");
     const store = getOrCreateDocumentStore(tabId);
-    // Through the real chokepoint, so the state is one the app produces: no
-    // path from the server, the opened path still followed.
+    // Through the real chokepoint, so the state is one the app produces.
     applyOpenedFile(
       {
         source: "workflow broken:\n  entry: a\n!!! mid-repair @@@\n",
         document: createEmptyDocument(),
         diagnostics: ["broken/main.bot:3:1: error [E001]: unexpected character"],
+        path: "bots/broken/main.bot",
+        bindable: false,
       },
       store.getState(),
-      "bots/broken/main.bot",
     );
-    expect(store.getState().currentFilePath).toBeNull();
+    expect(store.getState().salvaged).toBe(true);
 
     const snapshot = await captureActiveEditorDocument();
-    if (!snapshot) throw new Error("an unbound but followed editor gave no snapshot");
+    if (!snapshot) throw new Error("a salvaged editor gave no snapshot");
 
     expect(snapshot.file).toBe("bots/broken/main.bot");
     expect(authoring.snapshotAssistantAuthoring).toHaveBeenCalledWith("bots/broken/main.bot");

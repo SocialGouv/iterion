@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 //
-// A tab that opened a file it could not bind still NAMES that file, and
+// A tab that opened a file which does not parse still NAMES that file, and
 // keeps it across a remount. `/editor` is a wouter route: leaving it
 // unmounts EditorTabsView and every EditorTabHost, while the per-tab
 // document store survives in the module registry. Coming back remounts the
-// host with `tab.params.file` — whatever TabBindingSync last wrote there.
-// Keyed on the bound path alone, that param stays on the PREVIOUS file and
-// the remount re-fetches it over the author's in-progress repair.
+// host with `tab.params.file` — whatever TabBindingSync last wrote there,
+// and it only writes a non-null path. Taking the path away to stop a save
+// would leave that param on the PREVIOUS file, and the remount would fetch
+// it over the author's in-progress repair: a second loss by another road.
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,8 +63,8 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe("a tab names the file it follows, bound or not", () => {
-  it("keeps the repair of an unbindable file across leaving the editor and coming back", async () => {
+describe("a tab names the file it is about, salvage or not", () => {
+  it("keeps the repair of an unparseable file across leaving the editor and coming back", async () => {
     const tabId = useTabsStore
       .getState()
       .openTab("editor", { file: "bots/alpha/main.bot" }, "alpha");
@@ -78,16 +79,16 @@ describe("a tab names the file it follows, bound or not", () => {
     await waitFor(() => expect(state(tabId).currentSource).toBe("ALPHA ON DISK"));
 
     // The author opens, in this tab, a workspace file that does not parse.
-    // The server refuses to bind it and names it as the one followed.
+    // The server names it and says its document is a salvage.
     loadExample.mockResolvedValue({
       source: "SALVAGE",
       document,
       diagnostics: ["one/main.bot:3:1: error [E001]: unexpected character"],
+      path: "catalog/one/main.bot",
       bindable: false,
-      followed_path: "catalog/one/main.bot",
     });
     await openExampleIntoStore("one/main.bot", state(tabId));
-    expect(state(tabId).currentFilePath).toBeNull();
+    expect(state(tabId).salvaged).toBe(true);
     await waitFor(() => expect(paramsFileOf(tabId)).toBe("catalog/one/main.bot"));
 
     // The author starts repairing it, then leaves /editor and comes back.
@@ -96,8 +97,8 @@ describe("a tab names the file it follows, bound or not", () => {
     mount(tabId, paramsFileOf(tabId));
     await new Promise((r) => setTimeout(r, 10));
 
-    // No second fetch: the tab came back to the file it followed, not to
-    // the one it had bound before it.
+    // No second fetch: the tab came back to the file it names, not to the
+    // one it held before it.
     expect(openFile.mock.calls.map((c) => c[0])).toEqual(["bots/alpha/main.bot"]);
     expect(state(tabId).currentSource).toBe("THE AUTHOR'S REPAIR");
   });

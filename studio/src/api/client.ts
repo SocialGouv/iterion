@@ -362,23 +362,17 @@ export async function loadExample(
   document: IterDocument;
   diagnostics: string[];
   /** The path the studio opens and saves the example by: set for a file
-   *  inside the workspace that parses clean, in one file or several;
-   *  absent for an embedded bot, one outside the workspace, or one that
-   *  does not parse — the studio then binds bots/<name>, where a save of
-   *  the one program lands. */
+   *  inside the workspace, in one file or several, whether or not it
+   *  parses; absent for an embedded bot or one outside the workspace, which
+   *  the studio binds as bots/<name>, where a save of the one program
+   *  lands. */
   path?: string;
   /** The on-disk path the server read, when `path` is set — what
    *  /api/files/open confirms for the same path. */
   confirmed_disk_path?: string;
-  /** The workspace file the answer was read from, named whether or not it
-   *  is bound: the tab FOLLOWS it, so the write that makes it parse again
-   *  reloads it and binds it there. Absent for a program the workspace does
-   *  not hold — an embedded bot, or a catalog outside it. */
-  followed_path?: string;
-  /** False when the example does not parse: the studio binds no path at
-   *  all — a save asks where and never lands on the file as the author
-   *  wrote it, which bots/<name> would name in the default layout. Absent
-   *  (an older server, a unit response) reads as true. */
+  /** False when the example does not parse: `document` is the salvage, and
+   *  the sites that write a document refuse it. Absent (an older server, a
+   *  unit response) reads as true. */
   bindable?: boolean;
   /** Set when the example is a bot in several files inside the workspace
    *  that loads clean: the document is the merged unit. An embedded bot, or
@@ -449,16 +443,16 @@ export async function openFile(
   source: string;
   document: IterDocument;
   diagnostics: string[];
-  /** Absent when the file does not parse: the document is then what the
-   *  parser salvaged, and binding it would make the next save write that
-   *  back over what the author wrote. */
+  /** The file this answer is about, whether or not it parses: the editor is
+   *  ABOUT that file. */
   path?: string;
   confirmed_disk_path?: string;
-  /** False when the file does not parse — including for a cloud bot source,
-   *  which this client fetches and parses itself below: /api/parse carries
-   *  the same verdict, so the two surfaces refuse to bind on the same
-   *  grounds. A unit stays bindable either way: its write back is refused
-   *  server-side, naming the fragment at fault. */
+  /** False when the file does not parse: `document` is then what the parser
+   *  SALVAGED, so the three sites that write a document refuse it. Carried
+   *  for a cloud bot source too, which this client fetches and parses itself
+   *  below — /api/parse answers the same verdict, so the two surfaces refuse
+   *  on the same grounds. A unit stays writable either way: its write back is
+   *  refused server-side, naming the fragment at fault. */
   bindable?: boolean;
   /** Set when the file is the main of a bot in several files: the document
    *  is the merged unit, and a save must present `unit.revision`. */
@@ -479,17 +473,16 @@ export async function openFile(
       return { source, document: parsed.document, diagnostics: parsed.diagnostics, path, unit: parsed.unit, bindable: true };
     }
     const parsed = await parseSource(source);
-    // A source the parser could not read whole binds NOTHING here either.
-    // The document is the salvage, and this path's save is a versioned PUT
-    // of `unparse(document)` with no server-side refusal to catch it — so
-    // binding would put the salvage on the bot source at the first Ctrl+S.
-    const bindable = parsed.bindable !== false;
+    // The verdict travels with the answer, the way /api/files/open carries it
+    // for a file on disk. It has to: this path's save is a versioned PUT of
+    // `unparse(document)`, and the compile guard behind it PASSES a salvage —
+    // a salvage compiles, it is simply missing what the parser could not read.
     return {
       source,
       document: parsed.document,
       diagnostics: parsed.diagnostics,
-      ...(bindable ? { path } : {}),
-      bindable,
+      path,
+      bindable: parsed.bindable !== false,
     };
   }
   return request("/files/open", {

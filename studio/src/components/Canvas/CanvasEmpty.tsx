@@ -24,7 +24,7 @@ export default function CanvasEmpty() {
   const setDocument = useDocumentStore((s) => s.setDocument);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
-  const setWatchedFilePath = useDocumentStore((s) => s.setWatchedFilePath);
+  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const setUnit = useDocumentStore((s) => s.setUnit);
   const markSaved = useDocumentStore((s) => s.markSaved);
@@ -51,7 +51,7 @@ export default function CanvasEmpty() {
         setDiagnostics,
         setCurrentSource,
         setCurrentFilePath,
-        setWatchedFilePath,
+        setSalvaged,
         setUnit,
         markSaved,
       });

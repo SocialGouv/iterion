@@ -5,8 +5,8 @@ import { fileWatcher } from "@/api/ws";
 import * as api from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
 import { touchesOpenUnit } from "@/hooks/unitFiles";
-import type { ServerWsEvent } from "@/api/types";
 import { applyOpenedFile } from "@/lib/openedFile";
+import type { ServerWsEvent } from "@/api/types";
 
 const RELOAD_DEBOUNCE_MS = 500;
 
@@ -34,10 +34,7 @@ export function useFileWatcher() {
       }
       const store = docStoreRef.current.getState();
       const { addToast, notifyFilesChanged } = useUIStore.getState();
-      // The file this tab FOLLOWS, which survives the file being unbound for
-      // not parsing: otherwise one bad write stops the tab following it, and
-      // the write that repairs the file never arrives.
-      const filePath = store.currentFilePath ?? store.watchedFilePath;
+      const filePath = store.currentFilePath;
       const dirty = store.isDirty();
 
       if (event.type === "file_created" || event.type === "file_deleted") {
@@ -68,13 +65,13 @@ export function useFileWatcher() {
               .openFile(path)
               .then((result) => {
                 const s = docStoreRef.current.getState();
-                if ((s.currentFilePath ?? s.watchedFilePath) !== path) return;
+                if (s.currentFilePath !== path) return;
                 // Through the shared helper: a reload of a file that stopped
-                // parsing must unbind it too. An external write is all it
-                // takes, with no user action, and the next Save would put
-                // the salvaged program on the author's file.
-                // The unit follows the disk: the revision a save presents must.
-                applyOpenedFile(result, s, path);
+                // parsing must mark the document a SALVAGE too. An external
+                // write is all it takes, with no user action, and the next
+                // save would put the salvage on the author's file.
+                // The files changed on disk: the revision a save presents must follow.
+                applyOpenedFile(result, s);
                 if (notifySuccess) {
                   useUIStore.getState().addToast("File reloaded", "info");
                 }
@@ -105,7 +102,7 @@ export function useFileWatcher() {
             clearTimeout(reloadTimerRef.current);
             reloadTimerRef.current = setTimeout(() => {
               const current = docStoreRef.current.getState();
-              if ((current.currentFilePath ?? current.watchedFilePath) !== targetPath || current.isDirty()) {
+              if (current.currentFilePath !== targetPath || current.isDirty()) {
                 return;
               }
               reload(targetPath, true);
@@ -116,8 +113,7 @@ export function useFileWatcher() {
               action: {
                 label: "Reload",
                 onClick: () => {
-                  const st = docStoreRef.current.getState();
-                  const path = st.currentFilePath ?? st.watchedFilePath;
+                  const path = docStoreRef.current.getState().currentFilePath;
                   if (path) reload(path, false);
                 },
               },

@@ -120,10 +120,11 @@ describe("saveFile of a cloud bot in several files", () => {
 });
 
 // A cloud bot source never travels through /api/files/open, which is where
-// the disk surface refuses to bind a salvaged document: this client fetches
-// the bundle and parses it itself. The refusal has to hold here too — the
-// save on this path is a versioned PUT of the rendered document, with no
-// server-side refusal behind it to catch a salvage.
+// the disk surface answers whether a document is a salvage: this client
+// fetches the bundle and parses it itself. The verdict has to travel here
+// too — the save on this path is a versioned PUT of the rendered document,
+// and the compile guard behind it PASSES a salvage, which compiles fine and
+// is simply missing what the parser could not read.
 describe("openFile of a cloud bot source that does not parse", () => {
   const brokenBundle = {
     id: "b1",
@@ -132,7 +133,7 @@ describe("openFile of a cloud bot source that does not parse", () => {
     files: { "main.bot": "workflow w:\n  entry: done\n\nagent a\n  not a declaration\n" },
   };
 
-  it("binds no path when /api/parse says the document is a salvage", async () => {
+  it("carries the salvage verdict, and still names the file", async () => {
     mockFetch(({ url, init }) => {
       if (url.endsWith("/parse")) {
         return {
@@ -146,15 +147,18 @@ describe("openFile of a cloud bot source that does not parse", () => {
     });
 
     const opened = await openFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
-    expect(opened.path).toBeUndefined();
     expect(opened.bindable).toBe(false);
+    // The path stays: the editor is ABOUT that bot source, and the bundle
+    // drawer, the tab binding and the validation scope all read it. What the
+    // verdict refuses is the write.
+    expect(opened.path).toBe(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
     // The text and the diagnostics still travel: the editor has to show
-    // what is there, and say why it will not bind it.
+    // what is there, and say why it will not write it back.
     expect(opened.source).toBe(brokenBundle.files["main.bot"]);
     expect(opened.diagnostics).toHaveLength(1);
   });
 
-  it("still binds one that parses clean", async () => {
+  it("calls one that parses clean writable", async () => {
     mockFetch(({ url, init }) => {
       if (url.endsWith("/parse")) return { document: { agents: [] }, diagnostics: [], bindable: true };
       if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") {

@@ -20,6 +20,7 @@ func openFileFor(t *testing.T, s *Server, path string) struct {
 	Diagnostics       []string        `json:"diagnostics"`
 	Path              string          `json:"path"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
+	Bindable          bool            `json:"bindable"`
 } {
 	t.Helper()
 	var out struct {
@@ -28,6 +29,7 @@ func openFileFor(t *testing.T, s *Server, path string) struct {
 		Diagnostics       []string        `json:"diagnostics"`
 		Path              string          `json:"path"`
 		ConfirmedDiskPath string          `json:"confirmed_disk_path"`
+		Bindable          bool            `json:"bindable"`
 	}
 	body, err := json.Marshal(openFileRequest{Path: path})
 	if err != nil {
@@ -44,19 +46,20 @@ func openFileFor(t *testing.T, s *Server, path string) struct {
 	return out
 }
 
-// TestAFileThatDoesNotParseIsNotBoundToItsPath.
+// TestAFileThatDoesNotParseIsNotWritable.
 //
 // A parse that leaves errors yields the program the parser SALVAGED — the
-// file minus the region it could not read. Handed back with its path, the
-// studio binds it and marks it saved, and the first Save writes the salvaged
-// document over what the author wrote. The loss is silent and total for the
-// unreadable part.
+// file minus the region it could not read. Handed back as writable, the
+// studio marks it saved and the first Save writes the salvaged document over
+// what the author wrote. The loss is silent and total for the unreadable
+// part.
 //
-// So nothing is bound: the text and the salvaged program travel with the
-// diagnostics, and a save has to ask where. `serveDiskExample` already takes
-// this posture for `/api/examples/{name}`; this is the same file, opened the
-// other way.
-func TestAFileThatDoesNotParseIsNotBoundToItsPath(t *testing.T) {
+// So the answer says the document is a salvage, and the three sites that
+// write one refuse it. The PATH still travels: the editor is about that file,
+// and the watcher, the tab binding, the validation scope and the assistant's
+// perimeter all read it — taking it away moves the loss instead of removing
+// it. `serveDiskExample` takes the same posture for `/api/examples/{name}`.
+func TestAFileThatDoesNotParseIsNotWritable(t *testing.T) {
 	workdir := t.TempDir()
 	// A workflow the parser reads, followed by a declaration it cannot.
 	source := "workflow keep:\n  entry: done\n\nagent broken\n  this line is not a declaration\n"
@@ -70,9 +73,13 @@ func TestAFileThatDoesNotParseIsNotBoundToItsPath(t *testing.T) {
 	if len(got.Diagnostics) == 0 {
 		t.Fatal("no diagnostics: this fixture is supposed to be unparseable, so the test would prove nothing")
 	}
-	if got.Path != "" || got.ConfirmedDiskPath != "" {
-		t.Errorf("bound to path=%q confirmed=%q — a save would land the salvaged program on the author's file",
-			got.Path, got.ConfirmedDiskPath)
+	if got.Bindable {
+		t.Error("declared writable — a save would land the salvaged program on the author's file")
+	}
+	// The path stays, and so does the disk path: every surface that asks
+	// WHICH file this editor is about reads them.
+	if got.Path != "broken.bot" || got.ConfirmedDiskPath == "" {
+		t.Errorf("a file that does not parse lost its path: path=%q confirmed=%q", got.Path, got.ConfirmedDiskPath)
 	}
 	// The text still travels: the editor must be able to show what is there.
 	if got.Source != source {
@@ -80,9 +87,9 @@ func TestAFileThatDoesNotParseIsNotBoundToItsPath(t *testing.T) {
 	}
 }
 
-// TestAFileThatParsesIsStillBound is the end state the check drives toward.
-// Without it, refusing to bind everything would look exactly as green.
-func TestAFileThatParsesIsStillBound(t *testing.T) {
+// TestAFileThatParsesIsStillWritable is the end state the check drives
+// toward. Without it, refusing every write would look exactly as green.
+func TestAFileThatParsesIsStillWritable(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workdir, "fine.bot"), []byte("workflow fine:\n  entry: done\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -91,6 +98,9 @@ func TestAFileThatParsesIsStillBound(t *testing.T) {
 
 	got := openFileFor(t, s, "fine.bot")
 
+	if !got.Bindable {
+		t.Error("a file that parses clean was declared a salvage: nothing could be saved")
+	}
 	if got.Path != "fine.bot" {
 		t.Errorf("path = %q, want a clean file bound to its own path", got.Path)
 	}
@@ -177,17 +187,28 @@ func TestParseCarriesTheBindingVerdict(t *testing.T) {
 		t.Errorf("a source that parses clean was declared not bindable: %v", clean.Diagnostics)
 	}
 
-	// A unit stays bindable, loading or not: unparseUnitFiles refuses to
-	// write one that does not load, which is what makes binding it safe.
+	// A unit stays writable, LOADING OR NOT: unparseUnitFiles refuses to
+	// write one that does not load, naming the fragment at fault, which is
+	// what makes keeping it writable safe. Both halves are exercised —
+	// asserting only the loading one leaves the load-bearing half of that
+	// decision covered by nothing.
 	frag := unit.FragmentDir + "/nodes.bot"
-	unitGot := parseFor(t, parseRequest{
-		Files: map[string]string{
-			"main.bot": "import \"" + frag + "\"\n\nworkflow x:\n  entry: done\n",
-			frag:       "prompt p:\n  Hello\n",
-		},
-		Main: "main.bot",
-	})
-	if !unitGot.Bindable || unitGot.Unit == nil {
-		t.Errorf("a unit was declared not bindable: bindable %v unit %v", unitGot.Bindable, unitGot.Unit != nil)
+	for _, tc := range []struct {
+		name     string
+		fragment string
+	}{
+		{"a unit that loads", "prompt p:\n  Hello\n"},
+		{"a unit whose fragment does not parse", "prompt p\n  !!! broken @@@\n"},
+	} {
+		unitGot := parseFor(t, parseRequest{
+			Files: map[string]string{
+				"main.bot": "import \"" + frag + "\"\n\nworkflow x:\n  entry: done\n",
+				frag:       tc.fragment,
+			},
+			Main: "main.bot",
+		})
+		if !unitGot.Bindable || unitGot.Unit == nil || unitGot.Unit.Revision == "" {
+			t.Errorf("%s was declared not writable: bindable %v unit %v", tc.name, unitGot.Bindable, unitGot.Unit != nil)
+		}
 	}
 }

@@ -536,23 +536,17 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 
 // exampleResponse is what /api/examples/{name} answers for one program:
 // its text and document, the diagnostics, and — for a file inside the
-// working directory that parses — the path the studio opens and saves it
-// by with the disk path /api/files/open confirms for it. Bindable is false
-// when the file does not parse: the studio then binds no path at all, so a
-// save asks where instead of landing on the file as the author wrote it —
-// its bots/<name> fallback would name that very file in the default layout.
-// FollowedPath names the file the answer was read from whether or not it is
-// bound, so a tab keeps FOLLOWING a file it could not bind: the write that
-// makes it parse again reloads it through /api/files/open, which binds it
-// there. Empty for a program the working directory does not hold — an
-// embedded bot, or a catalog outside it — which nothing can follow.
+// working directory — the path the studio opens and saves it by with the
+// disk path /api/files/open confirms for it. Bindable is false when the file
+// does not parse: the path still names the file the answer was read from,
+// since the editor is ABOUT that file, and what the flag forbids is writing
+// the document back — it is the salvage, not the file.
 type exampleResponse struct {
 	Source            string          `json:"source"`
 	Document          json.RawMessage `json:"document"`
 	Diagnostics       []string        `json:"diagnostics,omitempty"`
 	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
-	FollowedPath      string          `json:"followed_path,omitempty"`
 	Bindable          bool            `json:"bindable"`
 }
 
@@ -564,16 +558,14 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 	pr := parser.Parse(name, source)
 	var diags []string
 	bindable := true
-	// The file read, kept whole across the unbinding below: what is refused
-	// is binding it, not knowing which file the answer came from.
-	followed := rel
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
-		// A file that does not parse is never bound to its path: the
-		// document the parser salvaged is not the file, and a save of it
-		// would replace what the author wrote with what the parser kept.
+		// A file that does not parse keeps its path — the editor is about
+		// that file — and is declared unbindable: the document is what the
+		// parser salvaged, and writing it back would replace what the author
+		// wrote with what the parser kept.
 		if d.Severity == parser.SeverityError {
-			rel, confirmed, bindable = "", "", false
+			bindable = false
 		}
 	}
 
@@ -594,7 +586,6 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 		Diagnostics:       diags,
 		Path:              rel,
 		ConfirmedDiskPath: confirmed,
-		FollowedPath:      followed,
 		Bindable:          bindable,
 	})
 }
@@ -629,25 +620,20 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		return
 	}
 	if u.HasErrors() {
-		// A unit that does not load is never bound to its files: the studio
-		// gets the main's text and the program the loader salvaged, with the
-		// diagnostics, no path or unit, and the word that nothing is to be
-		// bound — a save of it asks where, never lands on the files as the
-		// author wrote them.
+		// A unit that does not load is served as the main's text and the
+		// program the loader salvaged, with the diagnostics and no unit —
+		// there is no revision to present — and declared unbindable, so no
+		// save lands on the files as the author wrote them.
 		docJSON, err := ast.MarshalFile(u.Merged)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		// Unbound, the main is still named as the file followed, so the studio
-		// reloads it on the next write to it — through /api/files/open, which
-		// binds a unit whether or not it loads; a save of one that still does
-		// not is refused there, naming the fragment at fault. It is the
-		// main alone: with no unit there is nothing to say which fragments
-		// belong to it, so a fix written in one of them lands on the next
-		// touch of the main.
-		followed, _, _ := s.workDirRelative(abs, name)
-		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, FollowedPath: followed})
+		// The main still names its path — the editor is about that file, and
+		// the watcher, the tab and the validation scope all read it — with
+		// the word that the document is a salvage, which refuses the write.
+		rel, confirmed, _ := s.workDirRelative(abs, name)
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed})
 		return
 	}
 	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {
