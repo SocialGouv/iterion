@@ -13,6 +13,33 @@ zero uncovered rows; scoped runs converge on scope-level completion.
 
 ---
 
+## 2026-09-17 — profile 2: a matrix and five subprocess tests from nothing, then the mirror refused the gate (run 01a0af9e-967a)
+
+- Status: **campaign validated, gate refused by #1364** — `campaign` (5 commits) →
+  `verify_build` cut by the wall → resumed → `verify_build` → `verify_run` NET DIRTY →
+  `gate` not converged → done.
+- Versions: bot e2e-coverage 0.4.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository with no matrix, `--var plan_phase=off
+  --var max_passes=1 --var target="the greet command-line behaviour: exit codes, --excited,
+  empty name"`, `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20). The 10-minute wall cut `verify_build` (context deadline) with the cost
+  budget already spent by the campaign; resumed with `--max-duration 25m --max-cost-usd 3`.
+- Result: $2.22, 15 min 14 s. The campaign inventoried the surface from the outside (README,
+  the argparse surface, ADR-0001, the landing page), committed the matrix first
+  (`docs/e2e-coverage-matrix.md`, v1 contract), then one commit per gap — plain greeting,
+  `--excited`, empty and whitespace-only names, missing name usage error — every test driving
+  `greet.py` as a real subprocess through the repo's own runner, all rows
+  `covered-deterministic`, the landing-page row left `uncovered` and named as out of scope;
+  `coverage_complete: true`. `verify_build` ran `verify.sh` green. Then the deterministic gate refused the tree — `NET DIRTY: 1 path(s) … Paths: ?? .claude/` — because iterion's own skills mirror sits untracked in the run worktree of a repository that does not ignore `.claude/`; #1364 carries the class (ten bots and four templates), with the engine's own `runOutputPaths` rule as the fix. Storage
+  branch `iterion/run/01a0af9e-967a-7d74-93a6-eaf56acb863f` → `f977d7c`.
+- Value: the eleven prompts' paragraph breaks reach the models (proven for `campaign_system`
+  and, twice, `verify_system`; plan prompts not rendered), and "deterministic-first" is
+  visible in every test the campaign chose.
+- Findings / misses: #1364. The campaign alone needs more than ten minutes of wall even on a
+  seven-file repository.
+- Engine hardening: none in this wave.
+- Lessons for next run: `--max-duration 20m` at least for one pass; pass `--merge-into none`
+  again on resume.
+
 ## 2026-08-06 — the audits' own backlog, closed: eight gaps → tests (`443198247`)
 The three audits had left 9 honest `uncovered` rows. Eight are now covered by deterministic tests; each was **seen red under a mutation of the feature it claims to cover**, then green on revert, with no product code changed.
 

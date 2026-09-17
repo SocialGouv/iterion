@@ -6,6 +6,37 @@ step rules on the criteria a static pass cannot decide; the engine's own
 fail-closed gates refuse the result if that ruling does not hold up. See
 [bots/ultra11y/](../../bots/ultra11y/).
 
+## 2026-09-17 — profile 2: a 13-line page ruled in full, report wip-banked because it lives in the tree (run 01a0af95-64fb)
+
+- Status: **validated end to end** — `prepare` → `static_audit` → `worklist` (47 items) →
+  `adjudicate` (cut once by the wall, then complete) → `publish` (board off) → done.
+- Versions: bot ultra11y 0.1.2 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository whose `web/index.html` carries planted
+  defects (an image without `alt`, a clickable `div`, a placeholder-only input, an empty
+  button, a "click here" link), `--var scope_globs="web/**" --var post_to_board=false` plus
+  a one-line `scope_notes`,
+  `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20). The first `adjudicate` died at the 10-minute wall (context deadline, its spend
+  unrecorded); resumed with `--max-duration 25m --max-cost-usd 2.5`.
+- Result: $1.59 recorded, 24 min 17 s from launch to done. The engine produced 47 worklist
+  items; the adjudicator ruled the judgment calls against WCAG 2.2 AA — 3 NC, classed major in
+  the report (1.3.5, no `autocomplete` on the name field; 2.4.4, the "click here" link with
+  `href="#"`; 3.3.2 on the same field), with line numbers — and wrote
+  `audits/wcag-2026-09-17.md`, whose 3 blocking items (1.1.1, 3.1.1, 4.1.2) come from the
+  static pass; `publish` made no board call (`post_to_board` false) and reported the
+  nine-criterion set faithfully (3 blocking, 6 major, no advisory).
+  Because `report_dir` defaults to `${PROJECT_DIR}/audits`, finalize found the tree dirty
+  and wip-banked the report as `c7b14ce` on `iterion/run/01a0af95-64fb-7aae-adfe-6b04591a80cd`
+  (never merged, by design).
+- Value: the four prompts' paragraph breaks reach the models (proven for
+  `adjudicate_system`, twice, and `publish_system`); the fail-closed engine gates accepted the
+  ruling.
+- Findings / misses: none bot-side; the wip bank is the documented consequence of a report
+  written inside the workspace.
+- Engine hardening: none needed.
+- Lessons for next run: `--var report_dir=<outside the tree>` when the report is the
+  deliverable; budget 20 min of wall for the adjudicator even on a one-page scope; a resume
+  does not carry `--merge-into none` (seen on the other resumed runs of this wave).
+
 ## 2026-08-13 — CI flake, empty-scope façade, then a full walk to fold (run 019ffa09)
 
 - Status: **partial** — deterministic half validated on a live run; `adjudicate`

@@ -15,6 +15,33 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
 
 ---
 
+## 2026-09-17 — profile 2: seven behaviours locked in three commits, the exhaustion exit delivered on a spent budget (run 01a0af9e-967d)
+
+- Status: **campaign validated, gate refused by #1364** — `campaign` (3 commits) →
+  `verify_build` → `verify_run` NET DIRTY → `gate` not converged → the loop's exhaustion exit
+  → done, the last two nodes past the declared cost cap inside the engine's 10 % grace.
+- Versions: bot test-coverage 2.3.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository, `--var test_unit=true --var plan_phase=off
+  --var max_passes=1 --var target="greet.py error paths and the main() exit codes"`, `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20).
+- Result: $1.61, 7 min 15 s, no resume. The campaign locked down seven behaviours in
+  `test_greet.py` (blank and whitespace-only names, the exact error message, exit codes of
+  `main()`, argparse usage errors) in three commits, reported `coverage_complete: true`, and
+  flagged the stray `requests` pin on its own. `verify_build` wrote `verify.sh` (EXIT=0 once).
+  Then the deterministic gate refused the tree — `NET DIRTY: 1 path(s) … Paths: ?? .claude/` — because iterion's own skills mirror sits untracked in the run worktree of a repository that does not ignore `.claude/`; #1364 carries the class (ten bots and four templates), with the engine's own `runOutputPaths` rule as the fix. What followed is the wave-1 doctrine live: the cost budget was spent after
+  `verify_build`, the engine let `verify_run` and `gate` run inside the 10 % grace, declined
+  the back-edge to `campaign` ("cannot fund another iteration"), and the exhaustion exit
+  carried the run to `done` — finished, `converged: false`, storage branch
+  `iterion/run/plasma-wave-glitchfox-6336` → `25acd47` (named by run name, where every
+  resumed run of this wave got a branch named by run id — #1366).
+- Value: the eleven prompts' paragraph breaks reach the models (proven in the run's
+  `events.jsonl` for `campaign_system` and `verify_system`; the plan prompts were not rendered,
+  `plan_phase` off); the loop guard on a spent budget behaves exactly as documented since
+  wave 1.
+- Findings / misses: #1364.
+- Engine hardening: none in this wave.
+- Lessons for next run: `--max-cost-usd 1.5` means about $1.35 of work before the 90 % guard —
+  size the cap for one campaign pass plus the gate, or expect a resume.
+
 ## 2026-07-07 — v2 dogfood on pkg/skilllib: 78.1%→93.2%, 35 mutation-verified tests, converged first pass (run 019f3d44-bf42)
 - Status: **VALIDATED** — first live run of the v2 shape; the strengthened anti-façade floor proved out in real conditions.
 - Versions: bot v2.0.0 · iterion `dev+239203525cc8` · sandbox-full (worktree: auto).

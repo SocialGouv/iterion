@@ -2,6 +2,40 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-09-17 — profile 2: forty minutes of oracle campaign on a one-file CLI, no net delivered — the dry run is the witness (run 01a0afa6-aaf7)
+
+- Status: **bounded attempt, no delivery** — `oracle_campaign` ran to the 10-minute wall, was
+  resumed with `--max-duration 30m --max-cost-usd 3`, and ran to that wall too; 78 tool calls
+  across the two attempts, no file written, no commit.
+- Versions: bot golden-master 0.1.1 (`dsl: 2` on main.bot, extend.bot, reanchor.bot and
+  sync-harness.bot, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository (a one-file argparse CLI, two tests),
+  `--var surface_scope="the greet command line (python3 greet.py NAME [--excited]) — stdout,
+  stderr and exit codes" --var min_corpus=5 --var mutation_floor=50 --var max_passes=1 --var
+  adversarial=false`, `--store-dir` the operator's workspace store, `--sandbox none`,
+  `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on
+  `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20).
+- Result: nothing recorded ($0 booked: an agent node cut by the wall books no cost), 40 min of
+  wall. The agent spent both attempts reading — the scratch, then its own bundle's 8 700-line
+  `main.bot` and harness from the operator's main checkout (`/home/jo/lab/ai/iterion/bots/
+  golden-master/`, reachable because the run was not sandboxed) — and never reached the point
+  of writing the oracle harness for a CLI surface. Whether a CLI-only target is in this bot's
+  reach at all is not answered by this run; the bot's own bilans below record HTTP and binary
+  lanes on real applications.
+- Value: what wave 3b proves for this bundle is the migration itself — the four files carry
+  the header, `validate --exec --strict` is identical before and after on all four but for
+  C144, the corpus gate holds them byte-idempotent, the migrator lists 8 prompts / 47 blank
+  lines across main, extend and reanchor (sync-harness has no prompt) — and the engine floor
+  now counts the three sibling entries (the syntax walk enumerates root-level `.bot` files
+  since this wave; #1367 carries the file-form gap).
+- Findings / misses: the wall caps end an agent node with nothing booked and nothing kept —
+  a long single-agent campaign on a small budget is all or nothing; #1367 for the floor's
+  blind spot on sibling entries, found by the local adversarial round of this wave.
+- Engine hardening: `bundle.walkSyntax` counts the root-level sibling entries (this wave);
+  the rest is #1367.
+- Lessons for next run: give Goldy a real HTTP or binary target with a running app, an hour of
+  wall and a $5 cap, and sandbox it (an unsandboxed agent reads whatever the host holds).
+
 ## 2026-07-27 → 08-01 — two lanes added, and each was added because a real defect walked under the others
 
 - Status: **hardening period, not a single run.** Written because the engine changed a lot and the

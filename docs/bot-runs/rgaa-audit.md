@@ -7,6 +7,40 @@ non-conformity. See [bots/rgaa-audit/](../../bots/rgaa-audit/).
 Earlier runs (pre-dedicated-file) are recorded in the 2026-06 campaign
 bilans.
 
+## 2026-09-17 — profile 2: the 106 criteria ruled on a 13-line page, three attempts of wall to get there (run 01a0af95-64fa)
+
+- Status: **validated end to end** — `inventory` → `campaign` (cut twice by the wall, then
+  complete) → the deterministic tail (`scan_health`, `cap_findings`, …) → `report_card` →
+  done.
+- Versions: bot rgaa-audit 2.0.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository whose `web/index.html` carries planted
+  defects, `--var scope_globs="web/**" --var post_to_board=false` plus a one-line
+  `scope_notes`, `--store-dir` the
+  operator's workspace store, `--sandbox none`, `--merge-into none`, caps
+  `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5`
+  (the GPT forfait is closed until 2026-09-20). The single audit agent died at the 10-minute
+  wall (context deadline); resumed with `--max-duration 25m --max-cost-usd 2.5`, the campaign
+  then finished but the 90 % duration guard fired on the deterministic tail; resumed once more
+  with `--max-duration 45m --max-cost-usd 3`.
+- Result: $2.33 recorded (the two cut attempts' spend is not), 29 min 45 s from launch to done.
+  The campaign audited the page theme by theme against the 106 RGAA 4.1.2 criteria without
+  the DSFR skill (no framework on the page, said explicitly): 16 C / 15 NC / 75 NA, 31
+  applicable, 52 % — the planted defects all caught, with the sibling-criterion rule the
+  agent chose written down (a criterion whose object does not exist because a sibling failed
+  on absence is NA with a reason). `report_card` wrote `audits/rgaa-2026-09-17-2.md`; the
+  `-2` suffix because a cut attempt had already left `rgaa-2026-09-17.md` in the tree.
+  `report_dir` defaults to `${PROJECT_DIR}/audits`, so finalize wip-banked both as
+  `7fd2c33` on `iterion/run/01a0af95-64fa-7ab3-8aa9-07925fad26c4` (never merged, by design).
+- Value: the four prompts' paragraph breaks reach the models (proven in the run's
+  `events.jsonl` for `campaign_system`, twice, and `report_card_system`), and the report is
+  the operator-facing French document the bot promises.
+- Findings / misses: none bot-side. The one-agent audit of a full referential needs about
+  twenty minutes of wall even for a one-page scope; a cut attempt leaves its half-written
+  report in the tree and the next one numbers around it — harmless, but worth knowing.
+- Engine hardening: none needed.
+- Lessons for next run: `--max-duration 30m` from the start; `--var report_dir=<outside the
+  tree>` when the report is the deliverable.
+
 ## 2026-07-07 — re-run post status-fix: the 5 NC now flow through the gates into the report — VALIDATED (run 019f3de8)
 - Status: **VALIDATED** — closes the morning run's partial: with the d6b966f03 fix live (mandatory per-candidate status + fail-safe NC counting), the same scope now yields scan_health nc_count=5 and a report with full detailed NC blocks.
 - Versions: bot v2.0.0 (+status fix) · iterion `dev+239203525cc8` · no sandbox.

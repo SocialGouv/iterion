@@ -7,6 +7,34 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-09-17 — profile 2: a manifest-only bump judged safe, nothing to align, nothing to commit (run 01a0af9e-9697)
+
+- Status: **validated end to end** — `prepare` → `security_audit` (safe) → `align`
+  (nothing to do) → `verify_build` → cost cap → resumed → `verify_run` green → `commit`
+  (nothing to commit) → `validate_gate` clean → forge and board steps skipped as configured →
+  `arm_automerge` (off) → done.
+- Versions: bot dep-update-guard 2.7.8 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository checked out on a branch that bumps
+  `requests` 2.31.0 → 2.32.3 in `requirements.txt` (nothing imports it), `--var base_ref=main
+  --var gate_enabled=false --var post_to_board=false --var max_fix_iterations=1` plus a
+  one-line `scope_notes`, `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20).
+  The 90 % cost guard fired before `verify_run`; resumed with `--max-cost-usd 3`.
+- Result: $1.63, 10 min 38 s. The audit read the bump correctly (single package, no lockfile,
+  the diff is the whole change set, impact nil), checked PyPI and the upstream tag for a
+  hijack signal and found none, verdict `safe`; `align` applied nothing (no import site) and
+  said so; `verify_build` wrote a real gate (py_compile + unittest) that `verify_run` passed —
+  this bot's gate has no NET DIRTY precheck by design (its align step leaves the tree dirty on
+  purpose), so #1364 does not touch it; `commit` had nothing to commit, `validate_gate` said
+  clean (`validate_gate`), no comment posted, no automerge armed.
+- Value: the nine prompts' paragraph breaks reach the models (proven for
+  `security_audit_system`, `security_audit_user`, `align_system`, `verify_system`,
+  `verify_user`, `commit_system`; the escalation prompt was not rendered), and every skipped
+  step reported why.
+- Findings / misses: none bot-side.
+- Engine hardening: none needed.
+- Lessons for next run: a manifest-only bump on a repository with no lockfile is the cheapest
+  full walk of this bot; a resume again needs `--merge-into none`.
+
 ## 2026-08-24 — end-to-end pipeline audit: every failure mode had no recovery, and each got one
 
 - Status: **validated** — a full audit of the auto-upgrade lane on BOTH repos

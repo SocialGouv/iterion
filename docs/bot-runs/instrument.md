@@ -4,6 +4,34 @@ Newest first. Bot: [bots/instrument/](../../bots/instrument/) — observability
 instrumentation campaign (Sentry/GlitchTip error tracking + standardized
 logs; opt-in tracing).
 
+## 2026-09-17 — profile 2: one logging seam shipped on a stdlib CLI, then the gate refused iterion's own mirror (run 01a0af9e-9678)
+
+- Status: **campaign validated, gate refused by #1364** — `campaign` (1 commit) → cost cap →
+  resumed → `verify_build` → `verify_run` NET DIRTY → `review` clean → `gate` not converged →
+  `mr_gate` (open_mr false) → done.
+- Versions: bot instrument 0.1.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository (a one-file CLI with two tests),
+  `--var scope=logs --var max_passes=1 --var mission_notes="One central logging seam in
+  greet.py, standard-library logging only; scope excludes error tracking, so no SDK."`, `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20). The 90 % cost guard stopped the run before `verify_probe`
+  ($1.37 spent on the campaign alone); resumed with `--max-cost-usd 3`.
+- Result: $1.83, 10 min 18 s. The campaign shipped exactly the arbitration — a module logger
+  owned by `setup_logging()`, a `log_event(level, msg, **fields)` contract, a JSON formatter
+  with stable keys and a serialisation fallback that degrades instead of raising, `SENTRY_DSN`
+  deliberately never read — as commit `bb649c4` (4 files, 11/11 tests green, tree clean,
+  `work_remaining` empty). `verify_build` wrote and ran `verify.sh` (EXIT=0). Then the deterministic gate refused the tree — `NET DIRTY: 1 path(s) … Paths: ?? .claude/` — because iterion's own skills mirror sits untracked in the run worktree of a repository that does not ignore `.claude/`; #1364 carries the class (ten bots and four templates), with the engine's own `runOutputPaths` rule as the fix.
+  The in-loop review found nothing (`clean: true`). Storage branch
+  `iterion/run/01a0af9e-9678-7b50-a4a3-bf07e3896393` → `bb649c4`.
+- Value: the eight prompts' paragraph breaks reach the models (proven in the run's
+  `events.jsonl` for `campaign_system`, `verify_system`, `verify_user`, `review_system`; the MR
+  prompts were not rendered, `open_mr` false), and the campaign's reading of a one-sentence
+  mission note is exact.
+- Findings / misses: #1364 (bot-side, older than this wave). Also: a resume does not carry
+  `--merge-into none` — finalize reported "merge into main pending UI confirmation" on the
+  resumed run; nothing merged.
+- Engine hardening: none in this wave; #1364 is the follow-up.
+- Lessons for next run: on a repository that does not ignore `.claude/`, expect every pass to
+  be refused until #1364 lands; pass `--merge-into none` again on resume.
+
 ## 2026-08-20 — second dogfood: the opt-in tracing family (run 01a01db3)
 
 - Status: **validated**

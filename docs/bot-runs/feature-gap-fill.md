@@ -11,6 +11,27 @@ build+test into `verify.sh`, `verify_run` re-runs it on the actual exit code) wi
 `gate.converged` closing a bounded continuation loop. Inputs are typically the
 `type:feature-gap` issues filed by the adr-cartograph (Adry) bot.
 
+## 2026-09-17 — profile 2: both missing items closed from a four-line gap spec, gate refused by the mirror (run 01a0af9e-967f)
+
+- Status: **campaign validated, gate refused by #1364** — `campaign` (3 commits) →
+  `verify_build` → cost cap → resumed → `verify_run` NET DIRTY → `gate` not converged → done.
+- Versions: bot feature-gap-fill 2.3.1 (`dsl: 2`, wave 3b of #1344) · iterion `5fa790d82` for the bots; the engine the branch binary `v3.157.0+c31559517` (built on the wave-3a branch from main at v3.157.0; main is at v3.159.0 as this is written, one PR of engine work ahead), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: launched FROM a scratch greeter repository, `--var plan_phase=off --var max_passes=1`
+  and a `gap_spec` naming what to preserve (`greet NAME`, `--excited`, exit 2 on an empty name)
+  and what is missing (`--lang en|fr`, `Bonjour`, exit 3 on an unsupported language),
+  `--store-dir` the operator's workspace store, `--sandbox none`, `--merge-into none`, caps `--max-cost-usd 1.5 --max-duration 10m`, every LLM node on `claude_code`/`claude-opus-5` (the GPT forfait is closed until 2026-09-20). The 90 % cost guard fired before `verify_run`; resumed with `--max-cost-usd 3`.
+- Result: $1.39, 8 min 45 s. The campaign extended the existing `greet()` seam with a
+  `lang` parameter, wired `--lang`, added the exit-3 path with the exact message, kept every
+  preserved behaviour, and reported `gap_closed: true`, `missing_remaining` empty, three
+  commits. `verify_build` ran `verify.sh` green. Then the deterministic gate refused the tree — `NET DIRTY: 1 path(s) … Paths: ?? .claude/` — because iterion's own skills mirror sits untracked in the run worktree of a repository that does not ignore `.claude/`; #1364 carries the class (ten bots and four templates), with the engine's own `runOutputPaths` rule as the fix. Storage branch
+  `iterion/run/01a0af9e-967f-7c36-b007-2e9154dba3ee` → `7ff33a3`.
+- Value: the eleven prompts' paragraph breaks reach the models (proven for `campaign_system`,
+  `verify_system`, `verify_user`; plan prompts not rendered), and the preservation discipline
+  held on a spec that named it.
+- Findings / misses: #1364; the resume without `--merge-into none` (nothing merged).
+- Engine hardening: none in this wave.
+- Lessons for next run: same as instrument.
+
 ## 2026-07-07 — SANDBOXED path validated end-to-end after root-causing native:221edac8 (run 019f3e27)
 - Status: **VALIDATED (sandboxed)** — closes the sandbox blocker from the morning's dogfood party. Same gap_spec as the party runs, full sandbox (`iterion-sandbox-full:edge`), zero delegate retries.
 - Versions: bot v2.0.0 · iterion `dev+a239f80eb` (the fix stack below).
