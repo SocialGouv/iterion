@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -12,7 +13,8 @@ import (
 // Every shipped bot, example and fixture migrates without a refusal, and
 // the rewrite touches nothing but the header and the literals that hold a
 // backslash: the corpus is the proof the migrator is safe to run on the
-// catalogue, without migrating it here (that is its own reviewed lot).
+// catalogue, which its own reviewed lots migrate wave by wave (#1344). A
+// file already on profile 2 must come back byte-identical.
 func TestMigrateDryRunOverTheCorpus(t *testing.T) {
 	files := dsltest.CorpusFiles(t, "../../..")
 	literals := 0
@@ -26,7 +28,12 @@ func TestMigrateDryRunOverTheCorpus(t *testing.T) {
 			t.Errorf("%s: %v", path, err)
 			continue
 		}
-		if !res.Changed {
+		before := parser.Parse(path, string(src))
+		if before.File.EffectiveProfile() == 2 {
+			if res.Changed || !bytes.Equal(src, res.Migrated) || len(res.Changes) != 0 || len(res.Prompts) != 0 {
+				t.Errorf("%s: migrating an already-profile-2 file must be byte-idempotent", path)
+			}
+		} else if !res.Changed {
 			t.Errorf("%s: a profile-1 file that did not change", path)
 			continue
 		}
