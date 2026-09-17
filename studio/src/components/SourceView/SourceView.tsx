@@ -16,6 +16,7 @@ export default function SourceView() {
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const salvaged = useDocumentStore((s) => s.salvaged);
   const currentSource = useDocumentStore((s) => s.currentSource);
+  const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const [source, setSource] = useState("");
   const [editing, setEditing] = useState(false);
@@ -61,12 +62,17 @@ export default function SourceView() {
       // not read — which is why the refusal points here.
       applyParsedSource(result, { setDocument, setSalvaged });
       setDiagnostics(result.diagnostics);
+      // The applied text becomes the buffer's own. A repair that does not
+      // parse YET leaves the document a salvage, and the sync above would
+      // otherwise put the text this view opened with back over what the
+      // author just typed — the loss, inside the way out of it.
+      setCurrentSource(source);
       setParseError(null);
       setEditing(false);
     } catch (err) {
       setParseError(err instanceof Error ? err.message : "Parse failed");
     }
-  }, [source, setDocument, setDiagnostics, setSalvaged]);
+  }, [source, setDocument, setDiagnostics, setSalvaged, setCurrentSource]);
 
   const handleEditorWillMount = useCallback((monaco: Monaco) => {
     if (!monaco.languages.getLanguages().some((l: { id: string }) => l.id === ITER_LANGUAGE_ID)) {

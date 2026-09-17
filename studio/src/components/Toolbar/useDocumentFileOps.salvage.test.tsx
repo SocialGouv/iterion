@@ -29,7 +29,14 @@ import { useDocumentFileOps } from "./useDocumentFileOps";
 function Harness() {
   const ops = useDocumentFileOps({ confirm: async () => true });
   return (
-    <button onClick={() => void ops.handleSave()}>Save</button>
+    <>
+      <button onClick={() => void ops.handleSave()}>Save</button>
+      <input
+        aria-label="import"
+        type="file"
+        onChange={(e) => void ops.handleImport(e)}
+      />
+    </>
   );
 }
 
@@ -68,6 +75,31 @@ describe("the toolbar's Save", () => {
     expect(toasts[toasts.length - 1]?.message).toMatch(/did not parse/i);
     expect(toasts[toasts.length - 1]?.message).toMatch(/Source view/i);
     expect(api.saveFile).not.toHaveBeenCalled();
+  });
+
+  // Import unbinds, and unbinding clears the flag — which looks like
+  // protection and is the opposite: an unbound buffer still has one write,
+  // Save As, and it would put a file missing what the parser could not read
+  // under the name the author chose.
+  it("marks an imported file the parser could not read whole a salvage", async () => {
+    const store = createDocumentStore();
+    api.parseSource.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: ["imported.bot:4:1: error [E012]: unknown property"],
+      bindable: false,
+    });
+    render(
+      <DocumentStoreProvider store={store}>
+        <Harness />
+      </DocumentStoreProvider>,
+    );
+
+    const file = new File(["workflow y:\n  entry: done\n\nagent broken\n  nope\n"], "imported.bot");
+    fireEvent.change(screen.getByLabelText("import"), { target: { files: [file] } });
+
+    await waitFor(() => expect(api.parseSource).toHaveBeenCalled());
+    await waitFor(() => expect(store.getState().salvaged).toBe(true));
+    expect(store.getState().currentFilePath).toBeNull();
   });
 
   it("writes one that is not a salvage", async () => {

@@ -90,10 +90,14 @@ describe("the Source view of a salvaged file", () => {
     await waitFor(() => expect(store.getState().salvaged).toBe(false));
   });
 
-  // A repair that still does not parse leaves the refusal in place: the
-  // document is still only what could be read.
-  it("keeps the salvage when the text still does not parse", async () => {
+  // A repair that still does not parse leaves the refusal in place — and
+  // must leave the author's OWN text on screen. The buffer is still a
+  // salvage, so the sync re-runs; without the applied text becoming the
+  // buffer's own, it puts the text this view opened with back over what was
+  // just typed: the loss, inside the way out of it.
+  it("keeps the salvage but not the stale text when a repair does not parse yet", async () => {
     const store = salvagedStore();
+    const HALF_REPAIRED = "workflow y:\n  entry: done\n\nagent broken\n  half fixed\n";
     api.parseSource.mockResolvedValue({
       document: createEmptyDocument(),
       diagnostics: ["y.bot:4:1: error [E012]: unknown property"],
@@ -106,9 +110,16 @@ describe("the Source view of a salvaged file", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: HALF_REPAIRED } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
-    await waitFor(() => expect(api.parseSource).toHaveBeenCalled());
-    expect(store.getState().salvaged).toBe(true);
+    await waitFor(() => expect(store.getState().salvaged).toBe(true));
+    // The applied text is the buffer's own now — this is what the sync reads
+    // back, so asserting it is what makes the check bite.
+    await waitFor(() => expect(store.getState().currentSource).toBe(HALF_REPAIRED));
+    // And past the sync's debounce, the editor still shows it. Asserting the
+    // textarea alone would pass before the sync ever ran.
+    await new Promise((r) => setTimeout(r, 700));
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(HALF_REPAIRED);
   });
 });

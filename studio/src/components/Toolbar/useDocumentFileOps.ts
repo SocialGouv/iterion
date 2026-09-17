@@ -28,7 +28,7 @@ import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import { errorMessage, toastError } from "@/lib/errorHints";
 import { openExampleIntoStore } from "@/lib/openExample";
-import { salvageRefusal } from "@/lib/salvage";
+import { applyParsedSource, salvageRefusal } from "@/lib/salvage";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
@@ -215,9 +215,14 @@ export function useDocumentFileOps({
       const text = await file.text();
       try {
         const result = await api.parseSource(text);
-        setDocument(result.document);
         setDiagnostics(result.diagnostics);
+        // The path first — it clears the salvage flag — then the document and
+        // the verdict together. Unbinding does NOT protect an import: Save As
+        // is the only write an unbound buffer offers, and it would put a file
+        // missing what the parser could not read under the name the author
+        // chose.
         setCurrentFilePath(null);
+        applyParsedSource(result, { setDocument, setSalvaged });
         // Imported files are off-disk; the original text is the source.
         setCurrentSource(text);
       } catch (err) {
@@ -231,6 +236,7 @@ export function useDocumentFileOps({
       setDiagnostics,
       setCurrentFilePath,
       setCurrentSource,
+      setSalvaged,
       confirmDiscard,
       addToast,
     ],

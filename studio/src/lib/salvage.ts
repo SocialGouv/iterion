@@ -31,9 +31,15 @@ export function salvageRefusal(state: { salvaged: boolean }): string | null {
  * The two travel together on purpose. Setting the document without the
  * verdict is how a repaired buffer stays unwritable for the rest of the
  * session; setting the verdict without the document is how a salvage becomes
- * writable. Every site that applies a parsed source goes through here —
- * the Source view's Apply, a draft bot applied to a tab, the assistant's
- * proposal. (Import is not one: it unbinds, and unbinding clears the flag.)
+ * writable. Every site that applies a parsed source goes through here — the
+ * Source view's Apply, a draft bot applied to a tab, the assistant's
+ * proposal, and Import.
+ *
+ * Import is the one that looks exempt and is not: it unbinds, and unbinding
+ * clears the flag — which is the bug, not the protection. An unbound buffer
+ * still has one write, Save As, and that is where a file missing the region
+ * the parser could not read would land, under the name the author chose. It
+ * calls this AFTER setting the path, which clears what this sets.
  */
 export function applyParsedSource(
   parsed: { document: IterDocument; bindable?: boolean },
