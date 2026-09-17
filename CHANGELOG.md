@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.162.1](https://github.com/SocialGouv/iterion/compare/v3.162.0...v3.162.1) (2026-09-17)
+
+### Bug Fixes
+
+* **runtime:** a driver with no bind mount has a workspace, and the reset must find it ([#1365](https://github.com/SocialGouv/iterion/issues/1365)) ([ab57dde](https://github.com/SocialGouv/iterion/commit/ab57ddea8a79ea2b0b64b9f94dccb4d2999fc8ba)), references [#1195](https://github.com/SocialGouv/iterion/issues/1195)
+
+    <details><summary>why</summary>
+
+    A shared sandbox whose WorkspaceFolder is empty is not a sandbox without a workspace. containerWorkspaceFolder already states the rule — "an explicit Spec.WorkspaceFolder wins, an empty one means the same absolute path as on the host" — and engine_resolve.go already applies it. A driver with no host filesystem cannot bind-mount anything, so it copies the workspace to that same absolute path and leaves the field empty. That is the shape every cloud run takes.
+
+    </details>
+
 ## [3.162.0](https://github.com/SocialGouv/iterion/compare/v3.161.1...v3.162.0) (2026-09-17)
 
 ### Features
