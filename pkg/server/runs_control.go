@@ -283,7 +283,8 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -321,14 +322,26 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		}
 		sourcePath = resolved
 	}
+	// A run served by a STORED bot tier has no current source on this
+	// filesystem: resolveWorkflowPath would answer the baked catalog twin,
+	// which --auto refuses to diff against (ErrRewindStoredBotSourceUnresolved).
+	// Re-resolve the SAME row at its current version and hand --auto that —
+	// the resume path already does exactly this to replay a stored bot.
+	autoDiffPath, releaseBot, berr := s.currentStoredBotSource(r.Context(), runMeta, req.Auto && sourcePath == "")
+	if berr != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "resolve the bot's current source: %v", berr)
+		return
+	}
+	defer releaseBot()
 	result, err := s.runs.Rewind(r.Context(), runview.RewindSpec{
-		RunID:        id,
-		NodeID:       req.NodeID,
-		Auto:         req.Auto,
-		Force:        req.Force,
-		KeepFiles:    req.KeepFiles,
-		RestoreScope: restoreScope,
-		SourcePath:   sourcePath,
+		RunID:              id,
+		NodeID:             req.NodeID,
+		Auto:               req.Auto,
+		Force:              req.Force,
+		KeepFiles:          req.KeepFiles,
+		RestoreScope:       restoreScope,
+		SourcePath:         sourcePath,
+		AutoDiffSourcePath: autoDiffPath,
 	})
 	if err != nil {
 		switch {

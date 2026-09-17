@@ -37,6 +37,16 @@ var ErrRewindAmbiguous = errors.New("runview: rewind: the edit affects independe
 // or nowhere; the operator names the node instead.
 var ErrRewindUnitSourcesIncomplete = errors.New("runview: rewind: the run recorded its main file but not the fragments it imports — name the node with --node")
 
+// autoDiffPath is where --auto reads the source as it is NOW: the caller's
+// materialization of a stored bot's current version when it named one, else
+// the path every other part of the rewind uses.
+func autoDiffPath(spec RewindSpec, sourcePath string) string {
+	if spec.AutoDiffSourcePath != "" {
+		return spec.AutoDiffSourcePath
+	}
+	return sourcePath
+}
+
 // ErrRewindStoredBotSourceUnresolved is returned when --auto meets a run
 // served by a STORED bot tier (a team bot or a platform override) without
 // the caller naming where that bot's current source is.

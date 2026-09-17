@@ -157,6 +157,21 @@ type RewindSpec struct {
 	// operator rewinds precisely because they edited it, and the resume
 	// that follows executes the new graph too.
 	SourcePath string
+	// AutoDiffSourcePath names where the source as it is NOW lives, when
+	// that is NOT where SourcePath resolves. It is read by --auto's diff,
+	// and by nothing else.
+	//
+	// It exists for the cloud shape: a run served by a STORED bot tier has
+	// no current source on this filesystem, and resolveWorkflowPath answers
+	// such a run with the BAKED catalog twin — a fallback written so the
+	// studio's diagram view has something compilable to draw. A caller that
+	// HAS materialized the bot's current version (the server, from the
+	// botsource store) names it here.
+	//
+	// Deliberately not folded into SourcePath: that one also tells the
+	// workspace revert which files to leave alone, so pointing it at a
+	// materialization would quietly change what a restore protects.
+	AutoDiffSourcePath string
 	// ExpectedPivot is an optional host-side guard evaluated after auto
 	// resolution and fan-out promotion, immediately before mutation.
 	ExpectedPivot string
@@ -226,7 +241,7 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, spec.SourcePath != "", wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, autoDiffPath(spec, sourcePath), spec.SourcePath != "" || spec.AutoDiffSourcePath != "", wf, executed)
 		if err != nil {
 			return nil, err
 		}
@@ -428,7 +443,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	var changes []DeclChange
 	autoTargeted := false
 	if pivot == "" {
-		pivot, changes, err = resolveAutoPivotForRun(run, sourcePath, spec.SourcePath != "", wf, executed)
+		pivot, changes, err = resolveAutoPivotForRun(run, autoDiffPath(spec, sourcePath), spec.SourcePath != "" || spec.AutoDiffSourcePath != "", wf, executed)
 		if err != nil {
 			return nil, err
 		}
