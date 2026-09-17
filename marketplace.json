@@ -1,7 +1,7 @@
 {
   "name": "iterion-dsl",
   "version": "0.1.0",
-  "description": "Write correct .bot workflow files for the Iterion orchestration engine",
+  "description": "Write correct .bot workflow files for the Iterion orchestration engine, and run the adversarial review loop that ships them",
   "author": "SocialGouv",
   "license": "MIT",
   "repository": "https://github.com/SocialGouv/iterion",
@@ -10,6 +10,11 @@
       "name": "iterion-dsl",
       "path": ".",
       "description": "DSL reference for writing .bot multi-agent workflow files"
+    },
+    {
+      "name": "adversarial-review-loop",
+      "path": "skills/adversarial-review-loop",
+      "description": "Break your own change before a reviewer does — an adversarial review loop with a round budget, class-wide fixes and mutation-proved tests"
     }
   ],
   "compatibility": [
@@ -27,6 +32,8 @@
     "dsl",
     "ai-agents",
     "llm",
-    "multi-agent"
+    "multi-agent",
+    "code-review",
+    "adversarial-review"
   ]
 }

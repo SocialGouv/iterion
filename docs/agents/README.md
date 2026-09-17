@@ -18,7 +18,7 @@ carry: the failure that was measured, on this repo, on a given date.
 | Page | Read it when |
 |---|---|
 | [review-and-merge.md](review-and-merge.md) | You are about to open, merge or unblock a PR. The required loop, the merge queue, the Revi gate, the Billy pause + re-arm procedure. |
-| [adversarial-review-loop.md](adversarial-review-loop.md) | Before pushing anything to the gate. The local round: the subagent prompt, verifying the fix as hard as the finding, the two blocking conditions, the three exits from a non-converging loop. |
+| [adversarial-review-loop.md](adversarial-review-loop.md) | Before pushing anything to the gate, and throughout a feature's delivery. Why the round is required here, the round budget (a ceiling by change size), who pays a local round versus a gate cycle, the commit trailers that report both. The protocol itself is portable and lives in the skill [`skills/adversarial-review-loop/SKILL.md`](../../skills/adversarial-review-loop/SKILL.md). |
 | [engine-map.md](engine-map.md) | You need to know which package owns a behaviour, before grepping blind. |
 | [dsl-and-runtime.md](dsl-and-runtime.md) | You are writing or debugging a `.bot`, or touching the compiler/runtime: node types, edges, budget, resume, worktree finalization. |
 | [backends-and-execution.md](backends-and-execution.md) | A node picks the wrong model, loses its tools, or behaves "dumber" than the native harness; anything about sandboxes, plugins, supervisors or cursors. |

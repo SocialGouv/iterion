@@ -14,13 +14,23 @@ The loop is:
    [adversarial-review-loop.md](adversarial-review-loop.md). Measured on this
    repo: five consecutive gate verdicts at ≥ 1 medium on a fresh line (~6 h of
    queue) against one 15-minute local round followed by a first verdict at
-   0 findings.
+   0 findings. That page also carries the **round budget** — a ceiling on cost
+   by change size (≤ 8 files → 5 local rounds, 10 if the diff blocks · 9–25 →
+   20 · > 25 → 50), never a
+   target: what decides another round is whether the last one still returned
+   verified high or critical findings.
 2. **The gate closes the loop; the local round never does.** A sterile local
    round means "time to push", not "done". Revi's `questions` channel is
    non-blocking, but each question gets a doc fix or a written refusal — never
-   silence.
+   silence. Symmetrically: at the **third** verdict with findings on the same
+   PR, stop pushing — what is left is local-round work.
 3. **The developer fixes the findings** — by hand, or through another local
    round. **Do not comment `/billy`**: see [the pause](#billy-is-paused) below.
+4. **Every commit that ships reviewed work says what the review cost.**
+   `Adversarial-Rounds:` and `Adversarial-Model:` trailers, `0 (trivial: …)`
+   written explicitly when nobody attacked the change — format, what survives
+   the squash, and rationale in
+   [adversarial-review-loop.md](adversarial-review-loop.md#say-what-the-review-cost-in-the-commit).
 
 ## The merge queue
 

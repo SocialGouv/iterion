@@ -77,7 +77,9 @@ Every change lands through a pull request whose `revi/review` gate is green
 (admins may bypass — including a direct push to `main`, no PR; the release
 bot does the same — see review-and-merge.md).
 The loop is **local adversarial round → fix → re-attack the fix → push →
-`/revi` → green**. Protocol:
+`/revi` → green**, and it is not a pre-push formality: a feature is delivered
+*through* it — plan review upstream by another model family, a round per slice,
+a round on the whole diff before the push. Protocol:
 [docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);
 gate, merge queue and release mechanics:
 [docs/agents/review-and-merge.md](docs/agents/review-and-merge.md).
@@ -94,6 +96,17 @@ gate, merge queue and release mechanics:
    silence.
 3. **The developer fixes the findings** — by hand or through another local
    round. **Do not comment `/billy`.**
+4. **Budget, and transparency in the commit.** Round 1 announces an *estimate*
+   from the diff's file count (~3 / ~6 / ~8) — what decides the next round is
+   the findings, not the counter: while rounds keep returning verified
+   high/critical, keep going. The **ceiling** of *local* rounds bounds the cost
+   only: ≤ 8 files → 5 (10 if the diff blocks: hook/lint/guard/filter) · 9–25 →
+   20 · > 25 → 50 — permission, never a target, and never a licence for a loop
+   auditing its own fixes. Local rounds are paid by your own plan, gate cycles
+   by the shared credential: that asymmetry is the whole point. Every commit
+   **that ships reviewed work** then says what the review cost —
+   `Adversarial-Rounds:` and `Adversarial-Model:` trailers, `0 (trivial: …)`
+   written explicitly.
 
 **Billy is paused (2026-09-15).** The fixer campaign is a whole-session
 claude_code agent whose verify gate re-runs this repo's full build+test
@@ -187,7 +200,7 @@ index and contribution rule: **[docs/agents/README.md](docs/agents/README.md)**.
 | Read it when | Page |
 |---|---|
 | Opening, merging or unblocking a PR | [review-and-merge.md](docs/agents/review-and-merge.md) |
-| Before pushing anything to the gate | [adversarial-review-loop.md](docs/agents/adversarial-review-loop.md) |
+| Before pushing anything to the gate, and throughout a feature's delivery | [adversarial-review-loop.md](docs/agents/adversarial-review-loop.md) |
 | Finding which package owns a behaviour | [engine-map.md](docs/agents/engine-map.md) |
 | Writing/debugging a `.bot`, or touching compiler/runtime | [dsl-and-runtime.md](docs/agents/dsl-and-runtime.md) |
 | A node picks the wrong model, loses tools, or acts "dumber" than its native harness; sandboxes, plugins, supervisors, cursors | [backends-and-execution.md](docs/agents/backends-and-execution.md) |

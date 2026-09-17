@@ -59,9 +59,20 @@ bot, may bypass), and the gate is not the first reviewer: run a **local
 adversarial round on the diff before pushing** — a subagent whose posture is to break the change, with every
 finding *and every fix it proposes* verified before a line is written.
 The gate closes the loop; a sterile local round only means "time to
-push". Findings are the developer's to fix, by hand or through another
-local round — **`/billy` is paused on this repo** (cost, until the team
-spends its own BYOK key). Protocol:
+push". A feature is delivered *through* that loop — plan review upstream
+by another model family, a round per slice, a round on the whole diff
+before the push — not reviewed once at the end. Findings are the
+developer's to fix, by hand or through another local round — **`/billy`
+is paused on this repo** (cost, until the team spends its own BYOK key).
+What decides another round is the findings, not a counter: while rounds
+keep returning verified high/critical, keep going. The budget is a
+**ceiling on cost, not a target** (≤ 8 changed files → 5 local rounds,
+10 if the diff blocks — hook/lint/guard/filter · 9–25 → 20 · > 25 → 50),
+because a local round is paid by your own plan and a gate cycle by the
+shared credential. Every commit **that ships reviewed work** then says
+what the review cost — `Adversarial-Rounds:` and `Adversarial-Model:`
+trailers, `0 (trivial: …)` written explicitly rather than omitted.
+Protocol:
 [docs/agents/adversarial-review-loop.md](docs/agents/adversarial-review-loop.md);
 gate and merge mechanics:
 [docs/agents/review-and-merge.md](docs/agents/review-and-merge.md).
