@@ -192,6 +192,28 @@ vars:
   ## json.dumps LENGTHS (characters, not bytes), so an export heavy in
   ## non-ASCII can overshoot the number set here.
   deepsec_bank_max_bytes: int  = 524288
+  ## Which agent plugin deepsec investigates with, and on which model.
+  ##
+  ## deepsec has its OWN backend system, unrelated to iterion's: it drives
+  ## `claude`, `codex` or `pi` from inside this tool node, and each resolves its
+  ## own credentials. Empty keeps the historical behaviour exactly -- the
+  ## gateway probe below, falling back to `--agent claude` -- so nothing moves
+  ## for a run that does not set these.
+  ##
+  ## `codex` is the route onto the ChatGPT subscription rather than the shared
+  ## Claude one: deepsec reads ~/.codex/auth.json when no OPENAI_API_KEY is set
+  ## (packages/processor/src/agents/codex-sdk.ts), and the platform mounts that
+  ## file into the sandbox. It matters because the deep scan is the dominant
+  ## consumer of a pass -- measured, 79 of 102 minutes -- and nothing in the
+  ## engine meters it: no usage_progress, absent from backends_used, and
+  ## max_cost_usd does not bound it. Which subscription it draws on is
+  ## therefore an operator decision, not an implementation detail.
+  ##
+  ## The value is not checked against a list of known agents, only against a
+  ## charset: deepsec is the authority on which plugins exist, and enumerating
+  ## them here would refuse the next one it ships.
+  deepsec_agent:       string = ""
+  deepsec_model:       string = ""
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial
   ## "disprove" voters; majority vote drives the final verdict
@@ -2825,7 +2847,7 @@ compute deepsec_gate:
 ## untrusted-input boundary the triage prompt already applies to
 ## semgrep/gosec output.
 tool run_deepsec_scanner:
-  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} bash -c '
+  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} DS_AGENT={{vars.deepsec_agent}} DS_MODEL={{vars.deepsec_model}} bash -c '
 set +e
 mkdir -p "$(dirname "$OUT_JSON")"
 
@@ -2839,7 +2861,19 @@ fi
 
 # ── graceful-degrade probe ────────────────────────────────────────
 err_envelope() {
-  REASON="$1"
+  # The reason is spliced into a JSON string literal below, and some callers pass
+  # a value that was REFUSED for carrying arbitrary syntax -- the charset guards
+  # fire on exactly those. A quote, a backslash or a control byte would emit
+  # malformed JSON, which this node declares as scanner_output, so the refusal
+  # would be lost to a parse error that never names the offending var. And
+  # "errors" is the LAST key: a crafted value could close the array and append a
+  # second "coverage" object, which last-key-wins decoders accept -- forging a
+  # refused deep scan into a completed one, inside the very envelope that exists
+  # to make that impossible. Strip rather than escape: this is a diagnostic, and
+  # a lossy reason that parses beats an exact one that does not. Non-ASCII in a
+  # path is preserved; only the two structural characters and the control range
+  # go.
+  REASON=$(printf "%s" "$1" | tr -d "\\\\\"" | tr -d "\000-\037")
   printf "{\"scanner\":\"deepsec\",\"subscanners\":[],\"json_paths\":{},\"finding_count\":0,\"coverage\":{\"source\":\"deepsec_unavailable\",\"steps_failed\":null,\"candidates_found\":null,\"candidate_files\":null,\"files_processed\":null,\"scan_phase\":null,\"process_phase\":null,\"process_limit\":null,\"limit_truncated\":null,\"process_failed\":false,\"process_complete\":false},\"errors\":[\"deepsec unavailable: %s\"]}\n" "$REASON"
   exit 0
 }
@@ -2863,10 +2897,44 @@ if ! command -v deepsec >/dev/null 2>&1; then
 fi
 
 # ── provider selection ───────────────────────────────────────────
-if [ -n "${AI_GATEWAY_API_KEY:-}" ] || [ -n "${DEEPSEC_API_KEY:-}" ]; then
+# Both values reach deepsec as bare words in an unquoted expansion, so neither may
+# split into a second argument NOR pass for a flag: a leading dash is refused
+# first (--agent --some-flag reads as two flags to any parser, and the agent name
+# silently becomes whatever follows), then the charset. A refusal, not a silent
+# trim: a pass that runs on an agent nobody chose is the class of quiet
+# substitution this node exists to refuse elsewhere.
+case "$DS_AGENT" in
+  -*)
+    err_envelope "deepsec_agent cannot begin with a dash, it would reach deepsec as a second FLAG rather than as an agent name: $DS_AGENT" ;;
+  *[!A-Za-z0-9._-]*)
+    err_envelope "deepsec_agent is not usable as a single argument: $DS_AGENT" ;;
+esac
+case "$DS_MODEL" in
+  -*)
+    err_envelope "deepsec_model cannot begin with a dash, it would reach deepsec as a second FLAG rather than as a model name: $DS_MODEL" ;;
+esac
+# A DENY-list, and deliberately so: an unquoted expansion is subject to exactly
+# two things -- word splitting on IFS, and pathname expansion -- so whitespace
+# and the three glob characters are the complete set that can turn one argument
+# into something else. Nothing is re-parsed, so a quote or a dollar reaches
+# deepsec as a literal and is its business to reject. An ALLOW-list here would
+# be an artificial limit: provider model ids legitimately carry : and @
+# (us.anthropic.claude-opus-4-8-v1:0, anthropic/claude-opus-4@20250101), and
+# refusing one degrades the WHOLE deep scan rather than one flag.
+if [ "$DS_MODEL" != "$(printf "%s" "$DS_MODEL" | tr -d "[:space:]*?[")" ]; then
+  err_envelope "deepsec_model carries whitespace or a glob character, which would not survive as one argument: $DS_MODEL"
+fi
+# An explicit agent is an operator choice and outranks the gateway probe --
+# never replace what was asked for with what was detected.
+if [ -n "$DS_AGENT" ]; then
+  AGENT_ARGS="--agent $DS_AGENT"
+elif [ -n "${AI_GATEWAY_API_KEY:-}" ] || [ -n "${DEEPSEC_API_KEY:-}" ]; then
   AGENT_ARGS=""    # gateway preflight picks the model
 else
   AGENT_ARGS="--agent claude"
+fi
+if [ -n "$DS_MODEL" ]; then
+  AGENT_ARGS="$AGENT_ARGS --model $DS_MODEL"
 fi
 
 # ── state dirs under scan_dir ─────────────────────────────────────
@@ -2890,6 +2958,10 @@ case "${RUN_ID:-}" in
 esac
 LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 mkdir -p "$DSW" "$LOG_DIR"
+# Which agent actually ran is not derivable from the envelope: deepsec is not in
+# backends_used and the engine meters none of it. env.log is the one log that
+# travels in errors[] unconditionally, so the answer leaves the pod with it.
+echo "[deepsec] agent_args=$AGENT_ARGS" >>"$LOG_DIR/env.log"
 
 cd "$WS" || err_envelope "workspace_dir unreadable: $WS"
 
@@ -3361,6 +3433,14 @@ fi
 # so several names are tried; and when none answers, the message says which
 # ones were tried and what the directory actually holds. A diagnostic that
 # fails must name what it saw, never just "unreadable".
+#
+# Re-emitted at the TAIL, and that placement is the point: env.log travels as
+# its last 1500 characters only, while the copy written at startup sits at the
+# head. Anything appended in between -- the counter_failed branch pours a Python
+# traceback in there -- evicts it, and precisely in the failure where the
+# question "which agent ran?" is asked. deepsec is absent from backends_used, so
+# this line is the only answer that exists.
+echo "[deepsec] agent_args=$AGENT_ARGS" >>"$LOG_DIR/env.log"
 ERR_JSON=$(printf "%s" "$ERRS" | LOG_DIR="$LOG_DIR" python3 -c "
 import json, os, sys
 e = sys.stdin.read().strip().split()

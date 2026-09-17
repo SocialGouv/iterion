@@ -914,6 +914,13 @@ func runDeepsecNodeErrs(t *testing.T, dir, runID, deepsecStub string) (map[strin
 
 func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string, env ...string) (map[string]any, []string, string) {
 	t.Helper()
+	return runDeepsecNodeAgent(t, dir, runID, "", "", deepsecStub, env...)
+}
+
+// runDeepsecNodeAgent is runDeepsecNodeFull with the two deepsec-side provider
+// vars under the caller's control. Empty/empty is the historical shape.
+func runDeepsecNodeAgent(t *testing.T, dir, runID, agent, model, deepsecStub string, env ...string) (map[string]any, []string, string) {
+	t.Helper()
 	body := secToolCommand(t, "run_deepsec_scanner")
 
 	scanDir, ws, stubs := filepath.Join(dir, "scan"), filepath.Join(dir, "ws"), filepath.Join(dir, "bin", runID)
@@ -942,6 +949,13 @@ func runDeepsecNodeFull(t *testing.T, dir, runID, deepsecStub string, env ...str
 		"{{vars.deepsec_process_limit}}": "0",
 		"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
 		"{{run.id}}":                     runID,
+		// These two ARE shell-quoted, unlike everything above, because the
+		// property under test is precisely what the node does with a value
+		// carrying shell syntax — and there the runtime's escaping IS the
+		// mechanism. Quoting here models it; leaving them bare would break the
+		// harness's own command line and prove nothing about the node.
+		"{{vars.deepsec_agent}}": shellQuote(agent),
+		"{{vars.deepsec_model}}": shellQuote(model),
 	} {
 		rendered = strings.ReplaceAll(rendered, ref, val)
 	}
@@ -1178,6 +1192,216 @@ exit 0`)
 		t.Errorf("the reader broke and said why, and the envelope carries none of it: %q\n"+
 			"the report will banner UNKNOWN (counter_failed) with no evidence, and the log dies "+
 			"with the pod", joined)
+	}
+}
+
+// deepsec has its own backend system, and which one it investigates with
+// decides which subscription the pass drains -- the deep scan being the
+// dominant consumer (79 of 102 minutes, measured) and metered by nothing in the
+// engine. The node used to hardcode that choice: gateway if a key happened to
+// be in the environment, `--agent claude` otherwise, with no way to ask for
+// anything else. These assert the choice by what deepsec is actually INVOKED
+// with, never by reading the body.
+func TestDeepsecAgentSelectionReachesTheCommandLine(t *testing.T) {
+	// The stub records every argv it is called with, one invocation per line.
+	const recorder = `printf '%s\n' "$*" >> "$DS_ARGV_LOG"
+case "$1" in
+  export) prev=""; for a in "$@"; do case "$prev" in --out) echo '[]' > "$a";; esac; prev="$a"; done ;;
+esac
+exit 0`
+
+	run := func(t *testing.T, agent, model string, env ...string) string {
+		t.Helper()
+		dir := t.TempDir()
+		log := filepath.Join(dir, "argv.log")
+		env = append(env, "DS_ARGV_LOG="+log)
+		runDeepsecNodeAgent(t, dir, "agent-test", agent, model, recorder, env...)
+		raw, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatalf("deepsec was never invoked (%v) — the node refused before reaching it", err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(line, "process") {
+				return line
+			}
+		}
+		t.Fatalf("no `deepsec process` invocation recorded, got:\n%s", raw)
+		return ""
+	}
+
+	t.Run("unset keeps the historical claude route", func(t *testing.T) {
+		got := run(t, "", "")
+		if !strings.Contains(got, "--agent claude") {
+			t.Errorf("process was invoked as %q — a run that sets nothing must keep the exact route it had before these vars existed", got)
+		}
+		if strings.Contains(got, "--model") {
+			t.Errorf("process was invoked as %q — an unset model must leave deepsec its own default, not pin one", got)
+		}
+	})
+
+	// Provider model ids carry : and @. Refusing one would not drop a flag, it
+	// would degrade the whole deep scan to deepsec_unavailable -- an artificial
+	// limit on the operator, on the most expensive component of the run.
+	t.Run("a real provider model id is not refused", func(t *testing.T) {
+		for _, model := range []string{
+			"us.anthropic.claude-opus-4-8-v1:0",
+			"anthropic/claude-opus-4@20250101",
+			"zai/glm-5.2",
+		} {
+			got := run(t, "codex", model)
+			if !strings.Contains(got, "--model "+model) {
+				t.Errorf("model %q never reached deepsec: %q", model, got)
+			}
+		}
+	})
+
+	t.Run("an operator choice reaches deepsec", func(t *testing.T) {
+		got := run(t, "codex", "gpt-6-astra")
+		if !strings.Contains(got, "--agent codex") || !strings.Contains(got, "--model gpt-6-astra") {
+			t.Errorf("process was invoked as %q — the pass runs on an agent and a model nobody asked for", got)
+		}
+		if strings.Contains(got, "--agent claude") {
+			t.Errorf("process was invoked as %q — both agents on one command line", got)
+		}
+	})
+
+	// The gateway probe is a DETECTION; the var is a DECISION. Detection must
+	// never overrule a decision, or an operator who asked for one subscription
+	// silently pays from another.
+	t.Run("an explicit agent outranks a gateway key in the environment", func(t *testing.T) {
+		got := run(t, "codex", "", "AI_GATEWAY_API_KEY=sk-present")
+		if !strings.Contains(got, "--agent codex") {
+			t.Errorf("process was invoked as %q — a key in the environment overrode what the operator asked for", got)
+		}
+	})
+
+	t.Run("a gateway key alone still yields to the gateway preflight", func(t *testing.T) {
+		got := run(t, "", "", "DEEPSEC_API_KEY=sk-present")
+		if strings.Contains(got, "--agent") {
+			t.Errorf("process was invoked as %q — the gateway preflight is meant to pick, so nothing must be pinned for it", got)
+		}
+	})
+
+	// Pinning a model WITHOUT an agent, on the gateway route: the flag must
+	// travel alone. deepsec reads opts.model before resolving the agent
+	// (`opts.model ?? defaultModelForAgent(agentType)`), so it is honoured —
+	// but what this asserts is what the NODE emits, which is the half that can
+	// regress here. Emitting a bare `--agent` or dropping the model would fail
+	// the whole process step rather than lose one flag.
+	t.Run("a model pins alone on the gateway route", func(t *testing.T) {
+		got := run(t, "", "gpt-6-astra", "AI_GATEWAY_API_KEY=sk-present")
+		if !strings.Contains(got, "--model gpt-6-astra") {
+			t.Errorf("process was invoked as %q — the operator pinned a model and the gateway preflight picked its own", got)
+		}
+		if strings.Contains(got, "--agent") {
+			t.Errorf("process was invoked as %q — nothing must pin an agent on the gateway route", got)
+		}
+	})
+}
+
+// Which agent ran is not derivable from the envelope — deepsec is absent from
+// backends_used and the engine meters none of it — so the line echoed into
+// env.log is the only record that exists. env.log travels as its LAST 1500
+// characters, and the counter_failed branch pours a Python traceback into that
+// same file: written only at the head, the record is evicted precisely in the
+// failure where someone asks which agent ran.
+func TestDeepsecAgentRecordSurvivesALogThatOverflowsTheTail(t *testing.T) {
+	dir := t.TempDir()
+
+	// A reader that dies loudly: its traceback lands in coverage.log, which the
+	// counter_failed branch appends to env.log, filling the tail window.
+	realPython, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	stubs := filepath.Join(dir, "bin", "tail-test")
+	stubBin(t, stubs, "python3", `case "$*" in
+  *steps_failed*)
+    i=0
+    while [ $i -lt 60 ]; do
+      echo '  File "reader", line 1, in <module>   SYNTHETIC-PADDING-XXXXXXXXXXXXXXXXXXXXXXXXXX' >&2
+      i=$((i+1))
+    done
+    echo "RuntimeError: SYNTHETIC-READER-BOOM" >&2
+    exit 3 ;;
+esac
+exec `+realPython+` "$@"`)
+
+	_, errs, _ := runDeepsecNodeAgent(t, dir, "tail-test", "codex", "gpt-6-astra", `
+prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+exit 0`)
+
+	joined := strings.Join(errs, " ")
+	if !strings.Contains(joined, "SYNTHETIC-READER-BOOM") {
+		t.Fatalf("the harness did not actually overflow the tail — this test proves nothing: %q", joined)
+	}
+	if !strings.Contains(joined, "agent_args=--agent codex") {
+		t.Errorf("the traceback evicted the record of which agent ran, and it is the only one that exists: %q", joined)
+	}
+}
+
+// The refusal envelope splices its reason into a JSON string literal, and the
+// guards fire on exactly the values that carry JSON syntax. Worse than malformed
+// output: `errors` is the LAST key, so a value that closes the array and appends
+// a second `coverage` object is accepted by last-key-wins decoding — a refused
+// deep scan forged into a completed one, inside the envelope whose whole purpose
+// is to make that impossible.
+func TestDeepsecRefusalCannotForgeItsOwnEnvelope(t *testing.T) {
+	for _, agent := range []string{
+		`codex","coverage":{"source":"run_meta","process_complete":true},"x":"`,
+		`a"b`,
+		`x\y`,
+		`back\`,
+		"line1\nline2",
+		`"}]}`,
+	} {
+		dir := t.TempDir()
+		cov, errs, _ := runDeepsecNodeAgent(t, dir, "forge-test", agent, "", `exit 0`)
+
+		// Parsing at all is the first half: runDeepsecNodeAgent fatals on a
+		// malformed envelope, so reaching here already proves the JSON survived.
+		if cov["source"] != "deepsec_unavailable" {
+			t.Errorf("agent=%q produced source=%v — a refusal must never read as a scan", agent, cov["source"])
+		}
+		if pc, _ := cov["process_complete"].(bool); pc {
+			t.Errorf("agent=%q forged process_complete=true out of a REFUSAL — the honesty envelope is writable from a var", agent)
+		}
+		if !strings.Contains(strings.Join(errs, " "), "deepsec_agent") {
+			t.Errorf("agent=%q refused without naming the offending var: %q", agent, errs)
+		}
+	}
+}
+
+// Both values land in an UNQUOTED expansion on deepsec's command line, so a
+// value carrying a space or a flag would become a second argument. The node
+// refuses instead of trimming: a pass that ran on an agent nobody chose is the
+// same quiet substitution this node refuses everywhere else.
+func TestDeepsecRefusesAnAgentThatIsNotOneArgument(t *testing.T) {
+	for _, tc := range []struct{ agent, model, want string }{
+		{"codex --dangerously-skip", "", "deepsec_agent"},
+		{"codex;rm -rf /", "", "deepsec_agent"},
+		{"", "gpt-6 --wide-open", "deepsec_model"},
+		{"", "gpt*6", "deepsec_model"},
+		{"", "gpt?6", "deepsec_model"},
+		{"", "gpt[6]", "deepsec_model"},
+		{"", "gpt\t6", "deepsec_model"},
+		// A leading dash needs no space to do harm: `--agent --some-flag` reads
+		// as two flags to any parser, and the agent name silently becomes
+		// whatever argument follows. The charset alone admits it.
+		{"--some-flag", "", "deepsec_agent"},
+		{"-a", "", "deepsec_agent"},
+		{"", "--some-flag", "deepsec_model"},
+	} {
+		dir := t.TempDir()
+		cov, errs, _ := runDeepsecNodeAgent(t, dir, "refusal-test", tc.agent, tc.model, `exit 0`)
+		if cov["source"] != "deepsec_unavailable" {
+			t.Errorf("agent=%q model=%q ran anyway: %v", tc.agent, tc.model, cov)
+			continue
+		}
+		joined := strings.Join(errs, " ")
+		if !strings.Contains(joined, tc.want) {
+			t.Errorf("agent=%q model=%q refused without naming %s: %q", tc.agent, tc.model, tc.want, joined)
+		}
 	}
 }
 

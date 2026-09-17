@@ -197,6 +197,11 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 			// the workspace scratch cannot truncate each other's logs — and it
 			// refuses to start without one.
 			"{{run.id}}": "honesty-test",
+			// Empty: this test is about what the node leaves on disk, so it
+			// takes deepsec's historical provider route. Which agent runs is
+			// exercised in TestDeepsecAgentSelectionReachesTheCommandLine.
+			"{{vars.deepsec_agent}}": "''",
+			"{{vars.deepsec_model}}": "''",
 		} {
 			rendered = strings.ReplaceAll(rendered, ref, val)
 		}

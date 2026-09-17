@@ -104,15 +104,42 @@ When set, the workflow:
    Seki candidate per the field-mapping table in
    [`scanner-deepsec.md`](../bots/sec-audit-source/skills/scanner-deepsec.md).
 
-Provider selection (no API key plumbed):
+Provider selection (no API key plumbed), in precedence order:
 
-- If `AI_GATEWAY_API_KEY` or `DEEPSEC_API_KEY` is set in the run env,
-  deepsec routes through the Vercel AI Gateway (its native preflight).
+- **`--var deepsec_agent=<claude|codex|pi>`, when set, wins.** deepsec has
+  its own backend system, unrelated to iterion's, and this is the only
+  way to say which of its plugins investigates. `--var
+  deepsec_model=<model>` pins the model on any of the three routes below
+  (`deepsec process --model` is accepted whether or not `--agent` is
+  passed); left empty, deepsec keeps its own per-agent default.
+  An explicit agent deliberately outranks the gateway probe: the probe
+  is a detection, the var is a decision, and it decides which
+  subscription the pass draws on — the deep scan is the dominant
+  consumer of a run and no engine counter meters it.
+  Both values reach deepsec as bare words, so both refuse a **leading
+  dash** — it would read as a second flag and the name would silently
+  become the next argument. Beyond that the two differ on purpose:
+  `deepsec_agent` is held to `A-Za-z0-9._-` (no `/`, so an agent name
+  cannot become a plugin path), while `deepsec_model` refuses only what
+  cannot survive an unquoted expansion — whitespace and the glob
+  characters `*?[`. Provider model ids legitimately carry `:` and `@`
+  (`us.anthropic.claude-opus-4-8-v1:0`,
+  `anthropic/claude-opus-4@20250101`), and refusing one would degrade
+  the whole deep scan rather than drop a flag.
+- Otherwise, if `AI_GATEWAY_API_KEY` or `DEEPSEC_API_KEY` is set in the
+  run env, deepsec routes through the Vercel AI Gateway (its native
+  preflight), which picks the model itself.
 - Otherwise the tool node passes `--agent claude` so deepsec reuses
   the local `claude` CLI subscription. The sec sandbox mounts
   `${localEnv:HOME}/.claude` into the container at
   `/home/devbox/.claude` so the OAuth credentials are visible to the
-  spawned CLI.
+  spawned CLI. `codex` is the symmetric route onto a ChatGPT
+  subscription: deepsec reads `~/.codex/auth.json` when no
+  `OPENAI_API_KEY` is set, and the platform mounts that file too.
+
+Whichever route is taken is echoed into the node's `env.log`, which
+travels out in the envelope's `errors[]` — deepsec is absent from
+`backends_used`, so that line is the only record of which agent ran.
 
 ```bash
 # Default behaviour
