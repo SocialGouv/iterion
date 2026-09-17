@@ -533,7 +533,7 @@ func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
 
 // An expired access token is only dead when nothing can renew it. The
 // refresh worker heals exactly the expired-but-refreshable record
-// (ExpiringBefore lists expired ones; RunOnce refreshes every refreshable
+// (DueForRefresh lists expired ones; RunOnce refreshes every refreshable
 // one), and every producer funnels through sealOAuthRecord — so refusing
 // that shape at paste time left a stale export from a LOGGED-IN machine
 // unconnectable, with `claude login` as the wrong remedy (#627 round 1).
@@ -561,7 +561,7 @@ func TestOAuthCredentialIngestion_ExpiredIsRefusedOnlyWithoutARefreshToken(t *te
 			t.Fatalf("stored record: %v", err)
 		}
 		if rec.NotRefreshable || rec.AccessTokenExpiresAt == nil || rec.AccessTokenExpiresAt.After(time.Now()) {
-			t.Fatalf("stored record = %+v, want refreshable with its past expiry kept (ExpiringBefore must list it)", rec)
+			t.Fatalf("stored record = %+v, want refreshable with its past expiry kept (DueForRefresh must list it)", rec)
 		}
 	})
 

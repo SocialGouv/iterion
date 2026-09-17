@@ -327,7 +327,8 @@ func TestOAuthRefreshWorker_RefreshesCodexWithNoConfiguredClientID(t *testing.T)
 			view.Tokens.RefreshToken, "rt.rotated")
 	}
 	if rec.AccessTokenExpiresAt == nil {
-		t.Fatal("no stored expiry after the refresh — ExpiringBefore cannot return this record again")
+		t.Fatal("no stored expiry after the refresh — the record stays due on every sweep, which re-runs " +
+			"the exchange and rotates the refresh token for nothing")
 	}
 	if got := rec.AccessTokenExpiresAt.UTC(); !got.Equal(newExp) {
 		t.Errorf("stored expiry = %s, want the refreshed token's own exp %s", got, newExp)

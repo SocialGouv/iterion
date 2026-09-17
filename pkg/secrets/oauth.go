@@ -46,7 +46,7 @@ func (k OAuthKind) Valid() bool {
 // than an individual user. An org-scoped forfait is stored as an
 // ordinary OAuthRecord whose UserID is OrgOwnerKey(tenantID) — this
 // reuses the whole store/seal/refresh machinery (AAD, Mongo id,
-// ExpiringBefore) without a schema change. The cloud publisher uses
+// DueForRefresh) without a schema change. The cloud publisher uses
 // these as a FALLBACK when the run's owner has no personal record,
 // covering automated runs (webhook/dispatcher/cron) whose owner is a
 // synthetic identity. See OrgOwnerKey.
@@ -76,34 +76,57 @@ const PlatformOwnerKey = platformScope
 // We never decrypt for display; the only consumer is the runner,
 // which materialises the file in a tmpdir and points the CLI at it.
 //
-// AccessTokenExpiresAt is captured separately from the sealed blob
-// so the refresh worker can identify expiring records without
-// decrypting. Best-effort: providers without an access-token expiry
-// (or when the user pasted only the refresh token) leave it zero
-// and the worker skips them.
+// AccessTokenExpiresAt is captured separately from the sealed blob so
+// the refresh worker can schedule records without decrypting. It is
+// the token's own deadline and nothing else: a provider that states
+// none (or a paste carrying only the refresh token) leaves it zero
+// rather than inventing one, and DueForRefresh reads an unknown
+// deadline as DUE — so the worker renews that record on its next pass
+// instead of losing sight of it.
 type OAuthRecord struct {
 	// Produced only by RefreshRecord; never persisted or exposed.
 	accountUpdate *OAuthAccountUpdate
 
-	ID                   string     `bson:"_id" json:"id"`
-	UserID               string     `bson:"user_id" json:"user_id"`
-	Kind                 OAuthKind  `bson:"kind" json:"kind"`
-	SealedPayload        []byte     `bson:"sealed_payload" json:"-"`
-	Scopes               []string   `bson:"scopes,omitempty" json:"scopes,omitempty"`
-	AccessTokenExpiresAt *time.Time `bson:"access_token_expires_at,omitempty" json:"access_token_expires_at,omitempty"`
-	LastRefreshedAt      *time.Time `bson:"last_refreshed_at,omitempty" json:"last_refreshed_at,omitempty"`
+	ID            string    `bson:"_id" json:"id"`
+	UserID        string    `bson:"user_id" json:"user_id"`
+	Kind          OAuthKind `bson:"kind" json:"kind"`
+	SealedPayload []byte    `bson:"sealed_payload" json:"-"`
+	// None of the three carries a bson omitempty, for the reason spelled
+	// out on AccountLabel below: Upsert writes the record through $set,
+	// where an omitted key keeps the OLD value. A re-connect whose blob
+	// has no scopes, or no expiry, is a legitimate shape the codex
+	// exchange itself produces — and it has to be able to say so instead
+	// of inheriting the previous credential's. A stale LastRefreshedAt is
+	// worse than none: it is read as "this record was renewed then", on a
+	// record that was in fact pasted.
+	Scopes               []string   `bson:"scopes" json:"scopes,omitempty"`
+	AccessTokenExpiresAt *time.Time `bson:"access_token_expires_at" json:"access_token_expires_at,omitempty"`
+	LastRefreshedAt      *time.Time `bson:"last_refreshed_at" json:"last_refreshed_at,omitempty"`
 	// NotRefreshable marks a payload that carries no refresh token: the
 	// refresh worker and manual refresh must skip it — only a re-connect
 	// can renew it. Inverted polarity so legacy records (field absent =
 	// false) keep being attempted; the first ErrNotRefreshable outcome
 	// self-heals them by setting this flag.
-	NotRefreshable bool `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
+	//
+	// The bson tag carries NO omitempty, and that is load-bearing: a
+	// bool's zero value IS false, so omitempty would drop the field from
+	// Upsert's $set and leave a stored true standing. The flag would then
+	// be one-way — settable, never clearable — and self-sustaining, since
+	// the only writer that could clear it is a successful refresh, which
+	// the flag itself makes the worker skip. A re-connect with a payload
+	// that does carry a refreshToken has to be able to say so.
+	NotRefreshable bool `bson:"not_refreshable" json:"not_refreshable,omitempty"`
 	// Fingerprint is the audit identity of the SUBSCRIPTION behind this
 	// record: verified against the actual bearer at connect and refresh.
 	// It is what downstream metering keys on. A verified provider account
 	// keeps it across token rotations, reconnects and owner/rank changes;
 	// unidentified credentials retain a local payload-derived fallback.
-	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	//
+	// No bson omitempty, like every other key here: identity resolution
+	// normally guarantees a value, so dropping the tag changes nothing
+	// observable — but the struct-wide guard asserts the property for EVERY
+	// field, and a per-field exemption is how the defect came back twice.
+	Fingerprint string `bson:"fingerprint" json:"fingerprint,omitempty"`
 	// AccountLabel names the ACCOUNT this credential belongs to, in the
 	// operator's own words ("jothedev", "SocialGouv Revi"). An unnamed
 	// verified account defaults to its provider email. The label is purely
@@ -144,10 +167,13 @@ type OAuthRecord struct {
 	// exchange instead of overwriting the credential that replaced it.
 	//
 	// RefreshNotBefore doubles as a cool-down when no owner holds it: a
-	// refresh that succeeded but yielded no readable expiry leaves the
-	// record inside ExpiringBefore's window forever, and without a
-	// cool-down every sweep would re-run the exchange (and rotate the
-	// refresh token) every 10 minutes for good.
+	// refresh that succeeded but yielded no deadline in the FUTURE leaves
+	// the record inside DueForRefresh's window — under either spelling, a
+	// stored deadline already past or none at all — and without a cool-down
+	// every sweep would re-run the exchange (and rotate the refresh token)
+	// every 10 minutes for good. RefreshRecord sets it for every kind,
+	// outside the per-kind switch: one arm having it and the other not is
+	// exactly how that loop lived unnoticed.
 	//
 	// No bson omitempty on either: the Mongo store writes through $set, so
 	// an omitted key would leave a stale claim in place — the trap already
@@ -190,9 +216,29 @@ type OAuthStore interface {
 	ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error)
 	// Delete removes ONE record, addressed by its id. Missing → ErrOAuthNotFound.
 	Delete(ctx context.Context, id string) error
-	// ExpiringBefore returns records whose access token is set and
-	// expires before t — used by the background refresh worker.
-	ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error)
+	// DueForRefresh returns the records the background refresh sweep must
+	// consider at t: those whose access token expires before t, AND those
+	// whose expiry is UNKNOWN.
+	//
+	// The second half is load-bearing. Here a nil expiry means "this token
+	// states no readable deadline" and nothing else — no writer in this
+	// package clears the field to take a record out of the sweep. (The
+	// forge connection store carries a selector of the same shape where
+	// nil means precisely the opposite, parkSecurityOnly's "parked": same
+	// field name, inverted contract, which is why this one no longer
+	// shares its name.)
+	//
+	// Leaving unknown out made that one field the single point of failure
+	// of the whole refresh path: a record connected without a deadline —
+	// the shape a real ~/.codex/auth.json produces, and what a re-connect
+	// writes when the blob states none — was invisible to the worker for
+	// good and renewable only by hand. Measured at ten days of a dead
+	// platform forfait.
+	//
+	// So unknown reads as DUE: the sweep refreshes the record and the
+	// exchange stamps a real deadline, so it leaves this window by
+	// learning its own expiry instead of by being hidden from it.
+	DueForRefresh(ctx context.Context, t time.Time) ([]OAuthRecord, error)
 	// The four writers below address ONE record by its id, not by
 	// (owner, kind): that pair stopped being unique when a chain became
 	// possible, and a writer that still keyed on it would silently land
@@ -875,12 +921,12 @@ func (s *MemoryOAuthStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *MemoryOAuthStore) ExpiringBefore(_ context.Context, t time.Time) ([]OAuthRecord, error) {
+func (s *MemoryOAuthStore) DueForRefresh(_ context.Context, t time.Time) ([]OAuthRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []OAuthRecord
 	for _, r := range s.m {
-		if r.AccessTokenExpiresAt != nil && r.AccessTokenExpiresAt.Before(t) {
+		if r.AccessTokenExpiresAt == nil || r.AccessTokenExpiresAt.Before(t) {
 			out = append(out, r)
 		}
 	}
@@ -1261,17 +1307,35 @@ func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, id string, upd OAuth
 	return nil
 }
 
-func (s *MongoOAuthStore) ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error) {
-	cur, err := s.coll.Find(ctx, bson.M{
-		"access_token_expires_at": bson.M{"$lt": t, "$exists": true},
-	})
+func (s *MongoOAuthStore) DueForRefresh(ctx context.Context, t time.Time) ([]OAuthRecord, error) {
+	// Two branches, because Mongo's comparison operators are TYPE-BRACKETED:
+	// `$lt` against a Date matches Dates and nothing else, so no value of t
+	// ever selects a record whose expiry is null. The `nil` form is the one
+	// predicate that covers both spellings of unknown — an explicit null
+	// (what an Upsert writes when the blob states no deadline) and a missing
+	// key (records written before the field existed).
+	//
+	// This scans the collection, and access_expiry_partial no longer serves
+	// it: Mongo uses an index for an $or only when EVERY branch is
+	// indexable, and the null branch matches documents the partial filter
+	// ($exists: true) excludes. Measured by explain — SUBPLAN → COLLSCAN,
+	// where the old single-branch selector took an IXSCAN. Affordable
+	// because the collection holds one document per (owner, kind, rank) and
+	// this runs every 10 minutes; a credential that is never renewed is not.
+	// Redefining that index would need an explicit DropOne first —
+	// CreateMany answers IndexOptionsConflict and EnsureSchema swallows it,
+	// so a changed definition silently would not apply.
+	cur, err := s.coll.Find(ctx, bson.M{"$or": []bson.M{
+		{"access_token_expires_at": bson.M{"$lt": t}},
+		{"access_token_expires_at": nil},
+	}})
 	if err != nil {
-		return nil, fmt.Errorf("secrets: list expiring oauth: %w", err)
+		return nil, fmt.Errorf("secrets: list oauth due for refresh: %w", err)
 	}
 	defer cur.Close(ctx)
 	var out []OAuthRecord
 	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("secrets: decode expiring oauth: %w", err)
+		return nil, fmt.Errorf("secrets: decode oauth due for refresh: %w", err)
 	}
 	return out, nil
 }

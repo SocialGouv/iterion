@@ -94,7 +94,13 @@ func TestMemoryOAuthStoreSetAccountLabel(t *testing.T) {
 	}
 }
 
-func TestMemoryOAuthStoreExpiringBefore(t *testing.T) {
+// The sweep's selector answers three shapes, and the third is the one that
+// cost a forfait: a record whose deadline is UNKNOWN is due, not skipped.
+// In this package a nil expiry means "the token states no deadline" and
+// never "parked" — nothing here clears the field to hide a record — so
+// leaving it out made that field a single point of failure for the whole
+// refresh path.
+func TestMemoryOAuthStoreDueForRefresh(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryOAuthStore()
 	now := time.Now()
@@ -107,12 +113,40 @@ func TestMemoryOAuthStoreExpiringBefore(t *testing.T) {
 	if err := store.Upsert(ctx, OAuthRecord{UserID: "a", Kind: OAuthKindCodex, AccessTokenExpiresAt: &later}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.ExpiringBefore(ctx, now.Add(5*time.Minute))
-	if err != nil {
-		t.Fatalf("expiring: %v", err)
+	if err := store.Upsert(ctx, OAuthRecord{UserID: "b", Kind: OAuthKindCodex}); err != nil {
+		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Kind != OAuthKindClaudeCode {
-		t.Fatalf("expected 1 expiring claude_code, got %+v", got)
+	// Exactly ON the cutoff. The Mongo twin selects with `$lt`, so this store
+	// must be strict too: a deadline equal to the cutoff is not yet past, and
+	// the two stores answering differently at the boundary is the kind of
+	// divergence only the backend nobody tests locally would show.
+	atCutoff := now.Add(5 * time.Minute)
+	if err := store.Upsert(ctx, OAuthRecord{UserID: "c", Kind: OAuthKindCodex, AccessTokenExpiresAt: &atCutoff}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.DueForRefresh(ctx, now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("due for refresh: %v", err)
+	}
+	due := map[string]bool{}
+	for _, r := range got {
+		due[r.UserID+"/"+string(r.Kind)] = true
+	}
+	if !due["a/claude_code"] {
+		t.Errorf("a record expiring inside the window is not due: %+v", got)
+	}
+	if !due["b/codex"] {
+		t.Errorf("a record with NO stored expiry is not due — the sweep cannot see it, so nothing will ever renew it: %+v", got)
+	}
+	if due["a/codex"] {
+		t.Errorf("a record expiring two hours out is due at a five-minute cutoff: %+v", got)
+	}
+	if due["c/codex"] {
+		t.Errorf("a deadline exactly ON the cutoff is due — Mongo's $lt says it is not, so the two stores "+
+			"disagree about which records the sweep renews: %+v", got)
+	}
+	if len(got) != 2 {
+		t.Errorf("due = %d records, want exactly the two above: %+v", len(got), got)
 	}
 }
 

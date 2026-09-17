@@ -567,7 +567,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		}
 		// An EXPIRED access token is only dead when nothing can renew it.
 		// With a refreshToken the record is exactly what the refresh worker
-		// exists for (ExpiringBefore lists expired records too, and RunOnce
+		// exists for (DueForRefresh lists expired records too, and RunOnce
 		// refreshes every refreshable one), so a stale export from a
 		// logged-in machine connects and heals on the worker's next pass.
 		// Without one, only a fresh paste can help — and `claude login` is
@@ -593,13 +593,15 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 			return secrets.OAuthRecord{}, err
 		}
 		// Stamp the access token's own `exp` claim in preference to
-		// expires_in. Both the record's usefulness and the whole codex
-		// refresh path hang off this one field: the refresh worker sweeps
-		// ExpiringBefore, whose query requires access_token_expires_at to
-		// EXIST, so a codex record connected without it is invisible to
-		// the worker forever and can only ever be renewed by hand.
+		// expires_in. The field is what schedules the record: the refresh
+		// worker sweeps DueForRefresh, which renews a record whose
+		// deadline is within its lead — and, for one whose deadline is
+		// unknown, on the very next pass. A stamped record is renewed once
+		// per token lifetime instead of once per sweep.
 		//
-		// expires_in alone left exactly that hole: real ~/.codex/auth.json
+		// expires_in alone left a hole that was far worse while the sweep
+		// still required the field to exist — an unstamped record was
+		// invisible to the worker for good. Real ~/.codex/auth.json
 		// blobs carry access_token/refresh_token/account_id/id_token and
 		// last_refresh, and nothing writes expires_in (see
 		// delegate.piCodexExpiry), so the branch was never taken in
@@ -608,26 +610,36 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		// optimistic future expiry over an already-dead token. The claim
 		// is absolute and describes this very token.
 		//
-		// Measured cost of the hole: a platform forfait sat unrefreshed
-		// for ten days, surfacing only as a run failing its first LLM call
-		// with "authentication token is expired".
+		// Measured cost, back when an unstamped record was also an
+		// unsweepable one: a platform forfait sat unrefreshed for ten days,
+		// surfacing only as a run failing its first LLM call with
+		// "authentication token is expired".
 		if t := v.AccessTokenExpiry(); !t.IsZero() {
 			rec.AccessTokenExpiresAt = &t
 		} else if v.Tokens.ExpiresIn > 0 {
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}
-		// An unstampable record is accepted — it serves runs perfectly well
-		// until its token dies — but it will never be swept, so say that
-		// once, here, where the cause is still visible. Learning it later
-		// means reading it off a run's first LLM call failing on an expired
-		// token, which names neither the credential nor the reason.
-		if rec.AccessTokenExpiresAt == nil {
-			s.logger.Warn("oauth: owner=%s kind=%s stored WITHOUT an access-token expiry — the token states none "+
-				"(no readable `exp` claim, no expires_in), so the refresh worker cannot select this record and the "+
-				"forfait will need a manual re-connect when it expires", ownerKey, kind)
-		}
 		rec.NotRefreshable = v.Tokens.RefreshToken == ""
+		// An unstampable record is accepted — it serves runs perfectly well
+		// until its token dies — and the sweep does reach it: an unknown
+		// deadline reads as due. What that costs depends on whether anything
+		// can renew it, so say which, here, where the cause is still visible.
+		// Learning it later means reading it off a run's first LLM call
+		// failing on an expired token, which names neither the credential nor
+		// the reason.
+		if rec.AccessTokenExpiresAt == nil {
+			if rec.NotRefreshable {
+				s.logger.Warn("oauth: owner=%s kind=%s stored WITHOUT an access-token expiry and NO refresh token — the "+
+					"token states no deadline (no readable `exp` claim, no expires_in) and nothing can renew it, so "+
+					"nothing can ever stamp one either: it needs a manual re-connect, and no one can say when",
+					ownerKey, kind)
+			} else {
+				s.logger.Warn("oauth: owner=%s kind=%s stored WITHOUT an access-token expiry — the token states none "+
+					"(no readable `exp` claim, no expires_in), so the refresh worker treats it as due and renews it on "+
+					"its next pass, which is when the record learns its own deadline", ownerKey, kind)
+			}
+		}
 		// Now that the deadline is readable, the dead-on-arrival case can be
 		// named at last: an expired token with nothing to renew it serves no
 		// run, and every one that draws this credential dies on its first
