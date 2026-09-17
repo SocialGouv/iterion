@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.162.2](https://github.com/SocialGouv/iterion/compare/v3.162.1...v3.162.2) (2026-09-17)
+
+### Bug Fixes
+
+* **bots:** the campaign gates and the whole-tree commits leave iterion's .claude/ scaffold out ([#1364](https://github.com/SocialGouv/iterion/issues/1364)) ([#1377](https://github.com/SocialGouv/iterion/issues/1377)) ([b040a98](https://github.com/SocialGouv/iterion/commit/b040a98c57357b1e46c358513af1ea4df252d180)), references [#1344](https://github.com/SocialGouv/iterion/issues/1344)
+
+    <details><summary>why</summary>
+
+    iterion mirrors a bundle's skills and plugin files into <workspace>/.claude/ before the first node. On a repository that does not ignore .claude/, the ten campaign gates read the untracked mirror as the pass's uncommitted work and refused every pass (net_dirty, four times in wave 3b of #1344), and the deterministic commits that stage the whole tree committed it (16 of bmady's 43 files in one feature commit).
+
+    </details>
+
 ## [3.162.1](https://github.com/SocialGouv/iterion/compare/v3.162.0...v3.162.1) (2026-09-17)
 
 ### Bug Fixes
