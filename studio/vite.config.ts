@@ -78,6 +78,16 @@ export default defineConfig({
     // Raises Testing Library's async-query timeout for the jsdom files; a
     // no-op under the Node environment. See src/test/setup.ts for why.
     setupFiles: ["src/test/setup.ts"],
+    // Both of these are wall clocks, like the budget in setup.ts, so the ORDER
+    // in which they expire must not depend on machine load: whichever fires
+    // first writes the failure message. Testing Library's ("Unable to find
+    // …") names the element; Vitest's ("Test timed out in 5000ms") names
+    // nothing. Measured at the 5 s default: an async query budgeted above it
+    // reports the opaque one. 5x the 3 s budget keeps the readable error
+    // first by construction rather than by a 2 s margin a loaded runner can
+    // eat — and only a test that was going to fail ever waits this long.
+    testTimeout: 15_000,
+    hookTimeout: 15_000,
   },
   // Pre-bundle the run-console deps at boot so Vite doesn't trip on
   // its own race when discovering them on-the-fly (the "file does not

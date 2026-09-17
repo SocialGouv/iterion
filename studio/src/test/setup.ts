@@ -8,10 +8,11 @@
 // file; the same tests pass locally in ~200 ms. Reproduced by starving this
 // very setting to 1 ms, which reproduces the CI error verbatim.
 //
-// 3 s buys 3x headroom and stays under Vitest's 5 s per-test timeout, so a
-// genuinely missing element still fails with Testing Library's readable
-// message rather than an opaque test timeout (the slowest passing test in this
-// suite is ~890 ms, leaving ~1.1 s of margin).
+// 3 s buys 3x headroom. It must also stay well under Vitest's own per-test
+// timeout, because that is a wall clock too and whichever expires first writes
+// the message: Testing Library's names the element, Vitest's ("Test timed out
+// in 5000ms") names nothing. vite.config.ts raises testTimeout to 15 s so that
+// order holds by construction rather than by a margin a loaded runner can eat.
 //
 // Guarded on `document` because 134 of the 239 files run in the fast Node
 // environment (vite.config.ts) — only DOM files opt into jsdom with a per-file
