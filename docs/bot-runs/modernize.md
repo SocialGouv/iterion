@@ -4,6 +4,28 @@ Carries a repository through a programme of modernisation lots — steps whose
 entry and exit are both deterministic gates — against a behavioural oracle it
 is forbidden to rewrite. See [bots/modernize/](../../bots/modernize/).
 
+## 2026-09-17 — profile 2: the campaign prompts reach the model with their paragraphs (run 01a0af4e-ff2a)
+
+- Status: **validated** — one lot of a seeded programme landed and gated on a scratch repository.
+- Versions: bot modernize 0.4.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code + claude-opus-5.
+- Method: CLI `iterion run <bundle>/main.bot --var only_lot=L1 --var max_passes=2` launched FROM
+  the scratch copy Campy used on 2026-09-17 (`.modernize/plan.yaml` with one lot — a docstring and
+  type hints on `greeting()`, exit gate = the unit tests and a docstring check — and a
+  `.golden-master/` oracle printing a gate-mode JSON report), `--store-dir` the operator's
+  workspace store, `--sandbox none --merge-into none`, caps `--max-cost-usd 4 --max-duration 20m`.
+- Result: **converged**, ~2.5 min, **$0.57** (upgrade_campaign, 68 623 tokens): the lot's gate
+  green, the oracle green, the references untouched, `mark_done`; storage branch
+  `iterion/run/meteor-fizz-voltageclash-aa3a`, merged nowhere (the lot stays `todo` on the scratch
+  `main`, which is why it can be replayed).
+- Value: the bot live on profile 2 on its own, after having run as Campy's subbot the same day;
+  the run's `events.jsonl` carries the rendered campaign prompt with
+  `working from.\n\nFour rules`, the paragraph break the profile-1 lexer used to fold.
+- Findings / misses: none on the bot. Not exercised: a red gate feeding a repair pass, a
+  rewritten contract, the oracle refusals (those were Campy's scratch oracle's, on 2026-09-17).
+- Engine hardening: none needed.
+- Lessons for next run: the seeded one-lot programme is a reusable fixture — keep it under
+  `/tmp/iterion-probe-campy` while it survives the tmp cleaner.
+
 ## 2026-09-05 — only_lot on a blocked lot exits green as nothing_to_do: a confirmed-success no-op, fixed (native:670, run 01a06d77-4d06 + a relaunch)
 
 - Status: **ENGINE DEFECT, fixed.** Production: an operator relaunched two

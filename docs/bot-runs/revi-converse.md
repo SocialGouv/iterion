@@ -2,6 +2,31 @@
 
 Newest first. Template: [README.md](README.md).
 
+## 2026-09-17 — profile 2: the converse prompts reach the model with their paragraphs, nothing posted (run 01a0af4f-430c)
+
+- Status: **validated for what it could reach** — a grounded answer drafted from a branch diff,
+  the POST and its mandatory VERIFY refused by an unresolvable forge host, reported honestly.
+- Versions: bot revi-converse 0.1.2 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records · claude_code +
+  claude-opus-5.
+- Method: CLI `iterion run <bundle>/main.bot` launched FROM a scratch copy of the greet project on
+  `feat/shout`, `--store-dir` the operator's workspace store, `--sandbox none`, `--var base_ref=main
+  --var pr_url=https://forge.invalid/scratch/greet/pull/1 --var discussion_id=scratch-thread-1
+  --var converse_question=… --var trigger_note=… --var replier=devthejo`, caps
+  `--max-cost-usd 2 --max-duration 10m`. The `.invalid` host is deliberate: it lets the bot run its
+  whole procedure without any way of posting on a real forge.
+- Result: **finished**, ~1.5 min, **$0.32** (converse_agent, 37 614 tokens): the answer explains,
+  from the diff, why `--shout` uppercases the whole greeting; `posted: false`, `skipped_reason`
+  names the unresolvable host (curl exit 6), both the POST and the VERIFY re-fetch failed;
+  `converse_health` bannered it.
+- Value: the bot's graph live on profile 2; the run's `events.jsonl` carries the rendered
+  converse prompt with `discussion thread.\n\n── SCOPE ──`, the paragraph break the profile-1
+  lexer used to fold.
+- Findings / misses: the posting path is untested here by design; a real end-to-end stays the
+  2026-09 production run above.
+- Engine hardening: none needed.
+- Lessons for next run: an RFC 2606 `.invalid` forge host is the safe way to render a posting
+  bot's prompts locally.
+
 ## 2026-09-02 — GitHub review-thread + `/revi <question>` lanes, first live e2e (runs 01a063d4 / 01a063d5)
 
 - Status: **validated**

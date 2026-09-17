@@ -9,6 +9,31 @@ card in inbox. Companion of the ingest author-trust gate (trusted
 authors → `triage:auto`, external authors → `needs:approval` + studio
 "Approve & triage").
 
+## 2026-09-17 — profile 2: the triage prompt reaches the model with its paragraphs, after a GPT quota refusal (run 01a0af4f-8b9d)
+
+- Status: **validated** — a scratch card read, classified and stamped; the bot's default GPT route
+  refused on quota and the run recovered on claude by a resume.
+- Versions: bot issue-triage 0.2.1 (`dsl: 2`, wave 3a of #1344) · iterion `db8dbb8eb` (branch build v3.154.1 + the wave-1 runtime fix), served through the host's Anthropic-compatible facade (z.ai) as the runs' provenance records.
+- Method: a scratch native card created in the operator's store (`iterion issue create`, label
+  `scratch`, "add a --shout flag to greet.py"), then CLI `iterion run <bundle>/main.bot --var
+  issue_id=native:35fcaf04…`, `--store-dir` the operator's workspace store, `--sandbox none`,
+  caps `--max-cost-usd 2 --max-duration 10m`. The card was closed afterwards.
+- Result: the `triage` node's default route (`claw` + `openai/gpt-5.5`) hit `429 The usage limit
+  has been reached` three times and parked the run on its `recovery_pause` (RATE_LIMITED);
+  `iterion resume --backend claude_code --model claude-opus-5 --answer
+  acknowledge_recovery=continue` (with `ITERION_SANDBOX_DEFAULT=none`, since a resume does not
+  inherit the launch's sandbox dial) finished it: **$0.54** (76 847 tokens), labels
+  `source:issue-triage` + `kind:feature`, `routed_bot: feature-dev`, the routing rationale
+  commented on the card — the right call for a small feature.
+- Value: the bot's graph live on profile 2, the recovery pause included; the run's
+  `events.jsonl` carries the rendered triage prompt with `column.\n\nProcedure, in order:`, the
+  paragraph break the profile-1 lexer used to fold.
+- Findings / misses: the GPT forfait is closed until 2026-09-20 — a bot whose only route is
+  `openai/gpt-5.5` parks every run until then; the resume's backend override is the way through.
+- Engine hardening: none needed.
+- Lessons for next run: pass `--backend claude_code --model claude-opus-5` at launch while the
+  GPT window is closed; a scratch card costs nothing and is closed in one command.
+
 ## 2026-07-22 — treatment follow-through: 3 triaged cards driven to delivery (runs 019f8949 / 019f8979 / 019f898e)
 
 - Status: **validated** (triage→ready→dispatch→feature-dev→delivery, end-to-end)
