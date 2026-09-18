@@ -111,13 +111,12 @@ func codedRefusals() []codedRefusal {
 		codedRefusal{
 			bot: "app-dev", from: "interview_chat", elseEdge: true,
 			failNode: "interview_budget_starved", code: "INTERVIEW_BUDGET_STARVED", resumable: true,
-			// Every dimension the affordability guard can decline on, so the
-			// operator reads which cap starved the turn.
+			// The two caps the bot declares (an undeclared cap reads 0 in
+			// run.* and cannot decline a turn), so the operator reads which
+			// one starved the turn.
 			messageRefs: []string{
 				"{{loop.interview_loop.iteration}}",
 				"{{run.cost_usd}}", "{{run.max_cost_usd}}",
-				"{{run.tokens}}", "{{run.max_tokens}}",
-				"{{run.iterations}}", "{{run.max_iterations}}",
 				"{{run.elapsed_seconds}}", "{{run.max_duration_seconds}}",
 			},
 		},

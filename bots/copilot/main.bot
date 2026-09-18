@@ -367,6 +367,13 @@ schema implementation_handoff_out:
   scope_guard_attempt: bool
   actionless_clarification_count: int
   actionless_clarification_key: string
+  ## Typed constants for the cycle's exhaustion exits (see the workflow):
+  ## an edge `with` value without a reference travels as TEXT, so a bare
+  ## "false" or "[]" would reach compose's bool / json fields as strings.
+  plan_kept: bool
+  plan_dropped: bool
+  no_plan: string
+  no_quick_replies: json
 
 ## The draft crosses into the deterministic validator as typed data. The
 ## engine shell-escapes command refs before execution, so even an LLM-authored
@@ -1514,6 +1521,13 @@ compute implementation_handoff:
     scope_guard_attempt: "input.scope_guard_attempt"
     actionless_clarification_count: "input.actionless_clarification_count"
     actionless_clarification_key: "input.actionless_clarification_key"
+    ## The exits' typed constants: an expression yields a real bool, an
+    ## empty string, a true [] (tail of a list, 0 — the seed's idiom); an
+    ## edge literal would not.
+    plan_kept: "true"
+    plan_dropped: "false"
+    no_plan: "''"
+    no_quick_replies: "tail(input.manager_scope_exclusions, 0)"
 
 ## Deterministic passthrough. It carries only Terra's final response back to
 ## the chat loop, so the next visible turn always resumes Terra's session.
@@ -1951,13 +1965,13 @@ workflow copilot:
   ##   reviewed plan rather than pay its reflection again.
   implementation_handoff -> compose when "loop.terra_plan_execution_cycle.iteration >= loop.terra_plan_execution_cycle.max" with {
     reply: "Le cycle de planification a atteint sa limite de tours : ce plan est abandonné et la conversation continue. Reformule la demande pour repartir sur un plan neuf.",
-    quick_replies: "[]",
+    quick_replies: "{{outputs.implementation_handoff.no_quick_replies}}",
     context_brief: "{{outputs.implementation_handoff.context_brief}}",
     mode: "{{outputs.implementation_handoff.mode}}",
     session_id: "{{outputs.implementation_handoff.terra_session_id}}",
     session_fingerprint: "{{outputs.implementation_handoff.terra_session_fingerprint}}",
-    implementation_active: "false",
-    implementation_plan: "''",
+    implementation_active: "{{outputs.implementation_handoff.plan_dropped}}",
+    implementation_plan: "{{outputs.implementation_handoff.no_plan}}",
     authoring_context: "{{outputs.implementation_handoff.authoring_context}}",
     manager_scope_exclusions: "{{outputs.implementation_handoff.manager_scope_exclusions}}",
     effective_scope_exclusions: "{{outputs.implementation_handoff.effective_scope_exclusions}}",
@@ -1965,12 +1979,12 @@ workflow copilot:
   }
   implementation_handoff -> compose else with {
     reply: "Le budget du run ne permet plus de poursuivre ce plan : la session ne peut pas continuer ici. Reprends ce run avec un budget plus large (iterion resume --max-cost-usd ...) pour reprendre le plan tel qu il a été revu.",
-    quick_replies: "[]",
+    quick_replies: "{{outputs.implementation_handoff.no_quick_replies}}",
     context_brief: "{{outputs.implementation_handoff.context_brief}}",
     mode: "{{outputs.implementation_handoff.mode}}",
     session_id: "{{outputs.implementation_handoff.terra_session_id}}",
     session_fingerprint: "{{outputs.implementation_handoff.terra_session_fingerprint}}",
-    implementation_active: "true",
+    implementation_active: "{{outputs.implementation_handoff.plan_kept}}",
     implementation_plan: "{{outputs.implementation_handoff.implementation_plan}}",
     authoring_context: "{{outputs.implementation_handoff.authoring_context}}",
     manager_scope_exclusions: "{{outputs.implementation_handoff.manager_scope_exclusions}}",

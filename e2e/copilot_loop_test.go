@@ -655,14 +655,28 @@ func TestCopilot_GraphContract(t *testing.T) {
 			t.Errorf("%s exit carries no reply — the operator would read an empty bubble", name)
 		}
 	}
-	if got := mappingRaw(capExit, "implementation_active"); got != "false" {
-		t.Errorf("cap exit implementation_active = %q, want false (the plan is dropped, the next turn starts fresh)", got)
+	// An edge `with` value without a reference travels as TEXT: a bare
+	// "false" would reach compose's bool field as a string and die
+	// SCHEMA_VALIDATION there. The constants come typed from the hand-off's
+	// own expr, and every mapping but the reply is a reference.
+	if got := mappingRaw(capExit, "implementation_active"); got != "{{outputs.implementation_handoff.plan_dropped}}" {
+		t.Errorf("cap exit implementation_active = %q, want the typed false the hand-off emits (the plan is dropped)", got)
 	}
-	if got := mappingRaw(budgetExit, "implementation_active"); got != "true" {
-		t.Errorf("budget exit implementation_active = %q, want true (the plan waits for the resume)", got)
+	if got := mappingRaw(capExit, "implementation_plan"); got != "{{outputs.implementation_handoff.no_plan}}" {
+		t.Errorf("cap exit implementation_plan = %q, want the typed empty plan", got)
+	}
+	if got := mappingRaw(budgetExit, "implementation_active"); got != "{{outputs.implementation_handoff.plan_kept}}" {
+		t.Errorf("budget exit implementation_active = %q, want the typed true the hand-off emits (the plan waits for the resume)", got)
 	}
 	if got := mappingRaw(budgetExit, "implementation_plan"); got != "{{outputs.implementation_handoff.implementation_plan}}" {
 		t.Errorf("budget exit implementation_plan = %q, want the reviewed plan carried", got)
+	}
+	for name, e := range map[string]*ir.Edge{"cap": capExit, "budget": budgetExit} {
+		for _, m := range e.With {
+			if m.Key != "reply" && !strings.Contains(m.Raw, "{{") {
+				t.Errorf("%s exit maps %s to the literal %q: an edge literal travels as text, whatever the field's type", name, m.Key, m.Raw)
+			}
+		}
 	}
 
 	validate, ok := wf.Nodes["validate_draft"].(*ir.ToolNode)

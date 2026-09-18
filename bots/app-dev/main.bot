@@ -2010,7 +2010,7 @@ fail interview_not_converged:
 fail interview_budget_starved:
   description: "the run's budget stopped the interview before SPEC.md was committed"
   code: INTERVIEW_BUDGET_STARVED
-  message: "the run's budget can no longer fund another interview turn after {{loop.interview_loop.iteration}} operator answers, no SPEC.md committed — spent {{run.cost_usd}} of {{run.max_cost_usd}} USD, {{run.tokens}} of {{run.max_tokens}} tokens, {{run.iterations}} of {{run.max_iterations}} iterations, {{run.elapsed_seconds}} of {{run.max_duration_seconds}} s; resume with the starved cap raised (iterion resume --max-cost-usd / --max-duration) to continue the conversation — a ceiling the platform imposes cannot be raised: relaunch under a larger one"
+  message: "the run's budget can no longer fund another interview turn after {{loop.interview_loop.iteration}} operator answers, no SPEC.md committed — spent {{run.cost_usd}} of {{run.max_cost_usd}} USD and {{run.elapsed_seconds}} of {{run.max_duration_seconds}} s (the two caps this bot declares); resume with the starved cap raised (iterion resume --max-cost-usd / --max-duration) to continue the conversation — a ceiling the platform imposes cannot be raised: relaunch under a larger one"
   resumable: true
 
 ## ─── Workflow ───────────────────────────────────────────────────
