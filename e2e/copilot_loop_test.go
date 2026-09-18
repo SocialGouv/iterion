@@ -586,9 +586,16 @@ func TestCopilot_GraphContract(t *testing.T) {
 		}
 	}
 
-	// There are exactly two clean exits: explicit close, and the chat fallback
-	// used when the bounded/budget-guarded back-edge is declined. Without the
-	// latter, exhaustion becomes LOOP_EXHAUSTED instead of a finished session.
+	// There are exactly two clean exits into done: explicit close, and the
+	// chat fallback used when the bounded/budget-guarded back-edge is
+	// declined. Without the latter, exhaustion becomes LOOP_EXHAUSTED instead
+	// of a finished session. A plain exit carries no guard of either form
+	// (`when field` sets Condition, `when "expr"` sets Expression), is not
+	// the `else` of a conditional sibling, and iterates nothing — any other
+	// shape is declined at exhaustion and the run dies after all.
+	plain := func(e *ir.Edge) bool {
+		return e.Condition == "" && e.Expression == nil && !e.IsElse && e.LoopName == "" && e.ForeachName == ""
+	}
 	var doneEdges []*ir.Edge
 	for _, e := range wf.Edges {
 		if e.To == "done" {
@@ -600,14 +607,76 @@ func TestCopilot_GraphContract(t *testing.T) {
 	}
 	var explicitClose, exhaustionFallback bool
 	for _, edge := range doneEdges {
-		explicitClose = explicitClose || (edge.From == "gate" && edge.Condition != "")
-		exhaustionFallback = exhaustionFallback || (edge.From == "chat" && edge.LoopName == "" && edge.Condition == "")
+		explicitClose = explicitClose || (edge.From == "gate" && (edge.Condition != "" || edge.Expression != nil))
+		exhaustionFallback = exhaustionFallback || (edge.From == "chat" && plain(edge))
 	}
 	if !explicitClose {
 		t.Error("missing gate -> done edge guarded by the close flag")
 	}
 	if !exhaustionFallback {
 		t.Error("missing plain chat -> done fallback for loop/budget exhaustion")
+	}
+	// The plan hand-off's cycle is bounded and budget-guarded too. When its
+	// back-edge is declined the reviewed plan must not vanish into `done`
+	// with the operator's turn unanswered: two exits return to the chat
+	// pause through the delivery projection, each carrying a reply, told
+	// apart by the loop counter — the cap drops the plan so the next turn
+	// starts fresh, the budget (`else`) keeps it active for a resume.
+	var capExit, budgetExit *ir.Edge
+	for _, e := range wf.Edges {
+		if e.From != "implementation_handoff" || e.LoopName != "" {
+			continue
+		}
+		switch {
+		case e.ExpressionSrc == "loop.terra_plan_execution_cycle.iteration >= loop.terra_plan_execution_cycle.max":
+			capExit = e
+		case e.IsElse:
+			budgetExit = e
+		default:
+			t.Errorf("implementation_handoff has an exit of an unexpected shape: -> %s cond=%q expr=%q", e.To, e.Condition, e.ExpressionSrc)
+		}
+	}
+	if capExit == nil || budgetExit == nil {
+		t.Fatalf("implementation_handoff exits: cap=%v budget=%v, want both", capExit != nil, budgetExit != nil)
+	}
+	mappingRaw := func(e *ir.Edge, key string) string {
+		for _, m := range e.With {
+			if m.Key == key {
+				return m.Raw
+			}
+		}
+		return ""
+	}
+	for name, e := range map[string]*ir.Edge{"cap": capExit, "budget": budgetExit} {
+		if e.To != "compose" {
+			t.Errorf("%s exit goes to %q, want compose (the delivery projection to the chat pause)", name, e.To)
+		}
+		if strings.TrimSpace(mappingRaw(e, "reply")) == "" {
+			t.Errorf("%s exit carries no reply — the operator would read an empty bubble", name)
+		}
+	}
+	// An edge `with` value without a reference travels as TEXT: a bare
+	// "false" would reach compose's bool field as a string and die
+	// SCHEMA_VALIDATION there. The constants come typed from the hand-off's
+	// own expr, and every mapping but the reply is a reference.
+	if got := mappingRaw(capExit, "implementation_active"); got != "{{outputs.implementation_handoff.plan_dropped}}" {
+		t.Errorf("cap exit implementation_active = %q, want the typed false the hand-off emits (the plan is dropped)", got)
+	}
+	if got := mappingRaw(capExit, "implementation_plan"); got != "{{outputs.implementation_handoff.no_plan}}" {
+		t.Errorf("cap exit implementation_plan = %q, want the typed empty plan", got)
+	}
+	if got := mappingRaw(budgetExit, "implementation_active"); got != "{{outputs.implementation_handoff.plan_kept}}" {
+		t.Errorf("budget exit implementation_active = %q, want the typed true the hand-off emits (the plan waits for the resume)", got)
+	}
+	if got := mappingRaw(budgetExit, "implementation_plan"); got != "{{outputs.implementation_handoff.implementation_plan}}" {
+		t.Errorf("budget exit implementation_plan = %q, want the reviewed plan carried", got)
+	}
+	for name, e := range map[string]*ir.Edge{"cap": capExit, "budget": budgetExit} {
+		for _, m := range e.With {
+			if m.Key != "reply" && !strings.Contains(m.Raw, "{{") {
+				t.Errorf("%s exit maps %s to the literal %q: an edge literal travels as text, whatever the field's type", name, m.Key, m.Raw)
+			}
+		}
 	}
 
 	validate, ok := wf.Nodes["validate_draft"].(*ir.ToolNode)

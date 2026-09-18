@@ -321,7 +321,7 @@ theorising.
 |---|---|
 | `BUDGET_EXCEEDED` on a long-lived looping bot | budgets are **cumulative**; the caps were sized per-turn |
 | A conversational bot "forgets" everything each turn | the loop edge lost `_session_id` (a typo there is silent), or the backend session died — in cloud the CLI transcript lives in a per-delivery temp dir |
-| `LOOP_EXHAUSTED` | the loop's exit condition never became true; check the `when` field's actual value in the node output |
+| `LOOP_EXHAUSTED` | a bounded loop spent its crossings (or the budget guard declined its back-edge) and the node had no other edge; add the loop-exhaustion exit — a bare edge beside the loop edge (C145) — or raise the cap |
 | `NO_OUTGOING_EDGE` | every `when` was false and there is no `else`/default edge |
 | Agent "has no tools" | on claw: `tools:` empty ⇒ zero tools; or a declared `mcp_server` with no `mcp: servers:` selecting it |
 | Node dies immediately on start | an unresolvable tool name in `tools:` — it fails at runtime, `validate` does not catch it |

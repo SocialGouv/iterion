@@ -363,8 +363,10 @@ them under the operator's action policy. Copi itself still has no write
 tool. Every turn ends
 at a budget-free chat pause — the session stays reachable for days,
 and a rolling context_brief carries the conversation across server
-restarts, redeploys and cloud pod changes. Only an explicit "close"
-ends the session. You only read Terra's final answer: plans and judge
+restarts, redeploys and cloud pod changes. An explicit "close" ends
+the session; so does a spent conversation loop, as a finished session,
+while a spent plan hand-off cycle returns to the chat with a notice.
+You only read Terra's final answer: plans and judge
 critiques are private. Reflected work is bounded, so a blocked execution
 cannot silently spin forever.
 
@@ -1096,7 +1098,7 @@ in-stride commits until the diff is clean and the tree is green.
   lockfiles, version bumps. MUTATES dependency manifests/lockfiles and
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
-- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
+- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_families_per_run` (int), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
 ### `supply-shield` — Shieldy

@@ -20,10 +20,14 @@ import (
 // continuing is the cure.
 type codedRefusal struct {
 	bot string
-	// from/condition identify the guard edge; negated matches `when not X`.
-	from      string
-	condition string
-	negated   bool
+	// from/condition identify the guard edge; negated matches `when not X`,
+	// expression the quoted `when "…"` form, elseEdge the `else` beside a
+	// conditional sibling.
+	from       string
+	condition  string
+	negated    bool
+	expression string
+	elseEdge   bool
 	// failNode is the named fail node the edge must target, and code the
 	// value it stamps on the run.
 	failNode  string
@@ -78,6 +82,44 @@ func codedRefusals() []codedRefusal {
 		// typed code is the whole point: it is what lets an unattended lane
 		// tell "the fixer declined" from "the fixer died", without either
 		// side naming the other.
+		// The fixer's pull request merged or closed under it: the same
+		// DECLINED family the platform already reads.
+		codedRefusal{
+			bot: "branch-improve-loop", from: "publish_verdict", condition: "superseded",
+			failNode: "pr_superseded", code: "DECLINED",
+			messageRefs: []string{"{{outputs.push_back_tool.reason}}"},
+		},
+		// A bounded loop's exhaustion as a refusal (C145, #1293): the exit
+		// is the bare edge beside the loop edge, taken once the back-edge
+		// is declined. Ten rejected visions end evolve typed; an interview
+		// whose back-edge was declined (cap spent, or budget) without a
+		// committed SPEC.md ends app-dev typed and resumable — the message
+		// names the answers used and the budget spent, so the operator
+		// reads which of the two stopped it.
+		codedRefusal{
+			bot: "evolve", from: "revise_vision",
+			failNode: "vision_not_converged", code: "VISION_NOT_CONVERGED",
+		},
+		// The cap read by the guard and the message is the one in force —
+		// the var plus any bump_loop grant — never the var alone.
+		codedRefusal{
+			bot: "app-dev", from: "interview_chat",
+			expression: "loop.interview_loop.iteration >= loop.interview_loop.max",
+			failNode:   "interview_not_converged", code: "INTERVIEW_NOT_CONVERGED",
+			messageRefs: []string{"{{loop.interview_loop.max}}"},
+		},
+		codedRefusal{
+			bot: "app-dev", from: "interview_chat", elseEdge: true,
+			failNode: "interview_budget_starved", code: "INTERVIEW_BUDGET_STARVED", resumable: true,
+			// The two caps the bot declares (an undeclared cap reads 0 in
+			// run.* and cannot decline a turn), so the operator reads which
+			// one starved the turn.
+			messageRefs: []string{
+				"{{loop.interview_loop.iteration}}",
+				"{{run.cost_usd}}", "{{run.max_cost_usd}}",
+				"{{run.elapsed_seconds}}", "{{run.max_duration_seconds}}",
+			},
+		},
 		codedRefusal{
 			bot: "branch-improve-loop", from: "decline_probe", condition: "honoured",
 			failNode: "campaign_declined", code: "DECLINED",
@@ -157,12 +199,15 @@ func TestCodedRefusalsLandOnANamedFailNode(t *testing.T) {
 
 			var edge *ir.Edge
 			for _, e := range wf.Edges {
-				if e.From == r.from && e.Condition == r.condition && e.Negated == r.negated {
+				// A refusal edge never iterates: beside a loop's exhaustion
+				// exit sits the loop edge, bare too, and it is not the guard.
+				if e.From == r.from && e.Condition == r.condition && e.Negated == r.negated &&
+					e.ExpressionSrc == r.expression && e.IsElse == r.elseEdge && e.LoopName == "" {
 					edge = e
 				}
 			}
 			if edge == nil {
-				t.Fatalf("no edge %s -> … when %s (negated=%v)", r.from, r.condition, r.negated)
+				t.Fatalf("no edge %s -> … when %s (negated=%v, expression=%q, else=%v)", r.from, r.condition, r.negated, r.expression, r.elseEdge)
 			}
 			if edge.To == "fail" {
 				t.Fatalf("%s -> fail: the refusal reads FAIL_NODE / \"workflow reached fail node\" on the run, "+

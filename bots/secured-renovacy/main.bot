@@ -24,6 +24,11 @@
 ##   - all candidates exhausted in scope, OR
 ##   - Phase-2 gate converged (review_clean AND build green), OR
 ##   - review_pass_loop exhausted (ships what is banked), OR
+##   - the solo or family loop's back-edge declined for budget → Phase 2
+##     (solo) or the solo loop (family) on what is banked (the exhaustion
+##     exits, C145; each cap sits one above its knob — max_packages_per_run,
+##     max_families_per_run — so select_candidate and select_family report
+##     the cap themselves), OR
 ##   - budget exceeded (resumable via `iterion resume`).
 ##
 ## Token economy
@@ -54,6 +59,8 @@
 ##   between two upgrades, persistent fix-loop stagnation.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
@@ -72,7 +79,19 @@ vars:
 
   ## Policy
   scope: string = "patch,minor,major"
+  ## Counts every package ATTEMPTED in the run on one shared ledger — the
+  ## patch batch's members, every family member the fast-track attempted,
+  ## the solo picks — so families consume solo slots by design: the knob
+  ## bounds the run's work, whichever path did it. Also bounds the solo
+  ## loop (its cap is this value + 1, so select_candidate's own exit
+  ## reports the cap first).
   max_packages_per_run: int = 30
+  ## Families attempted per run — the family fast-track batches `@scope/`
+  ## siblings before the solo loop. select_family reports the cap in its
+  ## own exit; the family loop's cap sits one above it, like the solo loop's.
+  ## What the cap leaves goes through the solo loop, bounded by
+  ## max_packages_per_run on the shared ledger.
+  max_families_per_run: int = 20
   major_policy: string [enum: "skip", "gate", "attempt"] = "attempt"
   fix_loop_default: int = 3
   fix_loop_major:   int = 5
@@ -2060,7 +2079,12 @@ schema bucket_families_output:
 schema select_family_input:
   families: json
   attempted_families: json
+  ## The members ledger the family pass hands to the solo loop: seeded
+  ## from the patch batch on entry, grown by mark_family_attempted on
+  ## every loop-back, passed through so the natural exit always has it.
+  attempted_members: json
   workspace_dir: string
+  max_families: int
 
 ## select_family_output exposes the currently-selected family (name +
 ## members), plus the cumulative attempted_families ledger that the
@@ -2072,6 +2096,15 @@ schema select_family_output:
   has_more: bool
   attempted_families_count: int
   cumulative_attempted_families: json
+  ## The members ledger as received (see select_family_input): what the
+  ## exit to the solo loop and the edges into mark_family_attempted read.
+  attempted_members: json
+  ## cap_reason explains why the family loop is stopping: "" while
+  ## picking, "exhausted" when no family is left, or the
+  ## max_families_per_run line when the cap stopped it (the remaining
+  ## families' members then go through the solo loop). Read off the node
+  ## output in `iterion report`, as select_candidate.cap_reason is.
+  cap_reason: string
 
 ## family_upgrade_input drives the family yarn-up tool — same shape as
 ## batch_upgrade_input but the bundle is the family's members rather
@@ -2831,7 +2864,7 @@ compute join_files:
   input: commit_files_input
   output: commit_files_output
   expr:
-    files_lines: "join(input.files, '\n')"
+    files_lines: "join(input.files, '\\n')"
 
 ## set -euo pipefail + explicit exit-code checks on every git call
 ## so a failed `git commit` (missing identity, hook rejection, …)
@@ -3953,7 +3986,10 @@ tool select_family:
   script: |
     const familiesRaw = {{input.families}};
     const attemptedRaw = {{input.attempted_families}};
+    const membersRaw = {{input.attempted_members}};
     const workspaceDir = {{input.workspace_dir}} || "";
+    const maxFamilies = {{input.max_families}};
+    const attemptedMembers = (membersRaw && typeof membersRaw === "object") ? membersRaw : {};
 
     const families = Array.isArray(familiesRaw) ? familiesRaw : [];
     const attempted = (attemptedRaw && typeof attemptedRaw === "object") ? attemptedRaw : {};
@@ -3985,7 +4021,13 @@ tool select_family:
       .filter((f) => !familyAtTarget(f));
 
     let result;
-    if (survivors.length === 0) {
+    if (attemptedNames.size >= maxFamilies || survivors.length === 0) {
+      // Loop exit. Distinguish "no family left" from "the per-run cap
+      // stopped the family pass" so the run summary says whether the
+      // remaining families' members went through the solo loop instead.
+      const capReason = survivors.length === 0
+        ? "exhausted"
+        : "max_families_per_run reached (" + maxFamilies + " attempted; " + survivors.length + " remaining go through the solo loop)";
       result = {
         selected_family: "",
         selected_members: [],
@@ -3993,6 +4035,8 @@ tool select_family:
         has_more: false,
         attempted_families_count: attemptedNames.size,
         cumulative_attempted_families: attempted,
+        attempted_members: attemptedMembers,
+        cap_reason: capReason,
       };
     } else {
       const f = survivors[0];
@@ -4004,6 +4048,8 @@ tool select_family:
         has_more: true,
         attempted_families_count: attemptedNames.size,
         cumulative_attempted_families: cumulative,
+        attempted_members: attemptedMembers,
+        cap_reason: "",
       };
     }
 
@@ -4390,6 +4436,22 @@ compute phase2_decider:
 schema phase2_decider_output:
   go_done: bool
 
+## solo_banked — the solo loop's exhaustion exit counts the pick that
+## write_audit_md just banked. select_candidate's attempted_count is the
+## ledger BEFORE the pick it handed out (only cumulative_attempted and
+## only_patches_attempted include it), and phase2_decider reads 0 as
+## "nothing to review": without this step the first solo, committed and
+## then cut by the budget guard, would skip Phase 2.
+compute solo_banked:
+  output: solo_banked_output
+  expr:
+    attempted_count: "input.attempted_count + 1"
+    only_patches_attempted: "input.only_patches_attempted"
+
+schema solo_banked_output:
+  attempted_count: int
+  only_patches_attempted: bool
+
 ## ─── Nodes : SBOM emission ─────────────────────────────────────────
 
 ## emit_sbom writes a per-run software bill of materials right before
@@ -4683,7 +4745,9 @@ workflow secured_renovacy:
   bucket_families -> select_family when has_families with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    max_families: "{{vars.max_families_per_run}}"
   }
 
   ## No multi-member families found → straight to per-package solo loop.
@@ -4705,15 +4769,15 @@ workflow secured_renovacy:
   }
 
   ## select_family exhausted (every family attempted or already at
-  ## target) → hand off to the per-package solo loop. We pass the
-  ## family-attempted members ledger as `attempted` so solos skip the
-  ## packages the family path already handled; mark_family_attempted
-  ## seeded it with bucket_patches.attempted_after_batch on the first
-  ## iteration so the patch-batched members are also covered.
+  ## target, or the cap) → hand off to the per-package solo loop with the
+  ## members ledger select_family carries: the patch batch's members on
+  ## entry, plus every family attempted since. It exists even when no
+  ## family ran (max_families_per_run: 0, every family at target) — a
+  ## reference to mark_family_attempted would resolve to null there.
   select_family -> select_candidate when not has_more with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
-    attempted: "{{outputs.mark_family_attempted.attempted_members}}",
+    attempted: "{{outputs.select_family.attempted_members}}",
     max_packages: "{{vars.max_packages_per_run}}",
     workspace_dir: "{{vars.workspace_dir}}",
     update_scope: "{{vars.update_scope}}"
@@ -4765,12 +4829,15 @@ workflow secured_renovacy:
   ## Both terminal family outcomes (success → committed, failure →
   ## reverted) loop back through mark_family_attempted so the next
   ## select_family iteration skips this family.
+  ## The members ledger grows from what select_family carried into this
+  ## family (the batch's members, then every family before) — not from
+  ## the batch alone, which dropped the earlier families' members.
   family_commit -> mark_family_attempted with {
     family_name: "{{outputs.select_family.selected_family}}",
     members: "{{outputs.select_family.selected_members}}",
     reason: "family upgrade committed",
     cumulative_attempted_families: "{{outputs.select_family.cumulative_attempted_families}}",
-    cumulative_attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}"
+    cumulative_attempted_members: "{{outputs.select_family.attempted_members}}"
   }
 
   family_revert -> mark_family_attempted with {
@@ -4778,15 +4845,38 @@ workflow secured_renovacy:
     members: "{{outputs.select_family.selected_members}}",
     reason: "family upgrade or validate failed",
     cumulative_attempted_families: "{{outputs.select_family.cumulative_attempted_families}}",
-    cumulative_attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}"
+    cumulative_attempted_members: "{{outputs.select_family.attempted_members}}"
   }
 
   ## Loop back to select_family — same package_loop pattern as the per-
-  ## package solo loop, capped at 20 to bound the worst case.
-  mark_family_attempted -> select_family as family_loop(20) with {
+  ## package solo loop, bounded by its own knob: the cap sits one above
+  ## max_families_per_run, so select_family's own exit — the one that
+  ## writes cap_reason — fires first.
+  mark_family_attempted -> select_family as family_loop("vars.max_families_per_run + 1") with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{{outputs.mark_family_attempted.attempted_families}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    attempted_members: "{{outputs.mark_family_attempted.attempted_members}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    max_families: "{{vars.max_families_per_run}}"
+  }
+  ## The loop's exhaustion exit (C145, #1293): the back-edge declined for
+  ## budget (select_family's own exit reports the cap first) → the solo
+  ## loop takes what is left, skipping every member the family path
+  ## already handled (mark_family_attempted just grew the ledger). The
+  ## solo head is the deliberate target, not phase2_decider: select_candidate
+  ## is a free pick whose own exit builds the ledger emit_sbom and Phase 2
+  ## read (a decider entered from here hands emit_sbom nothing — measured
+  ## by the strict dry run), and a run too starved for another family
+  ## iteration cannot fund Phase 2's campaign either: in both designs it
+  ## stops at the first agent node with a resumable budget failure, and a
+  ## resume with a raised cap continues from there.
+  mark_family_attempted -> select_candidate with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "{{outputs.mark_family_attempted.attempted_members}}",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    update_scope: "{{vars.update_scope}}"
   }
 
   ## No more candidates → phase2_decider picks the right terminal
@@ -5031,7 +5121,7 @@ workflow secured_renovacy:
   ##     (the iteratively-grown ledger).
   ##   batch path → outputs.bucket_patches.attempted_after_batch
   ##     (every patch flagged so the loop skips them).
-  write_audit_md -> select_candidate when not was_batch as package_loop(50) with {
+  write_audit_md -> select_candidate when not was_batch as package_loop("vars.max_packages_per_run + 1") with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
@@ -5048,6 +5138,28 @@ workflow secured_renovacy:
     scope: "{{vars.scope}}",
     attempted: "{{outputs.bucket_patches.attempted_after_batch}}"
   }
+  ## The solo loop's exhaustion exit (C145, #1293). The cap sits one above
+  ## max_packages_per_run, so select_candidate's own exit — the one that
+  ## writes cap_reason and remaining_count — always fires first; this edge
+  ## is reached when the affordability guard declines the back-edge, at any
+  ## iteration. The pick was committed by construction here, and
+  ## select_candidate's attempted_count is the ledger BEFORE that pick:
+  ## solo_banked counts it in, so phase2_decider never reads 0 for a banked
+  ## minor or major (only_patches_attempted already includes the pick).
+  ## A malformed was_batch (neither true nor false) also lands here, on
+  ## either path: after a solo it goes to Phase 2 on the solo's own ledger;
+  ## on the batch path select_candidate never ran, solo_banked's `null + 1`
+  ## fails EXPRESSION_FAILED and the run parks failed_resumable naming the
+  ## node — measured, never a silent success (C011 refuses a `when` on this
+  ## exit, so the bare edge is the shape available).
+  write_audit_md -> solo_banked with {
+    attempted_count: "{{outputs.select_candidate.attempted_count}}",
+    only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
+  }
+  solo_banked -> phase2_decider with {
+    attempted_count: "{{outputs.solo_banked.attempted_count}}",
+    only_patches_attempted: "{{outputs.solo_banked.only_patches_attempted}}"
+  }
 
   ## Failure path: revert (or already reverted) → mark failed → loop back.
   revert_changes -> mark_failed_and_continue with {
@@ -5055,13 +5167,25 @@ workflow secured_renovacy:
     reason: "fix_loop exhausted or install/upgrade failed"
   }
 
-  mark_failed_and_continue -> select_candidate as package_loop(50) with {
+  mark_failed_and_continue -> select_candidate as package_loop("vars.max_packages_per_run + 1") with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
     max_packages: "{{vars.max_packages_per_run}}",
     workspace_dir: "{{vars.workspace_dir}}",
     update_scope: "{{vars.update_scope}}"
+  }
+  ## The same exhaustion exit from the failure path (C145, #1293), on the
+  ## PRE-pick count on purpose: the pick was just reverted, so a first solo
+  ## with nothing banked reaches the decider with 0 and skips Phase 2
+  ## (nothing to review — the natural exit, one select_candidate later,
+  ## would count the reverted pick and run a campaign over an empty diff).
+  ## only_patches_attempted does include the pick, so a reverted minor
+  ## after a patch batch still goes to Phase 2 over the batch, as the
+  ## natural exit does.
+  mark_failed_and_continue -> phase2_decider with {
+    attempted_count: "{{outputs.select_candidate.attempted_count}}",
+    only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
   }
 
   ## ═══ Phase 2 : Alternating review/fix on cumulative diff ═════════

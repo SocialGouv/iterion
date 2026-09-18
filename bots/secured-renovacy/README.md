@@ -29,14 +29,17 @@ Phase 1   discover_outdated ─▶ bucket_patches ─┬─ has_patches ─▶ b
                            │                       ▲              │ (fail)                                │
                            │                       │              ▼                                       │
                            │                 mark_family_attempted ◀─ family_revert / family_commit ◀─ family_validate
+                           │                   (family_loop, cap max_families_per_run + 1; declined for budget ─▶ select_candidate)
                            └─ else ─▶ select_candidate  ◀───────────────────────────────────────────────┘
                                           │ has_more
                                           ▼
               resolve_pkg_ecosystem ─▶ intel_fanout ─┬─▶ security_audit ─┐
                                                      └─▶ changelog_review ┴─▶ intel_join
-                        intel_join ─┬─ not safe ─▶ mark_failed_and_continue ─▶ select_candidate (package_loop 50)
+                        intel_join ─┬─ not safe ─▶ mark_failed_and_continue ─▶ select_candidate (package_loop, cap max_packages_per_run + 1;
+                                    │                                            declined for budget ─▶ phase2_decider)
                                     └─ safe ─▶ upgrade ─▶ install ─▶ align_code ─▶ validate_upgrade
                         validate_upgrade ─┬─ stable ─▶ prepare_commit ─▶ join_files ─▶ commit_changes ─▶ write_audit_md ─▶ select_candidate
+                                          │                                    (declined for budget ─▶ solo_banked ─▶ phase2_decider)
                                           └─ not stable ─▶ fix_after_upgrade (fix_loop N) ─▶ validate_upgrade / revert_changes
                         select_candidate ─ not has_more ─▶ phase2_decider
 
@@ -78,7 +81,8 @@ Phase 2   phase2_decider ─┬─ go_done (0 attempts or patches-only) ─▶ e
 | `scope` | `"patch,minor,major"` | Which semver tiers to attempt. `major` skips the patch fast-track; a run restricted to lower tiers skips major bumps. |
 | `update_scope` | `""` | What *kinds* of deps to touch — free-form, read verbatim by the agents (`libraries`, `languages`, `tooling`, `devops`, `ci_cd`, or a custom sentence). Empty = the whole dep graph. |
 | `major_policy` | `attempt` | `skip` \| `gate` \| `attempt` — how to handle major upgrades. **Ask before running `attempt`** — it mutates consuming code on breaking changes. |
-| `max_packages_per_run` | `30` | Cap on packages the solo loop selects in one run. |
+| `max_packages_per_run` | `30` | Cap on packages ATTEMPTED in one run, on one shared ledger: the patch batch's members, every family member the fast-track attempted and the solo picks all count, so families consume solo slots (`select_candidate` reports the cap in `cap_reason`; the solo loop's own cap sits one above). |
+| `max_families_per_run` | `20` | Cap on `@scope/` families the fast-track attempts in one run; the remainder's members go through the solo loop, where they count against `max_packages_per_run` like every other attempt (`select_family` reports the cap in `cap_reason`; the family loop's own cap sits one above). |
 | `fix_loop_default` / `fix_loop_major` | `3` / `5` | Per-package `fix_after_upgrade` retry budget (major-risk upgrades get the larger budget). |
 | `max_review_passes` | `5` | Phase-2 `review_pass_loop` cap (bounds loop-backs → up to N+1 campaign→verify passes). |
 | `override_install_cmd` / `override_upgrade_cmd` | `""` | Escape hatches for unusual setups; empty lets `detect_stack` supply the canonical commands. |

@@ -50,7 +50,9 @@ always with your recommended answer when you have one.
 
 ## Convergence heuristic
 
-- Typical interviews converge in **6–15 turns**; you are bounded at 30.
+- Typical interviews converge in **6–15 turns**; you are bounded by the run's
+  `max_interview_turns` (default 30) — your system prompt states the cap in
+  force, and past it the run refuses (INTERVIEW_NOT_CONVERGED).
 - STOP asking when another question would no longer change any decision
   in SPEC.md — or when the operator says "go / on y va / that's enough".
 - When 1–2 areas stay genuinely undecided, record them in SPEC.md as

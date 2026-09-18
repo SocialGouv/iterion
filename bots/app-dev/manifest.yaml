@@ -1,7 +1,19 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.3.1
+version: 0.3.2
+## 0.3.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside nineteen prompts (84 in all) now reach the
+## models as blank lines instead of being folded away by the profile-1 lexer;
+## the deploy gate's fail_log literal is re-spelled with its value unchanged.
+## The interview loop gains its exhaustion exits (C145, #1293), two typed
+## refusals told apart at the chat pause: a spent cap ends the run terminal
+## (INTERVIEW_NOT_CONVERGED — an exhausted loop stays exhausted across
+## resume, a relaunch is the cure), a turn the budget could no longer fund
+## parks it resumable (INTERVIEW_BUDGET_STARVED, naming the budget spent;
+## `iterion resume --max-cost-usd` continues the conversation) — instead of
+## LOOP_EXHAUSTED. One instruction changed: the interviewer is told the cap
+## in force and the refusal past it (the playbook no longer hardcodes 30).
 ## 0.3.1 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work;
 ## the deterministic commit and the commit instruction exclude it (#1364); the bundle's skill says the same.
@@ -123,3 +135,9 @@ invocations:
 launch:
   primary: [app_prompt, mode, deploy_enabled]
   hidden: [source_issue_ref]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"
