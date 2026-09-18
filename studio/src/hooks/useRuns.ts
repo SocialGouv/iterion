@@ -83,8 +83,16 @@ export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
   // ":" — stable, single-tenant, unchanged behaviour. The ORG must be in
   // the key too, not just the team: two orgs can both resolve to no active
   // team, and a team-only key would then collide on one cache entry.
-  const { activeOrgID, activeTeam } = useAuth();
-  const scopeKey = `${activeOrgID}:${activeTeam?.team_id ?? ""}`;
+  // Key on the authoritative session ids (activeOrgID/activeTeamID raw
+  // strings), NOT the derived `activeTeam` membership lookup: that lookup
+  // is `teams.find(... === activeTeamID)` over the active org's teams and
+  // resolves to undefined whenever the session's team isn't in the
+  // client-visible tree (org fell back to orgs[0], super-admin with empty
+  // orgs, …). A undefined there would degrade the key to "<org>:" and
+  // collapse two distinct server scopes onto one cache entry — the same
+  // collision the org component was added to prevent.
+  const { activeOrgID, activeTeamID } = useAuth();
+  const scopeKey = `${activeOrgID}:${activeTeamID}`;
 
   const query = useQuery<RunSummary[]>({
     queryKey: ["runs", scopeKey, status, limit, repo],

@@ -22,10 +22,11 @@ vi.mock("@/store/serverInfo", () => ({
 }));
 
 let activeOrgID: string;
-let activeTeamID: string | undefined;
+let activeTeamID: string;
 vi.mock("@/auth/AuthContext", () => ({
   useAuth: () => ({
     activeOrgID,
+    activeTeamID,
     activeTeam: activeTeamID ? { team_id: activeTeamID } : undefined,
   }),
 }));
@@ -87,7 +88,7 @@ describe("useRuns team-aware caching", () => {
     // Two orgs can both resolve to NO active team (team_id undefined). A
     // team-only key would then collide on one cache entry and serve the
     // previous org's runs. Folding the org into the key prevents that.
-    activeTeamID = undefined;
+    activeTeamID = "";
     listRuns.mockImplementation(async () =>
       activeOrgID === "org-a" ? [run("a1")] : [run("b1")],
     );
@@ -99,6 +100,27 @@ describe("useRuns team-aware caching", () => {
     activeOrgID = "org-b";
     rerender();
     await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["b1"]));
+    expect(listRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("keys on the authoritative team id even when the derived team lookup is empty", async () => {
+    // activeTeamID is the session's authoritative value; the derived
+    // `activeTeam` membership lookup can be undefined (team not in the
+    // client-visible tree). Keying on activeTeamID keeps two such scopes
+    // from collapsing onto one "<org>:" cache entry.
+    listRuns.mockImplementation(async () =>
+      activeTeamID === "team-a" ? [run("a1")] : [run("x1")],
+    );
+    const { wrapper } = makeWrapper();
+
+    const { result, rerender } = renderHook(() => useRuns(), { wrapper });
+    await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["a1"]));
+
+    // Same org, different authoritative team id that resolves to no
+    // membership row — the key must still change and refetch.
+    activeTeamID = "team-ghost";
+    rerender();
+    await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["x1"]));
     expect(listRuns).toHaveBeenCalledTimes(2);
   });
 
@@ -160,7 +182,7 @@ describe("useRuns team-aware caching", () => {
     // flips mid-boot.
     mode = "local";
     activeOrgID = "";
-    activeTeamID = undefined;
+    activeTeamID = "";
     listRuns.mockImplementation(async () => [run("local-1")]);
     const { wrapper } = makeWrapper();
 

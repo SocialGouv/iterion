@@ -10,10 +10,11 @@ const listRunRepos = vi.fn<() => Promise<RunRepo[]>>();
 vi.mock("@/api/runs", () => ({ listRunRepos: () => listRunRepos() }));
 
 let activeOrgID: string;
-let activeTeamID: string | undefined;
+let activeTeamID: string;
 vi.mock("@/auth/AuthContext", () => ({
   useAuth: () => ({
     activeOrgID,
+    activeTeamID,
     activeTeam: activeTeamID ? { team_id: activeTeamID } : undefined,
   }),
 }));

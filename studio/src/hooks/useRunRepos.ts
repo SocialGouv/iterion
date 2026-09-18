@@ -30,8 +30,11 @@ export function useRunRepos(enabled: boolean): UseRunReposResult {
   // repos. The ORG is in the key too, not just the team: two orgs can both
   // resolve to no active team, and a team-only key would collide on one
   // entry (mirrors useRuns).
-  const { activeOrgID, activeTeam } = useAuth();
-  const scopeKey = `${activeOrgID}:${activeTeam?.team_id ?? ""}`;
+  // Key on the authoritative session ids, not the derived `activeTeam`
+  // lookup which can resolve to undefined and collapse scopes (mirrors
+  // useRuns).
+  const { activeOrgID, activeTeamID } = useAuth();
+  const scopeKey = `${activeOrgID}:${activeTeamID}`;
   const query = useQuery<RunRepo[]>({
     queryKey: ["run-repos", scopeKey],
     queryFn: () => listRunRepos(),
