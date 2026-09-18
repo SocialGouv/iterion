@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.165.0](https://github.com/SocialGouv/iterion/compare/v3.164.0...v3.165.0) (2026-09-18)
+
+### Features
+
+* **studio:** / serves the product home, the studio moves under /studio, and iterion says what it is ([#1433](https://github.com/SocialGouv/iterion/issues/1433)) ([e6dfbda](https://github.com/SocialGouv/iterion/commit/e6dfbdafcc60c9e2078967b442465477086138aa))
+
+    <details><summary>why</summary>
+
+    Two things nobody could read off a URL or a page.
+
+    </details>
+
 ## [3.164.0](https://github.com/SocialGouv/iterion/compare/v3.163.0...v3.164.0) (2026-09-18)
 
 ### Features
