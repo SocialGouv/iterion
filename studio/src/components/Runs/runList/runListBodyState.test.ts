@@ -5,7 +5,16 @@ import { runListBodyState, showRefreshingOverlay } from "./runListBodyState";
 describe("runListBodyState", () => {
   it("shows the skeleton only on a cold load with no cached rows", () => {
     expect(
-      runListBodyState({ loading: true, error: null, runCount: 0, filteredCount: 0 }),
+      runListBodyState({ loading: true, refreshing: false, error: null, runCount: 0, filteredCount: 0 }),
+    ).toBe("skeleton");
+  });
+
+  it("shows the skeleton on a switch away from an empty scope (cached [] held)", () => {
+    // keepPreviousData holds the previous scope's [] so loading is already
+    // false, but the new scope is still fetching (refreshing). Without
+    // folding refreshing in this would fall through to the "no runs" CTA.
+    expect(
+      runListBodyState({ loading: false, refreshing: true, error: null, runCount: 0, filteredCount: 0 }),
     ).toBe("skeleton");
   });
 
@@ -14,31 +23,37 @@ describe("runListBodyState", () => {
     // presence of rows means keepPreviousData is holding them, so we render
     // the list + overlay, never a blank skeleton.
     expect(
-      runListBodyState({ loading: true, error: null, runCount: 5, filteredCount: 5 }),
+      runListBodyState({ loading: true, refreshing: false, error: null, runCount: 5, filteredCount: 5 }),
+    ).toBe("list");
+  });
+
+  it("keeps the list (not skeleton) while refreshing over cached rows", () => {
+    expect(
+      runListBodyState({ loading: false, refreshing: true, error: null, runCount: 5, filteredCount: 5 }),
     ).toBe("list");
   });
 
   it("surfaces errors ahead of empty/list states", () => {
     expect(
-      runListBodyState({ loading: false, error: "boom", runCount: 0, filteredCount: 0 }),
+      runListBodyState({ loading: false, refreshing: false, error: "boom", runCount: 0, filteredCount: 0 }),
     ).toBe("error");
   });
 
-  it("reports empty when the scope has no runs at all", () => {
+  it("reports empty when the scope has no runs at all and nothing is loading", () => {
     expect(
-      runListBodyState({ loading: false, error: null, runCount: 0, filteredCount: 0 }),
+      runListBodyState({ loading: false, refreshing: false, error: null, runCount: 0, filteredCount: 0 }),
     ).toBe("empty");
   });
 
   it("reports no-matches when filters hide every run", () => {
     expect(
-      runListBodyState({ loading: false, error: null, runCount: 8, filteredCount: 0 }),
+      runListBodyState({ loading: false, refreshing: false, error: null, runCount: 8, filteredCount: 0 }),
     ).toBe("no-matches");
   });
 
   it("renders the list when filtered runs survive", () => {
     expect(
-      runListBodyState({ loading: false, error: null, runCount: 8, filteredCount: 3 }),
+      runListBodyState({ loading: false, refreshing: false, error: null, runCount: 8, filteredCount: 3 }),
     ).toBe("list");
   });
 });

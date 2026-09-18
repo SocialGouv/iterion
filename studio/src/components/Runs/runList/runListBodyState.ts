@@ -13,6 +13,12 @@ export type RunListBodyState =
 export interface RunListBodyInput {
   // useRuns: true only on the very first load of a key (no cached data).
   loading: boolean;
+  // useRuns: a scope/param switch is in flight and keepPreviousData is
+  // holding the previous key's data (query.isPlaceholderData). Crucially
+  // this is true even when the previous key resolved to an EMPTY list, so
+  // it must be considered alongside `loading` to decide cold-load — a
+  // switch away from an empty scope has loading=false but is still loading.
+  refreshing: boolean;
   // useRuns error message, or null.
   error: string | null;
   // total fetched runs for the current scope (pre client-side filter).
@@ -23,15 +29,19 @@ export interface RunListBodyInput {
 
 export function runListBodyState({
   loading,
+  refreshing,
   error,
   runCount,
   filteredCount,
 }: RunListBodyInput): RunListBodyState {
-  // Cold load wins: no cached rows to keep on screen, so show the
-  // skeleton. A cached refetch (loading=false, runCount>0) falls through
-  // to "list" and the caller overlays a refreshing indicator instead —
-  // the list never blanks on a scope switch.
-  if (loading && runCount === 0) return "skeleton";
+  // Cold load wins whenever there are no rows on screen AND a fetch for
+  // the current scope is in flight — either a true first load (`loading`)
+  // or a switch away from an empty scope where keepPreviousData holds a
+  // cached [] (`refreshing`, loading=false). Without folding `refreshing`
+  // in, that second case would fall through to the "no runs" CTA while the
+  // new scope is still loading. When rows ARE on screen, a switch keeps the
+  // list ("list") and the caller overlays a refreshing indicator instead.
+  if ((loading || refreshing) && runCount === 0) return "skeleton";
   if (error) return "error";
   if (runCount === 0) return "empty";
   if (filteredCount === 0) return "no-matches";

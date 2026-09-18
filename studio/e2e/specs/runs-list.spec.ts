@@ -29,6 +29,10 @@ test.describe("runs list (virtualized)", () => {
     ).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "Status" })).toBeVisible();
 
+    // The table keeps its accessible name via the sr-only <caption>
+    // (RGAA 5.4/5.5) even though Virtuoso renders the <table> element.
+    await expect(page.getByRole("table", { name: "Runs" })).toBeAttached();
+
     // The seeded demo-bot run is present as a table row and shows finished.
     const row = page
       .getByRole("row")

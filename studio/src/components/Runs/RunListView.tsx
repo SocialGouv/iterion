@@ -94,7 +94,15 @@ function RunTableRow({
 }
 
 const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
-  Table: (props) => <table {...props} className="w-full text-xs" />,
+  // The sr-only <caption> is the table's accessible name (RGAA 5.4/5.5) —
+  // it must be the table's first child. Virtuoso renders a bare <table>,
+  // so we re-add it here (the pre-virtualization markup had it inline).
+  Table: ({ children, ...props }) => (
+    <table {...props} className="w-full text-xs">
+      <caption className="sr-only">Runs</caption>
+      {children}
+    </table>
+  ),
   TableRow: RunTableRow,
 };
 
@@ -367,6 +375,10 @@ export default function RunListView() {
 
   const bodyState = runListBodyState({
     loading,
+    // A switch away from an EMPTY scope holds a cached [] via
+    // keepPreviousData (loading=false), so fold refreshing in to show the
+    // skeleton rather than the "no runs" CTA while the new scope loads.
+    refreshing,
     error,
     runCount: runs.length,
     filteredCount: filteredRuns.length,
