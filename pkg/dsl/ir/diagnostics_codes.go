@@ -85,6 +85,7 @@ const (
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
+	DiagRoutingFieldRef  DiagCode = "C148" // model/backend/provider (a node's or a fallback route's) reads a template namespace other than vars — the route is decided before the node runs (error)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)

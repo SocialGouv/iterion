@@ -182,26 +182,27 @@ func block(name, body, doc string) Property {
 
 // Properties shared by every node kind that produces or consumes data.
 var (
-	pInput          = prop("input", Ident, "Schema the node's input is validated against")
-	pOutput         = prop("output", Ident, "Schema the node's structured output must match")
-	pPublish        = prop("publish", Ident, "Artifact name the output is published under (read back as {{artifacts.<name>}})")
-	pArtifactLabels = prop("artifact_labels", ToolList, "Labels stamped on the published artifact; a quoted element is the literal label")
-	pAwait          = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
-	pDescription    = prop("description", String, "Free-text description shown by the studio and the reports")
-	pNeeds          = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
-	pModel          = prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default")
-	pBackend        = prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi or grok")
-	pProvider       = prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"")
-	pSystem         = prop("system", Ident, "Prompt declaration used as the system prompt")
-	pUser           = prop("user", Ident, "Prompt declaration used as the user message")
-	pTimeout        = prop("timeout", String, "Duration the node may run, e.g. \"20m\"")
-	pCompress       = checked("compress", "Command-output compression: on, ultra or off (C102)", "on", "ultra", "off")
-	pPermission     = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
-	pAutoMemory     = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
-	pInteraction    = enum("interaction", "How the node asks the operator (ADR-081)", "none", "human", "llm", "llm_or_human", "review", "async")
-	pInteractionP   = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
-	pInteractionM   = prop("interaction_model", String, "Model the llm interaction mode uses")
-	pReasoning      = Property{Name: "reasoning_effort", Form: Enum, Values: []string{"low", "medium", "high", "xhigh", "max", "ultracode"},
+	pInput           = prop("input", Ident, "Schema the node's input is validated against")
+	pOutput          = prop("output", Ident, "Schema the node's structured output must match")
+	pPublish         = prop("publish", Ident, "Artifact name the output is published under (read back as {{artifacts.<name>}})")
+	pArtifactLabels  = prop("artifact_labels", ToolList, "Labels stamped on the published artifact; a quoted element is the literal label")
+	pAwait           = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
+	pDescription     = prop("description", String, "Free-text description shown by the studio and the reports")
+	pNeeds           = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
+	pModel           = prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
+	pBackend         = prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
+	pProvider        = prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
+	pSupervisorModel = prop("model", String, "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is refused (C148): a supervisor is spawned without the run's vars")
+	pSystem          = prop("system", Ident, "Prompt declaration used as the system prompt")
+	pUser            = prop("user", Ident, "Prompt declaration used as the user message")
+	pTimeout         = prop("timeout", String, "Duration the node may run, e.g. \"20m\"")
+	pCompress        = checked("compress", "Command-output compression: on, ultra or off (C102)", "on", "ultra", "off")
+	pPermission      = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
+	pAutoMemory      = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
+	pInteraction     = enum("interaction", "How the node asks the operator (ADR-081)", "none", "human", "llm", "llm_or_human", "review", "async")
+	pInteractionP    = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
+	pInteractionM    = prop("interaction_model", String, "Model the llm interaction mode uses")
+	pReasoning       = Property{Name: "reasoning_effort", Form: Enum, Values: []string{"low", "medium", "high", "xhigh", "max", "ultracode"},
 		Doc: "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},
 		Doc: "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"}
@@ -266,7 +267,7 @@ var Kinds = append([]Kind{
 	{Name: "supervisor", Role: Declaration, Doc: "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
 		Properties: []Property{
 			prop("watches", IdentList, "Agent nodes the supervisor is armed for"),
-			pModel,
+			pSupervisorModel,
 			pSystem,
 			prop("cooldown", String, "Minimum delay between two evaluations, e.g. \"2m\""),
 			prop("max_evals", Int, "Upper bound on evaluations per run"),

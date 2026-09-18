@@ -113,9 +113,11 @@ vars:
   state_commit: bool = false
 
   ## The synthesis model rides FEED_WATCH_MODEL (empty = the resolved
-  ## backend's own default) — a `model: "{{vars.x}}"` template is NOT
-  ## resolved on the delegation path and reaches the CLI literally.
-  ## Per-run override: FEED_WATCH_MODEL env or `iterion run --model`.
+  ## backend's own default): the env form reads the operator's environment
+  ## directly, which is what a scheduled bot wants. (A `model: "{{vars.x}}"`
+  ## template resolves too, on every backend: the routing fields go through
+  ## the template resolver.) Per-run override: FEED_WATCH_MODEL env or
+  ## `iterion run --model`.
 
   ## Per-feed HTTP timeout and freshest-N cap (Huginn max_events_per_run
   ## equivalent).

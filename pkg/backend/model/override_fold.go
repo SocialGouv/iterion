@@ -293,7 +293,12 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 		}
 		hint, _, _ := ir.SplitProviderStep(token)
 		hint = strings.ToLower(strings.TrimSpace(hint))
-		if hint == "" || hint == "auto" {
+		// A `{{vars.…}}` reference is resolved by the executor with the
+		// run's vars, which this walk does not have: it is a hint that
+		// defers, like "auto" — not a name. Recording its text as a hint
+		// made AnthropicWireReachable answer false for a run that rides
+		// the wire, and the usage-cap pre-flight stood down.
+		if hint == "" || hint == "auto" || strings.Contains(hint, "{{") {
 			unresolved = true
 			continue
 		}

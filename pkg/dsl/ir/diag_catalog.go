@@ -123,6 +123,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagReviewURLUnknownRef:    {"Review URL unknown ref", "Point `review_url` at a declared node's output, or remove it."},
 	DiagInvalidCompress:        {"Invalid compress value", "Use `on`, `off` or `ultra`."},
 	DiagQuotedCommandRef:       {"Tool command quotes a ref the runtime already quotes", "Remove the quotes around `{{ref}}` in the command or the postcondition — the runtime shell-escapes every ref; build optional flags with `${VAR:+--flag \"$VAR\"}` from a bare `VAR={{ref}}`."},
+	DiagRoutingFieldRef:        {"Routing field holds a template that will not resolve", "Only `{{vars.<name>}}` resolves in `model:`, `backend:`, `provider:` and `interaction_model:` (a node's or a fallback route's): the route is decided before the node runs, and any other `{{…}}` span reaches the backend as written. Write the id, a `${VAR:-default}`, or a declared var; a launch-time choice goes through `iterion run --model` / `--backend`. A supervisor's `model:` renders no template at all (#1450)."},
 	DiagInvalidAutoMemory:      {"Invalid auto_memory value", "Use `on` or `off`, or drop the field to inherit."},
 	DiagAutoMemoryNotSupported: {"auto_memory on an unsupported backend", "Use `claude_code`, `claw` or `pi`, or drop `auto_memory:`."},
 	DiagInvalidLoopBudgetGuard: {"Invalid loop_budget_guard value", "Use `on` or `off`, or drop the field to inherit."},

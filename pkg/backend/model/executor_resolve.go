@@ -41,7 +41,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	case *ir.RouterNode:
 		backend = n.Backend
 	}
-	backend = ir.ExpandEnvWithDefault(backend)
+	backend = e.resolveRoutingField(backend)
 	if backend != "" && backend != "auto" {
 		return backend
 	}
@@ -143,9 +143,9 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		}
 		el := chainElement{
 			Label:    fb.Name,
-			Backend:  strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)),
-			Provider: strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Provider)),
-			Model:    strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Model)),
+			Backend:  e.resolveRoutingField(fb.Backend),
+			Provider: e.resolveRoutingField(fb.Provider),
+			Model:    e.resolveRoutingField(fb.Model),
 			Skip:     fb.Action == ir.FallbackActionSkip,
 		}
 		if fb.RunStageSet {
@@ -224,7 +224,32 @@ func (e *ClawExecutor) baselineModel(node ir.Node) string {
 	case *ir.RouterNode:
 		m = n.Model
 	}
-	return strings.TrimSpace(ir.ExpandEnvWithDefault(m))
+	return e.resolveRoutingField(m)
+}
+
+// resolveRoutingField is the one reading every routing field takes on the
+// dispatch path — a node's `model:`, `backend:` and `provider:`, the same
+// three on each `fallbacks:` route, an llm router's model, a human or review
+// node's companion model, a verified action's recovery model. A `{{vars.…}}`
+// template resolves first (the run's vars are the one namespace that exists
+// before the node runs; any other stays as written), then the `${VAR:-default}`
+// environment form, then the value is trimmed. Without the first step a
+// `model: "{{vars.model}}"` reached the backend as written: the claw registry
+// refused it as an invalid spec, the claude CLI asked for a model literally
+// named `{{vars.model}}` (examples/clarify; feed-watch's bilan). The compiler
+// holds the same line (C033 for an undeclared var, C148 for any other
+// `{{…}}` span). The resolver here carries the vars and nothing else — no
+// secret guard, no node input, no run state — so a `{{secrets.…}}` that
+// slipped past the compiler cannot render a secret into a model id that
+// backends log and events record. The environment form is expanded AFTER
+// the template on purpose: a var's default is where the DSL writes
+// `${MODEL:-anthropic/x}` (examples/clarify), and the executor receives
+// that default as written. The launch-time pre-flights (wire_reach.go,
+// override_fold.go) read the fields without the run's vars: a template
+// there is a hint that defers, like "auto" — never a name.
+func (e *ClawExecutor) resolveRoutingField(raw string) string {
+	varsOnly := &TemplateResolver{Vars: e.vars}
+	return strings.TrimSpace(ir.ExpandEnvWithDefault(varsOnly.Resolve(raw, nil, nil)))
 }
 
 // dedupeChain drops any element that would re-issue the call its
@@ -367,7 +392,7 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 	case *ir.RouterNode:
 		raw = n.Provider
 	}
-	expanded := ir.ExpandEnvWithDefault(raw)
+	expanded := e.resolveRoutingField(raw)
 	chain := make([]chainElement, 0, 4)
 	for _, part := range strings.Split(expanded, ",") {
 		token := strings.TrimSpace(part)

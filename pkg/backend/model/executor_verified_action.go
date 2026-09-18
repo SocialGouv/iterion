@@ -298,7 +298,7 @@ func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, inp
 // else the package default.
 func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 	if node.Recovery != nil && node.Recovery.Model != "" {
-		if m := ir.ExpandEnvWithDefault(node.Recovery.Model); m != "" {
+		if m := e.resolveRoutingField(node.Recovery.Model); m != "" {
 			return m
 		}
 	}

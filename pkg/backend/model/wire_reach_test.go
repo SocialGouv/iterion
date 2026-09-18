@@ -36,6 +36,10 @@ func TestAnthropicWireReachable(t *testing.T) {
 		{"claw + openai model prefix only", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai/gpt-5"}}), false},
 		{"claw + anthropic provider", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "anthropic"}}), true},
 		{"claw + zai facade", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "${RESCUE_PROVIDER:-zai}"}}), true},
+		// A provider the executor resolves from the run's vars is unknown
+		// to this walk: it defers, like "auto", and the wire stays reachable.
+		{"claw + templated provider defers", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "{{vars.p}}"}}), true},
+		{"claw + templated chain defers", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai,{{vars.p}}"}}), true},
 		{"claw with no provider substitutes what the process holds", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw"}}), true},
 		{"claw chain openai,anthropic reaches the wire", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai,anthropic"}}), true},
 		{"codex is bound to openai", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "codex"}}), false},
