@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.164.0](https://github.com/SocialGouv/iterion/compare/v3.163.0...v3.164.0) (2026-09-18)
+
+### Features
+
+* **bots:** app-dev, copilot and secured-renovacy read as dsl profile 2, with their loops' exhaustion exits ([#1344](https://github.com/SocialGouv/iterion/issues/1344) wave 4, [#1293](https://github.com/SocialGouv/iterion/issues/1293)) ([#1383](https://github.com/SocialGouv/iterion/issues/1383)) ([424c933](https://github.com/SocialGouv/iterion/commit/424c933f88f8161c39b93f6c6cd64285fc7867f3)), references [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1420](https://github.com/SocialGouv/iterion/issues/1420)
+
+    <details><summary>why</summary>
+
+    Wave 4 of the catalogue's move to the `dsl: 2` profile: the three heaviest bundles, by the migrator and nothing else. 54 prompts / 290 blank lines the authors wrote now reach the models as paragraph breaks (app-dev 19/84, copilot 6/80, secured-renovacy 29/126), every one read; four quoted literals re-spelled with their value unchanged (the deploy fail_log, copilot's two expr trailers, the files_lines join — the expression lexer interprets \n itself, so both profiles hand the compute the same…
+
+    </details>
+
 ## [3.163.0](https://github.com/SocialGouv/iterion/compare/v3.162.3...v3.163.0) (2026-09-18)
 
 ### Features
