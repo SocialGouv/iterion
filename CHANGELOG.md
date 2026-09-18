@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.167.0](https://github.com/SocialGouv/iterion/compare/v3.166.0...v3.167.0) (2026-09-18)
+
+### Features
+
+* **brand:** the brand gate blocks, the short form is guarded, and a shared link gets its card ([#1440](https://github.com/SocialGouv/iterion/issues/1440)) ([aadec80](https://github.com/SocialGouv/iterion/commit/aadec80a53bca16acd275b7cd0b2677f437d0292)), references [#1437](https://github.com/SocialGouv/iterion/issues/1437) [#1437](https://github.com/SocialGouv/iterion/issues/1437)
+
+    <details><summary>why</summary>
+
+    Four decisions, each arbitrated rather than assumed.
+
+    </details>
+
 ## [3.166.0](https://github.com/SocialGouv/iterion/compare/v3.165.0...v3.166.0) (2026-09-18)
 
 ### Features
