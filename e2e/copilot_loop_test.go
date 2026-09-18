@@ -618,29 +618,51 @@ func TestCopilot_GraphContract(t *testing.T) {
 	}
 	// The plan hand-off's cycle is bounded and budget-guarded too. When its
 	// back-edge is declined the reviewed plan must not vanish into `done`
-	// with the operator's turn unanswered: the one plain exit returns to
-	// the chat pause through the delivery projection, carrying a reply.
-	var handoffExits []*ir.Edge
+	// with the operator's turn unanswered: two exits return to the chat
+	// pause through the delivery projection, each carrying a reply, told
+	// apart by the loop counter — the cap drops the plan so the next turn
+	// starts fresh, the budget (`else`) keeps it active for a resume.
+	var capExit, budgetExit *ir.Edge
 	for _, e := range wf.Edges {
-		if e.From == "implementation_handoff" && plain(e) {
-			handoffExits = append(handoffExits, e)
+		if e.From != "implementation_handoff" || e.LoopName != "" {
+			continue
+		}
+		switch {
+		case e.ExpressionSrc == "loop.terra_plan_execution_cycle.iteration >= loop.terra_plan_execution_cycle.max":
+			capExit = e
+		case e.IsElse:
+			budgetExit = e
+		default:
+			t.Errorf("implementation_handoff has an exit of an unexpected shape: -> %s cond=%q expr=%q", e.To, e.Condition, e.ExpressionSrc)
 		}
 	}
-	if len(handoffExits) != 1 {
-		t.Fatalf("implementation_handoff has %d plain exits, want exactly one for the spent plan hand-off cycle", len(handoffExits))
+	if capExit == nil || budgetExit == nil {
+		t.Fatalf("implementation_handoff exits: cap=%v budget=%v, want both", capExit != nil, budgetExit != nil)
 	}
-	handoffExit := handoffExits[0]
-	if handoffExit.To != "compose" {
-		t.Errorf("implementation_handoff exhaustion exit goes to %q, want compose (the delivery projection to the chat pause)", handoffExit.To)
+	mappingRaw := func(e *ir.Edge, key string) string {
+		for _, m := range e.With {
+			if m.Key == key {
+				return m.Raw
+			}
+		}
+		return ""
 	}
-	var handoffReply string
-	for _, m := range handoffExit.With {
-		if m.Key == "reply" {
-			handoffReply = m.Raw
+	for name, e := range map[string]*ir.Edge{"cap": capExit, "budget": budgetExit} {
+		if e.To != "compose" {
+			t.Errorf("%s exit goes to %q, want compose (the delivery projection to the chat pause)", name, e.To)
+		}
+		if strings.TrimSpace(mappingRaw(e, "reply")) == "" {
+			t.Errorf("%s exit carries no reply — the operator would read an empty bubble", name)
 		}
 	}
-	if strings.TrimSpace(handoffReply) == "" {
-		t.Error("implementation_handoff exhaustion exit carries no reply — the operator would read an empty bubble")
+	if got := mappingRaw(capExit, "implementation_active"); got != "false" {
+		t.Errorf("cap exit implementation_active = %q, want false (the plan is dropped, the next turn starts fresh)", got)
+	}
+	if got := mappingRaw(budgetExit, "implementation_active"); got != "true" {
+		t.Errorf("budget exit implementation_active = %q, want true (the plan waits for the resume)", got)
+	}
+	if got := mappingRaw(budgetExit, "implementation_plan"); got != "{{outputs.implementation_handoff.implementation_plan}}" {
+		t.Errorf("budget exit implementation_plan = %q, want the reviewed plan carried", got)
 	}
 
 	validate, ok := wf.Nodes["validate_draft"].(*ir.ToolNode)

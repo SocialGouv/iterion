@@ -3,6 +3,8 @@ package e2e
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -57,6 +59,26 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 		if l.MaxIterationsExpr != knob {
 			t.Errorf("%s cap = %q (literal %d), want %q", loop, l.MaxIterationsExpr, l.MaxIterations, knob)
 		}
+	}
+	// The family → solo exit's source sits inside package_loop's compiled
+	// Body, and the loop's from-outside entries are the three the runtime
+	// re-bases the price on: a later edit to the family path cannot silently
+	// move the mark or reset the counter, which is what keeps
+	// max_packages_per_run bounding the run.
+	pkg := wf.Loops["package_loop"]
+	if !pkg.Body["mark_family_attempted"] {
+		t.Error("mark_family_attempted sits outside package_loop's body: its exit into select_candidate would re-base the loop's price and reset its counter")
+	}
+	var entries []string
+	for _, e := range wf.Edges {
+		if e.LoopName == "" && !pkg.Body[e.From] && pkg.Body[e.To] {
+			entries = append(entries, e.From+"->"+e.To)
+		}
+	}
+	sort.Strings(entries)
+	wantEntries := []string{"batch_commit->bucket_families", "batch_commit->write_audit_md", "bucket_patches->select_candidate"}
+	if fmt.Sprint(entries) != fmt.Sprint(wantEntries) {
+		t.Errorf("package_loop's from-outside entries = %v, want %v", entries, wantEntries)
 	}
 	// select_family receives the knob it reports, and the members ledger it
 	// carries, on every edge into it: the patch batch's members on entry,

@@ -1936,18 +1936,35 @@ workflow copilot:
     actionless_clarification_count: "{{outputs.implementation_handoff.actionless_clarification_count}}",
     actionless_clarification_key: "{{outputs.implementation_handoff.actionless_clarification_key}}"
   } as terra_plan_execution_cycle(1000)
-  ## The cycle's exhaustion exit (C145, #1293). The back-edge above is
+  ## The cycle's exhaustion exits (C145, #1293). The back-edge above is
   ## declined at its cap or when the run's budget can no longer fund a turn
-  ## (the affordability guard); the reviewed plan then returns to the chat
-  ## pause through the delivery projection with a reply saying so — never a
-  ## silent `done` with the operator's turn unanswered, never LOOP_EXHAUSTED.
-  ## The plan stays active and Terra's session ids ride along, on purpose:
-  ## the cure this reply names is a resume with a larger budget, which
-  ## must continue the reviewed plan rather than pay its reflection again.
-  ## At the cycle's cap — a thousand hand-offs, a bound no session has
-  ## approached — each further hand-off would repeat this notice.
-  implementation_handoff -> compose with {
-    reply: "Le cycle de planification est arrivé à sa limite (tours ou budget du run) : la session ne peut pas poursuivre ce plan. Reprends ce run avec un budget plus large (iterion resume --max-cost-usd ...) ou relance une conversation.",
+  ## (the affordability guard); either way the operator's turn is answered
+  ## through the delivery projection — never a silent `done`, never
+  ## LOOP_EXHAUSTED — and the loop counter tells the two causes apart:
+  ## - the cap (a thousand hand-offs): the plan is dropped, so the next turn
+  ##   starts fresh instead of paying a reflection whose hand-off would be
+  ##   declined again;
+  ## - the budget (the `else`, only ever taken once the back-edge is
+  ##   declined — a loop edge with budget left wins over it): the plan stays
+  ##   active and Terra's session ids ride along, because the cure this
+  ##   reply names is a resume with a larger budget, which must continue the
+  ##   reviewed plan rather than pay its reflection again.
+  implementation_handoff -> compose when "loop.terra_plan_execution_cycle.iteration >= loop.terra_plan_execution_cycle.max" with {
+    reply: "Le cycle de planification a atteint sa limite de tours : ce plan est abandonné et la conversation continue. Reformule la demande pour repartir sur un plan neuf.",
+    quick_replies: "[]",
+    context_brief: "{{outputs.implementation_handoff.context_brief}}",
+    mode: "{{outputs.implementation_handoff.mode}}",
+    session_id: "{{outputs.implementation_handoff.terra_session_id}}",
+    session_fingerprint: "{{outputs.implementation_handoff.terra_session_fingerprint}}",
+    implementation_active: "false",
+    implementation_plan: "''",
+    authoring_context: "{{outputs.implementation_handoff.authoring_context}}",
+    manager_scope_exclusions: "{{outputs.implementation_handoff.manager_scope_exclusions}}",
+    effective_scope_exclusions: "{{outputs.implementation_handoff.effective_scope_exclusions}}",
+    scope_guard_attempt: "{{outputs.implementation_handoff.scope_guard_attempt}}"
+  }
+  implementation_handoff -> compose else with {
+    reply: "Le budget du run ne permet plus de poursuivre ce plan : la session ne peut pas continuer ici. Reprends ce run avec un budget plus large (iterion resume --max-cost-usd ...) pour reprendre le plan tel qu il a été revu.",
     quick_replies: "[]",
     context_brief: "{{outputs.implementation_handoff.context_brief}}",
     mode: "{{outputs.implementation_handoff.mode}}",
