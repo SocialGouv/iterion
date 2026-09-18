@@ -586,9 +586,16 @@ func TestCopilot_GraphContract(t *testing.T) {
 		}
 	}
 
-	// There are exactly two clean exits: explicit close, and the chat fallback
-	// used when the bounded/budget-guarded back-edge is declined. Without the
-	// latter, exhaustion becomes LOOP_EXHAUSTED instead of a finished session.
+	// There are exactly two clean exits into done: explicit close, and the
+	// chat fallback used when the bounded/budget-guarded back-edge is
+	// declined. Without the latter, exhaustion becomes LOOP_EXHAUSTED instead
+	// of a finished session. A plain exit carries no guard of either form
+	// (`when field` sets Condition, `when "expr"` sets Expression), is not
+	// the `else` of a conditional sibling, and iterates nothing — any other
+	// shape is declined at exhaustion and the run dies after all.
+	plain := func(e *ir.Edge) bool {
+		return e.Condition == "" && e.Expression == nil && !e.IsElse && e.LoopName == "" && e.ForeachName == ""
+	}
 	var doneEdges []*ir.Edge
 	for _, e := range wf.Edges {
 		if e.To == "done" {
@@ -600,14 +607,40 @@ func TestCopilot_GraphContract(t *testing.T) {
 	}
 	var explicitClose, exhaustionFallback bool
 	for _, edge := range doneEdges {
-		explicitClose = explicitClose || (edge.From == "gate" && edge.Condition != "")
-		exhaustionFallback = exhaustionFallback || (edge.From == "chat" && edge.LoopName == "" && edge.Condition == "")
+		explicitClose = explicitClose || (edge.From == "gate" && (edge.Condition != "" || edge.Expression != nil))
+		exhaustionFallback = exhaustionFallback || (edge.From == "chat" && plain(edge))
 	}
 	if !explicitClose {
 		t.Error("missing gate -> done edge guarded by the close flag")
 	}
 	if !exhaustionFallback {
 		t.Error("missing plain chat -> done fallback for loop/budget exhaustion")
+	}
+	// The plan hand-off's cycle is bounded and budget-guarded too. When its
+	// back-edge is declined the reviewed plan must not vanish into `done`
+	// with the operator's turn unanswered: the one plain exit returns to
+	// the chat pause through the delivery projection, carrying a reply.
+	var handoffExits []*ir.Edge
+	for _, e := range wf.Edges {
+		if e.From == "implementation_handoff" && plain(e) {
+			handoffExits = append(handoffExits, e)
+		}
+	}
+	if len(handoffExits) != 1 {
+		t.Fatalf("implementation_handoff has %d plain exits, want exactly one for the spent plan hand-off cycle", len(handoffExits))
+	}
+	handoffExit := handoffExits[0]
+	if handoffExit.To != "compose" {
+		t.Errorf("implementation_handoff exhaustion exit goes to %q, want compose (the delivery projection to the chat pause)", handoffExit.To)
+	}
+	var handoffReply string
+	for _, m := range handoffExit.With {
+		if m.Key == "reply" {
+			handoffReply = m.Raw
+		}
+	}
+	if strings.TrimSpace(handoffReply) == "" {
+		t.Error("implementation_handoff exhaustion exit carries no reply — the operator would read an empty bubble")
 	}
 
 	validate, ok := wf.Nodes["validate_draft"].(*ir.ToolNode)
