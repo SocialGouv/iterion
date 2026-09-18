@@ -44,7 +44,7 @@ link-preview regression the guard exists to catch.
 | `charts/iterion/README.md` | 1 | the Helm chart's front page |
 | `docs/cloud-overview.md` | 1 | the cloud product page in the docs |
 | `docs/index.md` | 1 | the docs hero |
-| `docs/scripts/og-card.html` | 1 | the OpenGraph image — **regenerate `docs/public/og.png` with `task brand:og` after editing**, and `task brand:og:check` verifies the committed PNG was rendered from THIS card (a recorded source hash, not a pixel compare — the render depends on host fonts) |
+| `docs/scripts/og-card.html` | 1 | the OpenGraph image — **regenerate `docs/public/og.png` with `task brand:og` after editing**, and `task brand:og:check` checks both that the PNG is a well-formed 1200×630 file and that its recorded source hash still matches this card — not a pixel compare, because the render depends on host fonts |
 | `docs/.vitepress/config.ts` | 3 | the docs site `description` + the og and twitter cards |
 | `studio/index.html` | 3 | the served HTML of iterion.cloud — what a crawler and a link preview read — + its og and twitter cards |
 | `studio/public/manifest.json` | 1 | the installed-app description |

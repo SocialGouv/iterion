@@ -21,8 +21,14 @@
       .brand span { font-size: 52px; font-weight: 700; letter-spacing: -0.5px; }
       /* No <br /> in the heading: the definition has to appear as one
          uninterrupted sentence for scripts/brand/positioning-check.sh to
-         recognise it. max-width sets where it wraps instead. */
-      h1 { position: absolute; left: 78px; top: 214px; margin: 0; max-width: 1010px; font-size: 78px; line-height: 1.05; font-weight: 700; letter-spacing: -1px; }
+         recognise it. max-width sets where it wraps instead.
+         Sized to survive the WIDEST font in its own stack, not the first one:
+         at 78px the sentence wrapped to three lines under DejaVu Sans — this
+         card's own second font-family entry, and the default on a minimal
+         Debian or CI image — and printed its last word straight through the
+         tagline. Nothing pins a font here, so the layout has to hold without
+         one. */
+      h1 { position: absolute; left: 78px; top: 200px; margin: 0; max-width: 1010px; font-size: 62px; line-height: 1.08; font-weight: 700; letter-spacing: -1px; }
       .tagline { position: absolute; left: 80px; top: 420px; margin: 0; font-size: 28px; line-height: 1.45; color: #b5bdc9; }
       .footer { position: absolute; left: 80px; top: 560px; font-size: 21px; color: #6e7787; }
     </style>

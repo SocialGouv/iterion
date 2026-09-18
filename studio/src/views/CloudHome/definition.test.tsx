@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { Router } from "wouter";
 
 import CloudHome from "@/views/CloudHome";
+import { STUDIO_BASE } from "@/lib/scope";
 
 // The sentence, read from nowhere else. A constant here and a constant in the
 // component would both be "the source", and the point of the guard is that
@@ -47,7 +48,12 @@ describe("the iterion.cloud product home", () => {
         <CloudHome signedIn />
       </Router>,
     );
-    expect(screen.getAllByRole("link", { name: /Open the studio/ })[0]).toBeTruthy();
+    // The HREF, not the caption. Asserting the label alone left the bench
+    // green while entryHref pointed back at /login — the exact behaviour the
+    // comment above forbids — and equally green when it pointed at "/", which
+    // loops the CTA back to the page it is on.
+    const cta = screen.getAllByRole("link", { name: /Open the studio/ })[0];
+    expect(cta.getAttribute("href")).toBe(STUDIO_BASE);
     expect(screen.queryByRole("link", { name: /^Sign in/ })).toBeNull();
   });
 });

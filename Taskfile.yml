@@ -574,39 +574,12 @@ tasks:
       - ./node_modules/.bin/playwright screenshot --viewport-size=1200,630 "file://{{.ROOT_DIR}}/docs/scripts/og-card.html" ../docs/public/og.png
       # Record WHICH card produced the PNG, so brand:og:check can tell a stale
       # artefact from a current one without re-rendering.
-      - sha256sum ../docs/scripts/og-card.html | cut -d' ' -f1 > ../docs/public/og.png.sha
+      - (sha256sum ../docs/scripts/og-card.html 2>/dev/null || shasum -a 256 ../docs/scripts/og-card.html) | cut -d' ' -f1 > ../docs/public/og.png.sha
 
   brand:og:check:
-    desc: Fail if docs/public/og.png was rendered from a different docs/scripts/og-card.html than the one committed
+    desc: Fail if docs/public/og.png is missing, malformed, or rendered from a different docs/scripts/og-card.html
     cmds:
-      # Compares the SOURCE the PNG was rendered from, not its pixels.
-      #
-      # A byte-cmp against a fresh render was the obvious guard and it is the
-      # wrong one: og-card.html asks for "Noto Sans", nothing in devbox.json
-      # pins a font, and chromium falls back to whatever the host's fontconfig
-      # offers. Measured — the same card renders to a different md5 under a
-      # DejaVu-only fontconfig. In `task check` that is a blocking tool telling
-      # a colleague on a devcontainer, macOS or a bare CI image that the PNG is
-      # stale and to commit a regenerated one, which then reddens for the next
-      # person: a flip-flop, and a false positive in a guard that blocks costs
-      # as much as a hole.
-      #
-      # The invariant that actually matters — "this PNG was rendered from THIS
-      # card" — needs no browser and no fonts, so it also runs in the CI brand
-      # job on a bare checkout.
-      - |
-        set -euo pipefail
-        recorded="$(cat docs/public/og.png.sha 2>/dev/null || true)"
-        current="$(sha256sum docs/scripts/og-card.html | cut -d' ' -f1)"
-        if [ -z "$recorded" ]; then
-          echo "::error::docs/public/og.png.sha is missing — run 'task brand:og' and commit both files"
-          exit 1
-        fi
-        if [ "$recorded" != "$current" ]; then
-          echo "::error::docs/public/og.png was rendered from a different og-card.html — run 'task brand:og' and commit the result"
-          exit 1
-        fi
-        echo "positioning: docs/public/og.png matches the committed og-card.html"
+      - ./scripts/brand/og-check.sh
 
   pi-ext:typecheck:
     desc: Typecheck the iterion pi extension

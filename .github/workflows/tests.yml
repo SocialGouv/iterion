@@ -30,7 +30,7 @@ concurrency:
 # it inside the merge queue buys a verdict nobody can act on — while holding a
 # runner slot the queue needs. The org shares 20 concurrent jobs across every
 # repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The four advisory jobs below therefore run
+# decides how long a merge takes. The seven advisory jobs below therefore run
 # on the pull request and on main, and skip in `merge_group`.
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
@@ -811,17 +811,10 @@ jobs:
       - name: Positioning
         run: ./scripts/brand/positioning-check.sh
       - name: OpenGraph card is not stale
-        # Source-hash comparison, so no browser and no fonts: see the
-        # brand:og:check comment in Taskfile.yml for why a pixel cmp is the
-        # wrong guard here. Inlined rather than `task brand:og:check` to keep
-        # this job toolchain-free.
-        run: |
-          recorded="$(cat docs/public/og.png.sha)"
-          current="$(sha256sum docs/scripts/og-card.html | cut -d' ' -f1)"
-          if [ "$recorded" != "$current" ]; then
-            echo "::error::docs/public/og.png was rendered from a different og-card.html — run 'task brand:og' and commit the result"
-            exit 1
-          fi
+        # bash + coreutils + python3, all present on a bare runner — no
+        # browser, no fonts, no devbox. The script says why it checks the
+        # source hash AND the artefact rather than comparing pixels.
+        run: ./scripts/brand/og-check.sh
 
   desktop-vet-linux:
     # cmd/iterion-desktop sits behind `//go:build desktop`, so `go build ./...`,
