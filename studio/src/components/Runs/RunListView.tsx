@@ -116,8 +116,13 @@ const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
   // The sr-only <caption> is the table's accessible name (RGAA 5.4/5.5) —
   // it must be the table's first child. Virtuoso renders a bare <table>,
   // so we re-add it here (the pre-virtualization markup had it inline).
+  // table-fixed: only a window of rows is in the DOM at any time, so with
+  // the default auto layout the browser would recompute column widths from
+  // each scrolled-in window and the columns would visibly jump. Fixed
+  // layout pins widths to the header row (below) regardless of the
+  // rendered window.
   Table: ({ children, context: _context, ...props }) => (
-    <table {...props} className="w-full text-xs">
+    <table {...props} className="w-full table-fixed text-xs">
       <caption className="sr-only">Runs</caption>
       {children}
     </table>
@@ -574,13 +579,17 @@ export default function RunListView() {
                     onChange={toggleAll}
                   />
                 </th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Run</th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Workflow</th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Source</th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Status</th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Started</th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Duration</th>
-                <th scope="col" className="text-left px-4 py-2 font-medium">Run ID</th>
+                {/* Explicit widths anchor the table-fixed layout so column
+                    widths don't depend on the virtualized row window. The
+                    flexible Run/Workflow columns take the remaining space;
+                    the rest are sized to their content. */}
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[22%]">Run</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[22%]">Workflow</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[10%]">Source</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[14%]">Status</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[12%]">Started</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[10%]">Duration</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[10%]">Run ID</th>
               </tr>
             )}
             groupContent={(index) =>
