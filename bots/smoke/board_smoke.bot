@@ -22,6 +22,8 @@
 ##   ./iterion issue board --store-dir /tmp/iterion-board-smoke
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 schema smoke_output:
   first_id:   string
   second_id:  string
