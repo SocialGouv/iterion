@@ -40,6 +40,17 @@ the hours this one spent.
   `local_map_*` MCP tools) — including how a `.bot` queries it from a
   `tool` node, and the list of what it deliberately is **not** (no
   embeddings, Go-only symbols, name-resolved edges).
+- [docs/board-epics.md](../board-epics.md) — the GitHub board's epics: which
+  view answers what, why membership is carried twice (sub-issues are the
+  authority, the `Epic` field is the projection the views need), how to add a
+  ticket or an epic, and the one step the API cannot do — a view's group-by is
+  UI-only. Read it before filing a ticket on the board or touching the `Epic`
+  field: re-sending its options without their `id` silently clears every
+  item's value.
+- [docs/state-of-the-art.md](../state-of-the-art.md) — how *proven* each
+  surface is, as opposed to what ships: the battle-tested backends (only
+  `claude_code` and `claw`), the bots with production evidence, and the
+  chantier map that mirrors the board's epics back into the repo.
 - [docs/connector-identities.md](../connector-identities.md) — connector
   regeneration identity locks, authored renames, retired names and recovery
   after an interrupted package replacement.
@@ -102,6 +113,14 @@ the hours this one spent.
   remote admin usage-readings clear <fingerprint>` forgets one
   credential's readings on the spot (a run refused pre-flight never
   refreshes them by itself).
+- [docs/url-layout.md](../url-layout.md) — which paths answer at the origin
+  root and which live under the studio's `/studio` base, what a pre-move URL
+  does now, and the one constant to change (declared once per language, with a
+  test holding the two together). Read it when a link lands somewhere
+  unexpected — a bookmark that redirects, a run URL in old mail, a post-OAuth
+  bounce to the wrong page — or before adding any code that builds a link into
+  the studio. It also carries the answer to "did the move break the webhooks":
+  no, every integration surface is under `/api/`.
 - [docs/merge-gate.md](../merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).
