@@ -2,6 +2,16 @@
 
 Newest first. Template: see [README.md](README.md).
 
+## 2026-09-18 — DSL profile 2 dogfood: a greenfield Go CLI in one pass, no operator step (run 01a0b32a-a631)
+- Status: **validated** — the campaign shipped a complete `todo` CLI in 8 commits; the deterministic gate and the adversarial review converged on the FIRST pass, zero continuation loop-backs.
+- Versions: bot app-dev 0.3.2 (`dsl: 2`, the wave-4 PR of #1344) · iterion v3.162.2 (`d98abd04d`; the engine did not change in this wave).
+- Method: CLI run from an EMPTY, non-git directory outside any repository (`worktree: auto` degraded to in-place, as documented), `--sandbox none --merge-into none --no-interactive`, `--max-cost-usd 8 --max-duration 45m`, vars `mode=autonomous draft_review=false deploy_enabled=false`, a French brief (a Go `todo` CLI over a local JSON file: add/list/done/rm, unit tests on the store, README, no dependency). Every LLM node on claude_code/claude-opus-5 as declared; the cross-model plan peer (claw/gpt-5.6-sol) met the closed ChatGPT window (429) and was skipped by the `give_up` route (plan_review_policy=skip, 0.2.1) — the campaign received the authored plan stamped unreviewed.
+- Result: `finished` in 27.8 min, $4.65, 273k tokens, 15 node executions. plan (3.8 min) → campaign (20 min, 8 commits: scaffold with devbox.json/Taskfile/CLAUDE.md, walking skeleton, JSON store with atomic saves, add/list, done/rm, README + two ADRs, a constants refactor, a save-failure test) → verify_probe/verify_build (verify.sh captured) → verify_run green → review clean → gate converged → draft/deploy/MR gates off → done. Commits on the app's own `main` (in-place greenfield); `?? .claude/` (iterion's skills mirror) is the only untracked entry — the campaign's staging left it out (#1364, observed live).
+- Value: real — a French brief became a tested, documented, stdlib-only Go CLI carrying the operator's project stack (devbox + Taskfile + CLAUDE.md), in one pass with no human step.
+- Findings / misses: the 19 prompts now reach the model with their paragraph breaks; nothing in the run reads differently from the 07/21 runs beyond the pass converging first time. The interview loop's new refusal (INTERVIEW_NOT_CONVERGED, resumable) is not on this path — its witness is `e2e/app_dev_interview_exhaustion_test.go` (stub run: two loop-backs, the third answer refuses typed with the count and the cap rendered, no plan and no campaign behind it, checkpoint on the chat pause). Miss: none attributable to the bot.
+- Engine hardening: none needed.
+- Lessons for next run: launch a greenfield run from a directory outside any other git repository — a nested non-git directory under a repository would resolve to the outer `.git` and `worktree: auto` would branch that repository instead.
+
 ## 2026-07-21 — end to end, twice (runs 019f847b, 019f84a7)
 - Status: **validated** — both apps live, the second with every traceability
   gate green and no manual step at all.
