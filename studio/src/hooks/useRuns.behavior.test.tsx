@@ -153,8 +153,13 @@ describe("useRuns team-aware caching", () => {
     await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["b1"]));
   });
 
-  it("does not scope by team in local mode (single-tenant key stays stable)", async () => {
+  it("uses a stable single-tenant key in local mode (no org/team)", async () => {
+    // Local/desktop has no org or team, so the scope key is a constant
+    // ":" — one fetch, no key churn. The key is built unconditionally
+    // (not gated on a server-info check that starts null), so it never
+    // flips mid-boot.
     mode = "local";
+    activeOrgID = "";
     activeTeamID = undefined;
     listRuns.mockImplementation(async () => [run("local-1")]);
     const { wrapper } = makeWrapper();

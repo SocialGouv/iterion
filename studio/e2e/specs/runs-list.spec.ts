@@ -69,4 +69,42 @@ test.describe("runs list (virtualized)", () => {
     await row.click();
     await expect(page).toHaveURL(new RegExp(`/runs/${fixtureRunId}`));
   });
+
+  test("grouped mode renders group headers and a header click is inert", async ({
+    page,
+  }) => {
+    // Group headers flow through Virtuoso's group-row slot (no `item`).
+    // Clicking one must NOT throw or navigate — the row is only clickable
+    // when it carries a run. Deep-link the group axis so we don't depend
+    // on the <select> wiring.
+    await page.goto("/runs?group=workflow");
+    const row = page.getByRole("row").filter({ hasText: "/demo-bot/main.bot" });
+    await expect(row).toContainText("finished");
+
+    // A group header row is a rowgroup <th> — at least one is present.
+    const groupHeader = page.locator('th[scope="rowgroup"]').first();
+    await expect(groupHeader).toBeVisible();
+
+    // Clicking the header stays on /runs (no navigation, no crash).
+    await groupHeader.click();
+    await expect(page).toHaveURL(/\/runs(\?|$)/);
+    // The list is still intact after the click (no error boundary).
+    await expect(row).toContainText("finished");
+  });
+
+  test("mobile card list keeps <ul>/<li> semantics", async ({ page }) => {
+    // The mobile GroupedVirtuoso renders cards through a <ul>/<li> List/Item
+    // so assistive tech still gets list role + item count. On desktop the
+    // table renders instead, so drive a phone viewport.
+    await page.setViewportSize({ width: 375, height: 800 });
+    await page.goto("/runs");
+
+    // The card list is a <ul.divide-y> (the pre-virtualization separator
+    // class) inside the main content — the sidebar nav <ul> is excluded by
+    // that class. Cards are real <li> list items, so assistive tech still
+    // gets list semantics + an item count.
+    await expect(
+      page.locator("#main-content ul.divide-y li").first(),
+    ).toBeVisible();
+  });
 });

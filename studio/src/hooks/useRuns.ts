@@ -4,7 +4,6 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
 import { useAuth } from "@/auth/AuthContext";
-import { useServerInfoStore } from "@/store/serverInfo";
 
 // Stable empty fallback so the undefined→loaded transition doesn't hand
 // the (many) downstream useMemos a fresh [] reference each render.
@@ -73,19 +72,19 @@ export interface UseRunsResult {
 export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
   const { status = "", limit, repo = "", enabled = true, keepPrevious = false } = opts;
 
-  // Cloud mode scopes the runs list to the active org+team on the server.
-  // The scope is part of the cache key ONLY in cloud mode so switching
-  // yields a fresh key (and, with keepPreviousData, keeps the old list on
-  // screen while the new one loads). The ORG must be in the key too, not
-  // just the team: two orgs can both resolve to no active team (team_id
-  // unchanged / undefined), and a team-only key would then collide on one
-  // cache entry — an org switch would silently serve the previous org's
-  // runs. Local/desktop mode is single-tenant: no scope key, unchanged.
-  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  // The runs list is scoped to the active org+team on the server (cloud).
+  // The scope is ALWAYS part of the cache key — not gated on a server-mode
+  // check — so it can never flip value mid-boot: gating on isCloud read a
+  // serverInfo store that starts null (info arrives async, after this hook
+  // can mount), which flipped the key from null→scope once info resolved,
+  // causing a redundant refetch + a spurious "Updating…" flash on cold
+  // load, and left the scope out of the key entirely if /api/info failed.
+  // In local/desktop mode there is no org/team, so the key is a constant
+  // ":" — stable, single-tenant, unchanged behaviour. The ORG must be in
+  // the key too, not just the team: two orgs can both resolve to no active
+  // team, and a team-only key would then collide on one cache entry.
   const { activeOrgID, activeTeam } = useAuth();
-  const scopeKey = isCloud
-    ? `${activeOrgID}:${activeTeam?.team_id ?? ""}`
-    : null;
+  const scopeKey = `${activeOrgID}:${activeTeam?.team_id ?? ""}`;
 
   const query = useQuery<RunSummary[]>({
     queryKey: ["runs", scopeKey, status, limit, repo],

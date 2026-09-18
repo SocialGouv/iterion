@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import {
   GroupedTableVirtuoso,
   GroupedVirtuoso,
+  type Components,
   type ItemProps,
+  type ListProps,
   type TableComponents,
 } from "react-virtuoso";
 
@@ -81,12 +83,19 @@ function RunTableRow({
   context,
   children,
   ...rest
-}: ItemProps<RunSummary> & { context?: RunTableContext }) {
+}: Omit<ItemProps<RunSummary>, "item"> & {
+  // Virtuoso routes GROUP header rows through TableRow too, with no
+  // `item`. Only data rows are clickable / hoverable.
+  item?: RunSummary;
+  context?: RunTableContext;
+}) {
   return (
     <tr
       {...rest}
-      className="group border-b border-border-default hover:bg-surface-2 cursor-pointer"
-      onClick={() => context?.onOpen(item.id)}
+      className={`group border-b border-border-default${
+        item ? " hover:bg-surface-2 cursor-pointer" : ""
+      }`}
+      onClick={item ? () => context?.onOpen(item.id) : undefined}
     >
       {children}
     </tr>
@@ -114,6 +123,29 @@ const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
     </table>
   ),
   TableRow: RunTableRow,
+};
+
+// Mobile card list keeps the pre-virtualization <ul>/<li> semantics so
+// assistive tech still gets list role + item count. Only run cards flow
+// through Item (→ <li>); group headers go through the default Group (a
+// <div>), so they stay outside the list-item semantics as before.
+const RunCardList = forwardRef<HTMLUListElement, ListProps>(function RunCardList(
+  { children, style, ...rest },
+  ref,
+) {
+  return (
+    <ul ref={ref} style={style} className="divide-y divide-border-default" {...rest}>
+      {children}
+    </ul>
+  );
+});
+
+const RUN_CARD_COMPONENTS: Components<RunSummary, RunTableContext> = {
+  // Cast: ListProps types the ref as HTMLDivElement, but rendering a <ul>
+  // is what restores the list semantics — the ref/style/children contract
+  // is identical.
+  List: RunCardList as unknown as Components<RunSummary, RunTableContext>["List"],
+  Item: ({ children, ...props }: ItemProps<RunSummary>) => <li {...props}>{children}</li>,
 };
 
 export default function RunListView() {
@@ -573,6 +605,7 @@ export default function RunListView() {
             data={flatRuns}
             groupCounts={groupCounts}
             context={runTableContext}
+            components={RUN_CARD_COMPONENTS}
             groupContent={(index) =>
               isGrouped ? (
                 <RunCardGroupHeader
@@ -585,15 +618,13 @@ export default function RunListView() {
             }
             itemContent={(_index, _groupIndex, run, ctx) =>
               run ? (
-                <div className="border-b border-border-default">
-                  <RunListCard
-                    run={run}
-                    resuming={ctx.resumingIds.has(run.id)}
-                    onOpen={ctx.onOpen}
-                    onFilterBot={ctx.onFilterBot}
-                    onResume={ctx.onResume}
-                  />
-                </div>
+                <RunListCard
+                  run={run}
+                  resuming={ctx.resumingIds.has(run.id)}
+                  onOpen={ctx.onOpen}
+                  onFilterBot={ctx.onFilterBot}
+                  onResume={ctx.onResume}
+                />
               ) : null
             }
             computeItemKey={runItemKey}
