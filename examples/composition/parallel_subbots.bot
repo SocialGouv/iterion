@@ -6,6 +6,8 @@
 ## store, so the workspace-safety guard admits the concurrent replays. Drop the
 ## flag (or the budget cap) and the run is rejected with WORKSPACE_SAFETY — see
 ## docs/groups-iteration-subbots.md#fanning-subbots-out-in-parallel.
+dsl: 2
+
 schema items_out:
   items: json
 

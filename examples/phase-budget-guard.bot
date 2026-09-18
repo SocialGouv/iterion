@@ -11,6 +11,8 @@
 ##    `resumable: true` because the cure here is "raise the cap and carry
 ##    on", not "start the plan phase over".
 
+dsl: 2
+
 schema note:
   value: string
 

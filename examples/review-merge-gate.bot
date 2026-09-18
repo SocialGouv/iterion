@@ -13,6 +13,8 @@
 ## Exits: approve → squash-merge; force-merge (studio) → merge without a
 ## verdict; request changes → loop back to the implementer.
 
+dsl: 2
+
 vars:
   feature_prompt: string = "Add a one-line CHANGELOG entry describing a notable recent change."
   review_env_prompt: string = ""   ## optional: how to make the change testable (serve/deploy/build)

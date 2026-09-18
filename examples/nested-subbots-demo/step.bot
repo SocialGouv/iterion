@@ -1,6 +1,8 @@
 ## Deepest bot of the nested-subbots demo: does one unit of tool work,
 ## then pauses on a HUMAN check — parking its parent (stage.bot), which
 ## parks the root run, until the operator approves from the studio.
+dsl: 2
+
 vars:
   step: string = "step"
 

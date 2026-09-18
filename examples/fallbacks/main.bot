@@ -14,6 +14,8 @@
 ##
 ## Run it with:  iterion run examples/fallbacks/main.bot
 
+dsl: 2
+
 schema work_output:
   summary: string
   confident: bool

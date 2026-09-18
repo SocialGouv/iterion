@@ -17,6 +17,8 @@
 ## only emit/wait sit inside branches. max_parallel_branches must be >= 2 so the
 ## producer branch can run while the consumer branch is parked on the wait.
 
+dsl: 2
+
 schema num:
   n: int
 

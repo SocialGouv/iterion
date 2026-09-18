@@ -1,6 +1,8 @@
 ## Minimal workflow demonstrating cursor activation.
 ## Run with: iterion run examples/cursors/sample.bot
 
+dsl: 2
+
 cursor ambition:
   description: "How aggressively to expand scope beyond the stated request."
   values:

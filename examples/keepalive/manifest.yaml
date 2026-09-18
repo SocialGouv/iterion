@@ -20,3 +20,9 @@ invocations:
     keepalive:
       interval: 15s
       stale_after: 2m
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

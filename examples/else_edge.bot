@@ -10,6 +10,8 @@
 ##   iterion run examples/else_edge.bot --var n=7    → routes to small
 ##   iterion run examples/else_edge.bot --var n=100  → routes to big
 
+dsl: 2
+
 vars:
   n: int = 7
 

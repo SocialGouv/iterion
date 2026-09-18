@@ -19,6 +19,8 @@
 ##   iterion runs answer <run-id> <interaction-id> "my answer"
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 schema draft_out:
   draft: string
 

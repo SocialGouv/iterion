@@ -20,6 +20,8 @@
 ##     --answer reviewer="Ada" --answer notes="LGTM"
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   service: string = "checkout-api"
   change_summary: string = "Bump the payment SDK 4.2 → 5.0 and migrate the webhook signature check to the new HMAC header."

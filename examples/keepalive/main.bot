@@ -5,6 +5,8 @@
 ## exactly one alive at a time, relaunching a stale one. See
 ## docs/scheduling.md#always-on-agents--overlap-keepalive.
 
+dsl: 2
+
 schema out:
   beat: string
 

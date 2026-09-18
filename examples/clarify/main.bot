@@ -29,6 +29,8 @@
 ##     --var thread_id=t1
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   ## Model for the facilitation pass. A mid-tier model is plenty; the
   ## task rewards concision and restraint, not raw horsepower. Override

@@ -9,6 +9,8 @@
 ## gates (coverage %, scanner thresholds, judge architecture) keep
 ## doing the load-bearing work of resisting façades.
 
+dsl: 2
+
 cursor ambition:
   description: "How aggressively to expand scope beyond the stated request."
   values:
