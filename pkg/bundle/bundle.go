@@ -246,20 +246,27 @@ func ForeignManifestBeside(mainBot string) (manifest, reason string) {
 }
 
 // DirForMainBot returns the bundle directory holding path, or "" when
-// path is not a bundle's main.bot.
+// path is not a bundle's main.bot: the file must exist, and a marker (an
+// iterion manifest or a skills/ directory) must sit beside it.
 //
 // Callers outside pkg/bundle need this to decide whether to open a
 // workflow as a bundle (picking up its skills, prompts, presets and
 // attachments) or as a loose file. It lives here because it encodes what
 // a bundle IS — when two packages answered that question with their own
 // copy of the marker list, they could disagree about it after any change
-// to the layout.
+// to the layout. The existence check is part of the definition: a caller
+// walking up a tree with a constructed `<dir>/main.bot` must not promote a
+// directory that merely carries a marker (a repository root with a
+// skills/ directory, a manifest of a bot whose main.bot lives elsewhere).
 func DirForMainBot(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return ""
 	}
 	if filepath.Base(abs) != MainBotFile {
+		return ""
+	}
+	if st, err := os.Stat(abs); err != nil || !st.Mode().IsRegular() {
 		return ""
 	}
 	parent := filepath.Dir(abs)

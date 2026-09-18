@@ -381,6 +381,40 @@ func TestDirForMainBot(t *testing.T) {
 	}
 }
 
+// TestDirForMainBot_RequiresTheFileToExist: a directory that carries a
+// marker but no main.bot is not a bundle. Callers that walk up a tree pass
+// a CONSTRUCTED `<dir>/main.bot`; without this check a repository root with
+// a skills/ directory, or a manifest whose main.bot lives elsewhere, was
+// promoted to the bundle of every loose file under it (and the migrator
+// raised its floor).
+func TestDirForMainBot_RequiresTheFileToExist(t *testing.T) {
+	for _, marker := range []string{DirSkills, ManifestFile} {
+		t.Run(marker, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "b")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if marker == DirSkills {
+				if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(filepath.Join(dir, marker), []byte("schema_version: 1\nname: x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != "" {
+				t.Fatalf("DirForMainBot = %q for a directory with no main.bot, want \"\"", got)
+			}
+			// A directory named main.bot is not the file either.
+			if err := os.MkdirAll(filepath.Join(dir, MainBotFile), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != "" {
+				t.Fatalf("DirForMainBot = %q for a directory named main.bot, want \"\"", got)
+			}
+		})
+	}
+}
+
 // TestDirForMainBot_MarkersAreLayoutConstants keeps the marker list tied
 // to the exported layout names: a rename that updated only one of them
 // would otherwise leave bundle detection silently looking for a
