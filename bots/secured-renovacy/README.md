@@ -29,14 +29,17 @@ Phase 1   discover_outdated ─▶ bucket_patches ─┬─ has_patches ─▶ b
                            │                       ▲              │ (fail)                                │
                            │                       │              ▼                                       │
                            │                 mark_family_attempted ◀─ family_revert / family_commit ◀─ family_validate
+                           │                   (family_loop, cap max_families_per_run + 1; declined for budget ─▶ select_candidate)
                            └─ else ─▶ select_candidate  ◀───────────────────────────────────────────────┘
                                           │ has_more
                                           ▼
               resolve_pkg_ecosystem ─▶ intel_fanout ─┬─▶ security_audit ─┐
                                                      └─▶ changelog_review ┴─▶ intel_join
-                        intel_join ─┬─ not safe ─▶ mark_failed_and_continue ─▶ select_candidate (package_loop 50)
+                        intel_join ─┬─ not safe ─▶ mark_failed_and_continue ─▶ select_candidate (package_loop, cap max_packages_per_run + 1;
+                                    │                                            declined for budget ─▶ phase2_decider)
                                     └─ safe ─▶ upgrade ─▶ install ─▶ align_code ─▶ validate_upgrade
                         validate_upgrade ─┬─ stable ─▶ prepare_commit ─▶ join_files ─▶ commit_changes ─▶ write_audit_md ─▶ select_candidate
+                                          │                                    (declined for budget ─▶ solo_banked ─▶ phase2_decider)
                                           └─ not stable ─▶ fix_after_upgrade (fix_loop N) ─▶ validate_upgrade / revert_changes
                         select_candidate ─ not has_more ─▶ phase2_decider
 

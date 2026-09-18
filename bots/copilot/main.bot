@@ -1978,7 +1978,7 @@ workflow copilot:
     scope_guard_attempt: "{{outputs.implementation_handoff.scope_guard_attempt}}"
   }
   implementation_handoff -> compose else with {
-    reply: "Le budget du run ne permet plus de poursuivre ce plan : la session ne peut pas continuer ici. Reprends ce run avec un budget plus large (iterion resume --max-cost-usd ...) pour reprendre le plan tel qu il a été revu.",
+    reply: "Le budget du run (coût, jetons, tours ou durée) ne permet plus de poursuivre ce plan : la session ne peut pas continuer ici. Reprends ce run avec le plafond épuisé relevé (iterion resume --max-cost-usd ou --max-duration) pour reprendre le plan tel qu'il a été revu.",
     quick_replies: "{{outputs.implementation_handoff.no_quick_replies}}",
     context_brief: "{{outputs.implementation_handoff.context_brief}}",
     mode: "{{outputs.implementation_handoff.mode}}",
