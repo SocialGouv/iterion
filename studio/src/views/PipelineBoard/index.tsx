@@ -28,7 +28,7 @@ import {
   resetPipelineFilters,
 } from "./filters";
 import { findFollowCard } from "./selection";
-import { STUDIO_BASE } from "@/lib/scope";
+import { studioBase } from "@/lib/scope";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -114,10 +114,13 @@ export default function PipelineBoardView() {
               action: {
                 label: "Open run",
                 onClick: () => {
-                  // A full document navigation, so the router base does not apply and
-                  // the prefix is written out — the twin of RunsPanel. Without it
-                  // the click rides the legacy redirect and pays an extra hop.
-                  window.location.href = `${STUDIO_BASE}/runs/${encodeURIComponent(runId)}`;
+                  // A full document navigation, so the router base does not
+                  // apply and the prefix is written out. studioBase(), NOT
+                  // STUDIO_BASE: this destination is the SAME origin, so a
+                  // workspace pane's /x/<id> has to survive — RunsPanel's
+                  // cross-daemon branch is the opposite case and is the only
+                  // one that may drop it.
+                  window.location.href = `${studioBase()}/runs/${encodeURIComponent(runId)}`;
                 },
               },
             },

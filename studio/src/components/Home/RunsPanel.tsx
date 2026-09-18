@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { LiveDot } from "@/components/ui/LiveDot";
 import type { GlobalActiveRun, RunSummary } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
-import { STUDIO_BASE } from "@/lib/scope";
+import { STUDIO_BASE, scopePrefix } from "@/lib/scope";
 import {
   STATUS_VARIANT,
   labelForStatus,
@@ -214,9 +214,11 @@ async function openRunCrossDaemon(run: GlobalActiveRun): Promise<void> {
       console.warn("openRunCrossDaemon: GetDaemonURLForStore failed:", err);
     }
   }
-  // Fallback: current daemon, relative, still carrying ?store= so
-  // the per-project daemon can proxy reads from the foreign store.
-  window.location.assign(targetWithStore);
+  // Fallback: current daemon — so unlike the cross-daemon branch above, this
+  // one is the SAME origin and must keep a workspace pane's /x/<id>. Still
+  // carrying ?store= so the per-project daemon can proxy reads from the
+  // foreign store.
+  window.location.assign(scopePrefix() + targetWithStore);
 }
 
 function GlobalRunRow({ run }: { run: GlobalActiveRun }) {

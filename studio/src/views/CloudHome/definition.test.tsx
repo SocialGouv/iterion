@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { Router } from "wouter";
 
@@ -18,6 +18,11 @@ vi.mock("./PlatformFeatures", () => ({ default: () => null }));
 vi.mock("./MissionExamples", () => ({ default: () => null }));
 
 describe("the iterion.cloud product home", () => {
+  // In afterEach, not at the end of each `it`: a test that throws would leak
+  // its DOM into the next one, which then fails on the first test's leftovers
+  // — a second red with no second cause.
+  afterEach(() => cleanup());
+
   // scripts/brand/positioning-check.sh counts the sentence in the SOURCE of
   // this component, and a source count cannot tell a rendered hero from a
   // comment: moving the definition into a `//` line while replacing the hero
@@ -31,7 +36,6 @@ describe("the iterion.cloud product home", () => {
       </Router>,
     );
     expect(container.textContent).toContain(DEFINITION);
-    cleanup();
   });
 
   // The home is the root for signed-in operators too, so its primary call to
@@ -45,6 +49,5 @@ describe("the iterion.cloud product home", () => {
     );
     expect(screen.getAllByRole("link", { name: /Open the studio/ })[0]).toBeTruthy();
     expect(screen.queryByRole("link", { name: /^Sign in/ })).toBeNull();
-    cleanup();
   });
 });

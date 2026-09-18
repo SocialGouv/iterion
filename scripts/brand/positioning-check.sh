@@ -76,7 +76,13 @@ for entry in "${SURFACES[@]}"; do
   # editorial reflow into "the sentence is gone" — a false accusation in a
   # guard that blocks the build. -F because the definition is a literal
   # sentence whose punctuation must not be read as a pattern.
-  got="$(tr '\n' ' ' < "$surface" | tr -s ' ' | grep -oF -- "$definition" | wc -l)"
+  # `|| got=0` is load-bearing, not defensive. grep exits 1 when it matches
+  # nothing, pipefail propagates that, and a bare assignment from a command
+  # substitution then aborts the script under `set -e` — so the one case this
+  # guard exists for, a surface that lost its last copy, exited 1 with NO
+  # OUTPUT AT ALL: no ::error::, no surface named, and every later surface
+  # unchecked. Measured on a bare container before this line existed.
+  got="$(tr '\n' ' ' < "$surface" | tr -s ' ' | grep -oF -- "$definition" | wc -l)" || got=0
   if [ "$got" != "$want" ]; then
     echo "::error::positioning drift: $surface carries the definition $got time(s), expected $want — the canonical wording is in $SOURCE"
     drift=1

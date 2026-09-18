@@ -44,19 +44,25 @@ link-preview regression the guard exists to catch.
 | `charts/iterion/README.md` | 1 | the Helm chart's front page |
 | `docs/cloud-overview.md` | 1 | the cloud product page in the docs |
 | `docs/index.md` | 1 | the docs hero |
-| `docs/scripts/og-card.html` | 1 | the OpenGraph image — **regenerate `docs/public/og.png` with `task brand:og` after editing**, and `task brand:og:check` compares the committed PNG against a fresh render |
+| `docs/scripts/og-card.html` | 1 | the OpenGraph image — **regenerate `docs/public/og.png` with `task brand:og` after editing**, and `task brand:og:check` verifies the committed PNG was rendered from THIS card (a recorded source hash, not a pixel compare — the render depends on host fonts) |
 | `docs/.vitepress/config.ts` | 3 | the docs site `description` + the og and twitter cards |
 | `studio/index.html` | 3 | the served HTML of iterion.cloud — what a crawler and a link preview read — + its og and twitter cards |
 | `studio/public/manifest.json` | 1 | the installed-app description |
 | `studio/src/views/CloudHome/index.tsx` | 1 | the iterion.cloud home |
 
-**A source count cannot tell a rendered hero from a comment.** Moving the
-sentence into a `//` line while replacing the hero keeps the count at one. For
-the one surface where that divergence is plausible — a React component —
+**The count is a spelling check, not a rendering check — on every surface.**
+It cannot tell a rendered hero from a comment: replacing the hero while parking
+the sentence in a `//` line keeps the count at one, and blanking both social
+cards of `studio/index.html` while adding the sentence in an HTML comment keeps
+it at three. Measured, in both shapes.
+
+So it holds a real invariant — the sentence is present, the expected number of
+times — and NOT the one a reader cares about. For the one surface where the
+divergence is most plausible and cheapest to close, a React component,
 `studio/src/views/CloudHome/definition.test.tsx` asserts the sentence in the
-text the browser renders, which has no spelling to enumerate. The other
-surfaces are static templates copied verbatim into the build; there the count
-is the guard, and this paragraph is the honest statement of its limit.
+text the browser renders, which has no spelling to enumerate. The remaining
+surfaces have no equivalent bench, and this paragraph is where that is written
+down rather than assumed away.
 
 The **GitHub repository description** lives outside the tree and cannot be
 guarded by a script. It is set by hand and read back:
@@ -87,7 +93,7 @@ Build, run and orchestrate agentic AI workflows
 | `build/linux/iterion.desktop` | the Linux launcher `Comment=` | ❌ |
 | `build/windows/info.json`, `cmd/iterion-desktop/wails.json` | Windows/Wails bundle metadata | ❌ |
 | `sdks/typescript/README.md`, `marketplace.json` | package descriptions | ❌ |
-| `docs/visual-identity.md` | the brand doc's own opening line | ❌ |
+| `studio/docs/visual-identity.md` | the studio's visual-identity brief | ❌ |
 
 None of these is guarded: they are release-packaging inputs whose wording is
 constrained by a third party's linter, and pinning them to a byte would turn a

@@ -277,13 +277,25 @@ function AuthGate() {
   if (location.startsWith("/config/")) {
     return (
       <Suspense fallback={<BootLoading />}>
-        {/* Wrapped in its Route, not rendered bare: ConfigShareView reads the
-            share id with useParams(), which only a matching <Route> supplies.
-            Rendered bare it reported "The share id is missing from the URL" —
-            the anonymous arm has always been wrapped, this one never was. */}
+        {/* Wrapped in its Route, because ConfigShareView reads the share id
+            with useParams(), which only a matching <Route> supplies — rendered
+            bare, a perfectly good /config/<id> link reported "The share id is
+            missing from the URL". The anonymous arm has always been wrapped;
+            this one never was.
+            The fall-through matters as much as the route: that message is
+            ConfigShareView's own, correct answer to a link with NO id, and a
+            bare <Switch> with one route renders NOTHING when it misses —
+            /config/ and /config/a/b became an empty page with no way out. */}
         <Switch>
           <Route path="/config/:id">
-            <ConfigShareView />
+            <ErrorBoundary area="Config share editor">
+              <ConfigShareView />
+            </ErrorBoundary>
+          </Route>
+          <Route>
+            <ErrorBoundary area="Config share editor">
+              <ConfigShareView />
+            </ErrorBoundary>
           </Route>
         </Switch>
       </Suspense>

@@ -787,9 +787,21 @@ jobs:
   brand:
     # The positioning guard: every public surface must carry the product
     # definition verbatim (assets/brand/positioning.md). It lived only in
-    # `task check`, which NO workflow runs — so a guard written to block
-    # blocked nothing between a pull request and main, which is the worst
-    # kind: it looks like it holds. Pure shell + grep, no toolchain, seconds.
+    # `task check`, which NO workflow runs — so it never executed between a
+    # pull request and main. Pure shell + grep, no toolchain, seconds.
+    #
+    # Running is not yet BLOCKING: `main` is protected by a ruleset whose
+    # required checks are test, race, vendor-check, mongo-conformance,
+    # golangci and revi/review. Until `brand` is added to that list, a red run
+    # here shows an X the merge queue steps over. Say it rather than imply it —
+    # a guard believed to hold is worse than one known not to.
+    #
+    # Advisory, so it carries the merge_group skip like every other advisory
+    # job above. ⚠️ PROMOTING IT TO REQUIRED MEANS DELETING THAT SKIP IN THE
+    # SAME CHANGE: a job skipped by a job-level `if:` reports SUCCESS, so a
+    # required check that never ran would satisfy the gate on every queue
+    # entry. The header comment carries the full argument.
+    if: github.event_name != 'merge_group'
     #
     # Deliberately NOT `task brand:check` (the asset-drift guard): that one
     # needs magick/pngquant/oxipng from devbox and is a different cost.
@@ -798,6 +810,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Positioning
         run: ./scripts/brand/positioning-check.sh
+      - name: OpenGraph card is not stale
+        # Source-hash comparison, so no browser and no fonts: see the
+        # brand:og:check comment in Taskfile.yml for why a pixel cmp is the
+        # wrong guard here. Inlined rather than `task brand:og:check` to keep
+        # this job toolchain-free.
+        run: |
+          recorded="$(cat docs/public/og.png.sha)"
+          current="$(sha256sum docs/scripts/og-card.html | cut -d' ' -f1)"
+          if [ "$recorded" != "$current" ]; then
+            echo "::error::docs/public/og.png was rendered from a different og-card.html — run 'task brand:og' and commit the result"
+            exit 1
+          fi
 
   desktop-vet-linux:
     # cmd/iterion-desktop sits behind `//go:build desktop`, so `go build ./...`,

@@ -58,8 +58,12 @@ func Runs(base string) string {
 // already wrote, and that build concatenated the id raw (`base + "/runs/" +
 // runID`). Percent-escaping here would produce a URL that never existed, so a
 // run whose id needs escaping would not recognise its own status — and a run
-// id is caller-chosen (`run_id` on the launch API), so that is reachable, not
-// theoretical. Faithfulness to what was written beats consistency with Run.
+// id is caller-chosen (`run_id` on the launch API).
+//
+// Reachable, though narrower than "anything goes": store.SanitizePathComponent
+// rejects `..`, a path separator and control characters, so a space or a
+// non-ASCII letter reaches this function and a slash does not. Faithfulness to
+// what was written beats consistency with Run.
 func LegacyRun(base, runID string) string {
 	return strings.TrimRight(base, "/") + "/runs/" + runID
 }
