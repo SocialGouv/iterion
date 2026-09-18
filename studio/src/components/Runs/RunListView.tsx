@@ -116,7 +116,7 @@ const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
   // The sr-only <caption> is the table's accessible name (RGAA 5.4/5.5) —
   // it must be the table's first child. Virtuoso renders a bare <table>,
   // so we re-add it here (the pre-virtualization markup had it inline).
-  Table: ({ children, ...props }) => (
+  Table: ({ children, context: _context, ...props }) => (
     <table {...props} className="w-full text-xs">
       <caption className="sr-only">Runs</caption>
       {children}
@@ -129,10 +129,10 @@ const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
 // assistive tech still gets list role + item count. Only run cards flow
 // through Item (→ <li>); group headers go through the default Group (a
 // <div>), so they stay outside the list-item semantics as before.
-const RunCardList = forwardRef<HTMLUListElement, ListProps>(function RunCardList(
-  { children, style, ...rest },
-  ref,
-) {
+const RunCardList = forwardRef<
+  HTMLUListElement,
+  ListProps & { context?: RunTableContext }
+>(function RunCardList({ children, style, context: _context, ...rest }, ref) {
   return (
     <ul ref={ref} style={style} className="divide-y divide-border-default" {...rest}>
       {children}
@@ -145,7 +145,21 @@ const RUN_CARD_COMPONENTS: Components<RunSummary, RunTableContext> = {
   // is what restores the list semantics — the ref/style/children contract
   // is identical.
   List: RunCardList as unknown as Components<RunSummary, RunTableContext>["List"],
-  Item: ({ children, ...props }: ItemProps<RunSummary>) => <li {...props}>{children}</li>,
+  // Strip `context` (+ item) so they don't leak onto the DOM node as
+  // invalid attributes; Virtuoso passes them through ContextProp.
+  Item: ({ children, context: _context, item: _item, ...props }) => (
+    <li {...props}>{children}</li>
+  ),
+  // Virtuoso renders group headers through Group as DIRECT children of
+  // the List (the <ul>), so they must also be <li> to keep the markup
+  // valid. role="presentation" keeps them out of the list-item count —
+  // they are section headers, not runs. RunCardGroupHeader (from
+  // groupContent) renders inside.
+  Group: ({ children, context: _context, ...props }) => (
+    <li role="presentation" {...props}>
+      {children}
+    </li>
+  ),
 };
 
 export default function RunListView() {
@@ -424,7 +438,11 @@ export default function RunListView() {
     // A switch away from an EMPTY scope holds a cached [] via
     // keepPreviousData (loading=false), so fold refreshing in to show the
     // skeleton rather than the "no runs" CTA while the new scope loads.
-    refreshing,
+    // repoScopeLoading counts as in-flight too: on a team switch the
+    // adopt-scope effect defers until the new team's repos resolve, so the
+    // list is momentarily fetching under the PREVIOUS team's repo filter —
+    // an empty result there is not "this scope has no runs".
+    refreshing: refreshing || repoScopeLoading,
     error,
     runCount: runs.length,
     filteredCount: filteredRuns.length,

@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { apiBase } from "@/lib/scope";
 import { useActiveRepoStore } from "@/store/activeRepo";
 import {
@@ -149,6 +150,21 @@ function applyResponse(prev: AuthState, res: AuthResponse): AuthState {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initial);
+  const queryClient = useQueryClient();
+
+  // A scope switch (apiSwitchOrg/Team) awaits a server round-trip and only
+  // then updates the active org/team. During that window the run-scoped
+  // query keys still name the OLD scope, so a poll tick (useRuns' 3s poll,
+  // and NavLinks' always-on paused-badge poll) can write the NEW scope's
+  // runs into the OLD scope's cache entry — which would later be served,
+  // unflagged, when switching back. removeQueries drops the OTHER scopes'
+  // run caches: it targets stale keys, not the freshly-keyed active query
+  // (which re-fetches on the key change anyway), so it adds no redundant
+  // fetch — unlike invalidateQueries, which would.
+  const dropOtherScopeRunCaches = useCallback(() => {
+    queryClient.removeQueries({ queryKey: ["runs"] });
+    queryClient.removeQueries({ queryKey: ["run-repos"] });
+  }, [queryClient]);
 
   const bootstrap = useCallback(async () => {
     const probe = await probeAuth();
@@ -231,21 +247,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ ...initial, status: "anonymous" });
   }, []);
 
-  // Switching org/team changes the active team id, which is part of the
-  // run-scoped query keys (useRuns / useRunRepos in cloud mode). The key
-  // change alone re-scopes those queries, and with staleTime:0 the newly
-  // keyed query refetches on switch — so no explicit cache invalidation is
-  // needed here (it would only add a redundant second fetch of the active
-  // key). keepPreviousData holds the previous scope's rows during the load.
-  const selectOrg = useCallback(async (orgID: string) => {
-    const res = await apiSwitchOrg(orgID);
-    setState((prev) => applyResponse(prev, res));
-  }, []);
+  // Switching org/team changes the active org+team id, which is part of the
+  // run-scoped query keys (useRuns / useRunRepos). The key change alone
+  // re-scopes those queries, and with staleTime:0 the newly keyed query
+  // refetches on switch, so we don't invalidate the active key (that would
+  // add a redundant fetch). We DO drop the other scopes' run caches to
+  // close the switch-window race where an in-flight poll writes the new
+  // scope's runs under the old key. keepPreviousData holds the previous
+  // scope's rows during the load.
+  const selectOrg = useCallback(
+    async (orgID: string) => {
+      const res = await apiSwitchOrg(orgID);
+      setState((prev) => applyResponse(prev, res));
+      dropOtherScopeRunCaches();
+    },
+    [dropOtherScopeRunCaches],
+  );
 
-  const selectTeam = useCallback(async (teamID: string) => {
-    const res = await apiSwitchTeam(teamID);
-    setState((prev) => applyResponse(prev, res));
-  }, []);
+  const selectTeam = useCallback(
+    async (teamID: string) => {
+      const res = await apiSwitchTeam(teamID);
+      setState((prev) => applyResponse(prev, res));
+      dropOtherScopeRunCaches();
+    },
+    [dropOtherScopeRunCaches],
+  );
 
   const reloadIdentity = useCallback(async () => {
     const me = await getMe();

@@ -101,10 +101,10 @@ test.describe("runs list (virtualized)", () => {
 
     // The card list is a <ul.divide-y> (the pre-virtualization separator
     // class) inside the main content — the sidebar nav <ul> is excluded by
-    // that class. Cards are real <li> list items, so assistive tech still
-    // gets list semantics + an item count.
-    await expect(
-      page.locator("#main-content ul.divide-y li").first(),
-    ).toBeVisible();
+    // that class. Run cards are real <li> list items (group headers use
+    // role="presentation", so they're excluded from the listitem role), so
+    // assistive tech still gets list semantics + an item count.
+    const cards = page.locator("#main-content ul.divide-y").getByRole("listitem");
+    await expect(cards.first()).toBeVisible();
   });
 });
