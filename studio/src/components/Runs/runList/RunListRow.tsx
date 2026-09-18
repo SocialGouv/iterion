@@ -21,13 +21,16 @@ import {
 } from "./runListFormat";
 import { SourceBadge } from "./SourceBadge";
 
-// Memoised so the parent's per-row callback (now stable via useCallback)
-// doesn't force every row to re-render when one run mutates.
+// RunListRow renders the CELLS of one desktop table row. The wrapping
+// <tr> (row click / hover) is supplied by RunListView's virtualized
+// TableRow component so GroupedTableVirtuoso owns the row element it
+// virtualizes. Memoised so the parent's stable per-row callbacks don't
+// force every visible row to re-render when one run mutates or the
+// live-duration tick fires.
 export const RunListRow = memo(function RunListRow({
   run,
   selected,
   resuming,
-  onOpen,
   onFilterBot,
   onToggleSelect,
   onResume,
@@ -35,16 +38,12 @@ export const RunListRow = memo(function RunListRow({
   run: RunSummary;
   selected: boolean;
   resuming: boolean;
-  onOpen: (id: string) => void;
   onFilterBot: (botKey: string) => void;
   onToggleSelect: (id: string) => void;
   onResume: (id: string) => void;
 }) {
   return (
-    <tr
-      className="group border-b border-border-default hover:bg-surface-2 cursor-pointer"
-      onClick={() => onOpen(run.id)}
-    >
+    <>
       {/* Selection cell swallows its clicks so toggling never navigates. */}
       <td className="pl-4 pr-1 py-2 w-8" onClick={(e) => e.stopPropagation()}>
         <Checkbox
@@ -119,6 +118,6 @@ export const RunListRow = memo(function RunListRow({
       <td className="px-4 py-2 font-mono text-caption text-fg-subtle" title={run.id}>
         {shortRunID(run.id)}
       </td>
-    </tr>
+    </>
   );
 });

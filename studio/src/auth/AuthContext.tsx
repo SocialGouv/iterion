@@ -231,6 +231,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ ...initial, status: "anonymous" });
   }, []);
 
+  // Switching org/team changes the active team id, which is part of the
+  // run-scoped query keys (useRuns / useRunRepos in cloud mode). The key
+  // change alone re-scopes those queries, and with staleTime:0 the newly
+  // keyed query refetches on switch — so no explicit cache invalidation is
+  // needed here (it would only add a redundant second fetch of the active
+  // key). keepPreviousData holds the previous scope's rows during the load.
   const selectOrg = useCallback(async (orgID: string) => {
     const res = await apiSwitchOrg(orgID);
     setState((prev) => applyResponse(prev, res));

@@ -1,8 +1,10 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
+import { useAuth } from "@/auth/AuthContext";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 // Stable empty fallback so the undefined→loaded transition doesn't hand
 // the (many) downstream useMemos a fresh [] reference each render.
@@ -45,7 +47,13 @@ export interface UseRunsOptions {
 export interface UseRunsResult {
   runs: RunSummary[];
   counts: Partial<Record<RunStatus, number>>;
+  // True only on a cold load — no cached data for the current key yet.
+  // Drives the first-load skeleton.
   loading: boolean;
+  // True while a background/scope-switch refetch is in flight but cached
+  // (previous-scope) data is still on screen via keepPreviousData. Drives
+  // the dim overlay + indicator so a scope switch never blanks the list.
+  refreshing: boolean;
   error: string | null;
 }
 
@@ -57,11 +65,25 @@ export interface UseRunsResult {
 // previous fingerprint + visibilitychange machinery falls away.
 export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
   const { status = "", limit, repo = "", enabled = true } = opts;
+
+  // Cloud mode scopes the runs list to the active team on the server. The
+  // team is part of the cache key ONLY in cloud mode so switching team
+  // yields a fresh key (and, with keepPreviousData, keeps the old list on
+  // screen while the new one loads). Local/desktop mode is single-tenant:
+  // no team, so the key stays team-free and behaviour is unchanged.
+  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  const { activeTeam } = useAuth();
+  const teamKey = isCloud ? activeTeam?.team_id ?? null : null;
+
   const query = useQuery<RunSummary[]>({
-    queryKey: ["runs", status, limit, repo],
+    queryKey: ["runs", teamKey, status, limit, repo],
     queryFn: () =>
       listRuns({ status: status || undefined, limit, repo: repo || undefined }),
     enabled,
+    // Keep the previous scope's list visible while the new scope loads,
+    // instead of blanking to an empty frame. RunListView dims it + shows
+    // an indicator via `refreshing`.
+    placeholderData: keepPreviousData,
     refetchInterval: (q) => {
       const data = q.state.data;
       if (!data) return POLL_INTERVAL_FAST_MS;
@@ -83,6 +105,12 @@ export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
     runs,
     counts,
     loading: query.isLoading,
+    // isPlaceholderData is true ONLY while keepPreviousData is holding the
+    // previous key's rows on screen because the key changed (a scope
+    // switch) and the new key is still loading. It is false during an
+    // ordinary same-key background poll — so the refreshing overlay
+    // appears on a real scope change, not on every 3s poll tick.
+    refreshing: query.isPlaceholderData,
     error: query.error ? errorMessage(query.error) : null,
   };
 }

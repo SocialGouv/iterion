@@ -130,11 +130,12 @@ describe("source discipline", () => {
     //   - MarkdownText.tsx renders markdown-authored tables;
     //   - RunListView.tsx toggles `hidden sm:table` display on the table
     //     element itself (mobile renders cards instead) — incompatible
-    //     with the primitive's wrapper;
+    //     with the primitive's wrapper; RunListSkeleton mirrors that same
+    //     `hidden sm:table` layout as its cold-load placeholder;
     //   - ArtifactFilesPanel.tsx needs a sticky thead inside its own
     //     scroll container.
     const hits = scan(/^\s*<table\b/, (path) =>
-      /\/(ui\/Table|conversation\/MarkdownText|Runs\/RunListView|Runs\/ArtifactFilesPanel)\.tsx$/.test(
+      /\/(ui\/Table|conversation\/MarkdownText|Runs\/RunListView|Runs\/runList\/RunListSkeleton|Runs\/ArtifactFilesPanel)\.tsx$/.test(
         path,
       ),
     );

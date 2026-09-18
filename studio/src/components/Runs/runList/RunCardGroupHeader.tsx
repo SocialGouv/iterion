@@ -1,6 +1,6 @@
-// RunCardGroupHeader is the mobile-list counterpart to RunRowGroup —
-// rendered above each group's <ul>. Visually subdued so the rows still
-// dominate the scroll.
+// RunCardGroupHeader is the mobile-list group header — rendered above
+// each group's cards via GroupedVirtuoso's groupContent. Visually subdued
+// so the rows still dominate the scroll.
 export function RunCardGroupHeader({
   label,
   count,
