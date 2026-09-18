@@ -53,6 +53,20 @@ src -> dst with { f: "{{ref}}" }    # data mapping
 References: `{{input.field}}`, `{{vars.name}}`, `{{outputs.node}}`,
 `{{outputs.node.field}}`, `{{artifacts.name}}`.
 
+**A bounded loop needs its exhaustion exit.** Once `as loop_name(N)` has
+spent its N crossings — or the run's budget can no longer fund one — the
+back-edge is declined and the node goes on by its other edges; with none,
+the run dies of `LOOP_EXHAUSTED` (`iterion validate` names the node: C145).
+The exit is a SECOND, BARE edge from the same node, written beside the loop
+edge in either order: the engine takes the loop edge while it has budget
+and the bare edge once it is spent. Never `else` (C015 refuses it without a
+`when` sibling) and never a `when` on the exit.
+
+```
+fix -> review as fix_loop("{{vars.max_fix_passes}}")
+fix -> findings_unresolved      # a typed `fail findings_unresolved:` when exhaustion is a refusal
+```
+
 Nodes with several incoming branches declare `await: wait_all` or
 `await: best_effort` — convergence is a property of the *downstream*
 node, there is no join declaration.
@@ -195,6 +209,7 @@ change that only *adds* files is invisible.
 | C110–C112 | permission mode / rule-list problems |
 | C128 | `sandbox: none` opt-out (warning) |
 | C137 | a command reference is inside quotes written by the workflow; refs are already shell-quoted at runtime, so remove the surrounding quotes |
+| C145 | a bounded loop has no exhaustion exit: add the bare edge beside the loop edge (see Edges) |
 
 When a validate run produces a dozen errors, fix the **first** one and
 re-run: parse errors cascade, and the later messages usually name

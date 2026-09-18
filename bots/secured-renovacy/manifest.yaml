@@ -1,7 +1,17 @@
 name: secured-renovacy
 display_name: Renovacy
 icon: ⬆️
-version: 0.2.2
+version: 0.2.3
+## 0.2.3 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside twenty-nine prompts (126 in all) now reach
+## the models as blank lines instead of being folded away by the profile-1
+## lexer; the files_lines join literal is re-spelled with its value unchanged.
+## Two loops gain their exhaustion exits, at three loop-backs (C145, #1293),
+## and their caps — fifty solos, twenty families, hardcoded — now sit one
+## above max_packages_per_run: select_candidate's own exit reports the cap
+## first, and a back-edge declined for budget hands the ledger to
+## phase2_decider (solo) or the remaining packages to the solo loop (family)
+## instead of dying LOOP_EXHAUSTED. No instruction changed.
 ## 0.2.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work;
 ## the deterministic commits, prepare_commit's file list and the commit
@@ -60,3 +70,9 @@ invocations:
 ## out of the form (still settable via --var / bot_args).
 launch:
   primary: [user_prompt]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

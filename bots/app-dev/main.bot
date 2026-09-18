@@ -44,8 +44,14 @@
 ##   interview_loop(max_interview_turns) — chat → interviewer
 ##   continuation_loop(max_passes)       — gate → campaign
 ##   draft_loop(max_draft_loops)         — derive_draft → campaign
-## On exhaustion each ships what is banked (git is the state; the
-## campaign commits every slice in stride).
+## On exhaustion the two campaign loops ship what is banked (git is the
+## state; the campaign commits every slice in stride). The interview
+## loop refuses instead (INTERVIEW_NOT_CONVERGED, resumable): nothing
+## is banked before SPEC.md is committed, and building behind an
+## unfinished interview is not a decision the run may take for the
+## operator. The same exit is taken when the run's budget can no longer
+## fund a turn; the refusal names the answers used and the budget spent,
+## and a resume with a raised budget continues the conversation.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
 ## "Universal code bots"): the app prompt + SPEC.md define the work;
@@ -54,6 +60,8 @@
 ## DSL. No language / package-manager literal appears in any var
 ## default, command body, or schema.
 ## ─────────────────────────────────────────────────────────────────
+
+dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
@@ -93,7 +101,9 @@ vars:
   max_passes: int = 10
 
   ## Interview conversation cap (loop-backs on the chat → interviewer
-  ## edge). An interview converges in ~15–20 turns; 30 is the backstop.
+  ## edge). An interview converges in 6–15 turns (the playbook's
+  ## heuristic); 30 is the backstop, past which the run refuses
+  ## (INTERVIEW_NOT_CONVERGED). The interviewer is told the cap in force.
   max_interview_turns: int = 30
 
   ## request_changes iterations at the draft-review gate before the run
@@ -217,6 +227,10 @@ prompt interviewer_system:
   - Mid-turn `ask_user` is for a single blocking clarification only;
     prefer ending your turn (the chat pause is free and can last
     days).
+  - You are bounded at {{vars.max_interview_turns}} operator answers:
+    past that the run REFUSES (INTERVIEW_NOT_CONVERGED) instead of
+    building. Converge before the cap — record what stays undecided
+    in SPEC.md rather than asking one more question.
 
   CONVERGENCE — when another question would no longer change any
   decision, or the operator says "go":
@@ -1966,6 +1980,20 @@ compute deploy_verify:
     pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != '' && (if(outputs.deploy_trace.verifiable, outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head, true))"
     reason: "if(outputs.deploy.deployed_url == '', outputs.deploy.notes, outputs.deploy_trace.trace_log)"
 
+## The interview loop's typed refusal, reached once interview_loop is spent
+## — at its cap, or because the run's budget could no longer fund another
+## turn (the affordability guard declines the back-edge the same way).
+## spec_ready never came, so no SPEC.md was committed and the campaign
+## would have nothing authoritative to build from. Resumable: the checkpoint
+## anchors on the chat pause, so `iterion resume --max-cost-usd` continues
+## the conversation when the budget was the cause; a spent cap needs a
+## relaunch (an exhausted loop stays exhausted across resume and rewind).
+fail interview_not_converged:
+  description: "the interview stopped without a committed SPEC.md"
+  code: INTERVIEW_NOT_CONVERGED
+  message: "the interview stopped without a committed SPEC.md: {{loop.interview_loop.iteration}} operator answers reached the interviewer (cap {{vars.max_interview_turns}}), {{run.cost_usd}} USD of the {{run.max_cost_usd}} USD budget spent — a spent cap needs a relaunch with a larger max_interview_turns or autonomous mode with the brief as it stands; a budget stop resumes with a raised cap (iterion resume --max-cost-usd)"
+  resumable: true
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow app_dev:
@@ -2039,6 +2067,11 @@ workflow app_dev:
     _session_id:          "{{outputs.interviewer._session_id}}",
     _session_fingerprint: "{{outputs.interviewer._session_fingerprint}}"
   } as interview_loop("{{vars.max_interview_turns}}")
+  ## The loop's exhaustion exit (C145, #1293): once the back-edge is declined
+  ## (cap spent, or budget) the pause's answer no longer reaches the
+  ## interviewer, and the run refuses rather than building behind an
+  ## unfinished interview.
+  interview_chat -> interview_not_converged
 
   ## ── Plan phase (on by default; plan_phase off → straight to campaign)
   plan_topology -> plan when do_plan
@@ -2173,7 +2206,7 @@ workflow app_dev:
   ## edge ships the code anyway (the deploy is best-effort; the committed
   ## app is real work regardless).
   deploy_verify -> deploy when not pass as deploy_retry("{{vars.max_deploy_retries}}") with {
-    fail_log: "DEPLOY NOT HEALTHY (fix exactly this, then redeploy):\n{{outputs.deploy_verify.reason}}"
+    fail_log: "DEPLOY NOT HEALTHY (fix exactly this, then redeploy):\\n{{outputs.deploy_verify.reason}}"
   }
   ## Healthy deploy → surface the live URL as a headline result-link (kind=deploy)
   ## in the run summary, alongside the detailed deployment report, then the PR

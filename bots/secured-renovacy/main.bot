@@ -24,6 +24,10 @@
 ##   - all candidates exhausted in scope, OR
 ##   - Phase-2 gate converged (review_clean AND build green), OR
 ##   - review_pass_loop exhausted (ships what is banked), OR
+##   - the solo or family loop's back-edge declined for budget → Phase 2,
+##     or the solo loop, on what is banked (the exhaustion exits, C145;
+##     both caps sit one above max_packages_per_run, so the operator's
+##     knob is the limit and select_candidate reports it), OR
 ##   - budget exceeded (resumable via `iterion resume`).
 ##
 ## Token economy
@@ -54,6 +58,8 @@
 ##   between two upgrades, persistent fix-loop stagnation.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
@@ -72,6 +78,8 @@ vars:
 
   ## Policy
   scope: string = "patch,minor,major"
+  ## Also bounds the solo and family loops (their cap is this value + 1,
+  ## so select_candidate's own exit reports the cap first).
   max_packages_per_run: int = 30
   major_policy: string [enum: "skip", "gate", "attempt"] = "attempt"
   fix_loop_default: int = 3
@@ -2831,7 +2839,7 @@ compute join_files:
   input: commit_files_input
   output: commit_files_output
   expr:
-    files_lines: "join(input.files, '\n')"
+    files_lines: "join(input.files, '\\n')"
 
 ## set -euo pipefail + explicit exit-code checks on every git call
 ## so a failed `git commit` (missing identity, hook rejection, …)
@@ -4782,11 +4790,24 @@ workflow secured_renovacy:
   }
 
   ## Loop back to select_family — same package_loop pattern as the per-
-  ## package solo loop, capped at 20 to bound the worst case.
-  mark_family_attempted -> select_family as family_loop(20) with {
+  ## package solo loop, bounded by the operator's knob (one above
+  ## max_packages_per_run, like the solo loop).
+  mark_family_attempted -> select_family as family_loop("vars.max_packages_per_run + 1") with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{{outputs.mark_family_attempted.attempted_families}}",
     workspace_dir: "{{vars.workspace_dir}}"
+  }
+  ## The loop's exhaustion exit (C145, #1293): the family cap spent, or the
+  ## back-edge declined for budget → the solo loop takes what is left,
+  ## skipping every member the family path already handled
+  ## (mark_family_attempted just grew the ledger).
+  mark_family_attempted -> select_candidate with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "{{outputs.mark_family_attempted.attempted_members}}",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    update_scope: "{{vars.update_scope}}"
   }
 
   ## No more candidates → phase2_decider picks the right terminal
@@ -5031,7 +5052,7 @@ workflow secured_renovacy:
   ##     (the iteratively-grown ledger).
   ##   batch path → outputs.bucket_patches.attempted_after_batch
   ##     (every patch flagged so the loop skips them).
-  write_audit_md -> select_candidate when not was_batch as package_loop(50) with {
+  write_audit_md -> select_candidate when not was_batch as package_loop("vars.max_packages_per_run + 1") with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
@@ -5048,6 +5069,16 @@ workflow secured_renovacy:
     scope: "{{vars.scope}}",
     attempted: "{{outputs.bucket_patches.attempted_after_batch}}"
   }
+  ## The solo loop's exhaustion exit (C145, #1293). The cap sits one above
+  ## max_packages_per_run, so select_candidate's own exit — the one that
+  ## writes cap_reason and remaining_count — always fires first; this edge
+  ## is reached when the affordability guard declines the back-edge, and
+  ## hands the ledger to phase2_decider exactly as the natural exit does
+  ## (select_candidate's outputs include the last pick: same decision).
+  write_audit_md -> phase2_decider with {
+    attempted_count: "{{outputs.select_candidate.attempted_count}}",
+    only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
+  }
 
   ## Failure path: revert (or already reverted) → mark failed → loop back.
   revert_changes -> mark_failed_and_continue with {
@@ -5055,13 +5086,18 @@ workflow secured_renovacy:
     reason: "fix_loop exhausted or install/upgrade failed"
   }
 
-  mark_failed_and_continue -> select_candidate as package_loop(50) with {
+  mark_failed_and_continue -> select_candidate as package_loop("vars.max_packages_per_run + 1") with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
     max_packages: "{{vars.max_packages_per_run}}",
     workspace_dir: "{{vars.workspace_dir}}",
     update_scope: "{{vars.update_scope}}"
+  }
+  ## The same exhaustion exit from the failure path (C145, #1293).
+  mark_failed_and_continue -> phase2_decider with {
+    attempted_count: "{{outputs.select_candidate.attempted_count}}",
+    only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
   }
 
   ## ═══ Phase 2 : Alternating review/fix on cumulative diff ═════════

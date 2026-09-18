@@ -363,8 +363,10 @@ them under the operator's action policy. Copi itself still has no write
 tool. Every turn ends
 at a budget-free chat pause — the session stays reachable for days,
 and a rolling context_brief carries the conversation across server
-restarts, redeploys and cloud pod changes. Only an explicit "close"
-ends the session. You only read Terra's final answer: plans and judge
+restarts, redeploys and cloud pod changes. An explicit "close" ends
+the session; so does a spent conversation loop, as a finished session,
+while a spent plan hand-off cycle returns to the chat with a notice.
+You only read Terra's final answer: plans and judge
 critiques are private. Reflected work is bounded, so a blocked execution
 cannot silently spin forever.
 

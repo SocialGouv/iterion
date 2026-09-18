@@ -1,7 +1,18 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.2.7
+version: 0.2.8
+## 0.2.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside six prompts (80 in all) now reach the models
+## as blank lines instead of being folded away by the profile-1 lexer; the two
+## expression literals carrying newlines (the validation trailer on a draft,
+## the review-availability note on a plan) are re-spelled with their value
+## unchanged. The plan hand-off cycle gains its exhaustion exit (C145, #1293):
+## a back-edge declined at its cap or for budget returns the reviewed plan
+## to the chat pause with a notice instead of dying LOOP_EXHAUSTED. The DSL
+## authoring skill teaches the loop-exhaustion exit and the run-debug
+## skill's LOOP_EXHAUSTED row names its real cause (a live Copi guessed
+## `else`, which C015 refuses). No prompt changed.
 ## 0.2.7 — the authoring skill's intent-to-add example leaves iterion's `.claude/`
 ## scaffold out (#1364).
 ## 0.2.6 — both GPT agents fall back to Claude Opus through Claw on quota,
@@ -73,8 +84,10 @@ description: |
   tool. Every turn ends
   at a budget-free chat pause — the session stays reachable for days,
   and a rolling context_brief carries the conversation across server
-  restarts, redeploys and cloud pod changes. Only an explicit "close"
-  ends the session. You only read Terra's final answer: plans and judge
+  restarts, redeploys and cloud pod changes. An explicit "close" ends
+  the session; so does a spent conversation loop, as a finished session,
+  while a spent plan hand-off cycle returns to the chat with a notice.
+  You only read Terra's final answer: plans and judge
   critiques are private. Reflected work is bounded, so a blocked execution
   cannot silently spin forever.
 when_to_use: |
@@ -171,3 +184,9 @@ chat:
       - value: "Quel bot du catalogue dois-je utiliser pour ce que je veux faire ?"
         label: "Which bot should I use?"
         description: "Routes you through the catalog and its personas."
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

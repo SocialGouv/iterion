@@ -20,7 +20,10 @@
 ##   chat (human)    — the standby home base: budget-free pause,
 ##                     reachable for days. This pause IS the chat
 ##                     bubble + composer.
-##   done            — reached ONLY on an explicit operator close.
+##   done            — an explicit operator close, or the conversation
+##                     loop spent: a finished session, never
+##                     LOOP_EXHAUSTED (a spent plan hand-off cycle
+##                     returns to the chat with a notice instead).
 ##
 ## ─── The memory contract (read this before touching the edges) ────
 ## Conversation memory rides on TWO independent channels, because
@@ -45,6 +48,8 @@
 ##
 ## Channel 2 is the mechanism; channel 1 is the fidelity bonus.
 ## ─────────────────────────────────────────────────────────────────
+
+dsl: 2
 
 vars:
   ## The workspace Copi advises on. Defaults to the run's project dir;
@@ -1346,7 +1351,7 @@ compute gate:
     ## has_draft is CURRENT-turn state. validate_draft output persists across
     ## loop/resume, so its report alone cannot distinguish a fresh verdict
     ## from a prior design turn.
-    reply:         "if(not input.has_draft, input.reply, if(not input.verified, input.reply + '\n\n---\n\n⚠️ This draft was NOT verified:\n\n```\n' + input.validate_report + '\n```', if(input.validated, input.reply + '\n\n---\n\n✅ `iterion validate` passed on this draft.', input.reply + '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n' + input.validate_report + '\n```')))"
+    reply:         "if(not input.has_draft, input.reply, if(not input.verified, input.reply + '\\n\\n---\\n\\n⚠️ This draft was NOT verified:\\n\\n```\\n' + input.validate_report + '\\n```', if(input.validated, input.reply + '\\n\\n---\\n\\n✅ `iterion validate` passed on this draft.', input.reply + '\\n\\n---\\n\\n⚠️ `iterion validate` did NOT pass on this draft:\\n\\n```\\n' + input.validate_report + '\\n```')))"
     quick_replies: "input.quick_replies"
     implementation_active: "input.implementation_active"
     implementation_plan: "input.implementation_plan"
@@ -1499,7 +1504,7 @@ compute implementation_handoff:
   expr:
     operator_message: "input.request"
     context_brief: "input.context_brief"
-    implementation_plan: "if(input.reviewer_unavailable, input.implementation_plan + '\n\nReview availability: the judge was unavailable; independently verify all material assumptions before proposing an action.', if(input.judge_critique != '', input.implementation_plan + '\n\nReview advice retained for Terra:\n' + input.judge_critique, input.implementation_plan))"
+    implementation_plan: "if(input.reviewer_unavailable, input.implementation_plan + '\\n\\nReview availability: the judge was unavailable; independently verify all material assumptions before proposing an action.', if(input.judge_critique != '', input.implementation_plan + '\\n\\nReview advice retained for Terra:\\n' + input.judge_critique, input.implementation_plan))"
     mode: "input.mode"
     authoring_context: "input.authoring_context"
     terra_session_id: "input.terra_session_id"
@@ -1931,8 +1936,30 @@ workflow copilot:
     actionless_clarification_count: "{{outputs.implementation_handoff.actionless_clarification_count}}",
     actionless_clarification_key: "{{outputs.implementation_handoff.actionless_clarification_key}}"
   } as terra_plan_execution_cycle(1000)
+  ## The cycle's exhaustion exit (C145, #1293). The back-edge above is
+  ## declined at its cap or when the run's budget can no longer fund a turn
+  ## (the affordability guard); the reviewed plan then returns to the chat
+  ## pause through the delivery projection with a reply saying so — never a
+  ## silent `done` with the operator's turn unanswered, never LOOP_EXHAUSTED.
+  ## The plan stays active and Terra's session ids ride along, so a run
+  ## resumed with a larger budget picks the plan up where it stopped.
+  implementation_handoff -> compose with {
+    reply: "Le cycle de planification est arrivé à sa limite (tours ou budget du run) : la session ne peut pas poursuivre ce plan. Reprends ce run avec un budget plus large (iterion resume --max-cost-usd ...) ou relance une conversation.",
+    quick_replies: "[]",
+    context_brief: "{{outputs.implementation_handoff.context_brief}}",
+    mode: "{{outputs.implementation_handoff.mode}}",
+    session_id: "{{outputs.implementation_handoff.terra_session_id}}",
+    session_fingerprint: "{{outputs.implementation_handoff.terra_session_fingerprint}}",
+    implementation_active: "true",
+    implementation_plan: "{{outputs.implementation_handoff.implementation_plan}}",
+    authoring_context: "{{outputs.implementation_handoff.authoring_context}}",
+    manager_scope_exclusions: "{{outputs.implementation_handoff.manager_scope_exclusions}}",
+    effective_scope_exclusions: "{{outputs.implementation_handoff.effective_scope_exclusions}}",
+    scope_guard_attempt: "{{outputs.implementation_handoff.scope_guard_attempt}}"
+  }
 
-  ## Explicit close is the only path to Done. Every finished Terra response
+  ## Explicit close is the operator's path to Done (the spent conversation
+  ## loop below is the engine's). Every finished Terra response
   ## goes through one delivery projection back to the standing chat pause.
   gate -> done when is_close
 
