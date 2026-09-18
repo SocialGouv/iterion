@@ -19,7 +19,10 @@
       .brand { position: absolute; left: 80px; top: 74px; display: flex; align-items: center; gap: 30px; }
       .brand img { width: 104px; height: 104px; display: block; }
       .brand span { font-size: 52px; font-weight: 700; letter-spacing: -0.5px; }
-      h1 { position: absolute; left: 78px; top: 214px; margin: 0; font-size: 78px; line-height: 1.05; font-weight: 700; letter-spacing: -1px; }
+      /* No <br /> in the heading: the definition has to appear as one
+         uninterrupted sentence for scripts/brand/positioning-check.sh to
+         recognise it. max-width sets where it wraps instead. */
+      h1 { position: absolute; left: 78px; top: 214px; margin: 0; max-width: 1010px; font-size: 78px; line-height: 1.05; font-weight: 700; letter-spacing: -1px; }
       .tagline { position: absolute; left: 80px; top: 420px; margin: 0; font-size: 28px; line-height: 1.45; color: #b5bdc9; }
       .footer { position: absolute; left: 80px; top: 560px; font-size: 21px; color: #6e7787; }
     </style>
@@ -30,8 +33,8 @@
       <img src="../public/iterion-logo.png" alt="" />
       <span>iterion</span>
     </div>
-    <h1>The control plane<br />for AI agents.</h1>
-    <p class="tagline">Apps have Linux. The cloud has Kubernetes.<br />AI agents have Iterion.</p>
+    <h1>Build, run and orchestrate agentic AI workflows.</h1>
+    <p class="tagline">The control plane for AI agents — apps have Linux,<br />the cloud has Kubernetes.</p>
     <div class="footer">MIT · self-hostable · declarative .bot workflows · socialgouv.github.io/iterion</div>
   </body>
 </html>

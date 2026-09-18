@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 import { seed } from "../lib/state";
+import { studio } from "../lib/paths";
 
 const DEMO_ENABLED = process.env.ITERION_COPI_DEMO === "1";
 const rawDelay = Number(process.env.ITERION_E2E_DEMO_DELAY_MS ?? "0");
@@ -47,7 +48,7 @@ test("@demo Copi crée, lance, surveille et corrige un workflow", async ({
     const reset = await request.post(`${controlUrl}/reset`);
     expect(reset.ok()).toBeTruthy();
 
-    await page.goto("/runs");
+    await page.goto(studio("/runs"));
     await page.getByRole("button", { name: "Open assistant" }).click();
     const dock = page.getByRole("dialog", { name: "Assistant" });
     await expect(dock).toBeVisible();
@@ -96,7 +97,7 @@ test("@demo Copi crée, lance, surveille et corrige un workflow", async ({
 
     await expect(dock.getByRole("link", { name: "Open run" })).toHaveAttribute(
       "href",
-      `/runs/${targetRunId}`,
+      `${studio()}/runs/${targetRunId}`,
     );
     await expect(
       dock.getByText(`Watch run ${targetRunId} in propose mode`),

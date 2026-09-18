@@ -517,6 +517,7 @@ tasks:
       - task: studio:check
       - task: pi-ext:check
       - task: brand:check
+      - task: brand:positioning
       - task: dsl:check
 
   dsl:gen:
@@ -559,6 +560,11 @@ tasks:
         done < <(git ls-files 'pkg/brand/*.png' 'studio/src/assets/*.png' 'studio/public/*.png' studio/public/favicon.ico \
                    docs/public/favicon.ico docs/public/iterion-logo.png docs/images/iterion-logo.png build/appicon.png cmd/iterion-desktop/appicon.png)
         exit $stale
+
+  brand:positioning:
+    desc: Fail if a public surface stopped carrying the canonical definition of iterion (assets/brand/positioning.md)
+    cmds:
+      - ./scripts/brand/positioning-check.sh
 
   brand:og:
     desc: Re-render the docs OpenGraph card (docs/public/og.png) from docs/scripts/og-card.html — needs the Playwright chromium (task test:e2e:ui:install)

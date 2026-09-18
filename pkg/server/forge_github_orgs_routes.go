@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 )
 
 // registerForgeGitHubOrgsRoutes wires a read:org OAuth that lists the signed-in
@@ -107,7 +108,7 @@ func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request
 	}
 	target := pending.NextURL
 	if target == "" {
-		target = "/"
+		target = deeplink.Path("")
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }

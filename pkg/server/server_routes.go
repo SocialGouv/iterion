@@ -429,5 +429,9 @@ func (s *Server) routes() {
 		s.logger.Error("server: SPA assets unavailable, studio UI not served: %v", err)
 		return
 	}
+	// Before the catch-all: a pre-move studio URL must get a 302 to its
+	// current address, not the SPA shell (which would render the product home
+	// at /runs/<id> and lose the run the link named).
+	s.registerStudioLegacyRedirects()
 	s.mux.Handle("GET /", SPAHandler(staticSub))
 }

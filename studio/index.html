@@ -10,7 +10,32 @@
     <link rel="manifest" href="/manifest.json" />
     <meta name="msapplication-config" content="/browserconfig.xml" />
     <meta name="theme-color" content="#4f46e5" />
-    <title>Iterion Studio</title>
+    <!-- This document is served at "/" too, where it is the product home: what
+         a crawler or a link preview reads is THIS static head, before any
+         route renders. useDocumentTitle() retitles the tab once the studio
+         mounts, so the static title is the product's, not the tool's.
+         No og:url: the same bundle is served from iterion.cloud, from preprod
+         and from every self-hosted deployment, and a pinned URL would name the
+         wrong one for all but the first. -->
+    <title>Iterion — build, run and orchestrate agentic AI workflows</title>
+    <meta
+      name="description"
+      content="Build, run and orchestrate agentic AI workflows. Define them as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Iterion" />
+    <meta property="og:title" content="Iterion — build, run and orchestrate agentic AI workflows" />
+    <meta
+      property="og:description"
+      content="Build, run and orchestrate agentic AI workflows. Define them as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud."
+    />
+    <meta property="og:image" content="/brand/iterion-bot-circle.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Iterion — build, run and orchestrate agentic AI workflows" />
+    <meta
+      name="twitter:description"
+      content="Build, run and orchestrate agentic AI workflows. Define them as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud."
+    />
   </head>
   <body class="bg-surface-0 text-fg-default antialiased">
     <div id="root"></div>

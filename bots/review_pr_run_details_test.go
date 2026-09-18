@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 )
 
 func TestReviewPRRunDetails(t *testing.T) {
@@ -115,7 +117,11 @@ func TestReviewPRRunDetails(t *testing.T) {
 			}
 			if tc.refs["run.id"] == "run-123" && endpointPath != "/custom-publisher" {
 				basePath, _, _ := strings.Cut(endpointPath, "/api/v1/forge/publish-review")
-				want := `<a href="` + srv.URL + basePath + `/runs/run-123"><code>run-123</code></a>`
+				// The address the studio actually answers on, read from the
+				// engine's constant rather than spelled out here: a comment
+				// published on a pull request that points at a redirect, or at
+				// nothing, is not something a reviewer can be asked to notice.
+				want := `<a href="` + srv.URL + basePath + deeplink.StudioBase + `/runs/run-123"><code>run-123</code></a>`
 				if !strings.Contains(got.Summary, want) {
 					t.Errorf("missing authenticated run link %q in %s", want, got.Summary)
 				}

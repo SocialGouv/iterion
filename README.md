@@ -4,8 +4,8 @@
 
 # Iterion
 
-**The control plane for AI agents.**
-*Apps have Linux. The cloud has Kubernetes. AI agents have Iterion.*
+**Build, run and orchestrate agentic AI workflows.**
+*The control plane for AI agents — apps have Linux, the cloud has Kubernetes.*
 
 Kubernetes gave cloud workloads a declarative control plane. Iterion brings that model to AI agents. Define agent workflows as readable `.bot` files — chain agents, judges, routers, human gates, parallel branches, bounded loops, and budget caps — and operate every run from a single, auditable execution graph.
 
@@ -39,7 +39,7 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 
 ## 🧩 What is Iterion?
 
-AI agents can now hold a real task for an hour — plan a feature, implement it, review it, fix what the review found. Iterion is the **control plane** that makes that work *operable*: define it once as a readable `.bot` file, and every run becomes a single execution graph you can budget, isolate, audit, resume, and prove converges — on your laptop, in CI, or across a multi-tenant cloud.
+AI agents can now hold a real task for an hour — plan a feature, implement it, review it, fix what the review found. Iterion is where you **build, run and orchestrate** that work: define it once as a readable `.bot` file, and every run becomes a single execution graph you can budget, isolate, audit, resume, and prove converges — on your laptop, in CI, or across a multi-tenant cloud.
 
 *Concretely: if you've caught yourself repeating the same loop with an LLM — "ask the model, eyeball the diff, ask it to fix what it missed, run the tests, ask again" — Iterion is where that loop stops being manual.* Capture the pattern once, give it budget caps, parallel reviewers, judges, and human gates, and let the engine run it deterministically every time.
 

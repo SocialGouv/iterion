@@ -11,9 +11,9 @@ import { SignInCard } from "./Login";
 // This module is one of App.tsx's few EAGER view imports, because
 // PublicTopBar (below) renders on /marketplace outside the lazy route tree.
 // So the product page — its own stylesheet plus ~50 icon modules — is
-// lazy()'d here rather than statically imported: it is shown to anonymous
-// visitors only, and a static import would put it in the entry chunk every
-// authenticated operator downloads on first paint.
+// lazy()'d here rather than statically imported: an operator who goes straight
+// to a studio URL never opens it, and a static import would put it in the
+// entry chunk every one of them downloads on first paint.
 const CloudHome = lazy(() => import("./CloudHome"));
 
 // PublicTopBar is the slim header shown above the public Marketplace view
@@ -43,9 +43,17 @@ export function PublicTopBar() {
   );
 }
 
-// The public product page is cloud-only. Keep the existing sign-in fallback
-// for deployments that do not run in cloud mode.
-export default function CloudLanding() {
+// The product page is cloud-only, and it is what "/" serves — to an anonymous
+// visitor and to a signed-in operator alike, which is why the studio lives
+// under its own base. Deployments that do not run in cloud mode have no
+// product page: an anonymous visitor gets the sign-in card here, and a
+// signed-in one never reaches this component (AuthGate sends the root straight
+// into the studio).
+//
+// signedIn comes from the caller rather than from useAuth(): this is the
+// product page, and a page has no business requiring the auth provider to be
+// mounted above it just to label a button.
+export default function CloudLanding({ signedIn = false }: { signedIn?: boolean }) {
   const serverInfo = useServerInfoStore((s) => s.info);
   useEffect(() => {
     if (!serverInfo) void useServerInfoStore.getState().refresh();
@@ -59,7 +67,10 @@ export default function CloudLanding() {
   }
   return (
     <Suspense fallback={<BootLoading />}>
-      <CloudHome marketplaceEnabled={serverInfo.marketplace_enabled} />
+      <CloudHome
+        marketplaceEnabled={serverInfo.marketplace_enabled}
+        signedIn={signedIn}
+      />
     </Suspense>
   );
 }

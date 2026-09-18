@@ -12,7 +12,7 @@ vi.mock("@/components/shared/Toast", () => ({ default: () => null }));
 vi.mock("@/views/SettingsDialog", () => ({ default: () => null }));
 vi.mock("@/components/shared/CloudReloginModal", () => ({ default: () => null }));
 vi.mock("@/components/Home/HomeView", () => ({ default: () => <h1>Signed-in home</h1> }));
-vi.mock("@/views/CloudLanding", () => ({ default: () => <h1>Public cloud home</h1>, PublicTopBar: () => null }));
+vi.mock("@/views/CloudLanding", () => ({ default: ({ signedIn }: { signedIn?: boolean }) => <h1>Public cloud home{signedIn ? " (signed in)" : ""}</h1>, PublicTopBar: () => null }));
 vi.mock("@/views/RestrictedShell", () => ({ default: () => <h1>Restricted account</h1> }));
 vi.mock("@/hooks/useProjectSwitchListener", () => ({ useProjectSwitchListener: () => undefined }));
 vi.mock("@/hooks/useProjectScopeSync", () => ({ useProjectScopeSync: () => undefined }));
@@ -26,7 +26,8 @@ import App from "@/App";
 import { useServerInfoStore } from "@/store/serverInfo";
 import type { ServerInfo } from "@/api/types";
 
-const run = "/runs/review-123?tab=events#node-converge";
+// The address a run link carries after the studio moved under its base.
+const run = "/studio/runs/review-123?tab=events#node-converge";
 const identity = { user: { id: "u", email: "reviewer@example.test", status: "active", is_super_admin: true }, orgs: [], active_role: "owner" };
 let authenticated: boolean;
 let rejectLogin: boolean;
@@ -106,5 +107,29 @@ describe("run → sign-in → requested run", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Public cloud home" });
     await waitFor(() => expect(window.location.pathname).toBe("/"));
+  });
+
+  // The point of the move: the root is the product home for EVERYONE. Before
+  // it, a session turned "/" into the studio's own home view, and there was no
+  // address at which a signed-in operator could read what the product is.
+  it("keeps the product home at / for a signed-in operator", async () => {
+    authenticated = true;
+    window.history.replaceState({}, "", "/");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Public cloud home (signed in)" });
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+    expect(screen.queryByText("Signed-in home")).toBeNull();
+  });
+
+  // A bookmark, or a link in mail sent before the move. The server answers
+  // these with a 302 as well; this is the arm that covers a document the
+  // server's redirect never saw (a desktop workspace pane).
+  it("carries a pre-move URL into the studio", async () => {
+    authenticated = true;
+    window.history.replaceState({}, "", "/runs/review-123?tab=events#node-converge");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Requested run review-123" });
+    await waitFor(() => expect(window.location.pathname).toBe("/studio/runs/review-123"));
+    expect(window.location.search + window.location.hash).toBe("?tab=events#node-converge");
   });
 });

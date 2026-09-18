@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -443,7 +444,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// head belongs to, not merely by its state. Every status iterion writes
 	// carries the run it speaks for in its target URL, which is what makes the
 	// question answerable across replicas with no shared bookkeeping.
-	runURL := gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID)
+	runTarget := gateRunTargetFor(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID)
 	switch {
 	case gate.State == "":
 		// Nothing on the head: this run owes the answer.
@@ -463,7 +464,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// than the job needs. Deliberately NOT extended to a verdict posted by
 		// ANOTHER run: a repo's gate context is shared between bots, so that
 		// would revoke the grant of a run still on its way to publishing.
-		if gateStatusSpeaksFor(gate, runURL) {
+		if runTarget.speaksFor(gate) {
 			s.forgePublishTokens.Revoke(token)
 		}
 		return nil
@@ -478,7 +479,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// relaunch whose idempotency key is already spent, which files a board
 		// card telling a human the automation is out of moves while the other
 		// run is alive and working.
-		if !gateStatusSpeaksFor(gate, runURL) {
+		if !runTarget.speaksFor(gate) {
 			if s.logger != nil {
 				s.logger.Debug("forge gate: run %s died on %s@%s but another run holds the in-flight claim — leaving the live review alone",
 					runID, repo, shortSHA(pr.HeadSHA))
@@ -496,7 +497,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// and only a launch_error row re-enters the tail, so a settled claim
 		// or a relaunch that was refused keeps this the cheap exit it has to
 		// be at one offer per minute per dead run.
-		if gateStatusSpeaksFor(gate, runURL) {
+		if runTarget.speaksFor(gate) {
 			d := deadGateRun{
 				run: run, grant: grant, conn: conn, gc: gc,
 				repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
@@ -512,7 +513,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// every sweep pass — dozens of forge writes and false escalations per
 		// stuck run. Standing down costs the second-death escalation only, and
 		// only on a deployment that has not set PublicURL.
-		if runURL == "" {
+		if runTarget.unset() {
 			return abstain("a synthetic failure is already on %s@%s and PublicURL is unset, so it cannot be told from this run's own — set PublicURL to enable second-death escalation",
 				repo, shortSHA(pr.HeadSHA))
 		}
@@ -537,7 +538,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		State:       forge.CommitStateFailure,
 		Context:     gateCtx,
 		Description: gateInterruptedDescriptionFor(run),
-		TargetURL:   runURL,
+		TargetURL:   runTarget.url,
 	}
 	if err := gc.SetCommitStatus(ctx, repo, pr.HeadSHA, st); err != nil {
 		if s.logger != nil {
@@ -560,31 +561,69 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	return nil
 }
 
-// gateStatusSpeaksFor reports whether a status iterion wrote belongs to the
-// run at runURL. Every status this package posts — the in-flight claim and the
-// synthetic failure alike — points at the run it speaks for, so ownership is
-// readable straight off the forge, with no bookkeeping a second replica would
-// not share and a restart would lose.
+// gateRunTarget is how one run is named on the forge: the URL this build
+// writes into a commit status, plus the spelling older builds wrote before the
+// studio moved under /studio.
 //
-// False when runURL is empty (no PublicURL configured) or the status carries
-// no target URL: ownership is then unknowable, and each caller decides which
-// way that ambiguity is safe to resolve rather than having a bare string
-// compare silently pick one.
-func gateStatusSpeaksFor(st forge.CommitStatus, runURL string) bool {
-	target := strings.TrimSpace(st.TargetURL)
-	if runURL == "" || target == "" {
-		return false
-	}
-	return strings.EqualFold(target, runURL)
+// Both matter because this package READS BACK what it wrote. A status on a
+// pull request opened before the move carries the legacy spelling, and it is
+// read by whatever build happens to be running now — a reader that knew only
+// the current spelling would answer "not mine" about the run's own claim, and
+// that answer is load-bearing: it decides whether a dead run's claim gets
+// repaired, whether a live review is painted over, and whether a publish grant
+// is revoked. Hence a pair, not a string: a caller cannot compare against one
+// spelling and forget the other.
+type gateRunTarget struct {
+	// url is what a status this build posts carries.
+	url string
+	// legacy is the pre-/studio spelling. Never written, only recognised.
+	legacy string
 }
 
-// gateRunURL points the check at the run that owed it, so the operator lands
+// gateRunTargetFor names the run the check speaks for, so the operator lands
 // on the evidence rather than on a bare red cross.
+//
+// Both spellings are empty when base is: with no PublicURL configured a status
+// is written with no target URL at all, and ownership becomes unknowable.
+func gateRunTargetFor(base, runID string) gateRunTarget {
+	if base == "" {
+		return gateRunTarget{}
+	}
+	return gateRunTarget{
+		url:    deeplink.Run(base, runID),
+		legacy: deeplink.LegacyRun(base, runID),
+	}
+}
+
+// unset reports whether this run can be named on the forge at all.
+func (t gateRunTarget) unset() bool { return t.url == "" }
+
+// speaksFor reports whether a status iterion wrote belongs to this run. Every
+// status this package posts — the in-flight claim and the synthetic failure
+// alike — points at the run it speaks for, so ownership is readable straight
+// off the forge, with no bookkeeping a second replica would not share and a
+// restart would lose.
+//
+// False when the run cannot be named (no PublicURL configured) or the status
+// carries no target URL: ownership is then unknowable, and each caller decides
+// which way that ambiguity is safe to resolve rather than having a bare string
+// compare silently pick one.
+func (t gateRunTarget) speaksFor(st forge.CommitStatus) bool {
+	target := strings.TrimSpace(st.TargetURL)
+	if t.unset() || target == "" {
+		return false
+	}
+	return strings.EqualFold(target, t.url) || strings.EqualFold(target, t.legacy)
+}
+
+// gateRunURL is the single spelling this build WRITES. Kept as its own
+// function because the escalation body (gateRunRef) publishes the same link in
+// prose, and one shape must serve both.
 func gateRunURL(base, runID string) string {
 	if base == "" {
 		return ""
 	}
-	return base + "/runs/" + runID
+	return deeplink.Run(base, runID)
 }
 
 // runInputString reads one launch input as a trimmed string.

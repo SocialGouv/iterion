@@ -101,7 +101,7 @@ func TestDispatcherHumanInputNotifiesOwner(t *testing.T) {
 	if n.Body != "Please approve the release notes before shipping." {
 		t.Fatalf("body = %q", n.Body)
 	}
-	if n.Link != "https://iterion.example/runs/run-p1" {
+	if n.Link != "https://iterion.example/studio/runs/run-p1" {
 		t.Fatalf("link = %q", n.Link)
 	}
 	if n.Tag != "run-p1" {

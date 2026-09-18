@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 )
 
 // oidcAgentBindingCookie is the per-flow HttpOnly cookie set at
@@ -383,16 +384,22 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// Link flow: an authenticated user is attaching this SSO identity to their
 	// existing account (started from /link/start). Attach and bounce back to
-	// settings instead of running login/signup.
+	// the account page instead of running login/signup.
+	//
+	// The target is the route SettingsPage is actually mounted on. It used to
+	// be "/settings", which the studio has never routed: the bounce landed on
+	// the authenticated catch-all, and the banner SettingsPage renders from
+	// ?sso_linked / ?sso_link_error could not be shown — a link that failed
+	// reported nothing at all.
 	if pending.LinkUserID != "" {
 		if err := s.authSvc.LinkExternalToUser(r.Context(), ext, pending.LinkUserID); err != nil {
 			if s.logger != nil {
 				s.logger.Warn("oidc link failed for user %s via %s: %v", pending.LinkUserID, name, err)
 			}
-			http.Redirect(w, r, "/settings?sso_link_error="+url.QueryEscape(linkErrorCode(err)), http.StatusFound)
+			http.Redirect(w, r, deeplink.Path("/account")+"?sso_link_error="+url.QueryEscape(linkErrorCode(err)), http.StatusFound)
 			return
 		}
-		http.Redirect(w, r, "/settings?sso_linked="+url.QueryEscape(c.Display()), http.StatusFound)
+		http.Redirect(w, r, deeplink.Path("/account")+"?sso_linked="+url.QueryEscape(c.Display()), http.StatusFound)
 		return
 	}
 	// Per-org flows drive the login from the tenant/provider stored in
@@ -436,7 +443,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)
 	target := pending.NextURL
 	if target == "" {
-		target = "/"
+		// The studio root, not "/": "/" is the product home now, and landing a
+		// just-authenticated operator on the marketing page is not signing in.
+		target = deeplink.Path("")
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }

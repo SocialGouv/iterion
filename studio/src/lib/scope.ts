@@ -18,6 +18,18 @@
  * to the historical single-origin behaviour.
  */
 
+/**
+ * STUDIO_BASE is the path prefix every studio route sits under, so that "/"
+ * can serve the product home instead. Its Go twin is deeplink.StudioBase
+ * (pkg/deeplink), which is what server-built links use; the two are held
+ * together by TestStudioBaseMatchesTheStudioConstant.
+ *
+ * Routes are NOT written with this prefix: wouter's <Router base> applies it,
+ * so `navigate("/runs")` and `<Route path="/runs">` stay as they are. Code
+ * that reads window.location directly bypasses that and must use studioBase().
+ */
+export const STUDIO_BASE = "/studio";
+
 // scopePrefix returns "/x/<connID>" for a workspace pane, or "" otherwise.
 export function scopePrefix(): string {
   const s = (globalThis as { __ITERION_SCOPE__?: unknown }).__ITERION_SCOPE__;
@@ -27,6 +39,43 @@ export function scopePrefix(): string {
 // isScopedPane reports whether this document is a workspace pane iframe.
 export function isScopedPane(): boolean {
   return scopePrefix() !== "";
+}
+
+/**
+ * studioBase is the absolute path the studio is mounted at in THIS document:
+ * "/studio" in a browser, "/x/<id>/studio" in a workspace pane. It is what
+ * wouter's <Router base> is given, and what any code building an absolute URL
+ * from window.location must prepend.
+ */
+export function studioBase(): string {
+  return scopePrefix() + STUDIO_BASE;
+}
+
+/**
+ * rootRoute builds a wouter target for a path that lives OUTSIDE the studio
+ * base but inside this document's scope — /login, /invitations/accept, a
+ * /config share link.
+ *
+ * The leading "~" tells wouter to ignore whatever router base it is called
+ * from; the scope prefix is then re-applied by hand, because "~" escapes ALL
+ * of it and a workspace pane's /x/<id> is not part of the studio base — a bare
+ * "~/login" would send a pane to the desktop shell's own origin root.
+ */
+export function rootRoute(path: string): string {
+  return "~" + scopePrefix() + path;
+}
+
+/**
+ * studioPath turns an absolute browser path into the studio-relative one
+ * wouter works in, or null when the path is not under the studio at all (the
+ * product home, /login, a share link). The inverse of prefixing with
+ * studioBase().
+ */
+export function studioPath(pathname: string): string | null {
+  const base = studioBase();
+  if (pathname === base) return "/";
+  if (pathname.startsWith(base + "/")) return pathname.slice(base.length);
+  return null;
 }
 
 // apiBase returns the /api prefix for this context: "/x/<id>/api" in a pane,

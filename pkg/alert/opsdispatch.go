@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -268,7 +268,7 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 		Timestamp: d.now(),
 	}
 	if d.BaseURL != "" {
-		a.Link = strings.TrimRight(d.BaseURL, "/") + "/runs/" + run.ID
+		a.Link = deeplink.Run(d.BaseURL, run.ID)
 	}
 	switch run.Status {
 	case store.RunStatusFailedResumable:

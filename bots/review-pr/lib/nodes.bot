@@ -527,7 +527,10 @@ def ai_run_identity():
                 or not endpoint.path.endswith(suffix)
                 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', run_id)):
             return label
-        path = endpoint.path[:-len(suffix)] + '/runs/' + quote(run_id, safe='')
+        # The studio is served under /studio (pkg/deeplink.StudioBase); a bare
+        # /runs/<id> still resolves through the server's redirect, but the link
+        # published on the pull request should be the address itself.
+        path = endpoint.path[:-len(suffix)] + '/studio/runs/' + quote(run_id, safe='')
         run_url = urlunsplit((endpoint.scheme, endpoint.netloc, path, '', ''))
     except ValueError:
         return label

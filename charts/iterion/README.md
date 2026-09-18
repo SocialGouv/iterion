@@ -1,6 +1,7 @@
 # iterion Helm chart
 
-Deploys Iterion Cloud, the multi-tenant **control plane for AI agents**.
+**Build, run and orchestrate agentic AI workflows.** This chart deploys Iterion
+Cloud — the multi-tenant control plane — on your own cluster.
 It combines an HTTP/WS API with the embedded studio, a KEDA-scalable runner
 pool consuming the NATS JetStream queue, and the Mongo + S3 run store. One
 image, two deployments (`server` + `runner`).

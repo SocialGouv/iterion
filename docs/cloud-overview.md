@@ -17,8 +17,8 @@ Iterion is two things in one repository:
    **Iterion Cloud**: the control plane and execution platform for running
    agent workflows across teams.
 
-> **The control plane for AI agents.** Apps have Linux. The cloud has
-> Kubernetes. AI agents have Iterion.
+> **Build, run and orchestrate agentic AI workflows.** The control plane for
+> AI agents — apps have Linux, the cloud has Kubernetes.
 
 > **Terminology.** An *agent workflow* is the deployable workload packaged as
 > `.bot` or `.botz` and identified as a `bot` by the existing CLI and API. An

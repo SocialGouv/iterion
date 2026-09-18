@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/alert"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -378,7 +379,7 @@ func (s *Server) notifyRouteDecisionErr(ctx context.Context, run *store.Run, kin
 		a.RunName = run.WorkflowName
 	}
 	if s.cfg.PublicURL != "" {
-		a.Link = strings.TrimRight(s.cfg.PublicURL, "/") + "/runs/" + run.ID
+		a.Link = deeplink.Run(s.cfg.PublicURL, run.ID)
 	}
 	return s.opsAlerts.NotifyOperator(ctx, a, episodeKey)
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -402,7 +403,7 @@ func (m *Manager) linkLocked(rs *runState) string {
 	if m.baseURL == "" || rs.id == "" {
 		return ""
 	}
-	return m.baseURL + "/runs/" + rs.id
+	return deeplink.Run(m.baseURL, rs.id)
 }
 
 func (m *Manager) snapshotSinksLocked() []Sink {

@@ -1,15 +1,16 @@
 import { expect, test } from "@playwright/test";
 
 import { seed } from "../lib/state";
+import { studio } from "../lib/paths";
 
-// studio-ui.pipelines — the `/pipelines` control centre renders the
+// studio-ui.pipelines — the `${studio()}/pipelines` control centre renders the
 // concurrency cap the server actually booted with (`--max-concurrent-
 // pipelines`, surfaced on /api/server/info) and files real runs into its
 // live / opened / closed lanes.
 
 test("pipeline board renders the server's concurrency cap", async ({ page }) => {
   const { maxConcurrentPipelines } = seed();
-  await page.goto("/pipelines");
+  await page.goto(studio("/pipelines"));
 
   // The banner is fed by server_info.pipeline_concurrency — hardcoding a
   // different cap in serve.mjs must turn this red.
@@ -30,7 +31,7 @@ test("closed inventory lists the finished runs as pipeline cards", async ({
   page,
 }) => {
   const { fixtureRunId } = seed();
-  await page.goto("/pipelines");
+  await page.goto(studio("/pipelines"));
 
   // No ticket is waiting to start; the finished runs live under Closed.
   await expect(page.getByRole("tab", { name: /^Opened/ })).toContainText("0");
@@ -43,5 +44,5 @@ test("closed inventory lists the finished runs as pipeline cards", async ({
     card.getByRole("link", {
       name: `Open run ${fixtureRunId} in the run console`,
     }),
-  ).toHaveAttribute("href", `/runs/${fixtureRunId}`);
+  ).toHaveAttribute("href", `${studio()}/runs/${fixtureRunId}`);
 });

@@ -29,6 +29,7 @@ vi.mock("wouter", () => ({
 
 import ForcedPasswordChange from "@/views/auth/ForcedPasswordChange";
 import * as authApi from "@/api/auth";
+import { STUDIO_BASE } from "@/lib/scope";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -83,7 +84,7 @@ describe("ForcedPasswordChange", () => {
       );
     });
     expect(reloadIdentity).toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledWith("/", { replace: true });
+    expect(navigate).toHaveBeenCalledWith(STUDIO_BASE, { replace: true });
   });
 
   it("shows an inline error when passwords don't match", async () => {
