@@ -1,5 +1,8 @@
 # 🗂️ Runbook — the GitHub board's epics
 
+<!-- The "Two axes" heading below carries no emoji on purpose: it is linked by
+     anchor, and a leading emoji slugs differently on GitHub than in VitePress. -->
+
 **Read it when** you add a ticket to the [board](https://github.com/orgs/SocialGouv/projects/203),
 create or retire an epic, wonder why a card is in the wrong column, or need to
 know which view answers your question.
@@ -13,11 +16,41 @@ This page is the mechanics.
 
 | view | question it answers |
 |---|---|
+| 🚦 **Chantier state** | *Where do we stand overall, and what needs attention first?* Board, columns = `State of play`, `label:epic`. |
 | 🎯 **Epics** | *What is live on each objective?* Board, columns = `Epic`, `-status:Done`. |
-| 📚 **Epic map** | *How is each chantier doing?* The 21 epics alone, with priority and progress. |
+| 📚 **Epic map** | *How is each chantier doing?* The epics alone, with their state of play, priority and progress. |
 | 🧭 **Tally by epic** | *What have we actually done?* Every item, grouped by `Epic` — the acquis, counted. |
 | 🧩 **Unassigned** | *Did anything escape?* `no:epic`. **It must read 0.** |
 | 🗂 Kanban · 🚀 In flight · 📥 Triage · 🗺 Roadmap · 📋 All items | the day-to-day views, unchanged |
+
+## Two axes — `Status` and `State of play`
+
+They answer different questions, and using one for the other is what made the
+board unreadable the first time round.
+
+- **`Status`** — *is someone on it?* Its vocabulary is a **claim lifecycle**,
+  written for tickets: Inbox → Planned → In progress → Blocked → Done, where
+  `Planned` means "triaged, ready to pick up" and `In progress` means "claimed
+  by a session".
+- **`State of play`** — *how far is it?* 🔴 blocked · 🟠 gap identified ·
+  🟡 running, watch it · 🟢 humming · ⚪ design stage. It grades **evidence,
+  not ambition**, and it is the axis that actually separates one chantier from
+  another.
+
+**For an epic, `Status` is almost always `In progress`.** A chantier with an
+état d'avancement is not "ready to pick up", whatever its ticket flow looks
+like — Credentials had 27 delivered tickets while sitting in `Planned`, which
+is simply false. An epic is `Planned` only if genuinely nothing has been done,
+and `Blocked` only when a **named decision** is pending (say whose it is in
+the body).
+
+So do not read `Status` to prioritise epics: it is near-uniform by design.
+Read **`State of play`**, which is why 🚦 Chantier state exists. `Status` on
+an epic still earns its keep for one thing: it keeps the epic out of the
+day-to-day Triage and Kanban views.
+
+For a **ticket**, `Status` keeps its ordinary claim meaning and
+`State of play` is left empty.
 
 ## 🧱 How membership is represented — and why twice
 
@@ -80,7 +113,9 @@ mis-filed by the bulk classifier showed up as `DIVERGENT`.
    cleared. The schema says so, and it is the one irreversible mistake here.
 3. Put the epic on the board and give it the new option as its own `Epic`
    value — that is how `board-epics-sync.sh` learns the mapping, so no epic
-   list lives in the script.
+   list lives in the script. Set its **`State of play`** to match the mark in
+   its body, and its `Status` to `In progress` (or `Blocked`, with the
+   decision named) — see [the two axes](#two-axes--status-and-state-of-play).
 4. Add its row to [state-of-the-art.md](state-of-the-art.md#the-chantier-map),
    and link that page back from the epic body. **Both ends, same change.**
 
@@ -119,7 +154,8 @@ board view you must open it and set it by hand:
 > view tab → **View options** → *Column field* (board) or *Group by* (table)
 > → pick **Epic** → **Save**.
 
-Two views depend on it: 🎯 **Epics** (column field = `Epic`) and 🧭 **Tally by
+Three views depend on it: 🚦 **Chantier state** (column field =
+`State of play`), 🎯 **Epics** (column field = `Epic`) and 🧭 **Tally by
 epic** (group by = `Epic`).
 
 > **Do not try to automate it with Playwright — measured, 2026-09-18.** The

@@ -20,8 +20,9 @@ row — a one-way link rots in one direction without anyone noticing.
 
 ## The maturity vocabulary
 
-The same five marks are used on this page and in every epic body. They grade
-**evidence**, not ambition:
+The same five marks are used on this page, in every epic body, and as the
+board's **`State of play`** field — the axis the 🚦 Chantier state view is
+built on. They grade **evidence**, not ambition:
 
 | mark | means | what earns it |
 |---|---|---|
@@ -196,6 +197,8 @@ All 22 epics, their mark, and where the detail lives. Counts are board items
 
 ## ✅ Keeping this page honest
 
+- **A mark lives in three places and they must agree** — this page, the epic
+  body, and the board's `State of play` field. Move one, move all three.
 - **A mark needs a date and a source.** "🟢 humming" with nothing to point at
   is a wish. If the evidence is older than the last release, say so rather
   than refresh the date.
