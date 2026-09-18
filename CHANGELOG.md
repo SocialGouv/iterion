@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.166.0](https://github.com/SocialGouv/iterion/compare/v3.165.0...v3.166.0) (2026-09-18)
+
+### Features
+
+* **examples:** the 25 examples read as dsl profile 2, with the three example bundles' floors ([#1344](https://github.com/SocialGouv/iterion/issues/1344) wave 5) ([#1436](https://github.com/SocialGouv/iterion/issues/1436)) ([d06cc04](https://github.com/SocialGouv/iterion/commit/d06cc04ed1b558b2664dc0fabe1554b9af567d0e)), references [#1349](https://github.com/SocialGouv/iterion/issues/1349)
+
+    <details><summary>why</summary>
+
+    `iterion dsl migrate --to 2 --floor 3.141.0` on every workflow under examples/: the `dsl: 2` header and nothing else — no quoted literal in an example holds a backslash, so no value was re-spelled. Eight named prompts in six files now keep the 19 paragraph breaks profile 1 dropped before the text reached the model or the studio's form; each was read, each separates prose (a heading, a list, a templated value) from prose.
+
+    </details>
+
 ## [3.165.0](https://github.com/SocialGouv/iterion/compare/v3.164.0...v3.165.0) (2026-09-18)
 
 ### Features
