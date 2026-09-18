@@ -45,8 +45,11 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	if backend != "" && backend != "auto" {
 		return backend
 	}
-	if e.defaultBackend != "" {
-		return e.defaultBackend
+	// The workflow's `default_backend:` is a routing field like a node's:
+	// the same template-then-env reading, or `{{vars.b}}` there became the
+	// backend NAME at dispatch.
+	if d := e.resolveRoutingField(e.defaultBackend); d != "" {
+		return d
 	}
 	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
 		return env

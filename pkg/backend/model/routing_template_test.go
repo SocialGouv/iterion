@@ -66,6 +66,16 @@ func TestRoutingFieldsResolveVarsTemplates(t *testing.T) {
 		t.Errorf("task.Model = %q, want the var's value", task.Model)
 	}
 
+	// The workflow's default_backend is a routing field too: a node that
+	// names no backend takes it resolved, not as text.
+	bare := &ir.AgentNode{}
+	bare.ID = "bare"
+	e.defaultBackend = "{{vars.backend}}"
+	if got := e.resolveBackendName(bare); got != "claw" {
+		t.Errorf("default_backend {{vars.backend}} resolved to %q, want claw", got)
+	}
+	e.defaultBackend = ""
+
 	// The template resolves first, then the environment form inside the var.
 	env := &ir.AgentNode{}
 	env.ID = "e"

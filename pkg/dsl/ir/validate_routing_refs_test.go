@@ -15,14 +15,17 @@ import "testing"
 // validate.
 func TestRoutingFieldRefs(t *testing.T) {
 	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
-	const tail = "\nworkflow w:\n  entry: a\n  a -> done\n"
 	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
 	type tc struct {
 		name string
 		body string
+		wf   string   // extra properties of the workflow block
 		want DiagCode // "" = none of C033, C148, C087
 	}
 	cases := []tc{
+		{name: "workflow default_backend from a declared var", body: agent(""), wf: "  default_backend: \"{{vars.b}}\"\n"},
+		{name: "workflow default_backend from an undeclared var", body: agent(""), wf: "  default_backend: \"{{vars.nope}}\"\n", want: DiagUndeclaredVar},
+		{name: "workflow default_backend from an output", body: agent(""), wf: "  default_backend: \"{{outputs.a.b}}\"\n", want: DiagRoutingFieldRef},
 		{name: "declared vars resolve in model, backend, provider and interaction_model",
 			body: agent("  model: \"{{vars.m}}\"\n  backend: \"{{vars.b}}\"\n  provider: \"{{vars.b}}\"\n  interaction_model: \"{{vars.m}}\"\n")},
 		{name: "a plain id and an env form are not references",
@@ -56,7 +59,7 @@ func TestRoutingFieldRefs(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, diags := compileSource(t, head+c.body+tail)
+			_, diags := compileSource(t, head+c.body+"\nworkflow w:\n  entry: a\n"+c.wf+"  a -> done\n")
 			var seen []DiagCode
 			for _, d := range diags {
 				switch d.Code {

@@ -8,7 +8,8 @@ import (
 // validateRoutingFieldRefs holds the compiler to the executor's line on the
 // routing fields — `model:`, `backend:`, `provider:` and `interaction_model:`
 // on a node and the three route fields of each `fallbacks:` entry, a human
-// or review node's companion model, a verified action's recovery model. The
+// or review node's companion model, a verified action's recovery model, the
+// workflow's `default_backend:`. The
 // executor resolves `{{vars.…}}` there (resolveRoutingField), nothing else:
 // the route is decided before the node runs, so no input, output, artifact
 // or loop exists to read. An undeclared var is C033 like everywhere; every
@@ -54,6 +55,23 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 			}
 		}
 	}
+	// The workflow's `default_backend:` is the backend of every node that
+	// names none — a routing field the executor reads the same way.
+	spans, unterminated := templateSpans(w.DefaultBackend)
+	for _, span := range spans {
+		refs, err := ParseRefs(span)
+		if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 && !refs[0].Unquoted {
+			c.validateVarsRef(w, refContext{Ref: refs[0], Location: "workflow default_backend"})
+			continue
+		}
+		c.warnf(DiagRoutingFieldRef,
+			"workflow default_backend: %s is not a vars reference — only {{vars.<name>}} resolves there; the text becomes the backend name at dispatch and every node that names no backend fails at its first delegation (write the id, a ${VAR:-default}, or a declared var)",
+			span)
+	}
+	if unterminated {
+		c.warnf(DiagRoutingFieldRef, "workflow default_backend: an opening {{ has no closing }} — the text becomes the backend name at dispatch")
+	}
+
 	// A supervisor is an enhancement that degrades rather than blocking the
 	// run (its monitors are dropped at spawn with a warning, C191), so this
 	// is a warning: the run starts, the supervisor is inert and said to be.

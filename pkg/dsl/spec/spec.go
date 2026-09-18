@@ -444,7 +444,7 @@ var Kinds = append([]Kind{
 			block("compaction", "compaction", "Default compaction thresholds"),
 			pSandbox,
 			checked("worktree", "auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place", "auto", "none"),
-			prop("default_backend", String, "Backend for nodes that name none"),
+			prop("default_backend", String, "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"),
 			pCompress, pAutoMemory,
 			checked("loop_budget_guard", "Decline a loop's back-edge the budget cannot fund: on (default) or off (C133)", "on", "off"),
 			checked("repo_devbox", "Load the target repo's devbox.json toolchain: on (default) or off (C134)", "on", "off"),
