@@ -52,8 +52,9 @@ describe("the iterion.cloud product home", () => {
     // green while entryHref pointed back at /login — the exact behaviour the
     // comment above forbids — and equally green when it pointed at "/", which
     // loops the CTA back to the page it is on.
-    const cta = screen.getAllByRole("link", { name: /Open the studio/ })[0];
-    expect(cta.getAttribute("href")).toBe(STUDIO_BASE);
+    const ctas = screen.getAllByRole("link", { name: /Open the studio/ });
+    expect(ctas.length).toBeGreaterThan(0);
+    expect(ctas[0]?.getAttribute("href")).toBe(STUDIO_BASE);
     expect(screen.queryByRole("link", { name: /^Sign in/ })).toBeNull();
   });
 });
