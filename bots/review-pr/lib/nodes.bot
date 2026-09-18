@@ -111,10 +111,63 @@ judge reviewer_claude:
   system: review_system
   user: review_user_claude
   session: fresh
-  ## Hard read-only: claude_code keeps Read/Grep/Bash for running git +
-  ## reading code, but Write/Edit are removed so the reviewer cannot
-  ## mutate the code it is judging.
+  ## `readonly:` is a SCHEDULING declaration — the node mutates no
+  ## workspace file, which is what lets dual fan both reviewers onto one
+  ## worktree. It is honoured as a tool boundary by pi and codex only:
+  ## on claude_code nothing reads it, so what bounds this reviewer is its
+  ## prompt and its output schema, not the flag. Declaring `tools:` here
+  ## WOULD bound it, and is not free — a non-empty list installs
+  ## --disallowedTools and takes Task/WebFetch/Skill off this node on
+  ## every run.
   readonly: true
+  fallbacks:
+    ## GLM, the claude family's other server, when this instance's
+    ## Anthropic credential cannot serve. Without it the operator's only
+    ## recourse was to point the GPT slot's model at GLM — spending the
+    ## cross-family check to buy capacity, on the bot whose product IS
+    ## that check.
+    ##
+    ## No `backend:` on purpose: the route stays on claude_code, which is
+    ## the ONE backend that honours a provider hint
+    ## (providerFallbackEligible). `provider: zai` then forces the z.ai
+    ## facade — ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN from the run's
+    ## zai credential — even when Anthropic credentials are present
+    ## (anthropicCredEnvForCLI). Routing this to claw instead would read
+    ## the hint nowhere, resolve `anthropic/…` back to the credential
+    ## that just failed, and cross a backend boundary that costs this
+    ## node an explicit tools: list — which on claude_code is NOT inert,
+    ## it installs --disallowedTools and takes Task/WebFetch/Skill off
+    ## the PRIMARY path. The hint keeps the whole thing on one backend.
+    ##
+    ## What each trigger is FOR — an instance with ONLY a z.ai key is
+    ## not among them: claude_code resolves z.ai itself (the BYOK z.ai
+    ## pair is case 1 of anthropicCredEnvForCLI's precedence), so the
+    ## primary is already credentialed there and this route stays shut.
+    ##   usage_window — an Anthropic credential that OUTRANKS z.ai and
+    ##     whose window is spent. The production case.
+    ##   auth        — an Anthropic credential present but rejected or
+    ##     expired: it still takes precedence, so the CLI uses it and
+    ##     401s. Not in the default trigger set, named here on purpose:
+    ##     the shipped default sends auth to a human because re-auth is
+    ##     usually the cure, and parking the review gate while a second
+    ##     credentialed route is DECLARED is the limitation, not the
+    ##     safety. (AuthFailedRecipe still catches what the chain cannot
+    ##     serve — the chain is tried first, not bypassed.)
+    ##   unavailable — the resolved credential cannot reach the model.
+    ## With NO credential at all the route has none either, and the run
+    ## fails loudly, which is correct.
+    ## Nothing is silent: `_backend`/`_model` name what served and the
+    ## published review's run table carries them.
+    ## One dial for both tiers, because the rescue is deliberately the
+    ## same on both (see reviewer_claude_glance). An account entitled to
+    ## a different GLM id — or one z.ai renames — repoints it without
+    ## re-releasing the bot; element models are ${VAR:-default}-expanded
+    ## at dispatch like the node's own.
+    glm:
+      provider: "zai"
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}"
+      metered: true
+      on: [usage_window, auth, unavailable]
 
 judge reviewer_gpt:
   ## Explicit backend pin: "openai/gpt-5.5" only resolves via claw.
@@ -157,6 +210,17 @@ judge reviewer_claude_glance:
   user: review_user_claude
   session: fresh
   readonly: true
+  fallbacks:
+    ## The glance tier is a cheaper PRIMARY, not a cheaper rescue: this
+    ## route reads the SAME dial as reviewer_claude's, because a smaller
+    ## z.ai id is not one this repo has measured, and a rescue that
+    ## guesses a model id fails on the spec instead of the credential.
+    ## See reviewer_claude for why the route carries no `backend:`.
+    glm:
+      provider: "zai"
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}"
+      metered: true
+      on: [usage_window, auth, unavailable]
 
 judge reviewer_gpt_glance:
   backend: "${ITERION_VIBE_BACKEND_GPT_GLANCE:-claw}"
@@ -260,7 +324,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} python3 -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} python3 -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -539,6 +603,14 @@ try:
     scope_unresolved = int(str(os.environ.get('SCOPE_FILES', '')).strip()) < 0
 except (ValueError, TypeError):
     scope_unresolved = True
+# The engine writes _fallback_used ONLY on a node it did not serve with its
+# first choice, so presence is the fact -- read through ai_value, which drops
+# an unsubstituted render (the glance twin never runs when topology picked the
+# full-strength node, and vice versa). Tested for an explicit true rather than
+# truthiness: an unexpected shape reads as no-fallback, which only costs the
+# note, never a verdict.
+fallback_served = (ai_value('AI_REVIEWER_CLAUDE_FALLBACK').lower() in ('true', '1', 'yes')
+                   or ai_value('AI_REVIEWER_CLAUDE_GLANCE_FALLBACK').lower() in ('true', '1', 'yes'))
 gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
@@ -588,6 +660,16 @@ if gate_enabled:
         payload['gate']['note'] = 'review output unreadable (findings were not machine-readable) - gate fails closed; re-run the review'
     elif recovered_from_reviewers:
         payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s) recovered from the reviewers (merge step degraded)'
+    elif fallback_served:
+        # ADVISORY, not fail-closed, and the distinction is deliberate: the
+        # three branches above are NON-reviews (no diff read, output
+        # unreadable, merge step lost) where a green status would approve
+        # by omission. A fallback-served review read the same diff and
+        # emitted the same schema; only the model behind it changed. Failing
+        # closed here would turn the rescue route into a merge block on
+        # exactly the runs it exists to keep reviewing. What must not happen
+        # is a silent swap, so the status names it.
+        payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s); the claude reviewer ran on its fallback route (' + (ai_value('AI_REVIEWER_CLAUDE_MODEL') or ai_value('AI_REVIEWER_CLAUDE_GLANCE_MODEL') or 'unnamed model') + ') because the primary credential could not serve'
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
                              method='POST')
