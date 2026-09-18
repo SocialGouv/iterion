@@ -70,11 +70,17 @@ func TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait(t *testing.T) {
 				"claude_code and nowhere else, so pinning the element silently drops it and the "+
 				"rescue resolves the credential that just failed", nodeID, route.Backend)
 		}
-		if !strings.Contains(strings.ToLower(route.Model), "glm") {
-			t.Errorf("review-pr: node %q zai route model = %q — it must name a GLM id of its own; "+
-				"inheriting (or repointing at) a Claude id sends the z.ai facade a model it does "+
-				"not serve, and repointing at the node's own model re-uses the credential that "+
-				"just failed", nodeID, route.Model)
+		// Where the dial LANDS with nothing set, not the string it is
+		// written as: `${ITERION_GLM_THING:-claude-opus-5}` carries "glm"
+		// in the variable NAME and resolves to a Claude id. Expanded
+		// against an empty lookup, so neither a developer's env nor the
+		// ADR-093 bot_vars overlay can decide this test.
+		landsOn := ir.ExpandWithDefault(route.Model, func(string) string { return "" })
+		if !strings.Contains(strings.ToLower(landsOn), "glm") {
+			t.Errorf("review-pr: node %q zai route model %q lands on %q — it must name a GLM id of "+
+				"its own; inheriting (or repointing at) a Claude id sends the z.ai facade a model "+
+				"it does not serve, and repointing at the node's own model re-uses the credential "+
+				"that just failed", nodeID, route.Model, landsOn)
 		}
 		if route.When != "" {
 			t.Errorf("review-pr: node %q zai route is gated on when: %q — a `when:` is evaluated at "+

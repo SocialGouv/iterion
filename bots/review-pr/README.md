@@ -181,6 +181,12 @@ categories:
 | `auth` | an Anthropic credential present but rejected or expired. It still takes precedence, so the CLI uses it and 401s. Not in the default trigger set; named here deliberately |
 | `unavailable` | the resolved credential cannot reach the model it was given |
 
+The rescue model is a dial like every other on those nodes:
+`${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}`, one for both tiers since the
+rescue is deliberately the same on each. An account entitled to a different GLM
+id — or one z.ai renames — repoints it without re-releasing the bundle, live
+through `bot-vars` like the other `ITERION_*` dials.
+
 **An instance with only a z.ai key is not in that table, and does not need to
 be:** `claude_code` resolves z.ai by itself — the BYOK z.ai pair is the first
 case of its credential precedence — so the primary is already credentialed and

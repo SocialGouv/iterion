@@ -11,7 +11,9 @@ version: 0.9.5
 ## honours a hint, which forces the z.ai facade even when Anthropic
 ## credentials are present. `auth` is named deliberately — it is not in
 ## the default trigger set, and it is the category a rejected Anthropic
-## credential produces while still outranking z.ai. Nothing else about
+## credential produces while still outranking z.ai. The rescue model is
+## a dial like its siblings (ITERION_VIBE_MODEL_CLAUDE_FALLBACK), so an
+## account on another GLM id repoints it without a re-release. Nothing else about
 ## the nodes changes. This is the bot's first fall-through path, so the
 ## merge-gate status learned to say so: the gate reads the engine's
 ## `_fallback_used` stamp and notes the model that ran — advisory, since

@@ -158,9 +158,14 @@ judge reviewer_claude:
     ## fails loudly, which is correct.
     ## Nothing is silent: `_backend`/`_model` name what served and the
     ## published review's run table carries them.
+    ## One dial for both tiers, because the rescue is deliberately the
+    ## same on both (see reviewer_claude_glance). An account entitled to
+    ## a different GLM id — or one z.ai renames — repoints it without
+    ## re-releasing the bot; element models are ${VAR:-default}-expanded
+    ## at dispatch like the node's own.
     glm:
       provider: "zai"
-      model: "glm-5.2"
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}"
       metered: true
       on: [usage_window, auth, unavailable]
 
@@ -207,14 +212,13 @@ judge reviewer_claude_glance:
   readonly: true
   fallbacks:
     ## The glance tier is a cheaper PRIMARY, not a cheaper rescue: this
-    ## route carries the same model as reviewer_claude's, because a
-    ## smaller z.ai id is not one this repo has measured, and a rescue
-    ## that guesses a model id fails on the spec instead of the
-    ## credential. See reviewer_claude for why the route carries no
-    ## `backend:`.
+    ## route reads the SAME dial as reviewer_claude's, because a smaller
+    ## z.ai id is not one this repo has measured, and a rescue that
+    ## guesses a model id fails on the spec instead of the credential.
+    ## See reviewer_claude for why the route carries no `backend:`.
     glm:
       provider: "zai"
-      model: "glm-5.2"
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}"
       metered: true
       on: [usage_window, auth, unavailable]
 
