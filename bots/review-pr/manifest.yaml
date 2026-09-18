@@ -1,7 +1,22 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.4
+version: 0.9.5
+## 0.9.5 — the claude slot has somewhere to go. Both its nodes
+## (reviewer_claude and its glance twin) declare a GLM fallback route,
+## so an instance whose Anthropic credential is spent, expired or unable
+## to serve the model still gets a claude-family review instead of a
+## failed node. The route is a `provider: "zai"` hint carrying its own
+## model and NO backend: it stays on claude_code, the one backend that
+## honours a hint, which forces the z.ai facade even when Anthropic
+## credentials are present. `auth` is named deliberately — it is not in
+## the default trigger set, and it is the category a rejected Anthropic
+## credential produces while still outranking z.ai. Nothing else about
+## the nodes changes. This is the bot's first fall-through path, so the
+## merge-gate status learned to say so: the gate reads the engine's
+## `_fallback_used` stamp and notes the model that ran — advisory, since
+## a fallback-served review read the same diff and emitted the same
+## schema, unlike the three conditions it fails closed on.
 ## 0.9.4 — DSL profile 2 (`dsl: 2` at the head of main.bot and of each
 ## lib/ fragment): the paragraph breaks the authors wrote inside six
 ## prompts (review_system, both review_user_*, emit_system, emit_user,

@@ -588,12 +588,18 @@ workflow review_pr:
     ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
     ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",
     ai_reviewer_claude_tokens: "{{outputs.reviewer_claude._tokens}}",
+    ## The engine writes _fallback_used ONLY when the node was served by
+    ## something other than its first choice, so its PRESENCE is the fact.
+    ## The gate reads it instead of inferring degradation from whichever
+    ## model name it happens to see.
+    ai_reviewer_claude_fallback: "{{outputs.reviewer_claude._fallback_used}}",
     ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
     ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
     ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
     ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
     ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
     ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
+    ai_reviewer_claude_glance_fallback: "{{outputs.reviewer_claude_glance._fallback_used}}",
     ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
     ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
     ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",

@@ -152,11 +152,66 @@ iterion run bots/review-pr/main.bot \
 
 ## Read-only by construction
 
-No node mutates source: `reviewer_claude` is `readonly: true` (Write/Edit
-removed, Read/Grep/Bash kept for `git diff`), and `reviewer_gpt` is given
-only read tools (`bash`, `read_file`, `glob`, `grep` — no
-`write_file`/`file_edit`). The single downstream `converge` step writes
-only the report file and creates board issues over MCP.
+No node mutates source. `reviewer_gpt` is given only read tools (`bash`,
+`read_file`, `glob`, `grep` — no `write_file`/`file_edit`), which on `claw` is
+the whole surface it has. The claude reviewers declare `readonly: true`, which
+is a **scheduling** declaration — "this node mutates no workspace file", the
+promise that lets dual fan both reviewers onto one worktree. Only `pi` and
+`codex` read it as a tool boundary; on `claude_code` nothing does, so what
+bounds those nodes is their prompt and their output schema. Declaring `tools:`
+on them would bound them for real and is not free: a non-empty list installs
+`--disallowedTools`, taking `Task`/`WebFetch`/`Skill` off the node on every
+run. The single downstream `converge` step writes only the report file and
+creates board issues over MCP.
+
+## When the Anthropic credential cannot serve
+
+The claude slot is not a dead end. Both its nodes declare a fallback route to
+**GLM** — the claude family's other server — as a `provider: "zai"` hint with
+no `backend:` of its own. The route therefore stays on `claude_code`, the one
+backend that honours a provider hint: the hint forces the z.ai facade
+(`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` from the run's `zai` credential,
+or `ZAI_API_KEY`) **even when Anthropic credentials are present**, which is
+exactly the tenant whose forfait window is spent. It is armed for three failure
+categories:
+
+| category | the instance shape that produces it |
+|---|---|
+| `usage_window` | an Anthropic credential that **outranks** z.ai in the CLI's precedence, whose window is spent. This route answers the *provider's* refusal, mid-run — the operator's own cap, when it is already shut at launch, refuses the whole run before any node dispatches and the route is never consulted. A cap that shuts *during* the run does divert here, metered key and all |
+| `auth` | an Anthropic credential present but rejected or expired. It still takes precedence, so the CLI uses it and 401s. Not in the default trigger set; named here deliberately |
+| `unavailable` | the resolved credential cannot reach the model it was given |
+
+**An instance with only a z.ai key is not in that table, and does not need to
+be:** `claude_code` resolves z.ai by itself — the BYOK z.ai pair is the first
+case of its credential precedence — so the primary is already credentialed and
+this route stays shut. With no credential at all the route has none either, and
+the run fails loudly.
+
+The route is `metered: true`. That is a declaration of intent, not a governor:
+nothing in the executor reads it (ADR-087's `ITERION_FORBID_METERED_FALLBACK`
+is prose, not code). On a forfait instance it does spend a billed key where the
+primary spent a subscription; on a BYOK z.ai instance both are the same billed
+key.
+
+One residual, engine-side: with the `zai` hint and **no** z.ai key reachable,
+the CLI's ambient `ANTHROPIC_API_KEY` is not cleared, so the route asks
+Anthropic for a GLM id and gets a 404 instead of a clean "no credential". It
+fails rather than mis-spending, so it bounds what the route buys rather than
+undoing it.
+
+Nothing about the degradation is silent. `_backend` and `_model` name what
+actually served; the published review's run table carries them
+(`ai_reviewer_claude_*`, or `ai_reviewer_claude_glance_*` on the glance tier);
+and the **merge-gate status itself says so** — the gate reads the engine's
+`_fallback_used` stamp and writes a note naming the model that ran. Advisory,
+not fail-closed, and deliberately: the gate's three fail-closed branches are
+*non-reviews* (no diff read, output unreadable, merge step lost) where green
+would approve by omission, whereas a fallback-served review read the same diff
+and emitted the same schema. Blocking it would turn the rescue into a merge
+block on exactly the runs it exists to keep reviewing.
+
+The GPT nodes have no equivalent route; their model and backend stay steerable
+by their own `ITERION_VIBE_*_GPT` / `ITERION_VIBE_*_GPT_GLANCE` dials.
 
 See [main.bot](main.bot) for the full DSL.
 

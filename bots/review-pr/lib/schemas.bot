@@ -143,12 +143,14 @@ schema publish_input:
   ai_reviewer_claude_model: json
   ai_reviewer_claude_backend: json
   ai_reviewer_claude_tokens: json
+  ai_reviewer_claude_fallback: json
   ai_reviewer_gpt_model: json
   ai_reviewer_gpt_backend: json
   ai_reviewer_gpt_tokens: json
   ai_reviewer_claude_glance_model: json
   ai_reviewer_claude_glance_backend: json
   ai_reviewer_claude_glance_tokens: json
+  ai_reviewer_claude_glance_fallback: json
   ai_reviewer_gpt_glance_model: json
   ai_reviewer_gpt_glance_backend: json
   ai_reviewer_gpt_glance_tokens: json
