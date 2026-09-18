@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/brand"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
@@ -295,7 +296,7 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 	s.auditTenant(r, pending.TenantID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": pending.Provider, "kind": "oauth_app"})
 	target := pending.NextURL
 	if target == "" {
-		target = "/teams/" + pending.TenantID
+		target = deeplink.Path("/teams/" + pending.TenantID)
 	}
 	http.Redirect(w, r, appendQueryParam(target, "connected", connID), http.StatusFound)
 }
@@ -317,7 +318,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	// persist (the live scope is re-probed on demand via InstallationInfo),
 	// so send the operator back to Integrations instead of a bare 400.
 	if r.URL.Query().Get("setup_action") == "update" && state == "" {
-		http.Redirect(w, r, "/integrations", http.StatusFound)
+		http.Redirect(w, r, deeplink.Path("/integrations"), http.StatusFound)
 		return
 	}
 	if state == "" || instStr == "" {
@@ -476,7 +477,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	s.auditTenant(r, pending.TenantID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": "github", "kind": "github_app"})
 	target := pending.NextURL
 	if target == "" {
-		target = "/teams/" + pending.TenantID
+		target = deeplink.Path("/teams/" + pending.TenantID)
 	}
 	http.Redirect(w, r, appendQueryParam(target, "connected", connID), http.StatusFound)
 }

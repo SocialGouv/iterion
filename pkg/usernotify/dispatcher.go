@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -261,7 +262,7 @@ func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, run
 		UserIDs:  recipients,
 		Title:    title,
 		Body:     body,
-		Link:     d.baseURL + "/runs/" + runID,
+		Link:     deeplink.Run(d.baseURL, runID),
 		RunID:    runID,
 		Tag:      runID,
 		Data:     data,

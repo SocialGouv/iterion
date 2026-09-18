@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { seed } from "../lib/state";
+import { studio } from "../lib/paths";
 
 // studio-ui.browser-pane — the run console's Browser pane is
 // level-triggered off the run's own `preview_url_available` events: a tool
@@ -13,7 +14,7 @@ test("a workflow-published preview URL reveals the Browser pane", async ({
   page,
 }) => {
   const { previewRunId, previewUrl } = seed();
-  await page.goto(`/runs/${previewRunId}`);
+  await page.goto(`${studio()}/runs/${previewRunId}`);
 
   // The pane is revealed automatically the first time a preview URL
   // becomes available, so no click is needed to make the tab appear.
@@ -38,7 +39,7 @@ test("a run that published no preview URL has no Browser pane", async ({
   page,
 }) => {
   const { fixtureRunId } = seed();
-  await page.goto(`/runs/${fixtureRunId}`);
+  await page.goto(`${studio()}/runs/${fixtureRunId}`);
 
   // Discriminates the pane's trigger from "the tab is always there":
   // the tool+compute fixture emits no preview_url_available event.
@@ -69,7 +70,7 @@ test("an external-scope pane may iframe a cross-origin URL", async ({ page }) =>
     });
   });
 
-  await page.goto(`/runs/${previewRunId}`);
+  await page.goto(`${studio()}/runs/${previewRunId}`);
   const url = page.getByRole("textbox", {
     name: "Enter URL or wait for the workflow to publish one",
   });

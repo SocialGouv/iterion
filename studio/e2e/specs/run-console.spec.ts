@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { seed } from "../lib/state";
+import { studio } from "../lib/paths";
 
 // studio-ui.run-console — the run console renders a REAL run the engine
 // produced: its graph (node ids, kinds, per-node status), its persisted
@@ -13,7 +14,7 @@ test("runs list shows the seeded run with its workflow and status", async ({
   page,
 }) => {
   const { fixtureRunId } = seed();
-  await page.goto("/runs");
+  await page.goto(studio("/runs"));
 
   // The Run ID column truncates, so address the row by the prefix it
   // renders — unique even between two runs seeded in the same second.
@@ -29,7 +30,7 @@ test("run console renders the executed graph, log and outcome", async ({
   page,
 }) => {
   const { fixtureRunId } = seed();
-  await page.goto(`/runs/${fixtureRunId}`);
+  await page.goto(`${studio()}/runs/${fixtureRunId}`);
 
   // Header: the workflow the run executed and its terminal status.
   await expect(page.getByRole("button", { name: "ui_fixture" })).toBeVisible();
@@ -88,7 +89,7 @@ test("run console surfaces a published artifact's real payload", async ({
   page,
 }) => {
   const { fixtureRunId } = seed();
-  await page.goto(`/runs/${fixtureRunId}`);
+  await page.goto(`${studio()}/runs/${fixtureRunId}`);
 
   await page.getByRole("tab", { name: "Artifacts" }).click();
   await expect(

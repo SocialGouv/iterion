@@ -7,7 +7,7 @@ import { useLocation } from "wouter";
 
 import { ApiError, completePendingPasswordChange } from "@/api/auth";
 import { useAuth } from "@/auth/AuthContext";
-import { signInReturnTo, signInURL } from "@/auth/returnTo";
+import { defaultReturnTo, signInReturnTo, signInURL } from "@/auth/returnTo";
 
 // ForcedPasswordChange completes the pending_password_change flow for an
 // account (typically the bootstrapped super-admin) whose login was
@@ -37,7 +37,8 @@ export default function ForcedPasswordChange() {
     if (e) setEmail(e);
     if (p) setCurrentPassword(p);
     if (e || p) {
-      const next = returnTo === "/" ? "" : `?${new URLSearchParams({ next: returnTo })}`;
+      // Omit ?next= when it names the place a sign-in goes anyway.
+      const next = returnTo === defaultReturnTo() ? "" : `?${new URLSearchParams({ next: returnTo })}`;
       const clean = window.location.pathname + next;
       window.history.replaceState({}, "", clean);
     }

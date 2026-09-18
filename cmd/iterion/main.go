@@ -27,8 +27,8 @@ var jsonOutput bool
 
 var rootCmd = &cobra.Command{
 	Use:           "iterion",
-	Short:         "Workflow orchestration engine",
-	Long:          "iterion — workflow orchestration engine",
+	Short:         "Build, run and orchestrate agentic AI workflows",
+	Long:          "iterion — build, run and orchestrate agentic AI workflows",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

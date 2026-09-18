@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Redirect, Route, Switch, useLocation } from "wouter";
+import { Redirect, Route, Router, Switch, useLocation } from "wouter";
 
 import AppShell from "@/components/shared/AppShell";
 import BootLoading from "@/components/shared/BootLoading";
@@ -75,7 +75,7 @@ import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
 import { useProjectScopeSync } from "@/hooks/useProjectScopeSync";
 import { onDesktopEvent } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
-import { isScopedPane, scopePrefix } from "@/lib/scope";
+import { STUDIO_BASE, isScopedPane, scopePrefix } from "@/lib/scope";
 import { showRunAlertNotification, type RunAlertPayload } from "@/lib/desktopNotify";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { signInURL } from "@/auth/returnTo";
@@ -118,9 +118,31 @@ function ScopedPaneReauth() {
   );
 }
 
-function RunSignIn() {
+// StudioSignIn bounces an anonymous visitor who followed a studio deep link
+// (a run URL out of mail or a pull-request comment) to the sign-in page, with
+// the address they wanted carried in ?next= so the login lands them on it.
+// window.location rather than the router's location: `next` travels through
+// the server and comes back as a redirect target, so it has to be the absolute
+// path, pane scope included.
+function StudioSignIn() {
   const { pathname, search, hash } = window.location;
   return <Redirect to={signInURL(pathname + search + hash)} replace />;
+}
+
+// ROOT_SIDE_DOORS are the paths that answer at the root even for a signed-in
+// operator, because their addresses are already fixed somewhere this app does
+// not control: printed in mail (/auth/reset, /invitations/accept), minted by
+// the CLI (/cli-auth), handed out as a share link whose token rides in the
+// fragment (/config/<id>), or linked to from the product home (/login).
+// Moving any of them under the studio base breaks a link nobody can reissue.
+const ROOT_SIDE_DOORS = ["/login", "/auth", "/invitations", "/cli-auth", "/config"];
+
+function isRootSideDoor(location: string): boolean {
+  return ROOT_SIDE_DOORS.some((p) => location === p || location.startsWith(p + "/"));
+}
+
+function isUnderStudioBase(location: string): boolean {
+  return location === STUDIO_BASE || location.startsWith(STUDIO_BASE + "/");
 }
 
 // AuthGate decides between the Login view and the full editor based
@@ -166,8 +188,6 @@ function AuthGate() {
               auth side-doors' navigate("/login") land on the plain
               SignInCard instead of scrolling the marketing landing. */}
           <Route path="/login" component={Login} />
-          <Route path="/runs" component={RunSignIn} />
-          <Route path="/runs/:id" component={RunSignIn} />
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />
@@ -195,9 +215,33 @@ function AuthGate() {
               </div>
             </Route>
           )}
-          {/* Catch-all: the cloud marketing landing (hero + sign-in card),
+          {/* The SAME public catalogue at the address a signed-in operator's
+              address bar shows — they are carried to /studio/marketplace, and
+              that is the URL they copy to a colleague. It must sit ABOVE the
+              `${STUDIO_BASE}/*` sign-in catch below, or the public marketplace
+              becomes a login wall for every link an operator shares. */}
+          {serverInfo?.marketplace_enabled && (
+            <Route path={`${STUDIO_BASE}/marketplace`}>
+              <div className="min-h-screen bg-surface-0 text-fg-default">
+                <PublicTopBar />
+                <ErrorBoundary area="Marketplace view">
+                  <MarketplaceView />
+                </ErrorBoundary>
+              </div>
+            </Route>
+          )}
+          {/* LAST before the product home, so every public route above —
+              including the studio-prefixed marketplace — is matched first: a
+              sign-in catch placed higher swallows them. A studio deep link
+              followed without a session signs in, then lands on the page that
+              was asked for. */}
+          <Route path={STUDIO_BASE} component={StudioSignIn} />
+          <Route path={`${STUDIO_BASE}/*`} component={StudioSignIn} />
+          {/* Catch-all: the cloud product home (hero + sign-in card),
               degrading to the plain sign-in page in non-cloud modes. */}
-          <Route component={CloudLanding} />
+          <Route>
+            <CloudLanding />
+          </Route>
         </Switch>
       </Suspense>
     );
@@ -233,32 +277,97 @@ function AuthGate() {
   if (location.startsWith("/config/")) {
     return (
       <Suspense fallback={<BootLoading />}>
-        <ConfigShareView />
+        {/* Wrapped in its Route, because ConfigShareView reads the share id
+            with useParams(), which only a matching <Route> supplies — rendered
+            bare, a perfectly good /config/<id> link reported "The share id is
+            missing from the URL". The anonymous arm has always been wrapped;
+            this one never was.
+            The fall-through matters as much as the route: that message is
+            ConfigShareView's own, correct answer to a link with NO id, and a
+            bare <Switch> with one route renders NOTHING when it misses —
+            /config/ and /config/a/b became an empty page with no way out. */}
+        <Switch>
+          <Route path="/config/:id">
+            <ErrorBoundary area="Config share editor">
+              <ConfigShareView />
+            </ErrorBoundary>
+          </Route>
+          <Route>
+            <ErrorBoundary area="Config share editor">
+              <ConfigShareView />
+            </ErrorBoundary>
+          </Route>
+        </Switch>
       </Suspense>
     );
   }
-  // The least-privilege `config_editor` role gets a limited shell that can
-  // ONLY edit the team's config-shares — no Sidebar, no runs/board/launch.
-  // It's a real team member (isRestricted is false for them), so this branch
-  // must sit ABOVE the isRestricted check. The auth side-doors above
-  // (/invitations/accept, /cli-auth, /config/:id) stay reachable for them.
-  if (activeRole === "config_editor") {
-    return (
-      <Suspense fallback={<BootLoading />}>
-        <ConfigEditorShell />
-      </Suspense>
-    );
+  // "/" is the product home for EVERYONE, signed in or not — that is what the
+  // studio moving under a prefix buys. A deployment with no product home
+  // (local, desktop, a self-hosted server not in cloud mode) has nothing to
+  // show there, so its root sends the operator straight into the studio.
+  if (location === "/") {
+    // Wait for the probe rather than guess. Which of the two the root is
+    // depends on the server mode, and the wrong guess here is not a flash of
+    // the wrong view — it is a replace() into the studio that the operator
+    // cannot come back from with the Back button.
+    if (!serverInfo) {
+      return <BootLoading />;
+    }
+    if (serverInfo.mode === "cloud") {
+      return <Suspense fallback={<BootLoading />}><CloudLanding signedIn /></Suspense>;
+    }
+    return <Redirect to={STUDIO_BASE} replace />;
   }
-  // The "submitter" tier (signed in, no team, not super-admin) gets a
-  // marketplace-only shell instead of the full studio.
-  if (isRestricted) {
-    return (
-      <Suspense fallback={<BootLoading />}>
-        <RestrictedShell />
-      </Suspense>
-    );
+  // Anything else still addressed at the root is a pre-move URL: a bookmark, a
+  // link in mail sent before the move, or the public /marketplace followed
+  // while signed in. The server answers these with a 302 as well
+  // (pkg/server/studio_legacy_redirect.go); this arm is what covers the
+  // desktop workspace panes, which the asset proxy serves without ever
+  // reaching it.
+  if (!isUnderStudioBase(location)) {
+    // A root side-door reaching this line is one the branches above did not
+    // claim — an /auth/… link opened with a live session. The page it names
+    // exists for someone WITHOUT one, and prefixing it would address a route
+    // the studio does not have, so that case lands on the studio root instead
+    // of on a blank prefixed path.
+    //
+    // The query and the fragment are re-attached from window.location: wouter's
+    // location is the PATH alone, and a run link carries the tab to open and
+    // the node to scroll to in exactly those two parts.
+    const target = isRootSideDoor(location)
+      ? STUDIO_BASE
+      : STUDIO_BASE + location + window.location.search + window.location.hash;
+    return <Redirect to={target} replace />;
   }
-  return <AuthedApp />;
+  // From here down the studio owns the URL. The nested base means every route
+  // and every navigate() inside keeps its historical spelling — wouter appends
+  // this base to the parent's, so a workspace pane resolves to
+  // /x/<id>/studio/… with nothing else to change.
+  return (
+    <Router base={STUDIO_BASE}>
+      {
+        // The least-privilege `config_editor` role gets a limited shell that
+        // can ONLY edit the team's config-shares — no Sidebar, no
+        // runs/board/launch. It's a real team member (isRestricted is false
+        // for them), so this branch must sit ABOVE the isRestricted check. The
+        // auth side-doors above (/invitations/accept, /cli-auth, /config/:id)
+        // stay reachable for them.
+        activeRole === "config_editor" ? (
+          <Suspense fallback={<BootLoading />}>
+            <ConfigEditorShell />
+          </Suspense>
+        ) : isRestricted ? (
+          // The "submitter" tier (signed in, no team, not super-admin) gets a
+          // marketplace-only shell instead of the full studio.
+          <Suspense fallback={<BootLoading />}>
+            <RestrictedShell />
+          </Suspense>
+        ) : (
+          <AuthedApp />
+        )
+      }
+    </Router>
+  );
 }
 
 function AuthedApp() {

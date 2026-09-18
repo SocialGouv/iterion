@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import MainSpinner from "@/components/shared/MainSpinner";
 import { useAuth } from "@/auth/AuthContext";
+import { rootRoute } from "@/lib/scope";
 
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 
@@ -46,7 +47,7 @@ export default function RestrictedShell() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => navigate("/invitations/accept")}
+              onClick={() => navigate(rootRoute("/invitations/accept"))}
             >
               I have an invitation
             </Button>

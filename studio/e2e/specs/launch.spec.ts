@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { studio } from "../lib/paths";
 
 // studio-ui.launch-modal — the Launch view builds its form from the
 // workflow the server parsed: the bot's manifest identity, the `vars:`
@@ -6,12 +7,12 @@ import { expect, test } from "@playwright/test";
 // overrides, and the validation that blocks a launch with a required var
 // missing.
 
-const LAUNCH = "/runs/new?file=bots/launch-fixture/main.bot";
+const LAUNCH = studio("/runs/new?file=bots/launch-fixture/main.bot");
 
 test("bot picker resolves ?bot= to the catalog entry's workflow", async ({
   page,
 }) => {
-  await page.goto("/runs/new?bot=launch-fixture");
+  await page.goto(studio("/runs/new?bot=launch-fixture"));
   await expect(
     page.getByRole("heading", { name: "Launch Fixture" }),
   ).toBeVisible();
@@ -106,7 +107,7 @@ test("the per-node model picker captions its model's capabilities", async ({
 test("a workflow with no LLM nodes still renders a launchable view", async ({
   page,
 }) => {
-  await page.goto("/runs/new?file=bots/demo-bot/main.bot");
+  await page.goto(studio("/runs/new?file=bots/demo-bot/main.bot"));
   await expect(page.getByRole("button", { name: "Launch" })).toBeVisible();
   await expect(page.getByText("Launch view crashed")).toHaveCount(0);
 });

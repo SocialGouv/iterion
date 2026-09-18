@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 )
@@ -146,7 +147,7 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 		UserIDs:  []string{id.UserID},
 		Title:    "Test notification",
 		Body:     "Push notifications are working — a run waiting for your input will look like this.",
-		Link:     s.cfg.PublicURL + "/runs",
+		Link:     deeplink.Runs(s.cfg.PublicURL),
 		Tag:      "iterion-test",
 	}
 	if err := s.pushSink.Deliver(r.Context(), n); err != nil {

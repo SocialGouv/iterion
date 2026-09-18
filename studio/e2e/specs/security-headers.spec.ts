@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { studio } from "../lib/paths";
 
 // studio-ui.security-headers — the CSP is enforced against the REAL SPA, not
 // asserted as a string. A policy is only worth its directives if the app it
@@ -85,7 +86,7 @@ test("the app boots under the CSP with no violation and no CDN request", async (
 }) => {
   const w = watch(page);
 
-  await page.goto("/runs");
+  await page.goto(studio("/runs"));
   // The seeded run must be on screen: the SPA has to boot, fetch over the API
   // and render under the policy. Without this the test would pass on a blank
   // page, which is exactly what a too-strict CSP produces.
@@ -102,7 +103,7 @@ test("the app boots under the CSP with no violation and no CDN request", async (
 test("Monaco loads self-hosted, under the CSP, with its workers", async ({ page }) => {
   const w = watch(page);
 
-  await page.goto("/editor?file=bots/demo-bot/main.bot");
+  await page.goto(studio("/editor?file=bots/demo-bot/main.bot"));
   // Open the source pane — that is what mounts Monaco.
   await page.getByRole("button", { name: "Toggle source view" }).click();
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { wsPath } from "../lib/state";
+import { studio } from "../lib/paths";
 
 // studio-ui.editor — the editor is a full parse → edit → unparse → write
 // round-trip over the server: the canvas and inspector are built from the
@@ -12,7 +13,7 @@ import { wsPath } from "../lib/state";
 test("editor renders the parsed graph, inspector and compiler diagnostics", async ({
   page,
 }) => {
-  await page.goto("/editor?file=bots/demo-bot/main.bot");
+  await page.goto(studio("/editor?file=bots/demo-bot/main.bot"));
 
   // Canvas nodes carry the kind the parser assigned and, for the tool
   // node, the command it declared.
@@ -44,7 +45,7 @@ test("an inspector edit is unparsed back into the .bot file on save", async ({
   const file = wsPath("bots", "demo-bot", "main.bot");
   expect(fs.readFileSync(file, "utf8")).toContain("max_iterations: 5");
 
-  await page.goto("/editor?file=bots/demo-bot/main.bot");
+  await page.goto(studio("/editor?file=bots/demo-bot/main.bot"));
   await page.getByRole("spinbutton", { name: "Max Iterations" }).fill("9");
   await page.getByRole("button", { name: "Save" }).click();
 
@@ -54,8 +55,8 @@ test("an inspector edit is unparsed back into the .bot file on save", async ({
   }).toPass();
 
   // …and re-opening the file re-parses that source, not a cached document.
-  await page.goto("/runs");
-  await page.goto("/editor?file=bots/demo-bot/main.bot");
+  await page.goto(studio("/runs"));
+  await page.goto(studio("/editor?file=bots/demo-bot/main.bot"));
   await expect(page.getByRole("spinbutton", { name: "Max Iterations" })).toHaveValue(
     "9",
   );

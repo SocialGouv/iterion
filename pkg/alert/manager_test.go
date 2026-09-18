@@ -105,7 +105,7 @@ func TestBudgetWarningFiresOncePerAxis(t *testing.T) {
 	if tok.BudgetPct != 80 {
 		t.Errorf("BudgetPct = %v, want 80", tok.BudgetPct)
 	}
-	if tok.Link != "http://localhost:4891/runs/r1" {
+	if tok.Link != "http://localhost:4891/studio/runs/r1" {
 		t.Errorf("Link = %q", tok.Link)
 	}
 	if tok.RunName != "nice-run" {

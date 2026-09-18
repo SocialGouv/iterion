@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Iterion
-  text: The control plane for AI agents.
-  tagline: Apps have Linux. The cloud has Kubernetes. AI agents have Iterion. Define agent workflows as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.
+  text: Build, run and orchestrate agentic AI workflows.
+  tagline: The control plane for AI agents — apps have Linux, the cloud has Kubernetes. Define agent workflows as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.
   image:
     src: /iterion-logo.png
     alt: Iterion logo

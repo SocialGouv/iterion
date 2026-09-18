@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 )
@@ -51,7 +52,7 @@ func TestMarkGateInFlight_ClaimsAnAbsentCheck(t *testing.T) {
 	if !isGateInFlight(gc.last) {
 		t.Errorf("status %q is not recognisable as the in-flight marker — the reconciler would read it as a verdict and stand down", gc.last.Description)
 	}
-	if gc.last.TargetURL != "https://iterion.test/runs/run-42" {
+	if gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/run-42" {
 		t.Errorf("target url = %q, want the live run console", gc.last.TargetURL)
 	}
 	if gc.lastSHA != "deadbeef" {
@@ -100,7 +101,7 @@ func TestMarkGateInFlight_ReplacesAnInterruptionAndItsOwnStaleClaim(t *testing.T
 			if !isGateInFlight(gc.last) {
 				t.Errorf("status = %s/%q, want the in-flight marker", gc.last.State, gc.last.Description)
 			}
-			if gc.last.TargetURL != "https://iterion.test/runs/run-99" {
+			if gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/run-99" {
 				t.Errorf("target url = %q, want the run that is actually working", gc.last.TargetURL)
 			}
 		})
@@ -186,7 +187,7 @@ func TestGateReconcile_ActsOnItsOwnClaimAndLeavesAnotherRunsAlone(t *testing.T) 
 	t.Run("its own claim — nobody else will answer it", func(t *testing.T) {
 		gc := &listingGateClient{
 			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
-			statuses:       []forge.CommitStatus{claim("https://iterion.test/runs/run-gating")},
+			statuses:       []forge.CommitStatus{claim("https://iterion.test" + deeplink.StudioBase + "/runs/run-gating")},
 		}
 		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
 

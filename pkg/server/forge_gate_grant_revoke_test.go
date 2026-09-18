@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -38,7 +39,7 @@ func TestTheGrantIsGivenBackOnlyOnThisRunsOwnVerdict(t *testing.T) {
 	}{
 		{
 			name:        "its own verdict — nothing left to publish",
-			targetURL:   "https://iterion.test/runs/run-gating",
+			targetURL:   "https://iterion.test" + deeplink.StudioBase + "/runs/run-gating",
 			wantRevoked: true,
 		},
 		{

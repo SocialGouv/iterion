@@ -246,6 +246,7 @@ const sidebar = [
       { text: 'Cloud overview', link: '/cloud-overview' },
       { text: 'Cloud components', link: '/cloud' },
       { text: 'Cloud user guide', link: '/cloud-user' },
+      { text: 'URL layout', link: '/url-layout' },
       { text: 'Forge integrations', link: '/forge-integrations' },
       { text: 'Forge permissions', link: '/forge-permissions' },
       { text: 'Forge conversations', link: '/forge-conversations' },
@@ -307,7 +308,7 @@ const sidebar = [
 export default withMermaid(
   defineConfig({
     title: 'Iterion',
-    description: 'The control plane for AI agents.',
+    description: 'Build, run and orchestrate agentic AI workflows.',
     base: '/iterion/',
     lang: 'en-US',
     cleanUrls: true,
@@ -323,25 +324,25 @@ export default withMermaid(
       ['link', { rel: 'icon', href: '/iterion/favicon.ico' }],
       ['meta', { property: 'og:type', content: 'website' }],
       ['meta', { property: 'og:site_name', content: 'Iterion' }],
-      ['meta', { property: 'og:title', content: 'Iterion — the control plane for AI agents' }],
+      ['meta', { property: 'og:title', content: 'Iterion — build, run and orchestrate agentic AI workflows' }],
       [
         'meta',
         {
           property: 'og:description',
           content:
-            'Define agent workflows as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.',
+            'Build, run and orchestrate agentic AI workflows. Define them as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.',
         },
       ],
       ['meta', { property: 'og:image', content: 'https://socialgouv.github.io/iterion/og.png' }],
       ['meta', { property: 'og:url', content: 'https://socialgouv.github.io/iterion/' }],
       ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-      ['meta', { name: 'twitter:title', content: 'Iterion — the control plane for AI agents' }],
+      ['meta', { name: 'twitter:title', content: 'Iterion — build, run and orchestrate agentic AI workflows' }],
       [
         'meta',
         {
           name: 'twitter:description',
           content:
-            'Define agent workflows as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.',
+            'Build, run and orchestrate agentic AI workflows. Define them as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.',
         },
       ],
       ['meta', { name: 'twitter:image', content: 'https://socialgouv.github.io/iterion/og.png' }],

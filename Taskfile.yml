@@ -517,6 +517,8 @@ tasks:
       - task: studio:check
       - task: pi-ext:check
       - task: brand:check
+      - task: brand:positioning
+      - task: brand:og:check
       - task: dsl:check
 
   dsl:gen:
@@ -560,11 +562,24 @@ tasks:
                    docs/public/favicon.ico docs/public/iterion-logo.png docs/images/iterion-logo.png build/appicon.png cmd/iterion-desktop/appicon.png)
         exit $stale
 
+  brand:positioning:
+    desc: Fail if a public surface stopped carrying the canonical definition of iterion (assets/brand/positioning.md)
+    cmds:
+      - ./scripts/brand/positioning-check.sh
+
   brand:og:
     desc: Re-render the docs OpenGraph card (docs/public/og.png) from docs/scripts/og-card.html — needs the Playwright chromium (task test:e2e:ui:install)
     dir: studio
     cmds:
       - ./node_modules/.bin/playwright screenshot --viewport-size=1200,630 "file://{{.ROOT_DIR}}/docs/scripts/og-card.html" ../docs/public/og.png
+      # Record WHICH card produced the PNG, so brand:og:check can tell a stale
+      # artefact from a current one without re-rendering.
+      - (sha256sum ../docs/scripts/og-card.html 2>/dev/null || shasum -a 256 ../docs/scripts/og-card.html) | cut -d' ' -f1 > ../docs/public/og.png.sha
+
+  brand:og:check:
+    desc: Fail if docs/public/og.png is missing, malformed, or rendered from a different docs/scripts/og-card.html
+    cmds:
+      - ./scripts/brand/og-check.sh
 
   pi-ext:typecheck:
     desc: Typecheck the iterion pi extension

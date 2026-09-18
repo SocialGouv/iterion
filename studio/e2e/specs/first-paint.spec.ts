@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { studio } from "../lib/paths";
 
 // studio-ui.first-paint — the editor must stay OFF the critical path.
 //
@@ -28,7 +29,7 @@ async function assetsOnLoad(page: import("@playwright/test").Page, path: string)
 const MONACO_ASSET = /\/assets\/(monacoInstance|editor\.api)-[A-Za-z0-9_-]+\.js$/;
 
 test("the runs list does not download the editor", async ({ page }) => {
-  const seen = await assetsOnLoad(page, "/runs");
+  const seen = await assetsOnLoad(page, studio("/runs"));
 
   // The page really rendered — otherwise "no monaco" is trivially true.
   await expect(page.getByRole("row").filter({ hasText: "/demo-bot/main.bot" })).toContainText(
@@ -43,7 +44,7 @@ test("the runs list does not download the editor", async ({ page }) => {
 });
 
 test("opening the editor does download it", async ({ page }) => {
-  const seen = await assetsOnLoad(page, "/editor?file=bots/demo-bot/main.bot");
+  const seen = await assetsOnLoad(page, studio("/editor?file=bots/demo-bot/main.bot"));
   await page.getByRole("button", { name: "Toggle source view" }).click();
   await expect(page.locator(".monaco-editor").first()).toBeVisible({ timeout: 30_000 });
 

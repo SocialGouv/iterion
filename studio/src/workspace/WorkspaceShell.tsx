@@ -9,6 +9,7 @@ import {
   type Project,
 } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
+import { STUDIO_BASE } from "@/lib/scope";
 import { showRunAlertNotification, type RunAlertPayload } from "@/lib/desktopNotify";
 import {
   WORKSPACE_SWITCH_REQUEST,
@@ -568,7 +569,10 @@ export default function WorkspaceShell() {
                   window.location.origin,
                 );
               }}
-              src={`/x/${id}/${handoffTickets[id] ? `?handoff=${encodeURIComponent(handoffTickets[id])}` : ""}`}
+              // Straight into the studio: a pane is always an authenticated
+              // studio surface, so loading "/x/<id>/" would render the root and
+              // bounce, showing the wrong view for a frame first.
+              src={`/x/${id}${STUDIO_BASE}/${handoffTickets[id] ? `?handoff=${encodeURIComponent(handoffTickets[id])}` : ""}`}
               title={projectById(id)?.name ?? id}
               className="h-full w-full border-0 min-w-0"
               style={{ display: visible ? "block" : "none" }}

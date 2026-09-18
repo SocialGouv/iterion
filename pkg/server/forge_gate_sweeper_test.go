@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 )
@@ -128,7 +129,7 @@ func TestGateReconcile_SyntheticFailureStandsDownOnlyForItsOwnRun(t *testing.T) 
 	t.Run("its own — already answered, stand down", func(t *testing.T) {
 		gc := &listingGateClient{
 			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
-			statuses:       []forge.CommitStatus{interruption("https://iterion.test/runs/run-gating")},
+			statuses:       []forge.CommitStatus{interruption("https://iterion.test" + deeplink.StudioBase + "/runs/run-gating")},
 		}
 		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
 		if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {

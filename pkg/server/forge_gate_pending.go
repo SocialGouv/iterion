@@ -76,7 +76,7 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 		return
 	}
 	// An UNATTRIBUTABLE claim must never exist. Ownership of a status is read
-	// off its target URL (gateStatusSpeaksFor), so a claim posted without one
+	// off its target URL (gateRunTarget.speaksFor), so a claim posted without one
 	// cannot be told from another run's — and the reconciler would have to
 	// choose between painting "review died" over a live review and leaving a
 	// PR stuck on a pending nothing resolves. Neither is acceptable, so with

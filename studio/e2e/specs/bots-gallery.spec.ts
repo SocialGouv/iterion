@@ -3,15 +3,16 @@ import fs from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { wsPath } from "../lib/state";
+import { studio } from "../lib/paths";
 
-// studio-ui.bots-gallery — `/bots` lists what botregistry discovered on
-// disk, `/bots/:name` renders that bot's manifest, and `/bots/new` runs
+// studio-ui.bots-gallery — `${studio()}/bots` lists what botregistry discovered on
+// disk, `${studio()}/bots/:name` renders that bot's manifest, and `${studio()}/bots/new` runs
 // the guided builder all the way to a bundle written to the filesystem.
 
 test("gallery lists the discovered bots with their manifest metadata", async ({
   page,
 }) => {
-  await page.goto("/bots");
+  await page.goto(studio("/bots"));
 
   const demo = page.getByRole("button", { name: /Demo Fixture/ });
   await expect(demo).toBeVisible();
@@ -30,7 +31,7 @@ test("gallery lists the discovered bots with their manifest metadata", async ({
 test("bot home renders the manifest the registry read off disk", async ({
   page,
 }) => {
-  await page.goto("/bots/demo-bot");
+  await page.goto(studio("/bots/demo-bot"));
 
   await expect(page.getByRole("heading", { name: "Demo Fixture" })).toBeVisible();
   await expect(page.getByText("v0.1.0")).toBeVisible();
@@ -47,7 +48,7 @@ test("bot home renders the manifest the registry read off disk", async ({
 test("guided builder writes a real bundle to the workspace", async ({
   page,
 }) => {
-  await page.goto("/bots/new");
+  await page.goto(studio("/bots/new"));
 
   await page.getByRole("button", { name: /^Blank bot/ }).click();
   await page.getByRole("textbox", { name: "Name", exact: true }).fill("Scaffold Probe");
@@ -71,6 +72,6 @@ test("guided builder writes a real bundle to the workspace", async ({
   );
 
   // …and the registry picks it up on the next gallery load.
-  await page.goto("/bots");
+  await page.goto(studio("/bots"));
   await expect(page.getByRole("button", { name: /Scaffold Probe/ })).toBeVisible();
 });

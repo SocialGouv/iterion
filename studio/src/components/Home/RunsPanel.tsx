@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { LiveDot } from "@/components/ui/LiveDot";
 import type { GlobalActiveRun, RunSummary } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
+import { STUDIO_BASE, scopePrefix } from "@/lib/scope";
 import {
   STATUS_VARIANT,
   labelForStatus,
@@ -192,7 +193,10 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
 // navigation so the worst case is the historical 404, not a swallowed
 // click.
 async function openRunCrossDaemon(run: GlobalActiveRun): Promise<void> {
-  const target = `/runs/${encodeURIComponent(run.id)}`;
+  // A full document navigation, so wouter's router base does not apply and
+  // the prefix is written out. STUDIO_BASE and not studioBase(): the
+  // destination is another daemon's origin, which has no pane scope of ours.
+  const target = `${STUDIO_BASE}/runs/${encodeURIComponent(run.id)}`;
   // Always carry the run's store_path as a query so the destination
   // daemon's read handlers know which store to read from when the
   // run lives outside the daemon's primary store. Same-store
@@ -210,9 +214,11 @@ async function openRunCrossDaemon(run: GlobalActiveRun): Promise<void> {
       console.warn("openRunCrossDaemon: GetDaemonURLForStore failed:", err);
     }
   }
-  // Fallback: current daemon, relative, still carrying ?store= so
-  // the per-project daemon can proxy reads from the foreign store.
-  window.location.assign(targetWithStore);
+  // Fallback: current daemon — so unlike the cross-daemon branch above, this
+  // one is the SAME origin and must keep a workspace pane's /x/<id>. Still
+  // carrying ?store= so the per-project daemon can proxy reads from the
+  // foreign store.
+  window.location.assign(scopePrefix() + targetWithStore);
 }
 
 function GlobalRunRow({ run }: { run: GlobalActiveRun }) {

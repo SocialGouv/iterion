@@ -16,6 +16,7 @@ import {
   type MarketplaceSort,
 } from "@/api/marketplace";
 import { listBots } from "@/api/bots";
+import { rootRoute } from "@/lib/scope";
 import { listPlugins } from "@/api/plugins";
 import { ArchiveIcon } from "@radix-ui/react-icons";
 
@@ -460,7 +461,7 @@ export default function MarketplaceView() {
               Want to publish a bot? Sign in with GitHub to submit a repository —
               submissions are reviewed before they appear here.
             </span>
-            <Button variant="primary" size="sm" onClick={() => navigate("/login")}>
+            <Button variant="primary" size="sm" onClick={() => navigate(rootRoute("/login"))}>
               Sign in to propose a bot
             </Button>
           </section>

@@ -9,6 +9,8 @@ import {
 } from "react";
 import { apiBase } from "@/lib/scope";
 import { useActiveRepoStore } from "@/store/activeRepo";
+import { useServerInfoStore } from "@/store/serverInfo";
+import type { ServerInfo } from "@/api/types";
 import {
   ApiError,
   getMe,
@@ -99,7 +101,15 @@ async function probeAuth(): Promise<"required" | "not_required" | "unreachable">
   try {
     const res = await fetch(`${BASE_URL}/server/info`, { credentials: "include" });
     if (res.ok) {
-      const body = (await res.json()) as { auth_required?: boolean };
+      const body = (await res.json()) as ServerInfo & { auth_required?: boolean };
+      // The same body the server-info store holds, so fill it from here. That
+      // store is loaded ONCE at module start and never retries: a backend that
+      // is down at first paint leaves `info` null for the life of the
+      // document, and "/" — which has to know the server mode to choose
+      // between the product home and the studio — would wait on a probe that
+      // is never run again. This probe IS re-run, by every reconnect tick and
+      // by the manual retry, so the two are one.
+      useServerInfoStore.setState({ info: body, loading: false, error: null });
       return body.auth_required !== false ? "required" : "not_required";
     }
     return res.status >= 500 ? "unreachable" : "required";

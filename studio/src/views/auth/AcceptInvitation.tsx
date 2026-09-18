@@ -13,6 +13,7 @@ import {
   lookupInvitation,
 } from "@/api/auth";
 import { useAuth } from "@/auth/AuthContext";
+import { STUDIO_BASE } from "@/lib/scope";
 
 // AcceptInvitation handles /invitations/accept?token=…:
 //   anonymous → bounce to /login?invite=TOKEN&next=/invitations/accept?token=…
@@ -188,7 +189,10 @@ export default function AcceptInvitation() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate("/")}
+            // STUDIO_BASE, not "/": this view renders outside the studio
+            // router, where "/" is the product home — cancelling an invitation
+            // would drop a signed-in operator on the marketing page.
+            onClick={() => navigate(STUDIO_BASE)}
           >
             Cancel
           </Button>

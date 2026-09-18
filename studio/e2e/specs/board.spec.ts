@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 import { seed } from "../lib/state";
+import { studio } from "../lib/paths";
 
-// studio-ui.board — the `/board` kanban renders the native tracker's real
+// studio-ui.board — the `${studio()}/board` kanban renders the native tracker's real
 // columns and cards, and moving a card through the UI persists to the
 // native store (asserted through the REST surface AND a reload, so a
 // purely optimistic client update would be caught).
@@ -11,7 +12,7 @@ test("board renders the native tracker's columns and the seeded card", async ({
   page,
 }) => {
   const { issueId } = seed();
-  await page.goto("/board");
+  await page.goto(studio("/board"));
 
   // Columns come from the native board config, not from the SPA.
   for (const state of ["Inbox", "Backlog", "Ready", "In progress", "Done"]) {
@@ -30,7 +31,7 @@ test("moving a card in the UI persists to the native store", async ({
   request,
 }) => {
   const { issueId } = seed();
-  await page.goto("/board");
+  await page.goto(studio("/board"));
 
   // Selecting the card reveals the bulk-move toolbar; moving it there is
   // the deterministic equivalent of the drag-and-drop gesture (same

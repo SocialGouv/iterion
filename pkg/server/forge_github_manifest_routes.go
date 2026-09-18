@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 )
@@ -159,7 +160,7 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	}
 	target := pending.NextURL
 	if target == "" {
-		target = "/teams/" + pending.TenantID
+		target = deeplink.Path("/teams/" + pending.TenantID)
 	}
 	http.Redirect(w, r, appendQueryParam(target, "installed", app.ID), http.StatusFound)
 }

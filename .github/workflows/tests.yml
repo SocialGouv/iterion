@@ -30,7 +30,7 @@ concurrency:
 # it inside the merge queue buys a verdict nobody can act on — while holding a
 # runner slot the queue needs. The org shares 20 concurrent jobs across every
 # repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The four advisory jobs below therefore run
+# decides how long a merge takes. The seven advisory jobs below therefore run
 # on the pull request and on main, and skip in `merge_group`.
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
@@ -783,6 +783,38 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
       - name: Run golangci-lint
         run: golangci-lint run --timeout 5m
+
+  brand:
+    # The positioning guard: every public surface must carry the product
+    # definition verbatim (assets/brand/positioning.md). It lived only in
+    # `task check`, which NO workflow runs — so it never executed between a
+    # pull request and main. Pure shell + grep, no toolchain, seconds.
+    #
+    # Running is not yet BLOCKING: `main` is protected by a ruleset whose
+    # required checks are test, race, vendor-check, mongo-conformance,
+    # golangci and revi/review. Until `brand` is added to that list, a red run
+    # here shows an X the merge queue steps over. Say it rather than imply it —
+    # a guard believed to hold is worse than one known not to.
+    #
+    # Advisory, so it carries the merge_group skip like every other advisory
+    # job above. ⚠️ PROMOTING IT TO REQUIRED MEANS DELETING THAT SKIP IN THE
+    # SAME CHANGE: a job skipped by a job-level `if:` reports SUCCESS, so a
+    # required check that never ran would satisfy the gate on every queue
+    # entry. The header comment carries the full argument.
+    if: github.event_name != 'merge_group'
+    #
+    # Deliberately NOT `task brand:check` (the asset-drift guard): that one
+    # needs magick/pngquant/oxipng from devbox and is a different cost.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Positioning
+        run: ./scripts/brand/positioning-check.sh
+      - name: OpenGraph card is not stale
+        # bash + coreutils + python3, all present on a bare runner — no
+        # browser, no fonts, no devbox. The script says why it checks the
+        # source hash AND the artefact rather than comparing pixels.
+        run: ./scripts/brand/og-check.sh
 
   desktop-vet-linux:
     # cmd/iterion-desktop sits behind `//go:build desktop`, so `go build ./...`,

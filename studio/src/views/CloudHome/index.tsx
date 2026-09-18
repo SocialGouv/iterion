@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { ArrowRight, ArrowUpRight, Check, ChevronRight, Code2, GitBranch, GitFork, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Star, Sun, X } from "lucide-react";
 import { GitHubLogoIcon } from "@radix-ui/react-icons";
 import { BrandMark } from "@/components/ui/BrandMark";
+import { STUDIO_BASE } from "@/lib/scope";
 import { useThemeStore } from "@/store/theme";
 import StackCompatibility from "./StackCompatibility";
 import PlatformFeatures from "./PlatformFeatures";
@@ -62,13 +63,19 @@ function HeroVisual() {
   );
 }
 
-export default function CloudHome({ marketplaceEnabled = false }: { marketplaceEnabled?: boolean }) {
+export default function CloudHome({ marketplaceEnabled = false, signedIn = false }: { marketplaceEnabled?: boolean; signedIn?: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const resolved = useThemeStore(s => s.resolved);
   const setTheme = useThemeStore(s => s.setMode);
+  // This page is the root for signed-in operators too, so the three entry CTAs
+  // must not ask someone who already has a session to sign in again: they are
+  // the way back into the studio.
+  const entryHref = signedIn ? STUDIO_BASE : "/login";
+  const entryLabel = signedIn ? "Open studio" : "Sign in";
+  const entryCta = signedIn ? "Open the studio" : "Open Iterion Cloud";
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = "Iterion Cloud — The control plane for AI agents";
+    document.title = "Iterion Cloud — build, run and orchestrate agentic AI workflows";
     return () => { document.title = previousTitle; };
   }, []);
   return (
@@ -78,13 +85,13 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
         <div className="ch-nav ch-container">
           <Brand />
           <nav className="ch-nav-links" aria-label="Main navigation"><a href="#workflows">Use cases</a><a href="#control">Platform</a><a href={DOCS} target="_blank" rel="noreferrer">Documentation <ArrowUpRight size={12} /></a></nav>
-          <div className="ch-nav-actions"><button className="ch-theme" type="button" onClick={() => setTheme(resolved === "dark" ? "light" : "dark")} aria-label={`Switch to ${resolved === "dark" ? "light" : "dark"} theme`}>{resolved === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button><a className="ch-github-icon" href={GITHUB} target="_blank" rel="noreferrer" aria-label="Iterion on GitHub"><GitHubLogoIcon width={19} height={19} /></a><Link href="/login" className="ch-nav-signin">Sign in <ArrowUpRight size={14} /></Link><button className="ch-mobile-toggle" type="button" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-controls="ch-mobile-nav" aria-label={menuOpen ? "Close navigation" : "Open navigation"}>{menuOpen ? <X size={21} /> : <Menu size={21} />}</button></div>
+          <div className="ch-nav-actions"><button className="ch-theme" type="button" onClick={() => setTheme(resolved === "dark" ? "light" : "dark")} aria-label={`Switch to ${resolved === "dark" ? "light" : "dark"} theme`}>{resolved === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button><a className="ch-github-icon" href={GITHUB} target="_blank" rel="noreferrer" aria-label="Iterion on GitHub"><GitHubLogoIcon width={19} height={19} /></a><Link href={entryHref} className="ch-nav-signin">{entryLabel} <ArrowUpRight size={14} /></Link><button className="ch-mobile-toggle" type="button" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-controls="ch-mobile-nav" aria-label={menuOpen ? "Close navigation" : "Open navigation"}>{menuOpen ? <X size={21} /> : <Menu size={21} />}</button></div>
         </div>
         {menuOpen && <nav id="ch-mobile-nav" className="ch-mobile-nav" aria-label="Mobile navigation"><a href="#workflows" onClick={() => setMenuOpen(false)}>Use cases</a><a href="#control" onClick={() => setMenuOpen(false)}>Platform</a><a href={DOCS} target="_blank" rel="noreferrer">Documentation <ArrowUpRight size={13} /></a></nav>}
       </header>
       <main id="ch-main">
         <section className="ch-hero ch-container" aria-labelledby="ch-title">
-          <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description">Linux runs apps. Kubernetes orchestrates containers.<br /><strong>Iterion orchestrates agents.</strong></p><div className="ch-hero-ctas"><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div><GitHubStar /></div>
+          <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description"><strong>Build, run and orchestrate agentic AI workflows.</strong><br />Linux runs apps. Kubernetes orchestrates containers. Iterion orchestrates agents.</p><div className="ch-hero-ctas"><Link href={entryHref} className="ch-button ch-button-primary">{entryCta} <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div><GitHubStar /></div>
           <HeroVisual />
         </section>
         <div className="ch-container"><MissionExamples />
@@ -94,7 +101,7 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
             <p className="ch-eyebrow">DEPLOYMENT OPTIONS</p>
             <h2 id="ch-deployment-heading">Cloud, local or <span className="ch-no-wrap">self-hosted.</span></h2>
             <p>The same workflow engine, wherever you run it.<br />Use Iterion Cloud, work locally, or deploy on your own infrastructure.</p>
-            <div><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href={`${DOCS}quickstart.html`} target="_blank" rel="noreferrer" className="ch-button ch-button-secondary">Run locally <ArrowUpRight size={14} /></a><a href={`${DOCS}cloud-deployment.html`} target="_blank" rel="noreferrer" className="ch-button ch-button-text">Self-host Iterion <ArrowUpRight size={14} /></a></div>
+            <div><Link href={entryHref} className="ch-button ch-button-primary">{entryCta} <ArrowUpRight size={17} /></Link><a href={`${DOCS}quickstart.html`} target="_blank" rel="noreferrer" className="ch-button ch-button-secondary">Run locally <ArrowUpRight size={14} /></a><a href={`${DOCS}cloud-deployment.html`} target="_blank" rel="noreferrer" className="ch-button ch-button-text">Self-host Iterion <ArrowUpRight size={14} /></a></div>
           </section>
           <OpenSource />
         </div>

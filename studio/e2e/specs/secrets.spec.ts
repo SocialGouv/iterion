@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { wsPath } from "../lib/state";
+import { studio } from "../lib/paths";
 
 // studio-ui.secrets-view — the local Secrets view, gated on
 // server_info.secrets_enabled, manages the sealed on-disk store. The
@@ -26,7 +27,7 @@ test("the view is exposed and starts from the empty isolated store", async ({
   const info = await (await request.get("/api/server/info")).json();
   expect(info.secrets_enabled).toBe(true);
 
-  await page.goto("/secrets");
+  await page.goto(studio("/secrets"));
   await expect(page.getByRole("heading", { name: "Secrets" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add secret" })).toBeVisible();
   // The isolated store starts empty — proof the suite is not looking at
@@ -37,7 +38,7 @@ test("the view is exposed and starts from the empty isolated store", async ({
 test("adding a secret seals it on disk and lists it without the value", async ({
   page,
 }) => {
-  await page.goto("/secrets");
+  await page.goto(studio("/secrets"));
 
   await page.getByRole("button", { name: "Add secret" }).click();
   await page.getByPlaceholder("GITHUB_TOKEN").fill(SECRET_NAME);
@@ -66,7 +67,7 @@ test("adding a secret seals it on disk and lists it without the value", async ({
 });
 
 test("deleting a secret removes it from the store", async ({ page }) => {
-  await page.goto("/secrets");
+  await page.goto(studio("/secrets"));
   const row = page.getByRole("row").filter({ hasText: SECRET_NAME });
   await expect(row).toBeVisible();
 

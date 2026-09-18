@@ -19,6 +19,7 @@ import (
 	"github.com/gofrs/flock"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/server/projects"
 	runstore "github.com/SocialGouv/iterion/pkg/store"
@@ -156,7 +157,7 @@ func (h *WorkspaceHost) startRuntime(project projects.Project) {
 	rt.server = srv
 	rt.state = "ready"
 	h.mu.Unlock()
-	h.logger.Info("workspace: project %s ready at /x/%s/", project.Name, project.ID)
+	h.logger.Info("workspace: project %s ready at %s", project.Name, paneURL(project.ID))
 }
 
 func (h *WorkspaceHost) degrade(rt *workspaceRuntime, err error) {
@@ -319,7 +320,7 @@ func (h *WorkspaceHost) serveScoped(w http.ResponseWriter, r *http.Request) {
 			ID: id, Name: rt.project.Name, Dir: rt.project.Dir,
 			StoreDir: rt.project.StoreDir, Generation: rt.generation,
 			State: rt.state, RuntimeReady: rt.state == "ready" && rt.server != nil,
-			Error: rt.err, ScopedURL: "/x/" + id + "/",
+			Error: rt.err, ScopedURL: paneURL(id),
 			LastOpened: rt.project.LastOpened.UTC().Format(time.RFC3339Nano), Kind: "local",
 		})
 		return
@@ -404,7 +405,7 @@ func (h *WorkspaceHost) statuses() []WorkspaceRuntimeStatus {
 		status := WorkspaceRuntimeStatus{
 			ID: project.ID, Name: project.Name, Dir: project.Dir,
 			StoreDir: project.StoreDir, State: "degraded",
-			ScopedURL:  "/x/" + project.ID + "/",
+			ScopedURL:  paneURL(project.ID),
 			LastOpened: project.LastOpened.UTC().Format(time.RFC3339Nano), Kind: "local",
 		}
 		if rt != nil {
@@ -434,7 +435,7 @@ func (h *WorkspaceHost) currentProject(w http.ResponseWriter) {
 	status := WorkspaceRuntimeStatus{
 		ID: project.ID, Name: project.Name, Dir: project.Dir,
 		StoreDir: project.StoreDir, State: "degraded",
-		ScopedURL:  "/x/" + project.ID + "/",
+		ScopedURL:  paneURL(project.ID),
 		LastOpened: project.LastOpened.UTC().Format(time.RFC3339Nano), Kind: "local",
 	}
 	if rt != nil {
@@ -606,4 +607,16 @@ func (h *WorkspaceHost) writeError(w http.ResponseWriter, status int, message st
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// paneURL is the address a workspace pane's iframe loads. One function for the
+// three status builders that hand it out: the studio base is part of it, and
+// three copies of the same concatenation is three places for the next prefix
+// change to land in two.
+//
+// It points INTO the studio rather than at the scope root: a pane is always an
+// authenticated studio surface, and landing on "/x/<id>/" would render the
+// root — a redirect hop and a flash of the wrong view before the pane settles.
+func paneURL(projectID string) string {
+	return "/x/" + projectID + deeplink.StudioBase + "/"
 }

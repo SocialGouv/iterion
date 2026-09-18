@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 import { wsPath } from "../lib/state";
+import { studio } from "../lib/paths";
 
-// studio-ui.dispatcher — the `/dispatcher` dashboard is a live view onto
+// studio-ui.dispatcher — the `${studio()}/dispatcher` dashboard is a live view onto
 // the dispatcher actor the server owns: it configures one, starts it, and
 // renders that instance's real settings and lane counters. The spec drives
 // the whole lifecycle (configure → start → observe → stop).
@@ -16,7 +17,7 @@ const POLL_MS = 3_600_000;
 test("configure → start → stop, with the dashboard reflecting the instance", async ({
   page,
 }) => {
-  await page.goto("/dispatcher");
+  await page.goto(studio("/dispatcher"));
 
   // Nothing attached yet, and Start is correctly refused without a config.
   await expect(page.getByTitle(/No dispatcher attached/)).toContainText(
@@ -65,7 +66,7 @@ test("configure → start → stop, with the dashboard reflecting the instance",
 test("the settings dialog surfaces the server's own config rejection", async ({
   page,
 }) => {
-  await page.goto("/dispatcher");
+  await page.goto(studio("/dispatcher"));
   await page.getByRole("button", { name: "Dispatcher settings" }).click();
   await page.getByRole("textbox", { name: /^Name/ }).fill("bad-config");
   await page
