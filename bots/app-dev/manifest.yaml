@@ -6,12 +6,14 @@ version: 0.3.2
 ## breaks the authors wrote inside nineteen prompts (84 in all) now reach the
 ## models as blank lines instead of being folded away by the profile-1 lexer;
 ## the deploy gate's fail_log literal is re-spelled with its value unchanged.
-## The interview loop gains its exhaustion exit (C145, #1293): a spent cap
-## or a budget-declined turn without a committed SPEC.md ends the run in a
-## typed, resumable INTERVIEW_NOT_CONVERGED naming the answers used and the
-## budget spent, instead of LOOP_EXHAUSTED. One instruction changed: the
-## interviewer is told the cap in force and the refusal past it (the
-## playbook no longer hardcodes 30).
+## The interview loop gains its exhaustion exits (C145, #1293), two typed
+## refusals told apart at the chat pause: a spent cap ends the run terminal
+## (INTERVIEW_NOT_CONVERGED — an exhausted loop stays exhausted across
+## resume, a relaunch is the cure), a turn the budget could no longer fund
+## parks it resumable (INTERVIEW_BUDGET_STARVED, naming the budget spent;
+## `iterion resume --max-cost-usd` continues the conversation) — instead of
+## LOOP_EXHAUSTED. One instruction changed: the interviewer is told the cap
+## in force and the refusal past it (the playbook no longer hardcodes 30).
 ## 0.3.1 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work;
 ## the deterministic commit and the commit instruction exclude it (#1364); the bundle's skill says the same.

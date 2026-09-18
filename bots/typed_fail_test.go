@@ -20,10 +20,14 @@ import (
 // continuing is the cure.
 type codedRefusal struct {
 	bot string
-	// from/condition identify the guard edge; negated matches `when not X`.
-	from      string
-	condition string
-	negated   bool
+	// from/condition identify the guard edge; negated matches `when not X`,
+	// expression the quoted `when "…"` form, elseEdge the `else` beside a
+	// conditional sibling.
+	from       string
+	condition  string
+	negated    bool
+	expression string
+	elseEdge   bool
 	// failNode is the named fail node the edge must target, and code the
 	// value it stamps on the run.
 	failNode  string
@@ -98,12 +102,17 @@ func codedRefusals() []codedRefusal {
 		},
 		codedRefusal{
 			bot: "app-dev", from: "interview_chat",
-			failNode: "interview_not_converged", code: "INTERVIEW_NOT_CONVERGED", resumable: true,
+			expression: "loop.interview_loop.iteration >= vars.max_interview_turns",
+			failNode:   "interview_not_converged", code: "INTERVIEW_NOT_CONVERGED",
+			messageRefs: []string{"{{vars.max_interview_turns}}"},
+		},
+		codedRefusal{
+			bot: "app-dev", from: "interview_chat", elseEdge: true,
+			failNode: "interview_budget_starved", code: "INTERVIEW_BUDGET_STARVED", resumable: true,
 			messageRefs: []string{
-				"{{loop.interview_loop.iteration}}",
-				"{{vars.max_interview_turns}}",
 				"{{run.cost_usd}}",
 				"{{run.max_cost_usd}}",
+				"{{loop.interview_loop.iteration}}",
 			},
 		},
 		codedRefusal{
@@ -187,12 +196,13 @@ func TestCodedRefusalsLandOnANamedFailNode(t *testing.T) {
 			for _, e := range wf.Edges {
 				// A refusal edge never iterates: beside a loop's exhaustion
 				// exit sits the loop edge, bare too, and it is not the guard.
-				if e.From == r.from && e.Condition == r.condition && e.Negated == r.negated && e.LoopName == "" {
+				if e.From == r.from && e.Condition == r.condition && e.Negated == r.negated &&
+					e.ExpressionSrc == r.expression && e.IsElse == r.elseEdge && e.LoopName == "" {
 					edge = e
 				}
 			}
 			if edge == nil {
-				t.Fatalf("no edge %s -> … when %s (negated=%v)", r.from, r.condition, r.negated)
+				t.Fatalf("no edge %s -> … when %s (negated=%v, expression=%q, else=%v)", r.from, r.condition, r.negated, r.expression, r.elseEdge)
 			}
 			if edge.To == "fail" {
 				t.Fatalf("%s -> fail: the refusal reads FAIL_NODE / \"workflow reached fail node\" on the run, "+

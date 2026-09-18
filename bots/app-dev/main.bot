@@ -46,12 +46,14 @@
 ##   draft_loop(max_draft_loops)         — derive_draft → campaign
 ## On exhaustion the two campaign loops ship what is banked (git is the
 ## state; the campaign commits every slice in stride). The interview
-## loop refuses instead (INTERVIEW_NOT_CONVERGED, resumable): nothing
-## is banked before SPEC.md is committed, and building behind an
-## unfinished interview is not a decision the run may take for the
-## operator. The same exit is taken when the run's budget can no longer
-## fund a turn; the refusal names the answers used and the budget spent,
-## and a resume with a raised budget continues the conversation.
+## loop refuses instead: nothing is banked before SPEC.md is committed,
+## and building behind an unfinished interview is not a decision the
+## run may take for the operator. Two typed refusals, told apart at the
+## chat pause by the loop counter: a spent cap ends the run terminal
+## (INTERVIEW_NOT_CONVERGED — an exhausted loop stays exhausted across
+## resume and rewind, a relaunch is the cure); a turn the run's budget
+## could no longer fund parks it resumable (INTERVIEW_BUDGET_STARVED —
+## `iterion resume --max-cost-usd` re-asks the operator and continues).
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
 ## "Universal code bots"): the app prompt + SPEC.md define the work;
@@ -1980,18 +1982,31 @@ compute deploy_verify:
     pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != '' && (if(outputs.deploy_trace.verifiable, outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head, true))"
     reason: "if(outputs.deploy.deployed_url == '', outputs.deploy.notes, outputs.deploy_trace.trace_log)"
 
-## The interview loop's typed refusal, reached once interview_loop is spent
-## — at its cap, or because the run's budget could no longer fund another
-## turn (the affordability guard declines the back-edge the same way).
-## spec_ready never came, so no SPEC.md was committed and the campaign
-## would have nothing authoritative to build from. Resumable: the checkpoint
-## anchors on the chat pause, so `iterion resume --max-cost-usd` continues
-## the conversation when the budget was the cause; a spent cap needs a
-## relaunch (an exhausted loop stays exhausted across resume and rewind).
+## The interview loop's two typed refusals, reached from the chat pause once
+## its back-edge is declined: spec_ready never came, so no SPEC.md was
+## committed and the campaign would have nothing authoritative to build
+## from. The cause is observable at the pause — the loop counter tells a
+## spent cap from a turn the budget declined — and each gets the code, the
+## message and the resumability that fit it, with the chat pause itself as
+## the guard a resume re-runs.
+##
+## The cap: terminal. An exhausted loop stays exhausted across resume and
+## rewind, so a resume could only re-ask the operator and refuse again; the
+## cure is a relaunch, which no unattended lane attempts on a typed refusal.
 fail interview_not_converged:
-  description: "the interview stopped without a committed SPEC.md"
+  description: "the interview spent its turns without a committed SPEC.md"
   code: INTERVIEW_NOT_CONVERGED
-  message: "the interview stopped without a committed SPEC.md: {{loop.interview_loop.iteration}} operator answers reached the interviewer (cap {{vars.max_interview_turns}}), {{run.cost_usd}} USD of the {{run.max_cost_usd}} USD budget spent — a spent cap needs a relaunch with a larger max_interview_turns or autonomous mode with the brief as it stands; a budget stop resumes with a raised cap (iterion resume --max-cost-usd)"
+  message: "the interview spent its {{vars.max_interview_turns}} operator answers without a committed SPEC.md — an exhausted loop stays exhausted across resume and rewind: relaunch with a larger max_interview_turns, or in autonomous mode with the brief as it stands"
+  resumable: false
+
+## The budget: resumable. The affordability guard declined the back-edge
+## because another turn would cross the run's cost ceiling; the checkpoint
+## anchors on the chat pause, so `iterion resume --max-cost-usd` re-asks the
+## operator and the conversation continues where it stopped.
+fail interview_budget_starved:
+  description: "the run's budget stopped the interview before SPEC.md was committed"
+  code: INTERVIEW_BUDGET_STARVED
+  message: "the run's budget can no longer fund another interview turn: {{run.cost_usd}} USD of the {{run.max_cost_usd}} USD ceiling spent after {{loop.interview_loop.iteration}} operator answers, no SPEC.md committed — resume with a raised cap (iterion resume --max-cost-usd) to continue the conversation"
   resumable: true
 
 ## ─── Workflow ───────────────────────────────────────────────────
@@ -2067,11 +2082,14 @@ workflow app_dev:
     _session_id:          "{{outputs.interviewer._session_id}}",
     _session_fingerprint: "{{outputs.interviewer._session_fingerprint}}"
   } as interview_loop("{{vars.max_interview_turns}}")
-  ## The loop's exhaustion exit (C145, #1293): once the back-edge is declined
-  ## (cap spent, or budget) the pause's answer no longer reaches the
-  ## interviewer, and the run refuses rather than building behind an
-  ## unfinished interview.
-  interview_chat -> interview_not_converged
+  ## The loop's exhaustion exits (C145, #1293): once the back-edge is
+  ## declined the pause's answer no longer reaches the interviewer, and the
+  ## run refuses rather than building behind an unfinished interview —
+  ## terminal when the counter says the cap is spent, resumable when the
+  ## budget declined the turn (the `else`: the loop edge with budget left
+  ## wins over it, so it is only ever taken once the back-edge is declined).
+  interview_chat -> interview_not_converged when "loop.interview_loop.iteration >= vars.max_interview_turns"
+  interview_chat -> interview_budget_starved else
 
   ## ── Plan phase (on by default; plan_phase off → straight to campaign)
   plan_topology -> plan when do_plan
