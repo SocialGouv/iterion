@@ -1437,8 +1437,17 @@ func fallbacksReachClaw(fbs []ir.Fallback) bool {
 // nodes are env-templated (sec-audit-source/-deps) is mis-detected as
 // claw-free, the iterion binary is never bind-mounted, and the claw
 // runner dies with `exec: "iterion": executable file not found in $PATH`.
+//
+// A `{{vars.…}}` reference resolves at dispatch, with the run's vars this
+// plan-time reading does not have: it MAY be claw, and the union this
+// helper feeds errs on the side of the mount — an unused read-only bind
+// costs nothing, a missing binary kills the node.
 func backendIsClaw(name string) bool {
-	switch strings.ToLower(ir.ExpandEnvWithDefault(name)) {
+	expanded := strings.ToLower(ir.ExpandEnvWithDefault(name))
+	if strings.Contains(expanded, "{{") {
+		return true
+	}
+	switch expanded {
 	case "", "claw":
 		return true
 	}

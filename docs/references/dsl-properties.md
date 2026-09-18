@@ -89,7 +89,7 @@ A top-level declaration: `supervisor <name>:`.
 | Property | Value | Meaning |
 |---|---|---|
 | `watches` | ident list | Agent nodes the supervisor is armed for |
-| `model` | string | Model id the supervisor evaluates with, e.g. "anthropic/claude-opus-5"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is refused (C148): a supervisor is spawned without the run's vars |
+| `model` | string | Model id the supervisor evaluates with, e.g. "anthropic/claude-opus-5"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars |
 | `system` | ident | Prompt declaration used as the system prompt |
 | `cooldown` | string | Minimum delay between two evaluations, e.g. "2m" |
 | `max_evals` | int | Upper bound on evaluations per run |

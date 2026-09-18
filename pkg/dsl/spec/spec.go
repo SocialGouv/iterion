@@ -192,7 +192,7 @@ var (
 	pModel           = prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
 	pBackend         = prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
 	pProvider        = prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
-	pSupervisorModel = prop("model", String, "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is refused (C148): a supervisor is spawned without the run's vars")
+	pSupervisorModel = prop("model", String, "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars")
 	pSystem          = prop("system", Ident, "Prompt declaration used as the system prompt")
 	pUser            = prop("user", Ident, "Prompt declaration used as the user message")
 	pTimeout         = prop("timeout", String, "Duration the node may run, e.g. \"20m\"")

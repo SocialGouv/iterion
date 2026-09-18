@@ -22,15 +22,20 @@ import (
 //
 // A supervisor's `model:` is not a routing field of a node: it is decided
 // at spawn, without the run's vars, and nothing renders a template in it —
-// any `{{…}}` there is C148 too, said as such.
+// any `{{…}}` there is C148 too, as a warning (the supervisor degrades, the
+// run is not refused), said as such.
 func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 	for _, node := range w.Nodes {
 		for _, rf := range routingFields(node) {
 			loc := fmt.Sprintf("%s %q %s", node.NodeKind(), node.NodeID(), rf.name)
 			spans, unterminated := templateSpans(rf.value)
 			for _, span := range spans {
+				// Exactly one path segment: vars are scalars, so the executor
+				// looks `{{vars.m.id}}` up as the key "m.id", which no
+				// declaration can be — the span would reach the backend as
+				// written with `validateVarsRef` content with "m".
 				refs, err := ParseRefs(span)
-				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) > 0 {
+				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 {
 					c.validateVarsRef(w, refContext{Ref: refs[0], NodeID: node.NodeID(), Location: loc})
 					continue
 				}
@@ -44,10 +49,13 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 			}
 		}
 	}
+	// A supervisor is an enhancement that degrades rather than blocking the
+	// run (its monitors are dropped at spawn with a warning, C191), so this
+	// is a warning: the run starts, the supervisor is inert and said to be.
 	for _, sup := range w.Supervisors {
 		if spans, unterminated := templateSpans(sup.Model); len(spans) > 0 || unterminated {
-			c.errorf(DiagRoutingFieldRef,
-				"supervisor %q model: %q holds a template, and a supervisor's model is not rendered — it is decided at spawn, without the run's vars; write the model id or a ${VAR:-default}",
+			c.warnf(DiagRoutingFieldRef,
+				"supervisor %q model: %q holds a template, and a supervisor's model is not rendered — it is decided at spawn, without the run's vars, so this supervisor will evaluate nothing; write the model id or a ${VAR:-default} (#1450)",
 				sup.Name, sup.Model)
 		}
 	}
