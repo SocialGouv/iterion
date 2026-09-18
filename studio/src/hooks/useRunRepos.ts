@@ -24,15 +24,16 @@ export interface UseRunReposResult {
 // Polls lazily — the repo set changes far slower than the runs list, so
 // a 30s refetch keeps new repos appearing without hammering the server.
 export function useRunRepos(enabled: boolean): UseRunReposResult {
-  // The distinct-repos set is server-scoped to the active team (cloud
-  // only — this hook is disabled in local mode). Keying by team means a
-  // team switch invalidates the chips instead of showing the previous
-  // team's repos. `enabled` already gates this to cloud, so activeTeam
-  // is always present when the query runs.
-  const { activeTeam } = useAuth();
-  const teamID = activeTeam?.team_id ?? null;
+  // The distinct-repos set is server-scoped to the active org+team (cloud
+  // only — this hook is disabled in local mode). Keying by scope means a
+  // switch re-scopes the chips instead of showing the previous scope's
+  // repos. The ORG is in the key too, not just the team: two orgs can both
+  // resolve to no active team, and a team-only key would collide on one
+  // entry (mirrors useRuns).
+  const { activeOrgID, activeTeam } = useAuth();
+  const scopeKey = `${activeOrgID}:${activeTeam?.team_id ?? ""}`;
   const query = useQuery<RunRepo[]>({
-    queryKey: ["run-repos", teamID],
+    queryKey: ["run-repos", scopeKey],
     queryFn: () => listRunRepos(),
     enabled,
     refetchInterval: 30_000,

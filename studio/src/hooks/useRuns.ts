@@ -42,6 +42,13 @@ export interface UseRunsOptions {
   // Used by surfaces that only need the runs list while a UI is open
   // (e.g. the global command palette) to avoid background polling.
   enabled?: boolean;
+  // Opt into keepPreviousData: on a scope switch (key change) the hook
+  // keeps the PREVIOUS scope's rows on screen (and flags `refreshing`)
+  // instead of clearing to a loading state. Only the full runs list wants
+  // this — the home hub, the paused-badge counter and the command palette
+  // must NOT surface another scope's runs, so they leave it off (default)
+  // and go through their own loading/empty states on a switch.
+  keepPrevious?: boolean;
 }
 
 export interface UseRunsResult {
@@ -64,26 +71,32 @@ export interface UseRunsResult {
 // is hidden) and de-dupes consumers that mount the same key, so the
 // previous fingerprint + visibilitychange machinery falls away.
 export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
-  const { status = "", limit, repo = "", enabled = true } = opts;
+  const { status = "", limit, repo = "", enabled = true, keepPrevious = false } = opts;
 
-  // Cloud mode scopes the runs list to the active team on the server. The
-  // team is part of the cache key ONLY in cloud mode so switching team
+  // Cloud mode scopes the runs list to the active org+team on the server.
+  // The scope is part of the cache key ONLY in cloud mode so switching
   // yields a fresh key (and, with keepPreviousData, keeps the old list on
-  // screen while the new one loads). Local/desktop mode is single-tenant:
-  // no team, so the key stays team-free and behaviour is unchanged.
+  // screen while the new one loads). The ORG must be in the key too, not
+  // just the team: two orgs can both resolve to no active team (team_id
+  // unchanged / undefined), and a team-only key would then collide on one
+  // cache entry — an org switch would silently serve the previous org's
+  // runs. Local/desktop mode is single-tenant: no scope key, unchanged.
   const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
-  const { activeTeam } = useAuth();
-  const teamKey = isCloud ? activeTeam?.team_id ?? null : null;
+  const { activeOrgID, activeTeam } = useAuth();
+  const scopeKey = isCloud
+    ? `${activeOrgID}:${activeTeam?.team_id ?? ""}`
+    : null;
 
   const query = useQuery<RunSummary[]>({
-    queryKey: ["runs", teamKey, status, limit, repo],
+    queryKey: ["runs", scopeKey, status, limit, repo],
     queryFn: () =>
       listRuns({ status: status || undefined, limit, repo: repo || undefined }),
     enabled,
-    // Keep the previous scope's list visible while the new scope loads,
-    // instead of blanking to an empty frame. RunListView dims it + shows
-    // an indicator via `refreshing`.
-    placeholderData: keepPreviousData,
+    // Opt-in only: keep the previous scope's list visible while the new
+    // scope loads, instead of blanking. RunListView dims it + shows an
+    // indicator via `refreshing`. Other consumers leave this off so a
+    // scope switch never leaks another scope's runs into their UI.
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
     refetchInterval: (q) => {
       const data = q.state.data;
       if (!data) return POLL_INTERVAL_FAST_MS;

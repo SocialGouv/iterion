@@ -93,6 +93,16 @@ function RunTableRow({
   );
 }
 
+// Virtuoso key: derive from the item (a run), NOT from flatRuns[index].
+// Virtuoso passes the GROUP-INCLUSIVE index and also calls this for group
+// rows (item undefined), so indexing the items-only flatRuns would shift
+// every key by the group count — keys would track position instead of
+// identity, defeating the RunListRow memo whenever a poll inserts/reorders
+// a run. Group rows (no item) key by their positional index.
+function runItemKey(index: number, run: RunSummary | undefined): string {
+  return run?.id ?? `group-${index}`;
+}
+
 const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
   // The sr-only <caption> is the table's accessible name (RGAA 5.4/5.5) —
   // it must be the table's first child. Virtuoso renders a bare <table>,
@@ -164,6 +174,10 @@ export default function RunListView() {
   const { runs, counts, loading, refreshing, error } = useRuns({
     status,
     repo: serverRepo,
+    // The full list wants the smooth scope-switch transition (keep the
+    // previous rows dimmed while the new scope loads). Other useRuns
+    // consumers deliberately leave this off.
+    keepPrevious: true,
   });
 
   const filteredRuns = useMemo(
@@ -547,7 +561,7 @@ export default function RunListView() {
                 onResume={ctx.onResume}
               />
             )}
-            computeItemKey={(index) => flatRuns[index]?.id ?? index}
+            computeItemKey={runItemKey}
           />
         </div>
 
@@ -582,7 +596,7 @@ export default function RunListView() {
                 </div>
               ) : null
             }
-            computeItemKey={(index) => flatRuns[index]?.id ?? index}
+            computeItemKey={runItemKey}
           />
         </div>
       </>

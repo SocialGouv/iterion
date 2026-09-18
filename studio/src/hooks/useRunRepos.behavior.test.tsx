@@ -9,9 +9,13 @@ import type { RunRepo } from "@/api/runs";
 const listRunRepos = vi.fn<() => Promise<RunRepo[]>>();
 vi.mock("@/api/runs", () => ({ listRunRepos: () => listRunRepos() }));
 
+let activeOrgID: string;
 let activeTeamID: string | undefined;
 vi.mock("@/auth/AuthContext", () => ({
-  useAuth: () => ({ activeTeam: activeTeamID ? { team_id: activeTeamID } : undefined }),
+  useAuth: () => ({
+    activeOrgID,
+    activeTeam: activeTeamID ? { team_id: activeTeamID } : undefined,
+  }),
 }));
 
 import { useRunRepos } from "./useRunRepos";
@@ -32,6 +36,7 @@ function makeWrapper() {
 
 beforeEach(() => {
   listRunRepos.mockReset();
+  activeOrgID = "org-a";
   activeTeamID = "team-a";
 });
 

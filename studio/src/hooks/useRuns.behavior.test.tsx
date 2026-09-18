@@ -21,9 +21,13 @@ vi.mock("@/store/serverInfo", () => ({
     selector({ info: { mode } }),
 }));
 
+let activeOrgID: string;
 let activeTeamID: string | undefined;
 vi.mock("@/auth/AuthContext", () => ({
-  useAuth: () => ({ activeTeam: activeTeamID ? { team_id: activeTeamID } : undefined }),
+  useAuth: () => ({
+    activeOrgID,
+    activeTeam: activeTeamID ? { team_id: activeTeamID } : undefined,
+  }),
 }));
 
 import { useRuns } from "./useRuns";
@@ -55,6 +59,7 @@ function makeWrapper() {
 beforeEach(() => {
   listRuns.mockReset();
   mode = "cloud";
+  activeOrgID = "org-a";
   activeTeamID = "team-a";
 });
 
@@ -78,13 +83,35 @@ describe("useRuns team-aware caching", () => {
     expect(listRuns).toHaveBeenCalledTimes(2);
   });
 
+  it("keys by org too, so switching org without a resolvable team refetches", async () => {
+    // Two orgs can both resolve to NO active team (team_id undefined). A
+    // team-only key would then collide on one cache entry and serve the
+    // previous org's runs. Folding the org into the key prevents that.
+    activeTeamID = undefined;
+    listRuns.mockImplementation(async () =>
+      activeOrgID === "org-a" ? [run("a1")] : [run("b1")],
+    );
+    const { wrapper } = makeWrapper();
+
+    const { result, rerender } = renderHook(() => useRuns(), { wrapper });
+    await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["a1"]));
+
+    activeOrgID = "org-b";
+    rerender();
+    await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["b1"]));
+    expect(listRuns).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the previous list on screen while the new scope loads (keepPreviousData)", async () => {
     const deferred = makeDeferred<RunSummary[]>();
     listRuns.mockImplementationOnce(async () => [run("a1")]);
     listRuns.mockImplementationOnce(() => deferred.promise);
     const { wrapper } = makeWrapper();
 
-    const { result, rerender } = renderHook(() => useRuns(), { wrapper });
+    const { result, rerender } = renderHook(
+      () => useRuns({ keepPrevious: true }),
+      { wrapper },
+    );
     await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["a1"]));
 
     // Switch scope; the second fetch is still pending. The list must NOT
@@ -99,6 +126,31 @@ describe("useRuns team-aware caching", () => {
     deferred.resolve([run("b1")]);
     await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["b1"]));
     expect(result.current.refreshing).toBe(false);
+  });
+
+  it("without keepPrevious, a scope switch does NOT hold prior rows or flag refreshing", async () => {
+    // Default (opt-out) consumers — home hub, paused badge, command
+    // palette — must not surface another scope's runs during a switch.
+    // Their key still changes, but with no keepPreviousData the hook goes
+    // to a loading state instead of holding the previous scope's rows.
+    const deferred = makeDeferred<RunSummary[]>();
+    listRuns.mockImplementationOnce(async () => [run("a1")]);
+    listRuns.mockImplementationOnce(() => deferred.promise);
+    const { wrapper } = makeWrapper();
+
+    const { result, rerender } = renderHook(() => useRuns(), { wrapper });
+    await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["a1"]));
+
+    activeTeamID = "team-b";
+    rerender();
+    // No placeholder: the previous team's rows are not held, and
+    // refreshing never trips (it is derived from isPlaceholderData).
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.runs).toEqual([]);
+
+    deferred.resolve([run("b1")]);
+    await waitFor(() => expect(result.current.runs.map((r) => r.id)).toEqual(["b1"]));
   });
 
   it("does not scope by team in local mode (single-tenant key stays stable)", async () => {
@@ -123,7 +175,10 @@ describe("useRuns team-aware caching", () => {
     listRuns.mockImplementationOnce(() => deferred.promise);
     const { client, wrapper } = makeWrapper();
 
-    const { result } = renderHook(() => useRuns(), { wrapper });
+    const { result } = renderHook(
+      () => useRuns({ keepPrevious: true }),
+      { wrapper },
+    );
     expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
 
