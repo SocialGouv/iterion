@@ -10,8 +10,10 @@ version: 0.2.3
 ## and their caps — fifty solos, twenty families, hardcoded — now sit one
 ## above max_packages_per_run: select_candidate's own exit reports the cap
 ## first, and a back-edge declined for budget hands the ledger to
-## phase2_decider (solo) or the remaining packages to the solo loop (family)
-## instead of dying LOOP_EXHAUSTED. No instruction changed.
+## phase2_decider (solo, through solo_banked, which counts the pick just
+## committed: select_candidate's count is the ledger before it) or the
+## remaining packages to the solo loop (family) instead of dying
+## LOOP_EXHAUSTED. No instruction changed.
 ## 0.2.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work;
 ## the deterministic commits, prepare_commit's file list and the commit

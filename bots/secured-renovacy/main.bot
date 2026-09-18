@@ -4398,6 +4398,22 @@ compute phase2_decider:
 schema phase2_decider_output:
   go_done: bool
 
+## solo_banked — the solo loop's exhaustion exit counts the pick that
+## write_audit_md just banked. select_candidate's attempted_count is the
+## ledger BEFORE the pick it handed out (only cumulative_attempted and
+## only_patches_attempted include it), and phase2_decider reads 0 as
+## "nothing to review": without this step the first solo, committed and
+## then cut by the budget guard, would skip Phase 2.
+compute solo_banked:
+  output: solo_banked_output
+  expr:
+    attempted_count: "input.attempted_count + 1"
+    only_patches_attempted: "input.only_patches_attempted"
+
+schema solo_banked_output:
+  attempted_count: int
+  only_patches_attempted: bool
+
 ## ─── Nodes : SBOM emission ─────────────────────────────────────────
 
 ## emit_sbom writes a per-run software bill of materials right before
@@ -5072,12 +5088,18 @@ workflow secured_renovacy:
   ## The solo loop's exhaustion exit (C145, #1293). The cap sits one above
   ## max_packages_per_run, so select_candidate's own exit — the one that
   ## writes cap_reason and remaining_count — always fires first; this edge
-  ## is reached when the affordability guard declines the back-edge, and
-  ## hands the ledger to phase2_decider exactly as the natural exit does
-  ## (select_candidate's outputs include the last pick: same decision).
-  write_audit_md -> phase2_decider with {
+  ## is reached when the affordability guard declines the back-edge, at any
+  ## iteration. The pick was committed by construction here, and
+  ## select_candidate's attempted_count is the ledger BEFORE that pick:
+  ## solo_banked counts it in, so phase2_decider never reads 0 for a banked
+  ## minor or major (only_patches_attempted already includes the pick).
+  write_audit_md -> solo_banked with {
     attempted_count: "{{outputs.select_candidate.attempted_count}}",
     only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
+  }
+  solo_banked -> phase2_decider with {
+    attempted_count: "{{outputs.solo_banked.attempted_count}}",
+    only_patches_attempted: "{{outputs.solo_banked.only_patches_attempted}}"
   }
 
   ## Failure path: revert (or already reverted) → mark failed → loop back.
