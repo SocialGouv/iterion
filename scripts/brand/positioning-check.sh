@@ -21,9 +21,12 @@
 #     surface phrases in its own voice, and pinning its wording would freeze
 #     copy that is meant to be written.
 #
-# The short form was unguarded once, and the first class grep after unifying it
-# found TWO surfaces the hand-written inventory had missed — including
-# CLAUDE.md's opening line, the most-read descriptor in the repo.
+# Both lists are GUARDED rather than merely written down, because the
+# hand-written inventory has been wrong at every attempt: a grep for the old
+# tagline missed CLAUDE.md's opening line, then a narrower grep for one PHRASE
+# missed four more — including the `GenericName=` on the line directly above a
+# `Comment=` the same change had just edited. A count in a comment goes stale;
+# the lists below are what the build reads.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -39,6 +42,13 @@ definition="$(
     in_section && /^```text$/ { getline; print; exit }
   ' "$SOURCE"
 )"
+
+# Normalised the same way the surfaces are before matching. Without this a
+# definition carrying a double space — or a trailing one, which also defeats
+# ${definition%.} — turns every surface red at once, with no edit to any of
+# them that could fix it: the needle would be the only thing wrong, and the
+# error names the haystack.
+definition="$(printf '%s' "$definition" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
 
 if [ -z "$definition" ]; then
   echo "::error::$SOURCE carries no definition — expected a \`\`\`text block under '## definition'"
@@ -119,8 +129,17 @@ for surface in "${SHORT_SURFACES[@]}"; do
     drift=1
     continue
   fi
-  if ! tr '\n' ' ' < "$surface" | tr -s ' ' | grep -qF -- "$short"; then
+  folded="$(tr '\n' ' ' < "$surface" | tr -s ' ')"
+  if ! printf '%s' "$folded" | grep -qF -- "$short"; then
     echo "::error::positioning drift: $surface no longer carries the short form \"$short\" — the canonical wording is in $SOURCE"
+    drift=1
+  elif printf '%s' "$folded" | grep -qF -- "$definition"; then
+    # The short form is a SUBSTRING of the definition, so a presence test alone
+    # is satisfied by the full sentence — and these surfaces exist precisely
+    # because the full sentence is refused there. Measured: a Homebrew `desc`
+    # set to the definition passed this guard green while `brew style` rejected
+    # it with "Description shouldn't end with a full stop."
+    echo "::error::positioning drift: $surface carries the full definition where the SHORT form belongs — its format refuses a final period (see $SOURCE)"
     drift=1
   fi
 done

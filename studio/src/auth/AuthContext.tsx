@@ -241,6 +241,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ ...initial, status: "anonymous" });
   }, []);
 
+  // adoptIdentity applies a server response and drops the per-account context
+  // when the account CHANGED — not only when someone signed out.
+  //
+  // Signing out was the only way the browser's identity used to change, so the
+  // reset lived there. It is not any more: a password-reset link opened WITH a
+  // live session ends in fresh cookies for the TOKEN'S owner (the confirm
+  // endpoint is public and renders an auth response), and the view that
+  // follows calls reloadIdentity, not signOut. The previous account's active
+  // repo survived into the new one — the exact thing signOut's reset was
+  // written to prevent, reached through a door that did not exist before
+  // /auth/* began rendering with a session.
+  //
+  // Keyed on the identity that changed, not on the route that changed it: a
+  // guard at each caller would have to be repeated at the next one.
+  const adoptIdentity = useCallback((res: AuthResponse) => {
+    setState((prev) => {
+      const next = applyResponse(prev, res);
+      if (prev.user && next.user && prev.user.id !== next.user.id) {
+        useActiveRepoStore.getState().reset();
+      }
+      return next;
+    });
+  }, []);
+
   const selectOrg = useCallback(async (orgID: string) => {
     const res = await apiSwitchOrg(orgID);
     setState((prev) => applyResponse(prev, res));
@@ -253,8 +277,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const reloadIdentity = useCallback(async () => {
     const me = await getMe();
-    setState((prev) => applyResponse(prev, me));
-  }, []);
+    adoptIdentity(me);
+  }, [adoptIdentity]);
 
   const value = useMemo<AuthCtx>(() => {
     const activeOrg = state.orgs.find((o) => o.org_id === state.activeOrgID);

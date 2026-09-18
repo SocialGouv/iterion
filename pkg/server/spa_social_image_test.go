@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -130,5 +131,52 @@ func TestTheServerHandsTheSPAItsOwnOrigin(t *testing.T) {
 	const want = `content="https://iterion.cloud/brand/iterion-bot-circle.png"`
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("the server did not pass its own PublicURL to the SPA handler; want %s in:\n%s", want, rec.Body.String())
+	}
+}
+
+// Three shapes the first version of the rewrite got wrong, each cheap and each
+// producing a URL that names something other than what it should.
+func TestTheRewriteHandlesTheAwkwardOrigins(t *testing.T) {
+	const protoRelative = `<meta property="og:image" content="//cdn.example.com/a.png" />`
+	fs := fstest.MapFS{"index.html": {Data: []byte(
+		`<html><head>` + protoRelative + `<meta name="twitter:image" content="/brand/x.png" /></head></html>`)}}
+
+	body := getIndex(t, SPAHandler(fs, "https://iterion.cloud"), "/")
+	// A protocol-relative URL is ALREADY absolute. Prefixing an origin onto it
+	// names the wrong host.
+	if !strings.Contains(body, protoRelative) {
+		t.Errorf("a protocol-relative image was rewritten:\n%s", body)
+	}
+	if !strings.Contains(body, `content="https://iterion.cloud/brand/x.png"`) {
+		t.Errorf("the root-relative image beside it was not rewritten:\n%s", body)
+	}
+
+	// `$` is a legal URL sub-delimiter and a replacement-template expansion
+	// marker. Unescaped, an origin carrying one ate the image path entirely.
+	for _, base := range []string{"https://ex.com/$1", "https://ex.com/$", "https://ex.com/a$b"} {
+		out := getIndex(t, SPAHandler(spaFixture(), base), "/")
+		want := `content="` + base + `/brand/iterion-bot-circle.png"`
+		if !strings.Contains(out, want) {
+			t.Errorf("base %q: want %s in:\n%s", base, want, out)
+		}
+	}
+}
+
+// "/" used to be served by http.FileServer, which sent a Content-Length and
+// answered a Range. Routing it through serveIndex for the rewrite must not
+// quietly cost the length — a HEAD carried none at all.
+func TestTheIndexCarriesItsLength(t *testing.T) {
+	h := SPAHandler(spaFixture(), "https://iterion.cloud")
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+		got := rec.Header().Get("Content-Length")
+		if got == "" {
+			t.Errorf("%s /: no Content-Length", method)
+			continue
+		}
+		if method == http.MethodGet && got != strconv.Itoa(rec.Body.Len()) {
+			t.Errorf("GET /: Content-Length %s but %d bytes written", got, rec.Body.Len())
+		}
 	}
 }

@@ -353,7 +353,15 @@ function AuthGate() {
     // corrupted by the hop. The query and the fragment were never in wouter's
     // location at all, and a run link carries the tab to open and the node to
     // scroll to in exactly those two.
-    const rawPath = window.location.pathname.slice(scopePrefix().length);
+    // slice() on a prefix that is NOT one silently eats the wrong number of
+    // characters and builds a redirect to a mangled path. Unreachable today —
+    // the pane's scope is injected from the same request path it was served
+    // on — so this is the assertion that makes a future proxy change redden
+    // instead of quietly corrupting a link.
+    const scope = scopePrefix();
+    const rawPath = window.location.pathname.startsWith(scope)
+      ? window.location.pathname.slice(scope.length)
+      : window.location.pathname;
     const target = isRootSideDoor(location)
       ? STUDIO_BASE
       : STUDIO_BASE + rawPath + window.location.search + window.location.hash;

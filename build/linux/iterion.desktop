@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Iterion
-GenericName=Workflow Orchestration
+GenericName=Agentic AI Workflows
 Comment=Build, run and orchestrate agentic AI workflows
 Exec=iterion-desktop
 Icon=iterion-desktop

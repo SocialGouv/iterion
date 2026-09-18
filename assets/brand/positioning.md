@@ -93,7 +93,7 @@ Build, run and orchestrate agentic AI workflows
 | `build/windows/info.json` | the Windows bundle `Comments` |
 | `charts/iterion/Chart.yaml` | the `description:` ArtifactHub and `helm show chart` display |
 | `cmd/iterion-desktop/wails.json` | the Wails bundle `comments` |
-| `cmd/iterion/main.go` | the Cobra `Short`/`Long` — `iterion --help` |
+| `cmd/iterion/main.go` | the Cobra `Short`, which `iterion help` lists. `--help` prints `Long` — the same words, lower-cased after an em dash, so the guard matches `Short` and not that line |
 
 Checked by PRESENCE, not by count: each carries it once by construction, and
 several embed it mid-phrase.
@@ -104,12 +104,23 @@ before: `scripts/update-brew-tap.sh` rewrites only `version "…"` and
 assumption, corrected by reading the awk.
 
 **Prose that describes the product in its own words** —
-`sdks/typescript/README.md`, `marketplace.json`,
-`studio/docs/visual-identity.md`, `bots/copilot/skills/iterion-concepts.md` —
-carries the same idea in a full sentence and is deliberately NOT pinned to a
-byte: freezing prose is how a guard starts blocking legitimate edits.
+`sdks/typescript/README.md` and its `package.json`, `marketplace.json`,
+`studio/docs/visual-identity.md`, `bots/copilot/skills/iterion-concepts.md`,
+the Debian control `Description:` in `scripts/desktop/build-deb.sh` and
+`.github/workflows/desktop-release.yml` — carries the same idea in a sentence
+of its own and is deliberately NOT pinned to a byte: freezing prose is how a
+guard starts blocking legitimate edits. It is listed so the next person walking
+the class does not have to rediscover it.
 
-**The inventory was wrong once, which is why it is a guard now.** Written by
-hand it listed seven surfaces; the first class grep after unifying them found
-nine, including `CLAUDE.md`'s opening line — the most-read descriptor in the
-repository.
+**The inventory has been wrong at every attempt, which is why it is a guard
+and not a list.** Written by hand it named seven surfaces. A grep for the old
+tagline found `CLAUDE.md`'s opening line — the descriptor every agent reads on
+every call. A narrower grep, for one PHRASE rather than the class, then missed
+four more: `sdks/typescript/package.json` (the field npmjs.com renders, whose
+README sibling had just been updated), the Debian control `Description:` in two
+places, and `GenericName=` on the line DIRECTLY ABOVE a `Comment=` the same
+change had edited.
+
+No count is quoted here on purpose: three different ones were written for one
+measurement before this paragraph replaced them. What the build reads is
+`SURFACES` and `SHORT_SURFACES` in the script.

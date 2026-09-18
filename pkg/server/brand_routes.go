@@ -20,10 +20,23 @@ func (s *Server) registerBrandRoutes() {
 	s.mux.HandleFunc("GET /brand/{file}", handleBrandAsset)
 }
 
+// ServeBrandAsset answers one /brand/<file> request.
+//
+// Exported for the same reason NotFoundBuildAsset next door is: every surface
+// that serves these bytes needs the IDENTICAL answer, and the desktop asset
+// proxy lives in its own package. It had a copy for one round, and the copy
+// had already diverged on three things a reader would not notice — no ETag,
+// so every revalidation re-downloaded 79–158 KB; a text/plain 404 where this
+// one is JSON; and no If-None-Match handling, so a 304 came back as a full
+// body.
 func handleBrandAsset(w http.ResponseWriter, r *http.Request) {
-	v, ok := brand.VariantForFilename(r.PathValue("file"))
+	ServeBrandAsset(w, r, r.PathValue("file"))
+}
+
+func ServeBrandAsset(w http.ResponseWriter, r *http.Request, file string) {
+	v, ok := brand.VariantForFilename(file)
 	if !ok {
-		httpError(w, http.StatusNotFound, "no such brand asset: %s", r.PathValue("file"))
+		httpError(w, http.StatusNotFound, "no such brand asset: %s", file)
 		return
 	}
 	data := brand.BotAvatar(v)

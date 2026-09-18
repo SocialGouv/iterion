@@ -1,7 +1,7 @@
 {
   "name": "@iterion/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for the iterion workflow orchestration CLI",
+  "description": "TypeScript SDK for the iterion CLI — build, run and orchestrate agentic AI workflows",
   "license": "MIT",
   "homepage": "https://github.com/SocialGouv/iterion",
   "repository": {

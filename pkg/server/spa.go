@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -166,6 +167,9 @@ func serveIndex(w http.ResponseWriter, r *http.Request, sub fs.FS, publicURL str
 	data = absolutiseSocialImages(data, publicURL)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	// Set explicitly: "/" used to come from http.FileServer, which sent one.
+	// Without it the response is chunked and a HEAD carries no length at all.
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	if r.Method == http.MethodHead {
 		return
 	}
@@ -174,7 +178,10 @@ func serveIndex(w http.ResponseWriter, r *http.Request, sub fs.FS, publicURL str
 
 // socialImageMeta matches an og:image / twitter:image whose content is a
 // root-relative path.
-var socialImageMeta = regexp.MustCompile(`(?i)(<meta\s+(?:property|name)="(?:og:image|twitter:image)"\s+content=")(/[^"]*)(")`)
+// The content must start with a single "/": a protocol-relative "//cdn/x.png"
+// is ALREADY absolute, and prefixing an origin onto it produces a URL naming
+// the wrong host.
+var socialImageMeta = regexp.MustCompile(`(?i)(<meta\s+(?:property|name)="(?:og:image|twitter:image)"\s+content=")(/(?:[^/"][^"]*)?)(")`)
 
 // absolutiseSocialImages rewrites a root-relative social-card image into the
 // absolute URL OpenGraph specifies.
@@ -194,5 +201,9 @@ func absolutiseSocialImages(data []byte, publicURL string) []byte {
 	if base == "" {
 		return data
 	}
+	// `$` is a legal sub-delimiter in a URL and an expansion marker in a
+	// replacement template: an origin containing one silently ate the image
+	// path. Doubling escapes it.
+	base = strings.ReplaceAll(base, "$", "$$")
 	return socialImageMeta.ReplaceAll(data, []byte("${1}"+base+"${2}${3}"))
 }
