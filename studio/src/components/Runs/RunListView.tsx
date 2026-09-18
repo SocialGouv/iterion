@@ -209,6 +209,17 @@ export default function RunListView() {
   // scope adoption so shared URLs keep their filter.
   const { activeRepo, overview, enabled: repoScope, loading: repoScopeLoading } = useActiveRepo();
   const scopeRepoName = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
+
+  // repoScopeLoading is true on the FIRST repo-scope fetch too, not only on
+  // a switch. Treating that first load as a "scope switch" would flash the
+  // dim overlay on a cold load whenever the runs response lands before the
+  // repos response. So only count repoScopeLoading as a switch AFTER the
+  // repo scope has resolved at least once.
+  const repoScopeResolvedRef = useRef(false);
+  if (repoScope && !repoScopeLoading) repoScopeResolvedRef.current = true;
+  const repoSwitching =
+    repoScopeLoading && repoScopeResolvedRef.current;
+
   const seenScopeRef = useRef<string | null>(null);
   useEffect(() => {
     if (mode !== "cloud" || !repoScope || repoScopeLoading) return;
@@ -443,11 +454,12 @@ export default function RunListView() {
     // A switch away from an EMPTY scope holds a cached [] via
     // keepPreviousData (loading=false), so fold refreshing in to show the
     // skeleton rather than the "no runs" CTA while the new scope loads.
-    // repoScopeLoading counts as in-flight too: on a team switch the
+    // repoSwitching counts as in-flight too: on a team switch the
     // adopt-scope effect defers until the new team's repos resolve, so the
     // list is momentarily fetching under the PREVIOUS team's repo filter —
-    // an empty result there is not "this scope has no runs".
-    refreshing: refreshing || repoScopeLoading,
+    // an empty result there is not "this scope has no runs". (It excludes
+    // the first repo-scope load so a cold load never trips it.)
+    refreshing: refreshing || repoSwitching,
     error,
     runCount: runs.length,
     filteredCount: filteredRuns.length,
@@ -669,7 +681,9 @@ export default function RunListView() {
   // being replaced" instead of dimming only the list under the overlay.
   const scopeSwitching = showRefreshingOverlay({
     refreshing,
-    repoScopeLoading,
+    // repoSwitching, not raw repoScopeLoading, so the overlay never flashes
+    // on the first repo-scope resolution during a cold load.
+    repoScopeLoading: repoSwitching,
     runCount: runs.length,
   });
 
