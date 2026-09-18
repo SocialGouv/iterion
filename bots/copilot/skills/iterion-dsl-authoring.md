@@ -59,8 +59,13 @@ back-edge is declined and the node goes on by its other edges; with none,
 the run dies of `LOOP_EXHAUSTED` (`iterion validate` names the node: C145).
 The exit is a SECOND, BARE edge from the same node, written beside the loop
 edge in either order: the engine takes the loop edge while it has budget
-and the bare edge once it is spent. Never `else` (C015 refuses it without a
-`when` sibling) and never a `when` on the exit.
+and the bare edge once it is spent. A lone `else` is refused (C015 needs a
+`when` sibling); a `when` on the exit is fine only with an `else` sibling,
+so the node's edges stay exhaustive — that is how app-dev's interview tells
+a spent cap (`when "loop.x.iteration >= loop.x.max"`, terminal) from a
+budget-declined turn (`else`, resumable). Read the cap from `loop.x.max`,
+the one in force, never from the var it was declared with: a matching
+`when` is taken before the loop edge is considered.
 
 ```
 fix -> review as fix_loop("{{vars.max_fix_passes}}")

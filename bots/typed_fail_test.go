@@ -100,11 +100,13 @@ func codedRefusals() []codedRefusal {
 			bot: "evolve", from: "revise_vision",
 			failNode: "vision_not_converged", code: "VISION_NOT_CONVERGED",
 		},
+		// The cap read by the guard and the message is the one in force —
+		// the var plus any bump_loop grant — never the var alone.
 		codedRefusal{
 			bot: "app-dev", from: "interview_chat",
-			expression: "loop.interview_loop.iteration >= vars.max_interview_turns",
+			expression: "loop.interview_loop.iteration >= loop.interview_loop.max",
 			failNode:   "interview_not_converged", code: "INTERVIEW_NOT_CONVERGED",
-			messageRefs: []string{"{{vars.max_interview_turns}}"},
+			messageRefs: []string{"{{loop.interview_loop.max}}"},
 		},
 		codedRefusal{
 			bot: "app-dev", from: "interview_chat", elseEdge: true,

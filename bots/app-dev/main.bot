@@ -229,7 +229,7 @@ prompt interviewer_system:
   - Mid-turn `ask_user` is for a single blocking clarification only;
     prefer ending your turn (the chat pause is free and can last
     days).
-  - You are bounded at {{vars.max_interview_turns}} operator answers:
+  - You are bounded at {{loop.interview_loop.max}} operator answers:
     past that the run REFUSES (INTERVIEW_NOT_CONVERGED) instead of
     building. Converge before the cap — record what stays undecided
     in SPEC.md rather than asking one more question.
@@ -1996,7 +1996,7 @@ compute deploy_verify:
 fail interview_not_converged:
   description: "the interview spent its turns without a committed SPEC.md"
   code: INTERVIEW_NOT_CONVERGED
-  message: "the interview spent its {{vars.max_interview_turns}} operator answers without a committed SPEC.md — an exhausted loop stays exhausted across resume and rewind: relaunch with a larger max_interview_turns, or in autonomous mode with the brief as it stands"
+  message: "the interview spent its {{loop.interview_loop.max}} operator answers without a committed SPEC.md — an exhausted loop stays exhausted across resume and rewind: relaunch with a larger max_interview_turns, or in autonomous mode with the brief as it stands"
   resumable: false
 
 ## The budget: resumable. The affordability guard declined the back-edge
@@ -2088,7 +2088,11 @@ workflow app_dev:
   ## terminal when the counter says the cap is spent, resumable when the
   ## budget declined the turn (the `else`: the loop edge with budget left
   ## wins over it, so it is only ever taken once the back-edge is declined).
-  interview_chat -> interview_not_converged when "loop.interview_loop.iteration >= vars.max_interview_turns"
+  ## The cap read here is the one in force — the var plus any live-steering
+  ## grant (`bump_loop interview_loop`) — never the var alone: a matching
+  ## `when` is taken before the loop edge is considered, so a guard on the
+  ## var would refuse the very turns a grant just paid for.
+  interview_chat -> interview_not_converged when "loop.interview_loop.iteration >= loop.interview_loop.max"
   interview_chat -> interview_budget_starved else
 
   ## ── Plan phase (on by default; plan_phase off → straight to campaign)
