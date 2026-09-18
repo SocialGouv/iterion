@@ -3,6 +3,8 @@
 ## track, a real tiny MP4), then pauses on a HUMAN review — which surfaces in the
 ## parent's card on /pipelines as an answerable review. Tool-only + human:
 ## no LLM, no API keys.
+dsl: 2
+
 vars:
   episode: string = "ep"
 

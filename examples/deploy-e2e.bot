@@ -12,6 +12,8 @@
 ##
 ## Must run under a sandbox — file secrets require a real driver.
 
+dsl: 2
+
 secrets:
   ## Cluster credentials, exposed via $KUBECONFIG pointing at the file.
   kubeconfig:

@@ -100,6 +100,54 @@ func TestMigrateDSLDryRunAndCheckWriteNothing(t *testing.T) {
 	}
 }
 
+// A directory that carries a bundle marker but no main.bot — a repository
+// root with a skills/ directory, a manifest.yaml whose main.bot lives
+// elsewhere — is not a bundle, so a loose file under it belongs to no
+// bundle: the migration raises no floor for it, says so in the result and
+// the report, and leaves the marker byte-identical. (A file under a REAL
+// bundle root is that bundle's, and the bundle's floor is raised:
+// TestMigrateDSLFloorsTheOwningBundle.)
+func TestMigrateDSLLeavesAnAncestorBundleAlone(t *testing.T) {
+	for _, root := range []string{"manifest-only root", "skills-only root"} {
+		t.Run(root, func(t *testing.T) {
+			dir := t.TempDir()
+			if root == "manifest-only root" {
+				if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(migrateFixtureManifest), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			loose := filepath.Join(dir, "sub", "loose.bot")
+			if err := os.MkdirAll(filepath.Dir(loose), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(loose, []byte("## a loose workflow\nagent a:\n  description: \"x\"\n\nworkflow w:\n  entry: a\n  a -> done\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{loose}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
+			if err != nil {
+				t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
+			}
+			if len(res.Files) != 1 || !res.Files[0].Written || !strings.Contains(res.Files[0].Loose, "no bundle to carry requires.iterion") || !strings.Contains(res.Files[0].Loose, "older than 3.141.0") {
+				t.Fatalf("files: %+v", res.Files)
+			}
+			if len(res.Manifests) != 0 {
+				t.Fatalf("a manifest was attributed to a loose file: %+v", res.Manifests)
+			}
+			if !strings.Contains(out.String(), "  no bundle to carry requires.iterion") {
+				t.Fatalf("report:\n%s", out.String())
+			}
+			if root == "manifest-only root" {
+				if man, _ := os.ReadFile(filepath.Join(dir, "manifest.yaml")); string(man) != migrateFixtureManifest {
+					t.Fatalf("the ancestor manifest was touched:\n%s", man)
+				}
+			}
+		})
+	}
+}
+
 // A refused file fails the run, and NOTHING is written — not the sound
 // files planned before it, not a manifest: a tree is migrated whole or not
 // at all.

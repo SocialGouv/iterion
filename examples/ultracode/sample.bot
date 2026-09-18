@@ -10,6 +10,8 @@
 ## tool so the orchestration prerogative has something to act on.
 ## See docs/ultracode.md.
 
+dsl: 2
+
 prompt build_system:
   You are a senior engineer. Implement the requested change end to end. When the
   task has independent sub-parts, dispatch parallel subagents to handle them

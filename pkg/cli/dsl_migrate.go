@@ -47,6 +47,10 @@ type MigratedFile struct {
 	Written bool                   `json:"written"`
 	Changes []migrate.Change       `json:"changes,omitempty"`
 	Prompts []migrate.PromptChange `json:"prompts,omitempty"`
+	// Loose says, for a changed file that belongs to no bundle, why no
+	// engine floor was raised for it: nothing carries requires.iterion,
+	// and an engine older than the profile refuses the header.
+	Loose string `json:"loose,omitempty"`
 }
 
 // ManifestFloor is a bundle manifest whose engine floor the migration
@@ -108,13 +112,16 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			res.Refused = append(res.Refused, err.Error())
 			continue
 		}
-		res.Files = append(res.Files, MigratedFile{Path: path, Changed: out.Changed, Changes: out.Changes, Prompts: out.Prompts})
-		plans = append(plans, planned{path, out})
+		file := MigratedFile{Path: path, Changed: out.Changed, Changes: out.Changes, Prompts: out.Prompts}
 		if out.Changed {
-			if dir := owningBundleDir(path); dir != "" {
+			if dir := bundle.OwningDir(path); dir != "" {
 				bundleDirs[dir] = true
+			} else {
+				file.Loose = looseFileNote(opts.To)
 			}
 		}
+		res.Files = append(res.Files, file)
+		plans = append(plans, planned{path, out})
 	}
 	if len(res.Refused) > 0 {
 		reportMigration(opts, res)
@@ -273,24 +280,19 @@ func resolveFloor(flag string, to int) (string, error) {
 	return parser.ProfileSince[to], nil
 }
 
-// owningBundleDir is the root of the bundle a workflow file belongs to —
-// the nearest directory up from it that pkg/bundle recognises (a manifest,
-// or a skills/ directory) — or "" for a loose file.
-func owningBundleDir(path string) string {
-	dir, err := filepath.Abs(filepath.Dir(path))
-	if err != nil {
-		return ""
+// looseFileNote is what the report says of a migrated file that belongs to
+// no bundle: no manifest carries requires.iterion for it, so the only
+// guard against an engine too old for the profile is the engine's own
+// refusal of the header.
+func looseFileNote(to int) string {
+	if to == 0 {
+		to = parser.MaxProfile
 	}
-	for {
-		if bundle.DirForMainBot(filepath.Join(dir, bundle.MainBotFile)) != "" {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
+	note := "no bundle to carry requires.iterion"
+	if since := parser.ProfileSince[to]; since != "" {
+		note += " — an engine older than " + since + " refuses the header"
 	}
+	return note
 }
 
 // raiseManifestFloor makes a manifest require at least floor (resolveFloor),
@@ -347,6 +349,9 @@ func reportMigration(opts MigrateDSLOptions, res MigrateDSLResult) {
 			continue
 		}
 		p.Line("%s %s (%d change(s), %d prompt(s) keep their paragraphs)", verb, f.Path, len(f.Changes), len(f.Prompts))
+		if f.Loose != "" {
+			p.Line("  %s", f.Loose)
+		}
 		if opts.DryRun {
 			for _, c := range f.Changes {
 				switch c.Kind {

@@ -1,5 +1,7 @@
 ## Demonstrates group reuse + a subbot node (tool-only, runs without API keys).
 ##   plan -> r1.gate (group instance) -> run_ticket (subbot) -> done
+dsl: 2
+
 schema pout:
   id: string
   ok: bool

@@ -18,3 +18,9 @@ when_to_use: |
 author: iterion — examples/pipeline-board-demo
 schema_version: 1
 enabled: true
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

@@ -2,6 +2,8 @@
 ## running step.bot as a NESTED subbot (a subbot inside a subbot), then
 ## gathers. Tool/compute only at this level — the human gate lives one
 ## level deeper, in step.bot.
+dsl: 2
+
 schema split_out:
   steps: json
 

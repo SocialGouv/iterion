@@ -14,6 +14,8 @@
 ##     frame displays — the two parallel step runs pause on their HUMAN
 ##     check, parking stage, which parks main;
 ##   - answer both checks (Approve) and the whole chain completes.
+dsl: 2
+
 schema prep_out:
   ready: bool
 

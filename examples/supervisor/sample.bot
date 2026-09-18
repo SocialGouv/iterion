@@ -3,6 +3,8 @@
 ## enqueues steering messages it picks up at its next turn — scoped to
 ## that node. See docs/supervisors.md.
 
+dsl: 2
+
 supervisor watchdog:
   watches: [implement]
   model: "anthropic/claude-opus-4-8"

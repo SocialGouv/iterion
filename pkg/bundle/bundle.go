@@ -254,6 +254,13 @@ func ForeignManifestBeside(mainBot string) (manifest, reason string) {
 // a bundle IS — when two packages answered that question with their own
 // copy of the marker list, they could disagree about it after any change
 // to the layout.
+//
+// The path is taken as given: it names the file the caller holds, on disk
+// or not — the studio validates a draft main.bot beside a manifest that
+// already exists, and must get that bundle's prompts. A caller that walks
+// UP a tree looking for the bundle a file belongs to must not call this
+// with a constructed `<dir>/main.bot`: that is OwningDir, which requires
+// the main.bot to exist.
 func DirForMainBot(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -278,37 +285,55 @@ func DirForMainBot(path string) string {
 	return ""
 }
 
-// OpenForWorkflow returns the nearest enclosing directory bundle for an
-// arbitrary workflow file. Unlike DirForMainBot, this also recognizes
-// exported workflows under workflows/ so subbot children retain their bundle
-// prompts, skills, attachments and sandbox mount. A workflow outside a bundle
-// returns (nil, nil).
+// OwningDir is the root of the bundle a workflow file BELONGS to: the
+// nearest directory, from the file's own upward, that holds an existing
+// main.bot beside a marker — or "" for a loose file. The existence check
+// is what sets it apart from DirForMainBot: a directory that merely
+// carries a skills/ directory or a manifest (a repository root, a manifest
+// whose main.bot lives elsewhere) is not a bundle, and a loose file under
+// it is nobody's. Every walk-up shares this one answer — OpenForWorkflow
+// here, `iterion dsl migrate` when it raises a bundle's floor.
+func OwningDir(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+		main := filepath.Join(dir, MainBotFile)
+		if info, statErr := os.Stat(main); statErr == nil && info.Mode().IsRegular() && DirForMainBot(main) != "" {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+	}
+}
+
+// OpenForWorkflow opens the bundle an arbitrary workflow file belongs to
+// (OwningDir). Unlike DirForMainBot, this also recognizes exported
+// workflows under workflows/ so subbot children retain their bundle
+// prompts, skills, attachments and sandbox mount. A workflow outside a
+// bundle returns (nil, nil).
 func OpenForWorkflow(path string) (*Bundle, error) {
 	if path == "" {
 		return nil, nil
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
+	if _, err := filepath.Abs(path); err != nil {
 		return nil, fmt.Errorf("bundle: resolve workflow %s: %w", path, err)
 	}
-	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
-		hasMain := false
-		if info, statErr := os.Stat(filepath.Join(dir, MainBotFile)); statErr == nil && info.Mode().IsRegular() {
-			hasMain = true
-		}
-		if hasMain && DirForMainBot(filepath.Join(dir, MainBotFile)) != "" {
-			b, openErr := OpenDir(dir)
-			if openErr != nil {
-				return nil, openErr
-			}
-			return b, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
+	dir := OwningDir(path)
+	if dir == "" {
+		return nil, nil
 	}
-	return nil, nil
+	b, openErr := OpenDir(dir)
+	if openErr != nil {
+		return nil, openErr
+	}
+	return b, nil
 }
 
 // Kind discriminates how a workflow path was supplied.

@@ -8,6 +8,8 @@
 ## The tool is registered when ITERION_WEB_SEARCH=on, or (default `auto`)
 ## when any of those backends is configured. See docs/web-search.md.
 
+dsl: 2
+
 vars:
   topic: string = "the SearXNG metasearch engine"
 

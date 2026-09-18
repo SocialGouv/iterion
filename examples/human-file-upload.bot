@@ -28,6 +28,8 @@
 ## literal '@'.)
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   purpose: string = "background music for the episode"
 

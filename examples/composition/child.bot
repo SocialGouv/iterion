@@ -1,4 +1,6 @@
 ## Child bot run by the parent's `subbot` node (tool-only, no API keys).
+dsl: 2
+
 schema out:
   validated: bool
   echoed: string
