@@ -1,6 +1,6 @@
 # Iterion
 
-Workflow orchestration engine with a custom DSL. Runnable workflows are `.bot` files (`.botz` for packaged bundles); the single source of truth for the accepted workflow extension is [`pkg/dsl/workflowfile`](pkg/dsl/workflowfile/workflowfile.go).
+Build, run and orchestrate agentic AI workflows, written in a custom DSL. Runnable workflows are `.bot` files (`.botz` for packaged bundles); the single source of truth for the accepted workflow extension is [`pkg/dsl/workflowfile`](pkg/dsl/workflowfile/workflowfile.go).
 
 ## Project nature
 

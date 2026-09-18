@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -70,7 +71,10 @@ func NotFoundBuildAsset(w http.ResponseWriter, r *http.Request) {
 // routes like /runs/abc render the shell instead of a hard 404. The fallback
 // is gated on GET/HEAD, a non-/api/ prefix and a non-/assets/ prefix, so
 // neither JSON endpoints nor build artifacts masquerade as HTML.
-func SPAHandler(sub fs.FS) http.Handler {
+// publicURL, when non-empty, is the deployment's externally-reachable origin.
+// It exists for ONE reason: rewriting the relative og:image in index.html into
+// the absolute URL OpenGraph specifies (see absolutiseSocialImages).
+func SPAHandler(sub fs.FS, publicURL string) http.Handler {
 	fileServer := http.FileServer(http.FS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := path.Clean(r.URL.Path)
@@ -89,7 +93,10 @@ func SPAHandler(sub fs.FS) http.Handler {
 			return
 		}
 		if clean == "/" || clean == "." {
-			fileServer.ServeHTTP(w, r)
+			// Through serveIndex, not the file server: "/" is the product home,
+			// and its social-card image has to be absolutised like every other
+			// route's. http.FileServer would hand back the bytes untouched.
+			serveIndex(w, r, sub, publicURL)
 			return
 		}
 		if IsBuildAssetDir(sub, clean) {
@@ -109,7 +116,7 @@ func SPAHandler(sub fs.FS) http.Handler {
 			NotFoundBuildAsset(w, r)
 			return
 		}
-		serveIndex(w, r, sub)
+		serveIndex(w, r, sub, publicURL)
 	})
 }
 
@@ -150,16 +157,42 @@ func ServeInjectedIndex(w http.ResponseWriter, r *http.Request, sub fs.FS, scope
 	}
 }
 
-func serveIndex(w http.ResponseWriter, r *http.Request, sub fs.FS) {
+func serveIndex(w http.ResponseWriter, r *http.Request, sub fs.FS, publicURL string) {
 	data, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
+	data = absolutiseSocialImages(data, publicURL)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	if r.Method == http.MethodHead {
 		return
 	}
 	_, _ = w.Write(data)
+}
+
+// socialImageMeta matches an og:image / twitter:image whose content is a
+// root-relative path.
+var socialImageMeta = regexp.MustCompile(`(?i)(<meta\s+(?:property|name)="(?:og:image|twitter:image)"\s+content=")(/[^"]*)(")`)
+
+// absolutiseSocialImages rewrites a root-relative social-card image into the
+// absolute URL OpenGraph specifies.
+//
+// index.html ships the path RELATIVE because one bundle serves iterion.cloud,
+// a preprod host and every self-hosted deployment, so no build-time value is
+// right for all three. But a relative og:image is dropped by the crawlers that
+// matter — LinkedIn in particular — and the preview renders text-only. The
+// server is the first place that knows its own origin, so it is where the two
+// requirements can both be met.
+//
+// A no-op when publicURL is unset, which is every local and desktop run: there
+// is no origin to name, nothing external crawls them, and the bytes are served
+// exactly as built.
+func absolutiseSocialImages(data []byte, publicURL string) []byte {
+	base := strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	if base == "" {
+		return data
+	}
+	return socialImageMeta.ReplaceAll(data, []byte("${1}"+base+"${2}${3}"))
 }

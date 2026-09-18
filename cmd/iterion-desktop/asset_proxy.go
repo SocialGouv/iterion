@@ -14,11 +14,13 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
+	"github.com/SocialGouv/iterion/pkg/brand"
 	iserver "github.com/SocialGouv/iterion/pkg/server"
 )
 
@@ -112,7 +114,7 @@ func newAssetProxyHandler(app *App) *assetProxyHandler {
 	}
 	return &assetProxyHandler{
 		app:    app,
-		spa:    iserver.SPAHandler(subFS),
+		spa:    iserver.SPAHandler(subFS, ""),
 		subFS:  subFS,
 		caches: make(map[string]*cachedProxy),
 	}
@@ -215,6 +217,29 @@ func (h *assetProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// scoped /x/<id>/api/... never falls into the legacy single-backend path.
 	if strings.HasPrefix(r.URL.Path, "/x/") {
 		h.serveScoped(w, r)
+		return
+	}
+
+	// The mascot, from the same embed the server serves it from. It is NOT in
+	// the SPA's StaticFS — studio/public carries no brand/ — so without this
+	// the request fell to the SPA fallback and answered index.html as
+	// text/html. index.html's og:image points here, and so does the studio's
+	// GitHub-App logo hand-off, which is the one that matters: an operator
+	// asked to download the avatar got an HTML page.
+	if strings.HasPrefix(r.URL.Path, "/brand/") {
+		name := strings.TrimPrefix(r.URL.Path, "/brand/")
+		v, ok := brand.VariantForFilename(name)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		data := brand.BotAvatar(v)
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(data)
+		}
 		return
 	}
 

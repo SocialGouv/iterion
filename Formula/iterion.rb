@@ -1,5 +1,5 @@
 class Iterion < Formula
-  desc "Workflow orchestration engine with a custom DSL (.bot files)"
+  desc "Build, run and orchestrate agentic AI workflows, from readable .bot files"
   homepage "https://github.com/SocialGouv/iterion"
   version "3.165.0"
   license "MIT"

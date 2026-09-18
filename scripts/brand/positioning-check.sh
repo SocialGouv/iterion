@@ -11,12 +11,19 @@
 # Run through `task brand:positioning`; `task check` and the CI `brand` job
 # both run that.
 #
-# Only the DEFINITION is guarded. The category line ("apps have Linux…") is a
-# metaphor each surface phrases in its own voice, and pinning its wording would
-# freeze copy that is meant to be written. The SHORT form used by packaging
-# metadata is out of scope too, and assets/brand/positioning.md says which
-# surfaces those are — the list below is not the whole class, and claiming
-# otherwise is how a guard starts lying.
+# Two things are guarded, and one deliberately is not:
+#
+#   - the DEFINITION, on the surfaces that display a full sentence;
+#   - the SHORT form (same sentence, no final period) on packaging metadata
+#     whose format refuses one — a Homebrew `desc` audit rejects a trailing
+#     period and a leading article, a `.desktop` Comment= is a one-liner;
+#   - NOT the category line ("apps have Linux…"): it is a metaphor each
+#     surface phrases in its own voice, and pinning its wording would freeze
+#     copy that is meant to be written.
+#
+# The short form was unguarded once, and the first class grep after unifying it
+# found TWO surfaces the hand-written inventory had missed — including
+# CLAUDE.md's opening line, the most-read descriptor in the repo.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -62,6 +69,20 @@ SURFACES=(
   "studio/src/views/CloudHome/index.tsx:1"
 )
 
+# The SHORT form: the same sentence without its final period, on metadata whose
+# format refuses a sentence. Presence, not a count — these carry it once by
+# construction, and several embed it mid-phrase.
+SHORT_SURFACES=(
+  "CLAUDE.md"
+  "Cask/iterion-desktop.rb"
+  "Formula/iterion.rb"
+  "build/linux/iterion.desktop"
+  "build/windows/info.json"
+  "charts/iterion/Chart.yaml"
+  "cmd/iterion-desktop/wails.json"
+  "cmd/iterion/main.go"
+)
+
 drift=0
 for entry in "${SURFACES[@]}"; do
   surface="${entry%:*}"
@@ -89,8 +110,23 @@ for entry in "${SURFACES[@]}"; do
   fi
 done
 
+# The short form is the definition minus its final period, derived rather than
+# repeated: a second literal here is a second thing to keep in step.
+short="${definition%.}"
+for surface in "${SHORT_SURFACES[@]}"; do
+  if [ ! -f "$surface" ]; then
+    echo "::error::$surface is on the short-form surface list but does not exist — update $SOURCE and this script together"
+    drift=1
+    continue
+  fi
+  if ! tr '\n' ' ' < "$surface" | tr -s ' ' | grep -qF -- "$short"; then
+    echo "::error::positioning drift: $surface no longer carries the short form \"$short\" — the canonical wording is in $SOURCE"
+    drift=1
+  fi
+done
+
 if [ "$drift" -eq 0 ]; then
-  echo "positioning: ${#SURFACES[@]} surfaces carry \"$definition\" the expected number of times"
+  echo "positioning: ${#SURFACES[@]} surfaces carry \"$definition\", ${#SHORT_SURFACES[@]} carry the short form"
 fi
 
 exit $drift

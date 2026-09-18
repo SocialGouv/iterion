@@ -432,6 +432,17 @@ func (s *Server) routes() {
 	// Before the catch-all: a pre-move studio URL must get a 302 to its
 	// current address, not the SPA shell (which would render the product home
 	// at /runs/<id> and lose the run the link named).
+	s.mountSPA(staticSub)
+}
+
+// mountSPA registers the legacy redirects and the SPA catch-all over sub.
+//
+// Split out so a test can call THIS — the function the server actually runs —
+// with a fixture filesystem. Passing s.cfg.PublicURL to SPAHandler by hand in
+// a test proves the rewrite works and says nothing about whether the server
+// hands it its own origin, which is the difference between a capability and a
+// green test over a dead one.
+func (s *Server) mountSPA(sub fs.FS) {
 	s.registerStudioLegacyRedirects()
-	s.mux.Handle("GET /", SPAHandler(staticSub))
+	s.mux.Handle("GET /", SPAHandler(sub, s.cfg.PublicURL))
 }

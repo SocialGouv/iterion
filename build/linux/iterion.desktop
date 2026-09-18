@@ -2,7 +2,7 @@
 Type=Application
 Name=Iterion
 GenericName=Workflow Orchestration
-Comment=Workflow orchestration engine for AI-powered automations
+Comment=Build, run and orchestrate agentic AI workflows
 Exec=iterion-desktop
 Icon=iterion-desktop
 Terminal=false
