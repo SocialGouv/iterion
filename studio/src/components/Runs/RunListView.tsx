@@ -757,7 +757,17 @@ export default function RunListView() {
           skeleton / empty / error bodies fit the viewport or scroll
           internally. */}
       <div className="relative flex-1 min-h-0 overflow-hidden">
-        <div className={`h-full ${scopeSwitching ? "opacity-60 transition-opacity" : "transition-opacity"}`}>
+        {/* During a scope switch the rows on screen belong to the OUTGOING
+            scope (keepPreviousData). Dim them AND make them inert so a
+            click / bulk action can't target a run from the scope the
+            operator just left; interaction returns when the new scope
+            lands. */}
+        <div
+          className={`h-full transition-opacity ${
+            scopeSwitching ? "opacity-60 pointer-events-none" : ""
+          }`}
+          aria-busy={scopeSwitching || undefined}
+        >
           {body}
         </div>
         {/* Scope-switch indicator. keepPreviousData keeps the previous
