@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import {
   GroupedTableVirtuoso,
@@ -349,7 +349,10 @@ export default function RunListView() {
   // in that window would target runs from the scope the operator just left,
   // against the already-switched session.
   const scopeSwitchInFlight = refreshing || repoSwitching;
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so the selection is cleared BEFORE
+  // paint — otherwise there'd be a single frame where the bulk toolbar
+  // still shows the outgoing scope's selection at the start of a switch.
+  useLayoutEffect(() => {
     if (scopeSwitchInFlight) clear();
   }, [scopeSwitchInFlight, clear]);
 
