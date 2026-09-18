@@ -82,20 +82,28 @@ is the work tracked in the Backends epic.
 bots with production evidence. **Everything not listed here is ⚪ or 🟠 by
 default** — implemented and documented, not proven in production.
 
+> **Every 🟢 below was downgraded on 2026-09-18** by an adversarial pass whose
+> posture was to break the claim. Not one survived. The bar this page sets —
+> *a measured run, check or schedule you can point at* — turned out to be met
+> by **dispatch** evidence rather than **outcome** evidence in three cases out
+> of five, and by silence in the other two. `🟢 humming` is now an unused
+> mark: it is the bar to earn, and [#1422](https://github.com/SocialGouv/iterion/issues/1422)
+> is the mechanism that will earn it.
+
 | bot | persona | mark | evidence, 2026-09-18 |
 |---|---|---|---|
-| `review-pr` | **Revi** | 🟢 | `revi/review` is a required check on `iterion` **and** `buildkit-operator`. The last 25 merged iterion PRs (#1342→#1392) are **25/25 SUCCESS**. On the `mesure-impact` binding: **10 runs / 30 days, 0 failures**, p50 552 s, p95 884 s, **$13.68** total (~$1.37 a review) |
-| `feed-watch` | **Vigie** | 🟢 | **10 schedules** armed on the Ministères-Sociaux tenant (`Europe/Paris`): a twice-daily pair, a daily, and two weekly quarter-hour ladders. Fired today at 05:00Z and 06:00Z |
-| `vuln-watch` | **Senti** | 🟢 | hourly (`25 * * * *`), last fire 2026-09-18T10:25Z |
+| `review-pr` | **Revi** | 🟡 | `revi/review` is a required check on `iterion` **and** `buildkit-operator`. The last 25 merged iterion PRs (#1342→#1392) are **25/25 SUCCESS**. On the `mesure-impact` binding: **10 runs / 30 days, 0 failures**, p50 552 s, p95 884 s, **$13.68** total (~$1.37 a review) |
+| `feed-watch` | **Vigie** | 🟠 | **10 schedules** armed on the Ministères-Sociaux tenant, last *dispatched* today at 05:00Z. But a schedule record carries no run id, status or error ([#1426](https://github.com/SocialGouv/iterion/issues/1426)), and the runs API ignores `team_id` ([#1419](https://github.com/SocialGouv/iterion/issues/1419)) — **nothing here proves a run happened**. On the operator's host the same bot family is the top error source over two months ([#1425](https://github.com/SocialGouv/iterion/issues/1425)) |
+| `vuln-watch` | **Senti** | 🟠 | hourly (`25 * * * *`), last *dispatched* 2026-09-18T10:25Z — same caveat as Vigie: dispatch is not outcome |
 | `docs-refresh` | **Doki** | 🟡 | weekly against this repo (Monday 04:00Z), opens its own MR; last fire 2026-09-14 |
 | `sec-audit-source` | **Seki** | 🟡 | reaching the cloud; **5 open findings sit untriaged in Inbox** (#1322 #1323 #1324 #1328 #1333) |
 | `branch-improve-loop` | **Billy** | 🟠 | proven in the gate loop, then **paused on iterion** since 2026-09-15 (`auto_fix_on_gate_failure` off — cost). `/billy` still answers on demand |
-| `dep-update-guard` | **Vetty** | 🟠 | third member of the gate trio; **one ticket in 298** on this board — effectively unmeasured |
+| `dep-update-guard` | **Vetty** | 🟠 | third member of the gate trio; **one ticket on the whole board** — effectively unmeasured |
 
 Two silences are findings in their own right, and are written up in their
-epics rather than passed over: **Vigie carries one ticket out of 298** after
-months on ten schedules, and the **Assistant** and **Automation** epics have
-**zero open tickets**. Either those surfaces are genuinely settled, or nobody
+epics rather than passed over: **Vigie carries not one tracked ticket** after
+months on ten schedules — its epic is the only item under it — and the
+**Assistant** and **Automation** epics have **zero open tickets**. Either those surfaces are genuinely settled, or nobody
 is exercising them hard enough to file anything. Until a deliberate look says
 which, treat them as unmeasured, not solved.
 
@@ -167,33 +175,37 @@ closes.
 
 ## The chantier map
 
-All 22 epics, their mark, and where the detail lives. Counts are board items
+All 26 epics, their mark, and where the detail lives. Counts are board items
 (closed + open) as of 2026-09-18.
 
 | epic | mark | items | what it is |
 |---|---|---|---|
 | 🚦 [Merge gate](https://github.com/SocialGouv/iterion/issues/1395) | 🔴 | 15 | revi × billy × vetty, and the repos they guard |
-| 🔍 [Revi](https://github.com/SocialGouv/iterion/issues/1396) | 🟢 | 24 | PR review in production |
-| 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟢 | 2 | the watch feed in production |
-| 🛡️ [Seki](https://github.com/SocialGouv/iterion/issues/1398) | 🟡 | 9 | security audit on the cloud |
-| 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 15 | 37 bundles, shapes, `dsl: 2`, dogfood |
-| 💬 [Assistant](https://github.com/SocialGouv/iterion/issues/1400) | 🟢 | 13 | Copi & Nexie |
-| ✍️ [DSL authoring](https://github.com/SocialGouv/iterion/issues/1401) | 🟡 | 46 | the authoring-first DSL — the largest chantier |
-| 📐 [Public contracts](https://github.com/SocialGouv/iterion/issues/1402) | ⚪ | 9 | contracts & execution by ports |
-| ⚙️ [Runtime](https://github.com/SocialGouv/iterion/issues/1403) | 🟡 | 24 | fan-out, checkpoints, resume, rewind |
+| 💬 [Assistant](https://github.com/SocialGouv/iterion/issues/1400) | 🟠 | 13 | Copi & Nexie |
 | 🔌 [Backends](https://github.com/SocialGouv/iterion/issues/1404) | 🟠 | 18 | execution backends and their parity |
-| 📦 [Sandbox](https://github.com/SocialGouv/iterion/issues/1405) | 🟢 | 18 | isolation and the permission gate |
-| 🧩 [Connectors](https://github.com/SocialGouv/iterion/issues/1406) | 🟠 | 12 | connectors, MCP, plugins, skills |
-| ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 12 | tenancy, replicas, persistence |
-| 🔑 [Credentials](https://github.com/SocialGouv/iterion/issues/1408) | 🟡 | 31 | BYOK, quotas, metering, cost |
-| 🔗 [Forge](https://github.com/SocialGouv/iterion/issues/1409) | 🟡 | 25 | GitHub App, GitLab, Forgejo, webhooks |
 | 🩺 [CI health](https://github.com/SocialGouv/iterion/issues/1410) | 🟠 | 16 | flakes, races, the merge queue |
-| 🚀 [Prod ops](https://github.com/SocialGouv/iterion/issues/1411) | 🟡 | 7 | deploy, rollout, incidents |
-| 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 13 | editor, board, run console, desktop |
-| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟢 | 14 | board, dispatcher, triggers, schedules |
+| 🧩 [Connectors](https://github.com/SocialGouv/iterion/issues/1406) | 🟠 | 12 | connectors, MCP, plugins, skills |
 | 📚 [Docs](https://github.com/SocialGouv/iterion/issues/1414) | 🟠 | 4 | the doc site, ADRs, this page |
-| 👁️ [Observability](https://github.com/SocialGouv/iterion/issues/1415) | ⚪ | 1 | events, logs, error tracking |
 | 🧪 [E2E proof](https://github.com/SocialGouv/iterion/issues/1421) | 🟠 | 4 | the free layer always, the paid layer deliberately |
+| 👁️ [Observability](https://github.com/SocialGouv/iterion/issues/1415) | 🟠 | 1 | events, logs, error tracking |
+| 📦 [Sandbox](https://github.com/SocialGouv/iterion/issues/1405) | 🟠 | 19 | isolation and the permission gate |
+| 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 13 | editor, board, run console, desktop |
+| 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟠 | 1 | the watch feed in production |
+| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules |
+| 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 13 | 37 bundles, shapes, `dsl: 2`, dogfood |
+| 🏷️ [Brand & product home](https://github.com/SocialGouv/iterion/issues/1429) | 🟡 | 1 | what iterion says it is, and how it talks to users |
+| ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 13 | tenancy, replicas, persistence |
+| 🔑 [Credentials](https://github.com/SocialGouv/iterion/issues/1408) | 🟡 | 31 | BYOK, quotas, metering, cost |
+| ✍️ [DSL authoring](https://github.com/SocialGouv/iterion/issues/1401) | 🟡 | 46 | the authoring-first DSL — the largest chantier |
+| 🔗 [Forge](https://github.com/SocialGouv/iterion/issues/1409) | 🟡 | 25 | GitHub App, GitLab, Forgejo, webhooks |
+| 🪞 [Goldy](https://github.com/SocialGouv/iterion/issues/1428) | 🟡 | 3 | the golden-master oracle |
+| 🚀 [Prod ops](https://github.com/SocialGouv/iterion/issues/1411) | 🟡 | 8 | deploy, rollout, incidents |
+| 📐 [Public contracts](https://github.com/SocialGouv/iterion/issues/1402) | 🟡 | 9 | contracts & execution by ports |
+| 🚚 [Release & distribution](https://github.com/SocialGouv/iterion/issues/1427) | 🟡 | 1 | the train that puts iterion in a user's hands |
+| 🔍 [Revi](https://github.com/SocialGouv/iterion/issues/1396) | 🟡 | 24 | PR review in production |
+| ⚙️ [Runtime](https://github.com/SocialGouv/iterion/issues/1403) | 🟡 | 24 | fan-out, checkpoints, resume, rewind |
+| 🛡️ [Seki](https://github.com/SocialGouv/iterion/issues/1398) | 🟡 | 9 | security audit on the cloud |
+| 🧠 [Memory & knowledge](https://github.com/SocialGouv/iterion/issues/1430) | ⚪ | 1 | scopes, the knowledge store, lifecycle, quotas |
 
 ## ✅ Keeping this page honest
 

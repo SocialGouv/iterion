@@ -16,7 +16,7 @@ This page is the mechanics.
 
 Nine views, split by audience. **The epic views carry `label:epic`; the ticket
 views carry `-label:epic`** — an epic sitting in the Kanban's *In progress*
-column is noise, and there are 22 of them.
+column is noise, and there are 26 of them.
 
 *The strategy — the epics themselves:*
 
@@ -67,6 +67,13 @@ day-to-day Triage and Kanban views.
 For a **ticket**, `Status` keeps its ordinary claim meaning and
 `State of play` is left empty.
 
+**`Priority` is an epic-level field.** All 26 epics carry one; most open
+tickets do not, and that is deliberate rather than neglected. Ranking 77 open
+tickets against each other is fake precision — what actually decides the next
+move is which *chantier* matters (its `Priority`) and what its `Next` says.
+Give a ticket a priority when something makes it urgent on its own; leave it
+empty otherwise. An empty column here is not a backlog to fill.
+
 ## 🔭 `Latest` and `Next` — the two lines that make it readable
 
 Two **text** fields, on epics only, are what turn 📚 Epic map from an inventory
@@ -92,12 +99,12 @@ guess between the two — go and look.
 
 It was considered and deliberately not built. The board already carries `Area`
 (engine · bots · cloud/ops · studio · docs) and `State of play`, and the
-latter partitions all 22 epics into five scannable columns — the grouping need
+latter partitions all 26 epics into five scannable columns — the grouping need
 is met. Adding a third classification to answer *"what landed, what's next"*
 would be solving a **content** problem with a **taxonomy**, which is how this
 board became unreadable the first time. `Latest` and `Next` answer it directly.
 
-Revisit if and only if 22 epics genuinely stop being scannable — the seam
+Revisit if and only if the epic list genuinely stops being scannable — the seam
 goes in at the **second** variant, not the fifth: a real second grouping need,
 named, not an anticipated one.
 
