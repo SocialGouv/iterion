@@ -2075,6 +2075,10 @@ schema bucket_families_output:
 schema select_family_input:
   families: json
   attempted_families: json
+  ## The members ledger the family pass hands to the solo loop: seeded
+  ## from the patch batch on entry, grown by mark_family_attempted on
+  ## every loop-back, passed through so the natural exit always has it.
+  attempted_members: json
   workspace_dir: string
   max_families: int
 
@@ -2088,6 +2092,9 @@ schema select_family_output:
   has_more: bool
   attempted_families_count: int
   cumulative_attempted_families: json
+  ## The members ledger as received (see select_family_input): what the
+  ## exit to the solo loop and the edges into mark_family_attempted read.
+  attempted_members: json
   ## cap_reason explains why the family loop is stopping: "" while
   ## picking, "exhausted" when no family is left, or the
   ## max_families_per_run line when the cap stopped it (the remaining
@@ -3975,8 +3982,10 @@ tool select_family:
   script: |
     const familiesRaw = {{input.families}};
     const attemptedRaw = {{input.attempted_families}};
+    const membersRaw = {{input.attempted_members}};
     const workspaceDir = {{input.workspace_dir}} || "";
     const maxFamilies = {{input.max_families}};
+    const attemptedMembers = (membersRaw && typeof membersRaw === "object") ? membersRaw : {};
 
     const families = Array.isArray(familiesRaw) ? familiesRaw : [];
     const attempted = (attemptedRaw && typeof attemptedRaw === "object") ? attemptedRaw : {};
@@ -4022,6 +4031,7 @@ tool select_family:
         has_more: false,
         attempted_families_count: attemptedNames.size,
         cumulative_attempted_families: attempted,
+        attempted_members: attemptedMembers,
         cap_reason: capReason,
       };
     } else {
@@ -4034,6 +4044,7 @@ tool select_family:
         has_more: true,
         attempted_families_count: attemptedNames.size,
         cumulative_attempted_families: cumulative,
+        attempted_members: attemptedMembers,
         cap_reason: "",
       };
     }
@@ -4730,6 +4741,7 @@ workflow secured_renovacy:
   bucket_families -> select_family when has_families with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{}",
+    attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}",
     workspace_dir: "{{vars.workspace_dir}}",
     max_families: "{{vars.max_families_per_run}}"
   }
@@ -4753,15 +4765,15 @@ workflow secured_renovacy:
   }
 
   ## select_family exhausted (every family attempted or already at
-  ## target) → hand off to the per-package solo loop. We pass the
-  ## family-attempted members ledger as `attempted` so solos skip the
-  ## packages the family path already handled; mark_family_attempted
-  ## seeded it with bucket_patches.attempted_after_batch on the first
-  ## iteration so the patch-batched members are also covered.
+  ## target, or the cap) → hand off to the per-package solo loop with the
+  ## members ledger select_family carries: the patch batch's members on
+  ## entry, plus every family attempted since. It exists even when no
+  ## family ran (max_families_per_run: 0, every family at target) — a
+  ## reference to mark_family_attempted would resolve to null there.
   select_family -> select_candidate when not has_more with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
-    attempted: "{{outputs.mark_family_attempted.attempted_members}}",
+    attempted: "{{outputs.select_family.attempted_members}}",
     max_packages: "{{vars.max_packages_per_run}}",
     workspace_dir: "{{vars.workspace_dir}}",
     update_scope: "{{vars.update_scope}}"
@@ -4813,12 +4825,15 @@ workflow secured_renovacy:
   ## Both terminal family outcomes (success → committed, failure →
   ## reverted) loop back through mark_family_attempted so the next
   ## select_family iteration skips this family.
+  ## The members ledger grows from what select_family carried into this
+  ## family (the batch's members, then every family before) — not from
+  ## the batch alone, which dropped the earlier families' members.
   family_commit -> mark_family_attempted with {
     family_name: "{{outputs.select_family.selected_family}}",
     members: "{{outputs.select_family.selected_members}}",
     reason: "family upgrade committed",
     cumulative_attempted_families: "{{outputs.select_family.cumulative_attempted_families}}",
-    cumulative_attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}"
+    cumulative_attempted_members: "{{outputs.select_family.attempted_members}}"
   }
 
   family_revert -> mark_family_attempted with {
@@ -4826,7 +4841,7 @@ workflow secured_renovacy:
     members: "{{outputs.select_family.selected_members}}",
     reason: "family upgrade or validate failed",
     cumulative_attempted_families: "{{outputs.select_family.cumulative_attempted_families}}",
-    cumulative_attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}"
+    cumulative_attempted_members: "{{outputs.select_family.attempted_members}}"
   }
 
   ## Loop back to select_family — same package_loop pattern as the per-
@@ -4836,6 +4851,7 @@ workflow secured_renovacy:
   mark_family_attempted -> select_family as family_loop("vars.max_families_per_run + 1") with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{{outputs.mark_family_attempted.attempted_families}}",
+    attempted_members: "{{outputs.mark_family_attempted.attempted_members}}",
     workspace_dir: "{{vars.workspace_dir}}",
     max_families: "{{vars.max_families_per_run}}"
   }

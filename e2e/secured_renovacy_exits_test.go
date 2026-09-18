@@ -58,13 +58,39 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 			t.Errorf("%s cap = %q (literal %d), want %q", loop, l.MaxIterationsExpr, l.MaxIterations, knob)
 		}
 	}
-	// select_family receives the knob it reports on every edge into it.
+	// select_family receives the knob it reports, and the members ledger it
+	// carries, on every edge into it: the patch batch's members on entry,
+	// the ledger mark_family_attempted grew on every loop-back.
+	ledgerInto := map[string]string{
+		"bucket_families":       "{{outputs.bucket_patches.attempted_after_batch}}",
+		"mark_family_attempted": "{{outputs.mark_family_attempted.attempted_members}}",
+	}
 	for _, e := range wf.Edges {
 		if e.To != "select_family" {
 			continue
 		}
 		if got := mapping(e, "max_families"); got != "{{vars.max_families_per_run}}" {
 			t.Errorf("%s -> select_family max_families = %q, want the knob", e.From, got)
+		}
+		if got := mapping(e, "attempted_members"); got != ledgerInto[e.From] {
+			t.Errorf("%s -> select_family attempted_members = %q, want %q", e.From, got, ledgerInto[e.From])
+		}
+	}
+	// Every reader of the family pass's ledger reads it from select_family,
+	// which always ran: the natural hand-over to the solo loop (a reference
+	// to mark_family_attempted resolves to null when no family ran —
+	// max_families_per_run: 0, every family at target) and the two edges
+	// into mark_family_attempted (the batch alone dropped earlier families).
+	for _, e := range wf.Edges {
+		switch {
+		case e.From == "select_family" && e.To == "select_candidate":
+			if got := mapping(e, "attempted"); got != "{{outputs.select_family.attempted_members}}" {
+				t.Errorf("select_family -> select_candidate attempted = %q, want select_family's own ledger", got)
+			}
+		case e.To == "mark_family_attempted":
+			if got := mapping(e, "cumulative_attempted_members"); got != "{{outputs.select_family.attempted_members}}" {
+				t.Errorf("%s -> mark_family_attempted cumulative_attempted_members = %q, want the ledger select_family carried in", e.From, got)
+			}
 		}
 	}
 

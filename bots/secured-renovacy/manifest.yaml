@@ -14,8 +14,12 @@ version: 0.2.3
 ## phase2_decider (solo, through solo_banked, which counts the pick just
 ## committed: select_candidate's count is the ledger before it) or the
 ## remaining packages to the solo loop (family: its free pick builds the
-## ledger Phase 2 and the SBOM read) instead of dying LOOP_EXHAUSTED. No
-## instruction changed.
+## ledger Phase 2 and the SBOM read) instead of dying LOOP_EXHAUSTED. The
+## family pass's members ledger rides on select_family — seeded by the
+## patch batch, grown by every family attempted — so the hand-over to the
+## solo loop always has it (a reference to mark_family_attempted resolved
+## to null when no family ran, and the batch alone dropped the earlier
+## families' members). No instruction changed.
 ## 0.2.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work;
 ## the deterministic commits, prepare_commit's file list and the commit
