@@ -14,14 +14,29 @@ This page is the mechanics.
 
 ## 🧭 Which view answers what
 
+Nine views, split by audience. **The epic views carry `label:epic`; the ticket
+views carry `-label:epic`** — an epic sitting in the Kanban's *In progress*
+column is noise, and there are 22 of them.
+
+*The strategy — the epics themselves:*
+
 | view | question it answers |
 |---|---|
-| 🚦 **Chantier state** | *Where do we stand overall, and what needs attention first?* Board, columns = `State of play`, `label:epic`. |
-| 🎯 **Epics** | *What is live on each objective?* Board, columns = `Epic`, `-status:Done`. |
-| 📚 **Epic map** | *How is each chantier doing?* The epics alone, with their state of play, priority and progress. |
-| 🧭 **Tally by epic** | *What have we actually done?* Every item, grouped by `Epic` — the acquis, counted. |
+| 🚦 **Chantier state** | *Where do we stand, and what needs attention first?* Board, columns = `State of play`. The one-screen read. |
+| 📚 **Epic map** | *What just landed, and what is next, on each chantier?* Table: state of play, `Latest`, `Next`, priority, progress. |
+
+*The work — tickets:*
+
+| view | question it answers |
+|---|---|
+| 🎯 **Work by epic** | *What is live on each objective?* Board, columns = `Epic`, open work only. |
+| 🗂 **Kanban** | the day-to-day board, by status |
+| 🚀 **In flight** | who is on what — In progress + Blocked |
+| 📥 **Triage** | the Inbox to empty at session start (Phase A) |
 | 🧩 **Unassigned** | *Did anything escape?* `no:epic`. **It must read 0.** |
-| 🗂 Kanban · 🚀 In flight · 📥 Triage · 🗺 Roadmap · 📋 All items | the day-to-day views, unchanged |
+
+*Reference:* 📋 **All items** (the raw table — give it a `filterQuery` to slice
+by epic) and 🗺 **Roadmap**.
 
 ## Two axes — `Status` and `State of play`
 
@@ -51,6 +66,40 @@ day-to-day Triage and Kanban views.
 
 For a **ticket**, `Status` keeps its ordinary claim meaning and
 `State of play` is left empty.
+
+## 🔭 `Latest` and `Next` — the two lines that make it readable
+
+Two **text** fields, on epics only, are what turn 📚 Epic map from an inventory
+into a briefing:
+
+- **`Latest`** — the most recent *proven* advance, dated: `2026-09-17 · #1164 —
+  lot 3: import and the multi-file compilation unit`.
+- **`Next`** — the very next step, one line, naming its ticket when there is
+  one. When the next step is a **decision**, say so and say whose:
+  `DECISION, operator's: …`.
+
+They are the freshest thing on the board and therefore the first to rot. Two
+habits keep them true, and they cost seconds:
+
+- **Closing a ticket under an epic → update that epic's `Latest`.**
+- **Picking up the next one → update its `Next`.**
+
+A `Latest` older than the last release is itself a signal worth reading: either
+the chantier is genuinely quiet, or nobody is maintaining its line. Don't
+guess between the two — go and look.
+
+## Why there is no "ambition" layer above epics
+
+It was considered and deliberately not built. The board already carries `Area`
+(engine · bots · cloud/ops · studio · docs) and `State of play`, and the
+latter partitions all 22 epics into five scannable columns — the grouping need
+is met. Adding a third classification to answer *"what landed, what's next"*
+would be solving a **content** problem with a **taxonomy**, which is how this
+board became unreadable the first time. `Latest` and `Next` answer it directly.
+
+Revisit if and only if 22 epics genuinely stop being scannable — the seam
+goes in at the **second** variant, not the fifth: a real second grouping need,
+named, not an anticipated one.
 
 ## 🧱 How membership is represented — and why twice
 
@@ -97,6 +146,8 @@ means *what is left*.
 3. Attach it as a sub-issue of its epic (`gh issue edit` in the UI, or
    `addSubIssue`).
 4. `task board:epics:sync` — it must say `board is consistent`.
+5. Closing it later? Update its epic's **`Latest`**. Picking up the next one?
+   Update its **`Next`**.
 
 Step 3 is the one that gets skipped, and the sync script is what catches it.
 It already earned its keep on its first run: a ticket created by another
@@ -154,9 +205,10 @@ board view you must open it and set it by hand:
 > view tab → **View options** → *Column field* (board) or *Group by* (table)
 > → pick **Epic** → **Save**.
 
-Three views depend on it: 🚦 **Chantier state** (column field =
-`State of play`), 🎯 **Epics** (column field = `Epic`) and 🧭 **Tally by
-epic** (group by = `Epic`).
+Two views depend on it: 🚦 **Chantier state** (column field = `State of play`)
+and 🎯 **Work by epic** (column field = `Epic`). Keeping it to two is why
+there is no third grouped view — the same read is one `filterQuery` away on
+📋 All items.
 
 > **Do not try to automate it with Playwright — measured, 2026-09-18.** The
 > configuration sub-panels of the *View options* menu render
