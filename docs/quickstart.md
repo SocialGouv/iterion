@@ -21,6 +21,11 @@ Prove the pipeline works with a deterministic, LLM-free example — it compiles 
 iterion run examples/else_edge.bot --var n=100
 ```
 
+The examples open with `dsl: 2`, the current syntax profile, so this needs
+iterion ≥ 3.141.0 — an older binary stops at `E001: unexpected token 'dsl'`
+(check with `iterion --version`; [docs/examples.md](examples.md) says which
+examples carry the floor in a manifest).
+
 You get a typed run: a persisted event log, versioned node artifacts, and a
 final result. Inspect it:
 

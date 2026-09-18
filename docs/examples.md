@@ -6,7 +6,7 @@ declarative `.bot` you can run, inspect, or fork. The repository keeps two
 things deliberately separate:
 
 - [`bots/`](../bots/) contains the maintained bot catalogue. Each bot is a folder with a `main.bot`, a `manifest.yaml`, and any skills or resources it needs.
-- [`examples/`](../examples/) contains focused DSL and integration demos. They are teaching fixtures, not the product bot catalogue.
+- [`examples/`](../examples/) contains focused DSL and integration demos. They are teaching fixtures, not the product bot catalogue. Every example opens with `dsl: 2` ([the syntax profile](dsl.md#the-syntax-profile)), so they need **iterion ≥ 3.141.0**: an older binary refuses the header with `E001: unexpected token 'dsl'`. The three examples that are bundles (`keepalive`, `nested-subbots-demo`, `pipeline-board-demo`) declare that floor in their manifest (`requires.iterion`); a loose `.bot` has no manifest to carry one, so this sentence is its floor.
 
 Iterion runs `.bot` sources and packaged `.botz` bundles. Other workflow extensions are rejected consistently at the CLI, server, dispatcher, and studio boundaries; [`pkg/dsl/workflowfile`](../pkg/dsl/workflowfile/workflowfile.go) is the source of truth.
 
