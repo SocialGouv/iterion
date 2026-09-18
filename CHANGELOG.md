@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.162.3](https://github.com/SocialGouv/iterion/compare/v3.162.2...v3.162.3) (2026-09-18)
+
+### Bug Fixes
+
+* **modernize:** name the path that spent the extension certificate ([#1387](https://github.com/SocialGouv/iterion/issues/1387)) ([dc4a9fc](https://github.com/SocialGouv/iterion/commit/dc4a9fc477811923e9e4796f8b72b93c601a8155))
+
+    <details><summary>why</summary>
+
+    The exemption is correct and unchanged: a path outside the certified surface (additions under refs/ and corpus.json) spends the WHOLE certificate, because the exemption is safe only on "an addition cannot mask an existing divergence", and a change elsewhere under the net is not an addition.
+
+    </details>
+
 ## [3.162.2](https://github.com/SocialGouv/iterion/compare/v3.162.1...v3.162.2) (2026-09-17)
 
 ### Bug Fixes
