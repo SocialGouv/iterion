@@ -2000,13 +2000,17 @@ fail interview_not_converged:
   resumable: false
 
 ## The budget: resumable. The affordability guard declined the back-edge
-## because another turn would cross the run's cost ceiling; the checkpoint
-## anchors on the chat pause, so `iterion resume --max-cost-usd` re-asks the
-## operator and the conversation continues where it stopped.
+## because another turn would cross one of the run's ceilings — cost,
+## tokens, iterations or duration, the declared budget or a platform clamp
+## of it (loop.interview_loop.max is the authored cap plus grants; a clamp
+## never touches it, so a clamped run reaches this arm, not the cap's). The
+## checkpoint anchors on the chat pause, so a resume with the starved cap
+## raised re-asks the operator and the conversation continues where it
+## stopped; a ceiling the platform imposes cannot be raised.
 fail interview_budget_starved:
   description: "the run's budget stopped the interview before SPEC.md was committed"
   code: INTERVIEW_BUDGET_STARVED
-  message: "the run's budget can no longer fund another interview turn: {{run.cost_usd}} USD of the {{run.max_cost_usd}} USD ceiling spent after {{loop.interview_loop.iteration}} operator answers, no SPEC.md committed — resume with a raised cap (iterion resume --max-cost-usd) to continue the conversation"
+  message: "the run's budget can no longer fund another interview turn after {{loop.interview_loop.iteration}} operator answers, no SPEC.md committed — spent {{run.cost_usd}} of {{run.max_cost_usd}} USD, {{run.tokens}} of {{run.max_tokens}} tokens, {{run.iterations}} of {{run.max_iterations}} iterations, {{run.elapsed_seconds}} of {{run.max_duration_seconds}} s; resume with the starved cap raised (iterion resume --max-cost-usd / --max-duration) to continue the conversation — a ceiling the platform imposes cannot be raised: relaunch under a larger one"
   resumable: true
 
 ## ─── Workflow ───────────────────────────────────────────────────
