@@ -53,6 +53,13 @@ func Runs(base string) string {
 // delivered mail, in posted pull-request comments — and a reader that only
 // knows the current spelling would fail to recognise them. Nothing should emit
 // it.
+//
+// Deliberately UNESCAPED, unlike Run. This reconstructs a string another build
+// already wrote, and that build concatenated the id raw (`base + "/runs/" +
+// runID`). Percent-escaping here would produce a URL that never existed, so a
+// run whose id needs escaping would not recognise its own status — and a run
+// id is caller-chosen (`run_id` on the launch API), so that is reachable, not
+// theoretical. Faithfulness to what was written beats consistency with Run.
 func LegacyRun(base, runID string) string {
-	return strings.TrimRight(base, "/") + "/runs/" + url.PathEscape(runID)
+	return strings.TrimRight(base, "/") + "/runs/" + runID
 }

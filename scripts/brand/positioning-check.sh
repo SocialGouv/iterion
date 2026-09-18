@@ -8,11 +8,15 @@
 # sentence drifts — five different taglines across four surfaces is what this
 # repository looked like before this guard — so the copies are checked instead.
 #
-# Run through `task brand:positioning`; `task check` runs that.
+# Run through `task brand:positioning`; `task check` and the CI `brand` job
+# both run that.
 #
 # Only the DEFINITION is guarded. The category line ("apps have Linux…") is a
 # metaphor each surface phrases in its own voice, and pinning its wording would
-# freeze copy that is meant to be written.
+# freeze copy that is meant to be written. The SHORT form used by packaging
+# metadata is out of scope too, and assets/brand/positioning.md says which
+# surfaces those are — the list below is not the whole class, and claiming
+# otherwise is how a guard starts lying.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -34,40 +38,53 @@ if [ -z "$definition" ]; then
   exit 1
 fi
 
-# Every surface that displays the definition to a reader who is not us.
+# Every surface that displays the definition to a reader who is not us, with
+# the number of times it must appear.
+#
+# The COUNT is the guard, not mere presence. Two of these carry the sentence
+# three times over (a description plus an OpenGraph and a Twitter card), and a
+# presence test is satisfied by any one survivor: blanking the two social
+# cards — the exact regression this guard exists to catch, since a link preview
+# is the whole point of them — left `grep -q` green.
+#
+# A mismatch in EITHER direction is drift: a lost copy, and equally a new
+# unlisted one (a sentence added in a comment while the rendered copy is
+# deleted nets to a count that no longer matches).
 SURFACES=(
-  README.md
-  docs/index.md
-  docs/.vitepress/config.ts
-  docs/scripts/og-card.html
-  studio/index.html
-  studio/public/manifest.json
-  studio/src/views/CloudHome/index.tsx
-  charts/iterion/README.md
+  "README.md:1"
+  "charts/iterion/README.md:1"
+  "docs/cloud-overview.md:1"
+  "docs/index.md:1"
+  "docs/scripts/og-card.html:1"
+  "docs/.vitepress/config.ts:3"
+  "studio/index.html:3"
+  "studio/public/manifest.json:1"
+  "studio/src/views/CloudHome/index.tsx:1"
 )
 
 drift=0
-for surface in "${SURFACES[@]}"; do
+for entry in "${SURFACES[@]}"; do
+  surface="${entry%:*}"
+  want="${entry##*:}"
   if [ ! -f "$surface" ]; then
     echo "::error::$surface is on the positioning surface list but does not exist — update $SOURCE and this script together"
     drift=1
     continue
   fi
-  # -F: the definition is a literal sentence, and its punctuation must not be
-  # read as a pattern.
-  if ! grep -qF -- "$definition" "$surface"; then
-    echo "::error::positioning drift: $surface no longer carries \"$definition\" — the canonical wording is in $SOURCE"
+  # Newlines folded to spaces before matching: on a prose surface the sentence
+  # heads a hard-wrapped paragraph, and a line-oriented match turns an ordinary
+  # editorial reflow into "the sentence is gone" — a false accusation in a
+  # guard that blocks the build. -F because the definition is a literal
+  # sentence whose punctuation must not be read as a pattern.
+  got="$(tr '\n' ' ' < "$surface" | tr -s ' ' | grep -oF -- "$definition" | wc -l)"
+  if [ "$got" != "$want" ]; then
+    echo "::error::positioning drift: $surface carries the definition $got time(s), expected $want — the canonical wording is in $SOURCE"
     drift=1
   fi
 done
 
 if [ "$drift" -eq 0 ]; then
-  echo "positioning: ${#SURFACES[@]} surfaces carry \"$definition\""
+  echo "positioning: ${#SURFACES[@]} surfaces carry \"$definition\" the expected number of times"
 fi
-
-# The OpenGraph image is RENDERED from og-card.html, so a card whose HTML is
-# correct can still ship a stale picture. Nothing here can compare pixels
-# without a browser; say so rather than imply the image was checked.
-echo "positioning: docs/public/og.png is rendered from docs/scripts/og-card.html — run 'task brand:og' after changing the card"
 
 exit $drift

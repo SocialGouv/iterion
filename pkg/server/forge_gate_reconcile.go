@@ -459,11 +459,25 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// Worth the narrowness. The grant is a forge-write bearer held by an
 		// agent that reads untrusted pull-request content and can post a
 		// review AND a commit status — including a green one on the required
-		// check. Keeping it live for the whole horizon on every gating run,
-		// rather than on the few a repair may still reach, is 128× more window
-		// than the job needs. Deliberately NOT extended to a verdict posted by
-		// ANOTHER run: a repo's gate context is shared between bots, so that
-		// would revoke the grant of a run still on its way to publishing.
+		// check. Deliberately NOT extended to a verdict posted by ANOTHER run:
+		// a repo's gate context is shared between bots, so that would revoke
+		// the grant of a run still on its way to publishing.
+		//
+		// ⚠️ TODAY THIS NEVER FIRES, and the window reduction it was written
+		// for does not happen. Ownership is read off the status target URL,
+		// and no producer of a real verdict puts a run there: postGateStatus
+		// (forge_publish.go) writes the REVIEW's URL — the forge comment — or
+		// an empty string, and the two webhook approval paths write a comment
+		// URL too. The only statuses carrying a run URL are this package's own
+		// claim and synthetic failure, both of which are handled by the other
+		// branches above. So speaksFor is always false here and the grant
+		// simply expires on its horizon, as it did before this arm existed.
+		//
+		// Left in place rather than deleted because the fix is a product
+		// decision, not a cleanup: making the verdict carry the run would move
+		// where every reviewer lands from the PR check. Whoever takes it must
+		// also rebuild forge_gate_grant_revoke_test.go, which is green only
+		// because its stub writes a run URL no real producer writes.
 		if runTarget.speaksFor(gate) {
 			s.forgePublishTokens.Revoke(token)
 		}

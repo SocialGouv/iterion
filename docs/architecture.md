@@ -295,7 +295,7 @@ code. See [bundles.md](bundles.md), [skills-library.md](skills-library.md), and
 
 ## Architecture decisions
 
-Decision records under [`docs/adr/`](adr/) are immutable, point-in-time
+Decision records under [`docs/adr/`](adr/README) are immutable, point-in-time
 explanations. Later ADRs and the current code can supersede earlier details.
 The living [current-state overview](current-state.md), this page, and the
 domain references describe the as-built system.

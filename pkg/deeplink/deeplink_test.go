@@ -46,6 +46,22 @@ func TestRunIDIsEscapedIntoThePath(t *testing.T) {
 	}
 }
 
+// LegacyRun reconstructs a string ANOTHER build wrote, and that build did not
+// escape. Escaping here would invent a URL that never existed, so the run
+// would not recognise its own in-flight commit status and the pull request
+// would wait on a claim nothing resolves. Run ids are caller-chosen on the
+// launch API, so an id that needs escaping is reachable.
+func TestLegacyRunReproducesWhatWasWrittenNotWhatWouldBeWrittenToday(t *testing.T) {
+	const base = "https://iterion.cloud"
+	for _, id := range []string{"run x", "runé", "run/x", "run+x", "01a09ec6-b5b3-7660-8ef1-295031b7260d"} {
+		// Byte-for-byte what the pre-move writer produced: `base + "/runs/" + id`.
+		want := base + "/runs/" + id
+		if got := LegacyRun(base, id); got != want {
+			t.Errorf("LegacyRun(%q) = %q, want %q — a status carrying the second string would not be recognised", id, got, want)
+		}
+	}
+}
+
 // The studio's router and this package must name the same prefix. Nothing
 // executes both, so the agreement is checked against the studio's source
 // rather than inferred — a convenience guard, not a proof the router honours

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -67,7 +68,7 @@ func TestMarkFixInFlight_ClaimsForAFixer(t *testing.T) {
 	if !isFixInFlight(gc.last) {
 		t.Errorf("status %q is not recognisable as the fixer claim — a later pass could not refresh it", gc.last.Description)
 	}
-	if gc.last.TargetURL != "https://iterion.test/runs/run-77" {
+	if gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/run-77" {
 		t.Errorf("target url = %q, want the live run console — the URL names the most recent claimant so a reader lands somewhere", gc.last.TargetURL)
 	}
 	if gc.lastSHA != "deadbeef" {
@@ -183,7 +184,7 @@ func TestMarkFixInFlight_RefreshesAnExistingClaim(t *testing.T) {
 	if gc.setCalls != 1 {
 		t.Fatalf("posted %d, want 1 — the second pass stays invisible behind the first one's claim", gc.setCalls)
 	}
-	if gc.last.TargetURL != "https://iterion.test/runs/run-77" {
+	if gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/run-77" {
 		t.Errorf("target = %q, want the newest claimant so a reader lands on a live console", gc.last.TargetURL)
 	}
 	if !isFixInFlight(gc.last) {

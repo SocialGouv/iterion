@@ -188,10 +188,6 @@ function AuthGate() {
               auth side-doors' navigate("/login") land on the plain
               SignInCard instead of scrolling the marketing landing. */}
           <Route path="/login" component={Login} />
-          {/* A studio deep link followed without a session: sign in first,
-              then land on the page that was asked for. */}
-          <Route path={STUDIO_BASE} component={StudioSignIn} />
-          <Route path={`${STUDIO_BASE}/*`} component={StudioSignIn} />
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />
@@ -219,6 +215,28 @@ function AuthGate() {
               </div>
             </Route>
           )}
+          {/* The SAME public catalogue at the address a signed-in operator's
+              address bar shows — they are carried to /studio/marketplace, and
+              that is the URL they copy to a colleague. It must sit ABOVE the
+              `${STUDIO_BASE}/*` sign-in catch below, or the public marketplace
+              becomes a login wall for every link an operator shares. */}
+          {serverInfo?.marketplace_enabled && (
+            <Route path={`${STUDIO_BASE}/marketplace`}>
+              <div className="min-h-screen bg-surface-0 text-fg-default">
+                <PublicTopBar />
+                <ErrorBoundary area="Marketplace view">
+                  <MarketplaceView />
+                </ErrorBoundary>
+              </div>
+            </Route>
+          )}
+          {/* LAST before the product home, so every public route above —
+              including the studio-prefixed marketplace — is matched first: a
+              sign-in catch placed higher swallows them. A studio deep link
+              followed without a session signs in, then lands on the page that
+              was asked for. */}
+          <Route path={STUDIO_BASE} component={StudioSignIn} />
+          <Route path={`${STUDIO_BASE}/*`} component={StudioSignIn} />
           {/* Catch-all: the cloud product home (hero + sign-in card),
               degrading to the plain sign-in page in non-cloud modes. */}
           <Route>
@@ -259,7 +277,15 @@ function AuthGate() {
   if (location.startsWith("/config/")) {
     return (
       <Suspense fallback={<BootLoading />}>
-        <ConfigShareView />
+        {/* Wrapped in its Route, not rendered bare: ConfigShareView reads the
+            share id with useParams(), which only a matching <Route> supplies.
+            Rendered bare it reported "The share id is missing from the URL" —
+            the anonymous arm has always been wrapped, this one never was. */}
+        <Switch>
+          <Route path="/config/:id">
+            <ConfigShareView />
+          </Route>
+        </Switch>
       </Suspense>
     );
   }

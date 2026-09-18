@@ -1,7 +1,7 @@
 apiVersion: v2
 name: iterion
 description: |
-  Iterion workflow orchestration engine — Kubernetes deployment.
+  Build, run and orchestrate agentic AI workflows — Kubernetes deployment.
   Server (HTTP API + studio) plus an optional runner pool that
   pulls work from NATS JetStream and persists state to MongoDB + S3.
 type: application

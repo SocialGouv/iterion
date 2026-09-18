@@ -65,18 +65,6 @@ export function rootRoute(path: string): string {
   return "~" + scopePrefix() + path;
 }
 
-/**
- * studioPath turns an absolute browser path into the studio-relative one
- * wouter works in, or null when the path is not under the studio at all (the
- * product home, /login, a share link). The inverse of prefixing with
- * studioBase().
- */
-export function studioPath(pathname: string): string | null {
-  const base = studioBase();
-  if (pathname === base) return "/";
-  if (pathname.startsWith(base + "/")) return pathname.slice(base.length);
-  return null;
-}
 
 // apiBase returns the /api prefix for this context: "/x/<id>/api" in a pane,
 // "/api" (or the VITE_API_URL override) otherwise. Captured once at module

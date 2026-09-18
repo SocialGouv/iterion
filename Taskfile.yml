@@ -518,6 +518,7 @@ tasks:
       - task: pi-ext:check
       - task: brand:check
       - task: brand:positioning
+      - task: brand:og:check
       - task: dsl:check
 
   dsl:gen:
@@ -571,6 +572,34 @@ tasks:
     dir: studio
     cmds:
       - ./node_modules/.bin/playwright screenshot --viewport-size=1200,630 "file://{{.ROOT_DIR}}/docs/scripts/og-card.html" ../docs/public/og.png
+
+  brand:og:check:
+    desc: Fail if docs/public/og.png is not what docs/scripts/og-card.html currently renders (the card is the source, the PNG is a build artefact)
+    dir: studio
+    cmds:
+      # og.png is generated but committed, and neither brand:gen nor
+      # brand:check produces or lists it — so a card edited without a
+      # re-render shipped a stale picture, silently. The render is
+      # byte-deterministic (two independent runs md5-identical), which is what
+      # makes a cmp the right guard, exactly as brand:check does for the
+      # mascot assets.
+      #
+      # Skips with a message when the browser is absent, like test:e2e:ui:
+      # this must not make `task check` unusable on a bare machine.
+      - |
+        set -e
+        if ! node e2e/guard.mjs; then
+          echo "task: [brand:og:check] skipped — no Playwright browser installed"
+          exit 0
+        fi
+        tmp="$(mktemp -d -t iterion-og-XXXXXX)"
+        trap 'rm -rf "$tmp"' EXIT
+        ./node_modules/.bin/playwright screenshot --viewport-size=1200,630 \
+          "file://{{.ROOT_DIR}}/docs/scripts/og-card.html" "$tmp/og.png" >/dev/null
+        if ! cmp -s "$tmp/og.png" ../docs/public/og.png; then
+          echo "::error::docs/public/og.png is stale — run 'task brand:og' and commit the result"
+          exit 1
+        fi
 
   pi-ext:typecheck:
     desc: Typecheck the iterion pi extension

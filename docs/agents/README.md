@@ -10,7 +10,7 @@ every harness reads natively. These pages are read **on demand**: that split
 is the point, since pi injects both root files on every call and a 2 000-line
 CLAUDE.md was paying its cost every turn.
 
-Product and engine references live in [`docs/`](../) proper — [dsl.md](../dsl.md),
+Product and engine references live in [`docs/`](../index) proper — [dsl.md](../dsl.md),
 [backends.md](../backends.md), [sandbox.md](../sandbox.md), … The pages here
 summarize them for someone about to edit, and add what those references do not
 carry: the failure that was measured, on this repo, on a given date.

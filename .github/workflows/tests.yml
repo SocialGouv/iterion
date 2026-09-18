@@ -784,6 +784,21 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run --timeout 5m
 
+  brand:
+    # The positioning guard: every public surface must carry the product
+    # definition verbatim (assets/brand/positioning.md). It lived only in
+    # `task check`, which NO workflow runs — so a guard written to block
+    # blocked nothing between a pull request and main, which is the worst
+    # kind: it looks like it holds. Pure shell + grep, no toolchain, seconds.
+    #
+    # Deliberately NOT `task brand:check` (the asset-drift guard): that one
+    # needs magick/pngquant/oxipng from devbox and is a different cost.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Positioning
+        run: ./scripts/brand/positioning-check.sh
+
   desktop-vet-linux:
     # cmd/iterion-desktop sits behind `//go:build desktop`, so `go build ./...`,
     # `task test`, `race` and `golangci` (which excludes the directory outright)

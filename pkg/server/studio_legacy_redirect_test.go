@@ -1,8 +1,13 @@
 package server
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path"
 	"strings"
 	"testing"
 
@@ -41,6 +46,11 @@ func TestLegacyStudioURLRedirectsToTheStudio(t *testing.T) {
 		{"a nested admin page", "/admin/users", "/studio/admin/users"},
 		{"a segment with a hyphen", "/whats-next", "/studio/whats-next"},
 		{"config-editor is not the /config share link", "/config-editor", "/studio/config-editor"},
+		// Clean() removes a trailing slash, and a trailing slash is a real
+		// published address. A guard that rejected everything Clean changes
+		// would 404 these.
+		{"a trailing slash is not a traversal", "/account/", "/studio/account/"},
+		{"a nested trailing slash either", "/admin/users/", "/studio/admin/users/"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,6 +97,79 @@ func TestLegacyStudioRedirectLeavesTheRootSurfacesAlone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A redirect that signs a Location leaving the base it just prepended is the
+// defect here. ServeMux cleans a literal "..", so it never reaches the
+// handler; "%2e%2e" does reach it, and the URL parser every browser uses
+// resolves it as a dot-dot segment — so the product would 302 a reader out of
+// /studio and onto any path on the origin, vouching for it.
+//
+// The assertion is on the RESOLVED target, not on the spelling that produced
+// it: that is what a browser does with the Location, and it cannot be defeated
+// by a future encoding the guard was never taught.
+//
+// Over a REAL socket, not httptest.NewRequest. The two disagree exactly where
+// this defect lives: a request built in-process is parsed with url.Parse and
+// its dirty path is cleaned away before any handler sees it, so the same case
+// that 302s on the wire is silently skipped in memory. Measured — the first
+// version of this test passed with the guard deleted.
+func TestARedirectNeverSignsATargetThatLeavesTheStudio(t *testing.T) {
+	s := &Server{mux: newRecordingMux()}
+	s.registerStudioLegacyRedirects()
+	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	srv := httptest.NewServer(s.mux)
+	defer srv.Close()
+
+	for _, target := range []string{
+		"/runs/%2e%2e/%2e%2e/api/server/info",
+		"/runs/%2e%2e/evil",
+		"/board/%2e%2e/%2e%2e/%2e%2e/login",
+		"/runs/%2E%2E/%2E%2E/evil",
+	} {
+		t.Run(target, func(t *testing.T) {
+			status, loc := rawGET(t, srv.URL, target)
+			if status != http.StatusFound {
+				return // refused outright, or normalised by the mux: nothing signed.
+			}
+			// The oracle has to be the BROWSER's rule, not net/url's.
+			// url.ResolveReference collapses only literal dot segments and
+			// leaves "%2e%2e" encoded, so using it as the oracle makes this
+			// test green against the very defect it exists for — measured: the
+			// first version passed with the guard deleted. The WHATWG parser
+			// every browser ships decodes first and THEN removes dot segments,
+			// which is what path.Clean over url.Parse's decoded Path does.
+			ref, err := url.Parse(loc)
+			if err != nil {
+				t.Fatalf("Location %q does not parse: %v", loc, err)
+			}
+			got := path.Clean(ref.Path) // ref.Path is decoded: "%2e%2e" is ".." here
+			if got != deeplink.StudioBase && !strings.HasPrefix(got, deeplink.StudioBase+"/") {
+				t.Fatalf("GET %s → 302 Location %q, which a browser resolves to %q — outside %q, with the product vouching for it",
+					target, loc, got, deeplink.StudioBase)
+			}
+		})
+	}
+}
+
+// rawGET writes the request line verbatim, so the server parses the target the
+// way it parses one off the network.
+func rawGET(t *testing.T, serverURL, target string) (int, string) {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(serverURL, "http://"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: iterion.test\r\nConnection: close\r\n\r\n", target); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode, resp.Header.Get("Location")
 }
 
 // A segment that also names a root surface would silently steal it. The list

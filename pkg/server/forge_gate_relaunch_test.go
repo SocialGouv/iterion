@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -462,7 +463,7 @@ func TestGateRelaunch(t *testing.T) {
 		w.gc.statuses = []forge.CommitStatus{{
 			Context: gateNm, State: forge.CommitStateFailure,
 			Description: gateInterruptedDescription,
-			TargetURL:   "https://iterion.test/runs/" + runID,
+			TargetURL:   "https://iterion.test" + deeplink.StudioBase + "/runs/" + runID,
 		}}
 		for i := 0; i < 4; i++ {
 			at = at.Add(time.Minute)
@@ -722,7 +723,7 @@ func TestEscalationRefusesToCiteAnotherTeamsRun(t *testing.T) {
 // the body read "- Dead run:  — `budget exceeded`", which tells the reader
 // nothing to look up.
 func TestEscalationNamesRunsWithoutPublicURL(t *testing.T) {
-	if got := gateRunRef("https://iterion.test", "run-x"); got != "https://iterion.test/runs/run-x" {
+	if got := gateRunRef("https://iterion.test", "run-x"); got != "https://iterion.test"+deeplink.StudioBase+"/runs/run-x" {
 		t.Errorf("with a PublicURL the reference must be the link, got %q", got)
 	}
 	got := gateRunRef("", "run-x")

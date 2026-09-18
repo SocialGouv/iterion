@@ -27,7 +27,7 @@ Nobody can reissue them, so they do not move:
 | `/invitations/accept` | invitation mail |
 | `/cli-auth` | `iterion remote login` opens it |
 | `/config/<id>#<token>` | a config-share link; the token rides in the fragment |
-| `/marketplace` | public, browsable without an account |
+| `/marketplace` | public, browsable without an account. A visitor who already has a session is carried on to `/studio/marketplace` — the same catalogue, inside the studio shell. Both addresses answer; neither 404s |
 | `/api/…` | **every integration**: inbound forge webhooks, OAuth and OIDC callbacks, the REST API, the MCP server, the remote CLI |
 | `/brand/…`, `/healthz`, `/readyz` | public assets and probes |
 
@@ -38,7 +38,14 @@ under `/api/`, which the studio base does not touch.
 
 A URL published before the move — a run link in old mail, a bookmark, a target
 URL on a forge commit status, a run cited as evidence in these docs — gets a
-`302` to its current address, query and fragment intact.
+`302` to its current address, with the query intact. The fragment needs no
+mechanism: a browser never sends one, and it re-attaches its own to a
+`Location` that carries none.
+
+A path that does not survive cleaning gets a `404` instead of a redirect.
+`/runs/%2e%2e/%2e%2e/x` would otherwise be answered with a `302` whose target,
+once a browser resolves it, sits outside `/studio` — with the product vouching
+for it.
 
 The list of redirected segments is **frozen** in
 [`pkg/server/studio_legacy_redirect.go`](../pkg/server/studio_legacy_redirect.go):
