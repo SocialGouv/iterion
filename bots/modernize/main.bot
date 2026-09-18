@@ -1284,8 +1284,26 @@ tool lot_verify:
             raw = [l.strip() for l in log.splitlines()
                    if l.strip() and l.strip() not in unjudged_exact
                    and not any(l.strip().startswith(u) for u in unjudged_prefixes)]
-            if any(p != corpus_path and not p.startswith(surface_prefix)
-                   for p in raw):
+            # A change outside the certified surface spends the WHOLE
+            # certificate: the exemption is safe only because "an addition
+            # cannot mask an existing divergence", and a change elsewhere
+            # under the net is not an addition. Naming the spender is not
+            # cosmetic. Without it the verdict lists every certified addition
+            # as a modification and offers two explanations, neither of which
+            # happened — measured on a live campaign: 43 paths listed, 42 of
+            # them additions the net's own subbot had certified, ONE the
+            # actual cause, and nothing in the output saying which.
+            voided = sorted(p for p in raw
+                            if p != corpus_path
+                            and not p.startswith(surface_prefix))
+            if voided:
+                if exempt:
+                    problems.append(
+                        "the extension certificate is SPENT: it covers additions "
+                        "under %s and %s, and %d path(s) outside it changed (%s). "
+                        "Every certified path below is judged like any other."
+                        % (surface_prefix, corpus_path, len(voided),
+                           ", ".join(voided[:12])))
                 exempt = set()
             changed = [p for p in raw if p not in exempt]
             report["refs_changed"] = changed

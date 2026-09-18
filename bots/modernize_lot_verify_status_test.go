@@ -688,3 +688,83 @@ lots:
 		})
 	}
 }
+
+// TestModernizeLotVerifyNamesWhatVoidedTheExtensionCertificate pins the
+// DIAGNOSTIC, not a gate: when a path outside the certified surface changes,
+// the whole extension exemption is voided — correctly, because the certificate
+// covers additions under refs/ and corpus.json and nothing else. But the
+// verdict then lists every certified path as "MODIFIED during this lot" and
+// offers two explanations, neither of which happened: the lot did not change
+// behaviour it was not supposed to, and the net was not edited to hide
+// anything. Measured on a live campaign: 43 paths listed, 42 of them certified
+// additions from the net's own extension subbot, ONE the actual cause — and
+// nothing in the output said which.
+//
+// The gate's answer does not change. What changes is that the reader is told
+// which path spent the certificate.
+func TestModernizeLotVerifyNamesWhatVoidedTheExtensionCertificate(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	const plan = `version: 1
+oracle:
+  refs_dir: .golden-master/refs
+lots:
+  - id: L1
+    title: "extend the corpus and touch one file besides"
+    status: todo
+    exit_gate:
+      - "true"
+`
+	ws, _, git := modernizeRepo(t, plan)
+	modernizeNet(t, ws)
+	// A harness that certifies the added reference, exactly as the net's
+	// extension subbot does once its own gate has converged.
+	harness := `import json, os
+mode = os.environ.get("GM_MODE", "gate")
+if mode == "extend-verify":
+    print(json.dumps({"acted": [{"id": "E-1", "ok": True, "paths": [".golden-master/refs/002.txt"], "problems": []}],
+                      "ok_paths": [".golden-master/refs/002.txt"],
+                      "ledger_append_only": True, "requests_added": 0, "problems": []}))
+elif mode == "extensions":
+    print(json.dumps({"pending": []}))
+else:
+    print(json.dumps({"error": "stub answers only the extension modes"}))
+`
+	if err := os.WriteFile(filepath.Join(ws, ".golden-master", "harness.py"), []byte(harness), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".golden-master", "feature-coverage.json"),
+		[]byte("{\"features\": [], \"exclusions\": []}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".golden-master")
+	git("commit", "-qm", "net")
+	base := git("rev-parse", "HEAD")
+
+	// The certified addition, plus one path the certificate does not cover.
+	if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".golden-master", "feature-coverage.json"),
+		[]byte("{\"features\": [], \"exclusions\": [{\"feature\": \"f\", \"reason\": \"why\"}]}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".golden-master")
+	git("commit", "-qm", "the act plus one file besides")
+
+	res := modernizeLotVerify(t, script, ws, "L1", base, "true")
+	if res.RefsUntouched {
+		t.Fatalf("refs_untouched=true with an uncertified path changed: %+v", res)
+	}
+	if !strings.Contains(res.LogTail, "feature-coverage.json") {
+		t.Fatalf("the verdict must name the path that voided the certificate: %s", res.LogTail)
+	}
+	if !strings.Contains(res.LogTail, "certificate") {
+		t.Fatalf("the verdict must say the certificate was spent, not only that paths moved: %s", res.LogTail)
+	}
+	// And it must still name the certified path it is now judging, so the
+	// reader can tell the two populations apart.
+	if !strings.Contains(res.LogTail, "refs/002.txt") {
+		t.Fatalf("the verdict must still list what it judges: %s", res.LogTail)
+	}
+}
