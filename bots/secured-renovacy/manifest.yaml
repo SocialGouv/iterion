@@ -79,8 +79,9 @@ invocations:
 launch:
   primary: [user_prompt]
 
-## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
-## release that reads the profile would refuse the header as an unknown
-## declaration — the floor keeps such a runner from admitting the bundle.
+## Profile 2 (`dsl: 2` at the head of main.bot) reads from 3.141.0; the
+## loop caps written as expressions (`as package_loop("vars.max_packages_per_run + 1")`)
+## are evaluated from 3.148.0 — a runner between the two would admit the
+## bundle and fail to compile it. The floor is the higher of the two.
 requires:
-  iterion: ">= 3.141.0"
+  iterion: ">= 3.148.0"

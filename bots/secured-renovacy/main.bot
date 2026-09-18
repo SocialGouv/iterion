@@ -5171,11 +5171,14 @@ workflow secured_renovacy:
     workspace_dir: "{{vars.workspace_dir}}",
     update_scope: "{{vars.update_scope}}"
   }
-  ## The same exhaustion exit from the failure path (C145, #1293). The pick
-  ## just reverted stays in the ledger as ATTEMPTED, exactly as the natural
-  ## exit counts it (select_candidate's ledger includes reverted picks):
-  ## a reverted minor after a patch batch sends both paths to Phase 2,
-  ## a cheap campaign that reports the patch-only tree clean.
+  ## The same exhaustion exit from the failure path (C145, #1293), on the
+  ## PRE-pick count on purpose: the pick was just reverted, so a first solo
+  ## with nothing banked reaches the decider with 0 and skips Phase 2
+  ## (nothing to review — the natural exit, one select_candidate later,
+  ## would count the reverted pick and run a campaign over an empty diff).
+  ## only_patches_attempted does include the pick, so a reverted minor
+  ## after a patch batch still goes to Phase 2 over the batch, as the
+  ## natural exit does.
   mark_failed_and_continue -> phase2_decider with {
     attempted_count: "{{outputs.select_candidate.attempted_count}}",
     only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
