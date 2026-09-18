@@ -341,6 +341,18 @@ export default function RunListView() {
   // checkboxes exist on the desktop table only.
   const { selectedIds, selectedRuns, allSelected, toggle, toggleAll, clear } =
     useRunListSelection(sortedRuns);
+
+  // Drop the selection the moment a scope switch starts. keepPreviousData
+  // holds the OUTGOING scope's rows on screen (so the selection-prune in
+  // useRunListSelection doesn't fire), which would otherwise leave the
+  // bulk toolbar live with the previous scope's run IDs — a Cancel/Delete
+  // in that window would target runs from the scope the operator just left,
+  // against the already-switched session.
+  const scopeSwitchInFlight = refreshing || repoSwitching;
+  useEffect(() => {
+    if (scopeSwitchInFlight) clear();
+  }, [scopeSwitchInFlight, clear]);
+
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog } = useConfirm();
   const { onResume, resumingIds, onBulkCancel, onBulkDelete } =
