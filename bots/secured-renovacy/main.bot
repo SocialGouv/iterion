@@ -26,8 +26,9 @@
 ##   - review_pass_loop exhausted (ships what is banked), OR
 ##   - the solo or family loop's back-edge declined for budget → Phase 2,
 ##     or the solo loop, on what is banked (the exhaustion exits, C145;
-##     both caps sit one above max_packages_per_run, so the operator's
-##     knob is the limit and select_candidate reports it), OR
+##     each cap sits one above its knob — max_packages_per_run,
+##     max_families_per_run — so select_candidate and select_family
+##     report the cap themselves), OR
 ##   - budget exceeded (resumable via `iterion resume`).
 ##
 ## Token economy
@@ -78,9 +79,15 @@ vars:
 
   ## Policy
   scope: string = "patch,minor,major"
-  ## Also bounds the solo and family loops (their cap is this value + 1,
-  ## so select_candidate's own exit reports the cap first).
+  ## Also bounds the solo loop (its cap is this value + 1, so
+  ## select_candidate's own exit reports the cap first).
   max_packages_per_run: int = 30
+  ## Families attempted per run — the family fast-track batches `@scope/`
+  ## siblings before the solo loop. select_family reports the cap in its
+  ## own exit; the family loop's cap sits one above it, like the solo loop's.
+  ## What the cap leaves goes through the solo loop, bounded by
+  ## max_packages_per_run on the shared ledger.
+  max_families_per_run: int = 20
   major_policy: string [enum: "skip", "gate", "attempt"] = "attempt"
   fix_loop_default: int = 3
   fix_loop_major:   int = 5
@@ -2069,6 +2076,7 @@ schema select_family_input:
   families: json
   attempted_families: json
   workspace_dir: string
+  max_families: int
 
 ## select_family_output exposes the currently-selected family (name +
 ## members), plus the cumulative attempted_families ledger that the
@@ -2080,6 +2088,11 @@ schema select_family_output:
   has_more: bool
   attempted_families_count: int
   cumulative_attempted_families: json
+  ## cap_reason explains why the family loop is stopping: "" while
+  ## picking, "exhausted" when no family is left, or the
+  ## max_families_per_run line when the cap stopped it (the remaining
+  ## families' members then go through the solo loop).
+  cap_reason: string
 
 ## family_upgrade_input drives the family yarn-up tool — same shape as
 ## batch_upgrade_input but the bundle is the family's members rather
@@ -3962,6 +3975,7 @@ tool select_family:
     const familiesRaw = {{input.families}};
     const attemptedRaw = {{input.attempted_families}};
     const workspaceDir = {{input.workspace_dir}} || "";
+    const maxFamilies = {{input.max_families}};
 
     const families = Array.isArray(familiesRaw) ? familiesRaw : [];
     const attempted = (attemptedRaw && typeof attemptedRaw === "object") ? attemptedRaw : {};
@@ -3993,7 +4007,13 @@ tool select_family:
       .filter((f) => !familyAtTarget(f));
 
     let result;
-    if (survivors.length === 0) {
+    if (attemptedNames.size >= maxFamilies || survivors.length === 0) {
+      // Loop exit. Distinguish "no family left" from "the per-run cap
+      // stopped the family pass" so the run summary says whether the
+      // remaining families' members went through the solo loop instead.
+      const capReason = survivors.length === 0
+        ? "exhausted"
+        : "max_families_per_run reached (" + maxFamilies + " attempted; " + survivors.length + " remaining go through the solo loop)";
       result = {
         selected_family: "",
         selected_members: [],
@@ -4001,6 +4021,7 @@ tool select_family:
         has_more: false,
         attempted_families_count: attemptedNames.size,
         cumulative_attempted_families: attempted,
+        cap_reason: capReason,
       };
     } else {
       const f = survivors[0];
@@ -4012,6 +4033,7 @@ tool select_family:
         has_more: true,
         attempted_families_count: attemptedNames.size,
         cumulative_attempted_families: cumulative,
+        cap_reason: "",
       };
     }
 
@@ -4707,7 +4729,8 @@ workflow secured_renovacy:
   bucket_families -> select_family when has_families with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    max_families: "{{vars.max_families_per_run}}"
   }
 
   ## No multi-member families found → straight to per-package solo loop.
@@ -4806,17 +4829,19 @@ workflow secured_renovacy:
   }
 
   ## Loop back to select_family — same package_loop pattern as the per-
-  ## package solo loop, bounded by the operator's knob (one above
-  ## max_packages_per_run, like the solo loop).
-  mark_family_attempted -> select_family as family_loop("vars.max_packages_per_run + 1") with {
+  ## package solo loop, bounded by its own knob: the cap sits one above
+  ## max_families_per_run, so select_family's own exit — the one that
+  ## writes cap_reason — fires first.
+  mark_family_attempted -> select_family as family_loop("vars.max_families_per_run + 1") with {
     families: "{{outputs.bucket_families.families}}",
     attempted_families: "{{outputs.mark_family_attempted.attempted_families}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    max_families: "{{vars.max_families_per_run}}"
   }
-  ## The loop's exhaustion exit (C145, #1293): the family cap spent, or the
-  ## back-edge declined for budget → the solo loop takes what is left,
-  ## skipping every member the family path already handled
-  ## (mark_family_attempted just grew the ledger).
+  ## The loop's exhaustion exit (C145, #1293): the back-edge declined for
+  ## budget → the solo loop takes what is left, skipping every member the
+  ## family path already handled (mark_family_attempted just grew the
+  ## ledger).
   mark_family_attempted -> select_candidate with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",

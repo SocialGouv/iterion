@@ -1941,8 +1941,11 @@ workflow copilot:
   ## (the affordability guard); the reviewed plan then returns to the chat
   ## pause through the delivery projection with a reply saying so — never a
   ## silent `done` with the operator's turn unanswered, never LOOP_EXHAUSTED.
-  ## The plan stays active and Terra's session ids ride along, so a run
-  ## resumed with a larger budget picks the plan up where it stopped.
+  ## The plan stays active and Terra's session ids ride along, on purpose:
+  ## the cure this reply names is a resume with a larger budget, which
+  ## must continue the reviewed plan rather than pay its reflection again.
+  ## At the cycle's cap — a thousand hand-offs, a bound no session has
+  ## approached — each further hand-off would repeat this notice.
   implementation_handoff -> compose with {
     reply: "Le cycle de planification est arrivé à sa limite (tours ou budget du run) : la session ne peut pas poursuivre ce plan. Reprends ce run avec un budget plus large (iterion resume --max-cost-usd ...) ou relance une conversation.",
     quick_replies: "[]",

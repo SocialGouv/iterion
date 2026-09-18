@@ -1350,7 +1350,7 @@ in-stride commits until the diff is clean and the tree is green.
   lockfiles, version bumps. MUTATES dependency manifests/lockfiles and
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
-- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
+- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_families_per_run` (int), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
 ### `supply-shield` — Shieldy

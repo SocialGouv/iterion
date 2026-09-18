@@ -47,13 +47,24 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 		return ""
 	}
 
-	for _, loop := range []string{"package_loop", "family_loop"} {
+	// Each loop's cap sits one above its own knob, so the selector's own
+	// exit — the one that writes cap_reason — fires before the bare exit.
+	for loop, knob := range map[string]string{"package_loop": "vars.max_packages_per_run + 1", "family_loop": "vars.max_families_per_run + 1"} {
 		l := wf.Loops[loop]
 		if l == nil {
 			t.Fatalf("loop %s missing", loop)
 		}
-		if l.MaxIterationsExpr != "vars.max_packages_per_run + 1" {
-			t.Errorf("%s cap = %q (literal %d), want the operator's knob plus one so select_candidate's own exit reports the cap first", loop, l.MaxIterationsExpr, l.MaxIterations)
+		if l.MaxIterationsExpr != knob {
+			t.Errorf("%s cap = %q (literal %d), want %q", loop, l.MaxIterationsExpr, l.MaxIterations, knob)
+		}
+	}
+	// select_family receives the knob it reports on every edge into it.
+	for _, e := range wf.Edges {
+		if e.To != "select_family" {
+			continue
+		}
+		if got := mapping(e, "max_families"); got != "{{vars.max_families_per_run}}" {
+			t.Errorf("%s -> select_family max_families = %q, want the knob", e.From, got)
 		}
 	}
 

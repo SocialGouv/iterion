@@ -10,7 +10,7 @@ Index + template: [README.md](README.md). Newest first.
 - Value: real — two correct upgrades with per-package audit notes and an SBOM, and a Phase 2 that reviewed rather than rubber-stamped.
 - Findings / misses: the three new exhaustion exits are not on this path; their witness is the strict dry run (the all-true pass no longer dies LOOP_EXHAUSTED at mark_family_attempted — it runs to the bot's own iteration ceiling). The loop caps now follow `max_packages_per_run` (one above it), so select_candidate's own exit reports the cap and only a back-edge declined for budget reaches the exits. The audit notes and the SBOM live in the run's artifact-files, not in the tree — the 07/07 bilan's "docs/renovacy/… inside the workspace" describes the earlier shape. Miss: none attributable to the bot.
 - Engine hardening: none needed.
-- Lessons for next run: a scope above the default 30 needs only `max_packages_per_run`; nothing else bounds the solo or family loops any more.
+- Lessons for next run: a scope above the default 30 needs only `max_packages_per_run`, and the family fast-track only `max_families_per_run`; nothing else bounds the two loops any more.
 
 ## 2026-07-07 — P1+P2 dogfood on an npm fixture: 2 clean upgrade commits, real advisory handled, P2 campaign converged (run 019f3d7b)
 - Status: **VALIDATED** (no-sandbox variant, small-fixture scope) — Phase 1's per-package pipeline and the NEW v2 Phase 2 both behaved as designed end to end in 10m50s.

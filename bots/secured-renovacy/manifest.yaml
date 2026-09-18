@@ -8,8 +8,9 @@ version: 0.2.3
 ## lexer; the files_lines join literal is re-spelled with its value unchanged.
 ## Two loops gain their exhaustion exits, at three loop-backs (C145, #1293),
 ## and their caps — fifty solos, twenty families, hardcoded — now sit one
-## above max_packages_per_run: select_candidate's own exit reports the cap
-## first, and a back-edge declined for budget hands the ledger to
+## above their knobs, max_packages_per_run and the new max_families_per_run
+## (default 20, the former literal), which select_candidate and
+## select_family report in their own exits; a back-edge declined for budget hands the ledger to
 ## phase2_decider (solo, through solo_banked, which counts the pick just
 ## committed: select_candidate's count is the ledger before it) or the
 ## remaining packages to the solo loop (family) instead of dying
