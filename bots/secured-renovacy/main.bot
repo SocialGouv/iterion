@@ -79,8 +79,12 @@ vars:
 
   ## Policy
   scope: string = "patch,minor,major"
-  ## Also bounds the solo loop (its cap is this value + 1, so
-  ## select_candidate's own exit reports the cap first).
+  ## Counts every package ATTEMPTED in the run on one shared ledger — the
+  ## patch batch's members, every family member the fast-track attempted,
+  ## the solo picks — so families consume solo slots by design: the knob
+  ## bounds the run's work, whichever path did it. Also bounds the solo
+  ## loop (its cap is this value + 1, so select_candidate's own exit
+  ## reports the cap first).
   max_packages_per_run: int = 30
   ## Families attempted per run — the family fast-track batches `@scope/`
   ## siblings before the solo loop. select_family reports the cap in its

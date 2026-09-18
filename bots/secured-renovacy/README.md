@@ -81,8 +81,8 @@ Phase 2   phase2_decider ─┬─ go_done (0 attempts or patches-only) ─▶ e
 | `scope` | `"patch,minor,major"` | Which semver tiers to attempt. `major` skips the patch fast-track; a run restricted to lower tiers skips major bumps. |
 | `update_scope` | `""` | What *kinds* of deps to touch — free-form, read verbatim by the agents (`libraries`, `languages`, `tooling`, `devops`, `ci_cd`, or a custom sentence). Empty = the whole dep graph. |
 | `major_policy` | `attempt` | `skip` \| `gate` \| `attempt` — how to handle major upgrades. **Ask before running `attempt`** — it mutates consuming code on breaking changes. |
-| `max_packages_per_run` | `30` | Cap on packages the solo loop selects in one run (`select_candidate` reports it in `cap_reason`; the solo loop's own cap sits one above). |
-| `max_families_per_run` | `20` | Cap on `@scope/` families the fast-track attempts in one run; the remainder's members go through the solo loop (`select_family` reports it in `cap_reason`; the family loop's own cap sits one above). |
+| `max_packages_per_run` | `30` | Cap on packages ATTEMPTED in one run, on one shared ledger: the patch batch's members, every family member the fast-track attempted and the solo picks all count, so families consume solo slots (`select_candidate` reports the cap in `cap_reason`; the solo loop's own cap sits one above). |
+| `max_families_per_run` | `20` | Cap on `@scope/` families the fast-track attempts in one run; the remainder's members go through the solo loop, where they count against `max_packages_per_run` like every other attempt (`select_family` reports the cap in `cap_reason`; the family loop's own cap sits one above). |
 | `fix_loop_default` / `fix_loop_major` | `3` / `5` | Per-package `fix_after_upgrade` retry budget (major-risk upgrades get the larger budget). |
 | `max_review_passes` | `5` | Phase-2 `review_pass_loop` cap (bounds loop-backs → up to N+1 campaign→verify passes). |
 | `override_install_cmd` / `override_upgrade_cmd` | `""` | Escape hatches for unusual setups; empty lets `detect_stack` supply the canonical commands. |
