@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.163.0](https://github.com/SocialGouv/iterion/compare/v3.162.3...v3.163.0) (2026-09-18)
+
+### Features
+
+* **review-pr:** the claude reviewer has somewhere to go ([#1388](https://github.com/SocialGouv/iterion/issues/1388)) ([0f694e6](https://github.com/SocialGouv/iterion/commit/0f694e680716d7512ec4c78149044cba64e1ac0f)), references [#1221](https://github.com/SocialGouv/iterion/issues/1221) [#1221](https://github.com/SocialGouv/iterion/issues/1221)
+
+    <details><summary>why</summary>
+
+    review-pr declared no `fallbacks:` route at all — one of the 28 bundles that declared none, and the only required merge gate among them. So when this instance's Anthropic credential could not serve, the claude reviewer simply failed, on the bot every PR in this repo crosses.
+
+    </details>
+
 ## [3.162.3](https://github.com/SocialGouv/iterion/compare/v3.162.2...v3.162.3) (2026-09-18)
 
 ### Bug Fixes
