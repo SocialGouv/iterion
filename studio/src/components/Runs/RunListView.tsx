@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { useLocation } from "wouter";
+import {
+  GroupedTableVirtuoso,
+  GroupedVirtuoso,
+  type Components,
+  type ItemProps,
+  type ListProps,
+  type TableComponents,
+} from "react-virtuoso";
 
 import {
   BarChartIcon,
@@ -10,7 +18,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/ui/EmptyState";
-import type { RunRepo, RunSourceKind, RunStatus } from "@/api/runs";
+import type { RunRepo, RunSourceKind, RunStatus, RunSummary } from "@/api/runs";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useRuns } from "@/hooks/useRuns";
@@ -43,14 +51,121 @@ import {
 } from "./runList/runListFormat";
 import { RunListFilters } from "./runList/RunListFilters";
 import { RunListRow } from "./runList/RunListRow";
-import { RunRowGroup } from "./runList/RunRowGroup";
+import { RunListSkeleton } from "./runList/RunListSkeleton";
 import { RunCardGroupHeader } from "./runList/RunCardGroupHeader";
+import { runListBodyState, showRefreshingOverlay } from "./runList/runListBodyState";
 import { RunSelectionToolbar } from "./runList/RunSelectionToolbar";
 import { SortGroupControls } from "./runList/SortGroupControls";
 import { useRunListActions } from "./runList/useRunListActions";
 import { useRunListFilters } from "./runList/useRunListFilters";
 import { useRunListLiveTick } from "./runList/useRunListLiveTick";
 import { useRunListSelection } from "./runList/useRunListSelection";
+
+// Shared per-row wiring handed to the virtualized table via Virtuoso's
+// `context` prop. Keeping callbacks + selection state here (rather than
+// closing over them in itemContent) lets the memoised TableRow read them
+// without every render allocating a new row renderer.
+interface RunTableContext {
+  selectedIds: ReadonlySet<string>;
+  resumingIds: ReadonlySet<string>;
+  onOpen: (id: string) => void;
+  onFilterBot: (botKey: string) => void;
+  onToggleSelect: (id: string) => void;
+  onResume: (id: string) => void;
+}
+
+// Custom <tr> for GroupedTableVirtuoso: carries the row click/hover the
+// old static table had. Virtuoso supplies `item` (the run) + data-index
+// (spread through `rest`) and owns positioning; we only add interaction
+// + styling.
+function RunTableRow({
+  item,
+  context,
+  children,
+  ...rest
+}: Omit<ItemProps<RunSummary>, "item"> & {
+  // Virtuoso routes GROUP header rows through TableRow too, with no
+  // `item`. Only data rows are clickable / hoverable.
+  item?: RunSummary;
+  context?: RunTableContext;
+}) {
+  return (
+    <tr
+      {...rest}
+      className={`group border-b border-border-default${
+        item ? " hover:bg-surface-2 cursor-pointer" : ""
+      }`}
+      onClick={item ? () => context?.onOpen(item.id) : undefined}
+    >
+      {children}
+    </tr>
+  );
+}
+
+// Virtuoso key: derive from the item (a run), NOT from flatRuns[index].
+// Virtuoso passes the GROUP-INCLUSIVE index and also calls this for group
+// rows (item undefined), so indexing the items-only flatRuns would shift
+// every key by the group count — keys would track position instead of
+// identity, defeating the RunListRow memo whenever a poll inserts/reorders
+// a run. Group rows (no item) key by their positional index.
+function runItemKey(index: number, run: RunSummary | undefined): string {
+  return run?.id ?? `group-${index}`;
+}
+
+const RUN_TABLE_COMPONENTS: TableComponents<RunSummary, RunTableContext> = {
+  // The sr-only <caption> is the table's accessible name (RGAA 5.4/5.5) —
+  // it must be the table's first child. Virtuoso renders a bare <table>,
+  // so we re-add it here (the pre-virtualization markup had it inline).
+  // table-fixed: only a window of rows is in the DOM at any time, so with
+  // the default auto layout the browser would recompute column widths from
+  // each scrolled-in window and the columns would visibly jump. Fixed
+  // layout pins widths to the header row (below) regardless of the
+  // rendered window.
+  Table: ({ children, context: _context, ...props }) => (
+    <table {...props} className="w-full table-fixed text-xs">
+      <caption className="sr-only">Runs</caption>
+      {children}
+    </table>
+  ),
+  TableRow: RunTableRow,
+};
+
+// Mobile card list keeps the pre-virtualization <ul>/<li> semantics so
+// assistive tech still gets list role + item count. Only run cards flow
+// through Item (→ <li>); group headers go through the default Group (a
+// <div>), so they stay outside the list-item semantics as before.
+const RunCardList = forwardRef<
+  HTMLUListElement,
+  ListProps & { context?: RunTableContext }
+>(function RunCardList({ children, style, context: _context, ...rest }, ref) {
+  return (
+    <ul ref={ref} style={style} className="divide-y divide-border-default" {...rest}>
+      {children}
+    </ul>
+  );
+});
+
+const RUN_CARD_COMPONENTS: Components<RunSummary, RunTableContext> = {
+  // Cast: ListProps types the ref as HTMLDivElement, but rendering a <ul>
+  // is what restores the list semantics — the ref/style/children contract
+  // is identical.
+  List: RunCardList as unknown as Components<RunSummary, RunTableContext>["List"],
+  // Strip `context` (+ item) so they don't leak onto the DOM node as
+  // invalid attributes; Virtuoso passes them through ContextProp.
+  Item: ({ children, context: _context, item: _item, ...props }) => (
+    <li {...props}>{children}</li>
+  ),
+  // Virtuoso renders group headers through Group as DIRECT children of
+  // the List (the <ul>), so they must also be <li> to keep the markup
+  // valid. role="presentation" keeps them out of the list-item count —
+  // they are section headers, not runs. RunCardGroupHeader (from
+  // groupContent) renders inside.
+  Group: ({ children, context: _context, ...props }) => (
+    <li role="presentation" {...props}>
+      {children}
+    </li>
+  ),
+};
 
 export default function RunListView() {
   const [, setLocation] = useLocation();
@@ -94,6 +209,17 @@ export default function RunListView() {
   // scope adoption so shared URLs keep their filter.
   const { activeRepo, overview, enabled: repoScope, loading: repoScopeLoading } = useActiveRepo();
   const scopeRepoName = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
+
+  // repoScopeLoading is true on the FIRST repo-scope fetch too, not only on
+  // a switch. Treating that first load as a "scope switch" would flash the
+  // dim overlay on a cold load whenever the runs response lands before the
+  // repos response. So only count repoScopeLoading as a switch AFTER the
+  // repo scope has resolved at least once.
+  const repoScopeResolvedRef = useRef(false);
+  if (repoScope && !repoScopeLoading) repoScopeResolvedRef.current = true;
+  const repoSwitching =
+    repoScopeLoading && repoScopeResolvedRef.current;
+
   const seenScopeRef = useRef<string | null>(null);
   useEffect(() => {
     if (mode !== "cloud" || !repoScope || repoScopeLoading) return;
@@ -107,7 +233,14 @@ export default function RunListView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, repoScope, repoScopeLoading, scopeRepoName]);
 
-  const { runs, counts, loading, error } = useRuns({ status, repo: serverRepo });
+  const { runs, counts, loading, refreshing, error } = useRuns({
+    status,
+    repo: serverRepo,
+    // The full list wants the smooth scope-switch transition (keep the
+    // previous rows dimmed while the new scope loads). Other useRuns
+    // consumers deliberately leave this off.
+    keepPrevious: true,
+  });
 
   const filteredRuns = useMemo(
     () => filterRuns(runs, { query, since, source, bot, repo: clientRepo }),
@@ -186,11 +319,43 @@ export default function RunListView() {
   const groups = useMemo(() => groupRuns(sortedRuns, group), [sortedRuns, group]);
   const isGrouped = group !== "none";
 
+  // Virtualization model. GroupedVirtuoso / GroupedTableVirtuoso want a
+  // flat item list plus per-group counts; the group index is implicit
+  // from the counts. We flatten once per (groups) change so scrolling
+  // and the live-duration tick don't rebuild it.
+  const flatRuns = useMemo(
+    () => groups.flatMap((g) => g.runs),
+    [groups],
+  );
+  const groupCounts = useMemo(
+    () => groups.map((g) => g.runs.length),
+    [groups],
+  );
+  const groupLabels = useMemo(
+    () => groups.map((g) => ({ label: g.label, count: g.runs.length })),
+    [groups],
+  );
+
   // Multi-selection over the visible (filtered + sorted) list, plus the
   // mutations it drives (inline Resume, bulk cancel/delete). Selection
   // checkboxes exist on the desktop table only.
   const { selectedIds, selectedRuns, allSelected, toggle, toggleAll, clear } =
     useRunListSelection(sortedRuns);
+
+  // Drop the selection the moment a scope switch starts. keepPreviousData
+  // holds the OUTGOING scope's rows on screen (so the selection-prune in
+  // useRunListSelection doesn't fire), which would otherwise leave the
+  // bulk toolbar live with the previous scope's run IDs — a Cancel/Delete
+  // in that window would target runs from the scope the operator just left,
+  // against the already-switched session.
+  const scopeSwitchInFlight = refreshing || repoSwitching;
+  // useLayoutEffect (not useEffect) so the selection is cleared BEFORE
+  // paint — otherwise there'd be a single frame where the bulk toolbar
+  // still shows the outgoing scope's selection at the start of a switch.
+  useLayoutEffect(() => {
+    if (scopeSwitchInFlight) clear();
+  }, [scopeSwitchInFlight, clear]);
+
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog } = useConfirm();
   const { onResume, resumingIds, onBulkCancel, onBulkDelete } =
@@ -202,6 +367,21 @@ export default function RunListView() {
       onOpenRun: openRun,
     });
   const someSelected = selectedIds.size > 0;
+
+  // Context handed to the virtualized table's row component. Rebuilt only
+  // when the selection/resume sets or the flat list change — the callbacks
+  // are already stable via useCallback.
+  const runTableContext = useMemo<RunTableContext>(
+    () => ({
+      selectedIds,
+      resumingIds,
+      onOpen: openRun,
+      onFilterBot: filterByBot,
+      onToggleSelect: toggle,
+      onResume,
+    }),
+    [selectedIds, resumingIds, openRun, filterByBot, toggle, onResume],
+  );
 
   // Shared "All" option count for the source + bot menus (the full
   // status-filtered fetch size). Omitted when zero.
@@ -284,17 +464,36 @@ export default function RunListView() {
     setRepo("");
   }, [setQueryInput, setSince, setSource, setBot, setRepo]);
 
+  const bodyState = runListBodyState({
+    loading,
+    // A switch away from an EMPTY scope holds a cached [] via
+    // keepPreviousData (loading=false), so fold refreshing in to show the
+    // skeleton rather than the "no runs" CTA while the new scope loads.
+    // repoSwitching counts as in-flight too: on a team switch the
+    // adopt-scope effect defers until the new team's repos resolve, so the
+    // list is momentarily fetching under the PREVIOUS team's repo filter —
+    // an empty result there is not "this scope has no runs". (It excludes
+    // the first repo-scope load so a cold load never trips it.)
+    refreshing: refreshing || repoSwitching,
+    error,
+    runCount: runs.length,
+    filteredCount: filteredRuns.length,
+  });
+
   let body: ReactNode;
-  if (loading && runs.length === 0) {
+  if (bodyState === "skeleton") {
+    // Cold load — no cached data for this scope yet. Show the skeleton
+    // (matches the table/card layout so nothing jumps when rows land). Its
+    // own scroll wrapper since the container is overflow-hidden for the
+    // virtualized list.
     body = (
-      <EmptyState
-        message="Loading runs…"
-        icon={<ReloadIcon className="animate-spin" />}
-      />
+      <div className="h-full overflow-auto">
+        <RunListSkeleton />
+      </div>
     );
-  } else if (error) {
+  } else if (bodyState === "error") {
     body = <EmptyState message={<span className="text-danger">{error}</span>} />;
-  } else if (runs.length === 0) {
+  } else if (bodyState === "empty") {
     // Cloud operators launch from /bots or the pipeline board, not the
     // editor. Desktop/local operators do open the editor as the primary
     // launch surface, so keep those CTAs there.
@@ -350,7 +549,7 @@ export default function RunListView() {
           }
         />
       );
-  } else if (filteredRuns.length === 0) {
+  } else if (bodyState === "no-matches") {
     body =
       status !== "" ? (
         <EmptyState
@@ -383,86 +582,135 @@ export default function RunListView() {
   } else {
     body = (
       <>
-        {/* Desktop / tablet: standard table. Adds a Source column
-            so the user can tell at a glance how each run was
-            triggered without expanding the row. */}
-        <table className="w-full text-xs hidden sm:table">
-          <caption className="sr-only">Runs</caption>
-          <thead className="text-fg-subtle">
-            <tr className="border-b border-border-default">
-              <th scope="col" className="pl-4 pr-1 py-2 w-8">
-                <Checkbox
-                  aria-label="Select all runs"
-                  checked={allSelected}
-                  ref={(el) => {
-                    if (el) el.indeterminate = someSelected && !allSelected;
-                  }}
-                  onChange={toggleAll}
-                />
-              </th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Run</th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Workflow</th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Source</th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Status</th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Started</th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Duration</th>
-              <th scope="col" className="text-left px-4 py-2 font-medium">Run ID</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groups.map((g) => (
-              <RunRowGroup
-                key={g.id}
-                label={g.label}
-                count={g.runs.length}
-                showHeader={isGrouped}
-                columnSpan={8}
-              >
-                {g.runs.map((r) => (
-                  <RunListRow
-                    key={r.id}
-                    run={r}
-                    selected={selectedIds.has(r.id)}
-                    resuming={resumingIds.has(r.id)}
-                    onOpen={openRun}
-                    onFilterBot={filterByBot}
-                    onToggleSelect={toggle}
-                    onResume={onResume}
+        {/* Desktop / tablet: virtualized semantic table. Only the visible
+            rows mount, so a several-hundred-run list no longer blocks the
+            main thread on a scope switch. thead (with select-all), group
+            headers, columns and selection all survive virtualization. The
+            Source column tells the operator how each run was triggered. */}
+        <div className="hidden sm:block h-full">
+          <GroupedTableVirtuoso<RunSummary, RunTableContext>
+            className="h-full"
+            data={flatRuns}
+            groupCounts={groupCounts}
+            context={runTableContext}
+            components={RUN_TABLE_COMPONENTS}
+            fixedHeaderContent={() => (
+              <tr className="border-b border-border-default bg-surface-1 text-fg-subtle">
+                <th scope="col" className="pl-4 pr-1 py-2 w-8">
+                  <Checkbox
+                    aria-label="Select all runs"
+                    checked={allSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someSelected && !allSelected;
+                    }}
+                    onChange={toggleAll}
                   />
-                ))}
-              </RunRowGroup>
-            ))}
-          </tbody>
-        </table>
-        <div className="sm:hidden">
-          {groups.map((g) => (
-            <div key={g.id}>
-              {isGrouped && (
-                <RunCardGroupHeader label={g.label} count={g.runs.length} />
-              )}
-              <ul className="divide-y divide-border-default">
-                {g.runs.map((r) => (
-                  <li key={r.id}>
-                    <RunListCard
-                      run={r}
-                      resuming={resumingIds.has(r.id)}
-                      onOpen={openRun}
-                      onFilterBot={filterByBot}
-                      onResume={onResume}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+                </th>
+                {/* Explicit widths anchor the table-fixed layout so column
+                    widths don't depend on the virtualized row window. The
+                    flexible Run/Workflow columns take the remaining space;
+                    the rest are sized to their content. */}
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[22%]">Run</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[22%]">Workflow</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[10%]">Source</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[14%]">Status</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[12%]">Started</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[10%]">Duration</th>
+                <th scope="col" className="text-left px-4 py-2 font-medium w-[10%]">Run ID</th>
+              </tr>
+            )}
+            groupContent={(index) =>
+              isGrouped ? (
+                <th
+                  colSpan={8}
+                  scope="rowgroup"
+                  className="text-left px-4 py-1.5 font-medium text-fg-muted text-micro uppercase tracking-wide bg-surface-2 border-y border-border-default"
+                >
+                  <span>{groupLabels[index]?.label}</span>
+                  <span className="ml-2 text-fg-subtle normal-case tracking-normal">
+                    {groupLabels[index]?.count}
+                  </span>
+                </th>
+              ) : (
+                // No grouping: Virtuoso still requires a group row. Render
+                // an empty, zero-height header so nothing shows.
+                <th colSpan={8} className="p-0 h-0" aria-hidden />
+              )
+            }
+            itemContent={(_index, _groupIndex, run, ctx) => (
+              <RunListRow
+                run={run}
+                selected={ctx.selectedIds.has(run.id)}
+                resuming={ctx.resumingIds.has(run.id)}
+                onFilterBot={ctx.onFilterBot}
+                onToggleSelect={ctx.onToggleSelect}
+                onResume={ctx.onResume}
+              />
+            )}
+            computeItemKey={runItemKey}
+          />
+        </div>
+
+        {/* Mobile: virtualized card list. Group headers render inline via
+            groupContent; divide-y is preserved by the row borders. */}
+        <div className="sm:hidden h-full">
+          <GroupedVirtuoso<RunSummary, RunTableContext>
+            className="h-full"
+            data={flatRuns}
+            groupCounts={groupCounts}
+            context={runTableContext}
+            components={RUN_CARD_COMPONENTS}
+            groupContent={(index) =>
+              isGrouped ? (
+                <RunCardGroupHeader
+                  label={groupLabels[index]?.label ?? ""}
+                  count={groupLabels[index]?.count ?? 0}
+                />
+              ) : (
+                <div className="h-0" aria-hidden />
+              )
+            }
+            itemContent={(_index, _groupIndex, run, ctx) =>
+              run ? (
+                <RunListCard
+                  run={run}
+                  resuming={ctx.resumingIds.has(run.id)}
+                  onOpen={ctx.onOpen}
+                  onFilterBot={ctx.onFilterBot}
+                  onResume={ctx.onResume}
+                />
+              ) : null
+            }
+            computeItemKey={runItemKey}
+          />
         </div>
       </>
     );
   }
 
+  // A scope switch (team/org/repo) is in flight when keepPreviousData is
+  // holding the previous scope's rows (refreshing) or the repo scope is
+  // still resolving. During that window every run-derived surface — the
+  // list AND the queue-depth bar / filter chip counts — is showing the
+  // previous scope's numbers, so we dim them together to signal "these are
+  // being replaced" instead of dimming only the list under the overlay.
+  const scopeSwitching = showRefreshingOverlay({
+    refreshing,
+    // repoSwitching, not raw repoScopeLoading, so the overlay never flashes
+    // on the first repo-scope resolution during a cold load.
+    repoScopeLoading: repoSwitching,
+    runCount: runs.length,
+  });
+
   return (
     <div className="h-full flex flex-col overflow-hidden bg-surface-1 text-fg-default">
-      <QueueDepthBar counts={counts} />
+      <div
+        className={
+          scopeSwitching ? "opacity-60 transition-opacity" : "transition-opacity"
+        }
+      >
+        <QueueDepthBar counts={counts} />
+      </div>
 
       <div className="px-4 py-2 flex flex-wrap items-center gap-2 border-b border-border-default">
         <RunListFilters
@@ -519,7 +767,43 @@ export default function RunListView() {
         />
       )}
 
-      <div className="flex-1 overflow-auto">{body}</div>
+      {/* overflow-hidden, not overflow-auto: the virtualized list owns its
+          own scroller, so a scroll here would nest a second scrollbar. The
+          skeleton / empty / error bodies fit the viewport or scroll
+          internally. */}
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        {/* During a scope switch the rows on screen belong to the OUTGOING
+            scope (keepPreviousData). Dim them AND make them inert so a
+            click / bulk action can't target a run from the scope the
+            operator just left; interaction returns when the new scope
+            lands. */}
+        <div
+          className={`h-full transition-opacity ${
+            scopeSwitching ? "opacity-60 pointer-events-none" : ""
+          }`}
+          aria-busy={scopeSwitching || undefined}
+        >
+          {body}
+        </div>
+        {/* Scope-switch indicator. keepPreviousData keeps the previous
+            scope's list on screen; this dims it (above) and shows a small
+            pill so the reload is visible without blanking. Shown only on a
+            real scope switch (isPlaceholderData) — never on a same-key poll
+            tick. pointer-events-none so it never blocks scroll / selection. */}
+        {scopeSwitching && (
+          <div
+            className="pointer-events-none absolute inset-0 flex items-start justify-center"
+            role="status"
+            aria-live="polite"
+            aria-label="Refreshing runs"
+          >
+            <span className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border-default bg-surface-1 px-2.5 py-1 text-caption text-fg-muted shadow-sm">
+              <ReloadIcon className="h-3 w-3 animate-spin" />
+              Updating…
+            </span>
+          </div>
+        )}
+      </div>
       {dialog}
     </div>
   );

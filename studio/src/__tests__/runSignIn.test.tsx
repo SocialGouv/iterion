@@ -22,9 +22,22 @@ vi.mock("@/components/Runs/RunsTabsView", () => ({ default: function RequestedRu
   return <h1>Requested run {params?.id}</h1>;
 } }));
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "@/App";
 import { useServerInfoStore } from "@/store/serverInfo";
 import type { ServerInfo } from "@/api/types";
+
+// Mirror main.tsx: the real app always mounts App inside a QueryClientProvider.
+// AuthProvider now reads the query client (to invalidate run-scoped caches on
+// scope switch), so the test harness must provide one too.
+function renderApp() {
+  const client = new QueryClient();
+  return render(
+    <QueryClientProvider client={client}>
+      <App />
+    </QueryClientProvider>,
+  );
+}
 
 const run = "/runs/review-123?tab=events#node-converge";
 const identity = { user: { id: "u", email: "reviewer@example.test", status: "active", is_super_admin: true }, orgs: [], active_role: "owner" };
@@ -64,7 +77,7 @@ async function submitLogin() {
 
 describe("run → sign-in → requested run", () => {
   it("shows sign-in and returns to the full run URL after password login", async () => {
-    render(<App />);
+    renderApp();
     await screen.findByRole("heading", { name: "Sign in to iterion" });
     expect(window.location.pathname).toBe("/login");
     expect(new URLSearchParams(window.location.search).get("next")).toBe(run);
@@ -76,7 +89,7 @@ describe("run → sign-in → requested run", () => {
 
   it("retains the destination when a password attempt fails", async () => {
     rejectLogin = true;
-    render(<App />);
+    renderApp();
     await submitLogin();
     await screen.findByText("Invalid credentials");
     expect(new URLSearchParams(window.location.search).get("next")).toBe(run);
@@ -88,14 +101,14 @@ describe("run → sign-in → requested run", () => {
   it("honors a login return link when the session already exists", async () => {
     authenticated = true;
     window.history.replaceState({}, "", `/login?${new URLSearchParams({ next: run })}`);
-    render(<App />);
+    renderApp();
     await screen.findByRole("heading", { name: "Requested run review-123" });
     expect(window.location.pathname + window.location.search + window.location.hash).toBe(run);
   });
 
   it("retains the restricted-account gate after signing in", async () => {
     restricted = true;
-    render(<App />);
+    renderApp();
     await submitLogin();
     await screen.findByRole("heading", { name: "Restricted account" });
     expect(screen.queryByText("Requested run review-123")).toBeNull();
@@ -103,7 +116,7 @@ describe("run → sign-in → requested run", () => {
 
   it("keeps the public home page public", async () => {
     window.history.replaceState({}, "", "/");
-    render(<App />);
+    renderApp();
     await screen.findByRole("heading", { name: "Public cloud home" });
     await waitFor(() => expect(window.location.pathname).toBe("/"));
   });

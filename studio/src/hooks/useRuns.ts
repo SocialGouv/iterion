@@ -1,8 +1,9 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
+import { useAuth } from "@/auth/AuthContext";
 
 // Stable empty fallback so the undefined→loaded transition doesn't hand
 // the (many) downstream useMemos a fresh [] reference each render.
@@ -40,12 +41,25 @@ export interface UseRunsOptions {
   // Used by surfaces that only need the runs list while a UI is open
   // (e.g. the global command palette) to avoid background polling.
   enabled?: boolean;
+  // Opt into keepPreviousData: on a scope switch (key change) the hook
+  // keeps the PREVIOUS scope's rows on screen (and flags `refreshing`)
+  // instead of clearing to a loading state. Only the full runs list wants
+  // this — the home hub, the paused-badge counter and the command palette
+  // must NOT surface another scope's runs, so they leave it off (default)
+  // and go through their own loading/empty states on a switch.
+  keepPrevious?: boolean;
 }
 
 export interface UseRunsResult {
   runs: RunSummary[];
   counts: Partial<Record<RunStatus, number>>;
+  // True only on a cold load — no cached data for the current key yet.
+  // Drives the first-load skeleton.
   loading: boolean;
+  // True while a background/scope-switch refetch is in flight but cached
+  // (previous-scope) data is still on screen via keepPreviousData. Drives
+  // the dim overlay + indicator so a scope switch never blanks the list.
+  refreshing: boolean;
   error: string | null;
 }
 
@@ -56,12 +70,40 @@ export interface UseRunsResult {
 // is hidden) and de-dupes consumers that mount the same key, so the
 // previous fingerprint + visibilitychange machinery falls away.
 export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
-  const { status = "", limit, repo = "", enabled = true } = opts;
+  const { status = "", limit, repo = "", enabled = true, keepPrevious = false } = opts;
+
+  // The runs list is scoped to the active org+team on the server (cloud).
+  // The scope is ALWAYS part of the cache key — not gated on a server-mode
+  // check — so it can never flip value mid-boot: gating on isCloud read a
+  // serverInfo store that starts null (info arrives async, after this hook
+  // can mount), which flipped the key from null→scope once info resolved,
+  // causing a redundant refetch + a spurious "Updating…" flash on cold
+  // load, and left the scope out of the key entirely if /api/info failed.
+  // In local/desktop mode there is no org/team, so the key is a constant
+  // ":" — stable, single-tenant, unchanged behaviour. The ORG must be in
+  // the key too, not just the team: two orgs can both resolve to no active
+  // team, and a team-only key would then collide on one cache entry.
+  // Key on the authoritative session ids (activeOrgID/activeTeamID raw
+  // strings), NOT the derived `activeTeam` membership lookup: that lookup
+  // is `teams.find(... === activeTeamID)` over the active org's teams and
+  // resolves to undefined whenever the session's team isn't in the
+  // client-visible tree (org fell back to orgs[0], super-admin with empty
+  // orgs, …). A undefined there would degrade the key to "<org>:" and
+  // collapse two distinct server scopes onto one cache entry — the same
+  // collision the org component was added to prevent.
+  const { activeOrgID, activeTeamID } = useAuth();
+  const scopeKey = `${activeOrgID}:${activeTeamID}`;
+
   const query = useQuery<RunSummary[]>({
-    queryKey: ["runs", status, limit, repo],
+    queryKey: ["runs", scopeKey, status, limit, repo],
     queryFn: () =>
       listRuns({ status: status || undefined, limit, repo: repo || undefined }),
     enabled,
+    // Opt-in only: keep the previous scope's list visible while the new
+    // scope loads, instead of blanking. RunListView dims it + shows an
+    // indicator via `refreshing`. Other consumers leave this off so a
+    // scope switch never leaks another scope's runs into their UI.
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
     refetchInterval: (q) => {
       const data = q.state.data;
       if (!data) return POLL_INTERVAL_FAST_MS;
@@ -83,6 +125,12 @@ export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
     runs,
     counts,
     loading: query.isLoading,
+    // isPlaceholderData is true ONLY while keepPreviousData is holding the
+    // previous key's rows on screen because the key changed (a scope
+    // switch) and the new key is still loading. It is false during an
+    // ordinary same-key background poll — so the refreshing overlay
+    // appears on a real scope change, not on every 3s poll tick.
+    refreshing: query.isPlaceholderData,
     error: query.error ? errorMessage(query.error) : null,
   };
 }
