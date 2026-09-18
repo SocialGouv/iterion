@@ -85,7 +85,10 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 	if got := mapping(failed, "attempted_count"); got != "{{outputs.select_candidate.attempted_count}}" {
 		t.Errorf("mark_failed_and_continue -> phase2_decider attempted_count = %q", got)
 	}
-	// The family loop hands what is left to the solo loop with the fresh ledger.
+	// The family loop, declined for budget, hands what is left to the solo
+	// loop's head with the fresh ledger: a free pick whose own exit builds
+	// the ledger emit_sbom and Phase 2 read (a decider entered from here
+	// would hand emit_sbom nothing — the strict dry run measured it).
 	family := exit("mark_family_attempted", "select_candidate")
 	if got := mapping(family, "attempted"); got != "{{outputs.mark_family_attempted.attempted_members}}" {
 		t.Errorf("mark_family_attempted -> select_candidate attempted = %q, want the ledger mark_family_attempted just grew", got)
@@ -93,6 +96,11 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 	for _, key := range []string{"packages", "scope", "max_packages", "workspace_dir", "update_scope"} {
 		if mapping(family, key) == "" {
 			t.Errorf("mark_family_attempted -> select_candidate lost the %q mapping", key)
+		}
+	}
+	for _, e := range wf.Edges {
+		if e.From == "mark_family_attempted" && e.To == "phase2_decider" {
+			t.Errorf("mark_family_attempted -> phase2_decider exists: emit_sbom would read a select_candidate ledger that never ran on that path")
 		}
 	}
 }

@@ -24,11 +24,11 @@
 ##   - all candidates exhausted in scope, OR
 ##   - Phase-2 gate converged (review_clean AND build green), OR
 ##   - review_pass_loop exhausted (ships what is banked), OR
-##   - the solo or family loop's back-edge declined for budget → Phase 2,
-##     or the solo loop, on what is banked (the exhaustion exits, C145;
-##     each cap sits one above its knob — max_packages_per_run,
-##     max_families_per_run — so select_candidate and select_family
-##     report the cap themselves), OR
+##   - the solo or family loop's back-edge declined for budget → Phase 2
+##     (solo) or the solo loop (family) on what is banked (the exhaustion
+##     exits, C145; each cap sits one above its knob — max_packages_per_run,
+##     max_families_per_run — so select_candidate and select_family report
+##     the cap themselves), OR
 ##   - budget exceeded (resumable via `iterion resume`).
 ##
 ## Token economy
@@ -2091,7 +2091,8 @@ schema select_family_output:
   ## cap_reason explains why the family loop is stopping: "" while
   ## picking, "exhausted" when no family is left, or the
   ## max_families_per_run line when the cap stopped it (the remaining
-  ## families' members then go through the solo loop).
+  ## families' members then go through the solo loop). Read off the node
+  ## output in `iterion report`, as select_candidate.cap_reason is.
   cap_reason: string
 
 ## family_upgrade_input drives the family yarn-up tool — same shape as
@@ -4839,9 +4840,16 @@ workflow secured_renovacy:
     max_families: "{{vars.max_families_per_run}}"
   }
   ## The loop's exhaustion exit (C145, #1293): the back-edge declined for
-  ## budget → the solo loop takes what is left, skipping every member the
-  ## family path already handled (mark_family_attempted just grew the
-  ## ledger).
+  ## budget (select_family's own exit reports the cap first) → the solo
+  ## loop takes what is left, skipping every member the family path
+  ## already handled (mark_family_attempted just grew the ledger). The
+  ## solo head is the deliberate target, not phase2_decider: select_candidate
+  ## is a free pick whose own exit builds the ledger emit_sbom and Phase 2
+  ## read (a decider entered from here hands emit_sbom nothing — measured
+  ## by the strict dry run), and a run too starved for another family
+  ## iteration cannot fund Phase 2's campaign either: in both designs it
+  ## stops at the first agent node with a resumable budget failure, and a
+  ## resume with a raised cap continues from there.
   mark_family_attempted -> select_candidate with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
