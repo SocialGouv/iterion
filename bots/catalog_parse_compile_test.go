@@ -39,7 +39,13 @@ func TestCatalogBotsParseAndCompileClean(t *testing.T) {
 	teamBots, _ := teamBotFiles()
 	demoMain, _ := filepath.Glob("../examples/*/main.bot")
 	demoLoose, _ := filepath.Glob("../examples/*.bot")
-	targets := append(append(teamBots, demoMain...), demoLoose...)
+	// The loose workflows shipped outside bots/ and examples/: the
+	// dispatcher's `default` assignee, copied into the //go:embed tree at
+	// build (a parse regression there breaks `iterion dispatch` in every
+	// binary), and the operator scripts under scripts/adhoc/.
+	shipped := []string{"../pkg/cli/templates/dispatch_bots_default.bot"}
+	scripts, _ := filepath.Glob("../scripts/adhoc/*.bot")
+	targets := append(append(append(append(teamBots, demoMain...), demoLoose...), shipped...), scripts...)
 	if len(targets) == 0 {
 		t.Fatal("no catalog workflows found — discovery glob likely broke")
 	}

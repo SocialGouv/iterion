@@ -12,40 +12,45 @@ import (
 // executor resolves `{{vars.…}}` there (resolveRoutingField), nothing else:
 // the route is decided before the node runs, so no input, output, artifact
 // or loop exists to read. An undeclared var is C033 like everywhere; every
-// other `{{…}}` span is C148, an error — a foreign namespace, a misspelt one
-// (`{{var.m}}`, `{{Vars.m}}`, `{{env.HOME}}`), a span with no path, an
-// opening with no close. The scan mirrors the executor's resolver, which
-// treats any `{{…}}` as a reference and keeps what it cannot resolve as
-// written: left alone, that text reached the backend (an invalid spec on
-// claw, a model literally named `{{var.m}}` on the claude CLI) after the
-// workspace and the sandbox had been paid for.
+// other `{{…}}` span is C148 — a foreign namespace, a misspelt one
+// (`{{var.m}}`, `{{Vars.m}}`, `{{env.HOME}}`), a span with no path, a dotted
+// var path, the `{{!…}}` raw form, an opening with no close. The scan
+// mirrors the executor's resolver, which treats any `{{…}}` as a reference
+// and keeps what it cannot resolve as written: left alone, that text reached
+// the backend (an invalid spec on claw, a model literally named `{{var.m}}`
+// on the claude CLI) after the workspace and the sandbox had been paid for.
 //
-// A supervisor's `model:` is not a routing field of a node: it is decided
-// at spawn, without the run's vars, and nothing renders a template in it —
-// any `{{…}}` there is C148 too, as a warning (the supervisor degrades, the
-// run is not refused), said as such.
+// C148 is a WARNING, like C147 and C144: a bot in the field that carries
+// the shape compiled yesterday and runs today until that node is reached,
+// and its failure there stays loud — the warning makes the defect visible
+// before a run without breaking an upgrade. A supervisor's `model:` is not
+// a routing field of a node: it is decided at spawn, without the run's
+// vars, and nothing renders a template in it — any `{{…}}` there is C148
+// too, said as such (the supervisor degrades, the run is not refused).
 func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 	for _, node := range w.Nodes {
 		for _, rf := range routingFields(node) {
 			loc := fmt.Sprintf("%s %q %s", node.NodeKind(), node.NodeID(), rf.name)
 			spans, unterminated := templateSpans(rf.value)
 			for _, span := range spans {
-				// Exactly one path segment: vars are scalars, so the executor
-				// looks `{{vars.m.id}}` up as the key "m.id", which no
-				// declaration can be — the span would reach the backend as
-				// written with `validateVarsRef` content with "m".
+				// Exactly one path segment, and not the `{{!…}}` raw form:
+				// vars are scalars, so the executor looks `{{vars.m.id}}` up
+				// as the key "m.id", which no declaration can be, and its
+				// resolver splits `!vars` as a namespace it has not — both
+				// spans would reach the backend as written with
+				// validateVarsRef content with "m".
 				refs, err := ParseRefs(span)
-				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 {
+				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 && !refs[0].Unquoted {
 					c.validateVarsRef(w, refContext{Ref: refs[0], NodeID: node.NodeID(), Location: loc})
 					continue
 				}
-				c.errorfAt(DiagRoutingFieldRef, node.NodeID(), "",
-					"%s: %s is not a vars reference — only {{vars.<name>}} resolves in %s, the route being decided before the node runs (write the id, a ${VAR:-default}, or a declared var)",
+				c.warnfAt(DiagRoutingFieldRef, node.NodeID(), "",
+					"%s: %s is not a vars reference — only {{vars.<name>}} resolves in %s, the route being decided before the node runs; the text reaches the backend as written and the node fails at its first delegation (write the id, a ${VAR:-default}, or a declared var)",
 					loc, span, rf.name)
 			}
 			if unterminated {
-				c.errorfAt(DiagRoutingFieldRef, node.NodeID(), "",
-					"%s: an opening {{ has no closing }} — the text would reach the backend as written", loc)
+				c.warnfAt(DiagRoutingFieldRef, node.NodeID(), "",
+					"%s: an opening {{ has no closing }} — the text reaches the backend as written and the node fails at its first delegation", loc)
 			}
 		}
 	}

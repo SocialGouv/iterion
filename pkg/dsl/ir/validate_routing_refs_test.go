@@ -4,13 +4,15 @@ import "testing"
 
 // The routing fields (model, backend, provider, interaction_model — on the
 // node and on its fallbacks routes) resolve vars.* at dispatch and nothing
-// else, so the compiler says so: an undeclared var is C033, any other
-// `{{…}}` span — a foreign namespace, a misspelt one, a dotted var path, an
-// unterminated one — is C148; C087 no longer calls a templated provider
-// "ignored"; a supervisor's model, which renders no template, gets C148 as
-// a warning and the run starts. examples/clarify shipped
-// `model: "{{vars.model}}"` and died at the first delegation with an
-// "invalid spec" from claw, after a clean validate.
+// else, so the compiler says so: an undeclared var is C033 (an error, as
+// everywhere), any other `{{…}}` span — a foreign namespace, a misspelt one,
+// a dotted var path, the raw `{{!…}}` form, an unterminated one — is C148,
+// a warning (the runtime failure at the first delegation stays loud, and a
+// bot in the field keeps compiling); C087 no longer calls a templated
+// provider "ignored"; a supervisor's model, which renders no template, gets
+// C148 too. examples/clarify shipped `model: "{{vars.model}}"` and died at
+// the first delegation with an "invalid spec" from claw, after a clean
+// validate.
 func TestRoutingFieldRefs(t *testing.T) {
 	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
 	const tail = "\nworkflow w:\n  entry: a\n  a -> done\n"
@@ -19,7 +21,6 @@ func TestRoutingFieldRefs(t *testing.T) {
 		name string
 		body string
 		want DiagCode // "" = none of C033, C148, C087
-		warn bool     // the expected diagnostic is a warning (a supervisor degrades, the run is not refused)
 	}
 	cases := []tc{
 		{name: "declared vars resolve in model, backend, provider and interaction_model",
@@ -39,6 +40,7 @@ func TestRoutingFieldRefs(t *testing.T) {
 		{name: "an env namespace that does not exist", body: agent("  model: \"{{env.HOME}}\"\n"), want: DiagRoutingFieldRef},
 		{name: "an unterminated reference", body: agent("  model: \"{{vars.m\"\n"), want: DiagRoutingFieldRef},
 		{name: "a dotted path under a declared var", body: agent("  model: \"{{vars.m.id}}\"\n"), want: DiagRoutingFieldRef},
+		{name: "the raw form the resolver does not read", body: agent("  model: \"{{!vars.m}}\"\n"), want: DiagRoutingFieldRef},
 		{name: "judge model from an undeclared var",
 			body: "judge a:\n  model: \"{{vars.nope}}\"\n  system: p\n  output: s\n", want: DiagUndeclaredVar},
 		{name: "fallback route model from an undeclared var",
@@ -49,8 +51,8 @@ func TestRoutingFieldRefs(t *testing.T) {
 			body: "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n  model: \"{{outputs.a.m}}\"\n", want: DiagRoutingFieldRef},
 		{name: "human interaction_model from an output",
 			body: "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n  interaction_model: \"{{outputs.a.m}}\"\n", want: DiagRoutingFieldRef},
-		{name: "supervisor model is not rendered at all — a warning, the run starts",
-			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.m}}\"\n", want: DiagRoutingFieldRef, warn: true},
+		{name: "supervisor model is not rendered at all",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.m}}\"\n", want: DiagRoutingFieldRef},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -58,14 +60,15 @@ func TestRoutingFieldRefs(t *testing.T) {
 			var seen []DiagCode
 			for _, d := range diags {
 				switch d.Code {
-				case DiagUndeclaredVar, DiagRoutingFieldRef:
+				case DiagUndeclaredVar:
 					seen = append(seen, d.Code)
-					want := SeverityError
-					if c.warn {
-						want = SeverityWarning
+					if d.Severity != SeverityError {
+						t.Errorf("C033 is %v, want an error", d.Severity)
 					}
-					if d.Severity != want {
-						t.Errorf("%s is %v, want %v", d.Code, d.Severity, want)
+				case DiagRoutingFieldRef:
+					seen = append(seen, d.Code)
+					if d.Severity != SeverityWarning {
+						t.Errorf("C148 is %v, want a warning (a fielded bot keeps compiling; the node fails loud at its first delegation)", d.Severity)
 					}
 				case DiagUnknownProvider:
 					t.Errorf("C087 on a templated provider: %s", d.Error())

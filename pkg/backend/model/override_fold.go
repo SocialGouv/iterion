@@ -314,7 +314,9 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 // `provider/model` string (env refs expanded), or "" when there is none.
 func providerFromModelPrefix(model string) string {
 	prov, _, cut := strings.Cut(strings.TrimSpace(ir.ExpandEnvWithDefault(model)), "/")
-	if !cut {
+	// A `{{vars.…}}` prefix resolves at dispatch, with the run's vars this
+	// walk does not have: no hint to read, the route defers.
+	if !cut || strings.Contains(prov, "{{") {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(prov))

@@ -85,7 +85,7 @@ const (
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
-	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's) holds a template that will not resolve — only vars.* does, the route being decided before the node runs (error; a warning on a supervisor's model, which renders no template and degrades instead of refusing the run)
+	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's) holds a template that will not resolve — only vars.* does, the route being decided before the node runs (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
