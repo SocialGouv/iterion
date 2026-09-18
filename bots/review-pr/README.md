@@ -187,11 +187,17 @@ rescue is deliberately the same on each. An account entitled to a different GLM
 id — or one z.ai renames — repoints it without re-releasing the bundle, live
 through `bot-vars` like the other `ITERION_*` dials.
 
-**An instance with only a z.ai key is not in that table, and does not need to
-be:** `claude_code` resolves z.ai by itself — the BYOK z.ai pair is the first
-case of its credential precedence — so the primary is already credentialed and
-this route stays shut. With no credential at all the route has none either, and
-the run fails loudly.
+**An instance with only a z.ai key is not in that table:** `claude_code`
+resolves z.ai by itself — the BYOK z.ai pair is the first case of its credential
+precedence — so the primary is already credentialed and the route is not what
+makes that host work. Give it the dial instead: set `ITERION_VIBE_MODEL_CLAUDE`
+(and `_GLANCE`) to the GLM id the account serves. Left at `claude-opus-5` the
+request still reaches z.ai's gateway, which aliases the model internally — the
+review runs, but the run table then names a model that did not serve it, and a
+gateway that refuses the id instead sends the node down the `unavailable`
+trigger once per run. The route is the net, not the configuration.
+
+With no credential at all the route has none either, and the run fails loudly.
 
 The route is `metered: true`. That is a declaration of intent, not a governor:
 nothing in the executor reads it (ADR-087's `ITERION_FORBID_METERED_FALLBACK`
