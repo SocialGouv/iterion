@@ -11,12 +11,22 @@
 # Run through `task brand:positioning`; `task check` and the CI `brand` job
 # both run that.
 #
-# Only the DEFINITION is guarded. The category line ("apps have Linux…") is a
-# metaphor each surface phrases in its own voice, and pinning its wording would
-# freeze copy that is meant to be written. The SHORT form used by packaging
-# metadata is out of scope too, and assets/brand/positioning.md says which
-# surfaces those are — the list below is not the whole class, and claiming
-# otherwise is how a guard starts lying.
+# Two things are guarded, and one deliberately is not:
+#
+#   - the DEFINITION, on the surfaces that display a full sentence;
+#   - the SHORT form (same sentence, no final period) on packaging metadata
+#     whose format refuses one — a Homebrew `desc` audit rejects a trailing
+#     period and a leading article, a `.desktop` Comment= is a one-liner;
+#   - NOT the category line ("apps have Linux…"): it is a metaphor each
+#     surface phrases in its own voice, and pinning its wording would freeze
+#     copy that is meant to be written.
+#
+# Both lists are GUARDED rather than merely written down, because the
+# hand-written inventory has been wrong at every attempt: a grep for the old
+# tagline missed CLAUDE.md's opening line, then a narrower grep for one PHRASE
+# missed four more — including the `GenericName=` on the line directly above a
+# `Comment=` the same change had just edited. A count in a comment goes stale;
+# the lists below are what the build reads.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -32,6 +42,13 @@ definition="$(
     in_section && /^```text$/ { getline; print; exit }
   ' "$SOURCE"
 )"
+
+# Normalised the same way the surfaces are before matching. Without this a
+# definition carrying a double space — or a trailing one, which also defeats
+# ${definition%.} — turns every surface red at once, with no edit to any of
+# them that could fix it: the needle would be the only thing wrong, and the
+# error names the haystack.
+definition="$(printf '%s' "$definition" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
 
 if [ -z "$definition" ]; then
   echo "::error::$SOURCE carries no definition — expected a \`\`\`text block under '## definition'"
@@ -62,6 +79,20 @@ SURFACES=(
   "studio/src/views/CloudHome/index.tsx:1"
 )
 
+# The SHORT form: the same sentence without its final period, on metadata whose
+# format refuses a sentence. Presence, not a count — these carry it once by
+# construction, and several embed it mid-phrase.
+SHORT_SURFACES=(
+  "CLAUDE.md"
+  "Cask/iterion-desktop.rb"
+  "Formula/iterion.rb"
+  "build/linux/iterion.desktop"
+  "build/windows/info.json"
+  "charts/iterion/Chart.yaml"
+  "cmd/iterion-desktop/wails.json"
+  "cmd/iterion/main.go"
+)
+
 drift=0
 for entry in "${SURFACES[@]}"; do
   surface="${entry%:*}"
@@ -89,8 +120,32 @@ for entry in "${SURFACES[@]}"; do
   fi
 done
 
+# The short form is the definition minus its final period, derived rather than
+# repeated: a second literal here is a second thing to keep in step.
+short="${definition%.}"
+for surface in "${SHORT_SURFACES[@]}"; do
+  if [ ! -f "$surface" ]; then
+    echo "::error::$surface is on the short-form surface list but does not exist — update $SOURCE and this script together"
+    drift=1
+    continue
+  fi
+  folded="$(tr '\n' ' ' < "$surface" | tr -s ' ')"
+  if ! printf '%s' "$folded" | grep -qF -- "$short"; then
+    echo "::error::positioning drift: $surface no longer carries the short form \"$short\" — the canonical wording is in $SOURCE"
+    drift=1
+  elif printf '%s' "$folded" | grep -qF -- "$definition"; then
+    # The short form is a SUBSTRING of the definition, so a presence test alone
+    # is satisfied by the full sentence — and these surfaces exist precisely
+    # because the full sentence is refused there. Measured: a Homebrew `desc`
+    # set to the definition passed this guard green while `brew style` rejected
+    # it with "Description shouldn't end with a full stop."
+    echo "::error::positioning drift: $surface carries the full definition where the SHORT form belongs — its format refuses a final period (see $SOURCE)"
+    drift=1
+  fi
+done
+
 if [ "$drift" -eq 0 ]; then
-  echo "positioning: ${#SURFACES[@]} surfaces carry \"$definition\" the expected number of times"
+  echo "positioning: ${#SURFACES[@]} surfaces carry \"$definition\", ${#SHORT_SURFACES[@]} carry the short form"
 fi
 
 exit $drift

@@ -6,7 +6,7 @@ intent behind the token palette so future contributors can answer
 
 ## The product mental model
 
-Iterion is a workflow orchestration engine for developers. Operators
+Iterion builds, runs and orchestrates agentic AI workflows. Operators
 sit in front of the studio to:
 
 - Edit `.bot` workflows in a dense node-graph canvas.

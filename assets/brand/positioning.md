@@ -72,36 +72,55 @@ gh repo edit SocialGouv/iterion --description "Build, run and orchestrate agenti
 gh api repos/SocialGouv/iterion --jq .description   # read it back
 ```
 
-## Where a SHORT form is used instead — deliberately, and unguarded
+## The SHORT form — guarded too
 
-The list above is **not the whole class**, and saying otherwise is how a guard
-starts lying. These surfaces carry a short descriptor because their format
-refuses a sentence: a `.desktop` `Comment=` is a one-liner, a Cobra `Short`
-sits on one terminal line, and a Homebrew `desc` audit rejects both a trailing
-period and a leading article. So the short form is the same sentence without
-its final period:
+Some surfaces cannot take a sentence: a Homebrew `desc` audit rejects both a
+trailing period and a leading article, a `.desktop` `Comment=` is a one-liner,
+a Cobra `Short` sits on one terminal line. They carry the same sentence without
+its final period — **derived** by the guard (`${definition%.}`), not written
+down a second time, because a second literal is a second thing to keep in step:
 
 ```text
 Build, run and orchestrate agentic AI workflows
 ```
 
-| Surface | What it is | Carries the short form |
-|---|---|---|
-| `cmd/iterion/main.go` | the Cobra `Short`/`Long` — `iterion --help` | ✅ |
-| `charts/iterion/Chart.yaml` | the `description:` ArtifactHub and `helm show chart` display | ✅ |
-| `Formula/iterion.rb`, `Cask/iterion-desktop.rb` | Homebrew `desc` | ❌ still "Workflow orchestration engine" |
-| `build/linux/iterion.desktop` | the Linux launcher `Comment=` | ❌ |
-| `build/windows/info.json`, `cmd/iterion-desktop/wails.json` | Windows/Wails bundle metadata | ❌ |
-| `sdks/typescript/README.md`, `marketplace.json` | package descriptions | ❌ |
-| `studio/docs/visual-identity.md` | the studio's visual-identity brief | ❌ |
+| Surface | What it is |
+|---|---|
+| `CLAUDE.md` | the opening line every agent reads on every call |
+| `Cask/iterion-desktop.rb` | Homebrew cask `desc` |
+| `Formula/iterion.rb` | Homebrew formula `desc` |
+| `build/linux/iterion.desktop` | the Linux launcher `Comment=` |
+| `build/windows/info.json` | the Windows bundle `Comments` |
+| `charts/iterion/Chart.yaml` | the `description:` ArtifactHub and `helm show chart` display |
+| `cmd/iterion-desktop/wails.json` | the Wails bundle `comments` |
+| `cmd/iterion/main.go` | the Cobra `Short`, which `iterion help` lists. `--help` prints `Long` — the same words, lower-cased after an em dash, so the guard matches `Short` and not that line |
 
-None of these is guarded: they are release-packaging inputs whose wording is
-constrained by a third party's linter, and pinning them to a byte would turn a
-packaging-rule change into a red build on an unrelated pull request. The
-Homebrew tap files are rewritten by a bot on every release
-(`chore(brew): update tap to vX.Y.Z`), so editing them by hand here would race
-it.
+Checked by PRESENCE, not by count: each carries it once by construction, and
+several embed it mid-phrase.
 
-The ❌ rows are **not done**, deliberately and visibly: this table is the
-inventory to walk when someone decides to unify them, and an inventory that
-claimed they were already done would be the lie this file exists to prevent.
+**Editing the Homebrew files by hand is safe**, contrary to what this file said
+before: `scripts/update-brew-tap.sh` rewrites only `version "…"` and
+`sha256 "…"` lines — every other line is printed through untouched. That was an
+assumption, corrected by reading the awk.
+
+**Prose that describes the product in its own words** —
+`sdks/typescript/README.md` and its `package.json`, `marketplace.json`,
+`studio/docs/visual-identity.md`, `bots/copilot/skills/iterion-concepts.md`,
+the Debian control `Description:` in `scripts/desktop/build-deb.sh` and
+`.github/workflows/desktop-release.yml` — carries the same idea in a sentence
+of its own and is deliberately NOT pinned to a byte: freezing prose is how a
+guard starts blocking legitimate edits. It is listed so the next person walking
+the class does not have to rediscover it.
+
+**The inventory has been wrong at every attempt, which is why it is a guard
+and not a list.** Written by hand it named seven surfaces. A grep for the old
+tagline found `CLAUDE.md`'s opening line — the descriptor every agent reads on
+every call. A narrower grep, for one PHRASE rather than the class, then missed
+four more: `sdks/typescript/package.json` (the field npmjs.com renders, whose
+README sibling had just been updated), the Debian control `Description:` in two
+places, and `GenericName=` on the line DIRECTLY ABOVE a `Comment=` the same
+change had edited.
+
+No count is quoted here on purpose: three different ones were written for one
+measurement before this paragraph replaced them. What the build reads is
+`SURFACES` and `SHORT_SURFACES` in the script.
