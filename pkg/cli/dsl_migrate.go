@@ -114,7 +114,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 		}
 		file := MigratedFile{Path: path, Changed: out.Changed, Changes: out.Changes, Prompts: out.Prompts}
 		if out.Changed {
-			if dir := owningBundleDir(path); dir != "" {
+			if dir := bundle.OwningDir(path); dir != "" {
 				bundleDirs[dir] = true
 			} else {
 				file.Loose = looseFileNote(opts.To)
@@ -293,29 +293,6 @@ func looseFileNote(to int) string {
 		note += " — an engine older than " + since + " refuses the header"
 	}
 	return note
-}
-
-// owningBundleDir is the root of the bundle a workflow file belongs to —
-// the nearest directory up from it whose main.bot pkg/bundle recognises
-// (an existing main.bot beside a manifest or a skills/ directory) — or ""
-// for a loose file. A directory that carries a marker but no main.bot is
-// not a bundle: a repository root with a skills/ directory must not be
-// handed the floor of a loose file under it.
-func owningBundleDir(path string) string {
-	dir, err := filepath.Abs(filepath.Dir(path))
-	if err != nil {
-		return ""
-	}
-	for {
-		if bundle.DirForMainBot(filepath.Join(dir, bundle.MainBotFile)) != "" {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
 }
 
 // raiseManifestFloor makes a manifest require at least floor (resolveFloor),

@@ -381,35 +381,100 @@ func TestDirForMainBot(t *testing.T) {
 	}
 }
 
-// TestDirForMainBot_RequiresTheFileToExist: a directory that carries a
-// marker but no main.bot is not a bundle. Callers that walk up a tree pass
-// a CONSTRUCTED `<dir>/main.bot`; without this check a repository root with
-// a skills/ directory, or a manifest whose main.bot lives elsewhere, was
-// promoted to the bundle of every loose file under it (and the migrator
-// raised its floor).
-func TestDirForMainBot_RequiresTheFileToExist(t *testing.T) {
+// writeBundleMarker puts one marker in dir: a skills/ directory or an
+// iterion manifest.
+func writeBundleMarker(t *testing.T, dir, marker string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if marker == DirSkills {
+		if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, marker), []byte("schema_version: 1\nname: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOwningDir: the bundle a file BELONGS to is the nearest ancestor with
+// an existing main.bot beside a marker. A marker alone — a repository root
+// with a skills/ directory, a manifest whose main.bot lives elsewhere — is
+// not a bundle, so a loose file under it is nobody's: the walk-up that
+// promoted such a directory handed a loose file's floor to a manifest that
+// never asked (the migrator), and every walk-up now shares this answer.
+func TestOwningDir(t *testing.T) {
+	for _, marker := range []string{DirSkills, ManifestFile} {
+		t.Run("a file under a real bundle, "+marker, func(t *testing.T) {
+			b := filepath.Join(t.TempDir(), "b")
+			writeBundleMarker(t, b, marker)
+			if err := os.WriteFile(filepath.Join(b, MainBotFile), []byte("workflow x:\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			kid := filepath.Join(b, "kids", "x.bot")
+			if err := os.MkdirAll(filepath.Dir(kid), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(kid, []byte("workflow k:\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := OwningDir(kid); got != b {
+				t.Errorf("OwningDir(kid) = %q, want %q", got, b)
+			}
+			if got := OwningDir(filepath.Join(b, MainBotFile)); got != b {
+				t.Errorf("OwningDir(main.bot) = %q, want %q", got, b)
+			}
+		})
+		t.Run("a marker-only ancestor is not a bundle, "+marker, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "root")
+			writeBundleMarker(t, root, marker)
+			loose := filepath.Join(root, "sub", "x.bot")
+			if err := os.MkdirAll(filepath.Dir(loose), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(loose, []byte("workflow x:\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := OwningDir(loose); got != "" {
+				t.Errorf("OwningDir = %q under a %s with no main.bot, want \"\"", got, marker)
+			}
+			// A directory named main.bot is not the file either.
+			if err := os.MkdirAll(filepath.Join(root, MainBotFile), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if got := OwningDir(loose); got != "" {
+				t.Errorf("OwningDir = %q under a directory named main.bot, want \"\"", got)
+			}
+		})
+	}
+	t.Run("a loose file", func(t *testing.T) {
+		loose := filepath.Join(t.TempDir(), "x.bot")
+		if err := os.WriteFile(loose, []byte("workflow x:\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := OwningDir(loose); got != "" {
+			t.Errorf("OwningDir = %q for a loose file, want \"\"", got)
+		}
+		if got := OwningDir(""); got != "" {
+			t.Errorf("OwningDir(\"\") = %q, want \"\"", got)
+		}
+	})
+}
+
+// TestDirForMainBot_AnswersForADraft pins the other half of the contract:
+// DirForMainBot takes the path AS GIVEN, on disk or not. The studio
+// validates a draft main.bot beside a manifest that already exists
+// (`/api/validate` with the editor's path) and must get that bundle's
+// prompts; only the walk-ups (OwningDir) require the file.
+func TestDirForMainBot_AnswersForADraft(t *testing.T) {
 	for _, marker := range []string{DirSkills, ManifestFile} {
 		t.Run(marker, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "b")
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if marker == DirSkills {
-				if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := os.WriteFile(filepath.Join(dir, marker), []byte("schema_version: 1\nname: x\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != "" {
-				t.Fatalf("DirForMainBot = %q for a directory with no main.bot, want \"\"", got)
-			}
-			// A directory named main.bot is not the file either.
-			if err := os.MkdirAll(filepath.Join(dir, MainBotFile), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != "" {
-				t.Fatalf("DirForMainBot = %q for a directory named main.bot, want \"\"", got)
+			writeBundleMarker(t, dir, marker)
+			if got := DirForMainBot(filepath.Join(dir, MainBotFile)); got != dir {
+				t.Errorf("DirForMainBot = %q for a draft main.bot beside a %s, want %q", got, marker, dir)
 			}
 		})
 	}
