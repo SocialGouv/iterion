@@ -5142,6 +5142,12 @@ workflow secured_renovacy:
   ## select_candidate's attempted_count is the ledger BEFORE that pick:
   ## solo_banked counts it in, so phase2_decider never reads 0 for a banked
   ## minor or major (only_patches_attempted already includes the pick).
+  ## A malformed was_batch (neither true nor false) also lands here, on
+  ## either path: after a solo it goes to Phase 2 on the solo's own ledger;
+  ## on the batch path select_candidate never ran, solo_banked's `null + 1`
+  ## fails EXPRESSION_FAILED and the run parks failed_resumable naming the
+  ## node — measured, never a silent success (C011 refuses a `when` on this
+  ## exit, so the bare edge is the shape available).
   write_audit_md -> solo_banked with {
     attempted_count: "{{outputs.select_candidate.attempted_count}}",
     only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
