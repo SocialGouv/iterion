@@ -31,6 +31,18 @@ Nobody can reissue them, so they do not move:
 | `/api/…` | **every integration**: inbound forge webhooks, OAuth and OIDC callbacks, the REST API, the MCP server, the remote CLI |
 | `/brand/…`, `/healthz`, `/readyz` | public assets and probes |
 
+**Known limit — the link preview loses its picture, not its message.**
+`studio/index.html` sets `og:image` to a RELATIVE path, because the same bundle
+is served from iterion.cloud, from preprod and from every self-hosted
+deployment, and no build-time value is right for all three. OpenGraph specifies
+an absolute URL and LinkedIn in particular drops a relative one, so those
+previews render text-only — `og:title` and `og:description` are text and
+resolve regardless, which is what carries the definition. The remedy is to
+inject an absolute `og:image` from `PublicURL` when the server serves the
+index; the seam exists (`ServeInjectedIndex` already rewrites the head for
+workspace panes), but `serveIndex` has no config today. The docs site, built
+for one origin, uses an absolute URL and does not have the problem.
+
 **No integration was affected by the move.** Anything a third party calls lives
 under `/api/`, which the studio base does not touch.
 
