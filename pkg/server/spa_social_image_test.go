@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -159,6 +161,34 @@ func TestTheRewriteHandlesTheAwkwardOrigins(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("base %q: want %s in:\n%s", base, want, out)
 		}
+	}
+}
+
+// Every test above feeds the rewrite a fixture written to match it, which
+// proves the regex does what it says and NOTHING about the template that
+// actually ships. The pattern is attribute-order sensitive: `content=` moved
+// ahead of `property=` — a reformat, a plugin, a hand edit — makes the rewrite
+// a silent no-op and the card regresses to text-only with every test still
+// green.
+//
+// So run the real function over the real file. No spellings enumerated: the
+// input is the artefact, and the assertion is the crawler's requirement.
+func TestTheShippedTemplateStillMatchesTheRewrite(t *testing.T) {
+	const tmpl = "../../studio/index.html"
+	raw, err := os.ReadFile(tmpl)
+	if err != nil {
+		t.Fatalf("read %s: %v", tmpl, err)
+	}
+	if !bytes.Contains(raw, []byte("og:image")) {
+		t.Fatalf("%s declares no og:image at all — the card has no picture to absolutise", tmpl)
+	}
+
+	got := absolutiseSocialImages(raw, "https://iterion.cloud")
+	if !bytes.Contains(got, []byte(`content="https://iterion.cloud/brand/`)) {
+		t.Errorf("the rewrite did not reach %s's social image; the shipped card stays relative.\ngot:\n%s", tmpl, got)
+	}
+	if socialImageMeta.Match(got) {
+		t.Errorf("%s still carries a root-relative social image after the rewrite", tmpl)
 	}
 }
 

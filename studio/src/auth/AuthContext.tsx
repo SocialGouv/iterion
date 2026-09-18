@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -160,6 +161,47 @@ function applyResponse(prev: AuthState, res: AuthResponse): AuthState {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initial);
 
+  // The identity the per-account stores are currently scoped to. A ref, and
+  // compared in the callback body rather than inside the updater: a setState
+  // updater must be pure — StrictMode double-invokes it and a discarded
+  // concurrent render replays it — so an external-store write placed there
+  // fires more than once per change, during another component's render.
+  //
+  // It survives a lapse to anonymous on purpose: cookies going stale does not
+  // empty the stores, so the next account to sign in still has to displace
+  // this one.
+  const scopedToUserID = useRef<string | null>(null);
+
+  // adoptIdentity is the ONE way a server auth response becomes auth state. It
+  // drops the per-account context when the account CHANGED — not only when
+  // someone signed out.
+  //
+  // Signing out was the only way the browser's identity used to change, so the
+  // reset lived there. It is not any more: a password-reset link opened WITH a
+  // live session ends in fresh cookies for the TOKEN'S owner (the confirm
+  // endpoint is public and renders an auth response), and the view that
+  // follows calls reloadIdentity, not signOut. The previous account's active
+  // repo survived into the new one — the exact thing signOut's reset was
+  // written to prevent, reached through a door that did not exist before
+  // /auth/* began rendering with a session.
+  //
+  // Keyed on the identity that changed, not on the route that changed it: a
+  // guard at each caller would have to be repeated at the next one, and there
+  // are six callers.
+  const adoptIdentity = useCallback((res: AuthResponse) => {
+    const nextID = res.user?.id ?? null;
+    if (scopedToUserID.current !== null && nextID !== null && scopedToUserID.current !== nextID) {
+      // Drop the repo-first context so a different account on this browser
+      // never inherits the previous user's active repo.
+      useActiveRepoStore.getState().reset();
+    }
+    // An empty response rescopes nothing; keep the identity the stores hold.
+    if (nextID !== null) {
+      scopedToUserID.current = nextID;
+    }
+    setState((prev) => applyResponse(prev, res));
+  }, []);
+
   const bootstrap = useCallback(async () => {
     const probe = await probeAuth();
     if (probe === "unreachable") {
@@ -177,7 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const me = await getMe();
-        setState((prev) => applyResponse(prev, me));
+        adoptIdentity(me);
         return;
       } catch (err) {
         lastErr = err;
@@ -200,7 +242,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     try {
       const r = await apiRefresh();
-      setState((prev) => applyResponse(prev, r));
+      adoptIdentity(r);
       return;
     } catch (err) {
       setState({
@@ -208,25 +250,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         status: err instanceof ApiError ? "anonymous" : "unreachable",
       });
     }
-  }, []);
+  }, [adoptIdentity]);
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const res = await apiLogin(email, password);
-    setState((prev) => applyResponse(prev, res));
-  }, []);
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const res = await apiLogin(email, password);
+      adoptIdentity(res);
+    },
+    [adoptIdentity],
+  );
 
   // Registration sets the session cookies server-side just like login; the
   // response must flow into the auth state or the shell stays anonymous.
   const signUp = useCallback(
     async (input: { email: string; password: string; name?: string; invitation?: string }) => {
       const res = await apiRegister(input);
-      setState((prev) => applyResponse(prev, res));
+      adoptIdentity(res);
     },
-    [],
+    [adoptIdentity],
   );
 
   const signOut = useCallback(async () => {
@@ -236,44 +281,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Cookies already cleared even if the server rejected — proceed.
     }
     // Drop the repo-first context so a different account on this browser
-    // never inherits the previous user's active repo.
+    // never inherits the previous user's active repo. Nothing account-scoped
+    // is left, so the next sign-in has nothing to displace.
     useActiveRepoStore.getState().reset();
+    scopedToUserID.current = null;
     setState({ ...initial, status: "anonymous" });
   }, []);
 
-  // adoptIdentity applies a server response and drops the per-account context
-  // when the account CHANGED — not only when someone signed out.
-  //
-  // Signing out was the only way the browser's identity used to change, so the
-  // reset lived there. It is not any more: a password-reset link opened WITH a
-  // live session ends in fresh cookies for the TOKEN'S owner (the confirm
-  // endpoint is public and renders an auth response), and the view that
-  // follows calls reloadIdentity, not signOut. The previous account's active
-  // repo survived into the new one — the exact thing signOut's reset was
-  // written to prevent, reached through a door that did not exist before
-  // /auth/* began rendering with a session.
-  //
-  // Keyed on the identity that changed, not on the route that changed it: a
-  // guard at each caller would have to be repeated at the next one.
-  const adoptIdentity = useCallback((res: AuthResponse) => {
-    setState((prev) => {
-      const next = applyResponse(prev, res);
-      if (prev.user && next.user && prev.user.id !== next.user.id) {
-        useActiveRepoStore.getState().reset();
-      }
-      return next;
-    });
-  }, []);
+  const selectOrg = useCallback(
+    async (orgID: string) => {
+      const res = await apiSwitchOrg(orgID);
+      adoptIdentity(res);
+    },
+    [adoptIdentity],
+  );
 
-  const selectOrg = useCallback(async (orgID: string) => {
-    const res = await apiSwitchOrg(orgID);
-    setState((prev) => applyResponse(prev, res));
-  }, []);
-
-  const selectTeam = useCallback(async (teamID: string) => {
-    const res = await apiSwitchTeam(teamID);
-    setState((prev) => applyResponse(prev, res));
-  }, []);
+  const selectTeam = useCallback(
+    async (teamID: string) => {
+      const res = await apiSwitchTeam(teamID);
+      adoptIdentity(res);
+    },
+    [adoptIdentity],
+  );
 
   const reloadIdentity = useCallback(async () => {
     const me = await getMe();
