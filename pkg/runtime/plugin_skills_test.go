@@ -428,3 +428,144 @@ func TestMirrorInjectedPluginFiles_DuplicateIdenticalBytesStillWarn(t *testing.T
 		t.Errorf("identical-byte duplicate went unwarned; logs = %q", logs)
 	}
 }
+
+// A plugin skill named with a case-insensitive .md extension (`Deploy.MD`,
+// `Whats-Next.Md`) must land in both discovery shapes just like a lowercase
+// one. Regression test for revi/review PR #1479 medium
+// (R6178bd/Rda9e59): `collectSkillFiles` accepts `.MD` via `EqualFold`,
+// but `skillDestDirForm` used a case-sensitive `TrimSuffix(name, ".md")`
+// leaving stem == name — `skillDir` and `flatDest` resolved to the SAME
+// path, `mkdirAll` made it a directory, `reconcileSkillFile` then hashed a
+// directory and returned EISDIR, and the whole plugin mirror aborted.
+//
+// Mutation: revert skillDestDirForm to case-sensitive TrimSuffix and this
+// test reddens (mkdir-then-hash-directory error abandons the mirror).
+func TestMirrorPluginContributions_UppercaseMdExtensionMirrorsBothShapes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	// Install a plugin whose only skill has an uppercase .MD extension.
+	pluginDir := filepath.Join(home, "plugins", "shouty")
+	if err := os.MkdirAll(filepath.Join(pluginDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "skills", "Deploy.MD"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "name: shouty\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\n" +
+		"contributes:\n  skills:\n    - skills/Deploy.MD\n"
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := t.TempDir()
+	owned, err := mirrorPluginContributions(workDir, nil, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions returned an error on an .MD-extension skill: %v", err)
+	}
+	dest := filepath.Join(workDir, ".claude", "skills")
+	dirForm := filepath.Join(dest, "Deploy", "SKILL.md")
+	flat := filepath.Join(dest, "Deploy.MD")
+	if _, err := os.Stat(dirForm); err != nil {
+		t.Fatalf("directory form missing at %s: %v", dirForm, err)
+	}
+	if _, err := os.Stat(flat); err != nil {
+		t.Fatalf("flat alias missing at %s: %v", flat, err)
+	}
+	if len(owned) != 1 || owned[0] != dirForm {
+		t.Fatalf("owned = %v, want [%s]", owned, dirForm)
+	}
+}
+
+// One malformed contribution (no .md extension) must be skipped with a
+// WARN naming it, never abort the whole pass. Before the fix,
+// `mirrorPluginContributions` returned `(nil, err)` on the FIRST such
+// name and every OTHER plugin's skills/commands/agents never landed.
+// Regression test for revi/review PR #1479 medium (R6178bd/Rda9e59).
+//
+// Mutation: put the `return nil, fmt.Errorf(...)` back on the per-file
+// path and the assertion "the sibling plugin's skill landed" reddens.
+func TestMirrorPluginContributions_OneMalformedNameDoesNotDiscardOtherPlugins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+
+	// Plugin A ships a name with no .md extension at all — that name is
+	// invalid for skillDestDirForm and previously killed the whole pass.
+	brokenDir := filepath.Join(home, "plugins", "a-broken")
+	if err := os.MkdirAll(filepath.Join(brokenDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "skills", "no-extension"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "plugin.yaml"),
+		[]byte("name: a-broken\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/no-extension\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plugin B ships a legitimate skill and MUST land.
+	goodDir := filepath.Join(home, "plugins", "z-good")
+	if err := os.MkdirAll(filepath.Join(goodDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goodDir, "skills", "kept.md"), []byte("kept-body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goodDir, "plugin.yaml"),
+		[]byte("name: z-good\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/kept.md\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	workDir := t.TempDir()
+	owned, err := mirrorPluginContributions(workDir, nil, logger)
+	if err != nil {
+		t.Fatalf("one malformed plugin file aborted the whole pass: %v", err)
+	}
+
+	dirForm := filepath.Join(workDir, ".claude", "skills", "kept", "SKILL.md")
+	if _, err := os.Stat(dirForm); err != nil {
+		t.Fatalf("z-good's skill did not land — a-broken's failure discarded it: %v", err)
+	}
+	found := false
+	for _, p := range owned {
+		if p == dirForm {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("owned = %v does not name z-good's skill", owned)
+	}
+	if logs := buf.String(); !strings.Contains(logs, "no-extension") || !strings.Contains(logs, "a-broken") {
+		t.Errorf("the malformed file was not named in the WARN; logs = %q", logs)
+	}
+}
+
+// Same class on the CLOUD (injected) path. One malformed entry in the
+// queue payload must not discard every subsequent (kind, name) —
+// mirrorInjectedPluginFiles had the same abort pattern as its local twin
+// and the same fix applies (WARN + continue).
+//
+// Mutation: put the `return nil, fmt.Errorf(...)` back in
+// mirrorInjectedPluginFiles and this test reddens on the "kept.md" file
+// not landing.
+func TestMirrorInjectedPluginFiles_OneMalformedEntryDoesNotDiscardTheRest(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	workDir := t.TempDir()
+	_, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "broken", Content: []byte("no extension")},
+		{Kind: "skills", Name: "kept.md", Content: []byte("still lands\n")},
+	}, logger)
+	if err != nil {
+		t.Fatalf("one malformed entry aborted the whole pass: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "skills", "kept", "SKILL.md")); err != nil {
+		t.Fatalf("subsequent entry did not land: %v", err)
+	}
+	if logs := buf.String(); !strings.Contains(logs, "broken") {
+		t.Errorf("malformed entry not named in the WARN; logs = %q", logs)
+	}
+}

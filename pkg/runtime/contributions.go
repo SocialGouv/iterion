@@ -112,7 +112,16 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		}
 		outcome, destPath, err := mirrorInjectedContribFile(destDir, markerDir, tmpPath, f.Kind, f.Name, logger)
 		if err != nil {
-			return nil, fmt.Errorf("runtime/contrib: mirror %s %q: %w", f.Kind, f.Name, err)
+			// Malformed entries (e.g. a name a third-party manifest crafted
+			// without an .md suffix — collectSkillFiles is EqualFold, so
+			// "Deploy.MD" reaches here and skillDestDirForm refuses it)
+			// must not discard every OTHER team-source's contribution
+			// behind a single error. Name the offender in the log, keep
+			// mirroring the rest.
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping %s %q: %v", f.Kind, f.Name, err)
+			}
+			continue
 		}
 		// A duplicate reaching this path IS by definition a publisher
 		// regression — the wording of the WARN itself asserts as much — so
@@ -200,13 +209,21 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		}
 		skillDir := filepath.Join(dest, s.Name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return nil, nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", skillDir, err)
+			// One skill's mkdir failing must not discard every OTHER
+			// injected library skill on this launch. Warn, skip.
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping library skill %q: mkdir %s: %v", s.Name, skillDir, err)
+			}
+			continue
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping library skill %q: %v", s.Name, err)
+			}
+			continue
 		}
 		// The FILE, not skillDir — see mirrorLibrarySkills for why.
 		if outcome != skillOutcomeShadowed {

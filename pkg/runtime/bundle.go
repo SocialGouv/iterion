@@ -199,12 +199,20 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 // <dest>/<stem>/SKILL.md. A flat <dest>/<name>.md is NOT discovered as a skill
 // by claude_code — only the directory form is (Agent Skills spec); claw's
 // skill_manager discovers BOTH the flat and directory forms, so the directory
-// form satisfies both backends. stem drops a trailing ".md" ("whats-next.md" →
-// dir "whats-next"); the marker keys on "<stem>.SKILL.md.sha256" (same scheme
-// as mirrorLibrarySkills). The caller mkdirs the returned skillDir before
-// reconciling into destPath.
+// form satisfies both backends. stem drops a trailing ".md" case-insensitively
+// ("whats-next.md" and "Whats-Next.MD" both stem "whats-next" for the dir form
+// and "Whats-Next" for the flat alias — collectSkillFiles ACCEPTS .MD via
+// EqualFold and this function refused to disambiguate before, letting stem ==
+// name make the flat alias collide with the dir on the same path and error
+// with "is a directory"). The marker keys on "<stem>.SKILL.md.sha256" (same
+// scheme as mirrorLibrarySkills). A name that does not end in .md at all is
+// refused — the caller must skip that entry rather than let its flat alias and
+// dir form resolve to the same path.
 func skillDestDirForm(dest, markerDir, srcName string) (skillDir, destPath, markerPath string, err error) {
-	stem := strings.TrimSuffix(srcName, ".md")
+	if !hasMarkdownSuffix(srcName) {
+		return "", "", "", fmt.Errorf("runtime/bundle: invalid skill file name %q: expected an .md extension (case-insensitive)", srcName)
+	}
+	stem := srcName[:len(srcName)-len(".md")]
 	if stem == "" || stem == "." || stem == ".." || strings.ContainsAny(stem, "/\\") {
 		return "", "", "", fmt.Errorf("runtime/bundle: invalid skill file name %q", srcName)
 	}
@@ -212,6 +220,18 @@ func skillDestDirForm(dest, markerDir, srcName string) (skillDir, destPath, mark
 	destPath = filepath.Join(skillDir, "SKILL.md")
 	markerPath = filepath.Join(markerDir, stem+".SKILL.md.sha256")
 	return skillDir, destPath, markerPath, nil
+}
+
+// hasMarkdownSuffix reports whether srcName ends in ".md" case-insensitively.
+// collectSkillFiles accepts either casing (via strings.EqualFold on filepath.Ext),
+// so every mirror site that names a file by its base must accept both here or
+// leak a "is a directory" error when the dir and flat forms collide on stem ==
+// name.
+func hasMarkdownSuffix(srcName string) bool {
+	if len(srcName) < len(".md") {
+		return false
+	}
+	return strings.EqualFold(srcName[len(srcName)-len(".md"):], ".md")
 }
 
 // mirrorFileSkill mirrors one flat "<stem>.md" source skill into BOTH forms
@@ -333,8 +353,10 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		// (.gitkeep placeholders, editor droppings) must be skipped:
 		// a non-.md name keeps its full basename as the stem, so its
 		// directory form and flat alias collide on the SAME path and
-		// the mirror errors with "is a directory".
-		if !strings.HasSuffix(name, ".md") {
+		// the mirror errors with "is a directory". Case-insensitive to
+		// match collectSkillFiles' EqualFold on `.md` — Deploy.MD is a
+		// skill too.
+		if !hasMarkdownSuffix(name) {
 			continue
 		}
 		// File skill → both the directory form (native Skill-tool discovery)
@@ -342,7 +364,14 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		// MirrorSingleSkill via mirrorFileSkill.
 		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, skillTierBundle, logger)
 		if err != nil {
-			return nil, err
+			// One malformed entry (e.g. skillDestDirForm refused it)
+			// must not discard the rest of the bundle's skills. Name it
+			// in the log; keep mirroring.
+			if logger != nil {
+				logger.Warn("runtime/bundle: skipping skill %q: %v", name, err)
+			}
+			shadowed++
+			continue
 		}
 		switch outcome {
 		case skillOutcomeMirrored:

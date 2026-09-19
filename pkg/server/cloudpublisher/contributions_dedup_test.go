@@ -269,3 +269,58 @@ func TestResolveContributionsFor_TeamSourcesAreSortedByCreatedAtBeforeDedup(t *t
 		t.Errorf("winning content = %q, want the source with the later CreatedAt", winner)
 	}
 }
+
+// The revi/review question on PR #1479: Resolver.Resolve sorted the
+// sources slice in place, so a caching Store returning its own field
+// would be reordered — and worse, a concurrent launch on the same Store
+// could race the sort. The fix (pluginsource/resolve.go): copy the slice
+// before sorting.
+//
+// Regression test: use a store whose ListEnabledByTenant returns a
+// pointer to its OWN persistent slice, in newest-first order (which the
+// resolver's sort must reverse). Assert the store's own slice is
+// UNCHANGED after the resolve call.
+//
+// Mutation: drop the `sources = append([]PluginSource(nil), sources...)`
+// copy in Resolver.Resolve and this test reddens.
+type sharedSourcesStore struct {
+	pluginsource.Store
+	slice []pluginsource.PluginSource
+}
+
+func (s *sharedSourcesStore) ListEnabledByTenant(context.Context, string) ([]pluginsource.PluginSource, error) {
+	return s.slice, nil
+}
+func (s *sharedSourcesStore) MarkDegraded(context.Context, string, string, string) error { return nil }
+func (s *sharedSourcesStore) ClearDegraded(context.Context, string, string) error        { return nil }
+
+func TestResolveContributionsFor_ResolverSortsACopyNotTheStoreSlice(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	origin := t.TempDir()
+	initSkillRepo(t, origin, "team-a-only", "body\n")
+
+	// The store's OWN slice, newer first — resolver's sort must reverse it.
+	oldTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	newTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	stored := []pluginsource.PluginSource{
+		{ID: "s-new", TenantID: "team-a", Name: "team-a-new", GitURL: origin, Ref: "v0.1.0", Enabled: true, CreatedAt: newTime},
+		{ID: "s-old", TenantID: "team-a", Name: "team-a-old", GitURL: origin, Ref: "v0.1.0", Enabled: true, CreatedAt: oldTime},
+	}
+	// A copy of the initial IDs so we can compare AFTER the resolve.
+	wantOrder := []string{stored[0].ID, stored[1].ID}
+
+	store := &sharedSourcesStore{slice: stored}
+	resolver := &pluginsource.Resolver{Store: store, Fetcher: &pluginsource.Fetcher{CacheDir: t.TempDir()}}
+
+	if _, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "team-a", "run-1", resolver, nil); err != nil {
+		t.Fatalf("resolveContributionsFor: %v", err)
+	}
+
+	// The store's own slice must be UNCHANGED after the resolve — a
+	// caching Store keeps its data untouched, and a concurrent launch
+	// would race an in-place sort.
+	gotOrder := []string{store.slice[0].ID, store.slice[1].ID}
+	if len(gotOrder) != len(wantOrder) || gotOrder[0] != wantOrder[0] || gotOrder[1] != wantOrder[1] {
+		t.Fatalf("resolver mutated the Store's slice in place: order was %v, is %v", wantOrder, gotOrder)
+	}
+}
