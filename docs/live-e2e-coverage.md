@@ -50,21 +50,38 @@ keyed by the `task test:live:*` target the operator invoked. The writer is
 the harness itself (`pkg/liveledger.Track`, hooked from `runBotLive`'s
 entry and from the tests that bypass it), registered at `t.Cleanup`, so a
 failure is recorded as a failure and the run's cost travels with the row.
+A **skipped** run (missing credential, `testing.Short`) records nothing —
+a skip never ran, so it claims neither pass nor fail. Aggregate targets
+(`test:live`, `test:live:bots:new`, …) run many test functions under one
+row: the functions' verdicts **merge fail-sticky** (any failure fails the
+row; duration and cost accumulate), so a suite that failed can never read
+as `pass` because its last member passed.
 The judge panel's snapshot store is a different, quality-only record and
 does not replace the ledger.
 
+The ledger carries one row per **recording** target — a target whose run
+reaches a Track call. The exceptions, classified in the enumeration
+itself (`LiveTarget.Records`): the delegating targets (`test:live:bots`,
+`test:live:bots-real` — each sub-target records its own row, and
+`{{.TASK}}` re-resolves per sub-task so the parent's name never reaches a
+Track call) and the non-test targets (`test:live:status`,
+`test:live:compile`, `test:live:quality:unit`). A row that no run could
+ever write would stay `never` forever and dilute the signal.
+
 ```bash
-# free: no credential, no network — prints every test:live:* target
-# with its last verdict (or an explicit `never`) sorted by staleness
+# free: no credential, no network — prints every recording test:live:*
+# target with its last verdict (or an explicit `never`) sorted by staleness
 devbox run -- task test:live:status
 ```
 
 `never` is written, never elided: a blank row reads as "fine" to every
-future reader, which is the one thing it never means. A target the
-Taskfile gains later is seeded `never` on the next `test:live:status`
-run; the class guard (`TestEveryLiveTestRecordsToTheLedger` in
-`pkg/liveledger`) fails a new live test that reaches no recording hook.
-See #1422.
+future reader, which is the one thing it never means. The status command
+is a **read**: a target the Taskfile gains later shows up as `never` in
+the table immediately, but the committed file is only seeded when the
+operator passes `-write-back` (e.g. `go run ./cmd/iterion-live-status
+-write-back`) or when the target's first real run writes its row. The
+class guard (`TestEveryLiveTestRecordsToTheLedger` in `pkg/liveledger`)
+fails a new live test that reaches no recording hook. See #1422.
 
 ## Quality layer — how it works
 

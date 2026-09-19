@@ -87,16 +87,6 @@
       "verdict": "never"
     },
     {
-      "target": "test:live:bots",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
-    },
-    {
-      "target": "test:live:bots-real",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
-    },
-    {
       "target": "test:live:bots:new",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
@@ -128,11 +118,6 @@
     },
     {
       "target": "test:live:claw-reasoning",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
-    },
-    {
-      "target": "test:live:compile",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
     },
@@ -252,11 +237,6 @@
       "verdict": "never"
     },
     {
-      "target": "test:live:quality:unit",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
-    },
-    {
       "target": "test:live:review",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
@@ -278,11 +258,6 @@
     },
     {
       "target": "test:live:session-inherit",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
-    },
-    {
-      "target": "test:live:status",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
     },

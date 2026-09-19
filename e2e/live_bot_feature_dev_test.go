@@ -35,6 +35,7 @@ func TestLive_FeatureDev(t *testing.T) {
 	loadDotEnv(t)
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "feature-dev/main.bot")
 

@@ -13,10 +13,11 @@ type StatusOptions struct {
 	LedgerPath string
 	// TaskfilePath resolves to TaskfileRelPath by default.
 	TaskfilePath string
-	// WriteBack, when true, ensures a `never` row exists for every
-	// enumerated target and writes the ledger back if any row was
-	// added. The status CLI passes true so a fresh checkout
-	// self-initialises; a read-only caller passes false.
+	// WriteBack, when true, seeds a `never` row for every newly
+	// enumerated recording target INTO THE FILE (the in-memory table
+	// always shows every target). False by default in the CLI: a status
+	// read is a read; seeding the committed ledger is an explicit
+	// operator action (`-write-back`).
 	WriteBack bool
 }
 
@@ -51,7 +52,13 @@ func Status(w io.Writer, opts StatusOptions) (*StatusResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	added := ledger.EnsureNeverRows(TargetNames(targets))
+	recording := make([]string, 0, len(targets))
+	for _, tt := range targets {
+		if tt.Records {
+			recording = append(recording, tt.Name)
+		}
+	}
+	added := ledger.EnsureNeverRows(recording)
 	if opts.WriteBack && added > 0 {
 		if err := ledger.Write(opts.LedgerPath); err != nil {
 			return nil, err

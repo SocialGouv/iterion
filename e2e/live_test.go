@@ -28,6 +28,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -268,6 +269,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
+	liveledger.Track(t)
 
 	// Default model if not set via .env or environment.
 	if os.Getenv("CLAUDE_MODEL") == "" {
@@ -622,6 +624,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
+	liveledger.Track(t)
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
 		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
@@ -892,6 +895,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
+	liveledger.Track(t)
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
 		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
@@ -1225,6 +1229,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
+	liveledger.Track(t)
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
 		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
@@ -1399,6 +1404,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	loadDotEnv(t)
 	requireOpenAI(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_comprehensive_coverage.bot")
 
@@ -1711,6 +1717,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
 	requireBinaryInPath(t, "go")
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_builtin_tools.bot")
 
@@ -1874,6 +1881,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_read_image.bot")
 
@@ -2048,6 +2056,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireOpenAI(t)
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_reasoning_effort.bot")
 
@@ -2138,6 +2147,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
 	requireBinaryInPath(t, "go")
+	liveledger.Track(t)
 
 	// Build the stdio MCP server.
 	binPath := filepath.Join(t.TempDir(), "mcp_test_server")
@@ -2300,6 +2310,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_long_context.bot")
 
@@ -2447,6 +2458,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_subagents.bot")
 

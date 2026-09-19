@@ -3,6 +3,7 @@ package liveledger
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,18 @@ tasks:
     cmds:
       - go test -tags live -count=1 -run 'TestLive_' ./e2e/...
 
+  test:live:unquoted:
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Unquoted -timeout 15m ./e2e/...
+
+  test:live:equals:
+    cmds:
+      - go test -v -tags live -count=1 -run=TestLive_Equals$ -timeout 15m ./e2e/...
+
+  test:live:multitag:
+    cmds:
+      - go test -v -tags "live extra" -count=1 -run 'TestLive_MultiTag$' -timeout 15m ./e2e/...
+
   test:live:notest:
     cmds:
       - echo 'this target invokes no test binary'
@@ -51,34 +64,78 @@ tasks:
 	if err != nil {
 		t.Fatalf("EnumerateLiveTargets: %v", err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("got %d live targets, want 4: %+v", len(got), got)
+	byName := map[string]LiveTarget{}
+	for _, tt := range got {
+		byName[tt.Name] = tt
 	}
-	if got[0].Name != "test:live:aggregate" || got[0].RunPattern != "TestLive_" {
-		t.Fatalf("aggregate: %+v", got[0])
+	if len(got) != 7 {
+		t.Fatalf("got %d live targets, want 7: %+v", len(got), got)
 	}
-	if got[1].Name != "test:live:bot:review-pr" || got[1].RunPattern != "TestLive_Bot_ReviewPR$" {
-		t.Fatalf("review-pr: %+v", got[1])
+	wantPatterns := map[string]string{
+		"test:live:aggregate":       "TestLive_",
+		"test:live:bot:review-pr":   "TestLive_Bot_ReviewPR$",
+		"test:live:equals":          "TestLive_Equals$",
+		"test:live:feat:permission": "TestLive_Feat_Permission$",
+		"test:live:multitag":        "TestLive_MultiTag$",
+		"test:live:notest":          "",
+		"test:live:unquoted":        "TestLive_Unquoted",
 	}
-	if got[2].Name != "test:live:feat:permission" || got[2].RunPattern != "TestLive_Feat_Permission$" {
-		t.Fatalf("permission: %+v", got[2])
+	for name, want := range wantPatterns {
+		got2, ok := byName[name]
+		if !ok {
+			t.Fatalf("target %s missing from enumeration", name)
+		}
+		if got2.RunPattern != want {
+			t.Fatalf("%s pattern = %q, want %q", name, got2.RunPattern, want)
+		}
 	}
-	if got[3].Name != "test:live:notest" || got[3].RunPattern != "" {
-		t.Fatalf("notest: %+v", got[3])
+	for _, name := range []string{"aggregate", "bot:review-pr", "equals", "feat:permission", "multitag", "unquoted"} {
+		tt := byName["test:live:"+name]
+		if !tt.Records {
+			t.Fatalf("%s must classify as recording", tt.Name)
+		}
+	}
+	if byName["test:live:notest"].Records {
+		t.Fatalf("a target that runs no test must classify as non-recording")
 	}
 }
 
-// TargetNames is a small helper — its shape (names extracted, order
-// preserved) is contract for callers that feed EnsureNeverRows.
-func TestTargetNames_PreservesOrder(t *testing.T) {
-	in := []LiveTarget{
-		{Name: "test:live:a"},
-		{Name: "test:live:b"},
-		{Name: "test:live:c"},
+// The ledger's row set is the set of RECORDING targets — the class of
+// non-recording targets is pinned exactly, because each entry here is a
+// decision with a reason:
+//
+//   - test:live:bots / test:live:bots-real delegate every cmd through
+//     `task:` and the sub-task overrides {{.TASK}}, so the parent's
+//     name never reaches a Track call — the sub-targets are the record;
+//   - test:live:status runs the (read-only) status binary, no test;
+//   - test:live:compile runs `go test -run '^$'` — compiles, runs
+//     nothing;
+//   - test:live:quality:unit runs the quality engine's unit tests —
+//     go test, but neither -tags live nor ./e2e, so no Track hook.
+//
+// A target that joins this list without a reason, or a recording target
+// that lands here, must redden — the enumeration decides which rows the
+// committed ledger carries.
+func TestEnumerateLiveTargets_RealTaskfile_RecordsClassification(t *testing.T) {
+	got, err := EnumerateLiveTargets(realTaskfilePath(t))
+	if err != nil {
+		t.Fatalf("EnumerateLiveTargets: %v", err)
 	}
-	got := TargetNames(in)
-	if len(got) != 3 || got[0] != "test:live:a" || got[1] != "test:live:b" || got[2] != "test:live:c" {
-		t.Fatalf("TargetNames = %v, want [a b c]", got)
+	var non []string
+	for _, tt := range got {
+		if !tt.Records {
+			non = append(non, tt.Name)
+		}
+	}
+	want := []string{
+		"test:live:bots",
+		"test:live:bots-real",
+		"test:live:compile",
+		"test:live:quality:unit",
+		"test:live:status",
+	}
+	if !slices.Equal(non, want) {
+		t.Fatalf("non-recording set = %v, want %v — the ledger seeds rows only for recording targets", non, want)
 	}
 }
 

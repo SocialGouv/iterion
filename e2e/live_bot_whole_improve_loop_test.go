@@ -33,6 +33,7 @@ func TestLive_VibeReviewAlternating(t *testing.T) {
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
 	requireOpenAI(t)
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "whole-improve-loop/main.bot")
 

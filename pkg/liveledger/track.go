@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/git"
 )
 
 // EnvTarget names the env var each Taskfile target sets to identify the
@@ -66,6 +67,19 @@ func (tr *Tracker) SetStartedAt(t time.Time) {
 	tr.metrics.StartedAt = t
 }
 
+// TB is the part of *testing.T (or *testing.B) that Track needs. A
+// narrow local interface, because testing.TB carries an unexported
+// method and cannot be implemented — or faked — outside the testing
+// package.
+type TB interface {
+	Cleanup(func())
+	Failed() bool
+	Skipped() bool
+	Helper()
+	Logf(format string, args ...any)
+	Name() string
+}
+
 // Track registers a t.Cleanup that writes a ledger row for this test.
 // It is designed to be safe to call from the top of any live test —
 // missing env vars just make it a no-op with a t.Logf line so the
@@ -74,9 +88,18 @@ func (tr *Tracker) SetStartedAt(t time.Time) {
 // run; if the returned pointer is unused, the row's cost is 0 and the
 // duration is measured from the Track call.
 //
-// Verdict derivation: at t.Cleanup, `t.Failed()` reports whether ANY
-// Errorf/Fatalf ran during the test. Pass iff not failed.
-func Track(t *testing.T) *Tracker {
+// Verdict derivation at cleanup time:
+//   - a SKIPPED test never ran, so it records nothing — a `pass` row
+//     would mean "the harness verified this target", which a skip never
+//     did;
+//   - otherwise pass iff the test did not fail.
+//
+// When one target ran SEVERAL test functions in the same process (the
+// aggregate targets like `test:live`), the rows merge fail-sticky: any
+// member's failure fails the row, duration and cost accumulate, and the
+// timestamp is the suite's last completion — never the last function's
+// private verdict.
+func Track(t TB) *Tracker {
 	t.Helper()
 	tr := &Tracker{
 		target:  os.Getenv(EnvTarget),
@@ -92,17 +115,27 @@ func Track(t *testing.T) *Tracker {
 		tr.disabled = true
 		return tr
 	}
-	t.Cleanup(func() {
-		if tr.disabled {
-			return
-		}
-		row := tr.buildRow(t.Failed())
-		path := tr.resolvedPath(t)
-		if err := RecordRow(path, row); err != nil {
-			t.Logf("[liveledger] recording row for %s failed: %v", tr.target, err)
-		}
-	})
+	t.Cleanup(func() { tr.record(t) })
 	return tr
+}
+
+// record is the cleanup closure: it decides the row's verdict and
+// writes it. Extracted from Track so tests can drive it through the
+// real Cleanup registration.
+func (tr *Tracker) record(t TB) {
+	if tr.disabled {
+		return
+	}
+	if t.Skipped() {
+		t.Logf("[liveledger] %s skipped — no row written (a skip never ran, so neither pass nor fail applies)", tr.target)
+		return
+	}
+	row := tr.buildRow(t.Failed())
+	path := tr.resolvedPath(t)
+	row = mergeProcessRow(path, row)
+	if err := RecordRow(path, row); err != nil {
+		t.Logf("[liveledger] recording row for %s failed: %v", tr.target, err)
+	}
 }
 
 // buildRow captures the final row shape from the tracker.
@@ -135,7 +168,7 @@ func (tr *Tracker) buildRow(failed bool) Row {
 // working directory to find the go.mod boundary, then joins
 // DefaultRelPath — so a test in a subdirectory of the checkout still
 // writes to the same file.
-func (tr *Tracker) resolvedPath(t *testing.T) string {
+func (tr *Tracker) resolvedPath(t TB) string {
 	if tr.path != "" {
 		return tr.path
 	}
@@ -170,11 +203,78 @@ func findModuleRoot() (string, bool) {
 // useful without a ref.
 func currentRef() string {
 	cmd := exec.Command("git", "rev-parse", "--short=12", "HEAD")
+	cmd.Env = git.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// processWritten remembers every row this process has already written,
+// keyed by ledger path + target. Aggregate targets run many test
+// functions under ONE row key inside a single `go test` invocation, and
+// `go test` runs them sequentially in one process — without the merge,
+// the last function's cleanup would overwrite the suite's verdict with
+// its own private one (test 1 fails, test 40 passes → the row reports
+// `pass` for a suite that failed).
+var (
+	processWrittenMu sync.Mutex
+	processWritten   = map[string]Row{}
+)
+
+// mergeProcessRow folds row into the row this process already wrote for
+// the same (path, target), if any, and returns what to persist. The
+// merge is commutative where it matters: fail wins regardless of which
+// function ran first, and duration/cost sum, so the row does not depend
+// on test ordering.
+func mergeProcessRow(path string, row Row) Row {
+	key := path + "\x00" + row.Target
+	processWrittenMu.Lock()
+	defer processWrittenMu.Unlock()
+	prev, ok := processWritten[key]
+	if !ok {
+		processWritten[key] = row
+		return row
+	}
+	merged := mergeRows(prev, row)
+	processWritten[key] = merged
+	return merged
+}
+
+// mergeRows folds two rows of the same target written by the same
+// process. fail dominates; duration and cost accumulate; LastRun is the
+// suite's last completion.
+func mergeRows(a, b Row) Row {
+	verdict := VerdictPass
+	if a.Verdict == VerdictFail || b.Verdict == VerdictFail {
+		verdict = VerdictFail
+	}
+	last := b.LastRun
+	if a.LastRun.After(last) {
+		last = a.LastRun
+	}
+	ref := b.Ref
+	if ref == "" {
+		ref = a.Ref
+	}
+	return Row{
+		Target:      a.Target,
+		LastRun:     last,
+		Verdict:     verdict,
+		DurationSec: a.DurationSec + b.DurationSec,
+		CostUSD:     a.CostUSD + b.CostUSD,
+		Ref:         ref,
+	}
+}
+
+// resetProcessWritten clears the process-level merge registry. Tests
+// use it to isolate cases; production never needs it — the registry
+// lives exactly as long as the process.
+func resetProcessWritten() {
+	processWrittenMu.Lock()
+	defer processWrittenMu.Unlock()
+	processWritten = map[string]Row{}
 }
 
 // RecordRow is the write-side primitive Track uses at t.Cleanup, and
