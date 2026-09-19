@@ -56,10 +56,17 @@ func (s *Server) handleRunsRepos(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "no run store configured on this server")
 		return
 	}
+	// Same scoping contract as /api/v1/runs/stats (#1419): honour
+	// ?team_id= (or X-Iterion-Team) when authorised, active team otherwise.
+	// A repo chip strip is tenant-scoped like the aggregation.
+	_, ctx, ok := s.resolveTenantScope(w, r)
+	if !ok {
+		return
+	}
 
 	// No filter: we want every repo that has ever had a run, not just a
 	// recent window — the chip strip should expose the full set.
-	runs, err := runsSvc.ListCtx(r.Context(), runview.ListFilter{})
+	runs, err := runsSvc.ListCtx(ctx, runview.ListFilter{})
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list runs: %v", err)
 		return
