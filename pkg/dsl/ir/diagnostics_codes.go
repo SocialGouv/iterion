@@ -168,7 +168,8 @@ const (
 	DiagLoopNoExit           DiagCode = "C145" // a bounded loop edge with no exit once the loop is spent: the run would die of LOOP_EXHAUSTED at the cap (warning)
 	DiagIntDivisionUnrounded DiagCode = "C146" // a compute field typed int fed by a division with a float operand, outside floor()/round(): fails at run time (warning)
 
-	DiagUnknownLoopRef DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
+	DiagUnknownLoopRef   DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
+	DiagUnknownRunMember DiagCode = "C149" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).

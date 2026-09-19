@@ -201,6 +201,7 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 | `{{loop.name.iteration}}` / `.max` / `.previous_output` | Declared-loop state. |
 | `{{each.name.item}}` / `.index` / `.count` / `.first` / `.last` / `.empty` | Sequential edge-`foreach` state. |
 | `{{run.id}}` | Current run id. |
+| `{{run.tree_noise}}` | The canonical tree-noise pathspecs (`':(exclude,top).claude' ':(exclude,top)devbox.lock'`) — what a scope gate or a whole-tree staging must exclude, because the run's setup and tooling wrote it, never the pass's work. In a prompt or a `script:` body it renders ready to paste into a git command; in a tool `command:` it arrives shell-escaped as ONE argument — `git add` refuses it, and a `git status`-based gate silently ignores it and lists the noise anyway — so read `$ITERION_TREE_NOISE` there instead (set for every tool process, host and sandbox). See [the run namespace](#the-run-namespace) and [bot authoring](agents/bot-authoring.md). |
 | `{{run.elapsed_seconds}}` / `.cost_usd` / `.tokens` / `.iterations` | What the run has consumed so far — see [the run namespace](#the-run-namespace). |
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
@@ -486,6 +487,7 @@ block through vars that drift from it in silence.
 | `run.max_cost_usd` | float | The effective cost cap. |
 | `run.max_tokens` | int | The effective token cap. |
 | `run.max_iterations` | int | The effective iteration cap. |
+| `run.tree_noise` | string | The canonical tree-noise pathspecs (pkg/treenoise), shell-quoted and space-separated: `':(exclude,top).claude' ':(exclude,top)devbox.lock'`. Constant for a run. Tool scripts get the same value in `ITERION_TREE_NOISE`. |
 
 The four `max_*` members are the caps **in force right now**: the
 `budget:` block after the `iterion run --max-*` flags, the recipe/preset,

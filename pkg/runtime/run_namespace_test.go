@@ -176,6 +176,35 @@ func TestRunNamespaceReachesDataMappings(t *testing.T) {
 	}
 }
 
+// TestRunTreeNoiseRendersTheCanonicalPathspecs covers #1464: the namespace's
+// newest member renders the tree-noise pathspecs a scope gate pastes into its
+// git command. Constant for a run, so the snapshot semantics of a rendered
+// command lose nothing; the VALUE is pkg/treenoise's to keep truthful — this
+// test pins only that the namespace carries it and that it is not empty (an
+// empty exclusion list is a gate switched off in silence).
+func TestRunTreeNoiseRendersTheCanonicalPathspecs(t *testing.T) {
+	eng := New(budgetedWorkflow(), tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("run-noise", nil)
+
+	got := resolveRunPath(rs, []string{"tree_noise"})
+	s, ok := got.(string)
+	if !ok || s == "" {
+		t.Fatalf("run.tree_noise = %#v, want a non-empty string of pathspecs", got)
+	}
+	if !containsEach(s, "':(exclude,top).claude'", "':(exclude,top)devbox.lock'") {
+		t.Fatalf("run.tree_noise = %q, want both canonical exclusions", s)
+	}
+}
+
+func containsEach(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
+
 // TestFailMessageRendersRunNamespaceOnTheRun is the operator-visible half of
 // #791: the rendered message is what `run.Error` carries, on a real run.
 func TestFailMessageRendersRunNamespaceOnTheRun(t *testing.T) {

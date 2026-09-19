@@ -1,0 +1,98 @@
+package model
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/treenoise"
+)
+
+// The tree-noise env rides the executor field pattern (plan review F1, #1464):
+// it is appended at every host tool spawn UNCONDITIONALLY — never through run
+// provisioning — because provisionHostDevbox early-returns on a workspace
+// without a devbox.json, and "no devbox" is the common run. A scope gate that
+// reads ITERION_TREE_NOISE must not depend on what the workspace happens to
+// pin. Both tool-node paths the host executor builds carry it: the shell
+// command and the script interpreter.
+func TestToolNodeCommandsCarryTheTreeNoiseEnvWithoutAnyProvisioning(t *testing.T) {
+	e := &ClawExecutor{} // no sandbox, no artifact dir, no runExtraEnv, no devbox
+
+	cmd := e.toolNodeCommand(context.Background(), "git status --porcelain -- ':/'", nil)
+	got := envValue(cmd.Env, "ITERION_TREE_NOISE")
+	if got != treenoise.EnvValue() {
+		t.Fatalf("shell command ITERION_TREE_NOISE = %q, want %q", got, treenoise.EnvValue())
+	}
+
+	sc := e.toolNodeScriptCommand(context.Background(), "python3", "scope_check.py")
+	got = envValue(sc.Env, "ITERION_TREE_NOISE")
+	if got != treenoise.EnvValue() {
+		t.Fatalf("script command ITERION_TREE_NOISE = %q, want %q", got, treenoise.EnvValue())
+	}
+}
+
+// The env rides an inherited environment: the child still sees the parent's
+// variables (a bot's PATH, its credentials), with the noise list appended.
+func TestToolNodeCommandsKeepTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("ITERION_NOISE_CANARY", "here")
+	e := &ClawExecutor{}
+
+	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	if envValue(cmd.Env, "ITERION_NOISE_CANARY") != "here" {
+		t.Fatalf("the inherited environment was dropped: ITERION_NOISE_CANARY missing from %q", cmd.Env)
+	}
+	if envValue(cmd.Env, "ITERION_TREE_NOISE") == "" {
+		t.Fatalf("the noise list is missing from %q", cmd.Env)
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
+// envContainsEnv mirrors what the executor does: os.Environ() first, the
+// noise list appended. Used to assert the appended slice is not built on a
+// nil base (which would drop the inherited environment silently).
+func TestToolNodeEnvBaseIsTheInheritedEnvironment(t *testing.T) {
+	e := &ClawExecutor{}
+	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	parent := os.Environ()
+	if len(cmd.Env) < len(parent) {
+		t.Fatalf("cmd.Env has %d entries, want at least the parent's %d", len(cmd.Env), len(parent))
+	}
+}
+
+// The agent path carries the variable too: an agent node's own Bash (the
+// claw builtin) receives Task.ExtraEnv, so a scope check an AGENT runs
+// inline sees the same list a tool script does — on an unsandboxed run with
+// no devbox.json, where provisioning never fires (plan review F3).
+func TestBuildTaskCarriesTheTreeNoiseEnv(t *testing.T) {
+	src, err := os.ReadFile("executor_build_task.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "treenoise.TreeNoiseEnvVar") {
+		t.Fatalf("executor_build_task.go no longer appends the tree-noise env to Task.ExtraEnv — an agent's own bash loses the list on an unsandboxed run")
+	}
+}
+
+// The agent-task append steps aside when the run's own env already carries
+// the variable (plan review round 2, F2): an operator or a workflow that set
+// ITERION_TREE_NOISE themselves wins on the agent path, the same rule the
+// sandbox seed follows.
+func TestExtraTreeNoiseEnvStepsAsideForARunValue(t *testing.T) {
+	if got := extraTreeNoiseEnv([]string{"ITERION_TREE_NOISE=':(exclude,top)vendor'"}); got != nil {
+		t.Fatalf("extraTreeNoiseEnv over a run-set variable = %q, want nil (the run's value wins)", got)
+	}
+	got := extraTreeNoiseEnv([]string{"PATH=/devbox/bin"})
+	if len(got) != 1 || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
+		t.Fatalf("extraTreeNoiseEnv without a run value = %q, want exactly the canonical entry", got)
+	}
+}

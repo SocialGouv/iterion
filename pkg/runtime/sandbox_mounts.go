@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // sandboxScratchContainerPath is where ${PROJECT_SCRATCH_DIR} resolves
@@ -830,4 +831,19 @@ func seedDefaultLocale(spec *sandbox.Spec) {
 		return
 	}
 	spec.Env["LANG"] = "C.UTF-8"
+}
+
+// seedTreeNoiseEnv gives in-sandbox tool scripts the canonical tree-noise
+// pathspecs (pkg/treenoise) so a scope gate filters the tree with the
+// engine's list, not its own literal — the sandbox half of the host's
+// executor env (#1464). Like seedDefaultLocale it steps aside when the
+// operator or the workflow set the variable themselves.
+func seedTreeNoiseEnv(spec *sandbox.Spec) {
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	if _, set := spec.Env[treenoise.TreeNoiseEnvVar]; set {
+		return
+	}
+	spec.Env[treenoise.TreeNoiseEnvVar] = treenoise.EnvValue()
 }

@@ -600,6 +600,15 @@ lets the run proceed. The same happens when the image has no `devbox` on
 `PATH`. Nothing is dressed up as success — a missing binary would
 otherwise read as an agent bug.
 
+Every in-sandbox tool script — and every host tool command, and an agent
+node's own environment — also receives `ITERION_TREE_NOISE`: the canonical
+tree-noise pathspecs (pkg/treenoise) a scope gate or a whole-tree staging
+pastes into its git command, so the gates filter the tree with the engine's
+list and not with a literal of their own (#1464). The variable is set when
+the spec is built, before the container starts; in the container an
+operator or a workflow that sets it themselves wins, while on host tool
+commands the engine's entry is appended last and covers a pre-set value.
+
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
 `errors` on the host target when something failed, and `lock_kept` on the

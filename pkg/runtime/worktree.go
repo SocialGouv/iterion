@@ -421,7 +421,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		if opts.runName != "" {
 			msg += " (" + opts.runName + ")"
 		}
-		if err := runGitInDir(wc.wtPath, "add", "-A"); err != nil {
+		if err := runGitInDir(wc.wtPath, stageWorkArgs()...); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}

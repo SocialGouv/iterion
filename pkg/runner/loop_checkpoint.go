@@ -30,6 +30,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // workspaceCheckpointInterval is how often a copy-based sandbox's work is
@@ -55,13 +56,18 @@ const workspaceCheckpointTimeout = 4 * time.Minute
 // The identity is iterion's, explicitly, and not the run's: a checkpoint
 // wearing the committer's name is evidence that lies about who did the
 // work — the exact confusion the extension gates spend their code refusing.
-const checkpointScript = `set -e
+// The `git add` carries the canonical tree-noise pathspecs (pkg/treenoise):
+// the checkpoint is pushed to the OPERATOR'S remote, and iterion's `.claude/`
+// mirror or a drifted devbox.lock must never travel there — the exact
+// incident class workspace_checkpoint.go opens with (#1364, #1464). The run's
+// own files stage normally; only the noise stays out of the preserved tree.
+var checkpointScript = `set -e
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "not-a-git-repo" >&2; exit 3; }
 head=$(git rev-parse HEAD 2>/dev/null) || { echo "no-commit-yet" >&2; exit 3; }
 idx="${TMPDIR:-/tmp}/iterion-checkpoint-index.$$"
 rm -f "$idx"
 GIT_INDEX_FILE="$idx" git read-tree "$head"
-GIT_INDEX_FILE="$idx" git add -A
+GIT_INDEX_FILE="$idx" git add -A -- ':/' ` + treenoise.ShellPathspecs() + `
 tree=$(GIT_INDEX_FILE="$idx" git write-tree)
 rm -f "$idx"
 if [ "$tree" = "$(git rev-parse "$head^{tree}")" ]; then

@@ -7,6 +7,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // CommitUncommittedAndFinalize stages every change in a run's worktree
@@ -62,7 +63,7 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: workdir %q has no changes to commit", r.WorkDir)
 	}
 
-	if err := runGitInDir(r.WorkDir, "add", "-A"); err != nil {
+	if err := runGitInDir(r.WorkDir, stageWorkArgs()...); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git add: %w", err)
 	}
 	if out, err := gitCommitMessage(r.WorkDir, message); err != nil {
@@ -86,10 +87,16 @@ func workdirIsClean(workdir string) (bool, error) {
 	return len(runOutputPaths(out)) == 0, nil
 }
 
-// scaffoldPrefix is where mirrorBundleSkills lays the bot's skills inside the
-// run worktree. What lives there is written BY iterion, at run start, from the
-// bundle — it is not something the run produced.
-const scaffoldPrefix = ".claude/"
+// stageWorkArgs stages the whole tree EXCEPT the canonical tree noise
+// (pkg/treenoise): the `.claude/` mirror and a drifted devbox.lock are not
+// the pass's work, and the staging gesture must agree with the probe
+// (workdirIsClean) that decides whether anything needs staging at all —
+// the two used to disagree, banking the mirror into a wip commit the
+// moment anything real was dirty (#1364, #1464).
+func stageWorkArgs() []string {
+	args := []string{"add", "-A", "--", ":/"}
+	return append(args, treenoise.Pathspecs()...)
+}
 
 // runOutputPaths returns the porcelain entries that stand for work the RUN
 // produced, dropping the scaffolding iterion mirrored in itself.
@@ -130,7 +137,7 @@ func runOutputPaths(porcelain string) []string {
 		if len(path) >= 2 && strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"") {
 			path = path[1 : len(path)-1]
 		}
-		if path == "" || strings.HasPrefix(path, scaffoldPrefix) {
+		if path == "" || treenoise.IsNoise(path) {
 			continue
 		}
 		out = append(out, path)

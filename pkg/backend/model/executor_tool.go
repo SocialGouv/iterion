@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // ---------------------------------------------------------------------------
@@ -649,12 +650,18 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	// container env (the same dir is bind-mounted there). runExtraEnv
 	// carries run-level provisioning (devbox profile PATH), appended
 	// after the inherited env so on a duplicate key it wins.
+	cmd.Env = os.Environ()
 	if e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
-		cmd.Env = append(os.Environ(), e.runExtraEnv...)
+		cmd.Env = append(cmd.Env, e.runExtraEnv...)
 		if e.artifactFilesDir != "" {
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
 	}
+	// The canonical tree-noise pathspecs, engine-owned and unconditional:
+	// a run without a devbox.json carries them just the same — the scope
+	// gates read this list (#1464).
+	cmd.Env = append(cmd.Env, treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
+
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
@@ -715,20 +722,21 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// work. Signal the whole group instead.
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
-	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
-		cmd.Env = os.Environ()
-		// Run-level provisioning (devbox profile PATH) — appended after
-		// the inherited env so on a duplicate key it wins.
-		cmd.Env = append(cmd.Env, e.runExtraEnv...)
-		// Host path only: sandboxed commands already see the variable from
-		// the container env (the same dir is bind-mounted there).
-		if e.artifactFilesDir != "" {
-			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
-		}
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	cmd.Env = os.Environ()
+	// Run-level provisioning (devbox profile PATH) — appended after
+	// the inherited env so on a duplicate key it wins.
+	cmd.Env = append(cmd.Env, e.runExtraEnv...)
+	// Host path only: sandboxed commands already see the variable from
+	// the container env (the same dir is bind-mounted there).
+	if e.artifactFilesDir != "" {
+		cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	// The canonical tree-noise pathspecs, engine-owned and unconditional:
+	// a run without a devbox.json carries them just the same (#1464).
+	cmd.Env = append(cmd.Env, treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}

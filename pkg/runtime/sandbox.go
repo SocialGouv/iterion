@@ -436,6 +436,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		botRunFilesDir = spec.Env[runFilesEnvVar]
 		spec.Env[runFilesEnvVar] = runFilesContainerPath
 	}
+	// Tool scripts find the canonical tree-noise pathspecs via
+	// $ITERION_TREE_NOISE (pkg/treenoise) so a scope gate filters the tree
+	// with the engine's list, not its own literal (#1464).
+	seedTreeNoiseEnv(spec)
 	seedDefaultLocale(spec)
 	// The bundle is a host bind and nothing else: a driver with no host
 	// filesystem would have it dropped below, leaving every promise made
