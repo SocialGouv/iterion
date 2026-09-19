@@ -65,7 +65,7 @@ type capOut struct {
 // deepsec's per-pass export lives OUTSIDE the top-level glob cap_findings
 // walks over scan_dir (its file is keyed on {{run.id}}, cf. #1322), and
 // travels in through the producer's json_paths -- the fixture writes it
-// under scan_dir/<run.id>/deepsec.json and feeds cap_findings DEEPSEC_PATHS
+// under scan_dir/deepsec-out-<run.id>/deepsec.json and feeds cap_findings DEEPSEC_PATHS
 // with that exact path. Writing it flat under scan_dir would model a
 // legacy configuration and hide the wire: the reader that mattered was the
 // harvest of json_paths.deepsec, and a fixture at scan_dir/deepsec.json
@@ -83,7 +83,7 @@ func capFixture(t *testing.T) func(budget string) capOut {
 		t.Fatal(err)
 	}
 	scanDir := filepath.Join(dir, "scan")
-	perRunDir := filepath.Join(scanDir, deepsecRunID)
+	perRunDir := filepath.Join(scanDir, "deepsec-out-"+deepsecRunID)
 	if err := os.MkdirAll(perRunDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func capFixture(t *testing.T) func(budget string) capOut {
 	// an object with a findings key. That shape has nothing to rewrite, so it
 	// never entered the capping path -- and skipping it here by shape would
 	// drop the deepest scanner from the payload without a word. Its file lives
-	// at scanDir/<run.id>/deepsec.json (per #1322) and reaches cap_findings
+	// at scanDir/deepsec-out-<run.id>/deepsec.json (per #1322) and reaches cap_findings
 	// through DEEPSEC_PATHS.
 	deepsecFile := filepath.Join(perRunDir, "deepsec.json")
 	writeJSON(t, deepsecFile, mk(5, "critical"))
@@ -117,7 +117,7 @@ func capFixture(t *testing.T) func(budget string) capOut {
 		// from a fresh copy — otherwise the second run caps already-capped
 		// input and the counts drift for a reason the test does not control.
 		fresh := t.TempDir()
-		freshPerRun := filepath.Join(fresh, deepsecRunID)
+		freshPerRun := filepath.Join(fresh, "deepsec-out-"+deepsecRunID)
 		if err := os.MkdirAll(freshPerRun, 0o755); err != nil {
 			t.Fatal(err)
 		}

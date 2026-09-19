@@ -1469,7 +1469,7 @@ func TestDeepsecAFailedExportDoesNotInheritTheSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The scanner uses vars.deepsec_out as a BASE template and derives its
-	// per-pass path as <dirname>/<run.id>/<basename>. The neighbour file lives
+	// per-pass path as <dirname>/deepsec-out-<run.id>/<basename>. The neighbour file lives
 	// at the base — a workspace-scratch file no current pass now writes to.
 	neighbourAtBase := filepath.Join(scanDir, "deepsec.json")
 	neighbourBody := []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`)
@@ -1479,7 +1479,7 @@ func TestDeepsecAFailedExportDoesNotInheritTheSlot(t *testing.T) {
 	// This pass's own per-run slot, which is what the export-unusable guard
 	// must leave empty.
 	const runID = "run-under-test"
-	runSlot := filepath.Join(scanDir, runID, "deepsec.json")
+	runSlot := filepath.Join(scanDir, "deepsec-out-"+runID, "deepsec.json")
 
 	cov, _, _ := runDeepsecNodeFull(t, dir, runID, `
 NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)

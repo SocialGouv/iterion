@@ -183,7 +183,7 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 		// substitutes; the runPath is where the export ACTUALLY lives.
 		base := filepath.Join(scanDir, "deepsec.json")
 		const runID = "honesty-test"
-		runPath := filepath.Join(scanDir, runID, "deepsec.json")
+		runPath := filepath.Join(scanDir, "deepsec-out-"+runID, "deepsec.json")
 		if err := os.MkdirAll(ws, 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -17,6 +17,13 @@ version: 0.1.4
 ## ".." explicitly so those path-navigation segments cannot recreate the
 ## shared slot or place the export above scan_dir; scan_dir_ttl_days (default
 ## 30, 0 disables) prunes stale per-run subdirs at scanner entry.
+## Follow-up (PR #1473, revi verdict 2): the per-run export subdir carries
+## the deepsec-out- prefix so the retention sweep positively matches
+## deepsec-out-* + deepsec-logs-* rather than deny-listing three names — an
+## operator-set scan_dir now leaves every other directory alone (Re56aa9).
+## Rule 3a is also suppressed when files_processed=0 && deepsec_finding_count>0
+## so the healthiest fully-analysed state renders one NOTE (from 3b) rather
+## than two banners.
 ## 0.1.3 — prepare_branch no longer reads iterion's `.claude/` scaffold as the
 ## operator's work in flight, its stash leaves the scaffold in place and is recorded
 ## only once it is confirmed on top, and a finding's revert neither cleans nor checks

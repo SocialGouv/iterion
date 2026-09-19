@@ -467,7 +467,7 @@ schema scan_join_output:
 
 ## cap_findings input — carries the producer's json_paths for the deep
 ## scan alongside vars.scan_dir. Since #1322 keyed the deepsec export on
-## {{run.id}}, its file lives at scan_dir/<run.id>/deepsec.json — outside
+## {{run.id}}, its file lives at scan_dir/deepsec-out-<run.id>/deepsec.json — outside
 ## the non-recursive glob cap_findings walks over scan_dir/*.json. Without
 ## this explicit route the array-shaped deepsec export never enters the
 ## harvest, so `inline` misses it entirely; on claw/codex triage (which
@@ -1678,6 +1678,12 @@ prompt report_card_user:
      the most misleading state, because everything downstream of the cap
      completes normally and looks healthy. `deepsec_process_limit=0` removes
      the cap.
+     EXCEPTION: when `files_processed` is 0 AND `deepsec_finding_count` is
+     above 0, the persistent backlog is exhausted (the 3b/files_processed=0
+     NOTE below applies) and the cap is moot: no candidate file was even
+     eligible for the deep pass. Skip 3a here — the healthiest state does
+     not need two banners. The NOTE from 3b alone tells the operator this
+     pass added nothing new, which is the whole message.
 
   3b. `process_complete` is false → the deep pass is not shown to have covered
      the tree. One of these terms failed, and each has its own words. Read them
@@ -3037,29 +3043,40 @@ LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 # the path from the producer json_paths, that path was still the shared name
 # on the happy path -- so the loser read back a file it did not write, with
 # no banner. The var vars.deepsec_out is kept as the BASE template (default:
-# a per-workspace .../scan/deepsec.json); the pass appends /$RUN_ID/ between
-# its dirname and basename. A var default cannot carry a run-id template
-# directly: defaults resolve through ir.ExpandWithDefault, which honours
-# ${ENV} but not workflow variables -- so the derivation lives here, where
-# $RUN_ID is real.
+# a per-workspace .../scan/deepsec.json); the pass appends /deepsec-out-
+# $RUN_ID/ between its dirname and basename (the prefix is what lets the
+# retention sweep scope positively on deepsec-* rather than a three-name
+# deny-list, per revi Re56aa9). A var default cannot carry a run-id
+# template directly: defaults resolve through ir.ExpandWithDefault, which
+# honours ${ENV} but not workflow variables -- so the derivation lives
+# here, where $RUN_ID is real.
 # (No apostrophes below and no backticks: one closes this bash -c block, and
 # the outer shell then re-parses the rest of the script.)
 OUT_JSON_BASE="$OUT_JSON"
-OUT_JSON="$(dirname "$OUT_JSON_BASE")/$RUN_ID/$(basename "$OUT_JSON_BASE")"
+# Per-run subdir prefixed with deepsec-out- so the retention sweep below can
+# scope POSITIVELY (allowlist) rather than by a three-name deny-list. Both
+# shapes THIS node owns now match deepsec-* and every other directory --
+# whatever an operator may drop under vars.scan_dir, whatever a future node
+# may add -- is left alone. See revi Re56aa9.
+OUT_JSON="$(dirname "$OUT_JSON_BASE")/deepsec-out-$RUN_ID/$(basename "$OUT_JSON_BASE")"
 mkdir -p "$DSW" "$LOG_DIR" "$(dirname "$OUT_JSON")"
 
 # ── retention ─────────────────────────────────────────────────────
-# Per-run keying leaves one exports subdir and one logs subdir at the
-# top of $SCAN_DIR per pass; the engine scratch sweep does not reclaim
-# them because a workspace used regularly keeps writing under scan_dir
-# (see runtime/scratch_sweep.go: sweep is by whole-workspace mtime).
-# Prune older per-run entries by mtime, skipping deepsec-workspace (the
-# shared data root, deliberately per-workspace) and this run own two
-# directories. 0 disables the sweep.
+# Per-run keying leaves one deepsec-out-<run.id>/ and one
+# deepsec-logs-<run.id>/ at the top of $SCAN_DIR per pass; the engine
+# scratch sweep does not reclaim them because a workspace used regularly
+# keeps writing under scan_dir (see runtime/scratch_sweep.go: sweep is by
+# whole-workspace mtime). Prune older entries by mtime, POSITIVELY scoped
+# to the two shapes THIS node owns -- deepsec-out-* and deepsec-logs-*,
+# both prefixed for exactly this reason (Re56aa9). deepsec-workspace is
+# the shared data root, not per-run, and stays. Every other directory
+# under scan_dir stays whatever its mtime -- an operator setting or a
+# future node writing there is not enrolled in this sweep by default. 0
+# disables the sweep entirely.
 if [ "${SCAN_DIR_TTL_DAYS:-0}" -gt 0 ] 2>/dev/null; then
   find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
-    ! -name "deepsec-workspace" \
-    ! -name "$RUN_ID" \
+    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" \) \
+    ! -name "deepsec-out-$RUN_ID" \
     ! -name "deepsec-logs-$RUN_ID" \
     -mtime "+${SCAN_DIR_TTL_DAYS}" \
     -exec rm -rf {} + 2>/dev/null
@@ -4030,7 +4047,7 @@ def trim(item):
 
 # The deepsec export lives OUTSIDE the top-level glob (its file is keyed on
 # the run id template, cf. run_deepsec_scanner, so it sits at
-# scan_dir/<run-id>/deepsec.json). Route it in EXPLICITLY through the
+# scan_dir/deepsec-out-<run.id>/deepsec.json). Route it in EXPLICITLY through the
 # producer's json_paths,
 # the same envelope bank_deepsec_findings and scan_health already honour.
 # Never recurse the glob: a recursive sweep would pull in other passes'

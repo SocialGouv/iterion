@@ -82,8 +82,8 @@ exit 0`
 	// Both must exist SIMULTANEOUSLY -- neither pass destroyed or overwrote
 	// the other. The basename is that of vars.deepsec_out (deepsec.json in
 	// the harness substitution).
-	aPath := filepath.Join(scanDir, "run-A", "deepsec.json")
-	bPath := filepath.Join(scanDir, "run-B", "deepsec.json")
+	aPath := filepath.Join(scanDir, "deepsec-out-run-A", "deepsec.json")
+	bPath := filepath.Join(scanDir, "deepsec-out-run-B", "deepsec.json")
 
 	aBody, err := os.ReadFile(aPath)
 	if err != nil {
@@ -156,7 +156,7 @@ exit 0`
 
 	runBank := func(runID, wantFirstID string) {
 		t.Helper()
-		exportPath := filepath.Join(scanDir, runID, "deepsec.json")
+		exportPath := filepath.Join(scanDir, "deepsec-out-"+runID, "deepsec.json")
 		paths, _ := json.Marshal(map[string]string{"deepsec": exportPath})
 		cmd := exec.Command("python3", tempPy)
 		cmd.Env = append(os.Environ(),
@@ -424,5 +424,15 @@ func TestDeepsecFindingCountReachesReportCard(t *testing.T) {
 	const markerPhrase = "the persistent backlog is exhausted"
 	if !strings.Contains(string(src), markerPhrase) {
 		t.Errorf("report_card_user does not carry the healthy-steady-state marker phrase %q -- either the note was removed or it was rephrased in a way that no longer distinguishes it from the ⚠ banner it replaces", markerPhrase)
+	}
+
+	// Rule 3a suppression on the healthy state (revi verdict 2 on PR #1473):
+	// on `files_processed=0 && deepsec_finding_count>0` the persistent
+	// backlog is exhausted; the 3a "capped at process_limit files" banner is
+	// moot because no candidate file was eligible for the deep pass. Suppress
+	// it too, so the healthiest state does not carry TWO banners.
+	const skip3aMarker = "Skip 3a here"
+	if !strings.Contains(string(src), skip3aMarker) {
+		t.Errorf("report_card_user does not carry the 3a-suppression marker %q -- the fully-analysed steady state still fires ⚠ from 3a beside the 3b note (revi verdict 2 on PR #1473)", skip3aMarker)
 	}
 }
