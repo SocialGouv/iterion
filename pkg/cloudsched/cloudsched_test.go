@@ -260,7 +260,10 @@ func TestMemoryStore_CRUDRoundTrip(t *testing.T) {
 // stays one place (#1426). Property tests: (1) a failure stamps id +
 // status + error + code + at; (2) a subsequent success CLEARS the
 // error/code (the field is a health signal, not a permanent record);
-// (3) an unknown id returns ErrNotFound.
+// (3) an unknown id returns ErrNotFound; (4) an OUT-OF-ORDER delivery
+// (an `at` older than the stamped one — an overlapping run finishing
+// late, or a NATS redelivery racing the next tick) is a no-op, so the
+// health field never moves backwards.
 func assertMarkRunOutcomeContract(t *testing.T, store Store, scheduleID string, now time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -294,6 +297,35 @@ func assertMarkRunOutcomeContract(t *testing.T, store Store, scheduleID string, 
 	}
 	if got.LastRunError != "" || got.LastRunErrorCode != "" {
 		t.Errorf("success should clear error = (%q, %q); want empty", got.LastRunError, got.LastRunErrorCode)
+	}
+	// Out-of-order delivery: a stamp OLDER than the one on the row (the
+	// failed run finishing late, after its successor's success was
+	// recorded) must be a silent no-op — the health field never moves
+	// backwards. Mutation: drop the monotonicity guard in either twin →
+	// last_run_id reverts to "run-boom" → red.
+	if err := store.MarkRunOutcome(ctx, scheduleID, "run-boom", "failed",
+		"late delivery of the failed run", "sandbox_refused", now.Add(30*time.Second)); err != nil {
+		t.Fatalf("MarkRunOutcome out-of-order: %v", err)
+	}
+	got, _ = store.Get(ctx, scheduleID)
+	if got.LastRunID != "run-ok" || got.LastRunStatus != "finished" {
+		t.Errorf("out-of-order delivery moved the field backwards: (%q, %q); want (run-ok, finished)", got.LastRunID, got.LastRunStatus)
+	}
+	if got.LastRunError != "" || got.LastRunErrorCode != "" {
+		t.Errorf("out-of-order delivery resurrected the error = (%q, %q); want empty", got.LastRunError, got.LastRunErrorCode)
+	}
+	// Equal-timestamp redelivery (the same event replayed by the queue
+	// group) must be an idempotent no-op that still commits — the $lte /
+	// !After guard admits `at == last_run_at`, and rewriting identical
+	// values is invisible. Mutation: `$lte` → `$lt` (or `After` →
+	// `!Before`) reddens the strict-older row above, not this one; this
+	// row pins that the boundary itself stays admitted.
+	if err := store.MarkRunOutcome(ctx, scheduleID, "run-ok", "finished", "", "", now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkRunOutcome equal-at redelivery: %v", err)
+	}
+	got, _ = store.Get(ctx, scheduleID)
+	if got.LastRunID != "run-ok" || got.LastRunStatus != "finished" || got.LastRunError != "" {
+		t.Errorf("equal-at redelivery changed the row: (%q, %q, %q); want unchanged", got.LastRunID, got.LastRunStatus, got.LastRunError)
 	}
 	// Unknown id → ErrNotFound (both twins).
 	if err := store.MarkRunOutcome(ctx, "does-not-exist", "run-x", "failed", "boom", "code", now); !errors.Is(err, ErrNotFound) {

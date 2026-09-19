@@ -2,6 +2,7 @@ package cloudsched
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -106,6 +107,14 @@ func (s *MongoStore) MarkLaunchError(ctx context.Context, id, lastError string, 
 // MarkRunOutcome stamps the last run's terminal outcome on the schedule —
 // same targeted-field discipline as MarkLaunchError, because the writer
 // (an eventbus subscriber) holds no copy of the row.
+//
+// The write carries a MONOTONICITY GUARD: the update matches only while the
+// row's last_run_at is absent or not newer than `at`, so an out-of-order
+// delivery (overlapping runs of one schedule, a NATS redelivery arriving
+// after a newer outcome was already stamped) cannot move the health field
+// backwards. A zero-match is ambiguous — "row gone" vs "stale outcome" —
+// and is disambiguated with one Get: the former is ErrNotFound, the latter
+// a silent no-op.
 func (s *MongoStore) MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
 	set := bson.M{
 		"last_run_id":     runID,
@@ -127,12 +136,32 @@ func (s *MongoStore) MarkRunOutcome(ctx context.Context, id, runID, status, errM
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	res, err := s.kit.Coll().UpdateOne(ctx, bson.M{"_id": id}, update)
+	filter := bson.M{
+		"_id": id,
+		"$or": bson.A{
+			bson.M{"last_run_at": bson.M{"$exists": false}},
+			bson.M{"last_run_at": bson.M{"$lte": at.UTC()}},
+		},
+	}
+	res, err := s.kit.Coll().UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("cloudsched: mark run outcome: %w", err)
 	}
 	if res.MatchedCount == 0 {
-		return ErrNotFound
+		if _, getErr := s.Get(ctx, id); getErr != nil {
+			if errors.Is(getErr, ErrNotFound) {
+				return ErrNotFound
+			}
+			// A transient store failure must not be laundered into
+			// ErrNotFound — the caller warns on real errors and stays
+			// silent only on a purged row.
+			return fmt.Errorf("cloudsched: mark run outcome: disambiguate zero-match: %w", getErr)
+		}
+		// The row exists but holds a NEWER outcome: a stale delivery (an
+		// overlapping run finishing late, or a redelivery that raced the
+		// next tick's stamp). Keeping the newer outcome is the point of
+		// the guard — not an error.
+		return nil
 	}
 	return nil
 }

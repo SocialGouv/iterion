@@ -65,10 +65,18 @@ func (s *Server) handleScheduleOutcomeEvent(ctx context.Context, ev trigger.Even
 	if runID == "" {
 		return nil
 	}
-	if s.runs == nil {
+	// Snapshot the hot-swappable run service the same way every other
+	// consumer does (handleRunsStats): a project switch replaces s.runs
+	// under stateMu, and this handler runs on a bus goroutine that races
+	// that swap — reading the field twice unlocked can hand the handler a
+	// half-written interface value (#1510 R5e0731).
+	s.stateMu.RLock()
+	runsSvc := s.runs
+	s.stateMu.RUnlock()
+	if runsSvc == nil {
 		return nil
 	}
-	rs := s.runs.RunStore()
+	rs := runsSvc.RunStore()
 	if rs == nil {
 		return nil
 	}

@@ -83,6 +83,12 @@ func (s *MemoryStore) MarkLaunchError(_ context.Context, id, lastError string, a
 
 func (s *MemoryStore) MarkRunOutcome(_ context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
 	_, err := s.kit.Mutate(id, func(sb *ScheduledBot) bool {
+		// Monotonicity guard (twin of the mongo filter): an out-of-order
+		// delivery — overlapping runs of one schedule, or a redelivery
+		// racing a newer stamp — cannot move the health field backwards.
+		if sb.LastRunAt != nil && sb.LastRunAt.After(at.UTC()) {
+			return false
+		}
 		sb.LastRunID = runID
 		sb.LastRunStatus = status
 		sb.LastRunError = errMsg
