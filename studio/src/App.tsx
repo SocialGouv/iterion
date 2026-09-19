@@ -36,6 +36,10 @@ const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPage"));
 const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
 const UsageCapsPage = lazy(() => import("@/views/admin/settings/UsageCapsPage"));
+const BotRolesPage = lazy(() => import("@/views/admin/settings/BotRolesPage"));
+const SandboxPage = lazy(() => import("@/views/admin/settings/SandboxPage"));
+const BotVarsPage = lazy(() => import("@/views/admin/settings/BotVarsPage"));
+const PlatformCredentialsSettingsPage = lazy(() => import("@/views/admin/settings/PlatformCredentialsPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -629,6 +633,10 @@ function AuthedApp() {
           <Route path="/admin/users" component={UsersAdminPage} />
           <Route path="/admin/llm-credentials" component={PlatformLlmCredsPage} />
           <Route path="/admin/settings/usage-caps" component={UsageCapsPage} />
+          <Route path="/admin/settings/bot-roles" component={BotRolesPage} />
+          <Route path="/admin/settings/sandbox" component={SandboxPage} />
+          <Route path="/admin/settings/bot-vars" component={BotVarsPage} />
+          <Route path="/admin/settings/platform-credentials" component={PlatformCredentialsSettingsPage} />
             <Route path="/admin/bots" component={PlatformBotsPage} />
           <Route path="/admin/audit" component={AuditAdminPage} />
           <Route path="/admin/dlq" component={DLQAdminPage} />
