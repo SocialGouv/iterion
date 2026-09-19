@@ -64,8 +64,15 @@ func TestInProcBusDropsOnFullBuffer(t *testing.T) {
 	for i := 0; i < subscriberBufferSize+50; i++ {
 		_ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard})
 	}
-	// Give the worker a moment to pull the first into flight.
-	time.Sleep(20 * time.Millisecond)
+	// Drops are counted synchronously in Publish's non-blocking send
+	// (inproc.go: `select { case s.ch <- ev: default: s.drops.Add(1) }`),
+	// so the counter is stable once the publish loop returns — the
+	// original `time.Sleep(20 * time.Millisecond)` "give the worker a
+	// moment to pull the first into flight" was decorative, and a slow
+	// runner racing its own decoration was one of #1471's flake shapes.
+	// No sleep, no wall-clock: `drops.Add` and `drops.Load` synchronize
+	// through the sync/atomic happens-before that the Go memory model
+	// guarantees.
 	if d := bus.Drops("slow"); d <= 0 {
 		t.Fatalf("expected drops > 0 on a full buffer, got %d", d)
 	}
