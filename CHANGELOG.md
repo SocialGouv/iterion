@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.169.0](https://github.com/SocialGouv/iterion/compare/v3.168.0...v3.169.0) (2026-09-19)
+
+### Features
+
+* **studio:** admin API client layer for platform settings, credential spend & usage-readings ([#1441](https://github.com/SocialGouv/iterion/issues/1441)) ([#1454](https://github.com/SocialGouv/iterion/issues/1454)) ([fc80e91](https://github.com/SocialGouv/iterion/commit/fc80e91b951aec85f134d5956f3f2fb4233faa47))
+
+    <details><summary>why</summary>
+
+    The cloud super-admin console exposes six pages, but several requireSuperAdmin endpoints exist and are tested with no client to reach them. This adds the API/client layer the remaining admin screens (T2–T5) depend on, schema-first so the wrappers carry the generated OpenAPI types rather than hand-rolled shapes.
+
+    </details>
+
 ## [3.168.0](https://github.com/SocialGouv/iterion/compare/v3.167.0...v3.168.0) (2026-09-19)
 
 ### Features
