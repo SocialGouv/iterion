@@ -202,6 +202,7 @@ index and contribution rule: **[docs/agents/README.md](docs/agents/README.md)**.
 | Opening, merging or unblocking a PR | [review-and-merge.md](docs/agents/review-and-merge.md) |
 | Before pushing anything to the gate, and throughout a feature's delivery | [adversarial-review-loop.md](docs/agents/adversarial-review-loop.md) |
 | Finding which package owns a behaviour | [engine-map.md](docs/agents/engine-map.md) |
+| "Where is…", "what else uses…", "what breaks if I change…" — before grepping a 3 779-file tree | [repo-map-and-graph.md](docs/repo-map-and-graph.md) |
 | Writing/debugging a `.bot`, or touching compiler/runtime | [dsl-and-runtime.md](docs/agents/dsl-and-runtime.md) |
 | A node picks the wrong model, loses tools, or acts "dumber" than its native harness; sandboxes, plugins, supervisors, cursors | [backends-and-execution.md](docs/agents/backends-and-execution.md) |
 | Something launched a run and you need to know what | [automation-surfaces.md](docs/agents/automation-surfaces.md) |

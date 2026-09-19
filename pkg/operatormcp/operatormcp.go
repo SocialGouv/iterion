@@ -114,6 +114,7 @@ func (s *Server) build() {
 		if s.Only != FamilyRemote {
 			all = append(all, localTools()...)
 			all = append(all, localBoardTools()...)
+			all = append(all, localMapTools()...)
 		}
 		if s.Only != FamilyLocal {
 			all = append(all, remoteTools()...)
