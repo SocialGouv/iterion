@@ -169,8 +169,10 @@ func TestRecordHumanAnswers_EmptyDoesNotWipe(t *testing.T) {
 	}
 
 	// Call recordHumanAnswers directly with an empty map — the guard
-	// must preserve the prior Ada answer.
-	if err := eng.recordHumanAnswers(ctx, r, r.Checkpoint, nil); err != nil {
+	// must preserve the prior Ada answer AND return it as the effective
+	// answer map the pause path seeds with (Rcc9dd7).
+	effective, err := eng.recordHumanAnswers(ctx, r, r.Checkpoint, nil)
+	if err != nil {
 		t.Fatalf("recordHumanAnswers empty: %v", err)
 	}
 	back, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
@@ -179,6 +181,9 @@ func TestRecordHumanAnswers_EmptyDoesNotWipe(t *testing.T) {
 	}
 	if v, ok := back.Answers["reviewer"].(string); !ok || v != "Ada" {
 		t.Fatalf("interaction.Answers = %v, want the prior Ada answer preserved (empty resume must not wipe)", back.Answers)
+	}
+	if v, ok := effective["reviewer"].(string); !ok || v != "Ada" {
+		t.Fatalf("effective answers = %v, want the stored Ada answer — an empty resume must seed the gate with the recorded decision, not an empty map", effective)
 	}
 }
 
@@ -775,5 +780,232 @@ func TestGateReplay_RefusesAnswersOlderThanRewindEvent(t *testing.T) {
 	eng2 := New(wf, s, newStubExecutor())
 	if err := eng2.Resume(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Resume: want ErrRunPaused (re-ask after a rewind event newer than the answer), got %v", err)
+	}
+}
+
+// TestGateReplay_MissionNarrowedToPausedCannotManufactureIt pins gate
+// finding R132d97 on PR #1490: gateReplayAllowed refuses ANY non-empty
+// expectedResumeStatus. The arms that consult the predicate always hold
+// a run whose CURRENT status differs from the narrowed one, so a
+// durable mission narrowed to paused_waiting_human resuming a CANCELLED
+// run at an answered gate must NOT get the flip — the flip would
+// MANUFACTURE the status the mission's claim CAS expects and launder
+// the cancelled run into a claim that should reject it.
+//
+// Mutation: restore the `|| e.expectedResumeStatus ==
+// store.RunStatusPausedWaitingHuman` disjunct in gateReplayAllowed →
+// the flip lands (cancelled → paused_waiting_human), the narrowed claim
+// succeeds and the run finishes → red.
+func TestGateReplay_MissionNarrowedToPausedCannotManufactureIt(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "gate_replay_mission_manufacture",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-gate-mission-manufacture"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The answered-gate shape on a CANCELLED run: answers recorded,
+	// pointer consumed, run parked failed_resumable then cancelled.
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "sandbox start", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, ""); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	// The mission expects paused_waiting_human: the predicate must skip
+	// the flip (no status manufacture) and the mission's own narrowed
+	// claim must refuse — the run doc stays cancelled.
+	eng2 := New(wf, s, newStubExecutor(), WithExpectedResumeStatus(store.RunStatusPausedWaitingHuman))
+	if err := eng2.Resume(ctx, runID, nil); err == nil {
+		t.Fatalf("Resume: want the narrowed claim to refuse the cancelled run, got success")
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun post-resume: %v", err)
+	}
+	if got.Status != store.RunStatusCancelled {
+		t.Fatalf("run status = %s, want cancelled — the gate-replay flip must not manufacture the mission's expected status (gate finding R132d97)", got.Status)
+	}
+}
+
+// TestPausedResume_SeedsStoredAnswersWhenCallerSendsNone pins gate
+// finding Rcc9dd7 on PR #1490: a resume that records answers and then
+// fails in materializeHumanArtifact leaves the run paused_waiting_human
+// with the pause pointer intact and the interaction answered. A second
+// resume that ships no answers takes the plain pause path (the pointer
+// is intact, so no predicate consult), recordHumanAnswers' empty-guard
+// preserves the stored answers — and must RETURN them, so the human
+// node's output and published artifact carry the operator's recorded
+// decision instead of an empty map.
+//
+// Mutation: make recordHumanAnswers return an empty map on the
+// empty-guard path → the run still finishes but the artifact carries no
+// decision → red.
+func TestPausedResume_SeedsStoredAnswersWhenCallerSendsNone(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "paused_resume_stored_seed",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-paused-stored-seed"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The failed-first-resume shape WITHOUT the status flip: answers
+	// recorded on the interaction, run still paused_waiting_human, pause
+	// pointer INTACT (the first attempt died inside materialize, before
+	// the claim).
+	ans := map[string]any{"decision": "approve", "reviewer": "Ada"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+
+	// Second resume, no answers: the pause path must seed the gate with
+	// the STORED decision and publish it.
+	eng2 := New(wf, s, newStubExecutor())
+	if err := eng2.Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("Resume (no answers, stored decision on disk): %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun post-resume: %v", err)
+	}
+	if got.Status != store.RunStatusFinished {
+		t.Fatalf("run status = %s, want finished", got.Status)
+	}
+	artifact, err := s.LoadArtifact(ctx, runID, "gate", 0)
+	if err != nil || artifact == nil {
+		t.Fatalf("LoadArtifact(gate v0): err=%v artifact=%v", err, artifact)
+	}
+	if v, _ := artifact.Data["decision"].(string); v != "approve" {
+		t.Fatalf("artifact.Data[decision]=%v, want %q — an answers-less resume of a paused run must seed the gate with the STORED decision, not an empty map (gate finding Rcc9dd7)", artifact.Data["decision"], "approve")
+	}
+}
+
+func TestParallelPauseRetrySeedsStoredAnswers(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Nodes["gate_one"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate_one"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
+	wf.Nodes["gate_two"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate_two"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
+	for _, edge := range wf.Edges {
+		if edge.From == "judge" && edge.To == "collect" {
+			edge.To = "gate_one"
+		}
+	}
+	wf.Edges = append(wf.Edges,
+		&ir.Edge{From: "gate_one", To: "gate_two", Condition: "approved"},
+		&ir.Edge{From: "gate_one", To: "collect", IsElse: true},
+		&ir.Edge{From: "gate_two", To: "collect"},
+	)
+
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"]}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": false}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+
+	s := tmpStore(t)
+	ctx := context.Background()
+	runID := "run-rva-parallel-seed"
+	eng := New(wf, s, exec)
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want pause at gate_one", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.Parallel == nil || r.Checkpoint.Parallel.PendingNodeID != "gate_one" {
+		t.Fatalf("checkpoint = %+v, want pending gate_one", r.Checkpoint)
+	}
+	interactionID := r.Checkpoint.Parallel.PendingInteractionID
+	in, err := s.LoadInteraction(ctx, runID, interactionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction(%s): %v", interactionID, err)
+	}
+	answeredAt := time.Now().UTC()
+	in.AnsweredAt = &answeredAt
+	in.Answers = map[string]any{"approved": true, "reviewer": "Ada"}
+	if err := s.WriteInteraction(ctx, in); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+
+	// Retry shipping NO answers: the branch must consume the STORED answer
+	// (approved=true) and take the gate_one -> gate_two edge, pausing at
+	// gate_two. An empty seed takes the IsElse edge and the run FINISHES.
+	eng2 := New(wf, s, exec)
+	if err := eng2.Resume(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("resume (no answers, stored decision on disk) = %v, want pause at gate_two on the seeded answer", err)
+	}
+	r2, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Checkpoint == nil || r2.Checkpoint.Parallel == nil || r2.Checkpoint.Parallel.PendingNodeID != "gate_two" {
+		t.Fatalf("checkpoint after seeded resume = %+v, want pending gate_two — the branch did not consume the STORED answer as its gate_one output (Rcc9dd7)", r2.Checkpoint)
 	}
 }
