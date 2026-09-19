@@ -141,7 +141,7 @@ func TestResumeFromFailure_RejectsAlreadyClaimedRun(t *testing.T) {
 	// r is the stale snapshot the losing resume loaded before the race.
 	r := &store.Run{ID: "run-dup", Status: store.RunStatusFailedResumable, Checkpoint: &store.Checkpoint{NodeID: "n1"}}
 
-	err := e.resumeFromFailure(ctx, r)
+	err := e.resumeFromFailure(ctx, r, nil)
 	if err == nil {
 		t.Fatal("expected resumeFromFailure to reject a run already claimed (status=running)")
 	}

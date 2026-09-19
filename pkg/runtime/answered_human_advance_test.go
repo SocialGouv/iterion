@@ -178,3 +178,161 @@ func TestRecordHumanAnswers_EmptyDoesNotWipe(t *testing.T) {
 		t.Fatalf("interaction.Answers = %v, want the prior Ada answer preserved (empty resume must not wipe)", back.Answers)
 	}
 }
+
+// TestResumeFromFailure_RefusesStaleAnswersAfterRewind pins the layer-2
+// freshness proof #1435 gate finding Rac891d asks for: after a rewind,
+// an answered blocking-pause interaction whose AnsweredAt is at or
+// before Run.LastRewindAt must NOT be reused — the operator is
+// rewinding precisely to re-decide. The retire step in rewind is the
+// sibling refusal; this test isolates the timestamp check so a future
+// edit dropping the retire cannot silently unblock the class.
+//
+// Mutation: remove the LastRewindAt guard in
+// advancePastAnsweredHumanNodeOnResume → the run finishes instead of
+// re-pausing and this test reddens.
+func TestResumeFromFailure_RefusesStaleAnswersAfterRewind(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "answered_human_rewind_stale",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-answered-rewind-stale"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// Record the pre-rewind answers.
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	// Simulate a rewind AFTER the answer: LastRewindAt > AnsweredAt.
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "operator rewound", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r2, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun post-fail: %v", err)
+	}
+	rewoundAt := answeredAt.Add(1 * time.Second)
+	r2.LastRewindAt = &rewoundAt
+	if err := s.SaveRun(ctx, r2); err != nil {
+		t.Fatalf("SaveRun with LastRewindAt: %v", err)
+	}
+
+	// Resume: the stale answer sits on-disk, LastRewindAt is AFTER
+	// AnsweredAt. The helper MUST refuse to advance — the human node
+	// re-pauses and asks the operator again.
+	eng2 := New(wf, s, newStubExecutor())
+	if err := eng2.Resume(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Resume: want ErrRunPaused (should have re-paused, not reused stale answers), got %v", err)
+	}
+}
+
+// TestResumeFromFailure_CallerAnswersOverwriteStored pins gate finding
+// R60aa7e: a non-empty `--answer` on a failed-run resume must overwrite
+// the stored interaction and be consumed on the advance.
+//
+// Mutation: return `in.Answers` unconditionally from the helper's
+// `source` decision → the callerAnswers.decision would never reach the
+// artifact and the test reddens on Data["decision"].
+func TestResumeFromFailure_CallerAnswersOverwriteStored(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "answered_human_overwrite",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-answered-overwrite"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// Store a STALE answer the operator wants to correct.
+	stale := map[string]any{"decision": "reject"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = stale
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "sandbox start", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+
+	// Resume with a CORRECTED answer.
+	corrected := map[string]any{"decision": "approve", "note": "corrected"}
+	eng2 := New(wf, s, newStubExecutor())
+	if err := eng2.Resume(ctx, runID, corrected); err != nil {
+		t.Fatalf("Resume with corrected answers: %v", err)
+	}
+	// The artifact must carry the CORRECTED answer, not the stale one.
+	artifact, err := s.LoadArtifact(ctx, runID, "gate", 0)
+	if err != nil || artifact == nil {
+		t.Fatalf("LoadArtifact: err=%v artifact=%v", err, artifact)
+	}
+	if v, _ := artifact.Data["decision"].(string); v != "approve" {
+		t.Fatalf("artifact.Data[decision]=%v, want %q — the corrected --answer must overwrite the stored one (gate finding R60aa7e)", artifact.Data["decision"], "approve")
+	}
+	// The stored interaction must also reflect the correction so a
+	// second resume with no --answer inherits the new value.
+	back, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction post-resume: %v", err)
+	}
+	if v, _ := back.Answers["decision"].(string); v != "approve" {
+		t.Fatalf("interaction.Answers[decision]=%v after corrected resume, want %q", back.Answers["decision"], "approve")
+	}
+}

@@ -402,7 +402,7 @@ func TestResumeFromFailure_CheckpointMapsNotMutated(t *testing.T) {
 	r.WorkDir = t.TempDir()
 
 	eng := New(wf, s, exec)
-	if err := eng.resumeFromFailure(ctx, r); err != nil {
+	if err := eng.resumeFromFailure(ctx, r, nil); err != nil {
 		t.Fatalf("resumeFromFailure: %v", err)
 	}
 
@@ -584,7 +584,7 @@ func TestResumeFromFailure_ExecutorEnvRestored(t *testing.T) {
 
 	spy := &charEnvSpyExecutor{}
 	eng := New(wf, s, spy)
-	if err := eng.resumeFromFailure(ctx, r); err != nil {
+	if err := eng.resumeFromFailure(ctx, r, nil); err != nil {
 		t.Fatalf("resumeFromFailure: %v", err)
 	}
 

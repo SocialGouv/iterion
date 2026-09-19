@@ -61,36 +61,43 @@ func TestRunResolveDoc_PersistsLaunchSandboxAndMergeOverrides(t *testing.T) {
 }
 
 // TestWithFilePath_AbsolutisesRelative asserts the runtime option
-// resolves a relative workflow path to an absolute one at the
-// chokepoint, so downstream consumers (sandbox bind-mount source
-// derived from filepath.Dir(e.filePath), the run record's `file_path`)
-// never see the relative form. Without this, `iterion resume --file
-// examples/foo.bot` on a docker host dies at sandbox start on the
-// operator-facing "mount path must be absolute" error — the second
-// facet of #1435. Empty stays empty by contract.
+// resolves a relative workflow path to an absolute one at the mount
+// chokepoint — the docker `--mount source=…` argument refuses a
+// non-absolute path. WithFilePath itself stores the launcher's meaning
+// verbatim; the absolutisation lives ONLY where the mount is built
+// (`bundleResourceDir` in `pkg/runtime/sandbox_devbox.go`), so
+// readers of `Run.FilePath` (`pkg/runview/workflow_path.go`,
+// `pkg/server/run_delegation.go`, the dispatcher) see the shape the
+// launcher wrote. Without the mount-side absolutisation, `iterion
+// resume --file examples/foo.bot` on a docker host dies at sandbox
+// start on the operator-facing "mount path must be absolute" error —
+// the second facet of #1435.
 //
-// Mutation: remove the filepath.Abs branch from WithFilePath → this
-// test reddens with e.filePath still equal to the relative input.
-func TestWithFilePath_AbsolutisesRelative(t *testing.T) {
-	// A relative path must land as absolute on the engine.
+// Mutation: remove the filepath.Abs branch from bundleResourceDir →
+// the relative sub-case reddens with the returned dir still relative.
+func TestBundleResourceDir_AbsolutisesRelative(t *testing.T) {
+	// A relative workflow path resolves to an absolute directory.
+	dir := bundleResourceDir(nil, "examples/foo.bot")
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("bundleResourceDir(examples/foo.bot) = %q, want an absolute path — the docker bind-mount source refuses a relative one (#1435)", dir)
+	}
+
+	// An already-absolute path passes through unchanged (as its parent).
+	abs := filepath.Join(t.TempDir(), "workflow.bot")
+	if got := bundleResourceDir(nil, abs); got != filepath.Dir(abs) {
+		t.Fatalf("bundleResourceDir(%q) = %q, want %q — an already-absolute parent must not be rewritten", abs, got, filepath.Dir(abs))
+	}
+
+	// Empty workflowPath returns empty (no bundle either).
+	if got := bundleResourceDir(nil, ""); got != "" {
+		t.Fatalf("bundleResourceDir(\"\") = %q, want empty", got)
+	}
+
+	// WithFilePath keeps the persisted value verbatim so readers of
+	// Run.FilePath see the launcher's meaning.
 	eng := &Engine{}
 	WithFilePath("examples/foo.bot")(eng)
-	if !filepath.IsAbs(eng.filePath) {
-		t.Fatalf("e.filePath = %q, want an absolute path — WithFilePath must absolutise its input", eng.filePath)
-	}
-
-	// An empty input stays empty.
-	eng2 := &Engine{}
-	WithFilePath("")(eng2)
-	if eng2.filePath != "" {
-		t.Fatalf("e.filePath = %q, want empty — the option is documented as no-op on empty", eng2.filePath)
-	}
-
-	// An already-absolute path passes through unchanged.
-	abs := filepath.Join(t.TempDir(), "workflow.bot")
-	eng3 := &Engine{}
-	WithFilePath(abs)(eng3)
-	if eng3.filePath != abs {
-		t.Fatalf("e.filePath = %q, want %q unchanged — an already-absolute path must not be rewritten", eng3.filePath, abs)
+	if eng.filePath != "examples/foo.bot" {
+		t.Fatalf("WithFilePath stored %q, want the verbatim relative input — Run.FilePath readers key on the launcher's meaning", eng.filePath)
 	}
 }

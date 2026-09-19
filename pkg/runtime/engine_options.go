@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -273,26 +272,22 @@ func WithExecutionContext(c *store.ExecutionContext) EngineOption {
 	}
 }
 
-// WithFilePath records the absolute .bot source path on the run
-// metadata so that resume (and the run console) can re-locate the
-// workflow without the caller having to thread it back through the
-// API. Optional — empty string is ignored.
+// WithFilePath records the .bot source path on the run metadata so
+// resume (and the run console) can re-locate the workflow without the
+// caller threading it back through the API. Optional — empty string is
+// ignored.
 //
-// A relative input is absolutised against the process's cwd at the
-// call site: the field's contract IS absolute, and a caller handing a
-// relative path (an operator's `--file examples/foo.bot`, a subbot
-// runner joining a bundle-relative name) would otherwise leak the
-// relative form into every derived path — the docker bind-mount for the
-// bot's resource dir takes `filepath.Dir(filePath)` as given, and docker
-// refuses a non-absolute mount source. The absolutisation happens ONCE
-// here so both `iterion run` and `iterion resume` cross the same
-// chokepoint; a caller that already resolved the path pays nothing.
+// The value is stored VERBATIM: the launcher's meaning survives on the
+// run doc (a bundle-relative name from a studio launch, an absolute
+// path from `iterion run --file …`, a stored-bot cache path from the
+// server), and readers of `Run.FilePath` (`pkg/runview/workflow_path.go`
+// resolver, `pkg/server/run_delegation.go`'s git describe, the
+// dispatcher, the studio) see the same shape the launcher wrote. The
+// docker bind-mount source — the half of #1435 that refused a
+// non-absolute path — is absolutised at its OWN chokepoint
+// (`bundleResourceDir` in `pkg/runtime/sandbox_devbox.go`) so the fix
+// lives where the mount is built, not on the persisted metadata.
 func WithFilePath(path string) EngineOption {
-	if path != "" && !filepath.IsAbs(path) {
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
-		}
-	}
 	return func(e *Engine) { e.filePath = path }
 }
 

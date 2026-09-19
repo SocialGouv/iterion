@@ -188,8 +188,10 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		// paused_operator resumes via the same machinery as cancelled
 		// runs: checkpoint preserved, no pending interaction, restart
-		// from the node about to execute when the pause fired.
-		return e.resumeFromFailure(ctx, r, preparedArtifacts)
+		// from the node about to execute when the pause fired. answers
+		// travels for the advance path — a non-empty --answer map
+		// overwrites the stored interaction (#1435 gate finding R60aa7e).
+		return e.resumeFromFailure(ctx, r, answers, preparedArtifacts)
 	case store.RunStatusQueued:
 		// Cloud resume: the publisher flips the run to queued BEFORE the
 		// message reaches a runner (queue-depth visibility + cooperative-
@@ -207,7 +209,7 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
 			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 		}
-		return e.resumeFromFailure(ctx, r, preparedArtifacts)
+		return e.resumeFromFailure(ctx, r, answers, preparedArtifacts)
 	default:
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
 	}
@@ -1731,7 +1733,14 @@ var (
 // network cuts during plan, claude_code subprocess crashes, etc. Without
 // it, those runs are dead-on-arrival because validateResumable lets
 // them through but the engine refuses to resume.
-func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared ...*resumeArtifactState) error {
+//
+// `answers` carries any caller-supplied `--answer` map. It is used ONLY
+// by advancePastAnsweredHumanNodeOnResume when the restart node is an
+// answered human node: a non-empty explicit map OVERWRITES the
+// interaction's stored answers before the advance (the operator is
+// correcting a stale answer on a failed run — #1435 gate finding
+// R60aa7e); an empty map inherits the stored ones as before.
+func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, answers map[string]any, prepared ...*resumeArtifactState) error {
 	runID := r.ID
 
 	cp := r.Checkpoint
@@ -1827,7 +1836,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	// same node and re-ask. Consult the interaction store for a
 	// previously-answered interaction on the restart node and, if
 	// found, seed it as the node's output and advance to the next edge.
-	restartNodeID = e.advancePastAnsweredHumanNodeOnResume(ctx, rs, r, restartNodeID)
+	restartNodeID = e.advancePastAnsweredHumanNodeOnResume(ctx, rs, r, restartNodeID, answers)
 
 	loopErr := e.execLoop(ctx, rs, restartNodeID)
 	e.evictRunSessions(runID, loopErr)
@@ -3201,7 +3210,7 @@ func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounte
 // the follow-up materialise/edge selection fails. A store error is
 // not fatal — we log and let execLoop re-execute the node,
 // preserving the pre-#1435 behaviour.
-func (e *Engine) advancePastAnsweredHumanNodeOnResume(ctx context.Context, rs *runState, r *store.Run, restartNodeID string) string {
+func (e *Engine) advancePastAnsweredHumanNodeOnResume(ctx context.Context, rs *runState, r *store.Run, restartNodeID string, callerAnswers map[string]any) string {
 	if restartNodeID == "" || e == nil || rs == nil || r == nil {
 		return restartNodeID
 	}
@@ -3241,9 +3250,37 @@ func (e *Engine) advancePastAnsweredHumanNodeOnResume(ctx context.Context, rs *r
 	if len(in.Answers) == 0 {
 		return restartNodeID
 	}
+	// Freshness proof layer 2 — the fact that travels with the answer:
+	// a rewind stamps Run.LastRewindAt, and an interaction whose
+	// AnsweredAt is at or before that timestamp belongs to the
+	// execution the rewind is REPLACING. Reusing it would silently
+	// re-decide the very gate the operator rewound to reconsider (gate
+	// finding Rac891d on PR #1490). The retire step in rewind is the
+	// sibling refusal (pkg/store RetireInteractions with
+	// includeBlocking=true), so this check remains meaningful even if
+	// the retire step were skipped in a future edit.
+	if r.LastRewindAt != nil && !in.AnsweredAt.After(*r.LastRewindAt) {
+		return restartNodeID
+	}
+	// A non-empty caller-supplied `--answer` map OVERWRITES the stored
+	// interaction before the advance (gate finding R60aa7e): the
+	// operator is correcting a stale answer on a failed run, and the
+	// fresh map is what the retry must record and consume. An empty
+	// caller map inherits the stored ones, preserving the answers-
+	// survive-a-failed-sandbox-start contract of the original defect.
+	source := in.Answers
+	if len(callerAnswers) > 0 {
+		source = callerAnswers
+		now := time.Now().UTC()
+		in.AnsweredAt = &now
+		in.Answers = cloneResumeInputs(callerAnswers)
+		if err := e.store.WriteInteraction(ctx, in); err != nil && e.logger != nil {
+			e.logger.Warn("resume %s: persist corrected answers on %s (interaction %s): %v", r.ID, restartNodeID, expectedID, err)
+		}
+	}
 	// Seed the outputs slot as if the node just finished with those
 	// answers. Deep-clone to keep the store's map immutable to the run.
-	answers := cloneResumeInputs(in.Answers)
+	answers := cloneResumeInputs(source)
 	answers = e.coerceAnswersToSchema(restartNodeID, answers)
 	if rs.outputs == nil {
 		rs.outputs = make(map[string]map[string]any)

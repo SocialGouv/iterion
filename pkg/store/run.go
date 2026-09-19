@@ -941,6 +941,17 @@ type Run struct {
 	// terminal refusal. Only this explicit marker permits reconstruction at
 	// BaseCommit on rewind/resume; an unexpectedly missing checkout is an error.
 	WorktreeReclaimed bool `json:"worktree_reclaimed,omitempty" bson:"worktree_reclaimed,omitempty"`
+	// LastRewindAt stamps when the run was most recently rewound. The
+	// resume path's advancePastAnsweredHumanNodeOnResume helper (#1435)
+	// requires an interaction's `AnsweredAt` to be AFTER this timestamp
+	// before reusing its recorded answers — the freshness proof travels
+	// with the answer as a FACT, not as an ID coincidence. Without it a
+	// rewind onto a human gate would silently replay the pre-rewind
+	// answers, defeating the very reason the operator rewound (#1435
+	// gate finding Rac891d). Nil for runs never rewound. Companion:
+	// rewind also retires the pivot's blocking-pause interactions so
+	// the refusal carries the diagnosis at both layers.
+	LastRewindAt *time.Time `json:"last_rewind_at,omitempty" bson:"last_rewind_at,omitempty"`
 	// RepoRoot is the absolute path of the main git repository the
 	// worktree was forked from. Used by the studio's modified-files
 	// panel after the worktree directory is gc'd to compute the diff

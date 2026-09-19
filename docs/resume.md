@@ -417,10 +417,10 @@ into the "persisted-and-replayed" column (✓). Fixed at #1435 and
 | `--sandbox` | ✓ `SandboxOverride` | ✓ CLI resume + studio resume | Cloud runner reads its own `cfg.SandboxOverride` (architectural — the pod IS the isolation boundary). |
 | `--sandbox-default-image` | ✓ `SandboxDefaultImage` | ✓ | Cloud runner reads `msg.SandboxImage`. |
 | `--sandbox-host-state` | ✓ `SandboxHostState` | ✓ | Cloud runner defaults come from `cfg.SandboxHostState`. |
-| `--merge-into` | ✓ `MergeInto` | ✓ CLI + studio | Cloud runner does NOT replay this — `pkg/runner/loop.go`'s engine options carry no `WithMergeInto`; a run launched with `--merge-into none` and picked up on a cloud runner after failure would silently merge on finalize. Empty means "current" for local resumes. |
-| `--branch-name` | ✓ `BranchName` | ✓ CLI + studio | Cloud runner does NOT replay this. Fixes half of #1366 alongside `Run.Name`. |
-| `--merge-strategy` | ✓ `MergeStrategy` | ✓ CLI + studio | Cloud runner does NOT replay this. Was persisted before this PR; readback added here. |
-| `--auto-merge` | ✓ `AutoMerge` | ✓ CLI + studio | Cloud runner does NOT replay this. Was persisted before this PR; readback added here. |
+| `--merge-into` | ✓ `MergeInto` | ✓ CLI + studio + cloud runner | Empty means "current" for local resumes. Cloud runner reads it back at pickup (`pkg/runner/loop.go`'s engine options) so a `--merge-into none` launch stays `none` on redelivery — Philosophy #3 (cloud-native by construction). |
+| `--branch-name` | ✓ `BranchName` | ✓ CLI + studio + cloud runner | Fixes half of #1366 alongside `Run.Name`. Cloud runner replays it too. |
+| `--merge-strategy` | ✓ `MergeStrategy` | ✓ CLI + studio + cloud runner | Was persisted before this PR; readback added here for all three surfaces. |
+| `--auto-merge` | ✓ `AutoMerge` | ✓ CLI + studio + cloud runner | Was persisted before this PR; readback added here for all three surfaces. |
 | `--var` | ✓ `Inputs` | ✓ | Replayed as run inputs. |
 | `--preset` | ✓ `Preset` | ✓ | Replayed. |
 | `--skill` | ✓ `ExtraSkills` | ✓ | Conversational-bot dock relies on this. |
