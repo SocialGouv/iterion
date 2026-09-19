@@ -355,8 +355,15 @@ func TestReadyzDoesNotRelaunchAWedgedCheck(t *testing.T) {
 		t.Fatal("the check never recovered after its driver answered — the pod stays out of the Service for good")
 	}
 	// That first 200 may legitimately be the freed ping's own answer,
-	// shared. What must also hold is that the NEXT probe runs a new one.
-	time.Sleep(50 * time.Millisecond)
+	// shared. What must also hold is that the NEXT probe runs a new
+	// one. Mechanism observed: the owner goroutine in handleReadyz
+	// defers `readyzInflight.Delete(name)` BEFORE `wg.Done()` on its
+	// defer stack (LIFO), so by the time this probeHealth returns
+	// (the handler waits on the WaitGroup) the inflight entry is
+	// gone; the next probe's LoadOrStore claims fresh ownership and
+	// launches a new check body, which `launches.Add(1)` counts
+	// atomically. No settle sleep — the atomic happens-before through
+	// wg.Wait / atomic.Add is what carries the property. #1471.
 	probeHealth(t, srv, "/readyz")
 	if got := launches.Load(); got < 2 {
 		t.Errorf("still %d launch(es) after recovery — the registry is a one-way latch", got)

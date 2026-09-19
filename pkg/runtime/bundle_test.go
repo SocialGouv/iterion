@@ -403,11 +403,23 @@ func TestMirrorPluginContributionsReportsOwnedSkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(owned) != 1 || filepath.Base(owned[0]) != "graphify.md" {
-		t.Fatalf("owned = %v, want just the skill — commands and agents are not skills", owned)
+	// The owned path is the DIRECTORY form <stem>/SKILL.md — the only shape
+	// claude_code's Skill tool discovers (bundle.go doc + ADR-079). A backend
+	// being handed the flat alias here would be handing claude_code a path it
+	// does not recognise as a skill.
+	wantOwned := filepath.Join(workDir, ".claude", "skills", "graphify", "SKILL.md")
+	if len(owned) != 1 || owned[0] != wantOwned {
+		t.Fatalf("owned = %v, want [%s] — commands and agents are not skills, and the skill must be reported in the directory form", owned, wantOwned)
 	}
 	if _, err := os.Stat(owned[0]); err != nil {
 		t.Errorf("reported %q but it is not on disk: %v", owned[0], err)
+	}
+	// The flat alias must also land — prompt Reads by path resolve against
+	// <stem>.md ("READ .claude/skills/graphify.md FIRST", the pattern most
+	// catalog bots use). It is NOT owned (backends discover the directory
+	// form; the flat file is a convenience for explicit-path reads).
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "skills", "graphify.md")); err != nil {
+		t.Errorf("the flat alias .claude/skills/graphify.md is missing — prompt Reads by path would fail: %v", err)
 	}
 }
 
@@ -527,5 +539,42 @@ func TestClearSkillTierMarkers_PrecedesEveryMirrorPass(t *testing.T) {
 			}
 			rest = rest[m+len("mirrorBundleSkills("):]
 		}
+	}
+}
+
+// A bundle skill named with a case-insensitive .md extension (`Deploy.MD`,
+// `Whats-Next.Md`) must have its `owned` entry point at the SAME path the
+// mirror wrote — the round-2 adversarial found the loop's tail used
+// case-sensitive `strings.TrimSuffix(name, ".md")` while `mirrorFileSkill`
+// went through the case-insensitive `skillDestDirForm`. The reported
+// owned path was a phantom and the real dir was misclassified as
+// workspace-shipped. The executor consumes `owned` via
+// `SetMirroredSkills`; a phantom there is silently drifted state.
+//
+// Mutation: revert the owned append to `filepath.Join(dest,
+// strings.TrimSuffix(name, ".md"), "SKILL.md")` and this test reddens.
+func TestMirrorBundleSkills_UppercaseMdOwnedPathMatchesWrittenFile(t *testing.T) {
+	workDir := t.TempDir()
+	skillsSrc := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsSrc, "Deploy.MD"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	if err != nil {
+		t.Fatalf("mirrorBundleSkills: %v", err)
+	}
+	if len(owned) != 1 {
+		t.Fatalf("owned = %v, want one entry", owned)
+	}
+	if _, err := os.Stat(owned[0]); err != nil {
+		t.Fatalf("owned path %q does not exist on disk (phantom entry): %v", owned[0], err)
+	}
+	// And it agrees with what mirrorFileSkill would have written.
+	want := filepath.Join(workDir, ".claude", "skills", "Deploy", "SKILL.md")
+	if owned[0] != want {
+		t.Fatalf("owned[0] = %q, want %q — case-sensitive strip does not match the mirror's case-insensitive stem", owned[0], want)
 	}
 }

@@ -157,7 +157,7 @@ func TestForgePublishGrantExpiryRidesTheRunOutcomeEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
+	defer cancel(context.Background())
 
 	if err := bus.Publish(context.Background(), trigger.Event{
 		Source:  trigger.SourceRun,

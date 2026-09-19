@@ -77,7 +77,24 @@ func resolveContributionsFor(
 					runID, sk.Source.Name, tenantID, sk.Err)
 			}
 		}
+		// Two enabled team sources shipping <kind>/<same-name>.md would
+		// otherwise both ride the payload — one destination on the runner,
+		// and the runner mirror's write order would silently pick the winner.
+		// Dedup on (kind, name): the LATER source's content replaces the
+		// incumbent (Resolver.Resolve iterates ListEnabledByTenant, which
+		// has no natural cross-source precedence — the write order is what
+		// a redelivery replays, so making it stable here is the point of
+		// dedup). The substitution is not silent: the run's log names what
+		// got shadowed so an operator can rename. Local plugins of the same
+		// name shadow BOTH deterministically in step 1.
 		for _, f := range files {
+			if replaceContribution(out.Plugin, f.Kind, f.Name, f.Content) {
+				if logger != nil {
+					logger.Warn("cloudpublisher: run %s: %s %q is contributed by more than one enabled team source (team %s) — one destination, so one of them is shadowed; rename one",
+						runID, f.Kind, f.Name, tenantID)
+				}
+				continue
+			}
 			out.Plugin = append(out.Plugin, queue.ContributionFile{
 				Kind: f.Kind, Name: f.Name, Content: f.Content,
 			})

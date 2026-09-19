@@ -98,13 +98,22 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		// A source that is already <name>/SKILL.md maps to the same dest.
 		skillDir := filepath.Join(dest, name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return nil, nil, fmt.Errorf("runtime/library: mkdir %s: %w", skillDir, err)
+			// One skill's mkdir failing (permission denied, ENOSPC on a
+			// per-file basis, ...) must not discard every OTHER library
+			// skill this workflow references. Warn, skip, continue.
+			if logger != nil {
+				logger.Warn("runtime/library: skipping skill %q: mkdir %s: %v", name, skillDir, err)
+			}
+			continue
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			return nil, nil, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
+			if logger != nil {
+				logger.Warn("runtime/library: skipping skill %q: %v", name, err)
+			}
+			continue
 		}
 		// The hint is recorded either way — claude_code and claw read the
 		// directory natively, so the agent sees the skill whoever wrote it. The

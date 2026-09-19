@@ -71,8 +71,11 @@ func NewDispatcher(runs store.RunStore, prefs PrefsStore, sent SentStore, baseUR
 	}
 }
 
-// Attach subscribes the dispatcher to bus for run-lifecycle events.
-func (d *Dispatcher) Attach(bus eventbus.Bus) (func(), error) {
+// Attach subscribes the dispatcher to bus for run-lifecycle events. The
+// returned cancel follows eventbus.Bus.Subscribe's ctx contract — callers
+// under shutdown thread a shared joinCtx so all subscriptions share ONE
+// budget (#1477's medium finding).
+func (d *Dispatcher) Attach(bus eventbus.Bus) (func(context.Context), error) {
 	return bus.Subscribe(SubscriberName, trigger.Matcher{
 		Sources: []trigger.Source{trigger.SourceRun},
 		Kinds: []string{

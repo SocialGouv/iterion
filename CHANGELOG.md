@@ -3,6 +3,78 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.174.1](https://github.com/SocialGouv/iterion/compare/v3.174.0...v3.174.1) (2026-09-19)
+
+### Bug Fixes
+
+* four one-site defects — the zai hint suppresses every ambient Anthropic channel, the operator MCP refuses unknown arguments, a bot's shell finds the engine's own binary, and the dry-run report is ordered ([#1487](https://github.com/SocialGouv/iterion/issues/1487)) ([ee80560](https://github.com/SocialGouv/iterion/commit/ee805603d310e17c9ce3aed7d0c93ede0e9be41f)), references [#1390](https://github.com/SocialGouv/iterion/issues/1390) [#1505](https://github.com/SocialGouv/iterion/issues/1505) [#1335](https://github.com/SocialGouv/iterion/issues/1335) [#1384](https://github.com/SocialGouv/iterion/issues/1384) [#1434](https://github.com/SocialGouv/iterion/issues/1434) [#1505](https://github.com/SocialGouv/iterion/issues/1505)
+
+    <details><summary>why</summary>
+
+    anthropicCredEnvForCLI's providerHint=="zai" no-key branch used to clear ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN only, so on a host carrying an ambient ANTHROPIC_API_KEY the CLI silently routed the node to api.anthropic.com and 404'd on the GLM id, exactly the "silently falling back to a different provider" the code's own comment promised to prevent.
+
+    </details>
+
+## [3.174.0](https://github.com/SocialGouv/iterion/compare/v3.173.0...v3.174.0) (2026-09-19)
+
+### Features
+
+* **map:** a repository map, a deterministic graph, and what discovery costs ([#1505](https://github.com/SocialGouv/iterion/issues/1505)) ([09bd1d0](https://github.com/SocialGouv/iterion/commit/09bd1d0b1460404981b7650f8f41a9d3e2af3241)), references [#1482](https://github.com/SocialGouv/iterion/issues/1482) [#1480](https://github.com/SocialGouv/iterion/issues/1480) [#1482](https://github.com/SocialGouv/iterion/issues/1482) [#1483](https://github.com/SocialGouv/iterion/issues/1483) [#1484](https://github.com/SocialGouv/iterion/issues/1484) [#1485](https://github.com/SocialGouv/iterion/issues/1485) [#1335](https://github.com/SocialGouv/iterion/issues/1335) [#1482](https://github.com/SocialGouv/iterion/issues/1482) [#1486](https://github.com/SocialGouv/iterion/issues/1486) [#1488](https://github.com/SocialGouv/iterion/issues/1488) [#1481](https://github.com/SocialGouv/iterion/issues/1481)
+
+    <details><summary>why</summary>
+
+    `iterion bench discovery` classifies a run's tool calls into orientation (read, search, list), change (write, commit) and neither, and reports the token spend of the nodes that never wrote a byte — the only split the event stream supports without imputing one.
+
+    </details>
+
+## [3.173.0](https://github.com/SocialGouv/iterion/compare/v3.172.3...v3.173.0) (2026-09-19)
+
+### Features
+
+* **webhooks:** l'App retire la demande de review après publication, pour rendre le geste répétable ([#1382](https://github.com/SocialGouv/iterion/issues/1382)) ([ed8cbbe](https://github.com/SocialGouv/iterion/commit/ed8cbbec4c7d7fef61dba1b8cff6e82cbd55a332))
+
+    <details><summary>why</summary>
+
+    GitHub lifts a review request only when the REQUESTED account submits the review. On a github_app connection the review is posted by <app_slug>[bot], and an App cannot be a reviewer at all — so the request armed through webhooks.Config.ReviewRequestLogins survives the review answering it: the "review requested" pastille stays pending forever and re-adding the reviewer is not a repeatable gesture.
+
+    </details>
+
+## [3.172.3](https://github.com/SocialGouv/iterion/compare/v3.172.2...v3.172.3) (2026-09-19)
+
+### Bug Fixes
+
+* **runtime:** the repo devbox install at run start leaves the tracked devbox.lock what the run found it ([#1459](https://github.com/SocialGouv/iterion/issues/1459)) ([#1465](https://github.com/SocialGouv/iterion/issues/1465)) ([ce459ec](https://github.com/SocialGouv/iterion/commit/ce459ec2c5008c66f3953e9b16c9a4f079ef812e)), references [#1344](https://github.com/SocialGouv/iterion/issues/1344) [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1464](https://github.com/SocialGouv/iterion/issues/1464) [#1451](https://github.com/SocialGouv/iterion/issues/1451) [#1450](https://github.com/SocialGouv/iterion/issues/1450) [#1344](https://github.com/SocialGouv/iterion/issues/1344) [#828](https://github.com/SocialGouv/iterion/issues/828)
+
+    <details><summary>why</summary>
+
+    `provisionHostDevbox` installs the TARGET REPO's devbox project in place, in the run's worktree. On a host whose devbox plugin registry is newer than the repository's pin, `devbox install` rewrites the tracked lock — one line, `nodejs_24@latest` `plugin_version` 0.0.4 → 0.0.5 on this machine — so the worktree differs on a tracked file before the first node runs, and every gate that reads the tree as the pass's own work (a campaign's scope gate, a clean-tree precheck, a whole-tree commit)…
+
+    </details>
+
+## [3.172.2](https://github.com/SocialGouv/iterion/compare/v3.172.1...v3.172.2) (2026-09-19)
+
+### Bug Fixes
+
+* **eventbus,server:** a bus cancel waits for its in-flight callback, and the forge-board projection is joined at the same budget ([#1477](https://github.com/SocialGouv/iterion/issues/1477)) ([14b573a](https://github.com/SocialGouv/iterion/commit/14b573ac8908bddb9c6ea18b40560c7e3c03016c)), references [#1343](https://github.com/SocialGouv/iterion/issues/1343) [#1257](https://github.com/SocialGouv/iterion/issues/1257) [#1345](https://github.com/SocialGouv/iterion/issues/1345) [post-#1257](https://github.com/post-/issues/1257) [#1474](https://github.com/SocialGouv/iterion/issues/1474) [#1343](https://github.com/SocialGouv/iterion/issues/1343) [#1345](https://github.com/SocialGouv/iterion/issues/1345) [#1257](https://github.com/SocialGouv/iterion/issues/1257)
+
+    <details><summary>why</summary>
+
+    #1343 — the two eventbus.Bus implementations disagreed on what the unsubscribe returned by Subscribe guarantees. InProcBus cancelled the handler's context and waited unbounded; NATSBus neither cancelled nor waited (sub.Unsubscribe() alone, callback on context.Background()). Under SIGTERM in a pod, five server subscribers — userNotifyCancel, opsAlertsCancel, gateReconcileCancel, forgePublishExpiryCancel, gateAutofixCancel — could be cut mid-store-write, and pkg/server/assistant_run_watch.go:289…
+
+    </details>
+
+## [3.172.1](https://github.com/SocialGouv/iterion/compare/v3.172.0...v3.172.1) (2026-09-19)
+
+### Bug Fixes
+
+* **runtime:** plugin skills land in both discovery shapes, and a same-name plugin collision is loud on the cloud mirror too ([#1479](https://github.com/SocialGouv/iterion/issues/1479)) ([407b719](https://github.com/SocialGouv/iterion/commit/407b719da091ebd45a7027668275335bc35dc4dd)), closes [#1372](https://github.com/SocialGouv/iterion/issues/1372), references [#1373](https://github.com/SocialGouv/iterion/issues/1373) [#1374](https://github.com/SocialGouv/iterion/issues/1374) [#1373](https://github.com/SocialGouv/iterion/issues/1373) [#1374](https://github.com/SocialGouv/iterion/issues/1374)
+
+    <details><summary>why</summary>
+
+    ## #1373 — plugin skills were reachable only by claw
+
+    </details>
+
 ## [3.172.0](https://github.com/SocialGouv/iterion/compare/v3.171.0...v3.172.0) (2026-09-19)
 
 ### Features

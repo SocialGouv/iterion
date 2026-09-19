@@ -18,6 +18,7 @@
 package operatormcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -105,6 +106,13 @@ type Server struct {
 	tools     []Tool
 	toolIndex map[string]*Tool
 	buildOnce sync.Once
+
+	// argsDecodeObserver, when set, sees every strict decode before it
+	// runs: the tool's name and the pointer its handler decodes into.
+	// A test seam — the schema↔struct parity test reads each handler's
+	// argument type from the one chokepoint every tool crosses, so the
+	// parity it checks is the decode that runs, not a parallel list.
+	argsDecodeObserver func(toolName string, dest any)
 }
 
 // build assembles the tool registry honoring Only + ReadOnly.
@@ -114,6 +122,7 @@ func (s *Server) build() {
 		if s.Only != FamilyRemote {
 			all = append(all, localTools()...)
 			all = append(all, localBoardTools()...)
+			all = append(all, localMapTools()...)
 		}
 		if s.Only != FamilyLocal {
 			all = append(all, remoteTools()...)
@@ -230,16 +239,89 @@ func (s *Server) board() (*native.Store, error) {
 	return b, nil
 }
 
-// unmarshalArgs decodes a tools/call arguments blob into dest, treating
-// an absent/empty blob as an empty object.
-func unmarshalArgs(raw json.RawMessage, dest any) error {
+// unmarshalArgs decodes a tools/call arguments blob strictly. An
+// argument the tool does not declare is a tool error naming the
+// unknown key and the accepted arguments (from its inputSchema),
+// not a silent drop against the schema's declared
+// additionalProperties: false. An absent/empty blob is treated as
+// an empty object.
+//
+// toolName identifies the tool being called — used to look up the
+// inputSchema and render the accepted-keys list in the error
+// message. Handlers pass their own name literal; a name unknown to
+// the server yields an error without the accepted-keys hint, which
+// is still louder than a silent drop.
+//
+// Fixes #1335: a misspelt or misplaced argument (e.g. `vras` for
+// `vars`) used to be a silent no-op, letting the LLM proceed on a
+// false result while every tool's schema advertised the promise
+// the server did not keep.
+func (s *Server) unmarshalArgs(toolName string, raw json.RawMessage, dest any) error {
+	if s.argsDecodeObserver != nil {
+		s.argsDecodeObserver(toolName, dest)
+	}
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
 	}
-	if err := json.Unmarshal(raw, dest); err != nil {
-		return fmt.Errorf("invalid arguments: %w", err)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dest); err != nil {
+		return s.wrapArgsError(toolName, err)
+	}
+	// Decoder.Decode reads the FIRST value only: without this, trailing
+	// garbage after the arguments object is silently ignored — the same
+	// class of silent tolerance the unknown-key check exists for.
+	if dec.More() {
+		return fmt.Errorf("invalid arguments: trailing data after the arguments JSON value")
 	}
 	return nil
+}
+
+// wrapArgsError renders a decode failure as a tool-friendly message.
+// When DisallowUnknownFields triggered — Go's json package returns
+// `json: unknown field "…"` verbatim — the message names the
+// offending key AND the accepted keys the tool's inputSchema
+// declares, so an LLM reading the tool error can correct the call
+// on the next turn (the whole point of #1335).
+func (s *Server) wrapArgsError(toolName string, err error) error {
+	const prefix = "json: unknown field "
+	msg := err.Error()
+	if strings.HasPrefix(msg, prefix) {
+		unknown := strings.TrimSpace(strings.TrimPrefix(msg, prefix))
+		unknown = strings.Trim(unknown, `"`)
+		accepted := s.acceptedArgKeys(toolName)
+		acceptedStr := "(none declared)"
+		if len(accepted) > 0 {
+			acceptedStr = strings.Join(accepted, ", ")
+		}
+		return fmt.Errorf("invalid arguments: unknown field %q — the tool's inputSchema declares additionalProperties: false; accepted keys: %s", unknown, acceptedStr)
+	}
+	return fmt.Errorf("invalid arguments: %w", err)
+}
+
+// acceptedArgKeys returns the sorted list of keys the tool's
+// inputSchema.properties declares. Returns an empty list when the
+// tool is unknown to the server or its schema is malformed —
+// neither should happen for a registered tool, and both are safe
+// fallbacks (the error text degrades to "(none declared)").
+func (s *Server) acceptedArgKeys(toolName string) []string {
+	s.build()
+	t, ok := s.toolIndex[toolName]
+	if !ok {
+		return nil
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(t.InputSchema, &schema); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(schema.Properties))
+	for k := range schema.Properties {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // marshalText renders v as indented JSON for a text content block.

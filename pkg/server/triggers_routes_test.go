@@ -32,7 +32,7 @@ func newEmitTestServer(t *testing.T) *Server {
 	if coord == nil {
 		t.Skip("trigger coordinator unavailable (fsnotify)")
 	}
-	t.Cleanup(coord.Close)
+	t.Cleanup(func() { coord.Close(context.Background()) })
 	srv := New(Config{DisableAuth: true, NativeTrackerStore: ns, TriggerStore: subs}, iterlog.New(iterlog.LevelError, nil))
 	srv.triggerCoord = coord
 	return srv
@@ -264,7 +264,7 @@ func TestEmitTrigger_PublishesAndFires(t *testing.T) {
 	if coord == nil {
 		t.Skip("trigger coordinator unavailable (fsnotify)")
 	}
-	t.Cleanup(coord.Close)
+	t.Cleanup(func() { coord.Close(context.Background()) })
 
 	srv := New(Config{DisableAuth: true, NativeTrackerStore: ns, TriggerStore: subs}, iterlog.New(iterlog.LevelError, nil))
 	srv.triggerCoord = coord

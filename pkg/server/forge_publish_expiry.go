@@ -77,9 +77,9 @@ func (s *Server) startForgePublishGrantExpiry() {
 // attachForgePublishGrantExpiry subscribes the reaper to run-terminal events —
 // the same ones the notification dispatcher and the merge-gate reconciler
 // consume.
-func (s *Server) attachForgePublishGrantExpiry(bus eventbus.Bus) (func(), error) {
+func (s *Server) attachForgePublishGrantExpiry(bus eventbus.Bus) (func(context.Context), error) {
 	if s == nil || bus == nil {
-		return func() {}, nil
+		return func(context.Context) {}, nil
 	}
 	return bus.Subscribe(forgePublishExpiryName, trigger.Matcher{
 		Sources: []trigger.Source{trigger.SourceRun},

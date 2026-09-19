@@ -16,9 +16,43 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
+
+// DefaultSubscribeCancelBudget bounds how long the cancel returned by
+// Subscribe waits for an in-flight handler when the caller passes a context
+// without a deadline. Under a graceful shutdown the caller SHOULD thread a
+// shared joinCtx so all N subscriptions cancel under ONE budget (mirroring
+// pkg/server.joinBackgroundWorkers' single joinCtx and its per-loop-budget
+// arbitration in #1257); the default is a safety net for callers that
+// cancel a single subscription outside of a shutdown.
+const DefaultSubscribeCancelBudget = 500 * time.Millisecond
+
+// overrunPostCheckWindow is a small grace period the cancel path gives
+// the worker after the budget expired: enough for a scheduler wake so a
+// no-in-flight worker closes its done channel, small enough that N
+// subscribers under one shared budget do not eat the budget by
+// composing the grace. Without it, a same-tick coin-flip between
+// waitCtx.Done() and s.done names a clean subscriber as an overrun
+// ~half the time (#1477 R6aac0e).
+//
+// 20 ms is calibrated between two constraints identified by the
+// adversarial rounds:
+//
+//   - Go's async-preemption slice is 10 ms, and a saturated shared
+//     runner can delay a worker's `defer close(s.done)` past a shorter
+//     window (round 3 reproduced the miss at 2 ms on a 32-core box
+//     under 32×`yes`).
+//   - The shared shutdown budget covers N cancels together, so each
+//     grace period composes into the total wall-clock. At N = 10 the
+//     added cost is 200 ms — significant next to a 500 ms budget but
+//     recoverable within the chart's 60 s terminationGracePeriodSeconds.
+//
+// 20 ms is well above the 10 ms preemption slice and leaves the
+// aggregate cost bounded.
+const overrunPostCheckWindow = 20 * time.Millisecond
 
 // Handler processes one event. It runs on a per-subscriber worker goroutine,
 // so it may do store I/O without stalling the publisher. A returned error is
@@ -34,7 +68,25 @@ type Bus interface {
 	// Subscribe delivers events matching filter to h. name identifies the
 	// subscriber (used as the durable consumer name by NATSBus; informational
 	// for InProcBus). An empty Matcher matches every event.
-	Subscribe(name string, filter trigger.Matcher, h Handler) (cancel func(), err error)
+	//
+	// The returned cancel signals the handler's context, unsubscribes the
+	// transport, and waits for an in-flight delivery within the caller's
+	// ctx.Deadline (DefaultSubscribeCancelBudget when ctx has none). A
+	// handler that ignores its context is named in a warning and left
+	// behind rather than waited out, so a defective subscriber cannot hold
+	// the process past the grace period. Cancel does NOT guarantee
+	// delivery of buffered events — the bus is a lossy fan-out and its
+	// producer's reconciliation path is the safety net (see the package
+	// doc; every subscriber pkg/server wires has a matching sweep, so
+	// unwinding an in-flight write is sufficient).
+	//
+	// Under a graceful shutdown the caller SHOULD thread ONE joinCtx across
+	// all cancels so N subscriptions share the same deadline; passing them
+	// separate contexts (or the same context sequentially with a per-call
+	// timer) composes the budget and eats the grace period upstream. That
+	// mirrors pkg/server.joinBackgroundWorkers' single joinCtx arbitration.
+	// Idempotent.
+	Subscribe(name string, filter trigger.Matcher, h Handler) (cancel func(ctx context.Context), err error)
 }
 
 // deliver runs one handler and converts a panic into an error, so a defect in

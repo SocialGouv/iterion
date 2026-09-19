@@ -198,8 +198,13 @@ their credentials exist.
 
 The `backend:` field chooses *which* execution stack runs a node; the
 optional `provider:` field is a finer **credential-routing hint** within
-that stack. It is resolved per node after `${VAR}` / `${VAR:-default}`
-expansion.
+that stack. It is resolved per node like every routing field (`model:`,
+`backend:`, `provider:`, `interaction_model:`, a `fallbacks:` route's three
+fields, a verified action's `recovery.model`, the workflow's
+`default_backend:`): a `{{vars.<name>}}` reference
+first — the run's vars are the one namespace that exists before the node
+runs; any other template warns C148 at compile time and reaches the backend
+as text — then `${VAR}` / `${VAR:-default}` expansion.
 
 Known hints:
 

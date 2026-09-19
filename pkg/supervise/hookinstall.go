@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 )
 
 // hookDrainSubcommand is the hidden iterion subcommand a raw Claude Code
@@ -46,7 +47,10 @@ func InstallHook(repoDir string, scope HookSettingsScope) (path string, changed 
 	if err != nil {
 		return path, false, err
 	}
-	cmd := proc.LocateIterionBinary() + " " + hookDrainSubcommand
+	// The command is a shell line in the target repo's settings: the
+	// binary path is quoted, so a path carrying a space or a shell
+	// metacharacter survives it.
+	cmd := shellquote.Quote(proc.LocateIterionBinary()) + " " + hookDrainSubcommand
 
 	hooks := asMap(root["hooks"])
 	stopChanged := ensureCommandHook(hooks, "Stop", "", cmd)

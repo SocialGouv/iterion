@@ -450,10 +450,48 @@ the MR/PR's current head:
   review identity explicitly on the webhook, and those logins join the same
   set both halves of the guard read — so the lane answers their request AND
   the actor guard recognises their own writes. On GitHub that identity has
-  to be a **User account reached through a `pat` connection**: only a user
-  can be a requested reviewer, and the review must be POSTED by that same
-  account for the forge to clear the pending request and re-arm the button.
+  to be a **User account**: only a user can be a requested reviewer.
   Nothing is derived from the connection for this — see the config table.
+
+  **And the App closes the request after publishing.** GitHub lifts a
+  review request only when the **requested account** submits the review —
+  the review is posted by `<app_slug>[bot]`, and an App cannot be a
+  reviewer at all — so the request would otherwise SURVIVE the review
+  answering it: the "review requested" pastille stays pending forever and
+  re-adding the reviewer is not a repeatable gesture (you have to remove
+  then re-add it by hand between two asks). So after each successful
+  publish the server withdraws the armed logins' pending request
+  ([forge.ReviewRequestWithdrawer](../pkg/forge/reviews.go), `DELETE
+  /repos/{owner}/{repo}/pulls/{n}/requested_reviewers`). Three properties
+  make it safe:
+
+  - **read-then-intersect, never a blind delete** — the pending set is
+    fetched first and only the intersection with `review_request_logins`
+    is withdrawn, so it cannot drop a reviewer it was not named, leaves
+    team requests alone, and is a **no-op** (zero writes) when none of the
+    logins is pending. GitHub 422s a removal naming an account that is not
+    currently requested, which is what a blind delete would hit on every
+    second publish;
+  - **best-effort, strictly behind the response and the merge gate** — it
+    runs in the same detached tail as the GitLab self-assign above, so a
+    slow or refusing forge never delays the publish nor the required
+    check. On a connection short of `pull_requests: write` the withdrawal
+    fails and logs at **Warn** naming that grant, while the published
+    review and its gate status stand untouched. Nothing new is granted for
+    this: `pull_requests: write` is already in the App manifest baseline
+    ([RuntimeInstallationPermissions](../pkg/forge/github/app_client.go));
+  - **it does not relaunch itself** — the `review_request_removed` the
+    withdrawal emits is filtered twice over before the actor guard is even
+    consulted: the re-request predicate only matches action
+    `review_requested`, and `IsReviewable` excludes
+    `review_request_removed`
+    ([pkg/webhooks/prforge/parser.go](../pkg/webhooks/prforge/parser.go)).
+
+  GitLab is the deliberate **non**-implementation, for the opposite
+  reason: there the reviewer role is exactly what makes the native button
+  exist, so withdrawing it would dismantle the affordance the self-assign
+  just created. Forgejo is an accepted gap — its re-request lane is not
+  wired either.
 
 Semantics, shared with `/revi` (deliberate manual gesture):
 
@@ -465,7 +503,10 @@ Semantics, shared with `/revi` (deliberate manual gesture):
   promise is that it freezes *every* automation on one PR;
 - **repeatable once the head's review has FINISHED** — such a click is its
   own delivery (the idempotency key is then salted with the MR/PR
-  `updated_at`), so re-requesting twice on the same head reviews twice. On
+  `updated_at`), so re-requesting twice on the same head reviews twice.
+  On GitHub the *pastille* is now cleared too, by the withdrawal above, so
+  the second ask is an ordinary "add the reviewer" gesture rather than a
+  manual remove-then-re-add. On
   GitHub a click landing while EVERY fanned-out bot's review of that head is
   still in flight collapses onto them instead (the CODEOWNERS auto-request
   dedupe) — unless the webhook's `overlap` is `supersede`, which takes
@@ -496,6 +537,27 @@ Pairs with the per-repo gate opt-out (`gate_enabled: "false"` pinned on the
 integration's launch vars): first review automatic on open, every re-review
 a button click or a `/revi` — see
 [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand).
+
+**Two things the withdrawal deliberately does NOT do.**
+
+- **GitHub's native ↻ "Re-request review" button stays out of reach.** The
+  forge only renders it next to a reviewer who has **submitted** a review,
+  and on an App connection the submitter is `<app_slug>[bot]`, never the
+  requested account. Getting the button would require the designated
+  account to post the review itself — i.e. a write credential for that
+  account, a separate arbitration that would undo the per-product
+  attribution settled on 2026-09-10. The gesture iterion makes repeatable
+  is **"add the reviewer"**, which needs no new identity.
+- **A budget escalation notice withdraws nothing.** The gate escalation
+  posts on the PR through `CreatePullReview` without going through the
+  publish tail
+  ([pkg/server/forge_gate_launch_budget.go](../pkg/server/forge_gate_launch_budget.go)),
+  so a request standing when a launch was refused for budget stays
+  pending — on purpose. That notice says a review could *not* be produced;
+  the pending request is then an accurate record of a review still owed,
+  and clearing it would erase the ask while nothing answered it. The
+  request is withdrawn by a review that **landed**, never by one that was
+  refused.
 
 ### <a name="two-identities"></a>Two identities: the App connection reads, a PAT binding writes
 
@@ -847,7 +909,7 @@ are accepted by `POST` / `PATCH`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. Also the knob for the [mixed-identity setup](#two-identities) where a webhook rides an App connection for reads and a `forge_token` PAT for writes — list the PAT's login here so both guards recognise the bot's own posts. |
+| `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer. It is also the set the publish tail **withdraws from `requested_reviewers` after posting a review** — GitHub never lifts the request itself (the review is posted by `<app_slug>[bot]`, not by the requested account), so without the withdrawal the pastille stays pending and the gesture is not repeatable; read-then-intersect, so a login that is not pending costs no write, and `pull_requests: write` is what it degrades without. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. Also the knob for the [mixed-identity setup](#two-identities) where a webhook rides an App connection for reads and a `forge_token` PAT for writes — list the PAT's login here so both guards recognise the bot's own posts. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). The lane is debounced (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default `3m`): a push volley costs one review of the final head — see the GitHub section above. |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
 | `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |

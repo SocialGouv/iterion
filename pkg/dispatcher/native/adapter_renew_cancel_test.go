@@ -51,10 +51,19 @@ func TestAdapterRenewClaim_HonoursCancelMidCall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() { errc <- a.RenewClaim(ctx, iss.ID, tok) }()
+	// LIVENESS BOUND, not a mechanism observation. The mechanism —
+	// "the RenewClaim goroutine is blocked on st.mu.Lock()" — is not
+	// observable from outside the shipped adapter without instrumenting
+	// it (a probe that wraps the adapter would test the wrapper, not
+	// the code path the probe premise guards). 500 ms is 25× the
+	// original 20 ms so a starved runner cannot miss a mutation where
+	// renew skips the lock entirely; the subsequent cancel + errors.Is
+	// assertion IS what proves the ctx-honouring behaviour under test.
+	// #1471.
 	select {
 	case e := <-errc:
 		t.Fatalf("renew returned %v while the store lock was held — this probe's premise is broken", e)
-	case <-time.After(20 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	cancel()

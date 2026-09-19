@@ -548,7 +548,86 @@ func devboxInstallSnippet(projects []devboxProject) string {
 			continue
 		}
 		if pr.stageFrom == "" {
+			// In-place install of the workspace: the repository's devbox.lock
+			// stays what the run found it when what devbox wrote is plugin
+			// metadata drift (`plugin_version`, rewritten when the image's
+			// registry is newer than the pin) — the run's own gates (scope,
+			// clean tree) would read the tracked file as the pass's change
+			// (#1459). A lock changed beyond that (the repository's lock was
+			// behind its devbox.json) is kept: it is the resolution the run's
+			// PATH was built from. A lock devbox CREATED is removed only where
+			// git would show it — an untracked file in a repository that does
+			// not ignore it. The pre-install copy lives under $TMPDIR (default
+			// /tmp), never beside the lock; `_had` carries the copy's outcome explicitly (0 = no
+			// lock before, 1 = copied, 2 = the copy FAILED) so a failed copy
+			// never reads as "the repository tracks no lock".
+			lockPath := pr.dir + "/" + devboxLockName
+			lock := shellquote.Quote(lockPath)
+			say := func(msg string) string { return shellquote.Quote("iterion: " + msg) }
+			unsaved := say(fmt.Sprintf("could not copy %s aside before devbox install; whatever devbox writes to it stays in the worktree", lockPath))
+			removed := say(fmt.Sprintf("devbox removed %s; restored to the repository's content", lockPath))
+			rewrote := say(fmt.Sprintf("devbox rewrote %s (plugin metadata drift in this image); restored to the repository's content so the worktree stays what the run found it", lockPath))
+			changed := say(fmt.Sprintf("devbox changed %s beyond plugin metadata (the repository's lock was behind its devbox.json, or the install left a document that does not parse); kept — the worktree carries the resolution the run's PATH was built from", lockPath))
+			unsure := say(fmt.Sprintf("could not compare %s with its pre-install copy (tr, sed or cmp failed in this image); left as found after the install — a plugin metadata drift, if devbox wrote one, stays in the worktree", lockPath))
+			createdRemoved := say(fmt.Sprintf("devbox created %s, a file the repository does not track; removed so the worktree stays clean", lockPath))
+			createdKept := say(fmt.Sprintf("devbox created %s; kept — the repository ignores it or no git repository reads the worktree, so no gate sees it", lockPath))
+			// The two restores and the removal read their own exit status
+			// too: a copy refused by a full layer or a read-only mount must be
+			// said as what it is, never announced as done — and said without
+			// guessing what the worktree holds afterwards (devbox's rewrite,
+			// a copy cut short, or nothing at all when devbox removed it).
+			restoreFailed := say(fmt.Sprintf("could not restore %s from its pre-install copy; the worktree carries what the failed copy left there", lockPath))
+			restoreFailedRemoved := say(fmt.Sprintf("could not restore %s from its pre-install copy after devbox removed it; the worktree carries what the failed copy left there, if anything", lockPath))
+			removeFailed := say(fmt.Sprintf("could not remove %s, a file the repository does not track; the worktree carries it", lockPath))
+			// The prologue cannot parse JSON, but it can see the shape devbox
+			// never leaves behind on a completed write: every lock devbox
+			// writes is an object, so once blanks are removed it ends in a
+			// brace. Empty, or ending in anything else, is a write cut short
+			// — no resolution anything can reuse, and devbox refuses to run
+			// with it in place; the pin comes back (or a created one goes),
+			// as on the host. What still ends in a brace once blanks are
+			// removed — a truncation stopping on an inner brace, a complete
+			// object followed by NUL padding — is the class this misses: it
+			// reads as a re-lock and is kept, said, and devbox refuses to run
+			// on it too (measured), where the host, which parses, restores.
+			// `_bad` is 2 when tr could not answer, and a 2 decides nothing —
+			// a missing tool must never turn a real lock into "unparseable".
+			unparseableRestored := say(fmt.Sprintf("the post-install %s is unparseable (empty, or not ending in a brace once blanks are removed); restored to the repository's content — the install itself is reported on its own", lockPath))
+			createdUnparseableRemoved := say(fmt.Sprintf("devbox created %s and left it unparseable; removed — no later devbox run could have read it", lockPath))
+			// The comparison reads both documents with every blank removed
+			// (devbox's indentation is not the repository's pin) and the
+			// `"plugin_version":"…"` field dropped wherever it sits in its
+			// entry, one comma with it — first, last or only key: the host's
+			// verdict on every lock devbox writes (a text comparison can only
+			// diverge on a document no devbox version produces — the field
+			// outside `packages`, keys reordered, a blank inside a value).
+			// Every step's exit status is read: a tool the image lacks, or a
+			// write cut short, must never leave two empty files that compare
+			// equal and put the pin back over a genuine re-lock — the lock is
+			// then left as found and said.
+			strip := "-e 's/\"plugin_version\":\"[^\"]*\",//g' -e 's/,\"plugin_version\":\"[^\"]*\"//g' -e 's/\"plugin_version\":\"[^\"]*\"//g'"
+			scratch := "\"$_pre\" \"$_pre.a\" \"$_pre.a0\" \"$_pre.b\" \"$_pre.b0\""
+			fmt.Fprintf(&b, "  _lk=%s; _pre=\"${TMPDIR:-/tmp}/iterion-devbox-lock-pre-$$\"; rm -f %s; _had=0\n", lock, scratch)
+			fmt.Fprintf(&b, "  if [ -f \"$_lk\" ]; then if cp \"$_lk\" \"$_pre\"; then _had=1; else _had=2; echo %s >&2; fi; fi\n", unsaved)
 			fmt.Fprintf(&b, "  devbox install -c %s || echo %s >&2\n", dir, fail)
+			fmt.Fprintf(&b, "  _bad=0; if [ -f \"$_lk\" ]; then if _m=$(tr -d '[:space:]' < \"$_lk\"); then case \"$_m\" in \"\") _bad=1;; *\"}\") ;; *) _bad=1;; esac; else _bad=2; fi; fi\n")
+			fmt.Fprintf(&b, "  if [ \"$_had\" = 1 ]; then\n")
+			fmt.Fprintf(&b, "    if [ ! -e \"$_lk\" ]; then if cp \"$_pre\" \"$_lk\"; then echo %s >&2; else echo %s >&2; fi\n", removed, restoreFailedRemoved)
+			fmt.Fprintf(&b, "    elif cmp -s \"$_lk\" \"$_pre\"; then :\n")
+			fmt.Fprintf(&b, "    elif [ \"$_bad\" = 1 ]; then if cp \"$_pre\" \"$_lk\"; then echo %s >&2; else echo %s >&2; fi\n", unparseableRestored, restoreFailed)
+			fmt.Fprintf(&b, "    else _eq=2; if tr -d '[:space:]' < \"$_lk\" > \"$_pre.a0\" && sed %s \"$_pre.a0\" > \"$_pre.a\" && tr -d '[:space:]' < \"$_pre\" > \"$_pre.b0\" && sed %s \"$_pre.b0\" > \"$_pre.b\"; then cmp -s \"$_pre.a\" \"$_pre.b\"; _eq=$?; fi\n", strip, strip)
+			fmt.Fprintf(&b, "      if [ \"$_eq\" = 0 ]; then if cp \"$_pre\" \"$_lk\"; then echo %s >&2; else echo %s >&2; fi; elif [ \"$_eq\" = 1 ]; then echo %s >&2; else echo %s >&2; fi\n", rewrote, restoreFailed, changed, unsure)
+			fmt.Fprintf(&b, "    fi\n")
+			// A created lock is removed only where git would list it: inside a
+			// work tree, with `check-ignore` answering "not ignored" (exit 1).
+			// An exit git cannot answer with — a bare repository, a broken
+			// checkout — keeps the lock, as the host's gitWouldShow does.
+			fmt.Fprintf(&b, "  elif [ \"$_had\" = 0 ] && [ -f \"$_lk\" ]; then\n")
+			fmt.Fprintf(&b, "    if [ \"$_bad\" = 1 ]; then if rm -f \"$_lk\"; then echo %s >&2; else echo %s >&2; fi\n", createdUnparseableRemoved, removeFailed)
+			fmt.Fprintf(&b, "    else _ci=2; if command -v git >/dev/null 2>&1 && git -C %s rev-parse --is-inside-work-tree >/dev/null 2>&1; then git -C %s check-ignore -q %s >/dev/null 2>&1; _ci=$?; fi\n", dir, dir, shellquote.Quote(devboxLockName))
+			fmt.Fprintf(&b, "      if [ \"$_ci\" = 1 ]; then if rm -f \"$_lk\"; then echo %s >&2; else echo %s >&2; fi; else echo %s >&2; fi\n", createdRemoved, removeFailed, createdKept)
+			fmt.Fprintf(&b, "    fi\n")
+			fmt.Fprintf(&b, "  fi; rm -f %s\n", scratch)
 			continue
 		}
 		// Staged copy out of the read-only bundle mount. The lock is

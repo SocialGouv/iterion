@@ -1021,6 +1021,95 @@ func TestGitHubWebhook_ReviewRequestedCollapsesOntoLiveReview(t *testing.T) {
 	}
 }
 
+// What makes the gesture REPEATABLE now that the App withdraws its own
+// pending request: two successive `review_requested` deliveries naming the
+// armed login, on the SAME head, launch TWO reviews — the second is not
+// swallowed as a duplicate of the first.
+//
+// The mechanism is the idempotency salt: the first request takes the ordinary
+// per-head key, and once that head is claimed and no longer in flight the
+// next one salts with the PR's `updated_at`. Publishing a review and
+// withdrawing the request both advance it, so the second ask lands on a
+// distinct key. The withdrawal is what makes "add the reviewer" expressible
+// twice in the first place — before it, the pastille was still pending and
+// the operator had to remove it by hand.
+func TestGitHubWebhook_TwoReviewRequestsOnOneHeadLaunchTwice(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return fmt.Sprintf("run-%d", calls), nil
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	// Each review finishes before the next ask — the whole point is that the
+	// second gesture is now possible at all.
+	s.webhookRunIsLive = func(context.Context, string) bool { return false }
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewRequestLogins = []string{"iterion-bot"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("first request: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// Second ask on the same head SHA, `updated_at` advanced by the published
+	// review and the withdrawal.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:07:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 2 {
+		t.Fatalf("a second request on the same head must review again, not dedupe: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// And a forge REDELIVERY of that same ask (identical updated_at) still
+	// dedupes — repeatability must not have cost the duplicate guard.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:07:00Z"), prforge.EventHeaderPullRequest, pt))
+	if calls != 2 {
+		t.Fatalf("a redelivery of the same ask must dedupe: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+}
+
+// The withdrawal's own side effect relaunches NOTHING. The App's DELETE emits
+// a `review_request_removed`, and the ACTION is what filters it, before the
+// actor guard is consulted at all: the re-request predicate only matches
+// `review_requested`, and IsReviewable excludes the removal.
+//
+// The three senders are three different nets, and the distinction is the
+// point — measured by mutation: widening either action filter leaves
+// `iterion-bot` still filtered (it is in this webhook's armed logins, so the
+// actor guard catches its own write) while `iterion[bot]` and `alice` start
+// launching. So the App's real login and the human case are what prove the
+// action filter; the armed login alone would have passed a broken one.
+func TestGitHubWebhook_ReviewRequestRemovedLaunchesNothing(t *testing.T) {
+	for _, sender := range []string{"iterion[bot]", "iterion-bot", "alice"} {
+		t.Run(sender, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			calls := 0
+			s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+				calls++
+				return "run-1", nil
+			}
+			s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+				return true, "allowlist", nil
+			}
+			cfg, pt := ghConfig(t, s)
+			cfg.ReviewRequestLogins = []string{"iterion-bot"}
+
+			body := strings.Replace(
+				ghReviewRequested(sender, "iterion-bot", "2026-09-01T10:00:00Z"),
+				`"action": "review_requested"`, `"action": "review_request_removed"`, 1)
+			w := httptest.NewRecorder()
+			s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+			if w.Code != http.StatusOK || calls != 0 {
+				t.Fatalf("a review_request_removed must launch nothing: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+			}
+		})
+	}
+}
+
 // Rf96744: a delivery row stranded at `accepted` (a crash between the insert
 // and the post-launch update) must not read as in-flight forever — past the
 // launch window the re-request lane treats it as a finished claim and the

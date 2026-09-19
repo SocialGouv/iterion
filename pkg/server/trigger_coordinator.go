@@ -45,7 +45,7 @@ type TriggerCoordinator struct {
 	bus       eventbus.Bus
 	source    *trigger.BoardSource
 	scheduler *trigger.Scheduler
-	cancelSub func()
+	cancelSub func(context.Context)
 	logger    *iterlog.Logger
 }
 
@@ -79,7 +79,9 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 	}
 	src := trigger.StartBoardSource(ns, bus, logger)
 	if src == nil {
-		cancelSub()
+		// Boot-time abort — no shared shutdown ctx yet; the default budget
+		// applies internally.
+		cancelSub(context.Background())
 		return nil
 	}
 	tc := &TriggerCoordinator{bus: bus, source: src, cancelSub: cancelSub, logger: logger}
@@ -170,8 +172,12 @@ func (t *TriggerCoordinator) Bus() eventbus.Bus {
 	return t.bus
 }
 
-// Close tears down the board source and unsubscribes the evaluator.
-func (t *TriggerCoordinator) Close() {
+// StopSource drains the non-bus halves — the schedule Scheduler and the
+// board Source — WITHOUT touching the bus subscription. Under a graceful
+// shutdown the caller drives these drains BEFORE opening the shared
+// subCancelCtx, so an unbounded ctx-less Stop cannot eat the bus-cancel
+// budget the arithmetic upstream depends on (#1477 R503821).
+func (t *TriggerCoordinator) StopSource() {
 	if t == nil {
 		return
 	}
@@ -181,7 +187,27 @@ func (t *TriggerCoordinator) Close() {
 	if t.source != nil {
 		t.source.Stop()
 	}
-	if t.cancelSub != nil {
-		t.cancelSub()
+}
+
+// CancelSub unsubscribes the evaluator from the bus. The ctx bounds the
+// bus-subscription cancel's in-flight wait; under a shared shutdown budget
+// the caller passes a joinCtx so this cancel composes with the peer
+// subscribers' cancels — see eventbus.Bus.Subscribe's ctx contract.
+func (t *TriggerCoordinator) CancelSub(ctx context.Context) {
+	if t == nil {
+		return
 	}
+	if t.cancelSub != nil {
+		t.cancelSub(ctx)
+	}
+}
+
+// Close is the convenience wrapper for callers outside of Server.Shutdown
+// (dispatch.go's defer, tests). It sequences the two halves the way a
+// standalone caller expects: drain the source, THEN unsubscribe. Server
+// shutdown uses StopSource + CancelSub separately so it can open the
+// subCancelCtx between the two.
+func (t *TriggerCoordinator) Close(ctx context.Context) {
+	t.StopSource()
+	t.CancelSub(ctx)
 }
