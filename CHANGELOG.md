@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.172.2](https://github.com/SocialGouv/iterion/compare/v3.172.1...v3.172.2) (2026-09-19)
+
+### Bug Fixes
+
+* **eventbus,server:** a bus cancel waits for its in-flight callback, and the forge-board projection is joined at the same budget ([#1477](https://github.com/SocialGouv/iterion/issues/1477)) ([14b573a](https://github.com/SocialGouv/iterion/commit/14b573ac8908bddb9c6ea18b40560c7e3c03016c)), references [#1343](https://github.com/SocialGouv/iterion/issues/1343) [#1257](https://github.com/SocialGouv/iterion/issues/1257) [#1345](https://github.com/SocialGouv/iterion/issues/1345) [post-#1257](https://github.com/post-/issues/1257) [#1474](https://github.com/SocialGouv/iterion/issues/1474) [#1343](https://github.com/SocialGouv/iterion/issues/1343) [#1345](https://github.com/SocialGouv/iterion/issues/1345) [#1257](https://github.com/SocialGouv/iterion/issues/1257)
+
+    <details><summary>why</summary>
+
+    #1343 — the two eventbus.Bus implementations disagreed on what the unsubscribe returned by Subscribe guarantees. InProcBus cancelled the handler's context and waited unbounded; NATSBus neither cancelled nor waited (sub.Unsubscribe() alone, callback on context.Background()). Under SIGTERM in a pod, five server subscribers — userNotifyCancel, opsAlertsCancel, gateReconcileCancel, forgePublishExpiryCancel, gateAutofixCancel — could be cut mid-store-write, and pkg/server/assistant_run_watch.go:289…
+
+    </details>
+
 ## [3.172.1](https://github.com/SocialGouv/iterion/compare/v3.172.0...v3.172.1) (2026-09-19)
 
 ### Bug Fixes
