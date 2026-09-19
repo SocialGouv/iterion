@@ -1512,7 +1512,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions (resume): %v", err)
@@ -1893,7 +1893,7 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions (resume): %v", err)

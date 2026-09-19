@@ -213,6 +213,7 @@ type Engine struct {
 	attachmentPromote        AttachmentPromoteFunc                // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle                       // optional: bundle backing this run; nil for plain .bot runs
 	contributions            *Contributions                       // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
+	contributionsUnresolved  bool                                 // dispatch arrived without the payload: the ambient declaration is unverifiable (WithContributionsUnresolved); local CLI runs never set it
 	pauseSignal              <-chan struct{}                      // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
 	overrideCh               <-chan *OverrideMsg                  // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
 	dailyCap                 *DailyCapGuard                       // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap

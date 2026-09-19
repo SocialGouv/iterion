@@ -582,6 +582,19 @@ func WithContributions(c *Contributions) EngineOption {
 	return func(e *Engine) { e.contributions = c }
 }
 
+// WithContributionsUnresolved marks the dispatch as having arrived WITHOUT the
+// contributions payload (the runner sets it when the queue message's
+// msg.Contributions is nil — a field the publisher ships on every launch and
+// every resume, so nil means the field was lost, not that nothing is enabled).
+// The engine then treats the ambient plugin declaration as unverifiable: the
+// mirror pass mirrors nothing for plugins and reports the pass incomplete, so
+// the orphan pruner skips instead of deleting what earlier passes mirrored.
+// A local CLI/studio run never sets this — there, local resolution IS the
+// declaration.
+func WithContributionsUnresolved() EngineOption {
+	return func(e *Engine) { e.contributionsUnresolved = true }
+}
+
 // WithOutputValidation enables post-execution validation of node outputs
 // against their declared output schemas. When enabled, a node whose output
 // does not conform to its schema will cause the run to fail immediately.

@@ -44,9 +44,27 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		// workflow's refs and the operator's extras into the payload, so the
 		// union is upstream of here and the pod just mirrors what it was sent.
 		injHints, injOwned, injErr := mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
-		// Injected payload IS the whole declaration for cloud runs;
-		// complete=true unless mirrorInjectedLibrarySkills says otherwise.
-		return injHints, injOwned, true, injErr
+		// The payload is authoritative for WHAT to mirror, but the workflow's
+		// declaration is checkable right here: every declared ref must have
+		// been produced this pass — by the payload, or by the bundle/plugin
+		// mirrors that outrank the library and ran earlier in the sequence —
+		// or be provably untouchable by the pruner. A ref that is neither was
+		// dropped upstream of the payload; blessing the pass complete would
+		// let the pruner delete the still-declared skill's prior copy
+		// (#1500 R6 high).
+		dest := filepath.Join(workDir, ".claude", "skills")
+		markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
+		complete := true
+		for _, name := range unionSkillRefs(collectSkillRefs(wf), extra) {
+			if skillCoveredThisPass(dest, markerDir, name) {
+				continue
+			}
+			complete = false
+			if logger != nil {
+				logger.Warn("library: skill %q is declared by the workflow but was produced by no mirror this pass (dropped from the contributions payload, or unresolved upstream) — the orphan pruner is skipped for this pass", name)
+			}
+		}
+		return injHints, injOwned, complete, injErr
 	}
 	refs := unionSkillRefs(collectSkillRefs(wf), extra)
 	if len(refs) == 0 {
@@ -78,9 +96,12 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 			// bundle and plugin ones, which take precedence (ADR-059). Warning
 			// that a bundle skill is "not in the skill library" is true and
 			// useless — it reads as a broken run to anyone watching the log, and
-			// every bundle that declares its own skills emits one line per skill
-			// at every start.
-			if alreadyMirrored(dest, name) {
+			// every bundle that declares its own skills (or an operator's
+			// hand-authored file, or a marker-less bundle directory skill) owns
+			// the name. A PREVIOUS pass's library copy does not satisfy the ref:
+			// its sidecar is stale, and that file is exactly what the pruner
+			// would delete on a transient store outage (#1500 R17fd85).
+			if skillCoveredThisPass(dest, markerDir, name) {
 				if logger != nil {
 					logger.Debug("skill %q resolved from the bundle/plugin mirror, not the library", name)
 				}
@@ -152,25 +173,11 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 // `skills:` default and every LLM node's `skills:` list, in a stable order
 // (workflow defaults first, then node refs in node-map iteration order,
 // deduped). Order does not affect correctness — the mirror is idempotent and
-// the hint list is re-sorted per node.
+// the hint list is re-sorted per node. Delegates to the exported
+// CollectSkillRefs, the ONE declaration collector shared with the cloud
+// publisher.
 func collectSkillRefs(wf *ir.Workflow) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(names []string) {
-		for _, n := range names {
-			if n != "" && !seen[n] {
-				seen[n] = true
-				out = append(out, n)
-			}
-		}
-	}
-	add(wf.Skills)
-	for _, node := range wf.Nodes {
-		if ln, ok := node.(ir.LLMNode); ok {
-			add(ln.GetSkills())
-		}
-	}
-	return out
+	return CollectSkillRefs(wf)
 }
 
 // unionSkillRefs appends the operator's run-level skills to the workflow's own,
@@ -268,4 +275,33 @@ func alreadyMirrored(dest, name string) bool {
 		}
 	}
 	return false
+}
+
+// skillCoveredThisPass reports whether a declared skill reference is covered
+// as of THIS mirror pass — satisfied for the orphan pruner's purposes, not
+// merely present on disk. One predicate serves both resolution paths:
+//
+//   - a fresh tier sidecar (<name>.SKILL.md.sha256.tier, rewritten by
+//     writeMarker after ClearMirroredTierMarkers wiped every sidecar at pass
+//     start) means a mirror produced the file THIS pass — the payload mirror,
+//     the local library mirror, or the bundle/plugin mirrors that outrank it;
+//   - a discoverable file with NO marker at all means a marker-less producer
+//     owns the name (a bundle's directory-form skill, or a hand-authored
+//     workspace file) — the pruner never touches a name without a marker, so
+//     the ref cannot become an orphan either way;
+//   - a marker WITHOUT a fresh sidecar is the dangerous middle: a file a
+//     PREVIOUS pass mirrored that this pass did not reproduce — exactly the
+//     file the pruner would delete, so the ref is NOT covered.
+//
+// The injected and local paths both consult it, so "declared but produced by
+// no mirror this pass" cannot mean different things on the two paths.
+func skillCoveredThisPass(dest, markerDir, name string) bool {
+	markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
+	if _, err := os.Stat(markerPath + tierSidecarSuffix); err == nil {
+		return true
+	}
+	if _, err := os.Stat(markerPath); err == nil {
+		return false
+	}
+	return alreadyMirrored(dest, name)
 }

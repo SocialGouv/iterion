@@ -736,16 +736,18 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	}
 	// Mirror markdown contributions (skills / commands / agents) from enabled
 	// plugins after the bundle skills so a same-named bundle/workspace file
-	// wins on collision. An I/O error is FATAL — a run whose enabled plugin
-	// declares a skill iterion cannot mirror must not proceed and report
-	// success without it (the doctrine, called out on #1479). Validation
-	// errors are already soft inside mirrorPluginContributions; anything
-	// reaching the return here is I/O.
+	// wins on collision. Per-FILE errors (validation AND I/O) are soft inside
+	// mirrorPluginContributions — ambient plugins must not brick a run — but
+	// each skipped entry drops `complete`. The errors that DO reach this
+	// return are the workspace-level ones (mkdir / tmpfile): those are fatal,
+	// since a run whose plugin cannot write its mirror at all must not
+	// proceed half-mirrored.
 	//
-	// Complete=false reports a KIND-level miss (plugin.Load failed, or a
-	// per-plugin MirrorFiles failed) — the pruner must be skipped, or it
-	// treats last pass's plugin files as orphans (#1500 R2-F1 HIGH).
-	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	// Complete=false reports a KIND-level miss (plugin.Load failed, a
+	// per-plugin MirrorFiles failed, a skipped entry, or an unresolved
+	// ambient declaration) — the pruner must be skipped, or it treats last
+	// pass's plugin files as orphans (#1500 R2-F1 HIGH, R6 medium).
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions: %v", err)

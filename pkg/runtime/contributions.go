@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -32,6 +33,13 @@ type Contributions struct {
 	Plugin []ContributionFile
 	// Library holds skill-library skills the workflow references by name.
 	Library []LibrarySkillFile
+	// Degraded is the publisher's confession that the enumeration was
+	// PARTIAL (a broken plugin.yaml is invisible to the registry's Enabled(),
+	// an unreadable home, a degraded team source): entries the launch pass
+	// mirrored may be absent from the wire. The mirror pass mirrors what
+	// arrived but reports the pass incomplete, so the orphan pruner is
+	// skipped — the cloud twin of the local path's Registry.LoadSkips veto.
+	Degraded bool
 }
 
 // ContributionFile is one plugin markdown file bound for
@@ -58,6 +66,48 @@ type LibrarySkillFile struct {
 // IsEmpty reports whether the payload would mirror nothing.
 func (c *Contributions) IsEmpty() bool {
 	return c == nil || (len(c.Plugin) == 0 && len(c.Library) == 0)
+}
+
+// ContributionsUnresolved reports whether this engine's dispatch arrived
+// WITHOUT the contributions payload (WithContributionsUnresolved): the
+// ambient plugin declaration is unverifiable here — a runner pod's iterion
+// home is empty by design, so local resolution proves nothing — and the
+// mirror pass mirrors nothing for plugins and never blesses the orphan
+// pruner. Read-only introspection; the runner's own tests assert the option
+// landed, and operators may log it.
+func (e *Engine) ContributionsUnresolved() bool {
+	return e.contributionsUnresolved
+}
+
+// CollectSkillRefs returns the deduplicated union of the workflow-level
+// `skills:` default and every LLM node's `skills:` list. It is THE declaration
+// collector for skill-library references: the runtime mirror verifies every
+// returned ref was produced by the pass (the #1500 R6 injected-payload veto),
+// and the cloud publisher ships exactly these names in the payload
+// (cloudpublisher used to carry its own copy — a drift between the two would
+// turn into a stationary prune-veto on healthy cloud runs, so one collector
+// serves both).
+func CollectSkillRefs(wf *ir.Workflow) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(names []string) {
+		for _, n := range names {
+			if n != "" && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	if wf == nil {
+		return out
+	}
+	add(wf.Skills)
+	for _, node := range wf.Nodes {
+		if ln, ok := node.(ir.LLMNode); ok {
+			add(ln.GetSkills())
+		}
+	}
+	return out
 }
 
 // mirrorInjectedPluginFiles mirrors pre-resolved plugin markdown into

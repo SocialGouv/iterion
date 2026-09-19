@@ -1,10 +1,15 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
 func TestContributionsFromWire_NilStaysNil(t *testing.T) {
@@ -89,5 +94,88 @@ func TestContributions_OmittedWhenNil(t *testing.T) {
 	}
 	if _, present := generic["contributions"]; present {
 		t.Error("contributions must be omitted from the wire when nil")
+	}
+}
+
+// #1500 R6 medium, runner side: a dispatch WITHOUT the contributions payload
+// is an anomaly (the publisher ships the field on every launch and every
+// resume, possibly empty), so the runner must NOT translate it into a plain
+// local-resolution engine. It flags the declaration unresolved — the engine
+// mirrors nothing for the ambient tier and skips the orphan pruner instead of
+// deleting the launch pass's files.
+//
+// The flag's EFFECT is pinned at the runtime end
+// (TestMirrorPluginContributions_NilPayloadOnRunnerFlagsIncomplete); this
+// pins the runner end: one option, and the anomaly is WARNed, never silent.
+func TestContributionsEngineOptions_NilPayloadIsUnresolvedNotLocal(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+	opts := contributionsEngineOptions(nil, logger)
+	if len(opts) != 1 {
+		t.Fatalf("expected exactly one engine option for a nil payload, got %d", len(opts))
+	}
+	if !strings.Contains(buf.String(), "contributions payload") {
+		t.Errorf("the anomaly must be WARNed, never silent; log = %q", buf.String())
+	}
+}
+
+func TestContributionsEngineOptions_PayloadRidesAuthoritative(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+	opts := contributionsEngineOptions(&queue.Contributions{
+		Library: []queue.LibrarySkillFile{{Name: "s", Content: []byte("body")}},
+	}, logger)
+	if len(opts) != 1 {
+		t.Fatalf("expected exactly one engine option for a carried payload, got %d", len(opts))
+	}
+	if buf.String() != "" {
+		t.Errorf("a carried payload is not an anomaly; unexpected log: %q", buf.String())
+	}
+}
+
+// Wiring witness, in the house style of the prune-gate count test: BOTH
+// dispatch paths (root run + subbot child) must translate the message's
+// contributions through the ONE helper. A site reverting to the bare
+// nil-guard reintroduces the R6 defect on that path only — invisible to the
+// helper-level tests above.
+func TestContributionsEngineOptions_WiredOnBothDispatchPaths(t *testing.T) {
+	sites := 0
+	for _, f := range []string{"loop.go", "subbot.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sites += strings.Count(string(src), "contributionsEngineOptions(")
+	}
+	if sites != 2 {
+		t.Fatalf("expected contributionsEngineOptions wired on exactly 2 dispatch paths (loop.go + subbot.go), found %d", sites)
+	}
+}
+
+// The publisher's degraded confession rides the wire and lands in the
+// engine's domain type: a payload built from a partially-enumerated instance
+// must keep that fact through the conversion, or the pod-side veto
+// (TestMirrorPluginContributions_DegradedPayloadFlagsIncomplete) starves.
+func TestContributionsFromWire_CarriesDegraded(t *testing.T) {
+	got := contributionsFromWire(&queue.Contributions{
+		Plugin:   []queue.ContributionFile{{Kind: "skills", Name: "a.md", Content: []byte("x")}},
+		Degraded: true,
+	})
+	if !got.Degraded {
+		t.Error("Degraded lost in the wire→domain conversion")
+	}
+}
+
+// The nil-payload option must land as a REAL effect on the engine, not just
+// exist in the returned slice: apply the helper's options and assert the
+// engine state. Closes the composition joint the re-attack round proved open
+// (an option that did nothing but WARN survived every committed test).
+func TestContributionsEngineOptions_NilPayloadEffectOnEngine(t *testing.T) {
+	e := &runtime.Engine{}
+	for _, opt := range contributionsEngineOptions(nil, nil) {
+		opt(e)
+	}
+	if !e.ContributionsUnresolved() {
+		t.Fatal("nil payload must flag the engine's ambient declaration unresolved")
 	}
 }

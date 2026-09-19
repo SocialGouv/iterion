@@ -123,6 +123,19 @@ operator's own checkout skips pruning — an orphan there costs one unused
 file; a false-positive prune costs an operator's edit. The escape hatch
 is greppable and opt-in: `ITERION_PRUNE_MIRROR_IN_CHECKOUT=1`.
 
+**A pass that could not verify its declaration never prunes.** The sweep
+runs only after BOTH mirrors report the pass complete — every declared
+entry actually produced this pass (a library `skills:` ref missing from a
+resume's contributions payload, or a plugin registry that could not be
+read, aborts the blessing). On the cloud path a dispatch that arrives
+WITHOUT the contributions payload is treated the same way: a runner pod's
+iterion home is empty by design, so its local "0 plugins enabled" proves
+nothing about the launching instance's set — the pass mirrors nothing,
+warns, and leaves the pruner unarmed. The publisher ships the payload on
+every launch and resume (possibly empty, which IS a statement: nothing
+enabled), so a missing field is an anomaly, never silently read as "the
+operator disabled everything".
+
 **Pre-upgrade leftovers are exempt — delete by hand.** The
 `.iterion-wrote` sidecar only exists on files this version wrote. A
 workspace whose mirrors predate it carries none, and an orphan (its

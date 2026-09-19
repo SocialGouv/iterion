@@ -43,7 +43,7 @@ func TestMirrorPluginContributions_SameNameCollisionIsLoudAndReportedOnce(t *tes
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestMirrorPluginContributions_SelfCollisionNamesThePluginOnce(t *testing.T)
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
-	owned, _, err := mirrorPluginContributions(t.TempDir(), nil, logger)
+	owned, _, err := mirrorPluginContributions(t.TempDir(), nil, false, logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestMirrorPluginContributions_CollisionWarningTellsTheTruthWhenTheWorkspace
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
-	owned, _, err := mirrorPluginContributions(workDir, nil, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestMirrorPluginContributions_IdenticalContributionsCollideSilently(t *test
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	if _, _, err := mirrorPluginContributions(workDir, nil, logger); err != nil {
+	if _, _, err := mirrorPluginContributions(workDir, nil, false, logger); err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
 	if logs := buf.String(); strings.Contains(logs, "is contributed by both") {
@@ -217,7 +217,7 @@ func TestMirrorPluginContributions_DirectoryFormSkillKeepsItsName(t *testing.T) 
 	}
 
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestMirrorPluginContributions_SkillLandsInBothForms(t *testing.T) {
 	installPack(t, home, "the-pack", "skills/graphify.md", "content\n")
 
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestMirrorPluginContributions_UppercaseMdExtensionMirrorsBothShapes(t *test
 	}
 
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions returned an error on an .MD-extension skill: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestMirrorPluginContributions_OneMalformedNameDoesNotDiscardOtherPlugins(t 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, logger)
 	if err != nil {
 		t.Fatalf("one malformed plugin file aborted the whole pass: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestMirrorPluginContributions_IOFailureOnAmbientSkillIsSoftAndIncomplete(t 
 		t.Fatal(err)
 	}
 
-	owned, complete, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
 	if err != nil {
 		t.Fatalf("ambient-tier I/O error aborted the run: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestMirrorPluginContributions_ValidationErrorSkipsOneEntryFatal(t *testing.
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	_, _, err := mirrorPluginContributions(workDir, nil, logger)
+	_, _, err := mirrorPluginContributions(workDir, nil, false, logger)
 	if err != nil {
 		t.Fatalf("validation error was FATAL instead of soft: %v", err)
 	}

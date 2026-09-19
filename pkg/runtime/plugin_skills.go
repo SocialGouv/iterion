@@ -78,6 +78,15 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // mirrored and the local plugin registry is never consulted. That is the cloud
 // path — a runner pod's iterion home is empty, so the launching instance
 // resolved the enabled plugins' files for it (see Contributions).
+//
+// When inj is nil AND ambientUnresolved is true, the dispatch arrived without
+// the contributions payload: the local registry is NOT the run's declaration —
+// a runner pod's iterion home is empty by design, so "0 enabled" here proves
+// nothing about the launching instance's set. Nothing is mirrored and the pass
+// reports incomplete, so the pruner skips instead of deleting whatever earlier
+// passes mirrored (#1500 R6 medium). The flag is set only by the runner; a
+// local CLI/studio run keeps local resolution, where "0 enabled" IS the truth.
+//
 // It returns the SKILL files iterion owns after the mirror — the same contract
 // as mirrorBundleSkills, and for the same reason: a backend that must decide
 // what it may hand an agent cannot recover that from the workspace, which is a
@@ -89,18 +98,34 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // form alone is NOT discovered as a skill by claude_code's Skill tool (only
 // the directory form is, per the Agent Skills spec; claw discovers both). See
 // mirrorFileSkill for the two-form contract.
-func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterlog.Logger) (owned []string, complete bool, err error) {
+func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnresolved bool, logger *iterlog.Logger) (owned []string, complete bool, err error) {
 	if workDir == "" {
 		return nil, true, nil
 	}
 	if inj != nil {
 		injOwned, injComplete, injErr := mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)
-		// The injected wire IS the whole declaration — the launching
-		// instance resolved it. A wire with no entries legitimately means
-		// "no plugins enabled", not "some plugin lost"; but a SKIPPED
-		// entry (validation or I/O, both soft in mirrorInjectedPluginFiles)
-		// drops injComplete so the pruner skips, same as the local path.
+		// The injected wire IS the whole declaration — the launching instance
+		// resolved it. A wire with no entries legitimately means "no plugins
+		// enabled", not "some plugin lost"; but a SKIPPED entry (validation or
+		// I/O, both soft in mirrorInjectedPluginFiles) drops injComplete so the
+		// pruner skips, same as the local path. Degraded is the publisher's
+		// own confession that the enumeration was PARTIAL (a broken
+		// plugin.yaml is invisible to Enabled()): the carried files mirror
+		// fine, and entries the launch pass mirrored are absent — the cloud
+		// twin of the local path's Registry.LoadSkips veto.
+		if inj.Degraded {
+			injComplete = false
+			if logger != nil {
+				logger.Warn("runtime/plugin: contributions payload is degraded (the launching instance could not fully enumerate its plugins) — mirrored what arrived, orphan pruner skipped for this pass")
+			}
+		}
 		return injOwned, injComplete, injErr
+	}
+	if ambientUnresolved {
+		if logger != nil {
+			logger.Warn("runtime/plugin: dispatch arrived without the contributions payload — the ambient plugin declaration cannot be verified on this pod, nothing mirrored and the orphan pruner is skipped for this pass")
+		}
+		return nil, false, nil
 	}
 	reg, regErr := plugin.Load()
 	if regErr != nil {

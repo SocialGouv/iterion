@@ -2,6 +2,8 @@ package cloudpublisher
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -68,5 +70,74 @@ func TestResolveContributionsFor_NilResolverIsLocalOnly(t *testing.T) {
 				t.Errorf("malformed entry: %+v", f)
 			}
 		}
+	}
+}
+
+// #1500 R6: an empty resolution is a STATEMENT ("nothing enabled on the
+// launching instance"), never a lost field. The payload ships non-nil-empty
+// so the runner can tell it from an ABSENT one — nil on the wire is reserved
+// for "the field did not arrive", which the runner treats as an unverifiable
+// declaration and skips the orphan pruner for that pass. Shipping nil here
+// would overload the two and make every empty cloud resume a silent
+// prune-veto (or worse, after a future regression, an unverified prune).
+//
+// Mutation: restore the `return nil, nil` early return for an empty
+// resolution and this test reddens.
+func TestResolveContributionsFor_EmptyResolutionShipsNonNil(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir()) // nothing installed, nothing enabled
+	got, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "", "run-empty", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("an empty resolution must ship a non-nil empty payload — nil is reserved for a lost field")
+	}
+	if len(got.Plugin) != 0 || len(got.Library) != 0 {
+		t.Errorf("expected an empty payload, got %d plugin file(s), %d library skill(s)", len(got.Plugin), len(got.Library))
+	}
+}
+
+// #1500 R6 follow-up: a broken plugin.yaml makes the registry skip the plugin
+// SILENTLY — it never enters Enabled(), so its files never reach the payload
+// while it is still enabled. The publisher must confess the amputation on the
+// wire (Degraded) or the pod reads the truncated payload as the whole
+// declaration and prunes the broken plugin's launch-pass mirrors on the first
+// resume — the cloud twin of the local path's LoadSkips veto.
+//
+// Mutation: drop the LoadSkips→degraded assignment (or the regErr one) in
+// resolveContributionsFor and this test reddens.
+func TestResolveContributionsFor_BrokenPluginYamlFlagsDegraded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	broken := filepath.Join(home, "plugins", "broken-yaml")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "plugin.yaml"),
+		[]byte("name: broken-yaml\nversion: 1.0.0\ndescription: unquoted: colon breaks yaml\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	healthy := filepath.Join(home, "plugins", "ok-pack")
+	if err := os.MkdirAll(filepath.Join(healthy, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthy, "plugin.yaml"),
+		[]byte("name: ok-pack\nversion: 1.0.0\ndescription: fine\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/ok-skill.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthy, "skills", "ok-skill.md"), []byte("OK\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "", "run-degraded", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.Degraded {
+		t.Fatal("a payload whose enumeration skipped a plugin must ship Degraded=true")
+	}
+	if len(got.Plugin) != 1 || got.Plugin[0].Name != "ok-skill.md" {
+		t.Errorf("the healthy plugin's files must still ride the payload, got %+v", got.Plugin)
 	}
 }

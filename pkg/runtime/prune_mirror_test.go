@@ -2,13 +2,16 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // installMirroredFile writes a file iterion "would have mirrored" at
@@ -627,7 +630,7 @@ func TestMirrorPluginContributions_PartialFailureFlagsIncomplete(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	_, complete, err := mirrorPluginContributions(workDir, nil, nil)
+	_, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -750,11 +753,336 @@ func TestMirrorPluginContributions_BrokenPluginYamlFlagsIncomplete(t *testing.T)
 	}
 
 	workDir := t.TempDir()
-	_, complete, err := mirrorPluginContributions(workDir, nil, nil)
+	_, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
 	if complete {
 		t.Errorf("complete=true despite a broken plugin.yaml — the pruner would delete the broken plugin's previously-mirrored files while its manifest still declares them")
+	}
+}
+
+// #1500 R6 high (21:08Z verdict): a cloud resume whose contributions payload
+// dropped a still-declared library ref must NOT bless the pass complete — the
+// prior copy of that skill is exactly what the pruner would delete, and the
+// local path's own semantics (declared ref produced by no mirror ⇒
+// complete=false) already guard the same class. The injected path verifies the
+// declared union against what was actually produced this pass: the payload,
+// the bundle/plugin mirrors that outrank the library, or a marker-less
+// producer the pruner cannot touch.
+//
+// Seen RED on f00eed935: complete=true, and the seeded skill was deleted by
+// the resume prune.
+//
+// Mutation: hardcode complete=true in mirrorLibrarySkills' injected branch
+// and this test reddens.
+func TestMirrorLibrarySkills_InjectedPayloadMissingDeclaredRefFlagsIncomplete(t *testing.T) {
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	// The launch pass mirrored library skill "alpha"; the resume payload
+	// dropped it while the workflow still declares it.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "alpha", "SKILL.md"),
+		filepath.Join(markerDir, "alpha.SKILL.md.sha256"),
+		"ALPHA BODY\n", "library")
+	// The real mirror sequence wipes every tier sidecar at pass start; the
+	// launch pass's sidecar must not count as fresh for THIS pass.
+	ClearMirroredTierMarkers(workDir)
+
+	wf := wfWithSkills([]string{"alpha", "beta"}, nil)
+	inj := &Contributions{Library: []LibrarySkillFile{{Name: "beta", Description: "b", Content: []byte("BETA BODY\n")}}}
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, nil)
+	if err != nil {
+		t.Fatalf("mirrorLibrarySkills: %v", err)
+	}
+	if complete {
+		t.Errorf("complete=true although declared skill %q arrived in no mirror this pass — the pruner would delete its prior copy", "alpha")
+	}
+}
+
+// #1500 R6 medium: a dispatch that arrived WITHOUT the contributions payload
+// must not fall back to local resolution and read "0 enabled" as the
+// declaration — a runner pod's iterion home is empty by design, so local
+// resolution proves nothing about the launching instance's set. The mirror
+// reports the pass incomplete so the pruner skips instead of deleting the
+// launch pass's plugin contributions.
+//
+// Seen RED on f00eed935 (probe): complete=true, and the seeded plugin file
+// was deleted by the resume prune.
+//
+// Mutation: drop mirrorPluginContributions' ambientUnresolved branch and this
+// test reddens (the local path runs: empty home → 0 enabled → complete=true).
+func TestMirrorPluginContributions_NilPayloadOnRunnerFlagsIncomplete(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir()) // empty pod home: local resolution finds nothing
+	workDir := t.TempDir()
+	_, complete, err := mirrorPluginContributions(workDir, nil, true, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions: %v", err)
+	}
+	if complete {
+		t.Errorf("complete=true although the ambient declaration could not be verified (nil payload) — the pruner would delete the launch pass's plugin files")
+	}
+}
+
+// The flag is set ONLY for a cloud dispatch whose payload did not arrive. A
+// local CLI/studio run keeps local resolution, where "0 enabled plugins" IS
+// the truth and the pruner must stay armed — #1375's core scenario (a plugin
+// disabled between two local passes leaves real orphans to sweep).
+//
+// Mutation: make mirrorPluginContributions return incomplete whenever the
+// flag is consulted-or-set regardless of resolution, and this test reddens.
+func TestMirrorPluginContributions_LocalResolutionStillTrustedWithoutTheFlag(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	workDir := t.TempDir()
+	_, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions: %v", err)
+	}
+	if !complete {
+		t.Errorf("complete=false for a local run with an empty registry — local resolution IS the declaration; the pruner must stay armed")
+	}
+}
+
+// The healthy cross-case: a cloud resume whose payload carries everything the
+// launch pass mirrored must stay COMPLETE and keep the pruner armed — a true
+// orphan (mirrored once, absent from the payload and from every other tier)
+// is swept, and the payload-carried skills survive untouched.
+//
+// Mutation: make the injected library check veto unconditionally (or make
+// mirrorInjectedPluginFiles report incomplete on an empty wire) and this
+// test reddens: the true orphan survives, or the pass reports incomplete.
+func TestPruneWorkspaceMirror_HealthyCloudResumePrunesTrueOrphans(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	// "gone" was mirrored by an earlier pass and is in NO tier anymore — the
+	// true orphan the pruner exists for.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "gone", "SKILL.md"),
+		filepath.Join(markerDir, "gone.SKILL.md.sha256"),
+		"OLD BODY\n", "library")
+	// "kept" is declared by the workflow and rides the resume payload.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "kept", "SKILL.md"),
+		filepath.Join(markerDir, "kept.SKILL.md.sha256"),
+		"KEPT BODY\n", "library")
+
+	wf := wfWithSkills([]string{"kept"}, nil)
+	inj := &Contributions{Library: []LibrarySkillFile{{Name: "kept", Description: "k", Content: []byte("KEPT BODY\n")}}}
+
+	ClearMirroredTierMarkers(workDir)
+	_, pluginsComplete, err := mirrorPluginContributions(workDir, inj, false, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions: %v", err)
+	}
+	_, _, libraryComplete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, nil)
+	if err != nil {
+		t.Fatalf("mirrorLibrarySkills: %v", err)
+	}
+	if !pluginsComplete || !libraryComplete {
+		t.Fatalf("a healthy payload must not veto the prune (plugins=%v library=%v)", pluginsComplete, libraryComplete)
+	}
+	pruneWorkspaceMirror(workDir, true, nil)
+
+	if _, err := os.Stat(filepath.Join(skillsDir, "gone", "SKILL.md")); !os.IsNotExist(err) {
+		t.Errorf("true orphan survived a healthy resume prune (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "kept", "SKILL.md")); err != nil {
+		t.Errorf("payload-carried skill was harmed: %v", err)
+	}
+}
+
+// R17fd85 (unanswered prior-verdict inline high, same class as R6): on the
+// LOCAL path, a library store outage on resume must not leave the pass
+// complete. A leftover from a PREVIOUS pass satisfies the bare
+// alreadyMirrored stat but has no fresh tier sidecar — it is exactly the file
+// the pruner would delete while the workflow still declares it.
+//
+// Mutation: restore the bare alreadyMirrored call in mirrorLibrarySkills'
+// Resolve-miss branch and this test reddens (complete=true).
+func TestMirrorLibrarySkills_StaleLeftoverDoesNotSatisfyDeclaredRef(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir()) // the store outage: Resolve misses
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	// The previous pass mirrored "alpha" from the library; the marker's
+	// tier sidecar is wiped by this pass's ClearMirroredTierMarkers.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "alpha", "SKILL.md"),
+		filepath.Join(markerDir, "alpha.SKILL.md.sha256"),
+		"ALPHA BODY\n", "library")
+	ClearMirroredTierMarkers(workDir)
+
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"alpha"}, nil), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("mirrorLibrarySkills: %v", err)
+	}
+	if complete {
+		t.Errorf("complete=true although the declared ref is satisfied only by a previous pass's un-refreshed copy — the pruner would delete it on a transient store outage")
+	}
+}
+
+// The runner-side flag reaches the mirror through the engine field: the
+// option sets it, the mirror consumes it (the effect is pinned at
+// TestMirrorPluginContributions_NilPayloadOnRunnerFlagsIncomplete, the wiring
+// at pkg/runner's TestContributionsEngineOptions_WiredOnBothDispatchPaths).
+func TestWithContributionsUnresolved_FlagsTheEngine(t *testing.T) {
+	e := &Engine{}
+	WithContributionsUnresolved()(e)
+	if !e.contributionsUnresolved {
+		t.Fatal("WithContributionsUnresolved must set the engine's unresolved flag")
+	}
+}
+
+// Composition witness for the R6-medium veto: the flag must survive the REAL
+// production pass — engine built the way the runner builds it, workspace
+// carrying the launch pass's plugin mirrors — not just the mirror function in
+// isolation. A mutation that breaks the flag threading AT THE CALL SITE
+// (engine_run.go / either resume site) lets the empty-pod local resolution
+// report complete=true and deletes the seeded file; this test reddens on it
+// (proven: the whole committed suite stayed green under exactly that
+// mutation before this test existed).
+func TestRunPersistWorkspace_UnresolvedContributionsSkipPrune(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())             // empty pod home: local resolution finds nothing
+	t.Setenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT", "1") // in-place workspace: the documented prune opt-in
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	// The launch pass mirrored a plugin contribution into this workspace.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "deploy-skill", "SKILL.md"),
+		filepath.Join(markerDir, "deploy-skill.SKILL.md.sha256"),
+		"DEPLOY BODY\n", "plugin")
+
+	wf := &ir.Workflow{Name: "unresolved", Nodes: map[string]ir.Node{}}
+	s, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	runID := "unresolved-contribs"
+	run, err := s.CreateRun(context.Background(), runID, wf.Name, nil)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	eng := New(wf, s, nil, WithWorkDir(workDir), WithContributionsUnresolved())
+	if err := eng.runPersistWorkspace(context.Background(), runID, run, false, worktreeContext{}); err != nil {
+		t.Fatalf("runPersistWorkspace: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(skillsDir, "deploy-skill", "SKILL.md")); err != nil {
+		t.Fatalf("seeded launch leftover DELETED although the engine held WithContributionsUnresolved — flag-to-mirror wiring broken: %v", err)
+	}
+}
+
+// Same composition witness through the FAILURE-RESUME path
+// (restoreResumeWorkspace), which re-mirrors and prunes with r.Worktree —
+// the pause-resume site (resumeRebuildState) shares the same predicate and
+// the same mirror call.
+func TestRestoreResumeWorkspace_UnresolvedContributionsSkipPrune(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	t.Setenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT", "1")
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "deploy-skill", "SKILL.md"),
+		filepath.Join(markerDir, "deploy-skill.SKILL.md.sha256"),
+		"DEPLOY BODY\n", "plugin")
+
+	wf := &ir.Workflow{Name: "unresolved", Nodes: map[string]ir.Node{}}
+	s, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	eng := New(wf, s, nil, WithContributionsUnresolved())
+	r := &store.Run{ID: "unresolved-resume", WorkDir: workDir}
+	if err := eng.restoreResumeWorkspace(r); err != nil {
+		t.Fatalf("restoreResumeWorkspace: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(skillsDir, "deploy-skill", "SKILL.md")); err != nil {
+		t.Fatalf("seeded launch leftover DELETED on failure-resume although the engine held WithContributionsUnresolved: %v", err)
+	}
+}
+
+// The publisher's own confession travels: a payload flagged Degraded mirrors
+// what arrived but must NOT bless the prune — entries the launch pass
+// mirrored are absent (the cloud twin of the local path's LoadSkips veto,
+// whose shape it mirrors exactly: skip ⇒ complete=false, files survive).
+//
+// Mutation: drop mirrorPluginContributions' inj.Degraded branch and this
+// test reddens (complete=true, pruner armed on an amputated declaration).
+func TestMirrorPluginContributions_DegradedPayloadFlagsIncomplete(t *testing.T) {
+	workDir := t.TempDir()
+	inj := &Contributions{
+		Plugin:   []ContributionFile{{Kind: "skills", Name: "ok.md", Content: []byte("OK\n")}},
+		Degraded: true,
+	}
+	_, complete, err := mirrorPluginContributions(workDir, inj, false, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions: %v", err)
+	}
+	if complete {
+		t.Errorf("complete=true on a Degraded payload — the amputated declaration blessed the prune; the broken plugin's still-enabled mirrors would be deleted on resume")
+	}
+}
+
+// A healthy payload with the SAME shape stays complete — Degraded is a
+// per-payload fact, not a cloud-wide veto. Mutation: make the Degraded
+// branch veto every injected pass and this test reddens.
+func TestMirrorPluginContributions_HealthyPayloadStaysComplete(t *testing.T) {
+	workDir := t.TempDir()
+	inj := &Contributions{
+		Plugin: []ContributionFile{{Kind: "skills", Name: "ok.md", Content: []byte("OK\n")}},
+	}
+	_, complete, err := mirrorPluginContributions(workDir, inj, false, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions: %v", err)
+	}
+	if !complete {
+		t.Errorf("complete=false on a healthy payload — Degraded must be a per-payload fact, not a cloud-wide veto")
+	}
+}
+
+// The marker-less arm of skillCoveredThisPass: a bundle can satisfy a
+// declared ref with a DIRECTORY skill (mirrorBundleSkills writes no marker
+// for directory sources). The ref is covered — and must not veto the prune —
+// because the pruner cannot touch a name without a marker anyway. A weak
+// predicate that required a marker would turn every such cloud run into a
+// STATIONARY veto.
+//
+// Mutation: make skillCoveredThisPass's marker-less arm return false and
+// this test reddens (complete=false on a healthy cloud run).
+func TestMirrorLibrarySkills_BundleDirFormSatisfiesInjectedDeclaration(t *testing.T) {
+	workDir := t.TempDir()
+	skillsSrc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(skillsSrc, "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsSrc, "alpha", "SKILL.md"), []byte("DIRFORM\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &bundle.Bundle{SkillsDir: skillsSrc}
+	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
+		t.Fatalf("mirrorBundleSkills: %v", err)
+	}
+
+	// The payload carries no library skills; the workflow declares only the
+	// bundle-owned ref.
+	wf := wfWithSkills([]string{"alpha"}, nil)
+	inj := &Contributions{}
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, nil)
+	if err != nil {
+		t.Fatalf("mirrorLibrarySkills: %v", err)
+	}
+	if !complete {
+		t.Errorf("complete=false although declared ref %q is owned by a marker-less bundle directory skill — stationary veto on a healthy cloud run", "alpha")
 	}
 }

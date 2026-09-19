@@ -336,10 +336,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		opts = append(opts, runtime.WithBundle(childBundle))
 		// Plugin/library skills the LAUNCHING instance resolved: the pod's
 		// iterion home is empty, so without the payload the child would
-		// silently find only the compiled-in builtins.
-		if msg.Contributions != nil {
-			opts = append(opts, runtime.WithContributions(contributionsFromWire(msg.Contributions)))
-		}
+		// silently find only the compiled-in builtins. A missing payload is an
+		// anomaly (see contributionsEngineOptions) and is never read as
+		// "nothing enabled".
+		opts = append(opts, contributionsEngineOptions(msg.Contributions, childLogger)...)
 
 		childEng := runtime.New(childWf, r.cfg.Store, childExec, opts...)
 		r.registerRunEngine(childRunID, childEng)

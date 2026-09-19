@@ -128,7 +128,12 @@ import (
 // runner cannot compile this AST semantics and must reject before admission.
 // v=19: literal template delimiters require the new renderer. A pre-v19
 // runner must reject before compiling or executing their source text.
-const SchemaVersion = 19
+// v=20: Contributions.Degraded flags a payload the publisher could not fully
+// enumerate (broken plugin.yaml, unreadable home, degraded team source). A
+// stale runner dropping it reads an amputated payload as the whole
+// declaration and prunes a still-enabled plugin's launch-pass mirrors on the
+// first resume, so it must reject.
+const SchemaVersion = 20
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -164,9 +169,13 @@ type RunMessage struct {
 	// wire mirror of runtime.Contributions). A runner pod's iterion home is
 	// ephemeral and empty, so without this an operator-installed plugin's
 	// skill — or a DSL `skills:` library reference — silently never reaches
-	// the workspace and only compiled-in builtins do. Nil (a message from
-	// before this field, or a non-cloud publisher) makes the runner fall back
-	// to local resolution, which is a no-op on a pod.
+	// the workspace and only compiled-in builtins do. The publisher ships the
+	// field on every dispatch, possibly EMPTY (a statement: "nothing enabled
+	// on the launching instance"). Nil means the field did not arrive (an
+	// anomaly — a lost field or a pre-payload publisher); the runner never
+	// reads it as "nothing enabled" and the engine treats the ambient
+	// declaration as unverifiable, so the orphan pruner is skipped for that
+	// pass instead of deleting still-declared files.
 	Contributions *Contributions `json:"contributions,omitempty"`
 	Vars          map[string]any `json:"vars,omitempty"`
 	SecretsRef    string         `json:"secrets_ref,omitempty"`
@@ -283,6 +292,17 @@ type BotBundleRef struct {
 type Contributions struct {
 	Plugin  []ContributionFile `json:"plugin,omitempty"`
 	Library []LibrarySkillFile `json:"library,omitempty"`
+	// Degraded flags a payload the publisher could NOT fully enumerate: a
+	// plugin whose plugin.yaml is broken (skipped by the registry, invisible
+	// to Enabled()), an unreadable iterion home, or a team-scoped source that
+	// failed to materialise. The runner pod cannot distinguish an amputated
+	// payload from a complete one by inspecting it — the missing entries are
+	// missing — so the publisher says so on the wire. The mirror pass reads
+	// it as "the declaration is partial": nothing beyond the carried files is
+	// verified, the pass reports incomplete, and the orphan pruner is
+	// skipped so a still-enabled plugin's launch-pass mirrors survive
+	// (the cloud twin of the local path's Registry.LoadSkips veto).
+	Degraded bool `json:"degraded,omitempty"`
 }
 
 // ContributionFile is one plugin markdown file bound for
