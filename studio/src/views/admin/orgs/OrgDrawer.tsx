@@ -16,6 +16,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { OrgDangerZone } from "./OrgDangerZone";
 import { OrgQuotasSection } from "./OrgQuotasSection";
 import { OrgStatusSection } from "./OrgStatusSection";
+import { OrgTeamsSection } from "./OrgTeamsSection";
 import { OrgUsageStats } from "./OrgUsageStats";
 import { Field } from "./orgFields";
 
@@ -115,6 +116,7 @@ export function OrgDrawer({
       </section>
 
       <OrgUsageStats usage={usage} />
+      <OrgTeamsSection orgID={org.id} />
       <OrgQuotasSection org={org} busy={busy} run={run} onAfterUpdate={onAfterUpdate} />
       <OrgStatusSection org={org} busy={busy} run={run} onAfterUpdate={onAfterUpdate} />
       <OrgDangerZone
