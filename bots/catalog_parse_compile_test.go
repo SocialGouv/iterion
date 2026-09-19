@@ -35,17 +35,34 @@ import (
 // launches by the same path and must pass the same gates.
 func teamBotFiles() ([]string, error) { return filepath.Glob("*/*.bot") }
 
-func TestCatalogBotsParseAndCompileClean(t *testing.T) {
+// exampleFragments are the .bot files under examples/ that are not
+// workflows: declaration catalogues meant to be pasted into one
+// (examples_cursors_test.go compiles the cursor catalogue inside a workflow).
+var exampleFragments = map[string]bool{"../examples/cursors/cursors.bot": true}
+
+// catalogWorkflowFiles lists every shipped workflow: the catalogue bots;
+// every .bot of the examples — the subbot children and the standalone
+// examples beside a main included, the declaration fragments excluded; the
+// dispatcher's `default` assignee, copied into the //go:embed tree at build
+// (a parse regression there breaks `iterion dispatch` in every binary); and
+// the operator scripts under scripts/adhoc/.
+func catalogWorkflowFiles() []string {
 	teamBots, _ := teamBotFiles()
-	demoMain, _ := filepath.Glob("../examples/*/main.bot")
+	demos, _ := filepath.Glob("../examples/*/*.bot")
 	demoLoose, _ := filepath.Glob("../examples/*.bot")
-	// The loose workflows shipped outside bots/ and examples/: the
-	// dispatcher's `default` assignee, copied into the //go:embed tree at
-	// build (a parse regression there breaks `iterion dispatch` in every
-	// binary), and the operator scripts under scripts/adhoc/.
-	shipped := []string{"../pkg/cli/templates/dispatch_bots_default.bot"}
 	scripts, _ := filepath.Glob("../scripts/adhoc/*.bot")
-	targets := append(append(append(append(teamBots, demoMain...), demoLoose...), shipped...), scripts...)
+	targets := append([]string{}, teamBots...)
+	for _, p := range append(demos, demoLoose...) {
+		if !exampleFragments[p] {
+			targets = append(targets, p)
+		}
+	}
+	targets = append(targets, "../pkg/cli/templates/dispatch_bots_default.bot")
+	return append(targets, scripts...)
+}
+
+func TestCatalogBotsParseAndCompileClean(t *testing.T) {
+	targets := catalogWorkflowFiles()
 	if len(targets) == 0 {
 		t.Fatal("no catalog workflows found — discovery glob likely broke")
 	}
