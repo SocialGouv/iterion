@@ -49,6 +49,16 @@ vars:
   ## (FP memory, file records, context, patches) lives under the repo's
   ## .sec-audit/ dotdir instead — see the vars below.
   scan_dir:            string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan"
+  ## TTL (in days) for the per-run subdirs the scan_dir carries -- the deep
+  ## scanner keys its export on {{run.id}} (see #1322), so scan_dir now
+  ## accumulates one `<run.id>/` and one `deepsec-logs-<run.id>/` per pass.
+  ## The engine's scratch sweep reclaims only entries nothing has written to
+  ## within its retention window (runtime/scratch_sweep.go), but a workspace
+  ## used regularly keeps writing under scan_dir, so its own subdirs never
+  ## age out on their own. Prune at scanner entry: entries older than TTL
+  ## days go, the current run's two directories always stay. 0 disables the
+  ## sweep. Matches records_ttl_days's default.
+  scan_dir_ttl_days:   int    = 30
   ## Overflow guard. gosec/semgrep can emit thousands of findings on a
   ## large repo; triage reads the scanner JSON and overflows the model
   ## context. cap_findings keeps at most this many findings per scanner
@@ -454,6 +464,23 @@ schema scan_join_output:
   ## exhausted (files_processed=0 with findings from earlier passes) from a
   ## pass that analysed nothing and produced nothing (#1328).
   deepsec_finding_count: int
+
+## cap_findings input — carries the producer's json_paths for the deep
+## scan alongside vars.scan_dir. Since #1322 keyed the deepsec export on
+## {{run.id}}, its file lives at scan_dir/<run.id>/deepsec.json — outside
+## the non-recursive glob cap_findings walks over scan_dir/*.json. Without
+## this explicit route the array-shaped deepsec export never enters the
+## harvest, so `inline` misses it entirely; on claw/codex triage (which
+## reads inline as its ONLY transport, cf. triage_system rule 1a) that is
+## the silent thinning the transport exists to end. Never widen the glob
+## to recurse: doing so would sweep other passes' per-run subdirs and
+## reopen #1322 with a neighbour attribution.
+schema cap_findings_input:
+  ## deepsec_paths is projected off the producer envelope by scan_join
+  ## (`if(vars.enable_deepsec, outputs.run_deepsec_scanner.json_paths, '')`),
+  ## so it is `""` when the deep gate routed around the scanner and `{}`
+  ## when it refused. Only json_paths.deepsec is consulted.
+  deepsec_paths: json
 
 ## cap_findings emits the truncation budget so triage can surface it in
 ## the report (explicit, never-silent signal loss). per_scanner is a list
@@ -2881,7 +2908,7 @@ compute deepsec_gate:
 ## untrusted-input boundary the triage prompt already applies to
 ## semgrep/gosec output.
 tool run_deepsec_scanner:
-  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} DS_AGENT={{vars.deepsec_agent}} DS_MODEL={{vars.deepsec_model}} bash -c '
+  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} OUT_JSON={{vars.deepsec_out}} CONC={{vars.deepsec_concurrency}} PROC_LIMIT={{vars.deepsec_process_limit}} DEEPSEC_ROOT={{vars.deepsec_root}} RUN_ID={{run.id}} DS_AGENT={{vars.deepsec_agent}} DS_MODEL={{vars.deepsec_model}} SCAN_DIR_TTL_DAYS={{vars.scan_dir_ttl_days}} bash -c '
 set +e
 mkdir -p "$(dirname "$OUT_JSON")"
 
@@ -2990,6 +3017,17 @@ case "${RUN_ID:-}" in
   ""|*[!A-Za-z0-9._-]*)
     err_envelope "run id missing or not usable as a path segment: refusing to share a log directory between runs, because the run ids this node pins its coverage on are read back out of it" ;;
 esac
+# The charset above admits . and .., which are LEGAL filenames but not usable
+# as path SEGMENTS: dirname/./basename resolves back to the shared slot, and
+# dirname/../basename escapes one directory above scan_dir. The generic
+# refusal upstream (RUN_ID unset or carrying an invalid character) makes the
+# resource layout claim structural; leaving these two through would make the
+# claim spelled-only. Rejected here rather than folded into the charset above
+# so the two failure modes carry distinct messages.
+case "$RUN_ID" in
+  .|..)
+    err_envelope "run id is a path-navigation segment (\"$RUN_ID\"): refusing to derive the log directory and the per-pass export slot from it, which would recreate the shared slot at scan_dir or place the export one directory above" ;;
+esac
 LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 # OUT_JSON is derived per-pass -- keyed on the same $RUN_ID that already keys
 # LOG_DIR -- so two passes that BOTH run deepsec successfully never write to
@@ -3009,6 +3047,23 @@ LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 OUT_JSON_BASE="$OUT_JSON"
 OUT_JSON="$(dirname "$OUT_JSON_BASE")/$RUN_ID/$(basename "$OUT_JSON_BASE")"
 mkdir -p "$DSW" "$LOG_DIR" "$(dirname "$OUT_JSON")"
+
+# ── retention ─────────────────────────────────────────────────────
+# Per-run keying leaves one exports subdir and one logs subdir at the
+# top of $SCAN_DIR per pass; the engine scratch sweep does not reclaim
+# them because a workspace used regularly keeps writing under scan_dir
+# (see runtime/scratch_sweep.go: sweep is by whole-workspace mtime).
+# Prune older per-run entries by mtime, skipping deepsec-workspace (the
+# shared data root, deliberately per-workspace) and this run own two
+# directories. 0 disables the sweep.
+if [ "${SCAN_DIR_TTL_DAYS:-0}" -gt 0 ] 2>/dev/null; then
+  find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
+    ! -name "deepsec-workspace" \
+    ! -name "$RUN_ID" \
+    ! -name "deepsec-logs-$RUN_ID" \
+    -mtime "+${SCAN_DIR_TTL_DAYS}" \
+    -exec rm -rf {} + 2>/dev/null
+fi
 # Which agent actually ran is not derivable from the envelope: deepsec is not in
 # backends_used and the engine meters none of it. env.log is the one log that
 # travels in errors[] unconditionally, so the answer leaves the pod with it.
@@ -3916,7 +3971,7 @@ if generic_present < min_generic:
 ## emitted so triage surfaces the truncation in the report. Security signal
 ## is bounded, never silently dropped.
 tool cap_findings:
-  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} python3 -c "
+  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
 import os, json, glob
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -3973,10 +4028,44 @@ def trim(item):
         return item[:MAXSTR] + '...[trunc]'
     return item
 
+# The deepsec export lives OUTSIDE the top-level glob (its file is keyed on
+# the run id template, cf. run_deepsec_scanner, so it sits at
+# scan_dir/<run-id>/deepsec.json). Route it in EXPLICITLY through the
+# producer's json_paths,
+# the same envelope bank_deepsec_findings and scan_health already honour.
+# Never recurse the glob: a recursive sweep would pull in other passes'
+# per-run subdirs and reopen the shared-slot defect #1322 closed.
+_ds_path = ''
+try:
+    _ds_paths = json.loads(os.environ.get('DEEPSEC_PATHS') or '{}')
+except ValueError:
+    _ds_paths = {}
+if isinstance(_ds_paths, dict):
+    _p = _ds_paths.get('deepsec')
+    if isinstance(_p, str) and _p:
+        _ds_path = _p
+
 per_scanner = []
 harvest = []
 total_raw = total_kept = total_capped = 0
-for jf in sorted(glob.glob(os.path.join(scan_dir, '*.json'))):
+_seen = set()
+_files = sorted(glob.glob(os.path.join(scan_dir, '*.json')))
+if _ds_path:
+    # Appended, not prepended: the top-level scanners are always-on and their
+    # ordering (semgrep first, then trivy, etc.) is what the inline budget
+    # already exercises. The deep scan is opt-in and its findings ride at the
+    # end of the same list, exactly like they did before per-run keying moved
+    # its file out of the glob.
+    _files.append(_ds_path)
+for jf in _files:
+    if jf in _seen:
+        # DEEPSEC_PATHS may still name a file that fell inside the top-level
+        # glob on a legacy configuration (e.g. an operator who set
+        # vars.deepsec_out to scan_dir/deepsec.json directly, before the
+        # per-run derivation). Skip the duplicate so the same findings never
+        # count twice into inline_total.
+        continue
+    _seen.add(jf)
     try:
         with open(jf, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
@@ -4058,6 +4147,7 @@ print(json.dumps({
     'inline_truncated': inline_max > 0 and inline_embedded < inline_total,
 }))
 "`
+  input: cap_findings_input
   output: findings_budget_output
 
 ## triage reads the full scanner JSON + cap_findings envelope + project
@@ -5786,7 +5876,7 @@ workflow sec_audit_source:
   bank_deepsec_findings -> scan_join
 
   scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}", deepsec_paths: "{{outputs.scan_join.deepsec_paths}}"}
-  scan_health -> cap_findings
+  scan_health -> cap_findings with {deepsec_paths: "{{outputs.scan_join.deepsec_paths}}"}
 
   ## ZERO-FINDINGS IS DELIBERATELY NOT SHORT-CIRCUITED. On a clean repo
   ## cap_findings yields an empty set and triage runs one cheap LLM pass

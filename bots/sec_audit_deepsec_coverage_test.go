@@ -949,7 +949,11 @@ func runDeepsecNodeAgent(t *testing.T, dir, runID, agent, model, deepsecStub str
 		"{{vars.deepsec_concurrency}}":   "1",
 		"{{vars.deepsec_process_limit}}": "0",
 		"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
-		"{{run.id}}":                     runID,
+		// 0 disables the per-run scratch prune (R6be92b). Retention has its
+		// own test; the coverage tests here must not have side effects on the
+		// tempdir they build.
+		"{{vars.scan_dir_ttl_days}}": "0",
+		"{{run.id}}":                 runID,
 		// These two ARE shell-quoted, unlike everything above, because the
 		// property under test is precisely what the node does with a value
 		// carrying shell syntax — and there the runtime's escaping IS the
