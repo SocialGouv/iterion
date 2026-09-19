@@ -244,10 +244,10 @@ func TestShapesFollowTheBias(t *testing.T) {
 	if Synthesize(nil, true) == nil {
 		t.Fatal("a node without a schema produces nil, not an empty output")
 	}
-	if v := VarValue(&ir.Var{Name: "goal", Type: ir.VarString}, true); v != "x" {
+	if v := VarValue(&ir.Var{Name: "goal", Type: ir.VarString}, true, false); v != "x" {
 		t.Fatalf("a string var's shape is %v", v)
 	}
-	if v := VarValue(&ir.Var{Name: "m", Type: ir.VarString, EnumValues: []string{"a", "b"}}, false); v != "b" {
+	if v := VarValue(&ir.Var{Name: "m", Type: ir.VarString, EnumValues: []string{"a", "b"}}, false, false); v != "b" {
 		t.Fatalf("an enum var's false shape is %v", v)
 	}
 }
@@ -922,17 +922,17 @@ func TestAPassThatRunsOutOfTimeIsSaidSo(t *testing.T) {
 // copilot bot's scope guard) does not die on the shape.
 func TestAListOfEnumValuesIsShapedAsAList(t *testing.T) {
 	enum := []string{"a", "b"}
-	if v, ok := Value(ir.FieldTypeStringArray, enum, true).([]any); !ok || len(v) != 1 || v[0] != "a" {
-		t.Fatalf("a string[] with an enum shaped as %#v", Value(ir.FieldTypeStringArray, enum, true))
+	if v, ok := Value(ir.FieldTypeStringArray, enum, true, false).([]any); !ok || len(v) != 1 || v[0] != "a" {
+		t.Fatalf("a string[] with an enum shaped as %#v", Value(ir.FieldTypeStringArray, enum, true, false))
 	}
-	if v, ok := Value(ir.FieldTypeStringArray, enum, false).([]any); !ok || len(v) != 1 || v[0] != "b" {
-		t.Fatalf("the false pass shaped %#v", Value(ir.FieldTypeStringArray, enum, false))
+	if v, ok := Value(ir.FieldTypeStringArray, enum, false, false).([]any); !ok || len(v) != 1 || v[0] != "b" {
+		t.Fatalf("the false pass shaped %#v", Value(ir.FieldTypeStringArray, enum, false, false))
 	}
-	if v := Value(ir.FieldTypeString, enum, true); v != "a" {
+	if v := Value(ir.FieldTypeString, enum, true, false); v != "a" {
 		t.Fatalf("a plain enum shaped as %#v", v)
 	}
-	if v, ok := VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true).([]any); !ok || len(v) != 1 || v[0] != "a" {
-		t.Fatalf("a string[] var with an enum shaped as %#v", VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true))
+	if v, ok := VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true, false).([]any); !ok || len(v) != 1 || v[0] != "a" {
+		t.Fatalf("a string[] var with an enum shaped as %#v", VarValue(&ir.Var{Type: ir.VarStringArray, EnumValues: enum}, true, false))
 	}
 }
 
@@ -1461,5 +1461,591 @@ func TestAChildInsideALoopIsSimulatedOnceAndCounted(t *testing.T) {
 	}
 	if out := r.Render(); !strings.Contains(out, "crossed 4 times") {
 		t.Fatalf("the crossings are not said:\n%s", out)
+	}
+}
+
+// #1318 — a fan_out_each router whose `over:` reads a `json`-typed output
+// field takes an array shape; today it took the default object shape and
+// died "expected an array" on both passes. The router now fires once (one
+// element on the true pass, empty on the false pass), and the whole
+// downstream subgraph reads on the true pass.
+const fanOutEachOverJSONBot = `schema plan_out:
+  items: json
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: plan_out
+
+agent work:
+  model: "claude-opus-4-7"
+  system: work_sys
+
+prompt work_sys:
+  Work on {{input.item}}
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.plan.items}}"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: plan
+  plan -> dispatch
+  dispatch -> work
+  work -> done
+`
+
+func TestAJSONOutputConsumedByFanOutEachIsShapedAsAnArray(t *testing.T) {
+	wf := compileBot(t, fanOutEachOverJSONBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Passes) != 2 {
+		t.Fatalf("two passes expected, got %+v", r.Passes)
+	}
+	for _, p := range r.Passes {
+		if strings.Contains(p.Failure, "expected an array") {
+			t.Fatalf("pass bias=%v still died on the array shape: %+v", p.Bias, p)
+		}
+	}
+	if !contains(r.Passes[0].Nodes, "work") {
+		t.Fatalf("the true pass did not fire the fan-out branch: %+v", r.Passes[0])
+	}
+	// The report never lists `work` as unvisited: the true pass reached it.
+	for _, id := range r.UnvisitedNodes {
+		if id == "work" {
+			t.Fatalf("work unvisited: %+v", r.UnvisitedNodes)
+		}
+	}
+}
+
+// #1456 — a compute expression `concat(outputs.a.f, outputs.b.g)` over two
+// `json` output fields no longer dies "argument 1 is map, want array" on
+// either pass: the two fields are shaped as arrays, `concat` returns an
+// array on both passes, the pass finishes.
+const concatOverTwoJSONBot = `schema batch:
+  items: json
+
+agent first_bank:
+  model: "claude-opus-4-7"
+  output: batch
+
+agent second_bank:
+  model: "claude-opus-4-7"
+  output: batch
+
+schema merged:
+  all: json
+
+compute merge:
+  output: merged
+  expr:
+    all: "concat(outputs.first_bank.items, outputs.second_bank.items)"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: first_bank
+  first_bank -> second_bank
+  second_bank -> merge
+  merge -> done
+`
+
+func TestAJSONOutputConsumedByAnArrayFunctionIsShapedAsAnArray(t *testing.T) {
+	wf := compileBot(t, concatOverTwoJSONBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Passes {
+		if strings.Contains(p.Failure, "want array") {
+			t.Fatalf("pass bias=%v still died on the array shape: %+v", p.Bias, p)
+		}
+		if p.Status != "finished" {
+			t.Fatalf("pass bias=%v did not finish: %+v", p.Bias, p)
+		}
+	}
+}
+
+// #1318 (unit) — Synthesize shapes a `json` field as an array when the
+// caller says so, and as an object otherwise. The rule holds on both
+// passes: a shape read as an array is an array whichever end of the enum
+// walk the pass takes.
+func TestSynthesizeShapesJSONAsArrayWhenConsumerNeedsIt(t *testing.T) {
+	schema := &ir.Schema{Name: "s", Fields: []*ir.SchemaField{
+		{Name: "items", Type: ir.FieldTypeJSON},
+		{Name: "note", Type: ir.FieldTypeJSON},
+	}}
+	arrayFields := map[string]bool{"items": true}
+	for _, bias := range []bool{true, false} {
+		out := SynthesizeAt(schema, bias, arrayFields)
+		if _, ok := out["items"].([]any); !ok {
+			t.Fatalf("bias=%v: `items` shaped %T, want []any", bias, out["items"])
+		}
+		if _, ok := out["note"].(map[string]any); !ok {
+			t.Fatalf("bias=%v: `note` shaped %T, want map[string]any", bias, out["note"])
+		}
+	}
+}
+
+// #1325 — a `best_effort` fan-out whose branches ALL die of the same
+// program-shape death (a bounded loop with no exit at its cap) is no
+// longer read as clean: the pass records the dead branches, and Clean()
+// reads false. A branch that ran to a ceiling — the shapes' doing — stays
+// what it is (TestACeilingInsideABranchIsACeiling holds that end).
+const bestEffortAllBranchesDeadBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: best_effort
+
+workflow br:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 40
+  survey -> split
+  split -> b1
+  split -> b2
+  b1 -> b1 when not ok as fix_a(2)
+  b2 -> b2 when not ok as fix_b(2)
+  b1 -> join when ok
+  b2 -> join when ok
+  join -> done
+`
+
+func TestABestEffortFanOutWhereEveryBranchDiesIsNotClean(t *testing.T) {
+	wf := compileBot(t, bestEffortAllBranchesDeadBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// On the false pass every bounded loop is spent (bias=false picks the
+	// "not ok" branch), every branch dies LOOP_EXHAUSTED with no exit,
+	// best_effort keeps the join and the run finishes at done. The dry run
+	// used to read that as clean; it now records the dead branches.
+	p := r.Passes[1]
+	if p.Status != "finished" {
+		t.Fatalf("best_effort with all branches dead should still finish at done: %+v", p)
+	}
+	if len(p.DeadBranches) == 0 {
+		t.Fatalf("best_effort with every branch dying reads no dead branch: %+v", p)
+	}
+	if r.Clean() {
+		t.Fatalf("a fan-out whose branches all died reads clean: %+v", r)
+	}
+	if out := r.Render(); !strings.Contains(out, "dead branch") {
+		t.Fatalf("the rendering does not name the dead branches:\n%s", out)
+	}
+}
+
+// #1325 (twin) — a `best_effort` fan-out whose branches all end at a
+// declared `fail` node reads as CLEAN: a deliberate refusal is the
+// program's word, whatever the fan-out mode.
+const bestEffortAllBranchesRefuseBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+fail rejected_a:
+  code: REJECTED
+  message: "a said no"
+
+fail rejected_b:
+  code: REJECTED
+  message: "b said no"
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: best_effort
+
+workflow br:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 20
+  survey -> split
+  split -> b1
+  split -> b2
+  b1 -> join when ok
+  b1 -> rejected_a when not ok
+  b2 -> join when ok
+  b2 -> rejected_b when not ok
+  join -> done
+`
+
+func TestABestEffortFanOutWhereEveryBranchRefusesIsClean(t *testing.T) {
+	wf := compileBot(t, bestEffortAllBranchesRefuseBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The false pass ends every branch at a declared fail; best_effort
+	// converges at join, the run reaches done. No dead branch.
+	p := r.Passes[1]
+	if p.Status != "finished" {
+		t.Fatalf("best_effort with every branch refusing should finish at done: %+v", p)
+	}
+	if len(p.DeadBranches) != 0 {
+		t.Fatalf("a branch that ended at a declared fail is not a dead branch: %+v", p.DeadBranches)
+	}
+	if !r.Clean() {
+		t.Fatalf("a fan-out whose branches all refused as declared is not clean: %+v", r)
+	}
+}
+
+// #1318 (foreach twin) — `foreach` is the other iteration surface of the
+// DSL: a `foreach` edge's collection ref reads a `json` output field or a
+// `json` var the same way `fan_out_each`'s `over:` does. The class rule
+// is that both iteration surfaces mark their collection as
+// array-consumed, so a bot that reads its collection from a `json`-typed
+// output or var stays clean under `--strict`.
+const foreachIterationBot = `schema plan_out:
+  items: json
+
+vars:
+  extras: json
+
+agent decompose:
+  model: "claude-opus-4-7"
+  output: plan_out
+
+agent visit:
+  model: "claude-opus-4-7"
+
+agent visit_extra:
+  model: "claude-opus-4-7"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: decompose
+  decompose -> visit
+  visit -> visit as foreach scan(item in "{{outputs.decompose.items}}")
+  visit -> visit_extra
+  visit_extra -> visit_extra as foreach scan_extra(item in "{{vars.extras}}")
+  visit_extra -> done
+`
+
+// arrayConsumers and arrayConsumedVars walk `wf.Foreaches[*].CollectionRefs`
+// alongside `RouterNode.OverRefs`, so a `json` field or var read by a
+// foreach is shaped as an array. The runtime's own edge semantics
+// (idx+1 >= count) fall through for small collections whatever the
+// shape, so what this test proves is that the SHAPE walker sees both
+// iteration surfaces — the walker is where a future bot's coverage rides.
+func TestForeachCollectionRefsAreArrayConsumers(t *testing.T) {
+	wf := compileBot(t, foreachIterationBot)
+	acOut := arrayConsumers(wf)
+	if got := acOut["decompose"]; got == nil || !got["items"] {
+		t.Fatalf("arrayConsumers did not mark outputs.decompose.items (foreach): %#v", acOut)
+	}
+	acVars := arrayConsumedVars(wf)
+	if !acVars["extras"] {
+		t.Fatalf("arrayConsumedVars did not mark vars.extras (foreach): %#v", acVars)
+	}
+	// The dry-run still finishes clean: foreach on a self-loop with a
+	// small collection falls through to the next outgoing edge whatever
+	// the shape, but the shape rule keeps the door open for a future bot
+	// whose coverage rides on the iteration count.
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Clean() {
+		t.Fatalf("a foreach bot with json collection sources is not clean: %+v", r)
+	}
+}
+
+// PR #1491 review R06ab46 + R0e2655 — a nested ref like
+// `outputs.a.cfg.items` or `vars.list.items` names a nested field the
+// shape rule cannot reach; arrayConsumers / arrayConsumedVars must NOT
+// mark the parent (`outputs.a.cfg` / `vars.list`) as array-consumed, or
+// a sibling map read (`keys(outputs.a.cfg)`) would die "keys() expects a
+// map, got []interface {}". All four sites (outputs OverRefs, outputs
+// Foreach.CollectionRefs, outputs ArrayContextRefs and its vars twin,
+// vars OverRefs, vars Foreach.CollectionRefs, vars edge expressions,
+// vars compute expressions) require an exact leaf ref.
+const deepPathBot = `vars:
+  cfg: json
+
+schema cfg_out:
+  cfg: json
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: cfg_out
+
+schema merged:
+  items: json
+  fields: json
+  var_items: json
+  var_fields: json
+
+compute merge:
+  output: merged
+  expr:
+    items:      "concat(outputs.survey.cfg.items, outputs.survey.cfg.items)"
+    fields:     "keys(outputs.survey.cfg)"
+    var_items:  "concat(vars.cfg.items, vars.cfg.items)"
+    var_fields: "keys(vars.cfg)"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: survey
+  survey -> merge
+  merge -> done
+`
+
+func TestArrayConsumersMarksOnlyExactLeafRefs(t *testing.T) {
+	wf := compileBot(t, deepPathBot)
+	ac := arrayConsumers(wf)
+	// `outputs.survey.cfg.items` and `outputs.survey.cfg` are both read,
+	// but the shape rule only marks EXACT leaf refs (path length 2). The
+	// nested `.items` on `cfg` is deeper — leaving `cfg` object-shaped is
+	// what `keys(cfg)` expects.
+	if got := ac["survey"]; got != nil && got["cfg"] {
+		t.Fatalf("arrayConsumers wrongly marked outputs.survey.cfg from a nested ref: %#v", ac)
+	}
+	// Same for vars: `vars.cfg.items` (nested) must NOT mark `vars.cfg`
+	// as array-consumed, or `keys(vars.cfg)` dies (R0e2655, the vars
+	// twin of R06ab46 — the compute-expression walker in
+	// arrayConsumedVars was the last remaining `>= 1` site).
+	acv := arrayConsumedVars(wf)
+	if acv["cfg"] {
+		t.Fatalf("arrayConsumedVars wrongly marked vars.cfg from a nested ref: %#v", acv)
+	}
+	// The dry run stays clean: `concat(...)` on a nested-json shape returns
+	// nil (indexing an object under a string key), the runtime is lenient
+	// on missing keys, and `keys(cfg)` reads the map.
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Clean() {
+		t.Fatalf("a bot with a nested json ref is not clean: %+v", r)
+	}
+}
+
+// PR #1491 review R085325 — a DYNAMIC subscript (`m[vars.k]`,
+// `arr[i]`) cannot be typed statically: evalIndex handles both map and
+// array at runtime, and the receiver must stay OBJECT-shaped so a
+// legal `cfg[vars.key]` on a `json` map does not die
+// EXPRESSION_FAILED. Only an integer-literal subscript asserts the
+// receiver as an array.
+const dynamicSubscriptBot = `vars:
+  key: string
+
+schema cfg_out:
+  cfg: json
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: cfg_out
+
+schema picked:
+  value: json
+
+compute pick:
+  output: picked
+  expr:
+    value: "outputs.survey.cfg[vars.key]"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: survey
+  survey -> pick
+  pick -> done
+`
+
+func TestArrayConsumersLeavesDynamicSubscriptReceiversAlone(t *testing.T) {
+	wf := compileBot(t, dynamicSubscriptBot)
+	ac := arrayConsumers(wf)
+	if got := ac["survey"]; got != nil && got["cfg"] {
+		t.Fatalf("arrayConsumers wrongly marked outputs.survey.cfg from a dynamic subscript: %#v", ac)
+	}
+	r, err := Run(context.Background(), wf, Options{Inputs: map[string]any{"key": "any"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// `cfg[vars.key]` reads a shaped map by a shaped string key — nil,
+	// the runtime is lenient on missing map keys and the compute
+	// produces `value: nil`. The pass stays clean.
+	if !r.Clean() {
+		t.Fatalf("a bot with a dynamic subscript on a json field is not clean: %+v", r)
+	}
+}
+
+// PR #1491 review Rdabb2b — a best_effort branch that hits the run's
+// `budget:` max_iterations is a ceiling the run's circumstances impose,
+// not a death of the program. The classifier must match the trunk's
+// ceilingOf: it reads `code == BUDGET_EXCEEDED` (or a ceiling
+// LoopDeclined.Reason) as a ceiling. checkPreExecBudget writes a plain
+// `%w`-wrapped ErrBudgetExceeded, not a typed RuntimeError, so
+// errorCode must recognize the sentinel.
+const bestEffortBudgetCeilingBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: best_effort
+
+workflow br:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 3
+  survey -> split
+  split -> b1
+  split -> b2
+  b1 -> b1 when not ok as fix_a(20)
+  b2 -> b2 when not ok as fix_b(20)
+  b1 -> join when ok
+  b2 -> join when ok
+  join -> done
+`
+
+func TestABranchThatHitsTheBudgetIsACeilingNotADeadBranch(t *testing.T) {
+	wf := compileBot(t, bestEffortBudgetCeilingBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A branch that dies of ErrBudgetExceeded is a run's-circumstance
+	// ceiling, not a program death: DeadBranches stays empty and the
+	// pass reads clean (via Ceiling on the trunk, symmetric with the
+	// branch classifier). Under best_effort a budget hit cancels the
+	// siblings via cancelOnFirstFailure and the trunk carries the
+	// budget error — the pass's Ceiling flag settles clean.
+	for _, p := range r.Passes {
+		for _, d := range p.DeadBranches {
+			if strings.Contains(d.Error, "budget exceeded") || d.Code == "BUDGET_EXCEEDED" {
+				t.Fatalf("a budget-exceeded branch was filed as a dead branch: %+v", d)
+			}
+		}
+	}
+	if !r.Clean() {
+		t.Fatalf("a bot whose branch hit the budget is not clean: %+v", r)
+	}
+}
+
+// PR #1491 review question — `Pass.DeadBranches` is scoped to passes
+// where a collector swallowed a branch's death: a `wait_all` fan-out
+// propagates the death onto the trunk, so the pass's Status carries the
+// story and DeadBranches would print twice. The recording is filtered
+// after the pass ends: only Status==`finished` && !Deliberate &&
+// !Ceiling keeps them.
+const waitAllOneBranchDiesBot = `schema verdict:
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+agent b1:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent b2:
+  model: "claude-opus-4-7"
+  output: verdict
+
+judge join:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+workflow br:
+  worktree: none
+  sandbox: none
+  entry: survey
+  budget:
+    max_iterations: 40
+  survey -> split
+  split -> b1
+  split -> b2
+  b1 -> b1 when not ok as fix_a(2)
+  b1 -> join when ok
+  b2 -> join
+  join -> done
+`
+
+func TestWaitAllPassCarriesTheDeathItself(t *testing.T) {
+	wf := compileBot(t, waitAllOneBranchDiesBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The false pass: b1's loop is spent and it dies LOOP_EXHAUSTED; b2
+	// finishes at join. wait_all propagates b1's death onto the trunk,
+	// so the pass's Status is failed_* and Failure carries the story.
+	// DeadBranches is empty — the trunk carries the death alone.
+	p := r.Passes[1]
+	if p.Status == "finished" {
+		t.Fatalf("wait_all should propagate the death onto the trunk: %+v", p)
+	}
+	if len(p.DeadBranches) != 0 {
+		t.Fatalf("wait_all should not double-print the death on DeadBranches: %+v", p.DeadBranches)
+	}
+	// The pass reads not clean via the status check (died() returns true
+	// because Status != "finished" and neither Deliberate nor Ceiling).
+	if r.Clean() {
+		t.Fatalf("a wait_all bot whose branch died is not clean: %+v", r)
 	}
 }

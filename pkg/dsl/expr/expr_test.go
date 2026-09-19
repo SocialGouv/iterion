@@ -252,6 +252,160 @@ func TestExpr_Refs(t *testing.T) {
 	}
 }
 
+// ArrayContextRefs surfaces the refs an expression consumes as an array
+// — the collection argument of a lambda combinator, the receiver of a
+// non-string subscript, or an argument of a builtin from the array-op
+// registry — and leaves the rest, so dry-run's shape rule (a `json`
+// field consumed as an array takes the array shape) fires only where a
+// runtime error would have.
+func TestExpr_ArrayContextRefs(t *testing.T) {
+	cases := []struct {
+		src        string
+		wantArray  []string // Namespace.Path in array context
+		wantBoring []string // refs the expression reads but not as arrays
+	}{
+		{
+			src:       `concat(outputs.a.items, outputs.b.items)`,
+			wantArray: []string{"outputs.a.items", "outputs.b.items"},
+		},
+		{
+			src:       `length(vars.batch) > 0`,
+			wantArray: []string{"vars.batch"},
+		},
+		{
+			src:       `map(outputs.plan.items, x => x.id)`,
+			wantArray: []string{"outputs.plan.items"},
+		},
+		{
+			src:       `outputs.plan.items[0]`,
+			wantArray: []string{"outputs.plan.items"},
+		},
+		{
+			// `.field` parses as an indexNode with a string-literal subscript
+			// — map access, not array indexing. The receiver is not marked;
+			// the resulting ref path carries the field name.
+			src:        `outputs.plan.title`,
+			wantBoring: []string{"outputs.plan.title"},
+		},
+		{
+			// `contains(arr, needle)` — the first arg iterates, the needle is
+			// a value. Only the array position is marked; a `json` needle
+			// stays an object rather than being wrongly shaped as an array.
+			src:        `contains(outputs.plan.tags, vars.needle)`,
+			wantArray:  []string{"outputs.plan.tags"},
+			wantBoring: []string{"vars.needle"},
+		},
+		{
+			// `join(arr, sep)` — same asymmetry. `sep` is a string, not a
+			// collection; a `json` var used as separator stays an object.
+			src:        `join(outputs.report.lines, vars.sep)`,
+			wantArray:  []string{"outputs.report.lines"},
+			wantBoring: []string{"vars.sep"},
+		},
+		{
+			// `length(keys(x))` — the array flag does NOT travel through a
+			// non-array-op child of an array-op. `keys` reads a map; if the
+			// walker inherited `length`'s flag, `keys`'s argument would be
+			// shaped as an array and the runtime would die "keys() expects a
+			// map, got []interface {}".
+			src:        `length(keys(outputs.survey.dict))`,
+			wantBoring: []string{"outputs.survey.dict"},
+		},
+		{
+			// The body of a lambda combinator produces ONE element per
+			// invocation, not an array. A ref in the body is not
+			// array-context by inheritance from the enclosing combinator —
+			// checked from an outer array-op (`length`) so the mutation
+			// that would let the flag travel is caught.
+			src:        `length(map(outputs.a.items, x => vars.tag))`,
+			wantArray:  []string{"outputs.a.items"},
+			wantBoring: []string{"vars.tag"},
+		},
+		{
+			src:        `outputs.plan.ok && vars.mode == "on"`,
+			wantBoring: []string{"outputs.plan.ok", "vars.mode"},
+		},
+		{
+			// String-literal subscript resets the array flag on the receiver
+			// (PR #1491 review R4399d8): `cfg["items"]` reads `cfg` as a
+			// map, whatever the outer wants. If the outer array flag
+			// travelled, `cfg` would be shaped as `[]any` and `cfg["items"]`
+			// would die "array index must be an integer, got string".
+			src:        `contains(outputs.a.cfg["items"], vars.needle)`,
+			wantBoring: []string{"outputs.a.cfg", "vars.needle"},
+		},
+		{
+			// Numeric subscript asserts the receiver as an array even
+			// without an outer array-op — `rows[0]` marks `rows` alone.
+			src:        `outputs.a.rows[0].name`,
+			wantArray:  []string{"outputs.a.rows"},
+			wantBoring: []string{},
+		},
+		{
+			// `.name` on `rows[0]` is a map access on the element — the
+			// numeric inner subscript still marks the array (`rows`), and
+			// the outer map access does not travel the array flag onto
+			// `rows` from the enclosing `concat`.
+			src:       `concat(outputs.a.rows[0].name, outputs.b.tags)`,
+			wantArray: []string{"outputs.a.rows", "outputs.b.tags"},
+		},
+		{
+			// A DYNAMIC subscript cannot be typed statically — evalIndex
+			// handles both map and array at runtime. Marking the
+			// receiver as array would kill a legal `cfg[vars.key]` on a
+			// `json` map with a strict-blocking EXPRESSION_FAILED false
+			// positive — the class this rule exists to remove
+			// (PR #1491 review R085325).
+			src:        `outputs.plan.cfg[vars.key]`,
+			wantBoring: []string{"outputs.plan.cfg", "vars.key"},
+		},
+		{
+			// Same rule under an array-op: `contains` marks its first
+			// arg as array-context, but the dynamic subscript inside
+			// asserts NOTHING at its own level, and the flag does not
+			// travel through the map-access form onto the receiver.
+			src:        `contains(outputs.a.cfg[vars.k], "x")`,
+			wantBoring: []string{"outputs.a.cfg", "vars.k"},
+		},
+		{
+			// Negative integer literal — the parser wraps `-1` in a
+			// unaryNode around a litInt; the shape rule unwraps it and
+			// marks the receiver, matching runtime behavior (arr[-1]
+			// is array access, not map).
+			src:        `outputs.a.rows[-1]`,
+			wantArray:  []string{"outputs.a.rows"},
+			wantBoring: []string{},
+		},
+	}
+	joinRef := func(r Ref) string {
+		s := r.Namespace
+		for _, p := range r.Path {
+			s += "." + p
+		}
+		return s
+	}
+	for _, tc := range cases {
+		ast, err := Parse(tc.src)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.src, err)
+		}
+		got := map[string]bool{}
+		for _, r := range ast.ArrayContextRefs() {
+			got[joinRef(r)] = true
+		}
+		for _, want := range tc.wantArray {
+			if !got[want] {
+				t.Errorf("%s: expected array-context ref %q, got %v", tc.src, want, got)
+			}
+		}
+		for _, boring := range tc.wantBoring {
+			if got[boring] {
+				t.Errorf("%s: %q surfaced as array-context but the expression only reads it plainly", tc.src, boring)
+			}
+		}
+	}
+}
+
 func TestExpr_ParseErrors(t *testing.T) {
 	bad := []string{
 		"1 +",
