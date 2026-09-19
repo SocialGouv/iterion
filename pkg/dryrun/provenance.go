@@ -128,14 +128,19 @@ func (x *Executor) invented(node string, r expr.Ref, visiting map[string]bool) (
 	case "input":
 		return x.inventedInput(node, r.Path, visiting)
 	case "loop":
-		// loop.<name>.previous_output[.field]: the loop's source node's
-		// output as of the previous crossing.
+		// loop.<name>.previous_output[.field]: the snapshot of the crossing
+		// BEFORE the latest one — the first crossing stages only the current
+		// output, so a read before the second crossing fails on nil, and the
+		// snapshot is the SELECTED edge's, which the pass observed. The
+		// consult answers only for a crossing that left a snapshot, on the
+		// source of that crossing — never a guess from the workflow's edge
+		// list.
 		if len(r.Path) >= 2 && r.Path[1] == "previous_output" {
-			for _, e := range x.wf.Edges {
-				if e != nil && e.LoopName == r.Path[0] {
-					return x.inventedOutput(append([]string{e.From}, r.Path[2:]...), visiting)
-				}
+			src, ok := x.previousOutputSource(r.Path[0])
+			if !ok {
+				return "", false
 			}
+			return x.inventedOutput(append([]string{src}, r.Path[2:]...), visiting)
 		}
 	case "artifacts":
 		if len(r.Path) >= 1 {
@@ -171,6 +176,13 @@ func (x *Executor) inventedOutput(path []string, visiting map[string]bool) (stri
 		return "", false
 	}
 	if _, pinned := x.fixtures[node]; pinned {
+		return "", false
+	}
+	// A node that has not finished on this pass produced nothing: a read of
+	// its output failed on ABSENCE, not on a shape — the dry run invents an
+	// output only where the node produced, and production fails the nil read
+	// the same way. The failure is the program's, and stands.
+	if !x.hasProduced(node) {
 		return "", false
 	}
 	switch n := x.wf.Nodes[node].(type) {

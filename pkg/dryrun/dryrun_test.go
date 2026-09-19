@@ -1860,6 +1860,99 @@ func TestAFailureOnTheProgramsOwnValueIsADeath(t *testing.T) {
 	}
 }
 
+// A read of a node that has NOT produced on this pass failed on absence —
+// production reads nil and dies the same way — never on a shape the dry run
+// invented: the consult answers nothing, and the death stands. The loop
+// target is its own predecessor to the compiler (C036), so the shape is
+// legal. The mutation: drop the consult's executed check (the absence is
+// read as the shaped json field and the pass reads inconclusive).
+const readAheadOfProductionBot = `schema wout:
+  count: json
+
+agent worker:
+  model: "claude-opus-4-7"
+  output: wout
+
+schema total:
+  n: json
+
+compute tally:
+  output: total
+  expr:
+    n: "outputs.worker.count + 1"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: tally
+  tally -> worker
+  worker -> tally as again(2)
+  worker -> done
+`
+
+func TestAReadAheadOfProductionIsADeath(t *testing.T) {
+	wf := compileBot(t, readAheadOfProductionBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Inconclusive()) != 0 {
+		t.Fatalf("an absence was read as a shaped value: %+v", r.Inconclusive())
+	}
+	if !r.Failing() {
+		t.Fatalf("a read ahead of its producer's first run did not stand as a death:\n%s", r.Render())
+	}
+	if !strings.Contains(r.Passes[0].Failure, "EXPRESSION_FAILED") {
+		t.Fatalf("the pass did not die of the nil read: %+v", r.Passes[0])
+	}
+}
+
+// `loop.<name>.previous_output` is the snapshot of the crossing BEFORE the
+// latest one: the first crossing stages only the current output, so a read
+// of it before the second crossing fails on nil — production dies the same
+// way, and the consult must not cloak the absence with the loop edge
+// source's schema. The mutation: answer from crossings >= 1 (the consult
+// reads the shaped json field and the pass reads inconclusive).
+const previousOutputFirstCrossingBot = `schema wout:
+  count: json
+
+agent worker:
+  model: "claude-opus-4-7"
+  output: wout
+
+schema total:
+  n: json
+
+compute tally:
+  output: total
+  expr:
+    n: "loop.again.previous_output.count + 1"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: worker
+  worker -> tally as again(2)
+  tally -> done
+`
+
+func TestAPreviousOutputBeforeTheFirstCrossingIsADeath(t *testing.T) {
+	wf := compileBot(t, previousOutputFirstCrossingBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Inconclusive()) != 0 {
+		t.Fatalf("a previous_output read before any previous crossing was read as a shaped value: %+v", r.Inconclusive())
+	}
+	if !r.Failing() {
+		t.Fatalf("the nil read before the first crossing did not stand:\n%s", r.Render())
+	}
+	if !strings.Contains(r.Passes[0].Failure, "EXPRESSION_FAILED") {
+		t.Fatalf("the pass did not die of the nil read: %+v", r.Passes[0])
+	}
+}
+
 // What an inconclusive expression computed is invented in turn, and so is
 // what a decided expression computed FROM a shape: a downstream expression
 // that fails on either is inconclusive too, never a death. The mutation:

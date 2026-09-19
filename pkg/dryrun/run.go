@@ -390,10 +390,22 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		switch evt.Type {
 		case store.EventNodeStarted:
 			pass.Nodes = append(pass.Nodes, evt.NodeID)
+		case store.EventNodeFinished:
+			// The node's output now exists — simulated or engine-computed
+			// alike. A finish that carried an error left no output to read:
+			// the consult must not answer absence with a shape. The consult
+			// reads this set: a producer that never finished left nothing to
+			// rest a failure on.
+			if _, failed := evt.Data["error"]; !failed {
+				x.markProduced(evt.NodeID)
+			}
 		case store.EventEdgeSelected:
 			from, _ := evt.Data["from"].(string)
 			to, _ := evt.Data["to"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: to})
+			if name, _ := evt.Data["loop"].(string); name != "" {
+				x.recordLoopCrossing(name, from, to)
+			}
 		case store.EventBranchStarted:
 			// A fan-out activates its branches without an edge_selected: the
 			// engine names the edge that started the branch, and that edge

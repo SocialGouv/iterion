@@ -100,10 +100,78 @@ type Executor struct {
 	shaped   []string
 	pinned   []string
 	findings []Finding
+	// produced holds every node the pass saw finish — simulated nodes and
+	// the engine-internal ones (computes, routers) alike, from the event
+	// stream. A producer absent from it has output nothing on this pass: a
+	// read of its output failed on absence, not on a shape (Inconclusive).
+	produced map[string]bool
+	// What the pass observed of each declared loop's crossings: how many
+	// edges of the name fired, and the source of the latest and of the
+	// previous one. `loop.<name>.previous_output` is the snapshot of the
+	// crossing BEFORE the latest (the first crossing stages only the
+	// current output), taken from the edge the pass selected — the consult
+	// reads this instead of guessing from the workflow's edge list.
+	loopCrossings map[string]int
+	loopPrevSrc   map[string]string
+	loopLastSrc   map[string]string
 	// undecided[nodeID][field] holds the compute fields whose expression
 	// could not be decided in this pass: their value is a shape, invented
 	// in turn (Inconclusive).
 	undecided map[string]map[string]bool
+}
+
+// markProduced records a node the pass saw finish.
+func (x *Executor) markProduced(node string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.produced == nil {
+		x.produced = map[string]bool{}
+	}
+	x.produced[node] = true
+}
+
+// hasProduced reports whether the node finished on this pass.
+func (x *Executor) hasProduced(node string) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.produced[node]
+}
+
+// recordLoopCrossing mirrors the engine's loop bookkeeping for one selected
+// loop edge: a re-entry through one of the loop's entries resets the
+// crossings (the engine drops the snapshots with the counter), and each
+// crossing rotates the previous snapshot's source behind the latest one.
+func (x *Executor) recordLoopCrossing(name, from, to string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.loopCrossings == nil {
+		x.loopCrossings = map[string]int{}
+		x.loopPrevSrc = map[string]string{}
+		x.loopLastSrc = map[string]string{}
+	}
+	if x.loopCrossings[name] > 0 && x.wf != nil {
+		if loop := x.wf.Loops[name]; loop != nil && loop.Entries[to] {
+			x.loopCrossings[name] = 0
+			x.loopPrevSrc[name] = ""
+			x.loopLastSrc[name] = ""
+		}
+	}
+	x.loopCrossings[name]++
+	x.loopPrevSrc[name] = x.loopLastSrc[name]
+	x.loopLastSrc[name] = from
+}
+
+// previousOutputSource names the node whose output the loop's
+// previous_output snapshot holds, and whether a snapshot exists: the first
+// crossing stages only the current output, so the snapshot appears with the
+// second.
+func (x *Executor) previousOutputSource(name string) (string, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.loopCrossings[name] < 2 || x.loopPrevSrc[name] == "" {
+		return "", false
+	}
+	return x.loopPrevSrc[name], true
 }
 
 // declaredSecrets resolves a declared secret to a placeholder — the value a
