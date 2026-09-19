@@ -89,6 +89,7 @@ describe("CredentialSpendPage", () => {
           fingerprint: "sha256:abcd",
           provider: "anthropic",
           tier: "pool",
+          tenant_id: "team-alpha",
           nature: "metered",
           month: "2026-09",
           cost_usd: 13.68,
@@ -106,5 +107,36 @@ describe("CredentialSpendPage", () => {
     expect(await screen.findByText(/\(aggregate\)/)).toBeTruthy();
     expect(screen.getByText(/1,000 in \/ 250 out/)).toBeTruthy();
     expect(screen.getByText("claude_code, claw")).toBeTruthy();
+  });
+
+  // One credential serving several tenants is several rows, identical but for
+  // the tenant and the figures: without the tenant cell neither figure can be
+  // attributed, on the one screen whose whole purpose is the cross-tenant view.
+  it("tells apart the rows one credential produced in different tenants", async () => {
+    const row = {
+      fingerprint: "sha256:abcd",
+      provider: "anthropic",
+      tier: "platform",
+      nature: "metered",
+      month: "2026-09",
+      input_tokens: 10,
+      output_tokens: 5,
+      aggregate_tokens: 0,
+      runs: 1,
+    };
+    getAdminCredentialUsage.mockResolvedValue(
+      answer([
+        { ...row, tenant_id: "team-alpha", cost_usd: 1 },
+        { ...row, tenant_id: "team-beta", cost_usd: 2 },
+        // A run with no tenant still meters — that is not missing data.
+        { ...row, cost_usd: 3 },
+      ]),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("team-alpha")).toBeTruthy();
+    expect(screen.getByText("team-beta")).toBeTruthy();
+    expect(screen.getByText("no tenant")).toBeTruthy();
   });
 });

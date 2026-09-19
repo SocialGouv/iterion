@@ -232,7 +232,7 @@ export default function CredentialSpendPage() {
               skeleton so neither can reach the empty state. */}
           {!loaded || (query.isFetching && !view) ? (
             <div className="p-3">
-              <TableSkeleton rows={5} cols={8} />
+              <TableSkeleton rows={5} cols={9} />
             </div>
           ) : !view ? (
             // An absent view is NOT a zero-spend answer — saying so would be
@@ -253,6 +253,7 @@ export default function CredentialSpendPage() {
                 <Th>Fingerprint</Th>
                 <Th>Provider</Th>
                 <Th>Tier</Th>
+                <Th>Tenant</Th>
                 <Th>Nature</Th>
                 <Th align="right">Cost</Th>
                 <Th align="right">Runs</Th>
@@ -272,6 +273,15 @@ export default function CredentialSpendPage() {
                     <Td className="font-mono text-caption break-all">{c.fingerprint}</Td>
                     <Td className="text-fg-muted">{c.provider}</Td>
                     <Td className="text-fg-muted">{c.tier}</Td>
+                    {/* The tenant the spend was metered under. A credential
+                        serving several tenants is several rows, identical but
+                        for this cell and the figures — without it the reader
+                        cannot attribute either. An empty tenant is a run that
+                        had none (local/CLI), which still meters, so it is
+                        named rather than dashed out. */}
+                    <Td className="font-mono text-caption break-all">
+                      {c.tenant_id ? c.tenant_id : <span className="text-fg-subtle">no tenant</span>}
+                    </Td>
                     <Td>
                       <span
                         className={
