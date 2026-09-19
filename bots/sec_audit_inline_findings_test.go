@@ -148,6 +148,7 @@ func capFixture(t *testing.T) func(budget string) capOut {
 			"CAP=50",
 			"INLINE_MAX="+budget,
 			"DEEPSEC_PATHS="+string(paths),
+			"DEEPSEC_OUT="+filepath.Join(fresh, "deepsec.json"),
 		)
 		raw, err := cmd.Output()
 		if err != nil {

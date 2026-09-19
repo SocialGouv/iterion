@@ -43,7 +43,7 @@ vars:
   severity_threshold:  string = "low"
   ## Per-run scanner output (JSON envelopes + shard plumbing). Pure
   ## scratch — regenerated on every run, never operator-consumed — so it
-  ## lives in the engine's out-of-tree scratch dir (${PROJECT_SCRATCH_DIR}
+  ## lives in the engine's out-of-tree scratch dir (the workspace scratch
   ## resolves to a container-writable path when sandboxed) and never
   ## scatters state into the target repo. Durable operator-facing state
   ## (FP memory, file records, context, patches) lives under the repo's
@@ -59,7 +59,10 @@ vars:
   ## used regularly keeps writing under scan_dir, so its own subdirs never
   ## age out on their own. Prune at scanner entry: entries older than TTL
   ## days go, the current run's two directories always stay. 0 disables the
-  ## sweep. Matches records_ttl_days's default.
+  ## sweep. Matches records_ttl_days's default. The sweep prunes directories
+  ## only; the pre-0.1.4 shared-slot FILE (the path vars.deepsec_out names)
+  ## is removed by the first deep-scan pass that gets past its preflight,
+  ## whatever this value is.
   scan_dir_ttl_days:   int    = 30
   ## Overflow guard. gosec/semgrep can emit thousands of findings on a
   ## large repo; triage reads the scanner JSON and overflows the model
@@ -83,13 +86,19 @@ vars:
   ## triage would have read all of it.
   triage_inline_max_bytes: int  = 0
   ## Anti-façade smoke gate. The always-on generic scanners (gitleaks,
-  ## trivy, semgrep --config=auto) MUST each write a JSON file on any repo
+  ## trivy, semgrep --config=p/default) MUST each write a JSON file on any repo
   ## when they actually run — a missing file means the tool crashed or was
   ## absent (e.g. scanners not installed in the sandbox), not that the repo
   ## is clean. scan_health hard-fails the run when fewer than this many of
   ## the 3 generic scanners produced output, so a broken toolchain can no
   ## longer masquerade as a zero-finding clean bill of health. Set to 0 to
   ## disable the gate (not recommended).
+  ## The floor counts the always-on trio ONLY: the optional deep scan
+  ## (enable_deepsec) never contributes to it, so a value above 3 could never
+  ## be met and would hard-fail every run. scan_health clamps such a value to
+  ## 3 and says so -- min_generic_requested / min_generic_clamped in its
+  ## envelope, a NOTE in the report -- rather than replacing the setting in
+  ## silence.
   min_generic_scanners: int    = 2
   fp_path:             string = "${PROJECT_DIR}/.sec-audit/fp-known.yaml"
   ## Per-file append-only analysis cache; see skills/file-records.md.
@@ -188,13 +197,19 @@ vars:
   ## graceful-degrade detection step (the tool probes this path to
   ## decide whether deepsec is locally available BEFORE attempting the
   ## globally-installed CLI). Override via env ITERION_REFERENCES_ROOT
-  ## (the tool reads ${ITERION_REFERENCES_ROOT:-$HOME/lab/ai/references}).
+  ## (the tool reads $ITERION_REFERENCES_ROOT).
   ## The actual runtime workspace lives under deepsec_out's parent
   ## (<scratch>/sec-audit-source/scan/deepsec) — created by `deepsec init`.
   deepsec_root:        string = "${HOME}/lab/ai/references/deepsec"
-  ## Where the deepsec JSON export lands. Triage reads it via
-  ## json_paths.deepsec when enable_deepsec=true. The directory part
-  ## doubles as the `.deepsec/` workspace target for init.
+  ## BASE template for the deepsec JSON export. run_deepsec_scanner derives
+  ## the per-run file from it -- <dirname>/deepsec-out-<run.id>/<basename> --
+  ## and publishes that path in json_paths.deepsec, the ONLY route by which
+  ## the readers (bank_deepsec_findings, scan_health, cap_findings, triage)
+  ## reach the export. The file at this exact path is the pre-0.1.4 shared
+  ## slot: removed by the first deep-scan pass that gets past its
+  ## preflight, and read by nobody. The removal keys on the path set NOW --
+  ## a dirname or basename changed across an upgrade leaves the old file in
+  ## place, to remove by hand.
   deepsec_out:         string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan/deepsec.json"
   ## Byte budget for bank_deepsec_findings — how much of the export is
   ## carried OUT of the pod inside the published artifact, so a pass that
@@ -503,6 +518,10 @@ schema findings_budget_output:
   inline_embedded:   int
   inline_total:      int
   inline_truncated:  bool
+  ## The deep-scan export this pass published -- the only file the
+  ## deep-scan group of inline can come from -- or the fact that none was.
+  ## The shared slot under scan_dir is never a source (see cap_findings).
+  deepsec_harvest:   string
 
 ## scan_health emits the scanner-coverage signal so a broken toolchain
 ## (scanners that crashed / are absent in the sandbox and produced no
@@ -513,6 +532,11 @@ schema scanner_health_output:
   generic_expected:      int
   generic_present:       int
   min_generic:           int
+  ## The operator's min_generic_scanners as set, and whether scan_health
+  ## clamped it to the trio's size. min_generic above is the floor the gate
+  ## actually ran with.
+  min_generic_requested: int
+  min_generic_clamped:   bool
   present:               json
   missing:               json
   total_findings_seen:   int
@@ -1281,7 +1305,10 @@ prompt triage_system:
         themselves, already severity-sorted and trimmed, as a list of
         {file, array, findings}. Use it and do not open json_paths. This is
         the transport used when you run on a backend that shares no
-        filesystem with the scanners.
+        filesystem with the scanners. `findings_budget.deepsec_harvest`
+        names the deep-scan export this pass published, or says that none
+        was — then there is no deep-scan group to look for, in `inline`,
+        under scan_dir or anywhere else.
      b. Otherwise read every scanner JSON listed in *.json_paths.
      If neither yields a single finding while `findings_budget.total_kept`
      is above zero, your input is unreadable — not a clean repository. Say
@@ -1602,6 +1629,9 @@ prompt report_card_user:
   narrow scope or raise findings_cap_per_file and re-run" banner — so a
   capped run is never mistaken for a clean bill of health. When
   `truncated` is false, coverage was complete; no banner needed.
+  `deepsec_harvest` names the deep-scan export this pass published — the
+  only file its `inline` group can come from — or says that none was;
+  informational, the deep-scan coverage rules below own the banners.
 
   Scanner health (deterministic scan_health smoke gate):
   {{input.scanner_health}}
@@ -1612,8 +1642,14 @@ prompt report_card_user:
   (<files>); results are NOT a complete clean bill of health — verify the
   scanner toolchain (iterion-sandbox-sec) and re-run" banner. (A run where
   the generic layer wholly failed never reaches this node — scan_health
-  hard-fails it first.) When `missing` is empty, coverage was full; no
+  hard-fails it first — unless the gate was disabled with
+  min_generic_scanners=0.) When `missing` is empty, coverage was full; no
   banner needed.
+  If `min_generic_clamped` is true, add one plain NOTE beside the scanner
+  banners (a NOTE, not a ⚠): "NOTE: min_generic_scanners=<min_generic_requested>
+  exceeds the always-on trio (3 scanners); the gate ran with a floor of
+  <min_generic> — the deep scan never counts toward it". The setting was not
+  honoured as written, and the report is where that is said.
 
   Diff/incremental scope (deterministic diff_scope step):
   {{input.diff_scope}}
@@ -2940,7 +2976,7 @@ set +e
 mkdir -p "$(dirname "$OUT_JSON")"
 
 
-REFS_ROOT="${ITERION_REFERENCES_ROOT:-}"
+REFS_ROOT="$ITERION_REFERENCES_ROOT"
 if [ -n "$REFS_ROOT" ] && [ -d "$REFS_ROOT/deepsec" ]; then
   REF_PATH="$REFS_ROOT/deepsec"
 else
@@ -3016,7 +3052,7 @@ fi
 # never replace what was asked for with what was detected.
 if [ -n "$DS_AGENT" ]; then
   AGENT_ARGS="--agent $DS_AGENT"
-elif [ -n "${AI_GATEWAY_API_KEY:-}" ] || [ -n "${DEEPSEC_API_KEY:-}" ]; then
+elif [ -n "$AI_GATEWAY_API_KEY" ] || [ -n "$DEEPSEC_API_KEY" ]; then
   AGENT_ARGS=""    # gateway preflight picks the model
 else
   AGENT_ARGS="--agent claude"
@@ -3032,7 +3068,7 @@ fi
 #
 # LOG_DIR must not be, and that is not a preference. The run ids this node pins
 # its coverage on are read back out of these logs, and every step opens them
-# with > (truncate). ${PROJECT_SCRATCH_DIR} is per-workspace and deliberately
+# with > (truncate). the workspace scratch is per-workspace and deliberately
 # shared between runs -- a subbot child writes into its PARENT scratch
 # (runtime/scratch_sweep.go) -- so one shared log dir means the LAST writer owns
 # the id every other reader pins. Measured: a pass that deep-scanned nothing
@@ -3040,7 +3076,13 @@ fi
 # banner at all. Keying the directory on the run id closes that by
 # construction; reading the ids sooner would only narrow the window.
 DSW="$SCAN_DIR/deepsec-workspace"
-case "${RUN_ID:-}" in
+# RUN_ID is referenced BARE, never as a braced default: the engine expands
+# every braced env reference in the command at launch, from ITS environment,
+# where no run id exists -- the braced form read empty on every production
+# pass and this guard refused them all while every harness test stayed green
+# (the harness substitutes plainly). The env prefix above is the value bash
+# actually sees.
+case "$RUN_ID" in
   ""|*[!A-Za-z0-9._-]*)
     err_envelope "run id missing or not usable as a path segment: refusing to share a log directory between runs, because the run ids this node pins its coverage on are read back out of it" ;;
 esac
@@ -3063,7 +3105,7 @@ LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 # OUT_JSON is derived per-pass -- keyed on the same $RUN_ID that already keys
 # LOG_DIR -- so two passes that BOTH run deepsec successfully never write to
 # the same file, and each publishes json_paths.deepsec pointing at what it
-# alone wrote. The prior shape was one shared slot under ${PROJECT_SCRATCH_DIR}:
+# alone wrote. The prior shape was one shared slot under the workspace scratch:
 # even after #1331 made both readers (bank_deepsec_findings, scan_health) take
 # the path from the producer json_paths, that path was still the shared name
 # on the happy path -- so the loser read back a file it did not write, with
@@ -3073,7 +3115,7 @@ LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 # retention sweep scope positively on deepsec-* rather than a three-name
 # deny-list, per revi Re56aa9). A var default cannot carry a run-id
 # template directly: defaults resolve through ir.ExpandWithDefault, which
-# honours ${ENV} but not workflow variables -- so the derivation lives
+# honours env-style defaults but not workflow variables -- so the derivation lives
 # here, where $RUN_ID is real.
 # (No apostrophes below and no backticks: one closes this bash -c block, and
 # the outer shell then re-parses the rest of the script.)
@@ -3098,12 +3140,12 @@ mkdir -p "$DSW" "$LOG_DIR" "$(dirname "$OUT_JSON")"
 # under scan_dir stays whatever its mtime -- an operator setting or a
 # future node writing there is not enrolled in this sweep by default. 0
 # disables the sweep entirely.
-if [ "${SCAN_DIR_TTL_DAYS:-0}" -gt 0 ] 2>/dev/null; then
+if [ "$SCAN_DIR_TTL_DAYS" -gt 0 ] 2>/dev/null; then
   find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
     \( -name "deepsec-out-*" -o -name "deepsec-logs-*" \) \
     ! -name "deepsec-out-$RUN_ID" \
     ! -name "deepsec-logs-$RUN_ID" \
-    -mtime "+${SCAN_DIR_TTL_DAYS}" \
+    -mtime "+$SCAN_DIR_TTL_DAYS" \
     -exec rm -rf {} + 2>/dev/null
 fi
 # Which agent actually ran is not derivable from the envelope: deepsec is not in
@@ -3128,7 +3170,22 @@ cd "$WS" || err_envelope "workspace_dir unreadable: $WS"
 # slot, which is the invariant its own tests already assert.
 rm -f "$OUT_JSON"
 
+# The legacy shared slot goes with it, and for the same position reason:
+# builds before 0.1.4 exported to $OUT_JSON_BASE itself, no pass writes
+# there any more and no reader opens it -- bank_deepsec_findings,
+# scan_health and cap_findings all take the deep scan from the producer
+# json_paths -- so a pre-0.1.4 export left there is an orphan the
+# directory-only retention sweep would keep forever. Not retention: a slot
+# this node no longer has, removed whatever SCAN_DIR_TTL_DAYS says. A
+# concurrent pass of an OLDER build would lose its export to this line and
+# report it missing -- a visible loss, never a facade; mixed builds on one
+# scratch are not a supported state.
+rm -f -- "$OUT_JSON_BASE" 2>/dev/null
+
 ERRS=""
+# Zero unless the retry below resumed a run: the coverage reader keys
+# process_failed on this, and an unset variable reads empty, not 0.
+PROC_RESUMED=0
 # init is idempotent: re-init only when deepsec.config.ts is absent.
 if [ ! -f "$DSW/deepsec.config.ts" ]; then
   deepsec init "$DSW" "$WS" --force >"$LOG_DIR/init.log" 2>&1 || ERRS="$ERRS init"
@@ -3153,7 +3210,7 @@ fi
 # runs/<id>.json (core/src/paths.ts runMetaPath). Opening THAT file is the only
 # way to certify the numbers describe THIS pass. Picking the newest meta inside
 # a time window instead spliced three things together, each measured:
-# ${PROJECT_SCRATCH_DIR} is per-workspace and DELIBERATELY shared between runs
+# the workspace scratch is per-workspace and DELIBERATELY shared between runs
 # (runtime/scratch_sweep.go); deepsec supports concurrent runs on one project
 # (packages/processor/src/index.ts, the lock covers the claim and not the work,
 # so runs against disjoint file sets do not block each other); and one data root
@@ -3195,8 +3252,10 @@ CLAUDE_BIN="$(command -v claude 2>/dev/null)"
 for _cb in "$HOME/.npm-global/bin/codex" /usr/local/bin/codex; do
   if [ -x "$_cb" ]; then CODEX_REAL_BIN="$_cb"; export CODEX_REAL_BIN; break; fi
 done
-echo "[codex] CODEX_REAL_BIN=${CODEX_REAL_BIN:-unset} version=$( "${CODEX_REAL_BIN:-codex}" --version 2>/dev/null | head -1 )" >>"$LOG_DIR/env.log"
-unset _cb
+_codex_bin="$CODEX_REAL_BIN"
+[ -n "$_codex_bin" ] || _codex_bin=codex
+echo "[codex] CODEX_REAL_BIN=$_codex_bin version=$( "$_codex_bin" --version 2>/dev/null | head -1 )" >>"$LOG_DIR/env.log"
+unset _cb _codex_bin
 # timeout bounds a network HANG: a mid-process connection loss leaves the
 # claude-agent-sdk waiting on a dead socket (it does NOT self-recover) and
 # would stall the whole node until the run timeout. 2400s is ~2x a legit
@@ -3269,7 +3328,8 @@ _dsrunid() { _dsrid "$LOG_DIR/process.log" "Processing complete" "Run: "; }
 # announced, make the resume branch unreachable, and log "no run meta carries
 # it" -- which reads as a forgery attempt rather than a path mismatch.
 _dsmeta_exists() {
-  _dsroot="${DEEPSEC_DATA_ROOT:-data}"
+  _dsroot="$DEEPSEC_DATA_ROOT"
+[ -n "$_dsroot" ] || _dsroot=data
   case "$_dsroot" in /*) : ;; *) _dsroot="$DSW/$_dsroot" ;; esac
   for _m in "$_dsroot"/*/runs/"$1".json; do
     [ -f "$_m" ] && return 0
@@ -3414,7 +3474,7 @@ fi
 # which is $DSW (packages/core/src/paths.ts:4). The project id is unknown here,
 # so the glob carries the run id, which is unique.
 # (No backticks and no apostrophes below: they close this block.)
-case "$ERRS" in *process*) PROC_FAILED=1 ;; *) PROC_FAILED="${PROC_RESUMED:-0}" ;; esac
+case "$ERRS" in *process*) PROC_FAILED=1 ;; *) PROC_FAILED="$PROC_RESUMED" ;; esac
 # Both ids are read HERE, once every log is written, rather than each beside
 # its own step: the retry block is exercised on its own by the retry tests,
 # which slice it out of this body, so a helper it needs must be defined inside
@@ -3639,7 +3699,7 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
 ##
 ## THE PATH COMES FROM THE PRODUCER, NOT FROM THE VAR. vars.deepsec_out is only
 ## the BASE template; run_deepsec_scanner inserts $RUN_ID between its dirname
-## and basename so the export lives at .../<run.id>/deepsec.json -- a per-pass
+## and basename so the export lives at .../deepsec-out-<run.id>/deepsec.json -- a per-pass
 ## location, not a name any other pass can write to. Read off the var directly,
 ## this node used to bank whatever sat at the shared slot -- an earlier pass's
 ## export, after a pass that refused to run and so produced nothing -- and
@@ -3671,7 +3731,7 @@ def emit(findings, embedded, total, truncated, note):
 
 if not out:
     emit([], 0, 0, False,
-         "the deep scanner published no export path: it was skipped, it refused to run, or it dropped its output as unusable. Nothing is banked -- the shared slot may still hold another pass file, and that file is not this run result")
+         "the deep scanner published no export path: it was skipped, it refused to run, or it dropped its output as unusable. Nothing is banked: no path published means no bank, whatever sits on disk")
     raise SystemExit(0)
 
 if not os.path.isfile(out):
@@ -3794,10 +3854,12 @@ tool scan_health:
 import os, sys, json, re
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
+_min_generic_raw = os.environ.get('MIN_GENERIC', '2')
 try:
-    min_generic = int(os.environ.get('MIN_GENERIC', '2') or '2')
+    min_generic = int(_min_generic_raw or '2')
 except ValueError:
     min_generic = 2
+    sys.stderr.write('scan_health: MIN_GENERIC=%r is not an integer; the floor falls back to 2\n' % _min_generic_raw)
 
 # The always-on generic layer is language-agnostic: each of these MUST
 # write a JSON file on any repo when the tool actually runs. Missing or
@@ -3812,6 +3874,18 @@ except ValueError:
 # scanners had failed -- the toolchain was broken, which is exactly what the
 # gate exists to catch, and no hard-fail fired).
 TRIO = ['gitleaks.json', 'trivy.json', 'semgrep-auto.json']
+# The floor is counted over TRIO alone, so a min_generic above its size can
+# never be met and would hard-fail every run -- most likely a setting that
+# meant to count the deep scan as a fourth. Clamp to the trio size and SAY
+# so: min_generic_requested keeps the value as set, min_generic_clamped flags
+# the change, report_card renders a NOTE. The setting is never replaced in
+# silence. min_generic below is the floor the gate actually runs with.
+min_generic_requested = min_generic
+min_generic_clamped = False
+if min_generic > len(TRIO):
+    min_generic = len(TRIO)
+    min_generic_clamped = True
+    sys.stderr.write('scan_health: min_generic_scanners=%d exceeds the always-on trio (%d scanners); the floor is clamped to %d -- the deep scan never counts toward it\n' % (min_generic_requested, len(TRIO), len(TRIO)))
 # Enhancement 4: deepsec export landing file is expected ONLY when the
 # operator opted into deepsec via --var enable_deepsec=true. The tool node
 # always emits its envelope (graceful degrade), but if deepsec ran for
@@ -3829,7 +3903,7 @@ TRIO = ['gitleaks.json', 'trivy.json', 'semgrep-auto.json']
 DEEP_ENTRY = []
 PRODUCED = {}
 if (os.environ.get('ENABLE_DEEPSEC', 'false') or 'false').strip().lower() == 'true':
-    _ds_out = os.environ.get('DEEPSEC_OUT', '').strip()
+    _ds_out = os.environ.get('DEEPSEC_OUT', '').strip().rstrip('/')
     if _ds_out:
         _ds_name = os.path.basename(_ds_out)
         DEEP_ENTRY.append(_ds_name)
@@ -3974,6 +4048,8 @@ health = {
     'generic_expected':    len(TRIO),
     'generic_present':     generic_present,
     'min_generic':         min_generic,
+    'min_generic_requested': min_generic_requested,
+    'min_generic_clamped': min_generic_clamped,
     'langs_detected':      _langs,
     'langs_covered':       sorted(_lang_outputs.keys()),
     'lang_void':           lang_void,
@@ -3986,13 +4062,16 @@ health = {
 print(json.dumps(health))
 
 if generic_present < min_generic:
+    _clamp_note = ''
+    if min_generic_clamped:
+        _clamp_note = ' min_generic_scanners=%d exceeds the trio and was clamped to %d.' % (min_generic_requested, min_generic)
     sys.stderr.write(
         'scan_health: only %d of %d always-on generic scanners produced output '
-        '(need >= %d). The scanner toolchain failed to run, so this audit cannot '
+        '(need >= %d).%s The scanner toolchain failed to run, so this audit cannot '
         'be trusted as a clean bill of health. Missing: %s. Check that the sandbox '
         'image ships the scanners (iterion-sandbox-sec) and that egress for '
         'semgrep/trivy rule + DB fetches is permitted.\n' % (
-            generic_present, len(TRIO), min_generic,
+            generic_present, len(TRIO), min_generic, _clamp_note,
             ', '.join(m['file'] for m in missing) or '(none recorded)',
         )
     )
@@ -4014,7 +4093,7 @@ if generic_present < min_generic:
 ## emitted so triage surfaces the truncation in the report. Security signal
 ## is bounded, never silently dropped.
 tool cap_findings:
-  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
+  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
 import os, json, glob
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -4071,13 +4150,20 @@ def trim(item):
         return item[:MAXSTR] + '...[trunc]'
     return item
 
-# The deepsec export lives OUTSIDE the top-level glob (its file is keyed on
-# the run id template, cf. run_deepsec_scanner, so it sits at
-# scan_dir/deepsec-out-<run.id>/deepsec.json). Route it in EXPLICITLY through the
-# producer's json_paths,
-# the same envelope bank_deepsec_findings and scan_health already honour.
-# Never recurse the glob: a recursive sweep would pull in other passes'
-# per-run subdirs and reopen the shared-slot defect #1322 closed.
+# The deep scan enters the harvest by ONE route: the path its producer
+# published in json_paths -- the same envelope bank_deepsec_findings and
+# scan_health honour. The top-level glob below is for the other scanners
+# and never yields the deep scan: the file at scan_dir/<basename of
+# vars.deepsec_out> is the pre-0.1.4 shared slot, which no current pass
+# writes (run_deepsec_scanner exports under deepsec-out-<run.id>/ and
+# removes the orphan once a pass is past its preflight) and this node does not read, whether or not
+# the deep scan ran. A pass whose deep scan was disabled, refused or dropped
+# as unusable publishes no path, so there is nothing to harvest for it, and
+# deepsec_harvest in the envelope says exactly that. vars.deepsec_out has a
+# non-empty default; an empty override names no slot to exclude, the same
+# way scan_health then expects no deep entry. Never recurse the glob:
+# a recursive sweep would pull in other passes' per-run subdirs and reopen
+# the shared-slot defect #1322 closed.
 _ds_path = ''
 try:
     _ds_paths = json.loads(os.environ.get('DEEPSEC_PATHS') or '{}')
@@ -4087,48 +4173,29 @@ if isinstance(_ds_paths, dict):
     _p = _ds_paths.get('deepsec')
     if isinstance(_p, str) and _p:
         _ds_path = _p
+_ds_slot_name = os.path.basename(os.environ.get('DEEPSEC_OUT', '').strip().rstrip('/'))
+deepsec_harvest = 'none: the deep scanner published no export path on this pass (disabled, refused, or output dropped as unusable); the shared slot under scan_dir is never read'
 
 per_scanner = []
 harvest = []
 total_raw = total_kept = total_capped = 0
-# Merge the top-level glob with the per-run deepsec path and sort the whole
-# list by BASENAME. Appending last would place deepsec at the tail of the
-# harvest loop; the inline budget breaks at 'size >= inline_max' as soon as
-# a group would spill it, so a generic layer that fills the budget would
-# reach 'inline' with zero deepsec items -- the exact gap the harvest was
-# added to close on non-sandboxed backends (revi R6ee3b1). Sorting by
-# basename ensures the deep scan is INTERLEAVED with the other scanners the
-# way the pre-per-run glob already did -- the letter d sorts between
-# custom.json and gitleaks.json -- so the budget cuts across a mixed
-# harvest rather than a partition.
+# Merge the top-level glob (minus the shared-slot name) with the per-run
+# deepsec path and sort the whole list by BASENAME. Appending last would
+# place deepsec at the tail of the harvest loop; the inline budget breaks
+# at 'size >= inline_max' as soon as a group would spill it, so a generic
+# layer that fills the budget would reach 'inline' with zero deepsec items
+# -- the exact gap the harvest exists to close on non-sandboxed backends
+# (revi R6ee3b1). Sorting by basename keeps the deep scan INTERLEAVED with
+# the other scanners -- the letter d sorts between custom.json and
+# gitleaks.json -- so the budget cuts across a mixed harvest rather than a
+# partition. Basenames are unique in this list by construction: the glob
+# is flat, and the one name it may not yield is the deep scan's.
 # (No backticks in this comment: they would close the DSL command block.)
-_files = list(glob.glob(os.path.join(scan_dir, '*.json')))
-# Dedup by BASENAME rather than by exact path: a workspace scanned by a
-# pre-#1322 build left an orphan scan_dir/deepsec.json (the legacy shared
-# slot), and the per-run producer path is scan_dir/deepsec-out-<run>/
-# deepsec.json — two distinct paths with the same basename. An exact-path
-# dedup missed that collision; harvesting BOTH inflated inline_total /
-# total_kept by the orphan's findings and produced two harvest[] entries
-# labelled 'deepsec.json' — the RVA agent 1 catch on PR #1473 verdict 3.
-# When the producer publishes deepsec.json (via json_paths), suppress any
-# other file with the same basename: only the producer's path is
-# authoritative.
+_files = [p for p in glob.glob(os.path.join(scan_dir, '*.json')) if not _ds_slot_name or os.path.basename(p) != _ds_slot_name]
 if _ds_path:
     _files.append(_ds_path)
 _files.sort(key=lambda p: os.path.basename(p))
-_ds_basename = os.path.basename(_ds_path) if _ds_path else ''
-_seen_basenames = set()
 for jf in _files:
-    _bn = os.path.basename(jf)
-    if _bn in _seen_basenames:
-        continue
-    if _ds_basename and _bn == _ds_basename and jf != _ds_path:
-        # Legacy orphan at scan_dir/<ds_basename>: the producer published
-        # its own per-run path via json_paths, so THAT is the authoritative
-        # deepsec export for this pass. Skip anything else that borrows the
-        # same basename from a previous build's shared slot.
-        continue
-    _seen_basenames.add(_bn)
     try:
         with open(jf, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
@@ -4173,6 +4240,16 @@ for jf in _files:
     per_scanner.append({'file': os.path.basename(jf), 'array': key, 'raw': raw, 'kept': len(kept), 'capped': capped})
     harvest.append({'file': os.path.basename(jf), 'array': key, 'findings': data[key]})
 
+if _ds_path:
+    _ds_n = 0
+    for g in harvest:
+        if g['file'] == os.path.basename(_ds_path):
+            _ds_n = len(g['findings'])
+    if _ds_n:
+        deepsec_harvest = 'published: ' + _ds_path + ' (' + str(_ds_n) + ' findings harvested)'
+    else:
+        deepsec_harvest = 'published: ' + _ds_path + ' (nothing harvested: the export was empty or unreadable)'
+
 # The findings travel in the envelope only when asked for, because the
 # payload lands in the triage prompt whole. Whole findings are dropped at the
 # budget, never truncated mid-object, so a cut payload still parses and the
@@ -4208,6 +4285,7 @@ print(json.dumps({
     'inline_embedded': inline_embedded,
     'inline_total': inline_total,
     'inline_truncated': inline_max > 0 and inline_embedded < inline_total,
+    'deepsec_harvest': deepsec_harvest,
 }))
 "`
   input: cap_findings_input

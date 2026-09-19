@@ -150,6 +150,27 @@ run_lang_scanners`), not a parallel router fan-out — this stays inside
 the runtime's one-mutating-branch rule; the lang scanner no-ops on
 absent languages.
 
+### The anti-façade gate and the deep scan
+
+`scan_health` hard-fails the run when fewer than `min_generic_scanners`
+(default 2) of the **always-on trio** — gitleaks, trivy, semgrep
+`p/default` — produced a parseable output file. The optional deep scan
+(`--var enable_deepsec=true`) is reported in the same `present` /
+`missing` lists but **never counts toward that floor**: a missing deep
+scan degrades the run with a banner, it does not stop it, and a
+`min_generic_scanners` above 3 is clamped to 3 with a NOTE in the report
+(`min_generic_requested` / `min_generic_clamped` in the envelope) rather
+than failing every run. The deep scan's export is per-run —
+`<scan_dir>/deepsec-out-<run.id>/deepsec.json`, published in the
+scanner's `json_paths` — and every reader (`bank_deepsec_findings`,
+`scan_health`, `cap_findings`, triage) takes it from there; the flat
+`<scan_dir>/deepsec.json` of releases before 0.1.4 is removed by the first
+deep-scan pass that gets past its preflight and read by nobody. Both the
+removal and the harvest exclusion key on the basename `deepsec_out` carries
+now (the removal keys on the whole path, the harvest exclusion on the
+basename) — change that dirname or basename across an upgrade and the old
+file stays, to remove by hand.
+
 ### Opt-in remediation phase (`--var remediate=true`)
 
 Off by default. When enabled, after `report_card` the workflow runs a

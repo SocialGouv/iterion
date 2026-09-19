@@ -34,10 +34,14 @@ export ITERION_REFERENCES_ROOT=$HOME/work/refs
 ```
 
 The `run_deepsec_scanner` tool node in `bots/sec-audit-source/main.bot`
-reads `${ITERION_REFERENCES_ROOT:-$HOME/lab/ai/references}` directly;
-the bot var `deepsec_root` defaults to
+reads `$ITERION_REFERENCES_ROOT` (bare — the engine expands braced
+`${NAME:-default}` forms in tool commands at launch, from the engine
+environment, so the body must not carry them); unset, it falls back to
+the bot var `deepsec_root`, which defaults to
 `"${HOME}/lab/ai/references/deepsec"` (override with
-`--var deepsec_root=...`).
+`--var deepsec_root=...`). The variable is read from the environment the
+tool node runs in: the engine's on a non-sandboxed runner, the sandbox
+container's when tool nodes run sandboxed.
 
 ## Bootstrap
 
@@ -98,9 +102,15 @@ When set, the workflow:
    `50`) at concurrency `--var deepsec_concurrency` (default `4`).
    This caps the LLM cost — deepsec's per-file batches can run
    $0.05–$0.30 with Opus.
-5. **Exports** the JSON to `--var deepsec_out`
-   (default `<scan_dir>/deepsec.json`).
-6. Triage reads that JSON via `read_file` and maps each finding to a
+5. **Exports** the JSON under a per-run subdirectory derived from
+   `--var deepsec_out` — `<scan_dir>/deepsec-out-<run.id>/deepsec.json`
+   by default — and publishes that path in its `json_paths.deepsec`. The
+   flat `<scan_dir>/deepsec.json` of releases before 0.1.4 is removed by
+   the first deep-scan pass that gets past its preflight and read by no
+   node.
+6. Triage reads that JSON through the published `json_paths` (or the
+   `findings_budget.inline` transport on backends with no shared
+   filesystem) and maps each finding to a
    Seki candidate per the field-mapping table in
    [`scanner-deepsec.md`](../bots/sec-audit-source/skills/scanner-deepsec.md).
 
@@ -165,7 +175,10 @@ never references a node that did not run.
 `scan_health` surfaces a missing `deepsec.json` to `report_card` so a
 degraded deepsec run shows up in the coverage banner — it is NOT
 counted toward `min_generic_scanners` (so a missing deepsec NEVER
-hard-fails the run — only flags as degraded).
+hard-fails the run — only flags as degraded). Because the floor counts
+the always-on trio alone, a `min_generic_scanners` above 3 is clamped
+to 3 and reported (`min_generic_requested` / `min_generic_clamped` in
+the envelope, a NOTE in the report).
 
 ## On-demand harness invocation (`external-security-tools` skill)
 

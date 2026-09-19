@@ -139,6 +139,7 @@ func TestCapFindingsHarvestReachesTheDeepsecFile(t *testing.T) {
 		"CAP=50",
 		"INLINE_MAX=524288",
 		"DEEPSEC_PATHS="+string(paths),
+		"DEEPSEC_OUT="+filepath.Join(scanDir, "deepsec.json"),
 	)
 	raw, err := cmd.Output()
 	if err != nil {
@@ -207,6 +208,7 @@ func TestCapFindingsIgnoresNeighbourPerRunSubdirs(t *testing.T) {
 		"CAP=50",
 		"INLINE_MAX=524288",
 		"DEEPSEC_PATHS="+string(paths),
+		"DEEPSEC_OUT="+filepath.Join(scanDir, "deepsec.json"),
 	)
 	raw, err := cmd.Output()
 	if err != nil {
@@ -523,6 +525,7 @@ func TestCapFindingsInlinesDeepsecUnderAFullBudget(t *testing.T) {
 		"CAP=50",
 		"INLINE_MAX=8192",
 		"DEEPSEC_PATHS="+string(paths),
+		"DEEPSEC_OUT="+filepath.Join(scanDir, "deepsec.json"),
 	)
 	raw, err := cmd.Output()
 	if err != nil {
@@ -566,13 +569,14 @@ func TestCapFindingsInlinesDeepsecUnderAFullBudget(t *testing.T) {
 // the fixture design; the mutation itself is documented and manually run in
 // the revi thread.
 
-// #1473 verdict 3 RVA agent-1 [medium] -- cap_findings must not double-count
-// a pre-#1322 orphan `scan_dir/deepsec.json` alongside the per-run producer
+// #1473 verdict 3 RVA agent-1 [medium] -- cap_findings must not harvest a
+// pre-#1322 orphan `scan_dir/deepsec.json` alongside the per-run producer
 // path. A workspace scanned by a pre-per-run build left the shared-slot file
 // on disk; the per-run derivation writes to `scan_dir/deepsec-out-<run>/
-// deepsec.json`; two distinct paths with the same basename bypass an
-// exact-path _seen dedup. The fix keys dedup by BASENAME and drops the
-// non-producer entry when json_paths names one.
+// deepsec.json`. The shared slot is never a harvest source (revi verdict 4,
+// Rf73c6f): the glob does not yield its name, and the deep scan enters the
+// harvest only through json_paths -- so the producer's findings are the
+// only deepsec.json group inline carries.
 func TestCapFindingsSkipsOrphanWhenTheProducerPublishesADeepsecPath(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -618,6 +622,7 @@ func TestCapFindingsSkipsOrphanWhenTheProducerPublishesADeepsecPath(t *testing.T
 		"CAP=50",
 		"INLINE_MAX=524288",
 		"DEEPSEC_PATHS="+string(paths),
+		"DEEPSEC_OUT="+filepath.Join(scanDir, "deepsec.json"),
 	)
 	raw, err := cmd.Output()
 	if err != nil {

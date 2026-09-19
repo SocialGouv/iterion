@@ -941,7 +941,13 @@ func runDeepsecNodeAgent(t *testing.T, dir, runID, agent, model, deepsecStub str
 	// as well, because the two cancel). So nothing established here may be read
 	// as a statement about values carrying shell syntax — for those, the
 	// escaping IS the mechanism, and this harness does not have it.
-	rendered := body
+	//
+	// One engine rule this harness DOES mirror: the engine expands every
+	// braced env reference in the command before the template resolves
+	// (expandEngineBracedEnv below). Without it, a braced ${RUN_ID:-} guard
+	// refused every production pass while this harness rendered it verbatim
+	// and stayed green.
+	rendered := expandEngineBracedEnv(body)
 	for ref, val := range map[string]string{
 		"{{vars.scan_dir}}":              scanDir,
 		"{{vars.workspace_dir}}":         ws,
@@ -1416,14 +1422,24 @@ func TestDeepsecRefusesAnAgentThatIsNotOneArgument(t *testing.T) {
 // running deepsec destroyed a CONCURRENT pass's already-exported findings, and
 // that neighbour then claimed a path to a vanished file while its own coverage
 // still read complete. A fix must not open a hole on the way to closing one,
-// and the position in the body is the whole of the fix.
+// and the position in the body is the whole of the fix -- for every entry
+// clear this node now carries (the per-pass stale export here, the pre-0.1.4
+// shared slot beside it). TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry
+// pins the base-slot placement.
 func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
 	dir := t.TempDir()
 	scanDir := filepath.Join(dir, "scan")
 	if err := os.MkdirAll(scanDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(scanDir, "deepsec.json")
+	// The neighbour's export lives where a current build writes one: under
+	// its own deepsec-out-<run.id>/ subdirectory. (The flat scan_dir/deepsec.json
+	// is the pre-0.1.4 shared slot, an orphan this build removes on entry --
+	// see TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry.)
+	out := filepath.Join(scanDir, "deepsec-out-run-NEIGHBOUR", "deepsec.json")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	neighbour := `[{"id":"N1"},{"id":"N2"}]`
 	if err := os.WriteFile(out, []byte(neighbour), 0o644); err != nil {
 		t.Fatal(err)
@@ -1445,7 +1461,9 @@ func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
 }
 
 // The test above locks only the CEILING of that line: it reddens if the clear
-// moves back above the probes. Deleting the line outright left every test green,
+// moves back above the probes (the shared-slot entry clear has the same
+// placement pinned by TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry).
+// Deleting the line outright left every test green,
 // because every other exercise of this node starts from a fresh TempDir and so
 // never has a stale export to inherit — a refactor could restore the defect the
 // line exists to close and the build would not notice.
@@ -1469,11 +1487,17 @@ func TestDeepsecAFailedExportDoesNotInheritTheSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The scanner uses vars.deepsec_out as a BASE template and derives its
-	// per-pass path as <dirname>/deepsec-out-<run.id>/<basename>. The neighbour file lives
-	// at the base — a workspace-scratch file no current pass now writes to.
-	neighbourAtBase := filepath.Join(scanDir, "deepsec.json")
+	// per-pass path as <dirname>/deepsec-out-<run.id>/<basename>. The
+	// neighbour's export lives under ITS run's subdirectory -- the only place
+	// a current build writes one. (The flat file at the base is the pre-0.1.4
+	// shared slot, removed on entry: see
+	// TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry.)
+	neighbourExport := filepath.Join(scanDir, "deepsec-out-run-NEIGHBOUR", "deepsec.json")
 	neighbourBody := []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`)
-	if err := os.WriteFile(neighbourAtBase, neighbourBody, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(neighbourExport), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(neighbourExport, neighbourBody, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// This pass's own per-run slot, which is what the export-unusable guard
@@ -1505,16 +1529,17 @@ esac`)
 			"run would ship as this pass output", runSlot, body)
 	}
 
-	// The neighbour at the base must be UNTOUCHED. Before #1322 the entry rm
-	// would have deleted it, or a full run would have overwritten it — either
-	// way a foreign pass export was destroyed by a pass that had nothing to do
-	// with it.
-	got, err := os.ReadFile(neighbourAtBase)
+	// The neighbour's export must be UNTOUCHED: this pass entry clears (its
+	// stale per-run export, the legacy shared slot) and its own export
+	// address slots derived from its own run id alone, so a foreign pass's
+	// findings can be neither destroyed nor overwritten by a pass that had
+	// nothing to do with them.
+	got, err := os.ReadFile(neighbourExport)
 	if err != nil {
-		t.Fatalf("a pass that ran deepsec destroyed a foreign export at the scratch base %s: %v", neighbourAtBase, err)
+		t.Fatalf("a pass that ran deepsec destroyed a foreign per-run export at %s: %v", neighbourExport, err)
 	}
 	if !bytes.Equal(got, neighbourBody) {
-		t.Errorf("a pass rewrote a foreign export at the scratch base %s: %q", neighbourAtBase, got)
+		t.Errorf("a pass rewrote a foreign per-run export at %s: %q", neighbourExport, got)
 	}
 
 	steps, _ := cov["steps_failed"].([]any)
@@ -1603,5 +1628,98 @@ func TestDeepsecRefusesToRunWithoutAUsableRunID(t *testing.T) {
 				t.Errorf("refused for some other reason than the run id: %q", joined)
 			}
 		})
+	}
+}
+
+// expandEngineBracedEnv mirrors pkg/backend/model/expandBracedEnv: at
+// execution the engine replaces every braced env reference in a tool
+// command — `${NAME}` when NAME is set in the ENGINE process environment,
+// `${NAME:-default}` always — BEFORE the command template resolves, so a
+// value the command itself sets in its env prefix (RUN_ID, SCAN_DIR_TTL_DAYS)
+// never reaches its own braced reference. Bare $NAME references pass through
+// verbatim for sh to interpret.
+func expandEngineBracedEnv(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] != '$' || i+1 >= len(s) || s[i+1] != '{' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(s[i+2:], '}')
+		if end < 0 {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		body := s[i+2 : i+2+end]
+		name, def := body, ""
+		hasDef := false
+		if idx := strings.Index(body, ":-"); idx >= 0 {
+			name, def, hasDef = body[:idx], body[idx+2:], true
+		}
+		if !isEnvRefName(name) {
+			b.WriteString(s[i : i+2+end+1])
+			i += 2 + end + 1
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			b.WriteString(v)
+		} else if hasDef {
+			b.WriteString(def)
+		} else {
+			// Unset with no default: the engine passes the reference through
+			// verbatim (bracedEnvWouldExpand is false there) so bash still
+			// sees it -- erasing it here once rendered the retention sweep's
+			// -mtime bound as "+" and killed the sweep in every
+			// mirror-rendered test.
+			b.WriteString(s[i : i+2+end+1])
+		}
+		i += 2 + end + 1
+	}
+	return b.String()
+}
+
+// isEnvRefName reports whether name lexically looks like a shell env var
+// reference (letter or underscore first, then letters, digits, underscores),
+// the same guard the engine applies before treating a braced body as an env
+// reference.
+func isEnvRefName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		ok := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (i > 0 && r >= '0' && r <= '9')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// TestExpandEngineBracedEnvMatchesTheEngine pins the harness mirror against
+// the engine rule (pkg/backend/model/executor_tool.go expandBracedEnv):
+// unset + default -> the default; unset + NO default -> the reference passes
+// through VERBATIM (erasing it once rendered the retention sweep's -mtime
+// bound as "+" and killed the sweep under this rendering); set -> the value;
+// anything that does not lexically look like an env reference passes
+// through; a bare $NAME always passes through.
+func TestExpandEngineBracedEnvMatchesTheEngine(t *testing.T) {
+	t.Setenv("ITERION_TEST_BRACED_SET", "hello")
+	for _, tc := range []struct{ in, want string }{
+		{"${ITERION_TEST_BRACED_UNSET:-d}", "d"},
+		{"${ITERION_TEST_BRACED_UNSET}", "${ITERION_TEST_BRACED_UNSET}"},
+		{"$ITERION_TEST_BRACED_UNSET", "$ITERION_TEST_BRACED_UNSET"},
+		{"${ITERION_TEST_BRACED_SET}", "hello"},
+		{"${ITERION_TEST_BRACED_SET:-d}", "hello"},
+		{"-mtime \"+${ITERION_TEST_BRACED_UNSET}\" \\", "-mtime \"+${ITERION_TEST_BRACED_UNSET}\" \\"},
+		{"${a.b}", "${a.b}"},
+		{"${1:-x}", "${1:-x}"},
+		{"${ITERION_TEST_BRACED_UNSET", "${ITERION_TEST_BRACED_UNSET"},
+	} {
+		if got := expandEngineBracedEnv(tc.in); got != tc.want {
+			t.Errorf("expandEngineBracedEnv(%q) = %q, want %q -- the harness diverges from the engine rule", tc.in, got, tc.want)
+		}
 	}
 }
