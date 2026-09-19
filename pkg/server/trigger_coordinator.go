@@ -45,7 +45,7 @@ type TriggerCoordinator struct {
 	bus       eventbus.Bus
 	source    *trigger.BoardSource
 	scheduler *trigger.Scheduler
-	cancelSub func()
+	cancelSub func(context.Context)
 	logger    *iterlog.Logger
 }
 
@@ -79,7 +79,9 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 	}
 	src := trigger.StartBoardSource(ns, bus, logger)
 	if src == nil {
-		cancelSub()
+		// Boot-time abort — no shared shutdown ctx yet; the default budget
+		// applies internally.
+		cancelSub(context.Background())
 		return nil
 	}
 	tc := &TriggerCoordinator{bus: bus, source: src, cancelSub: cancelSub, logger: logger}
@@ -170,8 +172,13 @@ func (t *TriggerCoordinator) Bus() eventbus.Bus {
 	return t.bus
 }
 
-// Close tears down the board source and unsubscribes the evaluator.
-func (t *TriggerCoordinator) Close() {
+// Close tears down the board source and unsubscribes the evaluator. The
+// ctx bounds the bus-subscription cancel's in-flight wait; under a shared
+// shutdown budget the caller passes a joinCtx so this cancel composes with
+// the peer subscribers' cancels — see eventbus.Bus.Subscribe's ctx
+// contract. A caller with no deadline can pass context.Background(); the
+// bus falls back to eventbus.DefaultSubscribeCancelBudget.
+func (t *TriggerCoordinator) Close(ctx context.Context) {
 	if t == nil {
 		return
 	}
@@ -182,6 +189,6 @@ func (t *TriggerCoordinator) Close() {
 		t.source.Stop()
 	}
 	if t.cancelSub != nil {
-		t.cancelSub()
+		t.cancelSub(ctx)
 	}
 }

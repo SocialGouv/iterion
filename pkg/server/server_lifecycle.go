@@ -756,20 +756,37 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		// operator-driven only.
 		s.cfg.Dispatcher.Shutdown()
 	}
+	// watchCoord.Close blocks on <-wc.done with NO ctx and NO timeout, and
+	// its worker fans out Mongo LoadRun/QueueMessage calls per buffered
+	// event on context.Background — a slow-Mongo pod under SIGTERM can
+	// keep it inside for many hundreds of ms. It is NOT a bus subscription
+	// cancel; if we started subCancelCtx first it would eat the shared
+	// budget the bus cancels arithmetic depends on. Close it outside the
+	// window (its own drain shape).
 	if s.watchCoord != nil {
 		s.watchCoord.Close()
 	}
+	// ONE shared budget covers EVERY bus-subscription cancel below (#1477's
+	// medium finding): the pre-fix code composed N × DefaultSubscribeCancelBudget
+	// serially, so seven slow-Mongo subscribers could eat up to 3.5s of the
+	// grace period before joinBackgroundWorkers spent its own budget — the
+	// exact shape #1257 rejects for loops, arriving from the bus side.
+	// Mirroring pkg/server.joinBackgroundWorkers' single joinCtx. The two
+	// TriggerCoordinator.Close calls below also thread through this ctx
+	// so THEIR bus cancel composes into the same budget.
+	subCancelCtx, subCancelDone := context.WithTimeout(ctx, eventbus.DefaultSubscribeCancelBudget)
+	defer subCancelDone()
 	if s.cloudTriggerCoord != nil {
-		s.cloudTriggerCoord.Close()
+		s.cloudTriggerCoord.Close(subCancelCtx)
 	}
 	if s.triggerCoord != nil {
-		s.triggerCoord.Close()
+		s.triggerCoord.Close(subCancelCtx)
 	}
 	if s.opsAlertsCancel != nil {
-		s.opsAlertsCancel()
+		s.opsAlertsCancel(subCancelCtx)
 	}
 	if s.userNotifyCancel != nil {
-		s.userNotifyCancel()
+		s.userNotifyCancel(subCancelCtx)
 	}
 	// Take the lifecycle handles once. Cancellation is immediate; never join
 	// while holding stateMu or before draining HTTP requests.
@@ -778,25 +795,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.assistantWatchCancel, s.assistantWatchDone = nil, nil
 	s.stateMu.Unlock()
 	if watchCancel != nil {
-		watchCancel()
+		watchCancel(subCancelCtx)
 	}
-	missionDone := s.stopAssistantMissions()
+	missionDone := s.stopAssistantMissions(subCancelCtx)
 	if s.gateAutofixCancel != nil {
-		s.gateAutofixCancel()
+		s.gateAutofixCancel(subCancelCtx)
 		s.gateAutofixCancel = nil
 	}
 	if s.outcomeRouterCancel != nil {
-		s.outcomeRouterCancel()
+		s.outcomeRouterCancel(subCancelCtx)
 		s.outcomeRouterCancel = nil
 	}
 	if s.boardSyncCancel != nil {
 		s.boardSyncCancel()
 	}
 	if s.gateReconcileCancel != nil {
-		s.gateReconcileCancel()
+		s.gateReconcileCancel(subCancelCtx)
 	}
 	if s.forgePublishExpiryCancel != nil {
-		s.forgePublishExpiryCancel()
+		s.forgePublishExpiryCancel(subCancelCtx)
 		s.forgePublishExpiryCancel = nil
 	}
 	if s.watcher != nil {

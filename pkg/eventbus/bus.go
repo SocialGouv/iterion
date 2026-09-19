@@ -22,12 +22,12 @@ import (
 )
 
 // DefaultSubscribeCancelBudget bounds how long the cancel returned by
-// Subscribe waits for an in-flight handler after it has signalled cancellation.
-// The value matches pkg/server's background join budget (#1257) so both halves
-// of a graceful shutdown — the goUntilShutdown loops and the bus subscribers —
-// draw from a single arithmetic on the chart's terminationGracePeriodSeconds:
-// a bus cancel that overran would spend budget the join arithmetic upstream
-// never provisioned, and vice versa.
+// Subscribe waits for an in-flight handler when the caller passes a context
+// without a deadline. Under a graceful shutdown the caller SHOULD thread a
+// shared joinCtx so all N subscriptions cancel under ONE budget (mirroring
+// pkg/server.joinBackgroundWorkers' single joinCtx and its per-loop-budget
+// arbitration in #1257); the default is a safety net for callers that
+// cancel a single subscription outside of a shutdown.
 const DefaultSubscribeCancelBudget = 500 * time.Millisecond
 
 // Handler processes one event. It runs on a per-subscriber worker goroutine,
@@ -45,14 +45,24 @@ type Bus interface {
 	// subscriber (used as the durable consumer name by NATSBus; informational
 	// for InProcBus). An empty Matcher matches every event.
 	//
-	// The returned cancel signals the handler's context and waits for an
-	// in-flight delivery within DefaultSubscribeCancelBudget; a handler that
-	// ignores its context is named in a warning and left behind rather than
-	// waited out, so a defective subscriber cannot hold the process past the
-	// grace period. Cancel does NOT guarantee delivery of buffered events —
-	// the bus is a lossy fan-out and its producer's reconciliation path is
-	// the safety net. Idempotent.
-	Subscribe(name string, filter trigger.Matcher, h Handler) (cancel func(), err error)
+	// The returned cancel signals the handler's context, unsubscribes the
+	// transport, and waits for an in-flight delivery within the caller's
+	// ctx.Deadline (DefaultSubscribeCancelBudget when ctx has none). A
+	// handler that ignores its context is named in a warning and left
+	// behind rather than waited out, so a defective subscriber cannot hold
+	// the process past the grace period. Cancel does NOT guarantee
+	// delivery of buffered events — the bus is a lossy fan-out and its
+	// producer's reconciliation path is the safety net (see the package
+	// doc; every subscriber pkg/server wires has a matching sweep, so
+	// unwinding an in-flight write is sufficient).
+	//
+	// Under a graceful shutdown the caller SHOULD thread ONE joinCtx across
+	// all cancels so N subscriptions share the same deadline; passing them
+	// separate contexts (or the same context sequentially with a per-call
+	// timer) composes the budget and eats the grace period upstream. That
+	// mirrors pkg/server.joinBackgroundWorkers' single joinCtx arbitration.
+	// Idempotent.
+	Subscribe(name string, filter trigger.Matcher, h Handler) (cancel func(ctx context.Context), err error)
 }
 
 // deliver runs one handler and converts a panic into an error, so a defect in

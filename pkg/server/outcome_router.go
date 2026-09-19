@@ -104,7 +104,7 @@ func (s *Server) startOutcomeRouter() {
 	}
 }
 
-func (s *Server) attachOutcomeRouter(bus eventbus.Bus) (func(), error) {
+func (s *Server) attachOutcomeRouter(bus eventbus.Bus) (func(context.Context), error) {
 	return bus.Subscribe(outcomeRouterName, trigger.Matcher{
 		Sources: []trigger.Source{trigger.SourceRun},
 		Kinds:   []string{trigger.KindRunFinished, trigger.KindRunFailed},

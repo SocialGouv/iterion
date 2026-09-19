@@ -104,12 +104,12 @@ type Server struct {
 	watchCoord             *watchCoordinator // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
 	assistantWatches       runwatch.Store    // durable target-run watches; deliberately separate from issue watches
 	assistantWatch         *assistantWatchCoordinator
-	assistantWatchCancel   func()
+	assistantWatchCancel   func(context.Context)
 	assistantWatchDone     <-chan struct{}
 	assistantMissionDone   <-chan struct{}
 	assistantMissions      assistantmission.Store
 	assistantMission       *assistantMissionCoordinator
-	assistantMissionCancel func()
+	assistantMissionCancel func(context.Context)
 	localEvents            eventbus.Bus             // local outcome spine when no trigger coordinator is configured
 	triggerCoord           *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
 	cloudTriggerCoord      *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
@@ -119,14 +119,14 @@ type Server struct {
 	// the bus subscription on Close.
 	userNotify       *usernotify.Dispatcher
 	pushSink         *webpush.Sink
-	userNotifyCancel func()
+	userNotifyCancel func(context.Context)
 	// opsAlerts is the operator-alert dispatcher when alerts are
 	// configured (nil otherwise) — the outcome router's escalation
 	// channel rides its NotifyOperator.
 	opsAlerts *alert.OpsDispatcher
 	// opsAlertsCancel detaches the operator-alert dispatcher's bus
 	// subscription on Close.
-	opsAlertsCancel func()
+	opsAlertsCancel func(context.Context)
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
@@ -489,17 +489,19 @@ type Server struct {
 	forgePublishTokens ForgePublishTokenStore
 
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
-	gateReconcileCancel func()
+	gateReconcileCancel func(context.Context)
 	// forgePublishExpiryCancel unsubscribes the publish-grant reaper — the
 	// consumer that shortens a grant once its run can no longer publish.
-	forgePublishExpiryCancel func()
+	forgePublishExpiryCancel func(context.Context)
 	// boardSyncCancel stops the project-board reconciliation worker at
 	// shutdown, so a drain does not leave a pass writing to a forge.
-	boardSyncCancel func()
+	// This one is a goUntilShutdown context.CancelFunc, NOT a bus
+	// subscription cancel — the shared-budget contract does not apply.
+	boardSyncCancel context.CancelFunc
 	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
-	gateAutofixCancel func()
+	gateAutofixCancel func(context.Context)
 	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
-	outcomeRouterCancel func()
+	outcomeRouterCancel func(context.Context)
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin

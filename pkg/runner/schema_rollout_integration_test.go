@@ -422,7 +422,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			if err != nil {
 				t.Fatalf("subscribe outcome event: %v", err)
 			}
-			defer cancelEvents()
+			defer cancelEvents(context.Background())
 
 			// The run document sits `queued`, exactly as SubmitLaunch
 			// leaves it before a runner claims the message.
@@ -700,7 +700,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("subscribe outcome event: %v", err)
 		}
-		defer cancelEvents()
+		defer cancelEvents(context.Background())
 
 		r := &Runner{cfg: Config{
 			NATS:                conn,
@@ -783,7 +783,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("subscribe outcome event: %v", err)
 		}
-		defer cancelEvents()
+		defer cancelEvents(context.Background())
 
 		r := &Runner{cfg: Config{
 			NATS:                conn,

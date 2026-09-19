@@ -189,8 +189,9 @@ func (b *NATSBus) Publish(_ context.Context, ev trigger.Event) error {
 // DefaultSubscribeCancelBudget — a handler ignoring its ctx is left behind
 // with a warning naming the subscriber, exactly as InProcBus does. Without
 // that wait a pod's SIGTERM would cut a callback mid-store-write (#1343).
+// See Bus.Subscribe for the ctx contract on the returned cancel.
 // Idempotent.
-func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (func(), error) {
+func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (func(context.Context), error) {
 	if name == "" {
 		return nil, fmt.Errorf("eventbus: NATSBus.Subscribe: empty name (used as the queue group)")
 	}
@@ -243,8 +244,17 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 	b.mu.Unlock()
 
 	var once sync.Once
-	cancel := func() {
+	cancel := func(ctx context.Context) {
 		once.Do(func() {
+			// One deadline covers Unsubscribe AND the in-flight wait.
+			// Unsubscribe on a real nats.Conn typically returns fast, but
+			// its "typically" is not a guarantee — a wire flush during a
+			// broker outage can sit here — so we bound it under the same
+			// budget as Wait rather than pinning "never blocks" with a
+			// separate assumption (#1477's Q2).
+			waitCtx, waitCancel := b.waitCtx(ctx)
+			defer waitCancel()
+
 			// Close the WaitGroup gate BEFORE Unsubscribe: past this point
 			// any newly-dispatched callback returns without Add-ing, so
 			// Wait() below observes only Adds that happened before the
@@ -258,23 +268,47 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 			// first would let a running callback finish its store write
 			// with no signal at all.
 			ns.cancel()
-			if ns.sub != nil {
-				_ = ns.sub.Unsubscribe()
-			}
-			budget := b.subscribeCancelBudget()
+			// Unsubscribe on its own goroutine so a slow transport wire
+			// doesn't eat the whole budget before Wait even starts. If
+			// unsubscribe hangs past waitCtx, we log and move on — the
+			// handler-context cancel already stopped delivery from being
+			// consumed, and the transport tears down when the connection
+			// closes.
+			unsubDone := make(chan struct{})
+			go func() {
+				defer close(unsubDone)
+				if ns.sub != nil {
+					_ = ns.sub.Unsubscribe()
+				}
+			}()
 			waitDone := make(chan struct{})
 			go func() {
+				defer close(waitDone)
 				ns.inFlight.Wait()
-				close(waitDone)
 			}()
-			timer := time.NewTimer(budget)
-			select {
-			case <-waitDone:
-				timer.Stop()
-			case <-timer.C:
-				if b.logger != nil {
-					b.logger.Warn("eventbus: subscriber %q handler did not return within %s of cancel; its last write falls outside the grace period", name, budget)
+			// One select over BOTH the in-flight WG AND unsubscribe: the
+			// budget is shared. A handler unwinding fast + unsub blocking
+			// is the same wall clock as a fast unsub + slow handler.
+			for pending := 2; pending > 0; {
+				select {
+				case <-waitDone:
+					pending--
+					waitDone = nil
+				case <-unsubDone:
+					pending--
+					unsubDone = nil
+				case <-waitCtx.Done():
+					pending = 0
 				}
+			}
+			// The overrun is "something did NOT complete", not "the ctx
+			// expired": if both channels closed on the same tick as
+			// ctx.Done, the ctx-arm can win the select at random and
+			// misclassify a clean shutdown as an overrun. Only warn when
+			// a channel is still open — that's what a real hang looks
+			// like (#1477's adversarial LOW).
+			if (waitDone != nil || unsubDone != nil) && b.logger != nil {
+				b.logger.Warn("eventbus: subscriber %q did not settle within cancel budget; its last write falls outside the grace period", name)
 			}
 			b.mu.Lock()
 			delete(b.subs, ns)
@@ -282,6 +316,20 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 		})
 	}
 	return cancel, nil
+}
+
+// waitCtx derives the ctx that bounds Unsubscribe + WG.Wait on cancel.
+// When the caller passes a joinCtx (shared deadline) we honour it verbatim
+// so N subscriptions share ONE budget. Otherwise fall back to a fresh
+// WithTimeout on the default budget so a standalone cancel stays bounded.
+func (b *NATSBus) waitCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.WithTimeout(context.Background(), b.subscribeCancelBudget())
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, b.subscribeCancelBudget())
 }
 
 var _ Bus = (*NATSBus)(nil)

@@ -81,7 +81,7 @@ func TestAssistantMissionDoneClosesAfterTheSweepsLastWrite(t *testing.T) {
 	}
 	awaitEntered(t, p)
 
-	done := s.stopAssistantMissions()
+	done := s.stopAssistantMissions(context.Background())
 	if done == nil {
 		t.Fatal("stop returned no loop to join")
 	}
@@ -135,7 +135,7 @@ func TestRestartAssistantMissionsReturnsThePreviousLoopToJoin(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the previous loop was not reported gone once its sweep had returned")
 	}
-	if done := s.stopAssistantMissions(); done != nil {
+	if done := s.stopAssistantMissions(context.Background()); done != nil {
 		<-done
 	}
 }

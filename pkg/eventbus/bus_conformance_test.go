@@ -118,11 +118,11 @@ func TestBusSubscribeCancelSignalsHandler(t *testing.T) {
 
 			done := make(chan struct{})
 			started := time.Now()
-			go func() { cancel(); close(done) }()
+			go func() { cancel(context.Background()); close(done) }()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
-				t.Fatal("cancel() hung — the in-flight handler never observed context cancellation")
+				t.Fatal("cancel(context.Background()) hung — the in-flight handler never observed context cancellation")
 			}
 			// Well behaved: the wait should short-circuit as soon as the
 			// handler returned, well below the 500ms budget.
@@ -138,8 +138,8 @@ func TestBusSubscribeCancelSignalsHandler(t *testing.T) {
 				t.Fatal("handler never reported its ctx.Err()")
 			}
 			// Idempotent.
-			cancel()
-			cancel()
+			cancel(context.Background())
+			cancel(context.Background())
 		})
 	}
 }
@@ -182,11 +182,11 @@ func TestBusSubscribeCancelBoundedForRunawayHandler(t *testing.T) {
 
 			done := make(chan struct{})
 			started := time.Now()
-			go func() { cancel(); close(done) }()
+			go func() { cancel(context.Background()); close(done) }()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
-				t.Fatal("cancel() hung past the bounded budget")
+				t.Fatal("cancel(context.Background()) hung past the bounded budget")
 			}
 			elapsed := time.Since(started)
 			// The wait is BOUNDED — cancel MUST have taken at least the budget
@@ -222,9 +222,9 @@ func TestBusSubscribeCancelIdempotent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Subscribe: %v", err)
 			}
-			cancel()
-			cancel()
-			cancel()
+			cancel(context.Background())
+			cancel(context.Background())
+			cancel(context.Background())
 		})
 	}
 }
@@ -270,7 +270,7 @@ func TestBusSubscribeCancelWaitsForStoreWrite(t *testing.T) {
 			// must not race the write. A bus that skips the wait returns
 			// while the increment is in flight — TestRace sees the write.
 			go func() { close(release) }()
-			cancel()
+			cancel(context.Background())
 			if !completed.Load() {
 				t.Fatal("cancel returned before the handler completed its store write — the wait was skipped (#1343)")
 			}
@@ -322,11 +322,103 @@ func TestNATSBus_SubscribeCancelConcurrentPublishNoWGRace(t *testing.T) {
 	}
 	// Interleave cancel with the burst so some Publish→cb goroutines land
 	// after ns.closed=true.
-	cancel()
+	cancel(context.Background())
 	pubWG.Wait()
 	// The count is not asserted (the race is what matters); a run that
 	// panics is the failure this test catches under -race.
 	_ = callbackCount.Load()
+}
+
+// TestBusSubscribeCancelSharedBudget is the #1477 medium property: N slow
+// subscribers cancelled under ONE joinCtx cost ONE budget total, not N ×
+// budget. Under the pre-fix per-subscription budget, seven slow-Mongo
+// handlers ate up to 3.5s of the grace period serially — the very shape
+// #1257 rejects for loops, arriving from the bus side.
+//
+// Only runs on buses that dispatch callbacks in parallel — the sync
+// fakeBroker delivers messages serially through a single goroutine, so a
+// blocked handler blocks the whole broker and the setup itself deadlocks.
+// The nats-async row is the honest test of the property; InProc's per-sub
+// worker also matches (each sub's worker is its own goroutine). Mutation:
+// revert to per-subscription budget → N × budget → red.
+func TestBusSubscribeCancelSharedBudget(t *testing.T) {
+	for _, c := range busCases {
+		if c.name == "nats" {
+			// Sync fakeBroker delivers to subs in a serial for-loop, so a
+			// slow-unwind handler on sub 0 blocks the delivery to sub 1..N.
+			// Property proven on inproc + nats-async.
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			// Per-subscription budget is 80ms; N=5 so serial N× would be 400ms.
+			// The shared joinCtx caps total at 120ms.
+			const N = 5
+			perSubBudget := 80 * time.Millisecond
+			bus, cleanup := c.make(t, nil, perSubBudget)
+			defer cleanup()
+
+			entered := make([]chan struct{}, N)
+			enteredOnce := make([]sync.Once, N)
+			cancels := make([]func(context.Context), N)
+			// The unwind sleep is longer than the joinCtx budget so a
+			// per-subscription wait would have to expire, not short-circuit
+			// on handler exit — that's what makes N × budget observable.
+			unwindDelay := 3 * perSubBudget
+			for i := 0; i < N; i++ {
+				entered[i] = make(chan struct{})
+				idx := i
+				cancel, err := bus.Subscribe("slow-"+string(rune('A'+idx)), trigger.Matcher{}, func(ctx context.Context, _ trigger.Event) error {
+					enteredOnce[idx].Do(func() { close(entered[idx]) })
+					<-ctx.Done() // cooperate on cancel signal
+					// Simulate a slow store-write unwind: the handler
+					// keeps running past ctx.Done for longer than the
+					// per-sub budget, so cancel's wait has to time out.
+					time.Sleep(unwindDelay)
+					return nil
+				})
+				if err != nil {
+					t.Fatalf("Subscribe %d: %v", i, err)
+				}
+				cancels[i] = cancel
+			}
+
+			// One publish reaches every subscriber (distinct queue-group
+			// names → each sub is its own group of 1 member → each group
+			// gets the delivery).
+			go func() { _ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard}) }()
+			for i := 0; i < N; i++ {
+				select {
+				case <-entered[i]:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("subscriber %d never entered", i)
+				}
+			}
+
+			// ONE joinCtx shared across the N cancels — the shape
+			// pkg/server.Shutdown threads under this PR (#1477).
+			joinBudget := perSubBudget + 40*time.Millisecond
+			joinCtx, joinCancel := context.WithTimeout(context.Background(), joinBudget)
+			defer joinCancel()
+
+			started := time.Now()
+			for _, cancel := range cancels {
+				cancel(joinCtx)
+			}
+			elapsed := time.Since(started)
+			// Serial per-sub budgets would give N × perSubBudget = 400ms;
+			// the assertion below reddens the pre-#1477 shape by any margin.
+			if elapsed >= time.Duration(N-1)*perSubBudget {
+				t.Errorf("%s: N=%d cancels shared joinCtx took %v; per-subscription composition would give ~%v — the shared budget is not being honoured", c.name, N, elapsed, time.Duration(N)*perSubBudget)
+			}
+			ceiling := joinBudget + 200*time.Millisecond
+			if elapsed > ceiling {
+				t.Errorf("%s: N=%d cancels took %v; expected ≤ %v (budget %v + slack)", c.name, N, elapsed, ceiling, joinBudget)
+			}
+			// Wait for the slow handlers to unwind so the cleanup can
+			// drain the async broker's dispatch goroutines cleanly.
+			time.Sleep(unwindDelay + 100*time.Millisecond)
+		})
+	}
 }
 
 // A silent no-op consumer of io.Writer to prove the logger construction path

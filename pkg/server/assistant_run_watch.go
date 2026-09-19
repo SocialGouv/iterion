@@ -234,7 +234,7 @@ func (s *Server) startAssistantRunWatches() {
 	s.assistantWatch = c
 	done := make(chan struct{})
 	s.assistantWatchDone = done
-	var unsubscribe func()
+	var unsubscribe func(context.Context)
 	if bus := s.eventsBus(); bus != nil {
 		cancel, err := bus.Subscribe("assistant-run-watch", trigger.Matcher{Sources: []trigger.Source{trigger.SourceRun}}, c.handleEvent)
 		if err != nil {
@@ -243,10 +243,10 @@ func (s *Server) startAssistantRunWatches() {
 			unsubscribe = cancel
 		}
 	}
-	s.assistantWatchCancel = func() {
+	s.assistantWatchCancel = func(cancelCtx context.Context) {
 		cancelWorker()
 		if unsubscribe != nil {
-			unsubscribe()
+			unsubscribe(cancelCtx)
 		}
 	}
 	go func() {

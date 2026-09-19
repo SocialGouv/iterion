@@ -423,7 +423,7 @@ func (s *cloudBoardSource) Stop() {
 // CloudTriggerCoordinator holds the cloud spine's moving parts for Close.
 type CloudTriggerCoordinator struct {
 	source    *cloudBoardSource
-	cancelSub func()
+	cancelSub func(context.Context)
 }
 
 // StartCloudTriggerCoordinator wires the board half of the trigger spine for
@@ -488,7 +488,8 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 }
 
 // Close tears down the source and unsubscribes the evaluator. Nil-safe.
-func (c *CloudTriggerCoordinator) Close() {
+// See TriggerCoordinator.Close for the ctx contract.
+func (c *CloudTriggerCoordinator) Close(ctx context.Context) {
 	if c == nil {
 		return
 	}
@@ -496,7 +497,7 @@ func (c *CloudTriggerCoordinator) Close() {
 		c.source.Stop()
 	}
 	if c.cancelSub != nil {
-		c.cancelSub()
+		c.cancelSub(ctx)
 	}
 }
 
