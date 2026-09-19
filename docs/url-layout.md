@@ -31,17 +31,22 @@ Nobody can reissue them, so they do not move:
 | `/api/…` | **every integration**: inbound forge webhooks, OAuth and OIDC callbacks, the REST API, the MCP server, the remote CLI |
 | `/brand/…`, `/healthz`, `/readyz` | public assets and probes |
 
-**Known limit — the link preview loses its picture, not its message.**
-`studio/index.html` sets `og:image` to a RELATIVE path, because the same bundle
-is served from iterion.cloud, from preprod and from every self-hosted
-deployment, and no build-time value is right for all three. OpenGraph specifies
-an absolute URL and LinkedIn in particular drops a relative one, so those
-previews render text-only — `og:title` and `og:description` are text and
-resolve regardless, which is what carries the definition. The remedy is to
-inject an absolute `og:image` from `PublicURL` when the server serves the
-index; the seam exists (`ServeInjectedIndex` already rewrites the head for
-workspace panes), but `serveIndex` has no config today. The docs site, built
-for one origin, uses an absolute URL and does not have the problem.
+**The link preview's image is absolutised by the server.** `studio/index.html`
+ships `og:image` as a RELATIVE path, because the same bundle is served from
+iterion.cloud, from preprod and from every self-hosted deployment, and no
+build-time value is right for all three. OpenGraph specifies an absolute URL
+and LinkedIn in particular drops a relative one, so the preview would render
+text-only.
+
+The server is the first place that knows its own origin, so `serveIndex`
+rewrites `og:image` and `twitter:image` into `PublicURL` + the path when one is
+configured (`absolutiseSocialImages`, [`pkg/server/spa.go`](../pkg/server/spa.go)).
+A no-op when it is unset — every local `iterion studio` and desktop run, where
+nothing crawls and the bytes are served exactly as built. A protocol-relative
+`//host/path` is left alone: it is already absolute.
+
+The docs site does not go through this at all: it is built for one origin and
+carries an absolute URL in its VitePress config.
 
 **No integration was affected by the move.** Anything a third party calls lives
 under `/api/`, which the studio base does not touch.

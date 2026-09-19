@@ -48,7 +48,7 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 		return nil, fmt.Errorf("model: review node %q: schema conversion: %w", node.ID, err)
 	}
 
-	modelSpec := ir.ExpandEnvWithDefault(node.Model)
+	modelSpec := e.resolveRoutingField(node.Model)
 	client, err := e.registry.Resolve(modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: review node %q: %w", node.ID, err)

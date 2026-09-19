@@ -154,6 +154,13 @@ func unrestrictedCLIBackendCanWrite(
 			backend = effective
 		}
 	}
+	// A `{{vars.…}}` backend the resolver did not read (a nil resolver, a
+	// stub) may be claw with a CLI route or a CLI backend outright:
+	// admission is decided once, before the run, so it is pessimistic —
+	// mutating — rather than read-only and eligible for a shared worktree.
+	if strings.Contains(backend, "{{") {
+		return true
+	}
 	// A claw→CLI route un-restricts the node's tool set WHATEVER it
 	// declared: under the always-on bypassPermissions, claude_code
 	// ignores the lowercase `tools:` list entirely and always carries

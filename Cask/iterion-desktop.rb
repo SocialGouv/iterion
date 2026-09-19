@@ -4,7 +4,7 @@ cask "iterion-desktop" do
 
   url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-desktop-darwin-universal.zip"
   name "Iterion Desktop"
-  desc "Workflow orchestration engine — desktop app"
+  desc "Build, run and orchestrate agentic AI workflows — desktop app"
   homepage "https://github.com/SocialGouv/iterion"
 
   livecheck do

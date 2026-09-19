@@ -123,7 +123,7 @@ Recommends: gtk-update-icon-cache
 Maintainer: SocialGouv <opensource@social.gouv.fr>
 Homepage: https://github.com/SocialGouv/iterion
 Installed-Size: ${installed_size}
-Description: Iterion Desktop — workflow orchestration for AI agents
+Description: Iterion Desktop — build, run and orchestrate agentic AI workflows
  Native desktop wrapper around the iterion studio and runtime,
  plus the iterion CLI (run, validate, diagram, inspect, resume,
  report, …). Both binaries are built from the same source revision

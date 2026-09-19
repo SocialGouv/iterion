@@ -67,6 +67,8 @@
 ## ─────────────────────────────────────────────────────────────────
 
 
+dsl: 2
+
 vars:
   ## The workspace root the run operates against. Resolved to the
   ## worktree when worktree: auto is set on the workflow.
@@ -1307,7 +1309,10 @@ workflow adr_cartograph:
     threshold: 0.9
     preserve_recent: 8
 
-  scan_adrs -> survey_code
+  scan_adrs -> survey_code with {
+    adrs: "{{outputs.scan_adrs.adrs}}",
+    recently_changed_code_files: "{{outputs.scan_adrs.recently_changed_code_files}}"
+  }
   survey_code -> build_manifest with {
     workspace_dir: "{{vars.workspace_dir}}",
     adr_dir: "{{vars.adr_dir}}",

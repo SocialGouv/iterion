@@ -1,7 +1,8 @@
 # @iterion/sdk
 
 TypeScript SDK for the [iterion](https://github.com/SocialGouv/iterion)
-workflow orchestration engine. The SDK is a thin, typed wrapper around
+engine that builds, runs and orchestrates agentic AI workflows. The SDK
+is a thin, typed wrapper around
 the `iterion` CLI binary — every method shells out and parses the
 `--json` output into typed result objects.
 

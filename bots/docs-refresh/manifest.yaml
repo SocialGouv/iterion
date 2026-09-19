@@ -1,7 +1,12 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.8
+version: 3.5.9
+## 3.5.9 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside four prompts (campaign_system 16,
+## campaign_user 7, finalize_mr_system 6, finalize_mr_user 4 — 33 in all) now
+## reach the models as blank lines instead of being folded away by the
+## profile-1 lexer. No instruction, literal, scope, gate, graph or budget changed.
 ## 3.5.8 — the commit instruction excludes the `.claude/` scaffold iterion
 ## mirrors into the worktree, and the scope check leaves it out (#1364); the
 ## bundle's skill says the same.
@@ -295,3 +300,9 @@ invocations:
 launch:
   primary: [scope_notes, open_mr]
   hidden: [bundle_self_path]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

@@ -36,6 +36,7 @@ const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
 const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPage"));
 const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
+const UsageCapsPage = lazy(() => import("@/views/admin/settings/UsageCapsPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -261,6 +262,22 @@ function AuthGate() {
       </Suspense>
     );
   }
+  // The password side-doors, reachable WITH a session too. They authenticate on
+  // the token in the URL, not on the session, and swallowing the address —
+  // which the /studio redirect below did — destroys the only copy of that
+  // token the operator has: the mail link re-opens and is eaten again.
+  if (location.startsWith("/auth/")) {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <Switch>
+          <Route path="/auth/password/change" component={ForcedPasswordChange} />
+          <Route path="/auth/forgot-password" component={ForgotPassword} />
+          <Route path="/auth/reset" component={ResetPassword} />
+          <Route><Redirect to={STUDIO_BASE} replace /></Route>
+        </Switch>
+      </Suspense>
+    );
+  }
   // Browser half of `iterion remote login` — approve + mint a CLI token. Any
   // authenticated user (incl. the restricted tier) can authorize the CLI.
   if (location.startsWith("/cli-auth")) {
@@ -332,12 +349,24 @@ function AuthGate() {
     // the studio does not have, so that case lands on the studio root instead
     // of on a blank prefixed path.
     //
-    // The query and the fragment are re-attached from window.location: wouter's
-    // location is the PATH alone, and a run link carries the tab to open and
-    // the node to scroll to in exactly those two parts.
+    // Rebuilt from window.location, not from wouter's location, in all three
+    // parts. wouter decodeURI()s the path, which leaves the reserved set alone
+    // but DOES decode %25 — so a segment carrying a literal percent came out
+    // corrupted by the hop. The query and the fragment were never in wouter's
+    // location at all, and a run link carries the tab to open and the node to
+    // scroll to in exactly those two.
+    // slice() on a prefix that is NOT one silently eats the wrong number of
+    // characters and builds a redirect to a mangled path. Unreachable today —
+    // the pane's scope is injected from the same request path it was served
+    // on — so this is the assertion that makes a future proxy change redden
+    // instead of quietly corrupting a link.
+    const scope = scopePrefix();
+    const rawPath = window.location.pathname.startsWith(scope)
+      ? window.location.pathname.slice(scope.length)
+      : window.location.pathname;
     const target = isRootSideDoor(location)
       ? STUDIO_BASE
-      : STUDIO_BASE + location + window.location.search + window.location.hash;
+      : STUDIO_BASE + rawPath + window.location.search + window.location.hash;
     return <Redirect to={target} replace />;
   }
   // From here down the studio owns the URL. The nested base means every route
@@ -346,6 +375,30 @@ function AuthGate() {
   // /x/<id>/studio/… with nothing else to change.
   return (
     <Router base={STUDIO_BASE}>
+      <StudioShell activeRole={activeRole} isRestricted={isRestricted} />
+    </Router>
+  );
+}
+
+// StudioShell picks the shell the operator's role earns, and — the reason it
+// is a component rather than a ternary inline above — titles the document for
+// ALL THREE of them.
+//
+// useDocumentTitle had exactly one call site, inside AuthedApp, so a
+// `config_editor` and a submitter read the PRODUCT title in their tab: the
+// static one from studio/index.html, which is written for a crawler reading
+// the home. It has to be called INSIDE the router, not in AuthGate, because it
+// matches on a base-relative location.
+function StudioShell({
+  activeRole,
+  isRestricted,
+}: {
+  activeRole: string | null;
+  isRestricted: boolean;
+}) {
+  useDocumentTitle();
+  return (
+    <>
       {
         // The least-privilege `config_editor` role gets a limited shell that
         // can ONLY edit the team's config-shares — no Sidebar, no
@@ -367,7 +420,7 @@ function AuthGate() {
           <AuthedApp />
         )
       }
-    </Router>
+    </>
   );
 }
 
@@ -383,7 +436,7 @@ function AuthedApp() {
   // opens the re-login modal.
   const [cloudReloginConnId, setCloudReloginConnId] = useState<string | null>(null);
 
-  useDocumentTitle();
+  // Titled by StudioShell above, which covers the two role shells too.
   // Reset SPA state on a server-side project hot-swap so the new
   // project's empty home view replaces whatever the user was looking
   // at. No-op in desktop (server-mode WS) and cloud modes.
@@ -583,6 +636,7 @@ function AuthedApp() {
                 <Route path="/orgs" component={OrgsAdminPage} />
                 <Route path="/users" component={UsersAdminPage} />
                 <Route path="/llm-credentials" component={PlatformLlmCredsPage} />
+                <Route path="/settings/usage-caps" component={UsageCapsPage} />
                 <Route path="/bots" component={PlatformBotsPage} />
                 <Route path="/audit" component={AuditAdminPage} />
                 <Route path="/dlq" component={DLQAdminPage} />

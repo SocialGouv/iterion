@@ -1,0 +1,27 @@
+## Guard fixture — a review gate's review_url reads an input no incoming edge maps.
+dsl: 2
+
+prompt work:
+  Do the work.
+
+prompt gate_instructions:
+  Walk the human through the change.
+
+schema verdict:
+  approved: bool
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+
+human gate:
+  interaction: review
+  model: "anthropic/claude-sonnet-4-6"
+  output: verdict
+  instructions: gate_instructions
+  review_url: "{{input.url_never_mapped}}"
+
+workflow review_url:
+  entry: seed
+  seed -> gate
+  gate -> done
