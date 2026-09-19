@@ -36,7 +36,8 @@ func TestAProductionEngineSimulatesNothing(t *testing.T) {
 // engine — a launch path that gained the option would simulate a real run.
 func TestNoProductionPackagePassesWithSimulation(t *testing.T) {
 	root := filepath.Join("..", "..")
-	skipDirs := map[string]bool{"vendor": true, "node_modules": true, ".git": true, ".works": true, ".repos": true, ".claude": true, "web": true}
+	// Dependency and tool trees: no first-party source under any of them.
+	skipDirs := map[string]bool{"vendor": true, "node_modules": true, "web": true}
 	var launchers []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -44,6 +45,15 @@ func TestNoProductionPackagePassesWithSimulation(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		if d.IsDir() {
+			// Dot-directories belong to git, to a tool or to a run — never to
+			// this repo's source, so none is named here one at a time.
+			// `.iterion/worktrees/<run-id>/` matters most: it holds whole
+			// COPIES of the tree, which made this verdict depend on how many
+			// runs the operator happened to keep. `rel == "."` is the root
+			// itself, whose Name() is "..".
+			if rel != "." && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			if skipDirs[d.Name()] || rel == filepath.Join("pkg", "runtime") || rel == filepath.Join("pkg", "dryrun") {
 				return filepath.SkipDir
 			}
