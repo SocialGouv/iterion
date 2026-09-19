@@ -55,10 +55,10 @@ describe("RequireSuperAdmin", () => {
     expect(screen.getByText(/super-admin only/i)).toBeTruthy();
   });
 
-  it("renders children while server_info is still loading (each page self-gates)", () => {
+  it("holds a spinner (not the page) while server_info is still loading", () => {
     mockUser = { is_super_admin: true };
     mockInfo = null;
     renderGuard(<div>admin content</div>);
-    expect(screen.getByText("admin content")).toBeTruthy();
+    expect(screen.queryByText("admin content")).toBeNull();
   });
 });
