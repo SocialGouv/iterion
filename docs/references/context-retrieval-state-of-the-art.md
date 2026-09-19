@@ -177,7 +177,15 @@ over a few hundred thousand edges is not the hard part.
   second — and the second is the product.
 - **The workflow graph is part of the graph.** No external tool models
   `.bot` nodes, edges, skills and bot dependencies. iterion does, at
-  compile time, for free.
+  compile time, for free — `iterion map build` records the compiler's own
+  DAG as `flows` edges, and `iterion diagram` renders the same fact
+  independently, which is how that half is checked.
+
+The graph exists: `iterion map build`, 9 811 nodes and 29 199 edges over
+this tree in 0.7 s, no database and no dependency outside the standard
+library. Its import edges were checked against `go list -deps` and its
+workflow edges against `iterion diagram` — a graph verified only against
+itself proves nothing.
 
 ## What is refused, and what would reopen it
 
