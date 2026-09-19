@@ -1,8 +1,11 @@
-## Guard fixture — an LLM router's prompts read an input no incoming edge maps.
+## Guard fixture — an LLM router's system and user prompts each read an input no incoming edge maps.
 dsl: 2
 
 prompt route_sys:
   Pick a lane. Context the previous node produced: {{input.router_never_mapped}}.
+
+prompt route_user:
+  The lanes are a and b; the previous node also said: {{input.router_user_never}}.
 
 prompt work:
   Do the work.
@@ -15,7 +18,7 @@ router pick:
   mode: llm
   model: "anthropic/claude-sonnet-4-6"
   system: route_sys
-  user: route_sys
+  user: route_user
 
 agent lane_a:
   model: "anthropic/claude-sonnet-4-6"

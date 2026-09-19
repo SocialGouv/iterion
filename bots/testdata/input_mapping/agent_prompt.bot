@@ -1,8 +1,11 @@
-## Guard fixture — an agent's user prompt reads an input no incoming edge maps.
+## Guard fixture — an agent's system and user prompts each read an input no incoming edge maps.
 dsl: 2
 
 prompt work:
   Do the work.
+
+prompt reader_sys:
+  You read what the previous node said: {{input.sys_never}}
 
 prompt read_it:
   The previous node said: {{input.never_mapped}}
@@ -13,6 +16,7 @@ agent seed:
 
 agent reader:
   model: "anthropic/claude-sonnet-4-6"
+  system: reader_sys
   user: read_it
 
 workflow agent_prompt:

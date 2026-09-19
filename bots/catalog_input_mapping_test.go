@@ -22,16 +22,19 @@ import (
 // re-author). The strict dry run flags the read on the paths it visits; this
 // test asks the compiled graph, for every node, visited or not.
 //
-// The surfaces walked are the ones the runtime resolves against the node's
-// own input (buildNodeInputRS): an agent's, judge's or LLM router's prompts;
-// a human node's instructions, LLM system prompt and review_url; a tool's
-// command, script, postcondition and connector-action params; a compute
-// node's expressions (special_node.go). NOT walked, on purpose, because the
-// runtime resolves them against the RUN's payload or another node's output:
-// a router's `over:`, a loop cap expression, a foreach collection, a fail
-// message, an emit's or subbot's `with`, an edge's own `with` values (the
-// SOURCE node's output), the human interaction prompt (the question map).
-// `images:` templates are kept as raw strings by the IR and cannot be seen.
+// The surfaces walked are the fields the runtime resolves against the node's
+// own input (every buildNodeInputRS call site in pkg/runtime): an agent's,
+// judge's or LLM router's system and user prompts; a human node's
+// instructions, LLM system prompt and review_url; a tool's command, script,
+// postcondition and connector-action params; a compute node's expressions.
+// Each field is its own surface, so a field dropped from the walk is seen
+// (a floor on the fields the catalogue reads, a fixture per field below).
+// NOT walked, on purpose, because the runtime resolves them against the
+// RUN's payload or another node's output: a router's `over:`, a loop cap
+// expression, a foreach collection, a fail message, an emit's or subbot's
+// `with`, an edge's own `with` values (the SOURCE node's output), the human
+// interaction prompt (the question map). `images:` templates are kept as raw
+// strings by the IR and cannot be seen.
 //
 // A field mapped by SOME incoming edge but not by others is legitimate (a
 // loop's back-edge overlays what changes per iteration; a first pass reads an
@@ -61,11 +64,20 @@ func TestCatalogInputReadsAreMappedByAnIncomingEdge(t *testing.T) {
 				path, r, r.Field, r.Field, r.Field)
 		}
 	}
-	// A surface the catalogue uses today must have contributed reads — a walk
-	// that silently loses a node kind would otherwise stay green.
-	for _, surface := range []string{"agent prompt", "tool command", "compute expr"} {
+	// Every field the catalogue reads today must have contributed — a walk
+	// that silently loses one would otherwise stay green. The fields with no
+	// live reader (router prompts, a human node's LLM system prompt and
+	// review_url, a tool's postcondition and action params) are held by
+	// their fixtures in TestInputReadGuardSeesEverySurface.
+	for _, surface := range []string{
+		"agent system prompt", "agent user prompt",
+		"judge system prompt", "judge user prompt",
+		"human instructions",
+		"tool command", "tool script",
+		"compute expr",
+	} {
 		if counts[surface] == 0 {
-			t.Errorf("the %q surface contributed no {{input.*}} read across the catalogue — the reference walk for it broke", surface)
+			t.Errorf("the %q surface contributed no {{input.*}} read across the catalogue — the reference walk for it broke, or the catalogue no longer reads it", surface)
 		}
 	}
 	keys := make([]string, 0, len(counts))
@@ -83,19 +95,24 @@ func TestCatalogInputReadsAreMappedByAnIncomingEdge(t *testing.T) {
 }
 
 // TestInputReadGuardSeesEverySurface proves the walk on one fixture per
-// surface, each with exactly one read no incoming edge maps: a surface the
-// walk lost would leave its fixture unreported. The last fixture maps every
-// read and must report nothing.
+// node kind, each carrying exactly one read no incoming edge maps on EVERY
+// field of that kind the walk covers: a field the walk lost would leave its
+// read unreported, and the exact-set comparison bites. The last fixture maps
+// every read and must report nothing.
 func TestInputReadGuardSeesEverySurface(t *testing.T) {
 	cases := []struct {
 		file string
 		want []string
 	}{
-		{"agent_prompt.bot", []string{"reader.never_mapped (agent prompt)"}},
-		{"compute_expr.bot", []string{"leak.never_mapped (compute expr)"}},
-		{"llm_router.bot", []string{"pick.router_never_mapped (router prompt)"}},
+		{"agent_prompt.bot", []string{"reader.sys_never (agent system prompt)", "reader.never_mapped (agent user prompt)"}},
+		{"judge_prompt.bot", []string{"review.judge_sys_never (judge system prompt)", "review.judge_never (judge user prompt)"}},
+		{"llm_router.bot", []string{"pick.router_never_mapped (router system prompt)", "pick.router_user_never (router user prompt)"}},
+		{"human_prompt.bot", []string{"gate.human_never (human instructions)", "gate.gate_sys_never (human system prompt)"}},
 		{"review_url.bot", []string{"gate.url_never_mapped (human review_url)"}},
 		{"tool_command.bot", []string{"probe.cmd_never (tool command)", "probe.pc_never (tool postcondition)"}},
+		{"tool_script.bot", []string{"probe.script_never (tool script)"}},
+		{"action_params.bot", []string{"comment.action_never (tool action param)"}},
+		{"compute_expr.bot", []string{"leak.never_mapped (compute expr)"}},
 		{"mapped.bot", nil},
 	}
 	for _, tc := range cases {
@@ -139,8 +156,8 @@ type inputRead struct {
 func (r inputRead) String() string { return r.Node + "." + r.Field + " (" + r.Surface + ")" }
 
 // unmappedInputReads returns the reads of the workflow's non-entry nodes that
-// no incoming edge maps — one per node, field and surface, however many texts
-// of the node read the field — and the number of reads seen per surface.
+// no incoming edge maps — one per node, field and surface, however many
+// times a text reads the field — and the number of reads seen per surface.
 func unmappedInputReads(wf *ir.Workflow) ([]inputRead, map[string]int) {
 	mapped := map[string]map[string]bool{}
 	for _, e := range wf.Edges {
@@ -179,7 +196,8 @@ func unmappedInputReads(wf *ir.Workflow) ([]inputRead, map[string]int) {
 }
 
 // inputReadsOf lists the {{input.*}} references in the texts of one node
-// that the runtime resolves against the node's own input.
+// that the runtime resolves against the node's own input, one surface per
+// field.
 func inputReadsOf(wf *ir.Workflow, n ir.Node) []inputRead {
 	var reads []inputRead
 	add := func(surface string, refs []*ir.Ref) {
@@ -198,17 +216,17 @@ func inputReadsOf(wf *ir.Workflow, n ir.Node) []inputRead {
 	}
 	switch x := n.(type) {
 	case *ir.AgentNode:
-		prompt("agent prompt", x.SystemPrompt)
-		prompt("agent prompt", x.UserPrompt)
+		prompt("agent system prompt", x.SystemPrompt)
+		prompt("agent user prompt", x.UserPrompt)
 	case *ir.JudgeNode:
-		prompt("judge prompt", x.SystemPrompt)
-		prompt("judge prompt", x.UserPrompt)
+		prompt("judge system prompt", x.SystemPrompt)
+		prompt("judge user prompt", x.UserPrompt)
 	case *ir.RouterNode:
-		prompt("router prompt", x.SystemPrompt)
-		prompt("router prompt", x.UserPrompt)
+		prompt("router system prompt", x.SystemPrompt)
+		prompt("router user prompt", x.UserPrompt)
 	case *ir.HumanNode:
-		prompt("human prompt", x.Instructions)
-		prompt("human prompt", x.SystemPrompt)
+		prompt("human instructions", x.Instructions)
+		prompt("human system prompt", x.SystemPrompt)
 		add("human review_url", x.ReviewURLRefs)
 	case *ir.ToolNode:
 		add("tool command", x.CommandRefs)
