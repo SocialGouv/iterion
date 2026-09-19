@@ -199,6 +199,10 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
 			"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
+			// 0 disables the per-run scratch prune. The test asserts what
+			// the node leaves on disk; retention is exercised in its own
+			// test and would otherwise sweep files the fixture depends on.
+			"{{vars.scan_dir_ttl_days}}": "0",
 			// The node keys its log directory AND its export path on the run
 			// id so two runs sharing the workspace scratch cannot truncate
 			// each other's logs or overwrite each other's exports — and it
