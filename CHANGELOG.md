@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.174.0](https://github.com/SocialGouv/iterion/compare/v3.173.0...v3.174.0) (2026-09-19)
+
+### Features
+
+* **map:** a repository map, a deterministic graph, and what discovery costs ([#1505](https://github.com/SocialGouv/iterion/issues/1505)) ([09bd1d0](https://github.com/SocialGouv/iterion/commit/09bd1d0b1460404981b7650f8f41a9d3e2af3241)), references [#1482](https://github.com/SocialGouv/iterion/issues/1482) [#1480](https://github.com/SocialGouv/iterion/issues/1480) [#1482](https://github.com/SocialGouv/iterion/issues/1482) [#1483](https://github.com/SocialGouv/iterion/issues/1483) [#1484](https://github.com/SocialGouv/iterion/issues/1484) [#1485](https://github.com/SocialGouv/iterion/issues/1485) [#1335](https://github.com/SocialGouv/iterion/issues/1335) [#1482](https://github.com/SocialGouv/iterion/issues/1482) [#1486](https://github.com/SocialGouv/iterion/issues/1486) [#1488](https://github.com/SocialGouv/iterion/issues/1488) [#1481](https://github.com/SocialGouv/iterion/issues/1481)
+
+    <details><summary>why</summary>
+
+    `iterion bench discovery` classifies a run's tool calls into orientation (read, search, list), change (write, commit) and neither, and reports the token spend of the nodes that never wrote a byte — the only split the event stream supports without imputing one.
+
+    </details>
+
 ## [3.173.0](https://github.com/SocialGouv/iterion/compare/v3.172.3...v3.173.0) (2026-09-19)
 
 ### Features
