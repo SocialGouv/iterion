@@ -197,6 +197,15 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The pass's coverage is committed on the observer stream — a
+		// fan-out interleaves the branch node_started/edge_selected
+		// events, so pass.Nodes and pass.Edges arrive in whichever
+		// order the goroutines finished. This is a REPORT, not a
+		// trace: sort before publishing so a byte-diff of two runs
+		// of the same file stays stable (#1434). The arrival order
+		// belongs in events.jsonl, where it already lives with its
+		// timestamps.
+		sortPassContents(&pass)
 		r.Passes = append(r.Passes, pass)
 		main.saw(pass)
 		for _, f := range x.Findings() {
@@ -212,7 +221,12 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 			pinned[id] = true
 		}
 		for _, cr := range x.ChildRuns() {
-			r.Children = append(r.Children, ChildPass{Node: cr.node, Source: cr.source, Crossings: cr.crossings, Pass: cr.pass})
+			// Same fan-out-safety property on each child pass: sort
+			// before appending so a subbot with its own concurrency
+			// does not reorder its parent's report.
+			childPass := cr.pass
+			sortPassContents(&childPass)
+			r.Children = append(r.Children, ChildPass{Node: cr.node, Source: cr.source, Crossings: cr.crossings, Pass: childPass})
 			cov := children[cr.node]
 			if cov == nil {
 				cov = newCoverage(cr.wf)
@@ -247,7 +261,38 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 		r.UnvisitedNodes = append(r.UnvisitedNodes, nodes...)
 		r.UnvisitedEdges = append(r.UnvisitedEdges, edges...)
 	}
+	// UnvisitedNodes is already sorted by unvisited() per level; the
+	// per-child slices land in child-node order (childNodes sorted).
+	// UnvisitedEdges follows wf.Edges' slice order, deterministic for
+	// one compilation but not a fact worth relying on across runs:
+	// sort by (from, to) so the report stays a document (#1434, same
+	// class as the per-pass Nodes/Edges).
+	sortEdges(r.UnvisitedEdges)
 	return r, nil
+}
+
+// sortPassContents orders a pass's Nodes by id and Edges by
+// (from, to) so a fan-out that reorders event arrival — the concurrent
+// goroutines of `fan_out` branches finishing in whichever order — does
+// not decide the report's byte layout. The set of nodes/edges reached
+// is a document about the program, not a trace of one run; the
+// observer stream in events.jsonl keeps the arrival order with its
+// timestamps.
+func sortPassContents(p *Pass) {
+	sort.Strings(p.Nodes)
+	sortEdges(p.Edges)
+}
+
+// sortEdges puts edges in a stable order: from first, then to.
+// Deterministic order across runs, independent of the source that
+// filled the slice (observer stream, map iteration, etc.).
+func sortEdges(edges []Edge) {
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].From != edges[j].From {
+			return edges[i].From < edges[j].From
+		}
+		return edges[i].To < edges[j].To
+	})
 }
 
 // maxChildDepth bounds the simulation of children of children.

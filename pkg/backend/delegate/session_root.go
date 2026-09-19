@@ -14,7 +14,14 @@ import (
 func SessionFilesRoot(ctx context.Context, task Task, backend string) string {
 	switch backend {
 	case BackendClaudeCode:
-		if env := anthropicCredEnvForCLI(ctx, task.ProviderHint, !task.Hostless()); env != nil {
+		env := anthropicCredEnvForCLI(ctx, task.ProviderHint, !task.Hostless())
+		// A forfait-suppressed env carries a POISONED CLAUDE_CONFIG_DIR
+		// that must NOT become a session root: writing transcripts
+		// under the path we chose because it does not exist is a
+		// filesystem error at best, a surprise directory on a laptop
+		// that happens to have `/nonexistent/…` at worst. Fall through
+		// to the ambient / home default (R0a39d6).
+		if env != nil && !isForfaitSuppressed(env) {
 			if d := env["CLAUDE_CONFIG_DIR"]; d != "" {
 				return d
 			}

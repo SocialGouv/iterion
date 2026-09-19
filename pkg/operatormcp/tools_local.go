@@ -217,7 +217,7 @@ func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (s
 		Vars        map[string]string `json:"vars"`
 		Preset      string            `json:"preset"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_validate", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.FilePath == "" {
@@ -253,7 +253,7 @@ func handleLocalBotsList(_ context.Context, s *Server, raw json.RawMessage) (str
 	var args struct {
 		Paths []string `json:"paths"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_bots_list", raw, &args); err != nil {
 		return "", false, err
 	}
 	paths := args.Paths
@@ -302,7 +302,7 @@ func handleLocalRunsList(ctx context.Context, s *Server, raw json.RawMessage) (s
 		Workflow string `json:"workflow"`
 		Limit    int    `json:"limit"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_runs_list", raw, &args); err != nil {
 		return "", false, err
 	}
 	limit := args.Limit
@@ -371,7 +371,7 @@ func handleLocalRunGet(ctx context.Context, s *Server, raw json.RawMessage) (str
 	var args struct {
 		RunID string `json:"run_id"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_run_get", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -455,7 +455,7 @@ func handleLocalRunEvents(ctx context.Context, s *Server, raw json.RawMessage) (
 		Since int64  `json:"since"`
 		Limit int    `json:"limit"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_run_events", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -492,7 +492,7 @@ func handleLocalRunLog(ctx context.Context, s *Server, raw json.RawMessage) (str
 		RunID string `json:"run_id"`
 		Tail  int    `json:"tail"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_run_log", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -544,7 +544,7 @@ func handleLocalRunReport(_ context.Context, s *Server, raw json.RawMessage) (st
 	var args struct {
 		RunID string `json:"run_id"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_run_report", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -576,7 +576,7 @@ func handleLocalQuestions(_ context.Context, s *Server, raw json.RawMessage) (st
 	var args struct {
 		RunID string `json:"run_id"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_questions", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -597,7 +597,7 @@ func handleLocalAnswer(_ context.Context, s *Server, raw json.RawMessage) (strin
 		InteractionID string `json:"interaction_id"`
 		Answer        string `json:"answer"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_answer", raw, &args); err != nil {
 		return "", false, err
 	}
 	// An empty answer is legitimate ("press enter to skip") — the CLI
@@ -632,7 +632,7 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		MaxIterations       int               `json:"max_iterations"`
 		MaxParallelBranches int               `json:"max_parallel_branches"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_run", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.FilePath == "" {
@@ -733,7 +733,7 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 		Answers  map[string]string `json:"answers"`
 		Force    bool              `json:"force"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_resume", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -803,7 +803,7 @@ func handleLocalRunCancel(ctx context.Context, s *Server, raw json.RawMessage) (
 	var args struct {
 		RunID string `json:"run_id"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_run_cancel", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {

@@ -262,6 +262,23 @@ func (e *ClawExecutor) SetRunExtraEnv(env []string) {
 	e.runExtraEnv = mergeProcessEnv(e.runExtraEnv, env)
 }
 
+// GetRunExtraEnvValue returns the value stored for the given env key
+// under runExtraEnv, or "" when the key is not present. A read-only
+// companion to SetRunExtraEnv used by producers that COMPOSE on top of
+// an existing entry — e.g. devbox_host.go's PATH prepend must not
+// discard the projectenv PATH override pushed earlier by
+// runview.Service. Same happens-before as SetRunExtraEnv (called from
+// the same engine setup phase); no mutex.
+func (e *ClawExecutor) GetRunExtraEnvValue(key string) string {
+	prefix := key + "="
+	for _, entry := range e.runExtraEnv {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
+}
+
 func mergeProcessEnv(base, overlay []string) []string {
 	order := make([]string, 0, len(base)+len(overlay))
 	values := make(map[string]string, len(base)+len(overlay))
