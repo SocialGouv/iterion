@@ -50,8 +50,10 @@ vars:
   ## .sec-audit/ dotdir instead — see the vars below.
   scan_dir:            string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan"
   ## TTL (in days) for the per-run subdirs the scan_dir carries -- the deep
-  ## scanner keys its export on {{run.id}} (see #1322), so scan_dir now
-  ## accumulates one `<run.id>/` and one `deepsec-logs-<run.id>/` per pass.
+  ## scanner keys its export on the run id (see #1322), so scan_dir now
+  ## accumulates one `deepsec-out-<run.id>/` and one `deepsec-logs-<run.id>/`
+  ## per pass (the prefix is what lets the retention sweep scope positively,
+  ## Re56aa9).
   ## The engine's scratch sweep reclaims only entries nothing has written to
   ## within its retention window (runtime/scratch_sweep.go), but a workspace
   ## used regularly keeps writing under scan_dir, so its own subdirs never
@@ -762,12 +764,15 @@ schema report_input:
   ## around the scanner).
   deepsec_coverage:    json
   ## Finding count from the deep pass envelope, plumbed alongside the
-  ## coverage object. Discriminates "the backlog is exhausted, nothing new
-  ## on this pass" (files_processed=0, count>0) from "nothing was analysed
-  ## and nothing came out" (files_processed=0, count=0) so 3b's
-  ## files_processed=0 branch renders a note rather than a ⚠ on the
-  ## reached-steady-state case (#1328). Empty (rendered 0 by the schema
-  ## coercion) when the gate routed around the deep scanner.
+  ## coverage object. Discriminates "this pass analysed no new file while
+  ## earlier passes' findings are exported" (files_processed=0, count>0)
+  ## from "nothing was analysed and nothing came out" (files_processed=0,
+  ## count=0) so 3b's files_processed=0 branch renders a NOTE rather than
+  ## a ⚠ on the earlier-passes-carry-the-findings case (#1328). The NOTE
+  ## does NOT claim which fact made files_processed 0 (backlog exhausted
+  ## vs narrowed file_filter/diff_scope) -- no field distinguishes the
+  ## two, per revi R76c175. Empty (rendered 0 by the schema coercion)
+  ## when the gate routed around the deep scanner.
   deepsec_finding_count: int
 
 schema report_output:
@@ -1633,9 +1638,12 @@ prompt report_card_user:
   Deep-scan finding count (informational, discriminator for rule 3b only):
   {{input.deepsec_finding_count}}
   This is the count of findings the deep pass EXPORTED on this run — never
-  used to establish coverage, only to tell "the backlog is exhausted, this
-  pass added nothing new" from "nothing was analysed and nothing came out"
-  in the files_processed=0 case below.
+  used to establish coverage, only to tell "this pass analysed no new file
+  while earlier passes' findings are already in the export" from "nothing
+  was analysed and nothing came out" in the files_processed=0 case below.
+  The count does NOT tell you WHY files_processed is 0 (backlog exhausted
+  vs narrowed file_filter/diff_scope) — the NOTE names the observable
+  fact, never the reason.
 
   Rules 1 and 2 are gates on COVERAGE: if one matches, banner it and say
   nothing further about how much of the tree was reached — 3a and 3b are then
@@ -1678,12 +1686,20 @@ prompt report_card_user:
      the most misleading state, because everything downstream of the cap
      completes normally and looks healthy. `deepsec_process_limit=0` removes
      the cap.
-     EXCEPTION: when `files_processed` is 0 AND `deepsec_finding_count` is
-     above 0, the persistent backlog is exhausted (the 3b/files_processed=0
-     NOTE below applies) and the cap is moot: no candidate file was even
-     eligible for the deep pass. Skip 3a here — the healthiest state does
-     not need two banners. The NOTE from 3b alone tells the operator this
-     pass added nothing new, which is the whole message.
+     EXCEPTION: when ALL THREE hold — `files_processed` is 0, `deepsec_
+     finding_count` is above 0, AND the process step SUCCEEDED (`process_
+     failed` is false AND `steps_failed` contains neither "process" nor
+     "init" nor "scan") — this pass analysed no new file while an earlier
+     pass's export carries findings. The cap is moot on that state: no
+     candidate file was eligible for the deep pass. Skip 3a here — the
+     3b/files_processed=0 NOTE below already tells the operator this pass
+     added nothing new, so a cap banner would be a second alarm on the same
+     healthy fact. The process-succeeded half is load-bearing (revi
+     question on verdict 3): without it, a process step that failed on the
+     first file while the export dumps prior passes' findings would ALSO
+     satisfy the first two conditions — and there the ⚠ cap banner must
+     still fire because coverage is genuinely unknown on this pass, not a
+     steady state.
 
   3b. `process_complete` is false → the deep pass is not shown to have covered
      the tree. One of these terms failed, and each has its own words. Read them
@@ -1705,13 +1721,18 @@ prompt report_card_user:
        has not analysed yet. Two sub-cases, discriminated by
        `deepsec_finding_count` (the count of deep-pass findings exported this
        run):
-       - deepsec_finding_count > 0 → the persistent backlog is exhausted and
-         this pass added nothing new; the findings below come from earlier
-         passes over this workspace. Render a plain NOTE, not a ⚠:
-         "Deep-scan pass: this pass analysed no new file — the persistent
-         backlog is exhausted, the findings below come from earlier passes
-         over this workspace". This is the healthiest steady state, and a
-         ⚠ here would train the operator to ignore the ones that matter.
+       - deepsec_finding_count > 0 → this pass analysed no new file; the
+         findings below come from earlier passes over this workspace (the
+         deep pass draws from a persistent on-disk backlog and skips files
+         it has already analysed at the same content hash, so the ordinary
+         steady state on a re-run is zero new files with the previous
+         passes' findings still in the export). Not a coverage failure
+         this pass owns. Render a plain
+         NOTE, not a ⚠: "Deep-scan pass: this pass analysed no new file; the
+         findings below come from earlier passes over this workspace". A ⚠
+         here would train the operator to ignore the ones that matter (revi
+         R76c175: no field distinguishes 'backlog exhausted' from 'nothing
+         eligible', so the NOTE names the observable fact — not the reason).
        - deepsec_finding_count == 0 → nothing was analysed and nothing came
          out, which is not a steady state you can attest either way. Banner
          "⚠ Deep-scan coverage: this pass analysed no file and produced no
@@ -3023,16 +3044,20 @@ case "${RUN_ID:-}" in
   ""|*[!A-Za-z0-9._-]*)
     err_envelope "run id missing or not usable as a path segment: refusing to share a log directory between runs, because the run ids this node pins its coverage on are read back out of it" ;;
 esac
-# The charset above admits . and .., which are LEGAL filenames but not usable
-# as path SEGMENTS: dirname/./basename resolves back to the shared slot, and
-# dirname/../basename escapes one directory above scan_dir. The generic
-# refusal upstream (RUN_ID unset or carrying an invalid character) makes the
-# resource layout claim structural; leaving these two through would make the
-# claim spelled-only. Rejected here rather than folded into the charset above
-# so the two failure modes carry distinct messages.
+# The charset above admits . and .. — they are LEGAL filenames but not
+# usable as raw path SEGMENTS. Under the pre-prefix shape
+# (dirname/$RUN_ID/basename), "." collapsed to the shared slot at scan_dir
+# and ".." escaped one directory above; the deepsec-out- prefix (verdict 2,
+# Re56aa9) now makes them literal directory names (dirname/deepsec-out-./
+# basename, dirname/deepsec-out-../basename) with no path collapse. The
+# guard stays as defence-in-depth: a future refactor that drops the prefix
+# would reopen the old vulnerability without a source-visible sign, and a
+# RUN_ID that collides with the retention sweep excluded names is still
+# a bug worth catching. Rejected here rather than folded into the charset
+# above so the two failure modes carry distinct messages.
 case "$RUN_ID" in
   .|..)
-    err_envelope "run id is a path-navigation segment (\"$RUN_ID\"): refusing to derive the log directory and the per-pass export slot from it, which would recreate the shared slot at scan_dir or place the export one directory above" ;;
+    err_envelope "run id is a path-navigation segment (\"$RUN_ID\"): refusing to use it as the $RUN_ID in the per-pass export subdir. The deepsec-out- prefix keeps the current derivation safe, but a future refactor that dropped the prefix would recreate the shared slot at scan_dir or escape above it" ;;
 esac
 LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 # OUT_JSON is derived per-pass -- keyed on the same $RUN_ID that already keys
@@ -3725,12 +3750,13 @@ compute scan_join:
     ## The FINDING COUNT the deep pass emitted (whether it processed anything
     ## on this pass or not), projected out for report_card. It travels beside
     ## the coverage object because it discriminates a coverage warning: a
-    ## fully-analysed workspace has files_processed=0 on the ordinary steady
-    ## state (the persistent backlog is exhausted), and pairing that with a
-    ## non-zero finding count is the difference between "no coverage" and
-    ## "coverage complete, nothing new". A scalar int, never a string, so it
-    ## carries no directive. Empty (rendered 0 by the schema coercion) when
-    ## the gate routed around the scanner.
+    ## workspace with files_processed=0 and a non-zero finding count says
+    ## "this pass analysed no new file while earlier passes' findings are
+    ## exported" -- whether that is a backlog exhausted, a narrowed
+    ## file_filter/diff_scope or a shorter diff scope, the NOTE does not
+    ## claim (revi R76c175: no field distinguishes those causes). A scalar
+    ## int, never a string, so it carries no directive. Empty (rendered 0
+    ## by the schema coercion) when the gate routed around the scanner.
     deepsec_finding_count: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.finding_count, 0)"
 
 ## scan_health (anti-façade smoke gate). Each scanner command ends in
@@ -4065,24 +4091,44 @@ if isinstance(_ds_paths, dict):
 per_scanner = []
 harvest = []
 total_raw = total_kept = total_capped = 0
-_seen = set()
-_files = sorted(glob.glob(os.path.join(scan_dir, '*.json')))
+# Merge the top-level glob with the per-run deepsec path and sort the whole
+# list by BASENAME. Appending last would place deepsec at the tail of the
+# harvest loop; the inline budget breaks at 'size >= inline_max' as soon as
+# a group would spill it, so a generic layer that fills the budget would
+# reach 'inline' with zero deepsec items -- the exact gap the harvest was
+# added to close on non-sandboxed backends (revi R6ee3b1). Sorting by
+# basename ensures the deep scan is INTERLEAVED with the other scanners the
+# way the pre-per-run glob already did -- the letter d sorts between
+# custom.json and gitleaks.json -- so the budget cuts across a mixed
+# harvest rather than a partition.
+# (No backticks in this comment: they would close the DSL command block.)
+_files = list(glob.glob(os.path.join(scan_dir, '*.json')))
+# Dedup by BASENAME rather than by exact path: a workspace scanned by a
+# pre-#1322 build left an orphan scan_dir/deepsec.json (the legacy shared
+# slot), and the per-run producer path is scan_dir/deepsec-out-<run>/
+# deepsec.json — two distinct paths with the same basename. An exact-path
+# dedup missed that collision; harvesting BOTH inflated inline_total /
+# total_kept by the orphan's findings and produced two harvest[] entries
+# labelled 'deepsec.json' — the RVA agent 1 catch on PR #1473 verdict 3.
+# When the producer publishes deepsec.json (via json_paths), suppress any
+# other file with the same basename: only the producer's path is
+# authoritative.
 if _ds_path:
-    # Appended, not prepended: the top-level scanners are always-on and their
-    # ordering (semgrep first, then trivy, etc.) is what the inline budget
-    # already exercises. The deep scan is opt-in and its findings ride at the
-    # end of the same list, exactly like they did before per-run keying moved
-    # its file out of the glob.
     _files.append(_ds_path)
+_files.sort(key=lambda p: os.path.basename(p))
+_ds_basename = os.path.basename(_ds_path) if _ds_path else ''
+_seen_basenames = set()
 for jf in _files:
-    if jf in _seen:
-        # DEEPSEC_PATHS may still name a file that fell inside the top-level
-        # glob on a legacy configuration (e.g. an operator who set
-        # vars.deepsec_out to scan_dir/deepsec.json directly, before the
-        # per-run derivation). Skip the duplicate so the same findings never
-        # count twice into inline_total.
+    _bn = os.path.basename(jf)
+    if _bn in _seen_basenames:
         continue
-    _seen.add(jf)
+    if _ds_basename and _bn == _ds_basename and jf != _ds_path:
+        # Legacy orphan at scan_dir/<ds_basename>: the producer published
+        # its own per-run path via json_paths, so THAT is the authoritative
+        # deepsec export for this pass. Skip anything else that borrows the
+        # same basename from a previous build's shared slot.
+        continue
+    _seen_basenames.add(_bn)
     try:
         with open(jf, 'r', encoding='utf-8') as fh:
             data = json.load(fh)

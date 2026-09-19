@@ -365,18 +365,10 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Render the scanner body: stub node so the version probe passes, but do
-	// NOT stub deepsec -- the scanner refuses through err_envelope. The
-	// prune block runs BEFORE the deepsec-binary probe (it is inside the
-	// "state dirs under scan_dir" section, which follows the RUN_ID guard).
-	//
-	// Wait, the prune block IS after the deepsec probe in the current shape.
-	// Let me re-inspect.
-	//
-	// Structure: node/deepsec probes and agent charset checks come FIRST
-	// (each with its own err_envelope). Then RUN_ID guard. Then OUT_JSON
-	// derivation + mkdir + prune. So the prune runs only if the deepsec
-	// binary is on PATH. Provide a no-op deepsec.
+	// The scanner body has this order: node + deepsec + agent charset probes
+	// (each with its own err_envelope) → RUN_ID guard → OUT_JSON derivation +
+	// mkdir + prune. So the prune only runs when the deepsec binary is on
+	// PATH; the fixture stubs a no-op deepsec so the prune is reached.
 	ws := filepath.Join(dir, "ws")
 	stubs := filepath.Join(dir, "bin", runID)
 	if err := os.MkdirAll(ws, 0o755); err != nil {
@@ -455,5 +447,217 @@ func TestTriageDeclaresInlineAsTheNonSandboxTransport(t *testing.T) {
 	// sentence, so a copy-edit that keeps the meaning stays green.
 	if !strings.Contains(body, "Otherwise read every scanner JSON listed in *.json_paths") {
 		t.Error("the fall-through from inline to json_paths is not spelled -- triage may pick json_paths first and then never read inline, missing the deepsec harvest on claw/codex")
+	}
+}
+
+// #1473 R6ee3b1 [HIGH] on verdict 3 -- cap_findings was appending the deepsec
+// export LAST in the harvest, and the inline loop breaks as soon as
+// `size >= inline_max`. With a generic layer that fills the budget the deepsec
+// findings reached `inline` with zero items -- the exact gap the harvest
+// route (Re6ee3b1 fixed by #1473 revi verdict 1) was supposed to close on
+// non-sandboxed backends.
+//
+// The fix: after appending the per-run deepsec path, sort the whole file
+// list by basename, so `deepsec.json` interleaves with the other scanners
+// the way the pre-per-run glob already did (`d` sorts between `custom.json`
+// and `gitleaks.json`). This test runs the real cap_findings body against
+// a scan dir where semgrep alone fills the inline budget and asserts
+// deepsec still lands in inline.
+func TestCapFindingsInlinesDeepsecUnderAFullBudget(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "cap.py")
+	if err := os.WriteFile(scriptPath, []byte(capFindingsScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scanDir := filepath.Join(dir, "scan")
+	perRun := filepath.Join(scanDir, "deepsec-out-run-BUDGET")
+	if err := os.MkdirAll(perRun, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fat semgrep + a fat trivy fill the top-level glob. Each finding is
+	// ~250 bytes; ~60 findings per file → each file is > 15 KB (larger than
+	// the 8 KB inline budget). The deepsec export is small (3 findings) --
+	// if the sort works and the loop encounters deepsec BEFORE it runs
+	// out of budget, deepsec makes it into inline.
+	mk := func(n int, prefix string) []map[string]any {
+		var out []map[string]any
+		for i := 0; i < n; i++ {
+			out = append(out, map[string]any{
+				"check_id": fmt.Sprintf("%s-%d", prefix, i),
+				"severity": "high",
+				"path":     "src/file.go",
+				"message":  strings.Repeat("y", 200),
+			})
+		}
+		return out
+	}
+	writeJSON(t, filepath.Join(scanDir, "semgrep.json"), map[string]any{"results": mk(60, "s")})
+	writeJSON(t, filepath.Join(scanDir, "trivy.json"), map[string]any{"Issues": mk(60, "t")})
+	// deepsec findings are the SAME shape and size as semgrep's (~250 bytes
+	// each). Under the pre-fix append-last order, the budget breaks inside
+	// semgrep and the next iteration on deepsec sees `size + 250 > 8192`
+	// which is TRUE, so deepsec gets zero items in inline. Under the fix
+	// (sort by basename), deepsec sits BEFORE semgrep (`d` < `s`) and its
+	// three items land while there is still room.
+	deepsecPath := filepath.Join(perRun, "deepsec.json")
+	writeJSON(t, deepsecPath, mk(3, "d"))
+
+	paths, err := json.Marshal(map[string]string{"deepsec": deepsecPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Budget of 8 KB: semgrep alone (60 × ~250 bytes) exceeds it. The
+	// pre-fix append-last behaviour would drain the whole budget on semgrep
+	// before ever opening deepsec; under the sort-by-basename fix the
+	// harvest order is `custom.json < deepsec.json < gitleaks.json <
+	// semgrep-auto.json < semgrep.json < trivy.json`, so deepsec comes
+	// BEFORE semgrep/trivy and gets its slots before the cut.
+	cmd := exec.Command("python3", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"SCAN_DIR="+scanDir,
+		"CAP=50",
+		"INLINE_MAX=8192",
+		"DEEPSEC_PATHS="+string(paths),
+	)
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cap_findings exited non-zero (%v): %q", err, raw)
+	}
+	var got struct {
+		Inline []struct {
+			File     string           `json:"file"`
+			Findings []map[string]any `json:"findings"`
+		} `json:"inline"`
+		InlineEmbedded  int  `json:"inline_embedded"`
+		InlineTotal     int  `json:"inline_total"`
+		InlineTruncated bool `json:"inline_truncated"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("output is not JSON: %v (%q)", err, raw)
+	}
+	// The budget MUST cut (there are ~120+ findings and only 8 KB), so
+	// truncated is expected.
+	if !got.InlineTruncated {
+		t.Fatalf("expected inline_truncated=true under an 8 KB budget with 120+ findings, got %+v", got)
+	}
+	// The deepsec array MUST have at least one finding in inline. Under the
+	// pre-fix (append-last) behaviour, `sortDeepsecLast := true` would drain
+	// the budget on the semgrep+trivy prefix before reaching the tail --
+	// deepsec_count == 0.
+	deepsecCount := 0
+	for _, g := range got.Inline {
+		if g.File == "deepsec.json" {
+			deepsecCount = len(g.Findings)
+		}
+	}
+	if deepsecCount == 0 {
+		t.Errorf("deepsec has 0 items in inline under a full generic budget -- the harvest is placing deepsec LAST and the budget cut orphans it (revi R6ee3b1). Got inline: %+v", got.Inline)
+	}
+}
+
+// Verify the retention block runs POSITIVELY on operator scan_dirs: a mutation
+// that widens the sweep to scan_dir/* (deny-list) reddens the alien-stays
+// assertions in TestDeepsecPrunesStalePerRunSubdirs. This is a smoke test of
+// the fixture design; the mutation itself is documented and manually run in
+// the revi thread.
+
+// #1473 verdict 3 RVA agent-1 [medium] -- cap_findings must not double-count
+// a pre-#1322 orphan `scan_dir/deepsec.json` alongside the per-run producer
+// path. A workspace scanned by a pre-per-run build left the shared-slot file
+// on disk; the per-run derivation writes to `scan_dir/deepsec-out-<run>/
+// deepsec.json`; two distinct paths with the same basename bypass an
+// exact-path _seen dedup. The fix keys dedup by BASENAME and drops the
+// non-producer entry when json_paths names one.
+func TestCapFindingsSkipsOrphanWhenTheProducerPublishesADeepsecPath(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "cap.py")
+	if err := os.WriteFile(scriptPath, []byte(capFindingsScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scanDir := filepath.Join(dir, "scan")
+	perRun := filepath.Join(scanDir, "deepsec-out-run-CURRENT")
+	if err := os.MkdirAll(perRun, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Orphan at the legacy shared slot (a pre-#1322 build's leftover, 5
+	// findings with distinctive ids). The retention sweep is `-type d` so
+	// it never touches this file; only the harvest-time dedup can prevent
+	// the double-count.
+	orphan := filepath.Join(scanDir, "deepsec.json")
+	writeJSON(t, orphan, []map[string]any{
+		{"id": "ORPHAN-1", "severity": "critical"},
+		{"id": "ORPHAN-2", "severity": "critical"},
+		{"id": "ORPHAN-3", "severity": "critical"},
+		{"id": "ORPHAN-4", "severity": "critical"},
+		{"id": "ORPHAN-5", "severity": "critical"},
+	})
+	// The current pass's per-run export.
+	current := filepath.Join(perRun, "deepsec.json")
+	writeJSON(t, current, []map[string]any{
+		{"id": "CURRENT-1", "severity": "high"},
+		{"id": "CURRENT-2", "severity": "high"},
+	})
+
+	paths, err := json.Marshal(map[string]string{"deepsec": current})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("python3", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"SCAN_DIR="+scanDir,
+		"CAP=50",
+		"INLINE_MAX=524288",
+		"DEEPSEC_PATHS="+string(paths),
+	)
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cap_findings exited non-zero (%v): %q", err, raw)
+	}
+	var got struct {
+		Inline []struct {
+			File     string           `json:"file"`
+			Findings []map[string]any `json:"findings"`
+		} `json:"inline"`
+		InlineTotal    int `json:"inline_total"`
+		InlineEmbedded int `json:"inline_embedded"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("output is not JSON: %v (%q)", err, raw)
+	}
+	// The producer's 2 findings must be the ONLY deepsec.json items in inline.
+	// The orphan's 5 must be excluded.
+	deepsecGroups := 0
+	deepsecFindings := 0
+	for _, g := range got.Inline {
+		if g.File != "deepsec.json" {
+			continue
+		}
+		deepsecGroups++
+		deepsecFindings += len(g.Findings)
+		for _, f := range g.Findings {
+			if id, _ := f["id"].(string); strings.HasPrefix(id, "ORPHAN") {
+				t.Errorf("an orphan deepsec finding rode into inline: %v -- the pre-#1322 shared-slot file was harvested alongside the producer's per-run export", f)
+			}
+		}
+	}
+	if deepsecGroups > 1 {
+		t.Errorf("cap_findings produced %d harvest entries labelled deepsec.json; want at most 1 -- the orphan was not deduped by basename", deepsecGroups)
+	}
+	if deepsecFindings != 2 {
+		t.Errorf("deepsec findings in inline = %d, want 2 (the producer's) -- either the orphan slipped through or the producer was skipped", deepsecFindings)
+	}
+	// inline_total counts ONLY the producer's findings for deepsec.
+	if got.InlineTotal != 2 {
+		t.Errorf("inline_total = %d, want 2 -- the orphan's 5 findings inflated the total", got.InlineTotal)
 	}
 }

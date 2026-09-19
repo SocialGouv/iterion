@@ -345,11 +345,14 @@ func TestScanHealthMinGenericIgnoresDeepsec(t *testing.T) {
 	})
 }
 
-// #1328 -- report_card_user distinguishes "the backlog is exhausted, this
-// pass added nothing new" (files_processed=0 AND deepsec findings > 0) from
-// "nothing analysed and nothing came out" (files_processed=0 AND count = 0):
-// the healthy steady state gets a plain note, not a ⚠, so the operator is
-// not trained to ignore coverage warnings.
+// #1328 -- report_card_user distinguishes "this pass analysed no new file
+// while earlier passes' findings are exported" (files_processed=0 AND
+// deepsec findings > 0) from "nothing analysed and nothing came out"
+// (files_processed=0 AND count = 0): the earlier-passes-carry-the-findings
+// state gets a plain note, not a ⚠, so the operator is not trained to ignore
+// coverage warnings. The NOTE names the observable fact ("this pass added
+// nothing new"), not the reason (backlog exhausted vs narrowed file_filter
+// vs narrowed diff_scope — no field distinguishes them, revi R76c175).
 //
 // The discriminator lives on the envelope: report_input carries a
 // deepsec_finding_count scalar (0 when the deep pass did not run), populated
@@ -421,18 +424,37 @@ func TestDeepsecFindingCountReachesReportCard(t *testing.T) {
 	if !strings.Contains(string(src), "{{input.deepsec_finding_count}}") {
 		t.Error("report_card_user does not read {{input.deepsec_finding_count}} -- the prompt cannot discriminate the healthy steady state from a genuine coverage gap")
 	}
-	const markerPhrase = "the persistent backlog is exhausted"
+	// The NOTE marker names the OBSERVABLE fact, not the reason: the
+	// "backlog exhausted" claim was withdrawn (revi R76c175 on PR #1473
+	// verdict 3) because no field distinguishes it from "nothing eligible
+	// because file_filter/diff_scope was narrower".
+	const markerPhrase = "come from earlier passes over this workspace"
 	if !strings.Contains(string(src), markerPhrase) {
-		t.Errorf("report_card_user does not carry the healthy-steady-state marker phrase %q -- either the note was removed or it was rephrased in a way that no longer distinguishes it from the ⚠ banner it replaces", markerPhrase)
+		t.Errorf("report_card_user does not carry the earlier-passes marker phrase %q -- either the NOTE was removed or it was rephrased in a way that no longer distinguishes it from the ⚠ banner it replaces", markerPhrase)
+	}
+	// The NOTE MUST NOT re-introduce the "backlog exhausted" claim (revi
+	// R76c175 asked for the neutral wording; the earlier revi verdict 2
+	// asserted a version of this test that reddens if a future edit slips
+	// the claim back in).
+	if strings.Contains(string(src), "backlog is exhausted") {
+		t.Errorf("report_card_user re-introduced the withdrawn 'backlog is exhausted' claim -- no field distinguishes it from 'nothing eligible', per revi R76c175. Use neutral wording naming the observable fact only.")
 	}
 
-	// Rule 3a suppression on the healthy state (revi verdict 2 on PR #1473):
-	// on `files_processed=0 && deepsec_finding_count>0` the persistent
-	// backlog is exhausted; the 3a "capped at process_limit files" banner is
-	// moot because no candidate file was eligible for the deep pass. Suppress
-	// it too, so the healthiest state does not carry TWO banners.
+	// Rule 3a suppression on the earlier-passes-carry-the-findings state
+	// (revi verdict 2 + 3 on PR #1473): when files_processed==0 &&
+	// deepsec_finding_count>0 AND the process step succeeded, the 3a
+	// "capped at process_limit files" banner is moot — no candidate file
+	// was eligible for the deep pass. Suppress it too, so the earlier-
+	// passes state does not carry TWO banners. The process-succeeded key
+	// is load-bearing: if the process step FAILED at the first file while
+	// the export carries prior findings, the ⚠ cap banner must still fire
+	// (revi verdict 3 question).
 	const skip3aMarker = "Skip 3a here"
 	if !strings.Contains(string(src), skip3aMarker) {
-		t.Errorf("report_card_user does not carry the 3a-suppression marker %q -- the fully-analysed steady state still fires ⚠ from 3a beside the 3b note (revi verdict 2 on PR #1473)", skip3aMarker)
+		t.Errorf("report_card_user does not carry the 3a-suppression marker %q", skip3aMarker)
+	}
+	const processSucceededMarker = "process step SUCCEEDED"
+	if !strings.Contains(string(src), processSucceededMarker) {
+		t.Errorf("report_card_user's 3a EXCEPTION does not require the process step to have SUCCEEDED (marker %q) -- a run whose process step failed at the first file while the export dumps prior findings would also satisfy the 3a EXCEPTION's first two conditions, and there the ⚠ cap banner must still fire (revi verdict 3 question)", processSucceededMarker)
 	}
 }
