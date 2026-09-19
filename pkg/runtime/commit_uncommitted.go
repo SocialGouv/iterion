@@ -84,17 +84,6 @@ func CommitUncommittedAndFinalize(
 	return RecoverFinalize(ctx, st, r, logger)
 }
 
-// workdirIsClean returns true when `git status --porcelain` reports nothing
-// once iterion's OWN scaffolding is set aside. See runOutputPaths for why that
-// exclusion exists and what it deliberately does not cover.
-func workdirIsClean(workdir string) (bool, error) {
-	out, err := runGit(workdir, "status", "--porcelain")
-	if err != nil {
-		return false, fmt.Errorf("git status: %w (output: %s)", err, strings.TrimSpace(out))
-	}
-	return len(runOutputPaths(out)) == 0, nil
-}
-
 // stageWorkArgs stages the whole tree EXCEPT the canonical tree noise
 // (pkg/treenoise): the `.claude/` mirror and a drifted devbox.lock are not
 // the pass's work, and the WIP BANK's staging gesture agrees with the probe

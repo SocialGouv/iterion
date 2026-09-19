@@ -28,6 +28,12 @@ import "strings"
 // construction, asserted by the tests).
 const TreeNoiseEnvVar = "ITERION_TREE_NOISE"
 
+// MirrorPath is the engine's own mirror — the ONE noise path the
+// operator-initiated commit-and-finalize keeps excluding. Named rather than
+// positional: Entries is documented as growable, and a member prepended
+// tomorrow must not silently redefine what a merge-destined commit excludes.
+const MirrorPath = ".claude"
+
 // Entry is one tree-noise path: what writes it, and whether it is a
 // directory (a prefix match on porcelain paths) or a top-level file (an
 // exact one).
@@ -41,7 +47,7 @@ type Entry struct {
 // its shape from this slice; nothing else in the repository may spell a
 // noise path (the guards in bots/ and the tests here enforce that).
 var Entries = []Entry{
-	{".claude", true, "iterion's skills/commands/agents/settings mirror, written at run start (#1364)"},
+	{MirrorPath, true, "iterion's skills/commands/agents/settings mirror, written at run start (#1364)"},
 	{"devbox.lock", false, "rewritten by every devbox invocation — plugin_version drift (#1459, #1464)"},
 }
 
@@ -76,16 +82,16 @@ func ShellPathspecs() string {
 // keeps excluding (its commit is merge-destined; a tracked-and-modified
 // devbox.lock there is the dependency work itself, verdict 3 R5478b3).
 func IsMirror(path string) bool {
-	return path == Entries[0].Path || strings.HasPrefix(path, Entries[0].Path+"/")
+	return path == MirrorPath || strings.HasPrefix(path, MirrorPath+"/")
 }
 
 // MirrorPathspec is the git pathspec excluding the engine's own mirror —
 // the ONE noise path the operator-initiated commit-and-finalize keeps
 // excluding when it stages merge-destined work (a tracked-and-modified
 // devbox.lock there is the dependency work itself, not engine noise —
-// verdict 3, R5478b3). Derived from Entries, like every shape.
+// verdict 3, R5478b3). Derived from MirrorPath, the name Entries carries.
 func MirrorPathspec() string {
-	return ":(exclude,top)" + Entries[0].Path
+	return ":(exclude,top)" + MirrorPath
 }
 
 // EnvValue is the form tool scripts read from ITERION_TREE_NOISE: the
