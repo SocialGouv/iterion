@@ -104,7 +104,7 @@ func TestCapFindingsHarvestReachesTheDeepsecFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	scanDir := filepath.Join(dir, "scan")
-	perRun := filepath.Join(scanDir, "run-XYZ")
+	perRun := filepath.Join(scanDir, "deepsec-out-run-XYZ")
 	if err := os.MkdirAll(perRun, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +188,8 @@ func TestCapFindingsIgnoresNeighbourPerRunSubdirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	scanDir := filepath.Join(dir, "scan")
-	mine := filepath.Join(scanDir, "run-MINE")
-	theirs := filepath.Join(scanDir, "run-THEIRS")
+	mine := filepath.Join(scanDir, "deepsec-out-run-MINE")
+	theirs := filepath.Join(scanDir, "deepsec-out-run-THEIRS")
 	for _, d := range []string{mine, theirs} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -314,15 +314,26 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 	}
 
 	// Aged directories: mtime 40 days ago. Fresh: mtime now.
-	aged := []string{
-		filepath.Join(scanDir, "run-OLD-A"),
-		filepath.Join(scanDir, "run-OLD-B"),
+	// - deepsec-out-* and deepsec-logs-* aged must GO (owned shapes, past TTL).
+	// - alien aged (unprefixed) must STAY (Re56aa9 positive-scope fix): a
+	//   directory the operator or another node dropped is not enrolled in
+	//   this sweep by default.
+	agedOwned := []string{
+		filepath.Join(scanDir, "deepsec-out-run-OLD-A"),
+		filepath.Join(scanDir, "deepsec-out-run-OLD-B"),
 		filepath.Join(scanDir, "deepsec-logs-run-OLD-A"),
 	}
+	agedAlien := []string{
+		filepath.Join(scanDir, "run-OLD-A"),         // bare run id -- not owned
+		filepath.Join(scanDir, "operator-cache"),    // arbitrary operator dir
+		filepath.Join(scanDir, "unrelated-scratch"), // another node might drop this
+	}
 	fresh := []string{
-		filepath.Join(scanDir, "run-FRESH"),
+		filepath.Join(scanDir, "deepsec-out-run-FRESH"),
 		filepath.Join(scanDir, "deepsec-workspace"), // the shared data root
 	}
+	aged := append([]string{}, agedOwned...)
+	aged = append(aged, agedAlien...)
 	for _, d := range append(aged, fresh...) {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -340,7 +351,7 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 
 	// Also seed a fake current-run directory so we can prove it stays.
 	const runID = "run-CURRENT"
-	currentDir := filepath.Join(scanDir, runID)
+	currentDir := filepath.Join(scanDir, "deepsec-out-"+runID)
 	currentLogsDir := filepath.Join(scanDir, "deepsec-logs-"+runID)
 	for _, d := range []string{currentDir, currentLogsDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -398,21 +409,28 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 		t.Fatal("scanner produced no envelope")
 	}
 
-	// The aged directories must be gone.
-	for _, d := range aged {
+	// The aged OWNED directories (deepsec-out-* and deepsec-logs-*) must be
+	// gone. Aged ALIEN directories (no owned prefix) must stay -- the sweep
+	// is positively scoped and does not enrol what it does not own (Re56aa9).
+	for _, d := range agedOwned {
 		if _, err := os.Stat(d); !os.IsNotExist(err) {
-			t.Errorf("aged dir %s survived the prune -- scan_dir_ttl_days=30 with mtime 40 days ago should have swept it", d)
+			t.Errorf("aged owned dir %s survived the prune -- scan_dir_ttl_days=30 with mtime 40 days ago should have swept it", d)
+		}
+	}
+	for _, d := range agedAlien {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("alien dir %s was pruned but must stay: %v -- the sweep is scoped to deepsec-out-* / deepsec-logs-* only; enrolling anything else would delete operator or foreign-node state after the TTL", d, err)
 		}
 	}
 	// The fresh dirs, current-run dirs, and deepsec-workspace must stay.
 	for _, d := range []string{
-		filepath.Join(scanDir, "run-FRESH"),
+		filepath.Join(scanDir, "deepsec-out-run-FRESH"),
 		filepath.Join(scanDir, "deepsec-workspace"),
 		currentDir,
 		currentLogsDir,
 	} {
 		if _, err := os.Stat(d); err != nil {
-			t.Errorf("dir %s was pruned but must stay: %v -- either the current-run guard is missing (%s) or deepsec-workspace is not excluded", d, err, fmt.Sprintf("SCAN_DIR/%s and SCAN_DIR/deepsec-logs-%s must never be pruned", runID, runID))
+			t.Errorf("dir %s was pruned but must stay: %v -- either the current-run guard is missing (%s) or deepsec-workspace is not excluded", d, err, fmt.Sprintf("SCAN_DIR/deepsec-out-%s and SCAN_DIR/deepsec-logs-%s must never be pruned", runID, runID))
 		}
 	}
 }
