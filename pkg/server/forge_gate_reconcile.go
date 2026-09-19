@@ -176,9 +176,9 @@ func (s *Server) startGateReconciler() {
 // attachGateReconciler subscribes the reconciler to run-terminal events.
 // Paused is deliberately absent: a paused run is expected to resume and post
 // its own verdict.
-func (s *Server) attachGateReconciler(bus eventbus.Bus) (func(), error) {
+func (s *Server) attachGateReconciler(bus eventbus.Bus) (func(context.Context), error) {
 	if s == nil || bus == nil {
-		return func() {}, nil
+		return func(context.Context) {}, nil
 	}
 	return bus.Subscribe(gateReconcilerName, trigger.Matcher{
 		Sources: []trigger.Source{trigger.SourceRun},

@@ -91,7 +91,7 @@ func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatc
 		<-started
 		c.sweepLoop(ctx)
 	}()
-	cancelBus := func() {}
+	cancelBus := func(context.Context) {}
 	if bus := s.eventsBus(); bus != nil {
 		if stop, err := bus.Subscribe("assistant-mission-"+uuid.NewString(), trigger.Matcher{Sources: []trigger.Source{trigger.SourceRun}}, c.handleEvent); err != nil {
 			s.logWarn("assistant mission: subscribe: %v", err)
@@ -106,17 +106,21 @@ func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatc
 	if s.draining.Load() || s.runs != runs {
 		s.stateMu.Unlock()
 		cancel()
-		cancelBus()
+		// Not a shutdown path: standalone project-switch cancel gets the
+		// default budget (no shared joinCtx to thread).
+		cancelBus(context.Background())
 		close(started)
 		return nil
 	}
 	prevCancel, prevDone := s.assistantMissionCancel, s.assistantMissionDone
 	s.assistantMission = c
-	s.assistantMissionCancel = func() { cancel(); cancelBus() }
+	s.assistantMissionCancel = func(cancelCtx context.Context) { cancel(); cancelBus(cancelCtx) }
 	s.assistantMissionDone = c.done
 	s.stateMu.Unlock()
 	if prevCancel != nil {
-		prevCancel()
+		// Previous mission cancels on a project switch, not shutdown: use
+		// a fresh Background — the shared joinCtx applies only to shutdown.
+		prevCancel(context.Background())
 	}
 	close(started)
 	return prevDone
@@ -124,14 +128,15 @@ func (s *Server) restartAssistantMissions(runs *runview.Service, watches runwatc
 
 // stopAssistantMissions cancels the coordinator and returns its done
 // channel (nil when none runs) for the shutdown to join after the HTTP
-// drain.
-func (s *Server) stopAssistantMissions() <-chan struct{} {
+// drain. The passed ctx is the shutdown's shared subscription-cancel
+// budget (#1477's medium finding) — every bus cancel below draws from it.
+func (s *Server) stopAssistantMissions(ctx context.Context) <-chan struct{} {
 	s.stateMu.Lock()
 	cancel, done := s.assistantMissionCancel, s.assistantMissionDone
 	s.assistantMission, s.assistantMissionCancel, s.assistantMissionDone = nil, nil, nil
 	s.stateMu.Unlock()
 	if cancel != nil {
-		cancel()
+		cancel(ctx)
 	}
 	return done
 }

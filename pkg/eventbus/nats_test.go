@@ -118,7 +118,7 @@ func TestNATSBus_PublishDecodeAndFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	defer cancel()
+	defer cancel(context.Background())
 
 	if err := bus.Publish(context.Background(), boardEvent("b1")); err != nil {
 		t.Fatalf("Publish board: %v", err)
@@ -144,12 +144,12 @@ func TestNATSBus_QueueGroupDeliversOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c1()
+	defer c1(context.Background())
 	c2, err := bus.Subscribe("evaluator", trigger.Matcher{}, inc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c2()
+	defer c2(context.Background())
 
 	if err := bus.Publish(context.Background(), boardEvent("b1")); err != nil {
 		t.Fatal(err)
@@ -166,12 +166,12 @@ func TestNATSBus_DistinctNamesEachReceive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ca()
+	defer ca(context.Background())
 	cb, err := bus.Subscribe("b", trigger.Matcher{}, func(_ context.Context, _ trigger.Event) error { b.Add(1); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cb()
+	defer cb(context.Background())
 
 	if err := bus.Publish(context.Background(), boardEvent("b1")); err != nil {
 		t.Fatal(err)
@@ -188,8 +188,8 @@ func TestNATSBus_CancelUnsubscribes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancel()
-	cancel() // idempotent
+	cancel(context.Background())
+	cancel(context.Background()) // idempotent
 	if err := bus.Publish(context.Background(), boardEvent("b1")); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestNATSBus_UndecodablePayloadDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
+	defer cancel(context.Background())
 	// Inject raw garbage on a matching subject — the decode must fail softly.
 	broker.deliver(DefaultSubjectPrefix+".board", []byte("{not valid json"))
 	if n.Load() != 0 {

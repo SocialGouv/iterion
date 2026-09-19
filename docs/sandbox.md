@@ -602,8 +602,32 @@ otherwise read as an agent bug.
 
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
-`errors` on the host target when something failed) so you can audit
-what was picked up — and see when a declared toolchain could **not**
+`errors` on the host target when something failed, and `lock_kept` on the
+host target when the repo's `devbox.lock` needed a decision after the
+install — devbox rewrites its plugin metadata on a host whose registry is
+newer than the pin, and the run's gates would read the tracked file as the
+pass's own change, #1459: a plugin-metadata drift is put back, and so is a
+lock the install removed or left unparseable (an install cut short
+mid-write); a lock the install changed beyond that — the repository's lock
+was behind its `devbox.json`, or did not parse — is kept and said; a lock
+the install created is removed only where git would show it, kept and said
+otherwise — unless the install left it unparseable, which is removed
+wherever it is, devbox refusing to run with such a file in place. The
+sandbox target's event is emitted when the spec is built, before the
+container's post-create prologue runs: the same decisions are taken there
+on every lock devbox writes (the prologue compares text: a lock left empty
+or not ending in a brace once blanks are removed is restored, or removed
+when the install created it; what still ends in a brace — a truncation
+stopping on an inner brace, a complete object followed by NUL padding —
+reads as a re-lock and is kept, said, and devbox refuses to run on it just
+as on any cut-short write, where the host, which parses, restores; the text
+comparison can otherwise only diverge from the host on a document no devbox
+version produces) — plus one of its own: a comparison the image's
+`tr`, `sed` or `cmp` could not complete leaves the lock as found after the
+install, said; a restore or removal that could not be carried out is said
+as such, never announced as done — and, like an install failure on that
+target, are reported on the container's stderr, not on the event) so you
+can audit what was picked up — and see when a declared toolchain could **not**
 be provisioned. A source that EXISTS and was deliberately declined is
 named on the same event, with its own reason:
 `skipped_sources` / `skipped_configs` / `skipped_reasons` (parallel

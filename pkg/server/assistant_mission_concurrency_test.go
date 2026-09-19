@@ -106,7 +106,7 @@ func TestRestartAssistantMissionsIsRaceFree(t *testing.T) {
 	last, lastDone := s.assistantMissionCancel, s.assistantMissionDone
 	s.stateMu.Unlock()
 	if last != nil {
-		last()
+		last(context.Background())
 		<-lastDone
 	}
 }
@@ -179,7 +179,7 @@ func TestAssistantMissionReplacementAndDrainCancelInFlightSweeps(t *testing.T) {
 	}
 	s.restartAssistantMissions(nil, nil, st)
 	t.Cleanup(func() {
-		if done := s.stopAssistantMissions(); done != nil {
+		if done := s.stopAssistantMissions(context.Background()); done != nil {
 			<-done
 		}
 	})
@@ -188,7 +188,7 @@ func TestAssistantMissionReplacementAndDrainCancelInFlightSweeps(t *testing.T) {
 	second := receive()
 	cancelled(first)
 	s.draining.Store(true)
-	s.stopAssistantMissions()
+	s.stopAssistantMissions(context.Background())
 	cancelled(second)
 	s.restartAssistantMissions(nil, nil, st)
 	s.stateMu.RLock()

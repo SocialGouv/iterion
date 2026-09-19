@@ -7,6 +7,14 @@ This page maps every public top-level command in the current binary and document
 | Command | Purpose |
 |---|---|
 | `bench asymptote` | Build a workflow-quality stabilisation report from persisted runs. |
+| `bench discovery` | Report what persisted runs spent on orientation — reads and searches — rather than on the change. |
+| `map gen` | Regenerate the committed repository maps (packages, docs + ADR, bots + skills); `--check` fails on drift. |
+| `map build` | Build the repository graph cache — packages, symbols, calls, doc links and every `.bot`'s compiled DAG. |
+| `map find` | Find graph nodes by name, with the file and line to open next. |
+| `map neighbours` | Everything one edge away from a node, in both directions. |
+| `map path` | Shortest directed path between two nodes. |
+| `map impact` | What reaches a node — who breaks if it changes. |
+| `map rank` | Rank the repository around a set of nodes (personalised PageRank). |
 | `bots` | Create bots, install published ones, and emit the catalogue. |
 | `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
 | `clean` | Reclaim disk by deleting run worktrees whose work has landed. |
@@ -713,5 +721,15 @@ iterion remote runs mission stop TARGET MISSION
 All four commands support the remote command's normal `--output json` mode.
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
+
+`iterion map gen` rewrites the three committed indexes under `docs/references/` — [`map-packages.md`](references/map-packages.md) (every Go package, its one-line purpose and the interfaces it exposes), [`map-docs.md`](references/map-docs.md) (every page and ADR, with the ADR's status) and [`map-bots.md`](references/map-bots.md) (every bundle and skill). Everything is derived deterministically: Go's own parser, markdown headings, the bundle manifest loader — no model call, no embedding. `--check` writes nothing and fails on drift; `task map:check` runs the same assertion as a Go test, so freshness rides the required `test` check.
+
+`iterion map build` builds the graph the other `map` subcommands query, caching it under `.iterion/map/` (gitignored — the small markdown maps are committed, a multi-megabyte graph is not). Nodes are packages, files, exported symbols, docs pages, bots, skills and `.bot` nodes; edges are `imports`, `contains`, `declares`, `calls`, `references`, `links`, `flows` and `uses`. Measured on this repository: **9 834 nodes and 31 366 edges in 0.7 s**. The graph body is byte-identical over repeated cold builds; the artifact carries a `built_at` stamp, so the file as a whole is not.
+
+Two of those relations are worth naming. **`references`** is a symbol named without being called — a parameter type, a struct field. On an interface it is the *only* edge there is, so a graph recording calls alone would report "nothing depends on this" about every seam in the architecture. **`flows`** is the `.bot` DAG, taken from the compiler rather than inferred from the text: `iterion map neighbours node:<bot>/<file>#<node>` and `iterion diagram` are two independent producers of the same fact.
+
+The cache is keyed on a fingerprint that hashes the **content** of every `.go`, `.md`, `.bot`, `go.mod`, `manifest.yaml` and `.mcp.json` outside the skipped trees — content rather than `(size, mtime)`, which is blind to a same-size edit inside one tick of the kernel's coarse clock. Any change rebuilds all of it: patching a graph in place would be faster and could describe a repository that no longer exists, which is the one failure an index must not have.
+
+`iterion bench discovery` classifies each run's tool calls into orientation (read, search, list), change (write, commit) and neither, and reports the token spend of the nodes that never wrote anything — the only split the event stream supports without imputing one. Takes `--runs id,...` or `--last N`, plus `--output`, `--title` and `--top`. Every table states its coverage, including the verbs the classifier could not name. Background and the measured baseline: [context retrieval state of the art](references/context-retrieval-state-of-the-art.md).
 
 `iterion completion <bash|zsh|fish|powershell>` emits shell completion. `iterion version` prints build version and commit; `--commit` prints only the SHA, truncated to the same 12 characters the default output embeds, and exits non-zero when the build carries none (no `-ldflags` injection, no VCS build info, or the Dockerfile's `unknown` default) rather than handing a script an empty or bogus value.

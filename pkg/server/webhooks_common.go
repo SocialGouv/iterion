@@ -51,13 +51,19 @@ func (s *Server) verifyWebhookHMACBody(w http.ResponseWriter, r *http.Request, c
 	return body, knowledge.ChecksumHex(body), s.clientIP(r), true
 }
 
-// forgeProjectionSem bounds concurrent best-effort forge→board projection
-// goroutines. A burst of webhooks would otherwise spawn one 30s goroutine
-// each without limit. Acquisition is non-blocking: when the cap is reached
-// the fast-path refresh is skipped and the periodic forge→board sweep
-// reconciles the board, so correctness is preserved and the request never
-// blocks.
-var forgeProjectionSem = make(chan struct{}, 16)
+// forgeProjectionSemCap bounds concurrent best-effort forge→board projection
+// goroutines. A burst of webhooks would otherwise spawn one 30 s goroutine
+// each without limit. Acquisition is non-blocking (see
+// scheduleForgeBoardProjection): when the cap is reached the fast-path
+// refresh is skipped and the periodic forge→board sweep reconciles the
+// board, so correctness is preserved and the request never blocks.
+//
+// Held on the Server (lazily built in forgeProjectionSem()) rather than
+// as a package var, so per-test state does not leak across independent
+// Server instances — the pre-fix package-scoped semaphore made
+// `-shuffle=on -count=3` observe slots that survived across tests
+// (#1477's follow-up Q4).
+const forgeProjectionSemCap = 16
 
 // defaultWebhookBotReviewPR is the bot iterion auto-selects when a
 // review-PR-shaped delivery (GitLab MR open/reopen, GitLab Note /revi,
@@ -393,13 +399,9 @@ func iterionBotLogins(cfg webhooks.Config, conn forge.Connection) []string {
 	// Operator-configured identities first: they are the only ones that can
 	// name a USER account, which on GitHub is the only thing that can be a
 	// requested reviewer. See Config.ReviewRequestLogins for why this is never
-	// derived from the connection.
-	var logins []string
-	for _, l := range cfg.ReviewRequestLogins {
-		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
-			logins = append(logins, l)
-		}
-	}
+	// derived from the connection — and NormalizedReviewRequestLogins for why
+	// the trimming is that method's and not this loop's.
+	logins := cfg.NormalizedReviewRequestLogins()
 	if conn.AppSlug != "" {
 		logins = append(logins, conn.AppSlug+"[bot]")
 	}
@@ -920,21 +922,45 @@ const supersededRunReason = store.RunEndReasonSuperseded
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise
 // queue N identical projections against the 16-slot semaphore.
+//
+// The projection is registered through goUntilShutdown (#1345) so a rolling
+// deploy joins its in-flight store writes rather than cutting them mid-Mongo
+// transaction. Two edges are settled explicitly:
+//
+//   - Not `context.Background()`: the projection observes SIGTERM through the
+//     registered context. The 30s WithTimeout is the happy-path ceiling, not
+//     a floor a defective handler can hold shutdown by.
+//   - Not the request's ctx: the request response has already been sent and
+//     r.Context() cancels then, but we want to complete the write. The
+//     goUntilShutdown context is bounded by shutdown, not by the response.
+//
+// A burst of 16 projections in flight at SIGTERM stays under ONE join budget
+// because projectForgeWebhookToBoard respects ctx (Mongo driver returns on
+// ctx.Done); if a projection ignored ctx the join budget's warning would
+// name "server.forgeBoardProjection" and the periodic sweep would reconcile
+// the cards on the next tick.
 func (s *Server) scheduleForgeBoardProjection(repo string) {
 	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil {
 		return
 	}
+	sem := s.forgeProjSem
 	select {
-	case forgeProjectionSem <- struct{}{}:
-		go func() {
-			defer func() { <-forgeProjectionSem }()
-			// Fresh background context (not derived from the request ctx) so the
-			// goroutine neither is cancelled by the response nor keeps the
-			// request's scoped values alive for its 30s lifetime.
-			pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	case sem <- struct{}{}:
+		if _, started := s.tryGoUntilShutdown("server.forgeBoardProjection", func(ctx context.Context) {
+			defer func() { <-sem }()
+			// 30s happy-path ceiling on top of the shutdown-aware ctx. On
+			// SIGTERM this cancels early with the outer ctx; on a slow
+			// Mongo it cancels after 30s.
+			pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			s.projectForgeWebhookToBoard(pctx, repo)
-		}()
+		}); !started {
+			// The shutdown already joined its background loops; the fn was
+			// not called, so the deferred slot release inside it never
+			// runs. Release it here so the concurrency cap does not leak
+			// on a process that is being kept alive by a hung Shutdown.
+			<-sem
+		}
 	default:
 		// Concurrency cap reached — skip the fast path; the periodic
 		// forge→board sweep will reconcile this repo's cards.

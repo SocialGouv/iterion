@@ -23,7 +23,7 @@ func TestInProcBusFanOutAndFilter(t *testing.T) {
 		done <- struct{}{}
 		return nil
 	})
-	defer cancelBoard()
+	defer cancelBoard(context.Background())
 	cancelAll, _ := bus.Subscribe("all", trigger.Matcher{}, func(_ context.Context, ev trigger.Event) error {
 		mu.Lock()
 		allN++
@@ -31,7 +31,7 @@ func TestInProcBusFanOutAndFilter(t *testing.T) {
 		done <- struct{}{}
 		return nil
 	})
-	defer cancelAll()
+	defer cancelAll(context.Background())
 
 	// A board event reaches both subscribers; a forge event reaches only "all".
 	_ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard, Kind: "card.moved"})
@@ -58,7 +58,7 @@ func TestInProcBusDropsOnFullBuffer(t *testing.T) {
 		<-release
 		return nil
 	})
-	defer cancel()
+	defer cancel(context.Background())
 
 	// 1 in-flight + 256 buffered + N overflow. Publish well past the buffer.
 	for i := 0; i < subscriberBufferSize+50; i++ {
@@ -72,7 +72,7 @@ func TestInProcBusDropsOnFullBuffer(t *testing.T) {
 	close(release)
 }
 
-// cancel() must unblock an in-flight handler by cancelling its context, then
+// cancel(context.Background()) must unblock an in-flight handler by cancelling its context, then
 // return — otherwise a handler stuck on store/LLM I/O would hang shutdown.
 func TestInProcBusCancelUnblocksInFlightHandler(t *testing.T) {
 	bus := NewInProcBus(nil)
@@ -90,11 +90,11 @@ func TestInProcBusCancelUnblocksInFlightHandler(t *testing.T) {
 	}
 
 	returned := make(chan struct{})
-	go func() { cancel(); close(returned) }()
+	go func() { cancel(context.Background()); close(returned) }()
 	select {
 	case <-returned:
 	case <-time.After(10 * time.Second):
-		t.Fatal("cancel() hung — in-flight handler was not unblocked by context cancellation")
+		t.Fatal("cancel(context.Background()) hung — in-flight handler was not unblocked by context cancellation")
 	}
 }
 
@@ -125,7 +125,7 @@ func TestPanickingHandlerDoesNotKillTheBus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel1()
+	defer cancel1(context.Background())
 	cancel2, err := b.Subscribe("healthy", trigger.Matcher{}, func(_ context.Context, ev trigger.Event) error {
 		healthy <- ev
 		return nil
@@ -133,7 +133,7 @@ func TestPanickingHandlerDoesNotKillTheBus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel2()
+	defer cancel2(context.Background())
 
 	for i := 0; i < 2; i++ {
 		if err := b.Publish(context.Background(), trigger.Event{Source: trigger.SourceRun, Kind: "run.finished"}); err != nil {

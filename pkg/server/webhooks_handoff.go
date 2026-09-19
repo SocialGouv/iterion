@@ -670,6 +670,15 @@ func (s *Server) logWarn(format string, args ...any) {
 	}
 }
 
+// logDebug is logWarn's twin, for the paths whose "nothing to do here" is
+// worth tracing but is not a problem — a deliberate non-implementation, a
+// lane an operator never armed.
+func (s *Server) logDebug(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Debug(format, args...)
+	}
+}
+
 // eventsBus resolves the event spine this server publishes on: the configured
 // bus, else the trigger coordinator's. Four call sites had their own copy of
 // this precedence, which is three too many for a rule that will change.

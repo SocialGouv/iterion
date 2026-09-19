@@ -423,7 +423,7 @@ func (s *cloudBoardSource) Stop() {
 // CloudTriggerCoordinator holds the cloud spine's moving parts for Close.
 type CloudTriggerCoordinator struct {
 	source    *cloudBoardSource
-	cancelSub func()
+	cancelSub func(context.Context)
 }
 
 // StartCloudTriggerCoordinator wires the board half of the trigger spine for
@@ -487,17 +487,34 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	return &CloudTriggerCoordinator{source: src, cancelSub: cancelSub}
 }
 
-// Close tears down the source and unsubscribes the evaluator. Nil-safe.
-func (c *CloudTriggerCoordinator) Close() {
+// StopSource drains the board source WITHOUT touching the bus
+// subscription. Shutdown drives this before opening the shared
+// subCancelCtx (#1477 R503821).
+func (c *CloudTriggerCoordinator) StopSource() {
 	if c == nil {
 		return
 	}
 	if c.source != nil {
 		c.source.Stop()
 	}
-	if c.cancelSub != nil {
-		c.cancelSub()
+}
+
+// CancelSub unsubscribes the evaluator from the bus. See
+// TriggerCoordinator.CancelSub for the ctx contract.
+func (c *CloudTriggerCoordinator) CancelSub(ctx context.Context) {
+	if c == nil {
+		return
 	}
+	if c.cancelSub != nil {
+		c.cancelSub(ctx)
+	}
+}
+
+// Close is the convenience wrapper for callers outside of Server.Shutdown
+// (tests). Nil-safe.
+func (c *CloudTriggerCoordinator) Close(ctx context.Context) {
+	c.StopSource()
+	c.CancelSub(ctx)
 }
 
 func firstNonEmptyStr(a, b string) string {
