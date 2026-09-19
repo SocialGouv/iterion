@@ -24,6 +24,8 @@
 ## any time we want to refresh / add a skill).
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   skills_dir:    string = "bots/whats-next/skills"

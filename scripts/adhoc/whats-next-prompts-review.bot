@@ -22,6 +22,8 @@
 ## review before they ship.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   bot_file: string = "bots/whats-next/main.bot"
 

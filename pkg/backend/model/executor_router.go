@@ -181,11 +181,10 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
 	}
 
-	// Resolve model for the router (with fallback chain). Use
-	// ExpandEnvWithDefault so `${VAR:-default}` syntax in recipes
-	// resolves to the default when VAR is unset, instead of the
-	// stdlib's silent collapse to "".
-	expanded := ir.ExpandEnvWithDefault(node.Model)
+	// Resolve model for the router (with fallback chain): a routing field,
+	// `{{vars.…}}` then `${VAR:-default}` (the default applies when VAR is
+	// unset, instead of the stdlib's silent collapse to "").
+	expanded := e.resolveRoutingField(node.Model)
 	if expanded == "" {
 		expanded = ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 	}

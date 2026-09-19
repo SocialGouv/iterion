@@ -739,6 +739,11 @@ func (c *compiler) compile() *Workflow {
 	// Static validation pass (P2-02).
 	c.validate(w)
 
+	// The routing fields (model, backend, provider) resolve vars.* at
+	// dispatch and nothing else: an undeclared var or another namespace
+	// there is said here, not by the backend after the workspace is paid.
+	c.validateRoutingFieldRefs(w)
+
 	// Supervisor cross-references (watched nodes exist + are agents,
 	// system prompt declared) — after nodes + prompts are on w.
 	c.validateSupervisors(w)

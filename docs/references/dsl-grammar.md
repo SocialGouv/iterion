@@ -151,9 +151,9 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | Property | Value | Meaning |
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
-| `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default |
-| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok |
-| `provider` | string | Provider hint for credential resolution, e.g. "anthropic" |
+| `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `command` | string | Executable that drives a CLI backend, overriding its default binary |
 | `input` | ident | Schema the node's input is validated against |
 | `output` | ident | Schema the node's structured output must match |
@@ -176,7 +176,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `images` | string list | Image paths sent with the prompt |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
 | `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
-| `interaction_model` | string | Model the llm interaction mode uses |
+| `interaction_model` | string | Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
@@ -217,9 +217,9 @@ router_mode = "fan_out_all" | "fan_out_each" | "condition"
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
 | `mode` | one of `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` | Routing mode |
-| `model` | string | llm mode only (C023 otherwise): Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default |
-| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok |
-| `provider` | string | Provider hint for credential resolution, e.g. "anthropic" |
+| `model` | string | llm mode only (C023 otherwise): Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `system` | ident | llm mode only (C023 otherwise): Prompt declaration used as the system prompt |
 | `user` | ident | llm mode only (C023 otherwise): Prompt declaration used as the user message |
 | `multi` | bool | llm mode only (C023 otherwise): the model may select several outgoing edges |
@@ -343,7 +343,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `compaction` | block → [compaction](#compaction) | Default compaction thresholds |
 | `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `worktree` | ident — `auto`, `none` | auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place |
-| `default_backend` | string | Backend for nodes that name none |
+| `default_backend` | string | Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
