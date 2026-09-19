@@ -98,22 +98,22 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		// A source that is already <name>/SKILL.md maps to the same dest.
 		skillDir := filepath.Join(dest, name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			// One skill's mkdir failing (permission denied, ENOSPC on a
-			// per-file basis, ...) must not discard every OTHER library
-			// skill this workflow references. Warn, skip, continue.
-			if logger != nil {
-				logger.Warn("runtime/library: skipping skill %q: mkdir %s: %v", name, skillDir, err)
-			}
-			continue
+			// I/O errors on a declared library skill (ENOSPC, EACCES,
+			// ENOTDIR when the checkout planted a plain file where the
+			// skill dir goes) stay FATAL: a run whose `.bot` explicitly
+			// declares `skills: [x]` must not proceed and report success
+			// without x — the doctrine is no silent fallback. skilllib
+			// name validation is already soft above (line ~61); anything
+			// reaching here is a filesystem issue.
+			return nil, nil, fmt.Errorf("runtime/library: mirror skill %q: mkdir %s: %w", name, skillDir, err)
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			if logger != nil {
-				logger.Warn("runtime/library: skipping skill %q: %v", name, err)
-			}
-			continue
+			// Same rationale as the mkdir branch: an I/O failure on a
+			// declared library skill is fatal.
+			return nil, nil, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
 		}
 		// The hint is recorded either way — claude_code and claw read the
 		// directory natively, so the agent sees the skill whoever wrote it. The

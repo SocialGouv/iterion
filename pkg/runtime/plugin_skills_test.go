@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -567,5 +568,142 @@ func TestMirrorInjectedPluginFiles_OneMalformedEntryDoesNotDiscardTheRest(t *tes
 	}
 	if logs := buf.String(); !strings.Contains(logs, "broken") {
 		t.Errorf("malformed entry not named in the WARN; logs = %q", logs)
+	}
+}
+
+// The house doctrine — no silent fallback — restated for the mirror pass.
+// PR1's blanket WARN+continue swallowed genuine I/O failures (ENOTDIR when
+// the target checkout planted a plain file where a skill dir goes, ENOSPC
+// on a runner pod under disk pressure, EACCES on a locked-down mount) —
+// a run whose plugin declares a skill it cannot mirror would report
+// success. The reviewer question on #1479 is right: only VALIDATION
+// errors (a name skillDestDirForm rejects) skip; I/O errors on a declared
+// skill stay FATAL.
+//
+// Test: plant a plain FILE at the skill's directory-form path so
+// `mirrorFileSkill`'s `os.MkdirAll(skillDir)` gets ENOTDIR. The whole
+// mirror pass must fail (fatal), not proceed with a WARN.
+//
+// Mutation: revert the isSkillValidationError split to unconditional
+// WARN+continue and this test reddens (err becomes nil).
+func TestMirrorPluginContributions_IOFailureOnDeclaredSkillIsFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	installPack(t, home, "the-pack", "skills/deploy.md", "playbook\n")
+
+	workDir := t.TempDir()
+	// Plant a plain FILE at .claude/skills/deploy — so MkdirAll(deploy)
+	// hits ENOTDIR ("not a directory") when mirrorFileSkill tries to
+	// create the directory-form skillDir.
+	block := filepath.Join(workDir, ".claude", "skills")
+	if err := os.MkdirAll(block, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(block, "deploy"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := mirrorPluginContributions(workDir, nil, nil)
+	if err == nil {
+		t.Fatalf("I/O error on a declared skill was swallowed — silent success is the doctrine violation")
+	}
+	if !strings.Contains(err.Error(), "deploy.md") {
+		t.Errorf("error message does not name the skill: %v", err)
+	}
+}
+
+// Cloud-path twin. Same doctrine: an I/O failure on a payload-declared
+// skill is fatal — the runner's `.bot` shipped the skill in the queue
+// message, silence would still lie.
+func TestMirrorInjectedPluginFiles_IOFailureOnDeclaredSkillIsFatal(t *testing.T) {
+	workDir := t.TempDir()
+	block := filepath.Join(workDir, ".claude", "skills")
+	if err := os.MkdirAll(block, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(block, "deploy"), []byte("planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "deploy.md", Content: []byte("payload\n")},
+	}, nil)
+	if err == nil {
+		t.Fatal("I/O error on a payload skill was swallowed")
+	}
+}
+
+// The soft half of the split. A malformed name (validation error from
+// `skillDestDirForm`) skips the ONE entry with a WARN naming it, and
+// unrelated entries still land. Same as the round-2 medium's regression
+// test, restated against the split-out predicate so a future refactor
+// cannot lose the soft branch.
+func TestMirrorPluginContributions_ValidationErrorSkipsOneEntryFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+
+	// Plugin A: a name that fails validation (no .md extension).
+	brokenDir := filepath.Join(home, "plugins", "a-broken")
+	if err := os.MkdirAll(filepath.Join(brokenDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "skills", "no-extension"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "plugin.yaml"),
+		[]byte("name: a-broken\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/no-extension\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plugin B: legitimate.
+	goodDir := filepath.Join(home, "plugins", "z-good")
+	if err := os.MkdirAll(filepath.Join(goodDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goodDir, "skills", "kept.md"), []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goodDir, "plugin.yaml"),
+		[]byte("name: z-good\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/kept.md\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	workDir := t.TempDir()
+	_, err := mirrorPluginContributions(workDir, nil, logger)
+	if err != nil {
+		t.Fatalf("validation error was FATAL instead of soft: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "skills", "kept", "SKILL.md")); err != nil {
+		t.Fatalf("z-good's skill did not land: %v", err)
+	}
+	if logs := buf.String(); !strings.Contains(logs, "validation") || !strings.Contains(logs, "no-extension") {
+		t.Errorf("skip WARN missing or does not label as validation; logs = %q", logs)
+	}
+}
+
+// The predicate itself. `isSkillValidationError` returns true for the
+// sentinel and false for wrapped I/O — nothing accidental in-between.
+func TestIsSkillValidationError_OnlyForTheSentinel(t *testing.T) {
+	// Positive: skillDestDirForm's own return.
+	_, _, _, err := skillDestDirForm("d", "m", "no-extension")
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !isSkillValidationError(err) {
+		t.Fatalf("skillDestDirForm returned a non-validation error: %v (%T)", err, err)
+	}
+	// Wrapped through a fmt.Errorf %w: still recognised.
+	wrapped := fmt.Errorf("upstream: %w", err)
+	if !isSkillValidationError(wrapped) {
+		t.Fatal("wrapped validation error not recognised via errors.As")
+	}
+	// Negative: a bare I/O error must NOT read as validation.
+	if isSkillValidationError(os.ErrPermission) {
+		t.Fatal("os.ErrPermission read as validation")
+	}
+	if isSkillValidationError(fmt.Errorf("mkdir: no space left on device")) {
+		t.Fatal("ENOSPC-shaped fmt.Errorf read as validation")
 	}
 }

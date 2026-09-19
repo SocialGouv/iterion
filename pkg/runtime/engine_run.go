@@ -728,18 +728,26 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// collision (see runtime/bundle.go for the rule). Tier sidecars from a
 	// PREVIOUS run are wiped first: precedence arbitrates within this
 	// pass, never across runs.
-	ClearSkillTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
-	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
-	// after the bundle skills so a same-named bundle/workspace file
-	// wins on collision. Best-effort: a plugin must not fail the run.
+	// Mirror markdown contributions (skills / commands / agents) from enabled
+	// plugins after the bundle skills so a same-named bundle/workspace file
+	// wins on collision. An I/O error is FATAL — a run whose enabled plugin
+	// declares a skill iterion cannot mirror must not proceed and report
+	// success without it (the doctrine, called out on #1479). Validation
+	// errors are already soft inside mirrorPluginContributions; anything
+	// reaching the return here is I/O.
 	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
-	if err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin contributions: %v", err)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: plugin contributions: %v", err)
+		}
+		e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
+		return fmt.Errorf("runtime: plugin contributions: %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
@@ -750,8 +758,32 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
 	// returned name→description map feeds every LLM node's "## Skills" hint.
 	// All three mirrors write into the same directory, so ownership is reported
-	// once, after the last of them has run.
-	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
+	// once, after the last of them has run. I/O errors here are FATAL for the
+	// same reason as the plugin mirror — the DSL `skills:` list is exactly
+	// "declared and load-bearing".
+	ownedLibrarySkills, libraryErr := e.applyLibrarySkills()
+	if libraryErr != nil {
+		e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
+		return fmt.Errorf("runtime: library skills: %w", libraryErr)
+	}
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	// Prune orphans left by earlier passes on this worktree — a skill
+	// renamed or removed upstream keeps its copy and marker on disk
+	// forever otherwise, and claw's resolver keeps offering the flat form
+	// under its old name (claude_code's Skill tool only discovers the
+	// directory form; a flat orphan is inert there — but the marker is
+	// still bookkeeping for that name). Only touches files iterion wrote
+	// AND the operator hasn't edited (iterion-wrote sidecar + marker
+	// match + no fresh tier sidecar); anything the operator owns stays.
+	// All three mirror phases are FATAL on I/O now: any code reaching
+	// here saw a healthy pass, so the "not touched this pass" signal the
+	// pruner relies on is reliable. Use run.Worktree (post-promotion)
+	// rather than the local worktreeActive: `workDirDelegated` promotes
+	// a foreign linked worktree to Worktree=true after this function has
+	// already read worktreeActive, and the two resume paths do use
+	// run.Worktree via r.Worktree — the pruner must see the SAME state
+	// whichever entry point it runs from.
+	pruneWorkspaceMirror(e.workDir, run.Worktree, e.logger)
 	e.applyPresetFocus()
 	// Say, on the run's own record, that this run carried skills its .bot
 	// does not mention. Without it the addition is invisible state changing
@@ -806,22 +838,29 @@ func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error
 // claude_code and claw read the directory natively, so the agent sees whatever
 // is there — but a shadowed entry is NOT owned: that content is the target
 // repository's, and a backend passing skills explicitly must not hand it over.
-func (e *Engine) applyLibrarySkills() []string {
+// applyLibrarySkills returns (owned, err). A non-nil err is an I/O failure
+// on a declared library skill — FATAL, propagated by the caller. The doctrine
+// is no silent fallback: a run whose DSL declares `skills: [x]` proceeds and
+// reports success without x is exactly the failure this seam exists to
+// prevent (revi/review question on #1479). skilllib.ValidName already covers
+// the validation class softly inside mirrorLibrarySkills; only I/O reaches
+// here as err.
+func (e *Engine) applyLibrarySkills() (owned []string, err error) {
 	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)
 		}
-		return nil
+		return nil, err
 	}
 	if len(hints) == 0 {
-		return owned
+		return owned, nil
 	}
 	type skillHintSetter interface{ SetSkillHints(map[string]string) }
 	if s, ok := e.executor.(skillHintSetter); ok {
 		s.SetSkillHints(hints)
 	}
-	return owned
+	return owned, nil
 }
 
 // applyMirroredSkills hands the executor the skill directories iterion OWNS in

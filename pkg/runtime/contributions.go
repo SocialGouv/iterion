@@ -112,16 +112,19 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		}
 		outcome, destPath, err := mirrorInjectedContribFile(destDir, markerDir, tmpPath, f.Kind, f.Name, logger)
 		if err != nil {
-			// Malformed entries (e.g. a name a third-party manifest crafted
-			// without an .md suffix — collectSkillFiles is EqualFold, so
-			// "Deploy.MD" reaches here and skillDestDirForm refuses it)
-			// must not discard every OTHER team-source's contribution
-			// behind a single error. Name the offender in the log, keep
-			// mirroring the rest.
-			if logger != nil {
-				logger.Warn("runtime/contrib: skipping %s %q: %v", f.Kind, f.Name, err)
+			// Same soft-vs-fatal split as the local plugin mirror:
+			// validation errors (a malformed name from a third-party
+			// manifest — collectSkillFiles is EqualFold so "Deploy.MD"
+			// reaches here and skillDestDirForm refuses it) skip that
+			// entry, keep mirroring; I/O errors on a declared skill
+			// stay FATAL. Same predicate: isSkillValidationError.
+			if isSkillValidationError(err) {
+				if logger != nil {
+					logger.Warn("runtime/contrib: skipping %s %q (validation): %v", f.Kind, f.Name, err)
+				}
+				continue
 			}
-			continue
+			return nil, fmt.Errorf("runtime/contrib: mirror %s %q: %w", f.Kind, f.Name, err)
 		}
 		// A duplicate reaching this path IS by definition a publisher
 		// regression — the wording of the WARN itself asserts as much — so
@@ -209,21 +212,17 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		}
 		skillDir := filepath.Join(dest, s.Name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			// One skill's mkdir failing must not discard every OTHER
-			// injected library skill on this launch. Warn, skip.
-			if logger != nil {
-				logger.Warn("runtime/contrib: skipping library skill %q: mkdir %s: %v", s.Name, skillDir, err)
-			}
-			continue
+			// I/O errors on a declared library skill stay fatal on the
+			// cloud path too. The runner's `.bot` still declared the
+			// skill; silently proceeding without it would let a run
+			// report success while the agent runs blind.
+			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: mkdir %s: %w", s.Name, skillDir, err)
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			if logger != nil {
-				logger.Warn("runtime/contrib: skipping library skill %q: %v", s.Name, err)
-			}
-			continue
+			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
 		}
 		// The FILE, not skillDir — see mirrorLibrarySkills for why.
 		if outcome != skillOutcomeShadowed {
