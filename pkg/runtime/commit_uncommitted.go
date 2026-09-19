@@ -55,15 +55,17 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: commit message is required")
 	}
 
-	clean, err := workdirIsClean(r.WorkDir)
+	porcelain, err := runGit(r.WorkDir, "status", "--porcelain")
 	if err != nil {
-		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w", err)
+		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w (output: %s)", err, strings.TrimSpace(porcelain))
 	}
-	if clean {
-		// "Clean" means nothing but tree noise: the operator's git status
-		// still SHOWS the drift, so the refusal must say why the gesture
-		// declines anyway — the lock is not the run's work (verdict 2).
-		if out, perr := runGit(r.WorkDir, "status", "--porcelain"); perr == nil && strings.TrimSpace(out) != "" {
+	// The probe agrees with THIS gesture's staging (verdict 5, R138690): a
+	// worktree whose only dirt is a tracked-and-modified devbox.lock is a
+	// lock-only bump the merge-destined commit carries — refusing it here
+	// left the studio's salvage action no path to bank it. Only the mirror
+	// is set aside; the wip bank keeps the fuller IsNoise probe.
+	if len(commitWorkPaths(porcelain)) == 0 {
+		if strings.TrimSpace(porcelain) != "" {
 			return fmt.Errorf("runtime: commit-uncommitted: workdir %q is dirty with tree noise only — nothing of the run's to commit (see git status)", r.WorkDir)
 		}
 		return fmt.Errorf("runtime: commit-uncommitted: workdir %q has no changes to commit", r.WorkDir)
@@ -117,6 +119,44 @@ func stageWorkArgs() []string {
 func commitStageArgs() []string {
 	args := []string{"add", "-A", "--", ":/"}
 	return append(args, treenoise.MirrorPathspec())
+}
+
+// commitWorkPaths returns the porcelain entries the OPERATOR-initiated
+// commit-and-finalize would stage: everything except the engine's own
+// mirror — a tracked-and-modified devbox.lock IS the dependency work half
+// the merge-destined commit carries (verdict 3, R5478b3). The probe must
+// agree with this gesture, not with the wip bank's (verdict 5, R138690).
+func commitWorkPaths(porcelain string) []string {
+	var out []string
+	for _, path := range porcelainPaths(porcelain) {
+		if !treenoise.IsMirror(path) {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// porcelainPaths normalizes `git status --porcelain` output into the paths
+// it reports: rename arrows cut to the destination, outer quotes stripped.
+func porcelainPaths(porcelain string) []string {
+	var out []string
+	for _, line := range strings.Split(porcelain, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := line[3:]
+		if i := strings.Index(path, " -> "); i >= 0 {
+			path = path[i+4:]
+		}
+		path = strings.TrimSpace(path)
+		if len(path) >= 2 && strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"") {
+			path = path[1 : len(path)-1]
+		}
+		if path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // runOutputPaths returns the porcelain entries that stand for work the RUN

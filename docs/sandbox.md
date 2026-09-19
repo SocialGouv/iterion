@@ -607,7 +607,9 @@ pastes into its git command, so the gates filter the tree with the engine's
 list and not with a literal of their own (#1464). The variable is set when
 the spec is built, before the container starts, and the engine's entry is
 appended only where nothing set the variable before it — the operator's
-own environment, the run's env and the node's env map each win.
+own environment, the run's env and the node's env map each win. Tool
+scripts read it UNQUOTED: the value is space-separated and must word-split
+into one pathspec per entry.
 
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus

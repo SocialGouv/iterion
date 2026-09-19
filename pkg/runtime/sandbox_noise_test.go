@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -12,6 +13,10 @@ import (
 // double-write ITERION_ARTIFACT_FILES_DIR gets. A workspace without a
 // devbox.json carries it just the same (provisioning never runs there).
 func TestSeedTreeNoiseEnvSetsThePathspecs(t *testing.T) {
+	t.Setenv(treenoise.TreeNoiseEnvVar, "")
+	if err := os.Unsetenv(treenoise.TreeNoiseEnvVar); err != nil {
+		t.Fatal(err)
+	}
 	spec := &sandbox.Spec{}
 	seedTreeNoiseEnv(spec)
 	if got := spec.Env[treenoise.TreeNoiseEnvVar]; got != treenoise.EnvValue() {

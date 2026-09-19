@@ -679,7 +679,7 @@ func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
 	if _, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set {
 		return nil
 	}
-	if _, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited {
+	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {
 		return nil
 	}
 	for _, entry := range e.runExtraEnv {

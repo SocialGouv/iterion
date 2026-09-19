@@ -62,3 +62,19 @@ func TestCommitStageArgsStageTheDependencyWork(t *testing.T) {
 		}
 	}
 }
+
+// R138690 (verdict 5): the probe must agree with THIS gesture — a
+// lock-only bump is merge-destined work here, never "tree noise only",
+// and the mirror beside it is still set aside.
+func TestCommitWorkPathsTreatALockOnlyBumpAsWork(t *testing.T) {
+	porcelain := strings.Join([]string{" M devbox.lock"}, "\n")
+	got := commitWorkPaths(porcelain)
+	if len(got) != 1 || got[0] != "devbox.lock" {
+		t.Fatalf("commitWorkPaths = %q, want [devbox.lock] — a lock-only bump is merge-destined work on this path", got)
+	}
+	porcelain = strings.Join([]string{"?? .claude/settings.json", " M devbox.lock"}, "\n")
+	got = commitWorkPaths(porcelain)
+	if len(got) != 1 || got[0] != "devbox.lock" {
+		t.Fatalf("mirror beside the lock = %q, want only the lock", got)
+	}
+}

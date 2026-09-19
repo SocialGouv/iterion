@@ -71,6 +71,14 @@ func ShellPathspecs() string {
 	return strings.Join(quoted, " ")
 }
 
+// IsMirror reports whether a `git status --porcelain` path is the engine's
+// own mirror — the ONE noise path the operator-initiated commit-and-finalize
+// keeps excluding (its commit is merge-destined; a tracked-and-modified
+// devbox.lock there is the dependency work itself, verdict 3 R5478b3).
+func IsMirror(path string) bool {
+	return path == Entries[0].Path || strings.HasPrefix(path, Entries[0].Path+"/")
+}
+
 // MirrorPathspec is the git pathspec excluding the engine's own mirror —
 // the ONE noise path the operator-initiated commit-and-finalize keeps
 // excluding when it stages merge-destined work (a tracked-and-modified

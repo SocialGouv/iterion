@@ -17,6 +17,15 @@ import (
 // pin. Both tool-node paths the host executor builds carry it: the shell
 // command and the script interpreter.
 func TestToolNodeCommandsCarryTheTreeNoiseEnvWithoutAnyProvisioning(t *testing.T) {
+	// The engine exports ITERION_TREE_NOISE to every tool process, so this
+	// suite runs with it SET whenever a bot runs `task test` here — and the
+	// executor then steps aside. Clear it for this case (t.Setenv registers
+	// the restore, os.Unsetenv makes the absence real).
+	t.Setenv(treenoise.TreeNoiseEnvVar, "")
+	if err := os.Unsetenv(treenoise.TreeNoiseEnvVar); err != nil {
+		t.Fatal(err)
+	}
+
 	e := &ClawExecutor{} // no sandbox, no artifact dir, no runExtraEnv, no devbox
 
 	cmd := e.toolNodeCommand(context.Background(), "git status --porcelain -- ':/'", nil)
@@ -121,6 +130,13 @@ func TestTreeNoiseEnvAppendYieldsToEveryPriorClaim(t *testing.T) {
 	if got := fresh.treeNoiseEnvAppend(nil); got != nil {
 		t.Fatalf("append over an operator-exported variable = %q, want nil (the operator's value wins)", got)
 	}
+	// An EMPTY export is not a claim (verdict 5): an empty exclusion list is
+	// the silent-gate failure C149 exists to name, so the canonical entry
+	// still comes.
+	t.Setenv(treenoise.TreeNoiseEnvVar, "")
+	if got := fresh.treeNoiseEnvAppend(nil); got == nil || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
+		t.Fatalf("append over an EMPTY export = %q, want the canonical entry (empty is not a claim)", got)
+	}
 }
 
 // One run, one list, whichever surface gates the tree (verdict 2,
@@ -129,6 +145,10 @@ func TestTreeNoiseEnvAppendYieldsToEveryPriorClaim(t *testing.T) {
 // appending the engine's entry after it — the same step-aside the sandbox
 // seed and the agent task do.
 func TestToolNodeCommandsStepAsideForARunOrNodeValue(t *testing.T) {
+	t.Setenv(treenoise.TreeNoiseEnvVar, "")
+	if err := os.Unsetenv(treenoise.TreeNoiseEnvVar); err != nil {
+		t.Fatal(err)
+	}
 	e := &ClawExecutor{}
 	e.SetRunExtraEnv([]string{"ITERION_TREE_NOISE=':(exclude,top)vendor'"})
 

@@ -848,7 +848,7 @@ func seedTreeNoiseEnv(spec *sandbox.Spec) {
 	// The operator's own exported environment is a claim too: one rule
 	// everywhere — their list is honored in the container, never silently
 	// replaced by the canonical one (verdict 3).
-	if value, exported := os.LookupEnv(treenoise.TreeNoiseEnvVar); exported {
+	if value, exported := os.LookupEnv(treenoise.TreeNoiseEnvVar); exported && value != "" {
 		spec.Env[treenoise.TreeNoiseEnvVar] = value
 		return
 	}
