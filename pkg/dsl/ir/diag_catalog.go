@@ -226,6 +226,17 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagContractCriterion:        {"Contract criterion or value invalid", "Name a declared port as `input.<name>` / `output.<name>`, give the evaluator a port of the type it takes and its parameters (`{min: 2}`); write a default as one JSON value of the port's type — a positive decimal, or a string — and `null` only on a nullable port."},
 	DiagContractUnknownKind:      {"Unregistered criterion kind", "Use a registered kind (`min_length`, `pattern`), or ship the evaluator with the plugin that defines the kind; until then the criterion is declared, not evaluated."},
 	DiagContractOutputOffSuccess: {"Contract output produced only on failure", "Bind the output to a node on a path to `done` — the contract lists what the bot produces on success."},
+
+	// `with:` mapping references and literals (C149–C152). The runtime
+	// resolves a mapping through `resolveRef`, which has no arm for
+	// `secrets` / `attachments` and reads `input.*` against the parent
+	// run's inputs — so a typo or a namespace mismatch resolves to nil
+	// silently. Refless literal text travels verbatim; a typed field on
+	// the destination reads it and fails SCHEMA_VALIDATION at run time.
+	DiagWithInputRefNoSchema:    {"input ref in a with: on a kind that has no input schema", "A `subbot`/`emit` `with:` has no `input:` surface, so the reference resolves against the parent's run inputs at run time — a warning, not an error, because the parent may legitimately be forwarding an undeclared payload key. If it is a launch-time value declared in this workflow's `vars:`, prefer `{{vars.<name>}}` (checked at compile time); if it is an undeclared parent payload, keep it and know that a typo lands nil silently at run time."},
+	DiagWithSecretRef:           {"secrets ref in a data mapping or compute expression", "Move the secret to an execution sink that materialises it (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body): a `with:` value, a fail `message:` or a compute `expr:` resolves the reference to nil — `pkg/dsl/expr` has no secrets resolver either."},
+	DiagWithAttachmentRef:       {"attachments ref in a data mapping or compute expression", "Move the attachment reference to an execution sink (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body): a `with:` value, a fail `message:` or a compute `expr:` resolves the reference to nil — `pkg/dsl/expr` has no attachments resolver either."},
+	DiagWithLiteralTypeMismatch: {"with: literal cannot be the target field's type", "The value is a template, so ref-less text travels verbatim as a string: emit the typed constant from a compute's `expr:` (`ok: true`, `n: 42`, `xs: [\"a\",\"b\"]`) and reference `{{outputs.<compute>.<field>}}`, or bind the value from a producer's output. Warning at every consumer — an LLM/shell/`truthy()` reads the string tolerantly; a compute expression that then passes it through to a typed output would fail SCHEMA_VALIDATION."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has

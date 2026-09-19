@@ -31,6 +31,24 @@ type refContext struct {
 	// declaration is the right place.
 	EdgeID string
 	Span   ast.Span
+	// InWith is true for a reference that lives in a data mapping — an
+	// edge `-> dst with { ... }`, a subbot node's own `with:`, an emit
+	// node's `with:`, or a `fail message:`. The runtime resolves those
+	// through `resolveMapping` / `resolveRef`, which has no arm for
+	// `secrets` / `attachments` and reads `input.*` against the
+	// parent's run inputs on a kind (subbot / emit) that has no
+	// `input:` surface. Namespaces the site cannot honour are refused
+	// (C149–C151) instead of resolving to nil at run time.
+	InWith bool
+	// InComputeExpr is true for a reference that lives inside a compute
+	// node's `expr:` block. Compute expressions run through
+	// `pkg/dsl/expr`, whose `evalNamespaces` (snapshot.go) excludes the
+	// `secrets` and `attachments` namespaces on purpose; a `{{secrets.X}}`
+	// or `{{attachments.X}}` in a compute expr therefore renders nil at
+	// evaluation time, same defect class as the mapping refusal, so C150
+	// and C151 fire there too. The check stays separate from InWith so
+	// the two positions can carry their own phrasing.
+	InComputeExpr bool
 }
 
 // refErrorf / refWarnf emit a template-reference diagnostic with the
@@ -95,6 +113,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					EdgeTo:      e.To,
 					EdgeID:      edgeID(e.From, e.To),
 					Span:        edgeSpans[e],
+					InWith:      true,
 				})
 			}
 		}
@@ -114,10 +133,14 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 	// Nothing downstream re-reads the value, so here is the only place it can
 	// be caught.
 	//
-	// The guarantee covers the namespaces the runtime resolves. `{{secrets.*}}`
-	// and `{{attachments.*}}` pass the checks below and then resolve to nil in
-	// a mapping (resolveRef has no arm for either) — that gap predates this
-	// walk, on edges, and is not closed here.
+	// The `secrets` and `attachments` namespaces do NOT resolve here:
+	// `resolveMapping` has no arm for them and `pkg/dsl/expr` excludes
+	// them from `evalNamespaces` — a reference to either renders nil
+	// silently. This walk closes that gap via the `InWith` flag below,
+	// which C150 / C151 read to refuse the reference at compile time
+	// and name the real materialisation sinks (a tool's `command:` /
+	// `script:` / `postcondition:`, a tool action's `params:` value,
+	// or a prompt body).
 	//
 	// IncludeSelf stays off: the node has produced no output yet when its own
 	// `with:` is resolved.
@@ -133,6 +156,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					NodeID:   n.NodeID(),
 					Location: fmt.Sprintf("%s node %q, with %q", n.NodeKind(), n.NodeID(), dm.Key),
 					Span:     withSpans[dm],
+					InWith:   true,
 				})
 			}
 		}
@@ -193,6 +217,12 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 				Ref:      ref,
 				NodeID:   fn.ID,
 				Location: fmt.Sprintf("fail node %q message", fn.ID),
+				// The message goes through `resolveMapping`, same as an
+				// edge/subbot/emit `with:` value: `resolveRef` has no
+				// arm for secrets or attachments there, so the reference
+				// would render to nil silently. Refuse it at compile
+				// time like a with-mapping does.
+				InWith: true,
 			})
 		}
 	}
@@ -217,9 +247,10 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					continue
 				}
 				out = append(out, refContext{
-					Ref:      ref,
-					NodeID:   cn.ID,
-					Location: fmt.Sprintf("compute node %q expr %q", cn.ID, e.Key),
+					Ref:           ref,
+					NodeID:        cn.ID,
+					Location:      fmt.Sprintf("compute node %q expr %q", cn.ID, e.Key),
+					InComputeExpr: true,
 				})
 			}
 		}
@@ -488,12 +519,33 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 }
 
 // validateSecretsRef flags a {{secrets.X}} reference whose secret X is
-// not declared in the workflow's `secrets:` block.
+// not declared in the workflow's `secrets:` block. In a data mapping —
+// an edge / subbot / emit `with:` value, or a `fail message:` — the
+// reference is refused: those all go through `resolveMapping`, and
+// `resolveRef` has no arm for the secrets namespace there. The runtime
+// materialises a secret only at an execution sink (a tool's
+// `command:`/`script:`/`postcondition:` or a prompt body). A compute
+// expression is NOT a sink — `pkg/dsl/expr` has no secrets/attachments
+// resolver either (`evalNamespaces` in expr/snapshot.go excludes them
+// explicitly). The mapping would resolve the reference to nil silently
+// — worse than the omitted key it looks like a value for.
 func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
 	name := rc.Ref.Path[0]
+	if rc.InWith {
+		c.refErrorf(rc, DiagWithSecretRef,
+			"%s: reference %s cannot travel through a data mapping — the runtime materialises secrets only at execution sinks (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body); a `with:` value or a fail `message:` resolves the reference to nil",
+			rc.Location, rc.Ref.Raw)
+		return
+	}
+	if rc.InComputeExpr {
+		c.refErrorf(rc, DiagWithSecretRef,
+			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no secrets resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the secret to an execution sink that materialises it (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",
+			rc.Location, rc.Ref.Raw)
+		return
+	}
 	secret, ok := w.Secrets[name]
 	if !ok {
 		c.refErrorf(rc, DiagUnknownSecret,
@@ -518,11 +570,30 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	}
 }
 
+// validateAttachmentsRef flags an undeclared {{attachments.X}} reference
+// or an unknown sub-field. In a data mapping — an edge / subbot / emit
+// `with:` value, or a `fail message:` — the reference is refused: same
+// rule as secrets, `resolveMapping` has no arm for the namespace and a
+// compute expression cannot resolve it either. The mapping would render
+// to nil silently. Execution sinks that DO materialise an attachment:
+// a tool's `command:`/`script:`/`postcondition:`, or a prompt body.
 func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
 	name := rc.Ref.Path[0]
+	if rc.InWith {
+		c.refErrorf(rc, DiagWithAttachmentRef,
+			"%s: reference %s cannot travel through a data mapping — the runtime materialises attachments only at execution sinks (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body); a `with:` value or a fail `message:` resolves the reference to nil",
+			rc.Location, rc.Ref.Raw)
+		return
+	}
+	if rc.InComputeExpr {
+		c.refErrorf(rc, DiagWithAttachmentRef,
+			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no attachments resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the attachment reference to an execution sink (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",
+			rc.Location, rc.Ref.Raw)
+		return
+	}
 	if _, ok := w.Attachments[name]; !ok {
 		c.refErrorf(rc, DiagUnknownAttachment,
 			"%s: reference %s targets undeclared attachment %q",
@@ -661,10 +732,36 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 }
 
 // validateNodeInputRef is C034 for prompts, tool commands, and compute
-// exprs: {{input.x}} is a field of the consuming node's input.
+// exprs: {{input.x}} is a field of the consuming node's input. On a
+// `subbot` or `emit` `with:` the node kind has NO `input:` surface —
+// the parser refuses `input:` there (`E012: unknown subbot property
+// 'input'`) — so the early return "cannot verify yet" reads as "will
+// never verify". The runtime resolves the reference against the
+// parent's run inputs, which the CLI (`--var k=v` builds a map[string]any
+// wholesale, `pkg/cli/run_inputs.go:buildRunInputs`) and the cloud
+// launch path both populate with EVERY key the operator passed —
+// declared as a var or not. So the reference is a real forwarding
+// channel for an undeclared payload key from a parent's launch input
+// into a subbot's child (which reads it as a bare `{{input.x}}` in
+// the child's own prompts/commands, or through a `vars: x: string =
+// "..."` default the parent's payload overrides). Absence of a key
+// cannot be proven at compile time — the compiler does not know the
+// launch payload — so C149 is a **warning** (philosophy: warn over
+// reject when absence isn't provable); a typo still surfaces to the
+// author, without shipping a permission that would refuse a
+// legitimate forwarding.
 func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
 	inSchema := NodeInputSchema(node)
 	if inSchema == "" {
+		if rc.InWith {
+			switch node.(type) {
+			case *SubbotNode, *EmitNode:
+				c.refWarnf(rc, DiagWithInputRefNoSchema,
+					"%s: reference %s cannot be verified — a `%s` node has no `input:` surface, so `{{input.*}}` in its `with:` resolves against the parent's run inputs at run time. If the key is a launch-time value declared in `vars:` here, use `{{vars.%s}}` (checked at compile time); if it is forwarded from an undeclared parent payload key, keep it and be aware that a typo lands nil silently at run time (suppressing the child's declared default for the mapped key).",
+					rc.Location, rc.Ref.Raw, node.NodeKind(), fieldName)
+				return
+			}
+		}
 		return
 	}
 
