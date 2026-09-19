@@ -184,6 +184,18 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	}()
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
+		// A gate replay that failed between the status flip (below) and
+		// the claim parks the run paused_waiting_human with the pause
+		// pointer ALREADY consumed by the first attempt — a plain
+		// resume would die on `LoadInteraction(runID, "")`. Consult the
+		// replay predicate here too: it re-finds the interaction,
+		// restores the pointer, and the replay re-runs through the
+		// pause path. A normal pause (pointer present) is untouched.
+		if r.Checkpoint != nil && r.Checkpoint.InteractionID == "" {
+			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
+				return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+			}
+		}
 		return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		// paused_operator resumes via the same machinery as cancelled
@@ -204,18 +216,25 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		// interaction retired) is refused by the predicate and the run
 		// re-asks. A non-empty caller --answer map (R60aa7e) is what
 		// gets recorded, correcting a stale stored answer.
-		if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
-			flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
-			defer flipCancel()
-			changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "human gate replay: reusing the recorded answer", []store.RunStatus{r.Status})
-			if ferr != nil {
-				return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
+		//
+		// A durable mission resume (expectedResumeStatus) keeps its
+		// exact-status contract: the flip below would change the status
+		// out from under claimForResume's narrowed CAS, so those skip
+		// the replay and re-ask through resumeFromFailure.
+		if e.expectedResumeStatus == "" || e.expectedResumeStatus == store.RunStatusPausedWaitingHuman {
+			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
+				flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+				changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "human gate replay: reusing the recorded answer", []store.RunStatus{r.Status})
+				flipCancel()
+				if ferr != nil {
+					return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
+				}
+				if !changed {
+					return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
+				}
+				r.Status = store.RunStatusPausedWaitingHuman
+				return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
 			}
-			if !changed {
-				return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
-			}
-			r.Status = store.RunStatusPausedWaitingHuman
-			return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
 		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	case store.RunStatusQueued:
@@ -238,7 +257,9 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 		}
 		if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
-			changed, ferr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusPausedWaitingHuman, "human gate replay: reusing the recorded answer", []store.RunStatus{r.Status})
+			flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+			changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "human gate replay: reusing the recorded answer", []store.RunStatus{r.Status})
+			flipCancel()
 			if ferr != nil {
 				return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
 			}

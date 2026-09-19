@@ -2351,11 +2351,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		engineOpts = append(engineOpts, runtime.WithExecutionContext(msg.ExecutionContext))
 	}
 	// Replay the finalization decisions the launch took. Without these
-	// the cloud pod finalises with runID (empty runName) as the branch
-	// label and skips the merge (default autoMerge=false) — a cloud
-	// resume of a run launched `--merge-into none` would silently merge
-	// anyway, and its storage branch would be named by id instead of
-	// the deterministic friendly name (#1366).
+	// the cloud pod skips the merge (default autoMerge=false) and loses
+	// the operator's `--merge-into` / `--branch-name` / merge-strategy
+	// choices — a cloud resume of a run launched `--merge-into none`
+	// would silently merge anyway (#1366). The storage branch label
+	// itself is keyed on the run ID by finalizeWorktree (the stable
+	// key), so WithRunName here feeds display surfaces (the
+	// squash-commit title), not the branch name.
 	if finalizationRun != nil {
 		if finalizationRun.Name != "" {
 			engineOpts = append(engineOpts, runtime.WithRunName(finalizationRun.Name))

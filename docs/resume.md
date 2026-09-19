@@ -471,6 +471,15 @@ third defect of #1435 and the PR #1490 gate findings Rac891d (rewind
 epoch + interaction retire), R62a836 (single transition, no
 duplicated boundary) and R60aa7e (corrected answers recorded).
 
+The predicate is also consulted on a `paused_waiting_human` run whose
+pause pointer is already consumed — the shape a gate replay lands in
+when it fails between the status flip and the claim — so that wedge
+recovers on a plain retry instead of dying on an empty interaction
+id. One carve-out: a durable mission resume
+(`expectedResumeStatus`, ADR-095) skips the replay to keep its
+exact-status CAS contract — the mission re-asks the human gate rather
+than flipping the status out from under its own claim.
+
 When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.
 

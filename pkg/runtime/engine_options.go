@@ -417,7 +417,7 @@ func WithMergeInto(target string) EngineOption {
 }
 
 // WithBranchName overrides the storage branch name for the worktree
-// finalization. The default `iterion/run/<runName>` is used when this
+// finalization. The default `iterion/run/<runID>` (the stable key, #1366) is used when this
 // is empty. The branch is always created (it is the GC guard for the
 // run's commits); on collision the engine appends a numeric suffix.
 //

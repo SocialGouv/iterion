@@ -444,3 +444,75 @@ func readEventTypes(t *testing.T, s store.RunStore, runID string) []store.EventT
 	}
 	return types
 }
+
+// TestPausedWaitingHuman_WedgedReplayRecovers pins the RVA-round-3
+// HIGH fix: a gate replay that failed between the status flip and the
+// claim parks the run paused_waiting_human with the pause pointer
+// ALREADY consumed (claimForResume's consumePausePointer ran on the
+// first attempt). A plain retry used to die on
+// `LoadInteraction(runID, "")` — the dispatch now consults the replay
+// predicate on this shape, re-finds the interaction, restores the
+// pointer and finishes through the pause path.
+//
+// Mutation: remove the InteractionID=="" predicate consult from the
+// paused_waiting_human dispatch case → Resume errors with "interaction
+// ID must not be empty" → red.
+func TestPausedWaitingHuman_WedgedReplayRecovers(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "answered_human_wedge",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-answered-wedge"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	// The WEDGED shape: status is paused_waiting_human (the flip
+	// landed) but the pointer is already consumed (the first claim
+	// ran consumePausePointer before the failure).
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+
+	eng2 := New(wf, s, newStubExecutor())
+	if err := eng2.Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("Resume on the wedged shape: %v — the dispatch must consult the replay predicate when the pointer is consumed", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun post-resume: %v", err)
+	}
+	if got.Status != store.RunStatusFinished {
+		t.Fatalf("run status = %s, want finished — the wedged replay did not recover", got.Status)
+	}
+}

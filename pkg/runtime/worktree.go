@@ -8,7 +8,7 @@
 // in place for inspection.
 //
 // On a successful run, finalizeWorktree promotes any commits the run
-// produced onto a persistent branch (default `iterion/run/<friendly>`)
+// produced onto a persistent branch (default `iterion/run/<runID>`, the stable key per #1366)
 // and best-effort fast-forwards the user's checked-out branch, then
 // removes the worktree directory. Without that promotion the commits
 // are reachable only via reflog and are eligible for GC.
@@ -309,7 +309,7 @@ type finalizeOptions struct {
 	runName string
 	runID   string
 	// branchName, when non-empty, overrides the default
-	// `iterion/run/<runName>` storage branch. Useful for landing each
+	// `iterion/run/<runID>` storage branch (the stable key, #1366). Useful for landing each
 	// run on a stable name (e.g. `feat/auto-fixes`).
 	branchName string
 	// mergeInto controls the best-effort merge target:
@@ -994,7 +994,7 @@ type DeferredMergeRequest struct {
 	// branch — see tryFastForward's guard rationale).
 	Target string
 	// BranchToMerge is the storage branch produced at finalization
-	// (e.g. "iterion/run/<friendly>"). Must point at a commit reachable
+	// (e.g. "iterion/run/<runID>"). Must point at a commit reachable
 	// from the run's FinalCommit.
 	BranchToMerge string
 	// FinalSHA is the SHA at the tip of BranchToMerge — passed in so

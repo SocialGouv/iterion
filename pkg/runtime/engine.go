@@ -180,7 +180,7 @@ type Engine struct {
 	runName                  string                               // deterministic human-friendly run label, set via WithRunName
 	source                   *store.RunSource                     // originating action metadata (dispatcher → issue ref), set via WithSource
 	mergeInto                string                               // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
+	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
 	mergeStrategy            string                               // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
 	autoMerge                bool                                 // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
 	modelOverrides           []store.RunModelOverride             // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
