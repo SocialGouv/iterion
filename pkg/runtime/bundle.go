@@ -389,8 +389,16 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			// checkout already shipped — so claiming <stem>/ would report a
 			// directory the target repo pre-populated, and any .md it planted
 			// there would ride along wherever this list is trusted. Naming the
-			// one file we wrote cannot carry a sibling.
-			owned = append(owned, filepath.Join(dest, strings.TrimSuffix(name, ".md"), "SKILL.md"))
+			// one file we wrote cannot carry a sibling. Compute the stem
+			// through skillDestDirForm so its case-insensitive strip and the
+			// owned path agree — a bare TrimSuffix leaves "Deploy.MD" ->
+			// "Deploy.MD" while mirrorFileSkill actually wrote under
+			// "Deploy/SKILL.md", handing the executor a path that never
+			// existed on disk.
+			_, ownedPath, _, dfErr := skillDestDirForm(dest, markerDir, name)
+			if dfErr == nil {
+				owned = append(owned, ownedPath)
+			}
 		}
 	}
 	if logger != nil && (mirrored > 0 || refreshed > 0 || uptodate > 0) {
