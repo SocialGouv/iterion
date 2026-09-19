@@ -78,22 +78,48 @@ func TestBuildTaskCarriesTheTreeNoiseEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "extraTreeNoiseEnv(e.runExtraEnv)") {
+	if !strings.Contains(string(src), "treeNoiseEnvAppend(nil)") {
 		t.Fatalf("executor_build_task.go no longer wires the tree-noise env into Task.ExtraEnv — an agent's own bash loses the list on an unsandboxed run")
 	}
 }
 
-// The agent-task append steps aside when the run's own env already carries
-// the variable (plan review round 2, F2): an operator or a workflow that set
-// ITERION_TREE_NOISE themselves wins on the agent path, the same rule the
-// sandbox seed follows.
-func TestExtraTreeNoiseEnvStepsAsideForARunValue(t *testing.T) {
-	if got := extraTreeNoiseEnv([]string{"ITERION_TREE_NOISE=':(exclude,top)vendor'"}); got != nil {
-		t.Fatalf("extraTreeNoiseEnv over a run-set variable = %q, want nil (the run's value wins)", got)
+// The append yields to every prior claim on the variable (verdicts 2-3):
+// the node's env map, the run's env, and the operator's own exported
+// environment each win — nothing is appended, and the child inherits their
+// value unchanged.
+func TestTreeNoiseEnvAppendYieldsToEveryPriorClaim(t *testing.T) {
+	// An operator who exported the variable themselves must not find the
+	// suite red on their own shell: skip this executor's canonical case
+	// (and the operator-claim case below) when the ambient environment
+	// already carries it.
+	if _, exported := os.LookupEnv(treenoise.TreeNoiseEnvVar); exported {
+		t.Skipf("%s is set in the ambient environment — the canonical-entry and operator-claim cases need it absent", treenoise.TreeNoiseEnvVar)
 	}
-	got := extraTreeNoiseEnv([]string{"PATH=/devbox/bin"})
+
+	// No prior claim: the canonical entry. FIRST, before any t.Setenv —
+	// which would otherwise shadow the rest of the test.
+	fresh := &ClawExecutor{}
+	got := fresh.treeNoiseEnvAppend(nil)
 	if len(got) != 1 || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
-		t.Fatalf("extraTreeNoiseEnv without a run value = %q, want exactly the canonical entry", got)
+		t.Fatalf("treeNoiseEnvAppend without any prior claim = %q, want exactly the canonical entry", got)
+	}
+
+	// The run's env claims it.
+	e := &ClawExecutor{}
+	e.SetRunExtraEnv([]string{"ITERION_TREE_NOISE=':(exclude,top)run'"})
+	if got := e.treeNoiseEnvAppend(map[string]string{}); got != nil {
+		t.Fatalf("append over a run-set variable = %q, want nil (the run's value wins)", got)
+	}
+	// The node's env map claims it.
+	if got := e.treeNoiseEnvAppend(map[string]string{treenoise.TreeNoiseEnvVar: "':(exclude,top)node'"}); got != nil {
+		t.Fatalf("append over a node-set variable = %q, want nil (the node's value wins)", got)
+	}
+	// The operator's own exported environment claims it (t.Setenv holds to
+	// the end of the test, so this case stays last) — on a FRESH executor,
+	// so the run-set value from the earlier case cannot mask the claim.
+	t.Setenv(treenoise.TreeNoiseEnvVar, "':(exclude,top)operator'")
+	if got := fresh.treeNoiseEnvAppend(nil); got != nil {
+		t.Fatalf("append over an operator-exported variable = %q, want nil (the operator's value wins)", got)
 	}
 }
 
@@ -115,9 +141,9 @@ func TestToolNodeCommandsStepAsideForARunOrNodeValue(t *testing.T) {
 	nodeEnv := map[string]string{treenoise.TreeNoiseEnvVar: "':(exclude,top)node'"}
 	cmd = e.toolNodeCommand(context.Background(), "true", nodeEnv)
 	entries = envEntries(cmd.Env, "ITERION_TREE_NOISE")
-	// The node's env map is appended after the run's env, and the child
-	// dedups last-wins — what matters is that the most specific value is
-	// the one the child sees, not that the argv carries one entry.
+	// The node's env map is appended after the run's env, and the CHILD's
+	// env dedups last-wins (bash and every interpreter here) — what
+	// matters is that the most specific value is the one the child sees.
 	if len(entries) == 0 || entries[len(entries)-1] != "':(exclude,top)node'" {
 		t.Fatalf("shell command with a node-env value = %q, want the node's value last", entries)
 	}

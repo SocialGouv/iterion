@@ -658,15 +658,36 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 		}
 	}
 	// The canonical tree-noise pathspecs, engine-owned: a run without a
-	// devbox.json carries them just the same (#1464) — but the run's own
-	// env wins when it set the variable itself, as everywhere else
-	// (verdict 2, R05b122).
-	cmd.Env = append(cmd.Env, extraTreeNoiseEnv(e.runExtraEnv)...)
+	// devbox.json carries them just the same (#1464) — but the operator,
+	// the run or the node wins when they set the variable themselves, as
+	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(nil)...)
 
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
 	return cmd
+}
+
+// treeNoiseEnvAppend returns the ITERION_TREE_NOISE entry to append to a
+// host tool command's environment: the canonical list — unless the
+// variable is already set by the node's env map (MaterializeShellEnv's
+// output; no DSL surface carries this name), the run's env, or the
+// operator's own environment, in which case nothing is appended: an
+// explicit choice is never silently replaced (verdicts 2-3, #1464).
+func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
+	if _, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set {
+		return nil
+	}
+	if _, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited {
+		return nil
+	}
+	for _, entry := range e.runExtraEnv {
+		if strings.HasPrefix(entry, treenoise.TreeNoiseEnvVar+"=") {
+			return nil
+		}
+	}
+	return []string{treenoise.TreeNoiseEnvVar + "=" + treenoise.EnvValue()}
 }
 
 // toolNodeCommand returns a configured *exec.Cmd for a tool node's
@@ -736,13 +757,10 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	// The canonical tree-noise pathspecs, engine-owned: a run without a
-	// devbox.json carries them just the same (#1464) — but an operator or a
-	// workflow that set the variable themselves wins, as on the sandbox seed
-	// and the agent task (verdict 2, R05b122: one run, one list, whichever
-	// surface gates the tree).
-	if _, set := env[treenoise.TreeNoiseEnvVar]; !set {
-		cmd.Env = append(cmd.Env, extraTreeNoiseEnv(e.runExtraEnv)...)
-	}
+	// devbox.json carries them just the same (#1464) — but the operator,
+	// the run or the node wins when they set the variable themselves, as
+	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}

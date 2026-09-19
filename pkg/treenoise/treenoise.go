@@ -71,6 +71,15 @@ func ShellPathspecs() string {
 	return strings.Join(quoted, " ")
 }
 
+// MirrorPathspec is the git pathspec excluding the engine's own mirror —
+// the ONE noise path the operator-initiated commit-and-finalize keeps
+// excluding when it stages merge-destined work (a tracked-and-modified
+// devbox.lock there is the dependency work itself, not engine noise —
+// verdict 3, R5478b3). Derived from Entries, like every shape.
+func MirrorPathspec() string {
+	return ":(exclude,top)" + Entries[0].Path
+}
+
 // EnvValue is the form tool scripts read from ITERION_TREE_NOISE: the
 // pathspecs separated by single spaces, split with strings.Fields on the
 // consumer side. Every entry is space-free by construction (asserted), so

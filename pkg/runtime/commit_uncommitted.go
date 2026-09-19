@@ -69,7 +69,7 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: workdir %q has no changes to commit", r.WorkDir)
 	}
 
-	if err := runGitInDir(r.WorkDir, stageWorkArgs()...); err != nil {
+	if err := runGitInDir(r.WorkDir, commitStageArgs()...); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git add: %w", err)
 	}
 	if out, err := gitCommitMessage(r.WorkDir, message); err != nil {
@@ -95,13 +95,28 @@ func workdirIsClean(workdir string) (bool, error) {
 
 // stageWorkArgs stages the whole tree EXCEPT the canonical tree noise
 // (pkg/treenoise): the `.claude/` mirror and a drifted devbox.lock are not
-// the pass's work, and the staging gesture must agree with the probe
-// (workdirIsClean) that decides whether anything needs staging at all —
-// the two used to disagree, banking the mirror into a wip commit the
-// moment anything real was dirty (#1364, #1464).
+// the pass's work, and the WIP BANK's staging gesture agrees with the probe
+// (workdirIsClean) — never merged, the lock is derivable from devbox.json.
+// The operator-initiated commit-and-finalize deliberately disagrees: its
+// commit is merge-destined, so it stages a tracked-and-modified lock (see
+// commitStageArgs).
 func stageWorkArgs() []string {
 	args := []string{"add", "-A", "--", ":/"}
 	return append(args, treenoise.Pathspecs()...)
+}
+
+// commitStageArgs stages the tree for the OPERATOR-initiated commit-and-
+// finalize: the `.claude/` mirror stays excluded (iterion wrote it, the run
+// did not — deliverables under it are staged by name), but a
+// tracked-and-modified devbox.lock is STAGED here, not dropped: this
+// commit is merge-destined, and a dependency bot's lock bump is half its
+// deliverable — dropping it would merge devbox.json without its
+// resolution and destroy the bump with the worktree (verdict 3, R5478b3).
+// The wip bank keeps the fuller exclusion: it is never merged, and the
+// lock is derivable from devbox.json.
+func commitStageArgs() []string {
+	args := []string{"add", "-A", "--", ":/"}
+	return append(args, treenoise.MirrorPathspec())
 }
 
 // runOutputPaths returns the porcelain entries that stand for work the RUN

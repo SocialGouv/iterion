@@ -17,23 +17,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/treenoise"
 	"github.com/google/uuid"
 )
-
-// extraTreeNoiseEnv returns the canonical tree-noise entry for an agent
-// task's environment, unless the run's own env already carries the
-// variable — an operator or a workflow that set it themselves wins on every
-// surface where the engine APPENDS rather than seeds (#1464).
-func extraTreeNoiseEnv(runExtraEnv []string) []string {
-	prefix := treenoise.TreeNoiseEnvVar + "="
-	for _, entry := range runExtraEnv {
-		if strings.HasPrefix(entry, prefix) {
-			return nil
-		}
-	}
-	return []string{treenoise.TreeNoiseEnvVar + "=" + treenoise.EnvValue()}
-}
 
 // backendFields holds the common fields extracted from AgentNode or JudgeNode
 // for the executeBackend unified path.
@@ -1025,7 +1010,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
 		WorkDir:               e.workDir,
-		ExtraEnv:              append(e.runExtraEnv, extraTreeNoiseEnv(e.runExtraEnv)...),
+		ExtraEnv:              append(e.runExtraEnv, e.treeNoiseEnvAppend(nil)...),
 		ReasoningEffort:       wireEffort(effort),
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,

@@ -70,6 +70,23 @@ func TestStageWorkArgsCarryTheTreeNoisePathspecs(t *testing.T) {
 	}
 }
 
+// The operator-initiated commit-and-finalize is merge-destined (verdict 3,
+// R5478b3): a tracked-and-modified devbox.lock is the dependency work half
+// the commit carries, so the gesture excludes ONLY the mirror — the wip
+// bank keeps the fuller list, this path does not.
+func TestCommitStageArgsExcludeOnlyTheMirror(t *testing.T) {
+	got := commitStageArgs()
+	want := []string{"add", "-A", "--", ":/", ":(exclude,top).claude"}
+	if len(got) != len(want) {
+		t.Fatalf("commitStageArgs() = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("commitStageArgs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // End to end, on the real finalize path: a worktree whose dirt is the
 // engine's mirror, a drifted lock and ONE real file banks the real file
 // only — the wip commit the operator is shown never carries tree noise.

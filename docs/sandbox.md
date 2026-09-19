@@ -605,9 +605,9 @@ node's own environment — also receives `ITERION_TREE_NOISE`: the canonical
 tree-noise pathspecs (pkg/treenoise) a scope gate or a whole-tree staging
 pastes into its git command, so the gates filter the tree with the engine's
 list and not with a literal of their own (#1464). The variable is set when
-the spec is built, before the container starts; in the container an
-operator or a workflow that sets it themselves wins, while on host tool
-commands the engine's entry is appended last and covers a pre-set value.
+the spec is built, before the container starts, and the engine's entry is
+appended only where nothing set the variable before it — the operator's
+own environment, the run's env and the node's env map each win.
 
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus

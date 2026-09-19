@@ -29,6 +29,18 @@ func TestSeedTreeNoiseEnvStepsAsideForAnOperatorValue(t *testing.T) {
 	}
 }
 
+// The operator's own EXPORTED environment (before `iterion run`) is the
+// same claim: their list is honored IN the container — one rule on every
+// surface (verdict 3). t.Setenv holds to the end of the test.
+func TestSeedTreeNoiseEnvHonorsAnOperatorExportedValue(t *testing.T) {
+	t.Setenv(treenoise.TreeNoiseEnvVar, "':(exclude,top)operator'")
+	spec := &sandbox.Spec{}
+	seedTreeNoiseEnv(spec)
+	if got := spec.Env[treenoise.TreeNoiseEnvVar]; got != "':(exclude,top)operator'" {
+		t.Fatalf("spec.Env[%q] = %q, want the operator's exported value honored", treenoise.TreeNoiseEnvVar, got)
+	}
+}
+
 // A nil Env map must not panic — the spec may arrive with no env at all.
 func TestSeedTreeNoiseEnvCreatesTheMap(t *testing.T) {
 	spec := &sandbox.Spec{}
