@@ -182,6 +182,30 @@ var streamEditors = map[string]bool{"sed": true, "perl": true, "ruby": true}
 // JSON input as the event stream recorded it (`data.input`). An empty or
 // unparseable input on a shell-shaped tool yields ClassUnknown: a shell
 // call whose command we cannot read is not evidence of anything.
+// UnnamedVerb returns the verb of the FIRST segment a chain could not
+// name — the entry the table is actually missing.
+//
+// ShellVerb answers with the chain's head, which for `grep -q x && <a
+// verb nobody knows>` is `grep`: a verb the table already names, listed
+// as its own to-do. The chain's textual order is the command's own, so
+// "first" here is a fact about the line and not about an arrival order.
+// Empty for a tool that is not shell-shaped, or when no segment is the
+// unnamed one.
+func UnnamedVerb(toolName string, rawInput []byte) string {
+	if !shellTools[normaliseTool(toolName)] {
+		return ""
+	}
+	for _, seg := range splitSegments(stripHeredocBodies(shellCommand(rawInput))) {
+		if strings.TrimSpace(seg) == "" {
+			continue
+		}
+		if classifySegment(seg) == ClassUnknown {
+			return verbOf(seg)
+		}
+	}
+	return ""
+}
+
 func Classify(toolName string, rawInput []byte) Class {
 	name := normaliseTool(toolName)
 	if shellTools[name] {
@@ -210,9 +234,7 @@ func classifyCommand(cmd string) Class {
 	}
 	// A heredoc body is DATA, not command text. Scanning it finds `>` in
 	// a python comparison and calls the whole call a file write.
-	if i := strings.Index(cmd, "<<"); i >= 0 {
-		cmd = cmd[:i]
-	}
+	cmd = stripHeredocBodies(cmd)
 	best := ClassOther
 	sawSegment := false
 	for _, seg := range splitSegments(cmd) {
@@ -510,36 +532,202 @@ func isIdentifierRune(r rune) bool {
 // `2>&1` (a descriptor dup) and `>/dev/null` (the bit bucket) are not
 // writes anyone measures; everything else that follows `>` or `>>` is a
 // path the command creates or truncates.
+//
+// The scan walks the segment itself, tracking quotes as it goes, rather
+// than scanning its `unquoted()` form: that form blanks the quoted span,
+// so a quoted TARGET (`cat > "/home/jo/notes.md"`) left nothing to read
+// and a file write classified as a read. Reading the target here also
+// keeps `cmd > "path" 2>&1` honest — scanning the blanked form skipped
+// past the target and took `2>&1` for it, reaching the right verdict by
+// the wrong route.
 func writesViaRedirect(seg string) bool {
-	cmd := unquoted(seg)
-	for i := 0; i < len(cmd); i++ {
-		if cmd[i] != '>' {
+	var quote byte
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			continue
+		}
+		if c != '>' {
 			continue
 		}
 		// `->`, `>=`, `<…>`: an operator or a template, not a redirection.
-		if i > 0 && (cmd[i-1] == '-' || cmd[i-1] == '=' || cmd[i-1] == '<') {
+		if i > 0 && (seg[i-1] == '-' || seg[i-1] == '=' || seg[i-1] == '<') {
 			continue
 		}
-		rest := strings.TrimLeft(cmd[i+1:], ">")
-		if strings.HasPrefix(rest, "=") {
+		j := i + 1
+		for j < len(seg) && seg[j] == '>' {
+			j++
+		}
+		if j < len(seg) && seg[j] == '=' {
 			continue // `>=`
 		}
-		rest = strings.TrimLeft(rest, " \t")
-		if strings.HasPrefix(rest, "&") {
+		for j < len(seg) && (seg[j] == ' ' || seg[j] == '\t') {
+			j++
+		}
+		if j < len(seg) && seg[j] == '&' {
 			continue // a descriptor dup: `>&1`, `2>&1`
 		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
+		target := readWord(seg[j:])
+		if target == "" {
 			continue // a trailing `>` with nothing after it
 		}
 		// cleanWord, not a quote strip: `2>/dev/null; echo x` yields the
 		// target `/dev/null;`, which compared unequal to /dev/null and
 		// turned 219 reads in the operator's store into writes.
-		if target := cleanWord(fields[0]); target != "/dev/null" {
+		if cleanWord(target) != "/dev/null" {
 			return true
 		}
 	}
 	return false
+}
+
+// stripHeredocBodies removes every heredoc's DATA while keeping the
+// command text around it. Cutting the line at the first `<<` instead
+// threw away the terminator and everything past it, so 23 chained writes
+// in the operator's store — `python3 - <<'PY' … PY` scripts followed by
+// the command that did the writing — read as unnamed.
+//
+// The opener token goes with its body: left in place it would be found
+// again on the next pass, and `<<TERM` is not command text either.
+func stripHeredocBodies(cmd string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(cmd) {
+		j := nextHeredocOpener(cmd, i)
+		if j < 0 {
+			b.WriteString(cmd[i:])
+			break
+		}
+		b.WriteString(cmd[i:j])
+		delim, afterOpener := readHeredocDelim(cmd, j)
+		if delim == "" {
+			b.WriteString(cmd[j : j+2]) // a bare `<<`: nothing to follow
+			i = j + 2
+			continue
+		}
+		nl := strings.IndexByte(cmd[afterOpener:], '\n')
+		if nl < 0 {
+			b.WriteString(cmd[afterOpener:]) // the opener ends the text
+			break
+		}
+		// The rest of the opener's own line is command text: `cat <<EOF > f`
+		// redirects, and the redirect sits after the delimiter.
+		b.WriteString(cmd[afterOpener : afterOpener+nl+1])
+		i = skipHeredocBody(cmd, afterOpener+nl+1, delim)
+	}
+	return b.String()
+}
+
+// nextHeredocOpener returns the index of the next `<<` that opens a
+// heredoc, stepping over `<<<` — a here-string, whose operand is a word
+// on the same line and not a body.
+func nextHeredocOpener(s string, from int) int {
+	for i := from; i+1 < len(s); i++ {
+		if s[i] != '<' || s[i+1] != '<' {
+			continue
+		}
+		if i+2 < len(s) && s[i+2] == '<' {
+			i += 2
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// readHeredocDelim reads the delimiter of the opener at i and returns it
+// with the index just past it. `<<-`, `<<'EOF'` and `<<"EOF"` name the
+// same delimiter; the quoting decides whether the body is expanded, which
+// is no business of a classifier.
+func readHeredocDelim(s string, i int) (string, int) {
+	j := i + 2
+	if j < len(s) && s[j] == '-' {
+		j++
+	}
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	start := j
+	var quote byte
+	var b strings.Builder
+	for ; j < len(s); j++ {
+		c := s[j]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+				continue
+			}
+			b.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case ' ', '\t', '\n', ';', '|', '&', '>', '<':
+			if b.Len() == 0 {
+				return "", start
+			}
+			return b.String(), j
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if b.Len() == 0 {
+		return "", start
+	}
+	return b.String(), j
+}
+
+// skipHeredocBody returns the index just past the line that terminates
+// the body, or the end of the text when the terminator never comes.
+func skipHeredocBody(s string, start int, delim string) int {
+	for i := start; i < len(s); {
+		var line string
+		var next int
+		if end := strings.IndexByte(s[i:], '\n'); end < 0 {
+			line, next = s[i:], len(s)
+		} else {
+			line, next = s[i:i+end], i+end+1
+		}
+		if strings.TrimSpace(line) == delim {
+			return next
+		}
+		i = next
+	}
+	return len(s)
+}
+
+// readWord reads one shell word, honouring quotes and returning it with
+// the quotes removed. A quoted word may contain spaces, which is why the
+// redirect scan cannot reach for `strings.Fields`.
+func readWord(s string) string {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+				continue
+			}
+			b.WriteByte(c)
+		case c == '\'' || c == '"':
+			quote = c
+		case c == ' ' || c == '\t' || c == '\n':
+			return b.String()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // hasInPlaceFlag reports whether a stream editor was handed -i, in any of

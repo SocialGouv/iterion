@@ -150,16 +150,17 @@ func RunBenchDiscovery(opts BenchDiscoveryOptions, p *Printer) error {
 
 	ids := opts.Runs
 	var unreadable []string
+	// undated is a different population from unreadable and is reported
+	// apart: these runs are anywhere in the store, and because their
+	// metadata would not load, nobody knows their date — so nobody can
+	// say whether they belonged in the requested window. Calling them
+	// "requested and excluded" asserts a fact the selector never had.
+	var undated []string
 	if len(ids) == 0 {
-		var skipped []string
-		ids, skipped, err = recentRunIDs(ctx, s, opts.Last)
+		ids, undated, err = recentRunIDs(ctx, s, opts.Last)
 		if err != nil {
 			return err
 		}
-		// A run the selector could not load never reaches the parse loop,
-		// so it would vanish from the corpus without a word. It is folded
-		// in here instead.
-		unreadable = append(unreadable, skipped...)
 	}
 
 	profiles := make([]*discovery.RunProfile, 0, len(ids))
@@ -185,7 +186,8 @@ func RunBenchDiscovery(opts BenchDiscoveryOptions, p *Printer) error {
 			Corpus     discovery.Corpus        `json:"corpus"`
 			Runs       []*discovery.RunProfile `json:"runs"`
 			Unreadable []string                `json:"unreadable,omitempty"`
-		}{corpus, profiles, unreadable})
+			Undated    []string                `json:"undated,omitempty"`
+		}{corpus, profiles, unreadable, undated})
 		return nil
 	}
 
@@ -198,6 +200,11 @@ func RunBenchDiscovery(opts BenchDiscoveryOptions, p *Printer) error {
 	if len(unreadable) > 0 {
 		md += fmt.Sprintf("\n%d requested run(s) could not be read and are excluded: %s\n",
 			len(unreadable), strings.Join(unreadable, ", "))
+	}
+	if len(undated) > 0 {
+		md += fmt.Sprintf("\n%d run(s) in the store carry no readable metadata, so the selector "+
+			"could not date them and cannot say whether they belonged in this window: %s\n",
+			len(undated), strings.Join(undated, ", "))
 	}
 
 	if opts.Output == "" || opts.Output == "-" {

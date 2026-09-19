@@ -51,6 +51,19 @@ type Corpus struct {
 	InputBytes  int   `json:"input_bytes"`
 	OutputBytes int   `json:"output_bytes"`
 	DurationMs  int64 `json:"duration_ms"`
+	ElapsedMs   int64 `json:"elapsed_ms"`
+	// Every sum above carries the count of calls that contributed one.
+	// Without them, `DurationMs` reads as the corpus's tool time when it
+	// is the tool time of the 6 % of calls a backend bothered to time —
+	// a figure this report published, wrong by 6.7×.
+	CallsWithInput    int `json:"calls_with_input"`
+	CallsWithOutput   int `json:"calls_with_output"`
+	CallsWithDuration int `json:"calls_with_duration"`
+	CallsWithElapsed  int `json:"calls_with_elapsed"`
+	// CompletionsWithoutStart is what the per-node dedup discarded. It is
+	// the engine's duplicate emissions while every start is present, and
+	// silently-dropped real calls the moment one is not.
+	CompletionsWithoutStart int `json:"completions_without_start"`
 
 	// TopVerbs ranks the shell verbs seen; UnknownVerbs ranks the subset
 	// the table could not name, which is the list that says what the
@@ -73,6 +86,7 @@ func Aggregate(profiles []*RunProfile) Corpus {
 		}
 		c.Runs++
 		c.StartedNotFinished += p.StartedNotFinished
+		c.CompletionsWithoutStart += p.CompletionsWithoutStart
 		if len(p.Nodes) > 0 {
 			hadCalls := false
 			for _, n := range p.Nodes {
@@ -92,6 +106,11 @@ func Aggregate(profiles []*RunProfile) Corpus {
 			c.InputBytes += n.InputBytes
 			c.OutputBytes += n.OutputBytes
 			c.DurationMs += n.DurationMs
+			c.ElapsedMs += n.ElapsedMs
+			c.CallsWithInput += n.CallsWithInput
+			c.CallsWithOutput += n.CallsWithOutput
+			c.CallsWithDuration += n.CallsWithDuration
+			c.CallsWithElapsed += n.CallsWithElapsed
 			for k, v := range n.ByClass {
 				c.ByClass[k] += v
 			}
@@ -198,8 +217,35 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 		fmt.Fprintf(&b, "| %s | %d | %d |\n", k, c.ByClass[k], c.BeforeMutation[k])
 	}
 	fmt.Fprintf(&b, "| **total** | **%d** | **%d** |\n\n", c.Calls, c.CallsBeforeMutation)
-	fmt.Fprintf(&b, "Bytes pulled in by tool inputs: %s · returned by outputs: %s · tool wall time: %s.\n\n",
-		humanBytes(c.InputBytes), humanBytes(c.OutputBytes), (time.Duration(c.DurationMs) * time.Millisecond).Round(time.Second))
+	cov := func(n int) string {
+		if c.Calls == 0 {
+			return "no calls"
+		}
+		return fmt.Sprintf("%d of %d calls", n, c.Calls)
+	}
+	dur := func(ms int64) string {
+		return (time.Duration(ms) * time.Millisecond).Round(time.Second).String()
+	}
+	fmt.Fprintf(&b, "Bytes pulled in by tool inputs: %s — %s · returned by outputs: %s — %s.\n\n",
+		humanBytes(c.InputBytes), cov(c.CallsWithInput),
+		humanBytes(c.OutputBytes), cov(c.CallsWithOutput))
+
+	// Two instruments, two lines, never one number. The backend times
+	// its own `tool` nodes and nothing else — the streaming path builds
+	// its call info without a duration at all — while the event stream
+	// times every call from its own two timestamps. Adding them would
+	// sum a measurement to an absence, and publishing only the first
+	// labelled "tool wall time" understated this corpus by 6.7×.
+	fmt.Fprintf(&b, "Tool time, backend-measured: %s — %s · event-stream elapsed: %s — %s.\n\n",
+		dur(c.DurationMs), cov(c.CallsWithDuration),
+		dur(c.ElapsedMs), cov(c.CallsWithElapsed))
+
+	if c.CompletionsWithoutStart > 0 {
+		fmt.Fprintf(&b, "Completions with no open start: %d — the engine emits two per `tool` "+
+			"node and the second is dropped. A number larger than the `tool`-node call count "+
+			"would mean starts went missing and real calls were discarded with them.\n\n",
+			c.CompletionsWithoutStart)
+	}
 
 	b.WriteString("## Tokens, where they can be attributed\n\n")
 	att := c.AttributableTokens()

@@ -5,19 +5,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ToolCall is one completed tool invocation, classified.
 type ToolCall struct {
-	Tool        string `json:"tool"`
-	Class       Class  `json:"class"`
-	Verb        string `json:"verb,omitempty"` // shell-shaped tools only
+	Tool  string `json:"tool"`
+	Class Class  `json:"class"`
+	Verb  string `json:"verb,omitempty"` // shell-shaped tools only
+	// UnnamedVerb is the verb of the first segment the table could not
+	// name. It differs from Verb whenever a chain's head IS named and a
+	// later segment is not — `grep -q x && <unnamed>` — and it is the
+	// one a to-do list has to carry.
+	UnnamedVerb string `json:"unnamed_verb,omitempty"`
 	InputBytes  int    `json:"input_bytes"`
 	OutputBytes int    `json:"output_bytes"`
 	DurationMs  int64  `json:"duration_ms"`
-	Failed      bool   `json:"failed,omitempty"`
+	// ElapsedMs is the call's real elapsed time, taken from the gap
+	// between its own two events. DurationMs is what the BACKEND
+	// measured, and most backends measure nothing — the two are
+	// different instruments and are never summed together.
+	ElapsedMs int64 `json:"elapsed_ms"`
+	// Each Known flag is set by the reader that saw the field, never
+	// derived from the value: a no-argument tool records a real zero
+	// input size, and a zero that means "unmeasured" summed next to it
+	// is how a total becomes a fiction.
+	InputKnown    bool `json:"input_known"`
+	OutputKnown   bool `json:"output_known"`
+	DurationKnown bool `json:"duration_known"`
+	ElapsedKnown  bool `json:"elapsed_known"`
+	Failed        bool `json:"failed,omitempty"`
 }
 
 // NodeProfile is one node's tool activity plus whatever token spend the
@@ -39,8 +58,16 @@ type NodeProfile struct {
 	InputBytes          int           `json:"input_bytes"`
 	OutputBytes         int           `json:"output_bytes"`
 	DurationMs          int64         `json:"duration_ms"`
-	Tokens              int           `json:"tokens"`
-	TokensKnown         bool          `json:"tokens_known"`
+	ElapsedMs           int64         `json:"elapsed_ms"`
+	// Every summed numeric carries the count of calls that actually
+	// contributed one. A sum without its denominator reads as a
+	// measurement of every call, and on duration that was wrong by 6.7×.
+	CallsWithInput    int  `json:"calls_with_input"`
+	CallsWithOutput   int  `json:"calls_with_output"`
+	CallsWithDuration int  `json:"calls_with_duration"`
+	CallsWithElapsed  int  `json:"calls_with_elapsed"`
+	Tokens            int  `json:"tokens"`
+	TokensKnown       bool `json:"tokens_known"`
 	// Verbs counts the shell verbs this node ran; UnknownVerbs counts the
 	// subset the table could not name. The second is the actionable one:
 	// a verb high in that ranking is the table's next entry, and its size
@@ -60,6 +87,14 @@ type RunProfile struct {
 	// completed (a killed run, a cancelled node). They are excluded
 	// from every other count and reported so the gap is visible.
 	StartedNotFinished int `json:"started_not_finished"`
+	// CompletionsWithoutStart is the mirror case, and it is the one the
+	// dedup rides on: a completion with no open start is dropped as the
+	// engine's duplicate. That reading is only true while every start is
+	// present. If a truncated stream or a resume ever loses starts, real
+	// calls are discarded here and the corpus totals slide DOWNWARD
+	// while still looking like a measurement — so the count is published
+	// rather than left to be inferred from a total that shrank.
+	CompletionsWithoutStart int `json:"completions_without_start"`
 }
 
 // ParseRun reads one run's event stream and turn checkpoints and returns
@@ -81,6 +116,8 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 		tool       string
 		input      []byte
 		inputBytes int
+		inputKnown bool
+		started    time.Time
 	}
 	var (
 		open = map[string]pending{} // tool_use_id → what tool_started saw
@@ -127,7 +164,12 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 
 		case store.EventToolStarted:
 			tool, _ := evt.Data["tool"].(string)
-			p := pending{tool: tool, input: rawInput(evt.Data), inputBytes: intField(evt.Data, "input_size")}
+			startBytes, startKnown := intFieldPresent(evt.Data, "input_size")
+			p := pending{
+				tool: tool, input: rawInput(evt.Data),
+				inputBytes: startBytes, inputKnown: startKnown,
+				started: evt.Timestamp,
+			}
 			if id, _ := evt.Data["tool_use_id"].(string); id != "" {
 				open[id] = p
 				continue
@@ -139,7 +181,8 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 			n := node(evt.NodeID)
 			tool, _ := evt.Data["tool"].(string)
 			input := rawInput(evt.Data)
-			inputBytes := intField(evt.Data, "input_size")
+			inputBytes, inputKnown := intFieldPresent(evt.Data, "input_size")
+			var started time.Time
 
 			if id, _ := evt.Data["tool_use_id"].(string); id != "" {
 				if p, ok := open[id]; ok {
@@ -150,9 +193,14 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 						input = p.input
 					}
 					if p.inputBytes > inputBytes {
-						inputBytes = p.inputBytes
+						inputBytes, inputKnown = p.inputBytes, p.inputKnown
+					} else if !inputKnown {
+						inputKnown = p.inputKnown
 					}
+					started = p.started
 					delete(open, id)
+				} else {
+					prof.CompletionsWithoutStart++
 				}
 			} else {
 				// One completion per start. A second completion for the
@@ -161,6 +209,7 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 				key := nodeKey(evt.NodeID, tool)
 				queue := nodeOpen[key]
 				if len(queue) == 0 {
+					prof.CompletionsWithoutStart++
 					continue
 				}
 				p := queue[0]
@@ -172,18 +221,51 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 				// completions reports 0, and taking the larger keeps the
 				// bytes-pulled-in line true whichever arrives first.
 				if p.inputBytes > inputBytes {
-					inputBytes = p.inputBytes
+					inputBytes, inputKnown = p.inputBytes, p.inputKnown
+				} else if !inputKnown {
+					inputKnown = p.inputKnown
+				}
+				started = p.started
+			}
+
+			outBytes, outKnown := outputBytesPresent(evt.Data)
+			durationMs, durationPresent := intFieldPresent(evt.Data, "duration_ms")
+			// Presence cannot separate "fast" from "unmeasured" here: the
+			// streaming path writes the key with a zero rather than
+			// omitting it (`pkg/backend/model/executor.go` builds its
+			// LLMToolCallInfo without a Duration), so 94 % of calls carry
+			// a zero nobody measured. A real tool call cannot take 0 ms,
+			// which makes `> 0` the honest proxy on THIS field — and only
+			// on this one, which is why it is not the shared rule.
+			durationKnown := durationPresent && durationMs > 0
+
+			var elapsedMs int64
+			elapsedKnown := !started.IsZero() && !evt.Timestamp.IsZero()
+			if elapsedKnown {
+				if d := evt.Timestamp.Sub(started); d >= 0 {
+					elapsedMs = d.Milliseconds()
+				} else {
+					elapsedKnown = false
 				}
 			}
 
+			cls := Classify(tool, input)
 			call := ToolCall{
-				Tool:        tool,
-				Class:       Classify(tool, input),
-				Verb:        ShellVerb(input),
-				InputBytes:  inputBytes,
-				OutputBytes: outputBytes(evt.Data),
-				DurationMs:  int64(intField(evt.Data, "duration_ms")),
-				Failed:      evt.Type == store.EventToolError,
+				Tool:          tool,
+				Class:         cls,
+				Verb:          ShellVerb(input),
+				InputBytes:    inputBytes,
+				OutputBytes:   outBytes,
+				DurationMs:    int64(durationMs),
+				ElapsedMs:     elapsedMs,
+				InputKnown:    inputKnown,
+				OutputKnown:   outKnown,
+				DurationKnown: durationKnown,
+				ElapsedKnown:  elapsedKnown,
+				Failed:        evt.Type == store.EventToolError,
+			}
+			if cls == ClassUnknown {
+				call.UnnamedVerb = UnnamedVerb(tool, input)
 			}
 			n.record(call)
 		}
@@ -215,16 +297,33 @@ func (n *NodeProfile) record(c ToolCall) {
 			n.Verbs = map[string]int{}
 		}
 		n.Verbs[c.Verb]++
-		if c.Class == ClassUnknown {
-			if n.UnknownVerbs == nil {
-				n.UnknownVerbs = map[string]int{}
-			}
-			n.UnknownVerbs[c.Verb]++
+	}
+	// The unnamed list carries the verb of the segment that could NOT be
+	// named, not the chain's head. Keyed by the head, half that list was
+	// verbs the table already names, which made a to-do out of work
+	// already done.
+	if c.Class == ClassUnknown && c.UnnamedVerb != "" {
+		if n.UnknownVerbs == nil {
+			n.UnknownVerbs = map[string]int{}
 		}
+		n.UnknownVerbs[c.UnnamedVerb]++
 	}
 	n.InputBytes += c.InputBytes
 	n.OutputBytes += c.OutputBytes
 	n.DurationMs += c.DurationMs
+	n.ElapsedMs += c.ElapsedMs
+	if c.InputKnown {
+		n.CallsWithInput++
+	}
+	if c.OutputKnown {
+		n.CallsWithOutput++
+	}
+	if c.DurationKnown {
+		n.CallsWithDuration++
+	}
+	if c.ElapsedKnown {
+		n.CallsWithElapsed++
+	}
 	if c.Class == ClassMutation {
 		n.Mutated = true // the boundary itself is not "before" it
 		return
@@ -296,29 +395,48 @@ func marshalMap(v map[string]any) []byte {
 	return b
 }
 
-func outputBytes(data map[string]any) int {
-	if n := intField(data, "output_size"); n > 0 {
-		return n
+// outputBytesPresent reads a call's output size and reports whether any
+// producer recorded one. iterion's own `tool` nodes record neither
+// `output_size` nor `output` outside trace logging, so every one of them
+// answers (0, false) — which is why the corpus total must publish its
+// denominator instead of reading as "these nodes returned nothing".
+func outputBytesPresent(data map[string]any) (int, bool) {
+	if n, ok := intFieldPresent(data, "output_size"); ok && n > 0 {
+		return n, true
 	}
 	if s, ok := data["output"].(string); ok {
-		return len(s)
+		return len(s), true
 	}
-	return 0
+	return 0, false
 }
 
 func intField(data map[string]any, key string) int {
+	v, _ := intFieldPresent(data, key)
+	return v
+}
+
+// intFieldPresent reads a numeric field and reports whether the producer
+// wrote it at all.
+//
+// The distinction is load-bearing and it is the reader's to make, never
+// the caller's: a tool that takes no arguments records a REAL zero input
+// size, while a backend that never measured its call records nothing.
+// Deriving "unknown" from `value == 0` downstream would collapse those
+// two — which is exactly the conflation this package already refuses for
+// tokens (`TokensKnown`) and committed on every other numeric.
+func intFieldPresent(data map[string]any, key string) (int, bool) {
 	if data == nil {
-		return 0
+		return 0, false
 	}
 	switch v := data[key].(type) {
 	case int:
-		return v
+		return v, true
 	case int64:
-		return int(v)
+		return int(v), true
 	case float64:
-		return int(v)
+		return int(v), true
 	}
-	return 0
+	return 0, false
 }
 
 // SortNodes orders a profile's nodes by descending tool-call count, so a

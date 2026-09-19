@@ -67,7 +67,7 @@
 | `pkg/backend/tooldisplay` | turns a tool call (name + raw JSON input) into the strings the engine renders in console logs and the per-node Tools tab. | — | 1 · 5 |
 | `pkg/benchmark` | implements a multi-recipe benchmark runner with isolated workspaces and comparable metrics collection. | — | 6 · 25 |
 | `pkg/benchmark/asymptote` | computes per-iteration quality scores from persisted runs and compares groups of runs (e.g. | — | 4 · 13 |
-| `pkg/benchmark/discovery` | measures what a run spent on ORIENTATION — the reads, searches and listings an agent performs to find its way around a repository — as opposed to… | — | 3 · 18 |
+| `pkg/benchmark/discovery` | measures what a run spent on ORIENTATION — the reads, searches and listings an agent performs to find its way around a repository — as opposed to… | — | 3 · 19 |
 | `pkg/benchmark/quality` | the subjective quality + value-for-money assessment layer for iterion's live e2e tests. | — | 2 · 38 |
 | `pkg/botdeps` | manages project-pinned shared bot dependencies. | — | 2 · 9 |
 | `pkg/botimport` | converts Claude-Code workflow scripts (.claude/workflows/*.js — the `export const meta` + `agent()` / `phase()` / `log()` shape) into DRAFT .bot… | — | 6 · 7 |
@@ -118,10 +118,10 @@
 | `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 3 · 3 |
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — | 1 · 4 |
 | `pkg/errtrack` | iterion's optional error-tracking seam. | — | 7 · 26 |
-| `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` | 3 · 15 |
-| `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `ConnectionStore`, `FileClient`, `IssueClient`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProvisionApprovalStore`, `PullClient`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewerAssigner`, `TokenRefresher` | 31 · 353 |
+| `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` | 3 · 16 |
+| `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `ConnectionStore`, `FileClient`, `IssueClient`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProvisionApprovalStore`, `PullClient`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `TokenRefresher` | 31 · 354 |
 | `pkg/forge/forgejo` | the Forgejo/Gitea implementation of forge.Admin. | — | 8 · 34 |
-| `pkg/forge/github` | the GitHub implementation of forge.Admin: the outbound write-side client the orchestrator uses to list repos and create/update/delete the iterion… | — | 17 · 133 |
+| `pkg/forge/github` | the GitHub implementation of forge.Admin: the outbound write-side client the orchestrator uses to list repos and create/update/delete the iterion… | — | 17 · 135 |
 | `pkg/forge/gitlab` | the GitLab implementation of forge.Admin: the OUTBOUND write-side client the orchestrator uses to list a connection's projects and… | — | 10 · 37 |
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — | 11 · 34 |
 | `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` | 4 · 159 |
@@ -176,7 +176,7 @@
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` | 6 · 52 |
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 341 |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | — | 1 · 5 |
-| `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 230 · 162 |
+| `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 230 · 166 |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `TeamResolver` | 9 · 14 |
 | `pkg/server/projects` | manages the studio's per-user project registry. | — | 1 · 11 |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` | 5 · 32 |
@@ -193,7 +193,7 @@
 | `pkg/usernotify` | delivers user-addressed notifications for run lifecycle moments — a run pausing on a human form, finishing, failing — to per-user channels (web… | `PrefsStore`, `SentStore`, `Sink` | 6 · 56 |
 | `pkg/usernotify/webpush` | the Web Push (RFC 8030 + VAPID) usernotify.Sink: it delivers a Notification to every browser PushSubscription registered by each recipient, via the… | `SubscriptionStore` | 2 · 24 |
 | `pkg/valkey` | wraps a go-redis client used to share ephemeral server state across replicas (forge OAuth/CSRF state, board-MCP run tokens, auth rate-limit buckets). | — | 1 · 6 |
-| `pkg/webhooks` | iterion's inbound-webhook spine: long-lived, per-org webhook tokens that authenticate an external caller (a forge, CI, a script) and authorize it to… | `CommandDiscovery`, `ConfigStore`, `Counter`, `DeferredLaunchStore`, `DeliveryStore` | 9 · 115 |
+| `pkg/webhooks` | iterion's inbound-webhook spine: long-lived, per-org webhook tokens that authenticate an external caller (a forge, CI, a script) and authorize it to… | `CommandDiscovery`, `ConfigStore`, `Counter`, `DeferredLaunchStore`, `DeliveryStore` | 9 · 116 |
 | `pkg/webhooks/generic` | decodes the bot-agnostic JSON shape iterion accepts on /api/webhooks/generic/{id}. | — | 1 · 7 |
 | `pkg/webhooks/gitlab` | decodes GitLab webhook payloads into the narrow, normalized shape iterion's inbound handler consumes. | — | 6 · 57 |
 | `pkg/webhooks/prforge` | decodes pull_request webhook payloads from PR-over-forge providers — GitHub and Forgejo/Gitea — which share the same wire shape for the… | — | 5 · 44 |

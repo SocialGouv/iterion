@@ -39,7 +39,7 @@ meantime.
 ## The graph
 
 ```bash
-iterion map build                              # 9 830 nodes, 31 352 edges, 0.7 s
+iterion map build                              # 9 834 nodes, 31 366 edges, 0.7 s
 iterion map find MemoryStore                   # where is it, and what kind of thing is it
 iterion map impact sym:pkg/knowledge.MemoryStore --depth 2
 iterion map neighbours bot:review-pr
@@ -127,9 +127,18 @@ trusted past them.
 - **`vendor/`, `.works/`, `.repos/`, `testdata/` and the run scratch are
   not in it.** A graph that indexed `vendor/` would be mostly `vendor/`.
 - **It describes the tree it was built from.** The cache is keyed on a
-  fingerprint of every `.go`, `.md`, `.bot` and `go.mod`; any change
-  rebuilds all of it. It is never patched in place, because an index that
-  describes a repository that no longer exists is worse than none.
+  fingerprint that hashes the **content** of every `.go`, `.md`, `.bot`,
+  `go.mod`, `manifest.yaml` and `.mcp.json`; any change rebuilds all of
+  it. It is never patched in place, because an index that describes a
+  repository that no longer exists is worse than none.
+
+  Content, not `(size, mtime)`: the cheaper key is blind to a same-size
+  edit landing inside one tick of the kernel's coarse clock, which any
+  codegen pass or in-place rewrite can produce. And the file list is
+  what the **builder opens**, not what looks like source — the workflow
+  compiler reads a bundle's `manifest.yaml` and probes its `.mcp.json`.
+  A file the builder reads while the fingerprint ignores it is a cache
+  reporting "current" for a tree that has changed.
 - **It is not yet proven to pay for itself.** Whether it reduces what a
   run spends on orientation is measured by `iterion bench discovery`, and
   it is [#1482](https://github.com/SocialGouv/iterion/issues/1482) that

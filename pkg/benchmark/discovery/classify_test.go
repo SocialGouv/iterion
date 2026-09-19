@@ -1,6 +1,119 @@
 package discovery
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// TestQuotingAnArgumentNeverChangesItsClass is the guarantee behind the
+// redirect scan rather than one more spelling in a list. A path can be
+// written bare, in single quotes or in double quotes; the shell runs the
+// same command either way, so the classifier owes the same verdict.
+//
+// Enumerating spellings is what let the defect through twice: round 1
+// taught the scan to ignore quotes, which blanked the target, so
+// `cat > "/home/jo/notes.md"` classified as orientation. A property
+// refuses the next spelling without anyone having to think of it.
+func TestQuotingAnArgumentNeverChangesItsClass(t *testing.T) {
+	templates := []string{
+		"cat > PATH",
+		"cat >> PATH",
+		"cat > PATH 2>&1",
+		"tee PATH",
+		"grep -r TODO PATH",
+		"rm -f PATH",
+		"cp a.txt PATH",
+		"go test ./... > PATH 2>&1",
+		"sed -i 's/a/b/' PATH",
+		"ls PATH",
+		"git add PATH",
+		"cat PATH | grep x",
+		"echo hi > PATH && git add PATH",
+		"grep -q TODO PATH && rm PATH",
+	}
+	paths := []string{"/home/jo/notes.md", "notes.md", "/dev/null", "a b.md"}
+	styles := []struct {
+		name string
+		wrap func(string) string
+	}{
+		{"bare", func(s string) string { return s }},
+		{"single", func(s string) string { return "'" + s + "'" }},
+		{"double", func(s string) string { return `"` + s + `"` }},
+	}
+
+	for _, tpl := range templates {
+		for _, p := range paths {
+			var want Class
+			var wantCmd, wantStyle string
+			for _, st := range styles {
+				// Bare, a path containing a space is two words — a
+				// different command, not a different spelling.
+				if st.name == "bare" && strings.ContainsAny(p, " \t") {
+					continue
+				}
+				cmd := strings.ReplaceAll(tpl, "PATH", st.wrap(p))
+				got := classifyCommand(cmd)
+				if wantStyle == "" {
+					want, wantCmd, wantStyle = got, cmd, st.name
+					continue
+				}
+				if got != want {
+					t.Errorf("quoting changed the class:\n  %-6s %q -> %s\n  %-6s %q -> %s",
+						wantStyle, wantCmd, want, st.name, cmd, got)
+				}
+			}
+		}
+	}
+}
+
+// TestAHeredocKeepsTheCommandsAfterItsTerminator pins both halves of the
+// heredoc rule: the body is data and must not be read as command text,
+// and everything past the terminator is command text and must not be
+// thrown away with it.
+func TestAHeredocKeepsTheCommandsAfterItsTerminator(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want Class
+	}{
+		{
+			"a write chained after the terminator still counts",
+			"python3 - <<'PY'\nprint(1)\nPY\ngit add f",
+			ClassMutation,
+		},
+		{
+			"a redirect on the opener's own line still counts",
+			"cat <<'EOF' > /tmp/out.txt\nhello\nEOF",
+			ClassMutation,
+		},
+		{
+			"a tab-stripping opener names the same delimiter",
+			"cat <<-EOF\nbody\n\tEOF\ngit commit -m x",
+			ClassMutation,
+		},
+		{
+			"a here-string is not a heredoc and keeps its chain",
+			"grep -q x <<< \"$v\" && git add f",
+			ClassMutation,
+		},
+	}
+	for _, c := range cases {
+		if got := classifyCommand(c.cmd); got != c.want {
+			t.Errorf("%s:\n  %q\n  got %s, want %s", c.name, c.cmd, got, c.want)
+		}
+	}
+}
+
+// TestAHeredocBodyIsDataNotCommandText is separate because it is the
+// half that must hold when the other half is wrong: a `>` inside a
+// python body is a comparison, and reading it as a redirect is what the
+// blunt cut was there to prevent in the first place.
+func TestAHeredocBodyIsDataNotCommandText(t *testing.T) {
+	const cmd = "python3 - <<'PY'\nif a > b:\n    pass\nPY"
+	if got := classifyCommand(cmd); got == ClassMutation {
+		t.Errorf("a `>` inside a heredoc body read as a file write:\n  %q\n  got %s", cmd, got)
+	}
+}
 
 // Each case below is chosen so exactly one table entry or one rule can
 // make it fail: deleting `read` from toolClass reddens the first row and

@@ -190,6 +190,74 @@ func TestUnfinishedCallsAreCountedApart(t *testing.T) {
 	}
 }
 
+// Every summed numeric owes the count of calls that contributed one.
+// Without it, a sum reads as a measurement of every call: "tool wall
+// time" was published as this corpus's and was the 6 % of calls a
+// backend bothered to time — wrong by 6.7×.
+//
+// The half that has to be exercised separately is the REAL zero. A
+// no-argument tool records an input size of 0 and that is a fact, so a
+// reader that derives "known" from `value != 0` would drop it and call
+// the measurement missing. The flag is set by the reader that saw the
+// key; this test reddens if anyone re-derives it from the value.
+func TestASummedNumericCarriesHowManyCallsContributed(t *testing.T) {
+	s := tmpStore(t)
+	runID := newRun(t, s)
+
+	// Timed by the backend, with a recorded input and output.
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolStarted, NodeID: "n",
+		Data: map[string]any{"tool": "Bash", "tool_use_id": "u1", "input": `{"command":"ls"}`, "input_size": 12},
+	})
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolCalled, NodeID: "n",
+		Data: map[string]any{"tool": "Bash", "tool_use_id": "u1", "duration_ms": 5, "output_size": 40},
+	})
+	// The streaming path's shape: the duration key is present and zero
+	// because nobody measured it, and no output size is recorded at all.
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolStarted, NodeID: "n",
+		Data: map[string]any{"tool": "Bash", "tool_use_id": "u2", "input": `{"command":"ls"}`, "input_size": 8},
+	})
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolCalled, NodeID: "n",
+		Data: map[string]any{"tool": "Bash", "tool_use_id": "u2", "duration_ms": 0},
+	})
+	// A no-argument tool: the zero input size is a measurement.
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolStarted, NodeID: "n",
+		Data: map[string]any{"tool": "Read", "tool_use_id": "u3", "input_size": 0},
+	})
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolCalled, NodeID: "n",
+		Data: map[string]any{"tool": "Read", "tool_use_id": "u3", "duration_ms": 3, "output_size": 10},
+	})
+
+	prof, err := ParseRun(context.Background(), s, runID)
+	if err != nil {
+		t.Fatalf("ParseRun: %v", err)
+	}
+	n := prof.Nodes[0]
+	if n.Calls != 3 {
+		t.Fatalf("calls = %d, want 3", n.Calls)
+	}
+	if n.CallsWithDuration != 2 {
+		t.Errorf("calls with a backend duration = %d, want 2 — the call nobody timed carries a zero, "+
+			"and summing it as a measurement is what understated the corpus by 6.7×", n.CallsWithDuration)
+	}
+	if n.CallsWithOutput != 2 {
+		t.Errorf("calls with a recorded output size = %d, want 2", n.CallsWithOutput)
+	}
+	if n.CallsWithInput != 3 {
+		t.Errorf("calls with a recorded input size = %d, want 3 — a no-argument tool's zero IS a "+
+			"measurement, and deriving the flag from the value drops it", n.CallsWithInput)
+	}
+	if n.CallsWithElapsed != 3 {
+		t.Errorf("calls with a stream-measured elapsed = %d, want 3 — every call has both its own "+
+			"events, which is why this is the figure that covers the corpus", n.CallsWithElapsed)
+	}
+}
+
 // A node with no recorded usage must read as "unknown", never as zero:
 // an unattributed spend folded into a ratio is a fabricated number.
 //

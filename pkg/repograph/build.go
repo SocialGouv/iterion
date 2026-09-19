@@ -9,8 +9,10 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -24,6 +26,24 @@ var skipDir = map[string]bool{
 	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
 	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
 	"testdata": true,
+}
+
+// skippedPath reports whether a slash-separated path lies inside a
+// skipped tree.
+//
+// Every walk in this package asks `skipDir[d.Name()]` and prunes, which
+// only answers for a directory it is standing in. A link resolves to a
+// PATH, with no walk behind it — and the one site that reached the
+// filesystem by `os.Stat` instead of by a walk minted nodes for files
+// the fingerprint never hashes, so deleting one left the cache serving a
+// graph of a tree that no longer existed.
+func skippedPath(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if skipDir[seg] {
+			return true
+		}
+	}
+	return false
 }
 
 // Build walks the tree once and returns the finalised graph.
@@ -70,6 +90,15 @@ func readModule(root string) (modulePath string, replaces map[string]string, err
 	replaces = map[string]string{}
 	for _, raw := range strings.Split(string(body), "\n") {
 		line := strings.TrimSpace(raw)
+		// A trailing `// pinned` is not part of the target. Left in, it
+		// rode into the replace map and named a directory that does not
+		// exist — 703 edges gone, exit 0, and `map impact` answering
+		// "nothing reaches this package" about a package 11 nodes reach.
+		// Cut before the split so both sides of `=>` are covered; no
+		// module path or version can contain `//`.
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
 		if rest, ok := strings.CutPrefix(line, "module "); ok && modulePath == "" {
 			modulePath = strings.TrimSpace(rest)
 			continue
@@ -368,12 +397,27 @@ func moduleDir(modulePath string, replaces map[string]string, importPath string)
 	if rest, ok := strings.CutPrefix(importPath, modulePath+"/"); ok {
 		return rest, true
 	}
-	for from, dir := range replaces {
+	// Longest prefix first — the semantics `go` itself gives a replace,
+	// and the reason this is a sorted walk rather than a map range: two
+	// replaces sharing a prefix made the answer depend on Go's map
+	// iteration order, and eight cold builds of one unchanged tree
+	// produced eight different graphs, which the cache then froze.
+	froms := make([]string, 0, len(replaces))
+	for from := range replaces {
+		froms = append(froms, from)
+	}
+	sort.Slice(froms, func(i, j int) bool {
+		if len(froms[i]) != len(froms[j]) {
+			return len(froms[i]) > len(froms[j])
+		}
+		return froms[i] < froms[j]
+	})
+	for _, from := range froms {
 		if importPath == from {
-			return dir, true
+			return replaces[from], true
 		}
 		if rest, ok := strings.CutPrefix(importPath, from+"/"); ok {
-			return path.Join(dir, rest), true
+			return path.Join(replaces[from], rest), true
 		}
 	}
 	return "", false
@@ -464,6 +508,9 @@ func linkDocs(g *Graph, root string, pages []docPage) {
 			resolved := path.Clean(path.Join(path.Dir(p.rel), target))
 			if strings.HasPrefix(resolved, "..") {
 				continue // outside the tree
+			}
+			if skippedPath(resolved) {
+				continue // a tree the graph never describes, and the fingerprint never hashes
 			}
 			id, known := byPath[resolved]
 			if !known {
@@ -587,7 +634,17 @@ func firstSentence(text string, max int) string {
 		text = text[:i+1]
 	}
 	if len(text) > max {
-		text = strings.TrimSpace(text[:max]) + "…"
+		// Back up to a rune boundary. `max` is a BYTE bound, and a cut
+		// inside a multi-byte rune — an ellipsis or an em-dash, both
+		// common in this tree's doc comments — writes invalid UTF-8 into
+		// a node's Doc. json.Marshal then rewrites those bytes to U+FFFD,
+		// so a freshly built graph and a cached one stop agreeing about
+		// an unchanged tree.
+		cut := max
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = strings.TrimSpace(text[:cut]) + "…"
 	}
 	return text
 }

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -77,10 +76,31 @@ func save(root string, g *Graph) error {
 	return nil
 }
 
-// Fingerprint hashes the shape of everything the builder reads: every
-// .go, .md and .bot file outside the skipped trees, with its size and
-// modification time. Sorted, so the digest depends on the tree and not
-// on the order the filesystem happened to hand it over.
+// fingerprinted names every file type the BUILDER opens. A file the
+// builder reads and the fingerprint ignores is a cache that reports
+// "current" for a tree that changed — and the two that are easy to miss
+// are not source files anyone would think to list: `CompileWorkflowPath`
+// reads a bundle's `manifest.yaml` and probes its `.mcp.json`.
+func fingerprinted(name string) bool {
+	if strings.HasSuffix(name, ".go") || strings.HasSuffix(name, ".md") ||
+		strings.HasSuffix(name, ".bot") {
+		return true
+	}
+	return name == "go.mod" || name == "manifest.yaml" || name == ".mcp.json"
+}
+
+// Fingerprint hashes the CONTENT of everything the builder reads,
+// outside the skipped trees. Sorted, so the digest depends on the tree
+// and not on the order the filesystem happened to hand it over.
+//
+// Content, not (size, mtime). That cheaper key is blind to a same-size
+// edit landing inside one tick of the kernel's coarse clock, which is
+// not an exotic case — a codegen pass, a formatter or any script
+// rewriting a file in place produces one, and this package's own test
+// suite hit it by accident on its first run. Reading the ~4 600 files
+// this covers costs ~70 ms against a ~700 ms rebuild: exactness is a
+// tenth of what it protects, and a cache that is wrong is worth less
+// than no cache at all.
 func Fingerprint(root string) (string, error) {
 	var lines []string
 	err := filepath.WalkDir(root, func(abs string, d os.DirEntry, err error) error {
@@ -94,22 +114,19 @@ func Fingerprint(root string) (string, error) {
 			}
 			return nil
 		}
-		name := d.Name()
-		if !strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, ".md") &&
-			!strings.HasSuffix(name, ".bot") && name != "go.mod" {
+		if !fingerprinted(d.Name()) {
 			return nil
-		}
-		info, statErr := d.Info()
-		if statErr != nil {
-			return statErr
 		}
 		rel, relErr := filepath.Rel(root, abs)
 		if relErr != nil {
 			return relErr
 		}
-		lines = append(lines, filepath.ToSlash(rel)+" "+
-			strconv.FormatInt(info.Size(), 10)+" "+
-			strconv.FormatInt(info.ModTime().UnixNano(), 10))
+		body, readErr := os.ReadFile(abs)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(body)
+		lines = append(lines, filepath.ToSlash(rel)+" "+hex.EncodeToString(sum[:]))
 		return nil
 	})
 	if err != nil {

@@ -27,23 +27,39 @@ devbox run -- ./iterion bench discovery --last 200 --output -
 |---|---|
 | Runs read / with a tool call | 200 / 186 |
 | Nodes / never called a tool | 772 / 331 |
-| Tool calls, classified | 5 600 of 6 604 (**85 %**) |
-| discovery · mutation · other · unknown | **4 121** · 1 219 · 260 · 1 004 |
+| Tool calls, classified | 5 624 of 6 604 (**85 %**) |
+| discovery · mutation · other · unknown | **4 117** · 1 247 · 260 · 980 |
 | Calls before a node's first write | 1 956, of which **1 355** were reads or searches |
-| Tool output pulled into contexts | **15.2 MiB** |
-| Tool wall time | **40 min 44 s** |
+| Tool input pulled into contexts | 4.5 MiB, over 6 604 of 6 604 calls |
+| Tool output pulled into contexts | **15.2 MiB**, over 6 270 of 6 604 calls |
+| Tool time, backend-measured | 40 min 44 s, over **392 of 6 604 calls** |
+| Tool time, event-stream elapsed | **4 h 33 min**, over 6 604 of 6 604 calls |
 | Tokens spent by nodes that never wrote a byte | **2 151 453 of 8 523 614 attributable — 25.2 %**, carried by 54 of the 361 such nodes (the rest are `tool` nodes, which spend none) |
+
+**Every row carries its denominator, and the two time rows are two
+instruments rather than one number.** A backend times its own `tool`
+nodes and nothing else — the streaming path that runs an agent's Bash,
+Read and Edit builds its call record without a duration at all — so the
+first row covers 6 % of the calls. Published alone under the label "tool
+wall time", as it was here, it understated this corpus by 6.7×. The two
+are never added: one is a measurement, the other would be an absence.
 
 And the size of what all that is searching:
 
 | Corpus | Size |
 |---|---|
-| Go files (excluding `vendor/`) | 3 798 |
-| Markdown tracked by git | 941 files, 10.6 MB (≈ 2.6 M tokens) |
-| of which `docs/*.md` | 311 files, 5.2 MB, including 109 ADRs |
+| Go files (excluding `vendor/`) | 3 806 |
+| Markdown tracked by git | 947 files, 10.8 MB (≈ 2.6 M tokens) |
+| of which `docs/**/*.md` | 317 files, 5.3 MB, including 110 ADRs |
 | of which bot skills | 186 files, 1.6 MB |
 | `.bot` workflows | 165 tracked (`git ls-files '*.bot'`), 78 outside `testdata/` |
-| Agent instruction tree | `CLAUDE.md` 15.5 KB **injected every turn** + `docs/agents/` 180 KB on demand |
+| Agent instruction tree | `CLAUDE.md` 15.3 KB **injected every turn** + `docs/agents/` 172 KB on demand |
+
+The markdown counts move when this page does: the five pages this change
+added are five of the 947, and the figures above were first published
+one commit before they landed. A corpus measurement written inside the
+corpus is re-taken as the last act before the commit, never reasoned
+about afterwards.
 
 **One number bounds the rest: 639 of 772 nodes carry no recorded token
 spend.** Usage is written once per node, at node end; the split *inside*
@@ -85,7 +101,7 @@ inherits. Claude Code's deliberate no-index posture is a
 cost-curve position, not a dogma: it also buys freshness (no index lag),
 no second attack surface, and no embedding of proprietary code.
 
-At 3 798 Go files and 941 markdown files, this repository is far past the
+At 3 806 Go files and 947 markdown files, this repository is far past the
 scale of either side of that replication. That is an argument for
 measuring, not for assuming: the `bench discovery` numbers above exist so
 the claim can be checked here rather than imported.
@@ -187,9 +203,12 @@ over a few hundred thousand edges is not the hard part.
   DAG as `flows` edges, and `iterion diagram` renders the same fact
   independently, which is how that half is checked.
 
-The graph exists: `iterion map build`, 9 830 nodes and 31 352 edges over
-this tree in 0.7 s, byte-identical over two cold builds, no database and
-no dependency outside the standard library. Its import edges were checked
+The graph exists: `iterion map build`, 9 834 nodes and 31 366 edges over
+this tree in 0.7 s, no database and no dependency outside the standard
+library. Its **body** is byte-identical over repeated cold builds; the
+artifact as a whole is not, because it carries a `built_at` stamp — a
+distinction worth stating rather than rounding off, since "byte-identical"
+was written here first and was false as written. Its import edges were checked
 against `go list -deps` and its workflow edges against `iterion diagram` —
 a graph verified only against itself proves nothing.
 

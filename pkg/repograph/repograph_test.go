@@ -1,9 +1,12 @@
 package repograph_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/repograph"
 )
@@ -236,5 +239,224 @@ func TestFingerprintMovesWhenAFileChanges(t *testing.T) {
 	}
 	if before == after {
 		t.Fatal("editing a file left the fingerprint unchanged")
+	}
+}
+
+// writeTree is fixture's general form: it builds a tree from a map of
+// relative paths to bodies.
+func writeTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, body := range files {
+		abs := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// A trailing comment is not part of a replace target. Left in, it named
+// a directory that does not exist: 703 edges gone, exit 0, no warning,
+// and `map impact` answering "nothing reaches this package" about a
+// package eleven nodes reach.
+func TestACommentOnAReplaceLineDoesNotLoseTheModule(t *testing.T) {
+	for _, tc := range []struct{ name, replace string }{
+		{"bare", "replace example.test/dep => ./third_party/dep\n"},
+		{"trailing comment", "replace example.test/dep => ./third_party/dep // pinned\n"},
+		{"comment with no space", "replace example.test/dep => ./third_party/dep// pinned\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeTree(t, map[string]string{
+				"go.mod":                 "module example.test/demo\n\ngo 1.26\n\n" + tc.replace,
+				"third_party/dep/dep.go": "package dep\n\n// Helper is reachable only through the replace.\nfunc Helper() int { return 1 }\n",
+				"pkg/user/user.go": `package user
+
+import "example.test/dep"
+
+// Run calls across the replace.
+func Run() int { return dep.Helper() }
+`,
+			})
+			g := build(t, root)
+			if _, ok := g.Nodes["sym:third_party/dep.Helper"]; !ok {
+				t.Fatal("the replaced module's symbol is absent — the target did not resolve")
+			}
+			if !hasEdge(g, "pkg:pkg/user", "pkg:third_party/dep", repograph.RelImports) {
+				t.Fatal("no import edge onto the replaced module")
+			}
+		})
+	}
+}
+
+// Two replaces sharing a prefix were resolved by ranging over a Go map,
+// so which one matched depended on iteration order: eight cold builds of
+// one unchanged tree produced eight different graphs, and the cache
+// froze whichever won. Longest prefix first is what `go` itself does,
+// and this asserts BOTH that the builds agree and that the right one
+// wins — agreement alone would pass on a consistently wrong answer.
+func TestOverlappingReplacesResolveTheSameWayEveryBuild(t *testing.T) {
+	files := map[string]string{
+		"go.mod": "module example.test/demo\n\ngo 1.26\n\n" +
+			"replace example.test/dep => ./third_party/outer\n" +
+			"replace example.test/dep/inner => ./third_party/inner\n",
+		"third_party/outer/inner/x/x.go": "package x\n\n// Outer must lose.\nfunc Outer() int { return 1 }\n",
+		"third_party/inner/x/x.go":       "package x\n\n// Inner must win.\nfunc Inner() int { return 2 }\n",
+		"pkg/user/user.go": `package user
+
+import "example.test/dep/inner/x"
+
+// Run reaches through the more specific replace.
+func Run() int { return x.Inner() }
+`,
+	}
+	root := writeTree(t, files)
+	first := build(t, root)
+
+	if !hasEdge(first, "pkg:pkg/user", "pkg:third_party/inner/x", repograph.RelImports) {
+		t.Fatal("the longest matching prefix did not win: the import did not land on third_party/inner/x")
+	}
+	for i := 2; i <= 9; i++ {
+		g := build(t, root)
+		if len(g.Edges) != len(first.Edges) {
+			t.Fatalf("build %d has %d edges, build 1 had %d — the resolution depends on map order",
+				i, len(g.Edges), len(first.Edges))
+		}
+		for j := range g.Edges {
+			if g.Edges[j] != first.Edges[j] {
+				t.Fatalf("build %d, edge %d: %+v, build 1 had %+v", i, j, g.Edges[j], first.Edges[j])
+			}
+		}
+	}
+}
+
+// linkDocs is the one site that reaches the filesystem by `os.Stat`
+// instead of by a guarded walk, so it minted doc nodes for files the
+// fingerprint never hashes. Deleting one then left the cache serving a
+// graph of a tree that no longer existed — the single failure an index
+// cannot have, and the same one a previous round closed at a sibling.
+func TestALinkIntoASkippedTreeMintsNoNode(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":                 "module example.test/demo\n\ngo 1.26\n",
+		"docs/a.md":              "# A\n\nSee [probe](testdata/probe.md) and [vendored](../vendor/dep/README.md).\n",
+		"docs/testdata/probe.md": "# Probe\n\nA fixture, not a page.\n",
+		"vendor/dep/README.md":   "# Vendored\n\nNot this repository.\n",
+	})
+	g := build(t, root)
+	for id, n := range g.Nodes {
+		for _, skipped := range []string{"testdata/", "vendor/"} {
+			if strings.Contains(n.Path, skipped) {
+				t.Errorf("node %s (%s) was minted inside a skipped tree the fingerprint never hashes", id, n.Path)
+			}
+		}
+	}
+}
+
+// A doc comment is cut at a BYTE bound. Cutting inside a multi-byte rune
+// writes invalid UTF-8 into a node's Doc, json.Marshal rewrites those
+// bytes to U+FFFD, and a freshly built graph stops agreeing with the
+// cached one about an unchanged tree. The assertion is the property, so
+// it holds for a rune the fixture never thought of.
+func TestNoDocCommentIsCutMidRune(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("package edge\n")
+	// Walk the ellipsis across every byte bound this package cuts at
+	// (100 and 120), so at least one symbol has a multi-byte rune
+	// straddling one of them. A fixture that misses the bound produces a
+	// test that cannot redden, which is worse than no test.
+	for pad := 88; pad <= 145; pad++ {
+		fmt.Fprintf(&src, "\n// Sym%d %s… and the sentence keeps going so the cut is taken\nfunc Sym%d() {}\n",
+			pad, strings.Repeat("a", pad), pad)
+	}
+	root := writeTree(t, map[string]string{
+		"go.mod":           "module example.test/demo\n\ngo 1.26\n",
+		"pkg/edge/edge.go": src.String(),
+	})
+	g := build(t, root)
+	checked := 0
+	for id, n := range g.Nodes {
+		if n.Doc == "" {
+			continue
+		}
+		checked++
+		if !utf8.ValidString(n.Doc) {
+			t.Errorf("node %s carries invalid UTF-8 in its Doc: %q", id, n.Doc)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no node carried a doc comment — the fixture proves nothing")
+	}
+}
+
+// The fingerprint hashes (path, size, mtime) for speed, which is blind
+// to a restore that preserves both — `cp -p`, `rsync -t`, `tar -x`,
+// `touch -r`. On go.mod that blindness costs the whole replaced module:
+// 703 edges in this repository hang off its replace lines, so this one
+// file is hashed by CONTENT.
+func TestGoModContentMovesTheFingerprintWithItsMtimeRestored(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":                 "module example.test/demo\n\ngo 1.26\n\nreplace example.test/dep => ./third_party/dep\n",
+		"third_party/dep/dep.go": "package dep\n\n// Helper is reachable only through the replace.\nfunc Helper() int { return 1 }\n",
+	})
+	mod := filepath.Join(root, "go.mod")
+	info, err := os.Stat(mod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := repograph.Fingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same byte length, so a stat sees nothing move.
+	body, err := os.ReadFile(mod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(body), "./third_party/dep", "./third_party/deX", 1)
+	if len(edited) != len(body) {
+		t.Fatalf("the edit changed the file length (%d vs %d) — it would move the fingerprint for the wrong reason", len(edited), len(body))
+	}
+	if err := os.WriteFile(mod, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(mod, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := repograph.Fingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("go.mod changed under a restored mtime and the fingerprint did not move — the cache would serve a graph missing the whole replaced module")
+	}
+}
+
+// The fingerprint must name every file type the BUILDER opens, not the
+// obvious ones: a bundle's manifest is read through the workflow
+// compiler, and a file read but not hashed is a cache that reports
+// "current" for a tree that changed.
+func TestABundleManifestMovesTheFingerprint(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":                  "module example.test/demo\n\ngo 1.26\n",
+		"bots/demo/manifest.yaml": "name: demo\nversion: 0.1.0\n",
+		"bots/demo/main.bot":      "workflow demo {\n}\n",
+	})
+	before, err := repograph.Fingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bots/demo/manifest.yaml"),
+		[]byte("name: demo\nversion: 0.2.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after, err := repograph.Fingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("a bundle manifest changed and the fingerprint did not move — the builder reads it, so the cache must see it")
 	}
 }
