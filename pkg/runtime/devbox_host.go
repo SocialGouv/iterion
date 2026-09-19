@@ -42,6 +42,18 @@ var (
 	// host's PATH.
 	hostDevboxLookPath = func() (string, error) { return exec.LookPath("devbox") }
 
+	// hostEngineBinPath resolves the ABSOLUTE PATH of THIS engine's
+	// iterion binary. Used by provisionHostDevbox to stage a per-run
+	// shim directory holding one `iterion` symlink, so a bot's shell
+	// tools resolve `iterion` to this engine (#1384) WITHOUT the
+	// resolver's containing directory shadowing the devbox-provisioned
+	// node/go/python/git/devbox on that same dir (Rff1076). Empty
+	// when no binary can be located; overridden in unit tests so the
+	// host-dependent probe does not decide test outcomes.
+	hostEngineBinPath = func() string {
+		return proc.LocateIterionBinary()
+	}
+
 	// runHostDevboxInstall executes `devbox install -c projectDir` and
 	// returns an error carrying the command output on failure.
 	runHostDevboxInstall = func(ctx context.Context, devboxBin, projectDir string, logger *iterlog.Logger) error {
@@ -87,6 +99,18 @@ type runExtraEnvSetter interface {
 	SetRunExtraEnv(env []string)
 }
 
+// runExtraEnvGetter is the READ half of the same seam: a producer that
+// composes on top of an existing entry (e.g. `PATH` prepend) reads the
+// current value here instead of `os.Getenv`, so an earlier writer's
+// override is not silently discarded. The DEFAULT executor implements
+// both halves; a test stub that only implements the setter degrades
+// to the pre-M1 behaviour (os.Getenv fallback), which is exactly what
+// the existing devbox tests expect. Grouped as its own interface (not
+// merged with the setter) so old tests keep compiling.
+type runExtraEnvGetter interface {
+	GetRunExtraEnvValue(key string) string
+}
+
 // hostDevboxProject is one resolved devbox source installed on the host.
 type hostDevboxProject struct {
 	// label names the source in logs and events ("repo" | "bot"), same
@@ -123,16 +147,108 @@ type hostDevboxProject struct {
 //     the executor's SetRunExtraEnv, which threads them into every
 //     host-spawned command (tool nodes, delegate CLIs, claw bash).
 //
+// The engine's OWN iterion binary is prepended to PATH through a
+// per-run SHIM DIRECTORY that holds a single `iterion` symlink to
+// proc.LocateIterionBinary — NOT the resolver's whole containing
+// directory. LocateIterionBinary resolves to `/usr/local/bin`,
+// `~/.local/bin` or a brew/homebrew prefix — dirs that also hold
+// `node`, `go`, `python`, `git`, `devbox`, so prepending the whole
+// directory would shadow every one of the devbox-provisioned tools
+// with the operator's ambient copy and reintroduce the exact class
+// of silent engine/bot toolchain disagreement #1384 closed for
+// `iterion`, one level up. The shim scopes the prepend to the one
+// symbol we intend to resolve. Whichever binary was ambient on PATH
+// still resolves at the tail — the shim just gives THIS engine
+// priority over it. Sandboxed runs bind-mount /usr/local/bin/iterion
+// inside the image (via addClawBinaryMount for claw-carrying
+// workflows; the runner image bakes it otherwise), so this fires on
+// the HOST path only. See #1384 and its PR-review finding Rff1076.
+//
+// The PATH tail is composed via the runExtraEnvGetter seam so an
+// EARLIER writer's PATH override (projectenv.Snapshot pushed by
+// pkg/runview/service_launch.go's `executor.SetRunExtraEnv(s.runEnv)`)
+// survives this call — engineBinDir + devboxBinDirs prepend to the
+// existing value instead of clobbering it with `os.Getenv("PATH")`.
+// Without this the operator's `.env` PATH additions would silently
+// vanish on host runs (M1 of the #1384 adversarial round).
+//
 // Best-effort, never silent: a missing devbox binary or a failed
 // install warns host-side with what is consequently missing, lands in
 // the sandbox_devbox_provisioned event's `errors` field, and lets the
 // run proceed. Opt-in stays by file presence — no devbox.json anywhere
-// means no event, no install, no PATH change.
+// still fires the engineBinDir shim prepend but installs nothing; a
+// run whose engine cannot be located AND has no devbox declares
+// nothing to push and pushes nothing.
 //
-// The returned cleanup removes the per-run staging dir; safe to call
-// always.
+// The returned cleanup removes the per-run staging dir AND the shim
+// dir; safe to call always.
 func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	noop := func() {}
+
+	// engineBin: THIS engine's iterion binary path, resolved by the
+	// same helper the delegated MCP servers use. Empty when no binary
+	// can be located (e.g. an anonymous `go run` under go-build's
+	// volatile paths that Locate() correctly skips) — the shim prepend
+	// then degrades to devbox-only, exactly as before. Read through
+	// the hostEngineBinPath test seam so unit tests can pin it.
+	engineBin := hostEngineBinPath()
+
+	// shimDirState is populated on first use of applyRunPath: the
+	// staged shim directory holding one `iterion` symlink to
+	// engineBin, and its cleanup. Deferred to first use so a run
+	// whose executor cannot accept env (test stubs) never writes to
+	// disk. Failure to stage falls back to no shim — a shim we
+	// cannot create is louder logged than the workflow it would help.
+	var shimDir string
+	var shimCleanup func()
+
+	// applyRunPath commits the PATH override for this run. Called at
+	// each provisioning return path so every branch goes through one
+	// PATH assembly (engineBin's shim first, devbox bin dirs after,
+	// existing PATH last). Empty shim AND empty devbox bin dirs →
+	// nothing to push and no SetRunExtraEnv call.
+	//
+	// tailPath: the existing PATH the fix must not discard. Reads the
+	// executor's own runExtraEnv (`GetRunExtraEnvValue`) when available
+	// so an earlier SetRunExtraEnv-pushed PATH override (e.g. the
+	// project's `.env` PATH via `runview.Service.runEnv`) is preserved.
+	// Falls back to `os.Getenv("PATH")` for test stubs that don't
+	// implement the getter half of the seam.
+	applyRunPath := func(setter runExtraEnvSetter, devboxBinDirs []string) string {
+		binDirs := make([]string, 0, 1+len(devboxBinDirs))
+		if engineBin != "" && shimDir == "" && shimCleanup == nil {
+			// Lazy-stage: the shim exists ONLY when a caller is
+			// about to push PATH. A run that never reaches
+			// SetRunExtraEnv leaves nothing behind on disk.
+			d, cleanup, err := stageEngineShim(runID, engineBin)
+			if err != nil {
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: could not stage the engine iterion shim (%v) — a bot's shell tools may resolve `iterion` to whatever sits on the ambient PATH first", err)
+				}
+			} else {
+				shimDir, shimCleanup = d, cleanup
+			}
+		}
+		if shimDir != "" {
+			binDirs = append(binDirs, shimDir)
+		}
+		binDirs = append(binDirs, devboxBinDirs...)
+		if len(binDirs) == 0 {
+			return ""
+		}
+		tailPath := os.Getenv("PATH")
+		if getter, ok := setter.(runExtraEnvGetter); ok {
+			if existing := getter.GetRunExtraEnvValue("PATH"); existing != "" {
+				tailPath = existing
+			}
+		}
+		path := strings.Join(binDirs, ":")
+		if tailPath != "" {
+			path += ":" + tailPath
+		}
+		setter.SetRunExtraEnv([]string{"PATH=" + path})
+		return path
+	}
 
 	repoCfg := devboxConfigIn(e.workDir, "workspace", e.logger)
 	botCfg := devboxConfigIn(e.resourceDirForRun(), "bundle", e.logger)
@@ -147,6 +263,35 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 		skippedRepo, repoCfg = repoCfg, ""
 	}
 	if repoCfg == "" && botCfg == "" {
+		// No devbox source. Push the engine shim through PATH if the
+		// executor supports the seam — a bot's shell tools still
+		// resolve `iterion` to THIS engine even without a devbox
+		// declaration (#1384). Absent-setter is silently accepted here
+		// because there is nothing devbox-shaped to complain about;
+		// the "packages declared…" warning below fires ONLY when a
+		// declaration actually exists and cannot be delivered.
+		if setter, ok := e.executor.(runExtraEnvSetter); ok {
+			cleanup := noop
+			_ = applyRunPath(setter, nil)
+			if shimCleanup != nil {
+				cleanup = shimCleanup
+			}
+			if skippedRepo != "" {
+				if err := e.emit(ctx, runID, store.EventSandboxDevboxProvisioned, "", map[string]any{
+					"target":          "host",
+					"skipped_sources": []string{"repo"},
+					"skipped_configs": []string{skippedRepo},
+					"reason":          "repo_devbox off",
+				}); err != nil && e.logger != nil {
+					e.logger.Warn("runtime: emit %s event for run %s: %v", store.EventSandboxDevboxProvisioned, runID, err)
+				}
+			}
+			return cleanup
+		}
+		// Non-setter executor with no devbox declaration: the
+		// declined-repo event still fires (pre-#1384 behaviour), and
+		// no warning is emitted because nothing was declared to be
+		// undeliverable.
 		if skippedRepo != "" {
 			if err := e.emit(ctx, runID, store.EventSandboxDevboxProvisioned, "", map[string]any{
 				"target":          "host",
@@ -160,16 +305,39 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 		return noop
 	}
 
-	// The executor's env seam is provisioning's ONLY consumer: without it
-	// the installed profile bin dirs can never reach a command's PATH, so
-	// installing would be pure waste. The production executor
-	// (model.ClawExecutor) always implements it — an executor that does
-	// not is a test stub, whose runs must stay hermetic (no real `devbox
-	// install` out of an e2e scenario).
+	// The executor's env seam is the ONLY consumer of both the engine
+	// binary shim AND the devbox profile bin dirs — without it neither
+	// can reach a command's PATH. The production executor
+	// (model.ClawExecutor) always implements it; an executor that does
+	// not is a test stub, whose runs must stay hermetic (no real
+	// `devbox install` out of an e2e scenario). Checked HERE (after
+	// the no-devbox short circuit) so a declined-repo event still
+	// fires for a non-setter executor and the "packages declared…"
+	// warning only fires when there IS a devbox declaration to
+	// deliver — the ordering the pre-#1384 code chose (the reviewer
+	// pointed out that moving it above the short-circuit swallowed
+	// the declined-repo event and mis-warned on no-devbox runs).
 	setter, ok := e.executor.(runExtraEnvSetter)
 	if !ok {
 		if e.logger != nil {
 			e.logger.Warn("runtime: host devbox: executor %T cannot receive run-level env — devbox provisioning skipped, the packages declared by the run's devbox.json are unavailable", e.executor)
+		}
+		// The declined-repo event still fires: the operator's signal
+		// about repo_devbox=off must not depend on whether the bot
+		// also declared a devbox (which reaches this branch when
+		// botCfg is non-empty; the no-devbox branch above handles
+		// the botCfg=="" case). Same class as the question the
+		// #1487 verdict flagged — the reader's follow-up round found
+		// this pre-existing sibling.
+		if skippedRepo != "" {
+			if err := e.emit(ctx, runID, store.EventSandboxDevboxProvisioned, "", map[string]any{
+				"target":          "host",
+				"skipped_sources": []string{"repo"},
+				"skipped_configs": []string{skippedRepo},
+				"reason":          "repo_devbox off",
+			}); err != nil && e.logger != nil {
+				e.logger.Warn("runtime: emit %s event for run %s: %v", store.EventSandboxDevboxProvisioned, runID, err)
+			}
 		}
 		return noop
 	}
@@ -218,7 +386,15 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 		if e.logger != nil {
 			e.logger.Warn("runtime: host devbox: %s (install devbox or run in an image that ships it, e.g. iterion-runner-devbox)", errs[len(errs)-1])
 		}
-		emitOutcome(nil, nil, "")
+		// The engine binary shim still fires so `iterion` inside the
+		// bot means THIS engine even when devbox is missing (#1384).
+		path := applyRunPath(setter, nil)
+		emitOutcome(nil, nil, path)
+		// A shim WAS created here — return its cleanup so the
+		// per-run temp dir does not leak on missing-devbox runs.
+		if shimCleanup != nil {
+			return shimCleanup
+		}
 		return noop
 	}
 
@@ -246,9 +422,25 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	if stageRoot != "" {
 		cleanup = func() { _ = os.RemoveAll(stageRoot) }
 	}
+	// composeCleanup chains the devbox staging cleanup with the shim
+	// cleanup (populated lazily on first applyRunPath call). Both may
+	// be no-ops individually.
+	composeCleanup := func() func() {
+		devboxCleanup := cleanup
+		return func() {
+			devboxCleanup()
+			if shimCleanup != nil {
+				shimCleanup()
+			}
+		}
+	}
 	if len(projects) == 0 {
-		emitOutcome(nil, nil, "")
-		return cleanup
+		// Same engine binary prepend, so a run that lost every
+		// devbox source at stage-time still gets THIS engine's
+		// iterion in front of PATH (#1384).
+		path := applyRunPath(setter, nil)
+		emitOutcome(nil, nil, path)
+		return composeCleanup()
 	}
 
 	binDirs := make([]string, 0, len(projects))
@@ -276,14 +468,49 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	// PATH is exposed even for a partially failed install: the profile
 	// dirs of the successful projects must load, and a failed project's
 	// dir simply resolves nothing. The failure itself is already loud
-	// (warn + event errors).
-	path := strings.Join(binDirs, ":")
-	if base := os.Getenv("PATH"); base != "" {
-		path += ":" + base
-	}
-	setter.SetRunExtraEnv([]string{"PATH=" + path})
+	// (warn + event errors). The engine binary SHIM is prepended in
+	// FRONT of every devbox dir so `iterion` inside the bot means THIS
+	// engine WITHOUT shadowing the devbox toolchain (#1384 + Rff1076);
+	// the existing PATH override (projectenv) survives as the tail via
+	// the runExtraEnvGetter seam.
+	path := applyRunPath(setter, binDirs)
 	emitOutcome(projects, binDirs, path)
-	return cleanup
+	return composeCleanup()
+}
+
+// stageEngineShim creates a per-run directory holding a SINGLE
+// `iterion` symlink to engineBin, and returns its absolute path along
+// with a cleanup that removes it. Used by provisionHostDevbox to
+// prepend one binary — not one whole directory — to the run's PATH,
+// so a bot's shell tools resolve `iterion` to THIS engine WITHOUT
+// shadowing the devbox-provisioned toolchain that also lives in
+// LocateIterionBinary's containing dir (node/go/python/git/devbox on
+// /usr/local/bin, ~/.local/bin, or a brew prefix). See #1384's
+// PR-review finding Rff1076.
+//
+// Symlink over copy so the shim never drifts against the running
+// binary. If os.Symlink is refused by the filesystem (a rare non-POSIX
+// mount), the caller degrades to no shim rather than blocking the
+// run: a bot's shell then sees whatever `iterion` sits on the ambient
+// PATH, exactly the pre-#1384 behaviour.
+//
+// The per-run directory is a subdir of os.TempDir() and carries the
+// runID: a resume that re-enters provisionHostDevbox recreates it
+// from scratch (removing the previous one first).
+func stageEngineShim(runID, engineBin string) (string, func(), error) {
+	root := filepath.Join(os.TempDir(), "iterion-engine-shim", runID)
+	// Remove any leftover from a previous invocation so a stale
+	// symlink from a prior engine binary path never wins.
+	_ = os.RemoveAll(root)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", nil, err
+	}
+	shimLink := filepath.Join(root, "iterion")
+	if err := os.Symlink(engineBin, shimLink); err != nil {
+		_ = os.RemoveAll(root)
+		return "", nil, fmt.Errorf("symlink %s -> %s: %w", shimLink, engineBin, err)
+	}
+	return root, func() { _ = os.RemoveAll(root) }, nil
 }
 
 // stageHostDevboxConfig copies srcDir's devbox.json (and devbox.lock
