@@ -10,10 +10,11 @@
 // misread as a frozen meter.
 
 import { useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { FeatureUnavailableError, getAdminCredentialUsage } from "@/api/adminCredUsage";
-import { errorMessage } from "@/lib/errorHints";
+import { clearUsageReadings } from "@/api/adminUsageReadings";
+import { errorMessage, toastError } from "@/lib/errorHints";
 
 import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/Button";
@@ -24,8 +25,10 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
+import { useConfirm } from "@/hooks/useConfirm";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { useUIStore } from "@/store/ui";
 
 import AdminNav from "../AdminNav";
 import {
@@ -63,6 +66,45 @@ export default function CredentialSpendPage() {
   const view = query.data;
   const loaded = !query.isPending;
   const unavailable = query.error instanceof FeatureUnavailableError;
+
+  const queryClient = useQueryClient();
+  const addToast = useUIStore((s) => s.addToast);
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [clearing, setClearing] = useState<string | null>(null);
+
+  // Clear one credential's stored usage readings by fingerprint — the escape
+  // hatch when a provider reset a window early and the stale reading keeps
+  // refusing every run of that credential (admin_usage_readings_routes.go).
+  const clearReadings = async (fp: string) => {
+    const ok = await confirm({
+      title: "Clear usage readings?",
+      message: (
+        <>
+          Forget the stored usage-window readings for credential{" "}
+          <code className="break-all">{fp}</code>. Use this only when a provider
+          reset a window early and the stale reading is refusing runs pre-flight.
+          It clears this one credential and leaves the global caps alone.
+        </>
+      ),
+      confirmLabel: "Clear readings",
+    });
+    if (!ok) return;
+    setClearing(fp);
+    try {
+      const res = await clearUsageReadings(fp);
+      addToast(
+        res.deleted > 0
+          ? `Cleared ${res.deleted} reading(s) for ${fp}`
+          : `No stored readings for ${fp} (nothing to clear)`,
+        "success",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["admin-credential-usage"] });
+    } catch (e) {
+      toastError(addToast, e, "Clear readings failed");
+    } finally {
+      setClearing(null);
+    }
+  };
 
   useHeaderSlot({
     left: <span className="text-sm font-semibold">Credential spend</span>,
@@ -235,6 +277,7 @@ export default function CredentialSpendPage() {
                 <Th align="right">Cost</Th>
                 <Th align="right">Runs</Th>
                 <Th>Tokens</Th>
+                <Th align="right">Actions</Th>
               </THead>
               <TBody>
                 {view.credentials.map((c) => (
@@ -254,6 +297,17 @@ export default function CredentialSpendPage() {
                     <Td align="right">{formatUSD(c.cost_usd)}</Td>
                     <Td align="right">{c.runs}</Td>
                     <Td className="text-caption text-fg-muted">{formatTokens(c)}</Td>
+                    <Td align="right" className="whitespace-nowrap">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        loading={clearing === c.fingerprint}
+                        disabled={clearing != null}
+                        onClick={() => void clearReadings(c.fingerprint)}
+                      >
+                        Clear readings
+                      </Button>
+                    </Td>
                   </Tr>
                 ))}
               </TBody>
@@ -261,6 +315,7 @@ export default function CredentialSpendPage() {
           )}
         </section>
       </div>
+      {confirmDialog}
     </div>
   );
 }
