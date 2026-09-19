@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -440,12 +441,29 @@ var remoteRunsUploadCmd = &cobra.Command{
 	}),
 }
 
+// remoteRunsScopeTeam carries the cross-tenant scope for the two run
+// aggregation reads. Empty = the caller's active team (the server's
+// default). #1419: the server honours ?team_id= with a canViewTeam check,
+// so an operator comparing two tenants no longer gets the active team's
+// numbers twice.
+var remoteRunsScopeTeam string
+
+// remoteRunsScopedPath appends the team scope the server's
+// resolveTenantScope reads (?team_id= beats the X-Iterion-Team header;
+// the query keeps the scope visible in the URL the operator typed).
+func remoteRunsScopedPath(path string) string {
+	if remoteRunsScopeTeam == "" {
+		return path
+	}
+	return path + "?team_id=" + url.QueryEscape(remoteRunsScopeTeam)
+}
+
 var remoteRunsStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Cross-run statistics",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/runs/stats")
+		return cli.RemoteGetPrint(cmd.Context(), c, p, remoteRunsScopedPath("/api/v1/runs/stats"))
 	}),
 }
 
@@ -454,7 +472,7 @@ var remoteRunsReposCmd = &cobra.Command{
 	Short: "Distinct repositories seen across runs",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/runs/repos")
+		return cli.RemoteGetPrint(cmd.Context(), c, p, remoteRunsScopedPath("/api/v1/runs/repos"))
 	}),
 }
 
@@ -607,5 +625,7 @@ func init() {
 		remoteRunsPreviewCostCmd, remoteRunsUploadCmd, remoteRunsStatsCmd, remoteRunsReposCmd,
 		remoteRunsMissionCmd,
 	)
+	remoteRunsStatsCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the aggregation to a team id you can view (default: your active team)")
+	remoteRunsReposCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
 	remoteCmd.AddCommand(remoteRunsCmd)
 }

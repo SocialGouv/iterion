@@ -65,6 +65,24 @@ func (s *Server) tryGoUntilShutdown(name string, fn func(context.Context)) (cont
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
+	// The shutdown SIGNAL has already fired (the HTTP drain is running,
+	// bgJoined has not flipped yet): a loop started now would run on an
+	// already-cancelled ctx and every store call in it would fail with a
+	// generic "context canceled". Refuse before registering so the caller
+	// — a late webhook's forge→board projection is the first one — can
+	// record the delivery as deferred to its sweep instead (#1477
+	// follow-up question 2). The select is non-blocking: a shutdown that
+	// has not fired costs one channel probe.
+	select {
+	case <-s.shutdown:
+		cancel()
+		if s.logger != nil {
+			s.logger.Warn("server: %s not started — the shutdown signal has already fired; anything this loop would have written is deferred to its reconciliation sweep", name)
+		}
+		return cancel, false
+	default:
+	}
+
 	s.stateMu.Lock()
 	joined := s.bgJoined
 	if !joined {

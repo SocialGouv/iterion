@@ -25,6 +25,44 @@ func resolveMaxConsecutiveToolErrors() int {
 	return defaultMaxConsecutiveToolErrors
 }
 
+// suppressedForfaitDir is the poisoned CLAUDE_CONFIG_DIR handed to the
+// CLI when the caller explicitly wants forfait auth REFUSED (the
+// providerHint=="zai" no-key branch). mergeCmdEnv turns an empty
+// value into an absent env var, and the claude CLI then defaults
+// CLAUDE_CONFIG_DIR to $HOME/.claude — on a developer laptop that
+// has run `claude login`, a valid forfait sits there and the CLI
+// authenticates as that operator's account, re-opening the leak
+// #1390 pinned. Pointing at a well-formed absolute path we know
+// does not exist forces the CLI's `.credentials.json` read to fail
+// and no fallback path is left. The value is never emitted anywhere
+// external; the file at that path is never opened by iterion itself.
+const suppressedForfaitDir = "/nonexistent/iterion-suppress-forfait"
+
+// ForfaitSuppressedEnvKey is the iterion-internal marker that names a
+// suppression map (the providerHint=="zai" no-key branch). Every reader
+// of CLAUDE_CONFIG_DIR inside iterion (providerFingerprint,
+// SessionFilesRoot, and any future one) tests THIS key before deciding
+// the OAuth forfait is set — pointing the CLI at a non-existent path
+// alone does not tell iterion's own code that the caller wants forfait
+// auth refused, so `providerFingerprint` would render the poisoned dir
+// as `anthropic-oauth` and persist it into node output / session
+// fingerprint / usagecap Reading.Source, and `SessionFilesRoot` would
+// write session transcripts under it. The marker travels with the map
+// (a plain env entry): the CLI subprocess sees an unknown var and
+// ignores it, while iterion's readers key on it. See #1390's PR-review
+// finding R0a39d6.
+const ForfaitSuppressedEnvKey = "ITERION_FORFAIT_SUPPRESSED"
+
+// isForfaitSuppressed reports whether the given env map declares the
+// suppression marker. Cheap enough to call from every reader of
+// CLAUDE_CONFIG_DIR.
+func isForfaitSuppressed(env map[string]string) bool {
+	if env == nil {
+		return false
+	}
+	return env[ForfaitSuppressedEnvKey] != ""
+}
+
 // settingSourcesFromEnv returns the CLI --setting-sources for claude_code
 // nodes. Default "user,project": load the operator's user-level CLAUDE.md /
 // settings.json and the target repo's project CLAUDE.md / .claude/settings.json
@@ -256,14 +294,25 @@ func providerFingerprint(env map[string]string) string {
 	if env == nil {
 		return "anthropic-env"
 	}
+	// The suppression marker wins over CLAUDE_CONFIG_DIR because the
+	// poisoned sentinel written by the zai no-key branch is NOT a
+	// real OAuth forfait — rendering it as `anthropic-oauth` would
+	// persist the sentinel into node output, cross-provider fork
+	// guards and usagecap Readings (R0a39d6). Fall through to the
+	// env label instead so the fingerprint reads as "suppressed
+	// Anthropic" and does not collide with the direct label.
+	suppressed := isForfaitSuppressed(env)
 	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
 		return "facade:" + facadeLabel(base)
 	}
 	if env["ANTHROPIC_API_KEY"] != "" {
 		return "anthropic-direct"
 	}
-	if env["CLAUDE_CONFIG_DIR"] != "" {
+	if !suppressed && env["CLAUDE_CONFIG_DIR"] != "" {
 		return "anthropic-oauth"
+	}
+	if suppressed {
+		return "anthropic-suppressed"
 	}
 	// Explicit zeroing of BASE_URL/AUTH_TOKEN (the providerHint==anthropic
 	// path) lands here too — it means "use the inherited ANTHROPIC_API_KEY
@@ -487,12 +536,59 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 			return zaiEnv(zai)
 		}
-		// No z.ai key reachable — clear hostile env and let downstream
-		// surface the "no credential" error rather than silently
-		// falling back to a different provider.
+		// No z.ai key reachable — actively suppress every channel the
+		// CLI could otherwise resolve to reach Anthropic-direct, so
+		// downstream surfaces the "no z.ai credential" error instead
+		// of silently routing the node to a different provider. The
+		// hostile set:
+		//   - Anthropic-flavoured env tokens (ANTHROPIC_API_KEY,
+		//     ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN),
+		//   - the ANTHROPIC_BASE_URL routing hint,
+		//   - the forfait FILE channel (CLAUDE_CONFIG_DIR: the CLI
+		//     reads $CLAUDE_CONFIG_DIR/.credentials.json when no
+		//     higher-priority env token is set, and on a sandboxed
+		//     spawn the container's baked value from
+		//     `exportForfaitConfigDirs` survives unless we override
+		//     it here — the fifth authoritative auth path in
+		//     claudeForfaitEnv),
+		//   - the alt-provider switches CLAUDE_CODE_USE_BEDROCK /
+		//     _USE_VERTEX / _USE_FOUNDRY (claw-code-go
+		//     detectProvider checks these BEFORE ANTHROPIC_API_KEY,
+		//     so an operator with the switch and cloud creds ambient
+		//     would silently boot the CLI into Bedrock/Vertex mode
+		//     against their cloud account for a `provider: zai`
+		//     node without a z.ai key).
+		//
+		// CLAUDE_CONFIG_DIR is set to a POISONED absolute path
+		// instead of `""`: mergeCmdEnv turns an empty value into an
+		// absent env var on the spawned CLI, which then defaults to
+		// $HOME/.claude — on a developer laptop that has run `claude
+		// login`, that resolves a valid forfait and re-opens the
+		// leak. A path we know does not exist forces the CLI's read
+		// to fail and no fallback to authenticate. The other four
+		// vars stay `""` (real "clear this inherited value") because
+		// they carry secrets, not paths.
+		//
+		// Clearing only a subset leaves the leak intact: issue #1390
+		// pinned this on a wave-4 fallback route that 404'd on the
+		// GLM id after silently landing at api.anthropic.com.
 		return map[string]string{
-			"ANTHROPIC_BASE_URL":   "",
-			"ANTHROPIC_AUTH_TOKEN": "",
+			"ANTHROPIC_BASE_URL":      "",
+			"ANTHROPIC_AUTH_TOKEN":    "",
+			"ANTHROPIC_API_KEY":       "",
+			"CLAUDE_CODE_OAUTH_TOKEN": "",
+			"CLAUDE_CONFIG_DIR":       suppressedForfaitDir,
+			"CLAUDE_CODE_USE_BEDROCK": "",
+			"CLAUDE_CODE_USE_VERTEX":  "",
+			"CLAUDE_CODE_USE_FOUNDRY": "",
+			// Marker every iterion-internal reader of
+			// CLAUDE_CONFIG_DIR tests before treating it as a real
+			// OAuth forfait — providerFingerprint would otherwise
+			// render the poisoned dir as `anthropic-oauth` and
+			// persist it into the node's output map; SessionFilesRoot
+			// would write transcripts under the non-existent path.
+			// See R0a39d6.
+			ForfaitSuppressedEnvKey: "1",
 		}
 	}
 
