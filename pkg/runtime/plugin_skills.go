@@ -161,16 +161,20 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				}
 				outcome, destPath, rerr := mirrorPluginContribFile(destDir, markerDir, tmpPath, f.Name, kind, logger)
 				if rerr != nil {
-					// A malformed contribution name (e.g. one that
-					// skillDestDirForm refuses because it has no .md
-					// extension case-insensitively) must not abort the
-					// whole mirror pass — that would discard every other
-					// plugin's skills / commands / agents behind a single
-					// WARN. Name the offender, keep going.
-					if logger != nil {
-						logger.Warn("runtime/plugin: skipping %s %q from %q: %v", kind.Name, f.Name, p.Name(), rerr)
+					// Validation error (a name skillDestDirForm refuses)
+					// is soft: skip THIS entry, name the offender, keep
+					// mirroring the rest — one malformed manifest entry
+					// must not discard every other plugin. An I/O error
+					// is FATAL: a run whose enabled plugin declares a
+					// skill iterion could not mirror must not proceed
+					// silently. Same predicate as the bundle site.
+					if isSkillValidationError(rerr) {
+						if logger != nil {
+							logger.Warn("runtime/plugin: skipping %s %q from %q (validation): %v", kind.Name, f.Name, p.Name(), rerr)
+						}
+						continue
 					}
-					continue
+					return nil, fmt.Errorf("runtime/plugin: mirror %s %q from %q: %w", kind.Name, f.Name, p.Name(), rerr)
 				}
 				// Reports the COLLISION, never the winner. Two earlier
 				// versions of this warning inferred which bytes landed from
