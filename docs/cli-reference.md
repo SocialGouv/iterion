@@ -8,6 +8,7 @@ This page maps every public top-level command in the current binary and document
 |---|---|
 | `bench asymptote` | Build a workflow-quality stabilisation report from persisted runs. |
 | `bench discovery` | Report what persisted runs spent on orientation — reads and searches — rather than on the change. |
+| `map gen` | Regenerate the committed repository maps (packages, docs + ADR, bots + skills); `--check` fails on drift. |
 | `bots` | Create bots, install published ones, and emit the catalogue. |
 | `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
 | `clean` | Reclaim disk by deleting run worktrees whose work has landed. |
@@ -714,6 +715,8 @@ iterion remote runs mission stop TARGET MISSION
 All four commands support the remote command's normal `--output json` mode.
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
+
+`iterion map gen` rewrites the three committed indexes under `docs/references/` — [`map-packages.md`](references/map-packages.md) (every Go package, its one-line purpose and the interfaces it exposes), [`map-docs.md`](references/map-docs.md) (every page and ADR, with the ADR's status) and [`map-bots.md`](references/map-bots.md) (every bundle and skill). Everything is derived deterministically: Go's own parser, markdown headings, the bundle manifest loader — no model call, no embedding. `--check` writes nothing and fails on drift; `task map:check` runs the same assertion as a Go test, so freshness rides the required `test` check.
 
 `iterion bench discovery` classifies each run's tool calls into orientation (read, search, list), change (write, commit) and neither, and reports the token spend of the nodes that never wrote anything — the only split the event stream supports without imputing one. Takes `--runs id,...` or `--last N`, plus `--output`, `--title` and `--top`. Every table states its coverage, including the verbs the classifier could not name. Background and the measured baseline: [context retrieval state of the art](references/context-retrieval-state-of-the-art.md).
 

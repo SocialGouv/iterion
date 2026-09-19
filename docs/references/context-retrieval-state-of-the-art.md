@@ -151,7 +151,13 @@ over a few hundred thousand edges is not the hard part.
 - **A generated, committed, gated index** — the deterministic half of the
   repo-map and generated-wiki ideas, following this repo's own
   `dsl:gen`/`dsl:check`, `openapi:gen`/`openapi:check` pattern, where a Go
-  test fails if the committed artifact drifts from its source.
+  test fails if the committed artifact drifts from its source. It exists:
+  [map-packages.md](map-packages.md), [map-docs.md](map-docs.md),
+  [map-bots.md](map-bots.md), written by `task map:gen`, held to the tree
+  by `task map:check`. **Its benefit is not yet measured** — the `bench
+  discovery` delta that decides whether it stays is issue #1482, and the
+  rule stands: an index that does not reduce the orientation cost is
+  deleted, not kept.
 - **Budget packing**: an index is useless if reading it costs what it
   saves. Rankings are packed under a stated token budget, the way Aider
   packs a repo map.
