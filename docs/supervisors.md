@@ -70,6 +70,12 @@ prompt watchdog_policy:
   test fails twice in a row. Keep messages short and actionable.
 ```
 
+A `model:` pin renders no template: a supervisor is spawned without the
+run's vars, so a `{{vars.…}}` there warns C148 at compile time and reaches
+the spawn as written (#1450); `${VAR}` / `${VAR:-default}` still expands.
+Only the `{{vars.<name>}}` step — which a node's routing fields take first —
+is missing here.
+
 **Model resolution** (unpinned supervisors): `model:` pin →
 `ITERION_DEFAULT_SUPERVISOR_MODEL` → **the provider family the watched
 nodes themselves run on** (their `provider:` routing, a `provider/`

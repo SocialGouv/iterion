@@ -14,11 +14,16 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -175,9 +180,15 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	}
 
 	var errs []string
+	// lockKept records what keepRepoDevboxLock had to undo after the repo's
+	// install: the operator reads it in the event, next to the errors.
+	var lockKept []string
 	emitOutcome := func(projects []hostDevboxProject, binDirs []string, path string) {
 		payload := map[string]any{
 			"target": "host",
+		}
+		if len(lockKept) > 0 {
+			payload["lock_kept"] = lockKept
 		}
 		if skippedRepo != "" {
 			payload["skipped_sources"] = []string{"repo"}
@@ -265,10 +276,45 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 			strings.Join(labels, "+"), strings.Join(configs, ", "), strings.Join(binDirs, ", "))
 	}
 	for _, pr := range projects {
+		// The repo installs IN PLACE, in the run's worktree: what `devbox
+		// install` writes there, the run's own gates read as the pass's work.
+		var lockBefore []byte
+		hadLock := false
+		keepLock := pr.label == "repo"
+		if keepLock {
+			data, err := os.ReadFile(filepath.Join(pr.dir, devboxLockName))
+			switch {
+			case err == nil:
+				lockBefore, hadLock = data, true
+			case errors.Is(err, fs.ErrNotExist):
+				// The repository tracks no lock: one the install creates is removed below.
+			default:
+				// Unreadable is not absent: a read error here must not turn into
+				// "created by devbox" after the install and remove a tracked file.
+				keepLock = false
+				errs = append(errs, fmt.Sprintf("read the repo %s before install: %v — whatever devbox writes to it stays in the worktree", devboxLockName, err))
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
+				}
+			}
+		}
 		if instErr := runHostDevboxInstall(ctx, devboxBin, pr.dir, e.logger); instErr != nil {
 			errs = append(errs, fmt.Sprintf("install failed for the %s %s: %v — the packages it declares are NOT on PATH for this run", pr.label, devboxConfigName, instErr))
 			if e.logger != nil {
 				e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
+			}
+		}
+		if keepLock {
+			if note, err := keepRepoDevboxLock(pr.dir, lockBefore, hadLock); err != nil {
+				errs = append(errs, fmt.Sprintf("keep the repo %s: %v — the worktree carries whatever the failed write left there", devboxLockName, err))
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
+				}
+			} else if note != "" {
+				lockKept = append(lockKept, note)
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: %s", note)
+				}
 			}
 		}
 	}
@@ -303,6 +349,147 @@ func stageHostDevboxConfig(srcDir, dstDir string) error {
 		return copyRegularFile(lockSrc, filepath.Join(dstDir, devboxLockName))
 	}
 	return nil
+}
+
+// keepRepoDevboxLock puts the repository's devbox.lock back to what the run
+// found it when what `devbox install` wrote in place in the worktree is
+// plugin metadata drift — and nothing else.
+//
+// devbox rewrites the lock's `plugin_version` whenever the host's plugin
+// registry is newer than the pin — one line on a laptop with a fresh devbox,
+// on a runner image rebuilt with one. The tracked tree then differs before
+// the first node runs, and every gate that reads the tree as the pass's own
+// work (a campaign's scope gate, a clean-tree precheck, a whole-tree commit)
+// refuses honest work for a file the bot never touched (#1459). Metadata is
+// all that moved, so the pinned content comes back. A lock the install
+// changed BEYOND that — a repository whose lock was behind its devbox.json,
+// packages resolved for the first time or moved to another nixpkgs commit —
+// is kept: the worktree then carries the resolution the run's PATH was
+// built from, and a later `devbox run` reuses it instead of resolving anew,
+// possibly elsewhere; the gates see the change, rightly, the repository is
+// out of sync with itself. A lock the install CREATED is removed only where
+// git would show it — an untracked file in a repository that does not
+// ignore it; an ignored lock, or one outside any repository, costs the gates
+// nothing and spares every later devbox invocation a resolution. A lock the
+// install left untouched yields no note and no write; one it removed, or
+// left unparseable (an install cut short mid-write is no resolution anything
+// can reuse), comes back; one it created AND left unparseable is removed
+// wherever it is — devbox would refuse to run with it. The note says what
+// was done.
+func keepRepoDevboxLock(dir string, before []byte, hadLock bool) (string, error) {
+	path := filepath.Join(dir, devboxLockName)
+	after, err := os.ReadFile(path)
+	switch {
+	case hadLock && err == nil && bytes.Equal(after, before):
+		return "", nil
+	case hadLock && err != nil:
+		// Removed: put the pinned content back.
+		if werr := os.WriteFile(path, before, 0o644); werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("devbox install removed %s; restored to the repository's pinned content so the worktree stays what the run found it", path), nil
+	case hadLock && !lockParses(after):
+		// Left unparseable — an install that crashed or was cut short
+		// mid-write: no resolution anything can reuse. The pinned content
+		// comes back; the install's own failure is reported on its own.
+		if werr := os.WriteFile(path, before, 0o644); werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("devbox install left %s unparseable (%d bytes); restored to the repository's pinned content — the install itself is reported on its own", path, len(after)), nil
+	case hadLock && !lockDiffersOnlyInPluginMetadata(before, after):
+		// A real re-lock: kept, said — and said why the pin lost.
+		reason := "the repository's lock was behind its devbox.json"
+		if !lockParses(before) {
+			reason = "the repository's lock did not parse"
+		}
+		return fmt.Sprintf("devbox install changed %s beyond plugin metadata (%s); kept — the worktree carries the resolution the run's PATH was built from", path, reason), nil
+	case hadLock:
+		// Rewritten metadata: restore the pinned content.
+		if werr := os.WriteFile(path, before, 0o644); werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("devbox install rewrote %s (%d → %d bytes: plugin metadata drift on this host); restored to the repository's pinned content so the worktree stays what the run found it", path, len(before), len(after)), nil
+	case err == nil:
+		// Created in a repository that tracks none. One the install left
+		// unparseable goes first: devbox refuses to run with it in place
+		// (measured: `unexpected end of JSON input`), so keeping it would
+		// break every later devbox invocation in the worktree rather than
+		// spare one a resolution.
+		if !lockParses(after) {
+			if rerr := os.Remove(path); rerr != nil {
+				return "", rerr
+			}
+			return fmt.Sprintf("devbox install created %s and left it unparseable; removed — no later devbox run could have read it", path), nil
+		}
+		// Removed only where git would show it.
+		visible, known := gitWouldShow(dir, devboxLockName)
+		if !known {
+			return fmt.Sprintf("devbox install created %s; kept — no git repository reads the worktree, so no gate sees it and a later devbox run reuses it", path), nil
+		}
+		if !visible {
+			return fmt.Sprintf("devbox install created %s; kept — the repository ignores it, so no gate sees it and a later devbox run reuses it", path), nil
+		}
+		if rerr := os.Remove(path); rerr != nil {
+			return "", rerr
+		}
+		return fmt.Sprintf("devbox install created %s, a file the repository does not track; removed so the worktree stays clean", path), nil
+	default:
+		return "", nil
+	}
+}
+
+// lockParses reports whether b is a devbox.lock document devbox can read
+// again: a JSON object. A write cut short, an empty file or a bare scalar
+// is not one — `json.Valid` alone would accept `null` or `[]`.
+func lockParses(b []byte) bool {
+	var doc map[string]any
+	return json.Unmarshal(b, &doc) == nil && doc != nil
+}
+
+// lockDiffersOnlyInPluginMetadata reports whether two devbox.lock documents
+// read the same once every package entry's `plugin_version` — the field
+// devbox rewrites when the host's plugin registry is newer than the pin —
+// is dropped. Content that does not parse is a real difference.
+func lockDiffersOnlyInPluginMetadata(a, b []byte) bool {
+	strip := func(raw []byte) (map[string]any, bool) {
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, false
+		}
+		if pkgs, ok := doc["packages"].(map[string]any); ok {
+			for _, v := range pkgs {
+				if entry, ok := v.(map[string]any); ok {
+					delete(entry, "plugin_version")
+				}
+			}
+		}
+		return doc, true
+	}
+	da, oka := strip(a)
+	db, okb := strip(b)
+	return oka && okb && reflect.DeepEqual(da, db)
+}
+
+// gitWouldShow reports whether git, asked in dir, would list rel as a change
+// — an untracked file no ignore rule covers. known is false when dir is not
+// inside a git work tree or git cannot answer.
+func gitWouldShow(dir, rel string) (visible, known bool) {
+	inside, cancel := gitCmd("-C", dir, "rev-parse", "--is-inside-work-tree")
+	defer cancel()
+	if err := inside.Run(); err != nil {
+		return false, false
+	}
+	check, cancelCheck := gitCmd("-C", dir, "check-ignore", "-q", rel)
+	defer cancelCheck()
+	err := check.Run()
+	if err == nil {
+		return false, true // exit 0: an ignore rule covers it
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return true, true // exit 1: not ignored
+	}
+	return false, false
 }
 
 // copyRegularFile copies src to dst (0644).

@@ -245,7 +245,7 @@ agent verify_fixes:
 ### Model resolution
 
 When using `model`, the engine resolves the model identifier through this chain:
-1. The `model` field value (with environment variable expansion)
+1. The `model` field value — a `{{vars.<name>}}` reference resolves first (vars only; any other template warns C148 and is read as text), then `${VAR}` / `${VAR:-default}` expansion
 2. The `ITERION_DEFAULT_SUPERVISOR_MODEL` environment variable
 3. Built-in default: `anthropic/claude-sonnet-5`
 
