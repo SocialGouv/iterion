@@ -123,6 +123,20 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 			select {
 			case <-s.done:
 			case <-waitCtx.Done():
+			}
+			// Post-check: when the shared budget is already spent
+			// (subscribers 2..N after subscriber 1 ate it), waitCtx.Done
+			// wins the select even though the worker has no in-flight
+			// handler — s.done is closed by the worker's defer AFTER we
+			// closed s.stop, and that goroutine may not have scheduled
+			// yet in the same nanosecond. Give s.done one more short
+			// window: enough for the worker to run when there is nothing
+			// in flight, small enough not to compose meaningfully across
+			// N subscribers. Only warn if the worker really did not
+			// return. #1477 R6aac0e.
+			select {
+			case <-s.done:
+			case <-time.After(overrunPostCheckWindow):
 				if b.logger != nil {
 					b.logger.Warn("eventbus: subscriber %q handler did not return within cancel budget; its last write falls outside the grace period", s.name)
 				}

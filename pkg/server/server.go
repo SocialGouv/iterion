@@ -502,6 +502,11 @@ type Server struct {
 	gateAutofixCancel func(context.Context)
 	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
 	outcomeRouterCancel func(context.Context)
+	// forgeProjSem bounds concurrent forge→board projection goroutines,
+	// held on the Server (not a package var) so tests spawning independent
+	// Server instances get independent semaphore state — see the
+	// forgeProjectionSem method (#1477 follow-up Q4).
+	forgeProjSem chan struct{}
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin
@@ -646,12 +651,18 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		cfg.WSTickets = wsticket.NewMemoryStore(wsTicketTTL)
 	}
 	s := &Server{
-		cfg:                 cfg,
-		extraOrigins:        loadExtraAllowedOrigins(logger),
-		logger:              logger,
-		mux:                 newRecordingMux(),
-		addrReady:           make(chan struct{}),
-		shutdown:            make(chan struct{}),
+		cfg:          cfg,
+		extraOrigins: loadExtraAllowedOrigins(logger),
+		logger:       logger,
+		mux:          newRecordingMux(),
+		addrReady:    make(chan struct{}),
+		shutdown:     make(chan struct{}),
+		// Pre-allocate the projection semaphore so scheduleForgeBoardProjection
+		// stays lock-free — a per-webhook stateMu.Lock (a lazy init would
+		// need one) would queue behind any project-switch writer and stall
+		// /api/bots, /api/server/info and the pipeline board (#1477
+		// follow-up round MEDIUM).
+		forgeProjSem:        make(chan struct{}, forgeProjectionSemCap),
 		authSvc:             cfg.AuthService,
 		signer:              cfg.AuthSigner,
 		oidcRegistry:        cfg.OIDCRegistry,

@@ -30,6 +30,30 @@ import (
 // cancel a single subscription outside of a shutdown.
 const DefaultSubscribeCancelBudget = 500 * time.Millisecond
 
+// overrunPostCheckWindow is a small grace period the cancel path gives
+// the worker after the budget expired: enough for a scheduler wake so a
+// no-in-flight worker closes its done channel, small enough that N
+// subscribers under one shared budget do not eat the budget by
+// composing the grace. Without it, a same-tick coin-flip between
+// waitCtx.Done() and s.done names a clean subscriber as an overrun
+// ~half the time (#1477 R6aac0e).
+//
+// 20 ms is calibrated between two constraints identified by the
+// adversarial rounds:
+//
+//   - Go's async-preemption slice is 10 ms, and a saturated shared
+//     runner can delay a worker's `defer close(s.done)` past a shorter
+//     window (round 3 reproduced the miss at 2 ms on a 32-core box
+//     under 32×`yes`).
+//   - The shared shutdown budget covers N cancels together, so each
+//     grace period composes into the total wall-clock. At N = 10 the
+//     added cost is 200 ms — significant next to a 500 ms budget but
+//     recoverable within the chart's 60 s terminationGracePeriodSeconds.
+//
+// 20 ms is well above the 10 ms preemption slice and leaves the
+// aggregate cost bounded.
+const overrunPostCheckWindow = 20 * time.Millisecond
+
 // Handler processes one event. It runs on a per-subscriber worker goroutine,
 // so it may do store I/O without stalling the publisher. A returned error is
 // logged and otherwise ignored — the bus does not retry (the producer's own

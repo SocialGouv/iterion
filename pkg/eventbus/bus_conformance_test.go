@@ -410,13 +410,64 @@ func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 			if elapsed >= time.Duration(N-1)*perSubBudget {
 				t.Errorf("%s: N=%d cancels shared joinCtx took %v; per-subscription composition would give ~%v — the shared budget is not being honoured", c.name, N, elapsed, time.Duration(N)*perSubBudget)
 			}
-			ceiling := joinBudget + 200*time.Millisecond
+			// Ceiling includes the overrunPostCheckWindow grace per cancel:
+			// each subscriber, after the shared joinCtx expires, waits up
+			// to overrunPostCheckWindow more for its worker's done signal
+			// so a same-tick coin-flip does not misname a clean sub as an
+			// overrun (#1477 R6aac0e). Total = joinBudget + N*grace + slack.
+			ceiling := joinBudget + N*overrunPostCheckWindow + 200*time.Millisecond
 			if elapsed > ceiling {
-				t.Errorf("%s: N=%d cancels took %v; expected ≤ %v (budget %v + slack)", c.name, N, elapsed, ceiling, joinBudget)
+				t.Errorf("%s: N=%d cancels took %v; expected ≤ %v (budget %v + %d×%v grace + slack)", c.name, N, elapsed, ceiling, joinBudget, N, overrunPostCheckWindow)
 			}
 			// Wait for the slow handlers to unwind so the cleanup can
 			// drain the async broker's dispatch goroutines cleanly.
 			time.Sleep(unwindDelay + 100*time.Millisecond)
+		})
+	}
+}
+
+// TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub is #1477 R6aac0e:
+// when the shared subCancelCtx is already spent (subscribers 2..N after
+// subscriber 1 ate the budget), the worker's s.done and waitCtx.Done()
+// are both ready at the SAME tick, and Go's select picks a random ready
+// arm — a worker that returned instantly gets named in the operator-
+// facing overrun warning ~half the time. The pre-check-s.done fix makes
+// the false positive structurally impossible.
+//
+// The test iterates N times to catch the coin-flip: without the
+// pre-check, this reddens with any probability up to 1 — running N=100
+// makes the false-positive rate observable on any run. Mutation
+// (revert the pre-check): red on flaky N iterations.
+func TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub(t *testing.T) {
+	for _, c := range busCases {
+		if c.name == "nats" {
+			// Sync fakeBroker's serial dispatch is not the shape of the
+			// race — the pre-check matters when many subscriptions share
+			// ONE expired ctx.
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			for iter := 0; iter < 100; iter++ {
+				var buf bytes.Buffer
+				bus, cleanup := c.make(t, newBufLogger(&buf), 50*time.Millisecond)
+				cancel, err := bus.Subscribe("clean", trigger.Matcher{}, func(context.Context, trigger.Event) error {
+					// Handler returns immediately: the worker is done by
+					// the time cancel is called.
+					return nil
+				})
+				if err != nil {
+					t.Fatalf("Subscribe: %v", err)
+				}
+				// Pre-expire the shared ctx so waitCtx.Done() is ALREADY
+				// ready when cancel enters its select.
+				expiredCtx, expiredCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				cancel(expiredCtx)
+				expiredCancel()
+				if s := buf.String(); strings.Contains(s, "did not return within") || strings.Contains(s, "did not settle within") {
+					t.Fatalf("iter=%d: warning fired on a clean subscriber (expired ctx race won by ctx.Done): %q", iter, s)
+				}
+				cleanup()
+			}
 		})
 	}
 }

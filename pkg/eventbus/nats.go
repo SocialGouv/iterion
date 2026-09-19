@@ -301,13 +301,33 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 					pending = 0
 				}
 			}
-			// The overrun is "something did NOT complete", not "the ctx
-			// expired": if both channels closed on the same tick as
-			// ctx.Done, the ctx-arm can win the select at random and
-			// misclassify a clean shutdown as an overrun. Only warn when
-			// a channel is still open — that's what a real hang looks
-			// like (#1477's adversarial LOW).
-			if (waitDone != nil || unsubDone != nil) && b.logger != nil {
+			// The overrun is defined by "did the operation actually
+			// complete", not by "which select arm won". When the shared
+			// budget is already spent (subscribers 2..N under one
+			// joinCtx), the ctx-arm and a channel-close arm can be ready
+			// on the same tick and Go's select picks a random ready arm
+			// — a clean shutdown would be named as an overrun ~half the
+			// time. Give each still-open channel one more short window:
+			// enough for the spawning goroutine to run when there is
+			// nothing in flight, small enough not to compose meaningfully
+			// across N subscribers. Only warn when the channel is
+			// genuinely still open. #1477 R6aac0e.
+			overran := false
+			if waitDone != nil {
+				select {
+				case <-waitDone:
+				case <-time.After(overrunPostCheckWindow):
+					overran = true
+				}
+			}
+			if !overran && unsubDone != nil {
+				select {
+				case <-unsubDone:
+				case <-time.After(overrunPostCheckWindow):
+					overran = true
+				}
+			}
+			if overran && b.logger != nil {
 				b.logger.Warn("eventbus: subscriber %q did not settle within cancel budget; its last write falls outside the grace period", name)
 			}
 			b.mu.Lock()

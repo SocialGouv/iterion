@@ -159,8 +159,10 @@ func TestScheduleForgeBoardProjectionReleasesSemOnRefused(t *testing.T) {
 		t.Fatalf("initial shutdown: %v", err)
 	}
 
-	// Snapshot the semaphore's current occupancy before the refused calls.
-	before := len(forgeProjectionSem)
+	// The semaphore is per-Server now (#1477 follow-up Q4), so this snapshot
+	// is not polluted by any other test.
+	sem := srv.forgeProjSem
+	before := len(sem)
 
 	// Fire a burst of projections; each acquires a slot but the registration
 	// is refused. Each must release the slot before returning.
@@ -168,7 +170,7 @@ func TestScheduleForgeBoardProjectionReleasesSemOnRefused(t *testing.T) {
 		srv.scheduleForgeBoardProjection("owner/repo")
 	}
 
-	after := len(forgeProjectionSem)
+	after := len(sem)
 	if after != before {
 		t.Fatalf("forgeProjectionSem grew by %d slots on refused registrations; slots leaked", after-before)
 	}

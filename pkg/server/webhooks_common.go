@@ -51,13 +51,19 @@ func (s *Server) verifyWebhookHMACBody(w http.ResponseWriter, r *http.Request, c
 	return body, knowledge.ChecksumHex(body), s.clientIP(r), true
 }
 
-// forgeProjectionSem bounds concurrent best-effort forge→board projection
-// goroutines. A burst of webhooks would otherwise spawn one 30s goroutine
-// each without limit. Acquisition is non-blocking: when the cap is reached
-// the fast-path refresh is skipped and the periodic forge→board sweep
-// reconciles the board, so correctness is preserved and the request never
-// blocks.
-var forgeProjectionSem = make(chan struct{}, 16)
+// forgeProjectionSemCap bounds concurrent best-effort forge→board projection
+// goroutines. A burst of webhooks would otherwise spawn one 30 s goroutine
+// each without limit. Acquisition is non-blocking (see
+// scheduleForgeBoardProjection): when the cap is reached the fast-path
+// refresh is skipped and the periodic forge→board sweep reconciles the
+// board, so correctness is preserved and the request never blocks.
+//
+// Held on the Server (lazily built in forgeProjectionSem()) rather than
+// as a package var, so per-test state does not leak across independent
+// Server instances — the pre-fix package-scoped semaphore made
+// `-shuffle=on -count=3` observe slots that survived across tests
+// (#1477's follow-up Q4).
+const forgeProjectionSemCap = 16
 
 // defaultWebhookBotReviewPR is the bot iterion auto-selects when a
 // review-PR-shaped delivery (GitLab MR open/reopen, GitLab Note /revi,
@@ -941,10 +947,11 @@ func (s *Server) scheduleForgeBoardProjection(repo string) {
 	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil {
 		return
 	}
+	sem := s.forgeProjSem
 	select {
-	case forgeProjectionSem <- struct{}{}:
+	case sem <- struct{}{}:
 		if _, started := s.tryGoUntilShutdown("server.forgeBoardProjection", func(ctx context.Context) {
-			defer func() { <-forgeProjectionSem }()
+			defer func() { <-sem }()
 			// 30s happy-path ceiling on top of the shutdown-aware ctx. On
 			// SIGTERM this cancels early with the outer ctx; on a slow
 			// Mongo it cancels after 30s.
@@ -956,7 +963,7 @@ func (s *Server) scheduleForgeBoardProjection(repo string) {
 			// not called, so the deferred slot release inside it never
 			// runs. Release it here so the concurrency cap does not leak
 			// on a process that is being kept alive by a hung Shutdown.
-			<-forgeProjectionSem
+			<-sem
 		}
 	default:
 		// Concurrency cap reached — skip the fast path; the periodic
