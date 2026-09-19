@@ -37,6 +37,7 @@ const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPage"));
 const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
 const UsageCapsPage = lazy(() => import("@/views/admin/settings/UsageCapsPage"));
+const CredentialSpendPage = lazy(() => import("@/views/admin/spend/CredentialSpendPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -640,6 +641,7 @@ function AuthedApp() {
                 <Route path="/bots" component={PlatformBotsPage} />
                 <Route path="/audit" component={AuditAdminPage} />
                 <Route path="/dlq" component={DLQAdminPage} />
+                <Route path="/spend" component={CredentialSpendPage} />
               </Switch>
             </RequireSuperAdmin>
           </Route>

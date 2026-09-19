@@ -13,6 +13,7 @@ const ITEMS = [
   { value: "/admin/bots", label: "Bot overrides" },
   { value: "/admin/audit", label: "Audit" },
   { value: "/admin/dlq", label: "Dead-letter queue" },
+  { value: "/admin/spend", label: "Spend" },
 ];
 
 export default function AdminNav() {
