@@ -111,13 +111,42 @@ func TestShutdown_CompleteMode_LetsRunFinish(t *testing.T) {
 
 	// Shutdown must block until the run finishes (done closes), NOT return
 	// eagerly and NOT cancel the run.
+	//
+	// Mechanism observed: Shutdown flips `r.draining` to true on its very
+	// first line (loop.go), and it is the only writer of that flag, so a
+	// visible `Health().Draining==true` proves Shutdown was entered. From
+	// there, the property is that Shutdown is now BLOCKED in the drain
+	// wait — proved by (a) shutReturned still open and (b) `cancelled`
+	// still false. No wall-clock witness bounds the observation; the
+	// 5 s ceiling in the recovery select below is only a liveness bound
+	// for a wedged goroutine and does not decide the property. #1471.
 	shutReturned := make(chan struct{})
 	go func() { _ = r.Shutdown(context.Background()); close(shutReturned) }()
 
+	deadline := time.Now().Add(5 * time.Second)
+	for !r.Health().Draining && time.Now().Before(deadline) {
+		select {
+		case <-shutReturned:
+			t.Fatal("Shutdown returned before the in-flight run finished (lame-duck must wait)")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if !r.Health().Draining {
+		t.Fatal("Shutdown never entered its drain state (Health().Draining stayed false) — the goroutine was not scheduled within 5 s")
+	}
+	// Shutdown has entered its drain (mechanism observed). The
+	// eager-cancel failure is directly readable via cancelled.Load()
+	// below; but the "flip Draining and return immediately" mutation is
+	// not — a goroutine parked on a select is not observable from Go,
+	// so a bounded liveness check is the only way to catch that class.
+	// 100 ms is a fence for the class, not a witness for the property:
+	// a healthy drain waits for `<-done` and only returns when done
+	// closes (proven by the "close(done) → Shutdown returns" assertion
+	// below).
 	select {
 	case <-shutReturned:
-		t.Fatal("Shutdown returned before the in-flight run finished (lame-duck must wait)")
-	case <-time.After(50 * time.Millisecond):
+		t.Fatal("Shutdown returned right after entering drain — the drain wait is broken (flip-and-return mutation)")
+	case <-time.After(100 * time.Millisecond):
 	}
 	if cancelled.Load() {
 		t.Fatal("lame-duck Shutdown cancelled the in-flight run — it must let it finish")
