@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.172.1](https://github.com/SocialGouv/iterion/compare/v3.172.0...v3.172.1) (2026-09-19)
+
+### Bug Fixes
+
+* **runtime:** plugin skills land in both discovery shapes, and a same-name plugin collision is loud on the cloud mirror too ([#1479](https://github.com/SocialGouv/iterion/issues/1479)) ([407b719](https://github.com/SocialGouv/iterion/commit/407b719da091ebd45a7027668275335bc35dc4dd)), closes [#1372](https://github.com/SocialGouv/iterion/issues/1372), references [#1373](https://github.com/SocialGouv/iterion/issues/1373) [#1374](https://github.com/SocialGouv/iterion/issues/1374) [#1373](https://github.com/SocialGouv/iterion/issues/1373) [#1374](https://github.com/SocialGouv/iterion/issues/1374)
+
+    <details><summary>why</summary>
+
+    ## #1373 — plugin skills were reachable only by claw
+
+    </details>
+
 ## [3.172.0](https://github.com/SocialGouv/iterion/compare/v3.171.0...v3.172.0) (2026-09-19)
 
 ### Features
