@@ -37,6 +37,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateNodeTimeout(w)
 	c.validateSecrets(w)
 	c.validateTemplateRefs(w)
+	c.validateWithMappingLiterals(w)
 	c.validateNodeMaxTokensVsBudget(w)
 	c.validateMCPAuth(w)
 	c.validateCompaction(w)
