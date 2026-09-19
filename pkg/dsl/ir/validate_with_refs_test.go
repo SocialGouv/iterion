@@ -592,15 +592,17 @@ workflow w:
 	}
 }
 
-// C152 also warns on a ref-less literal reaching a `json` field
-// when the text is NOT valid JSON — the copilot bot's `host_event:
-// "”"` shape (2-char single-quoted string). The runtime hands the
-// destination the raw text, and no downstream JSON consumer decodes
-// `”` as an empty string; the author's intent is opaque to any
-// reader. Warning surfaces the site for a compute-through fix; only
-// bare primitives that ARE valid JSON (`true`/`false`/numerics) stay
-// silent.
-func TestC152NotValidJSONLiteralWarns(t *testing.T) {
+// C152 warns on a ref-less literal reaching a `json` field when the
+// text visibly ATTEMPTS an encoding — the copilot bot's `host_event`
+// mapping holding two apostrophes (an attempted and wrong spelling of
+// the empty string). The runtime hands the destination the raw text,
+// and no consumer decodes two apostrophes as an empty string. A numeric literal stays
+// silent — a decision this test locks: it reads as the JSON string the
+// author wrote, and although arithmetic on it would concatenate
+// (`input.j + 1` on "42" yields "421"), the diagnostic claims the
+// encodings that visibly carry structure, not every scalar the
+// destination might have wanted typed.
+func TestC152AttemptedEncodingOnJSONWarns(t *testing.T) {
 	src := `dsl: 2
 
 schema kout:

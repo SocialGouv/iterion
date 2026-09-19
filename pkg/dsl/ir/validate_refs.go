@@ -536,7 +536,7 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	name := rc.Ref.Path[0]
 	if rc.InWith {
 		c.refErrorf(rc, DiagWithSecretRef,
-			"%s: reference %s cannot travel through a data mapping — the runtime materialises secrets only at execution sinks (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body); a `with:` value or a fail `message:` resolves the reference to nil",
+			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the secret (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
 			rc.Location, rc.Ref.Raw)
 		return
 	}
@@ -584,7 +584,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	name := rc.Ref.Path[0]
 	if rc.InWith {
 		c.refErrorf(rc, DiagWithAttachmentRef,
-			"%s: reference %s cannot travel through a data mapping — the runtime materialises attachments only at execution sinks (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body); a `with:` value or a fail `message:` resolves the reference to nil",
+			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the attachment (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
 			rc.Location, rc.Ref.Raw)
 		return
 	}
