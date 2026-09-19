@@ -92,22 +92,35 @@ type DeliveryReceipt struct {
 }
 
 type ActionReceipt struct {
-	ID              string           `json:"id" bson:"id"`
-	Action          string           `json:"action" bson:"action"`
-	Digest          string           `json:"digest" bson:"digest"`
-	AssistantRunID  string           `json:"assistant_run_id" bson:"assistant_run_id"`
-	ArtifactNodeID  string           `json:"artifact_node_id" bson:"artifact_node_id"`
-	ArtifactVersion int              `json:"artifact_version" bson:"artifact_version"`
-	ProposalIndex   int              `json:"proposal_index" bson:"proposal_index"`
-	Args            map[string]any   `json:"args" bson:"args"`
-	ExpectedStatus  store.RunStatus  `json:"expected_status,omitempty" bson:"expected_status,omitempty"`
-	ExpectedPivot   string           `json:"expected_pivot,omitempty" bson:"expected_pivot,omitempty"`
-	State           ReceiptState     `json:"state" bson:"state"`
-	CreatedAt       time.Time        `json:"created_at" bson:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at" bson:"updated_at"`
-	EventSeq        int64            `json:"event_seq,omitempty" bson:"event_seq,omitempty"`
-	Error           string           `json:"error,omitempty" bson:"error,omitempty"`
-	ResultDelivery  *DeliveryReceipt `json:"result_delivery,omitempty" bson:"result_delivery,omitempty"`
+	ID              string          `json:"id" bson:"id"`
+	Action          string          `json:"action" bson:"action"`
+	Digest          string          `json:"digest" bson:"digest"`
+	AssistantRunID  string          `json:"assistant_run_id" bson:"assistant_run_id"`
+	ArtifactNodeID  string          `json:"artifact_node_id" bson:"artifact_node_id"`
+	ArtifactVersion int             `json:"artifact_version" bson:"artifact_version"`
+	ProposalIndex   int             `json:"proposal_index" bson:"proposal_index"`
+	Args            map[string]any  `json:"args" bson:"args"`
+	ExpectedStatus  store.RunStatus `json:"expected_status,omitempty" bson:"expected_status,omitempty"`
+	ExpectedPivot   string          `json:"expected_pivot,omitempty" bson:"expected_pivot,omitempty"`
+	// SourceVersion pins the botsource version the PREVIEW resolved when it
+	// computed ExpectedPivot (#1381). The apply must act on THAT version —
+	// a stored bot republished between the two coordinator passes must not
+	// move the blast radius onto a graph the preview never saw. 0 = no pin
+	// (a baked-tier run, or a receipt from before the field existed): the
+	// apply keeps resolving the current row.
+	SourceVersion int `json:"source_version,omitempty" bson:"source_version,omitempty"`
+	// SourceID is the identity half of the pin: the botsource ROW the
+	// preview resolved. A slug deleted and re-authored between the passes
+	// mints a new row whose versions must not serve the old pin — without
+	// it, both twins would alias the incarnations and the apply could act
+	// in content the preview never certified.
+	SourceID       string           `json:"source_id,omitempty" bson:"source_id,omitempty"`
+	State          ReceiptState     `json:"state" bson:"state"`
+	CreatedAt      time.Time        `json:"created_at" bson:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at" bson:"updated_at"`
+	EventSeq       int64            `json:"event_seq,omitempty" bson:"event_seq,omitempty"`
+	Error          string           `json:"error,omitempty" bson:"error,omitempty"`
+	ResultDelivery *DeliveryReceipt `json:"result_delivery,omitempty" bson:"result_delivery,omitempty"`
 }
 
 type Mission struct {

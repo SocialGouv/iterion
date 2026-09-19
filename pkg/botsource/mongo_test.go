@@ -104,6 +104,10 @@ func TestMongoStore(t *testing.T) {
 		t.Fatalf("ListByTenant team-1: %v len=%d", err, len(list))
 	}
 
+	// The by-version accessor (#1381) against the durable backend: the same
+	// contract the memory twin pins, on real Mongo.
+	assertVersionHistoryContract(t, st, ctx, "team-1")
+
 	if err := st.Delete(t1, created.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
