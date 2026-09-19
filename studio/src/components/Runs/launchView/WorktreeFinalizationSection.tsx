@@ -134,7 +134,7 @@ export default function WorktreeFinalizationSection({
                 size="sm"
                 type="text"
                 className="font-mono"
-                placeholder="iterion/run/<friendly> (default)"
+                placeholder="iterion/run/<run id> (default)"
                 value={branchName}
                 onChange={(e) => onBranchNameChange(e.target.value)}
               />

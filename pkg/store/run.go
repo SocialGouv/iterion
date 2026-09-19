@@ -969,7 +969,7 @@ type Run struct {
 	// or didn't finish.
 	FinalCommit string `json:"final_commit,omitempty" bson:"final_commit,omitempty"`
 	// FinalBranch is the persistent branch name created on
-	// FinalCommit (default "iterion/run/<friendly-name>", overridable
+	// FinalCommit (default "iterion/run/<run id>", overridable
 	// via launch params). Acts as a GC guard so the commits remain
 	// reachable after the worktree directory is removed.
 	FinalBranch string `json:"final_branch,omitempty" bson:"final_branch,omitempty"`

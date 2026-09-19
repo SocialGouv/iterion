@@ -221,19 +221,9 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		// exact-status contract: the flip below would change the status
 		// out from under claimForResume's narrowed CAS, so those skip
 		// the replay and re-ask through resumeFromFailure.
-		if e.expectedResumeStatus == "" || e.expectedResumeStatus == store.RunStatusPausedWaitingHuman {
+		if e.gateReplayAllowed() {
 			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
-				flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
-				changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "human gate replay: reusing the recorded answer", []store.RunStatus{r.Status})
-				flipCancel()
-				if ferr != nil {
-					return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
-				}
-				if !changed {
-					return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
-				}
-				r.Status = store.RunStatusPausedWaitingHuman
-				return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+				return e.replayAnsweredGate(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
 			}
 		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
@@ -256,18 +246,10 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
 			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 		}
-		if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
-			flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
-			changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "human gate replay: reusing the recorded answer", []store.RunStatus{r.Status})
-			flipCancel()
-			if ferr != nil {
-				return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
+		if e.gateReplayAllowed() {
+			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
+				return e.replayAnsweredGate(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
 			}
-			if !changed {
-				return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
-			}
-			r.Status = store.RunStatusPausedWaitingHuman
-			return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
 		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	default:
@@ -3317,6 +3299,24 @@ func (e *Engine) answeredHumanGateReplay(ctx context.Context, r *store.Run, call
 	if r.LastRewindAt != nil && !in.AnsweredAt.After(*r.LastRewindAt) {
 		return nil, false
 	}
+	// A rewind older than the stamp — a pre-LastRewindAt binary — left
+	// neither the timestamp nor a retired interaction; the run_rewound
+	// event in the append-only timeline is the only witness it left.
+	// Any rewind AFTER the answer refuses the replay, so an operator
+	// resuming a run rewound by an older engine is re-asked instead of
+	// silently continuing on the decision they rewound to reconsider.
+	if r.LastRewindAt == nil {
+		rewoundAfter, err := e.rewoundAfterAnswer(ctx, r.ID, *in.AnsweredAt)
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("runtime: run %q: cannot read the timeline for a rewind marker (%v); re-asking the human gate", r.ID, err)
+			}
+			return nil, false
+		}
+		if rewoundAfter {
+			return nil, false
+		}
+	}
 	// Restore the pause pointer off the checkpoint so the pause path's
 	// claimForResume → consumePausePointer pair works unchanged: the
 	// first attempt consumed it when it claimed the run, and the
@@ -3331,6 +3331,63 @@ func (e *Engine) answeredHumanGateReplay(ctx context.Context, r *store.Run, call
 		return cloneResumeInputs(callerAnswers), true
 	}
 	return cloneResumeInputs(in.Answers), true
+}
+
+// gateReplayAllowed reports whether the caller's resume contract permits
+// the gate-replay status flip. A durable mission resume narrows its claim
+// CAS to one exact source status (expectedResumeStatus); flipping the run
+// to paused_waiting_human would move the status out from under that
+// narrowed claim, so those resumes skip the replay and re-ask the human
+// gate through resumeFromFailure. expectedResumeStatus ==
+// paused_waiting_human is permitted: the flip lands ON the narrowed
+// status and the exact-status contract holds.
+func (e *Engine) gateReplayAllowed() bool {
+	return e.expectedResumeStatus == "" || e.expectedResumeStatus == store.RunStatusPausedWaitingHuman
+}
+
+// replayAnsweredGate is the ONE flip into the gate replay: CAS the status
+// back to paused_waiting_human and route through the pause path with the
+// replayed answers. The flip states NO error text — a transition into a
+// non-failure status must not forge a failure message into Run.Error
+// (every other non-failure CAS in the tree passes ""), and the replay
+// rationale lives in the log line instead. If the replay then dies before
+// the claim, the run parks paused_waiting_human with an honest empty
+// Error the operator can retry, rather than a status note posing as the
+// failure diagnosis.
+func (e *Engine) replayAnsweredGate(ctx context.Context, r *store.Run, replayAnswers, hostInputs map[string]any, preparedArtifacts *resumeArtifactState) error {
+	runID := r.ID
+	if e.logger != nil {
+		e.logger.Info("runtime: run %q: answered human gate replay — reusing the recorded answer through the pause path (%s)", runID, r.Status)
+	}
+	flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+	changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "", []store.RunStatus{r.Status})
+	flipCancel()
+	if ferr != nil {
+		return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
+	}
+	if !changed {
+		return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
+	}
+	r.Status = store.RunStatusPausedWaitingHuman
+	return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+}
+
+// rewoundAfterAnswer reports whether the run's timeline carries a
+// run_rewound event newer than answeredAt — the marker a rewind writes
+// even when it predates the Run.LastRewindAt stamp, which is how the
+// first resume under this engine recognises a run rewound by an older
+// binary.
+func (e *Engine) rewoundAfterAnswer(ctx context.Context, runID string, answeredAt time.Time) (bool, error) {
+	events, err := e.store.LoadEvents(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("runtime: load events of run %q: %w", runID, err)
+	}
+	for _, ev := range events {
+		if ev.Type == store.EventRunRewound && ev.Timestamp.After(answeredAt) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // restampWorkflowSource refreshes Run.WorkflowSource to the text this

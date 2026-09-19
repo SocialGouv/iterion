@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -513,6 +514,266 @@ func TestPausedWaitingHuman_WedgedReplayRecovers(t *testing.T) {
 		t.Fatalf("LoadRun post-resume: %v", err)
 	}
 	if got.Status != store.RunStatusFinished {
-		t.Fatalf("run status = %s, want finished — the wedged replay did not recover", got.Status)
+		t.Fatalf("run status = %s, want finished — the wedged recovery did not recover", got.Status)
+	}
+}
+
+// gateReplayFaultStore seals WriteInteraction while armed, parking the
+// replay in the window between the status flip and the claim — the
+// window the wedge recovery exists for, and the one place the flip's
+// error text is observable on the parked run.
+type gateReplayFaultStore struct {
+	store.RunStore
+	failWrites bool
+	writes     int
+}
+
+func (f *gateReplayFaultStore) WriteInteraction(ctx context.Context, in *store.Interaction) error {
+	if f.failWrites {
+		f.writes++
+		return fmt.Errorf("interaction store sealed for the probe")
+	}
+	return f.RunStore.WriteInteraction(ctx, in)
+}
+
+// TestGateReplay_StatusFlipWritesNoErrorNote pins gate finding Racbc5a
+// on PR #1490: the flip into the gate replay must state NO error text.
+// UpdateRunStatusIf writes its runErr verbatim into Run.Error on a
+// transition while clearing FailureCode, so a note there surfaces in
+// inspect/studio as the run's failure message the moment the replay
+// dies between the flip and the claim — with the real diagnosis (the
+// sandbox-mount refusal of #1435, say) already destroyed. Every other
+// non-failure CAS in the tree passes "".
+//
+// The probe arms a store fault on WriteInteraction so the replay fails
+// inside recordHumanAnswers — exactly that window — and asserts the
+// parked run carries an EMPTY Error.
+//
+// Mutation: pass the "human gate replay: …" status note back into the
+// flip's UpdateRunStatusIf in replayAnsweredGate → the parked run's
+// Error carries it → this test reddens.
+func TestGateReplay_StatusFlipWritesNoErrorNote(t *testing.T) {
+	fs := &gateReplayFaultStore{RunStore: tmpStore(t)}
+	wf := &ir.Workflow{
+		Name:  "gate_flip_no_error_note",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := fs
+	ctx := context.Background()
+	const runID = "run-gate-flip-error-note"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The #1435 first-attempt shape: answers recorded, pointer consumed,
+	// run failed_resumable carrying a REAL diagnosis.
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "docker mount refused", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+
+	// The replay must get past the flip and die on the sealed write.
+	fs.failWrites = true
+	eng2 := New(wf, s, newStubExecutor())
+	if err := eng2.Resume(ctx, runID, nil); err == nil {
+		t.Fatalf("Resume: want the sealed interaction write to fail the replay, got success")
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun post-failed-replay: %v", err)
+	}
+	if got.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("run status = %s, want paused_waiting_human (parked in the flip-to-claim window)", got.Status)
+	}
+	if got.Error != "" {
+		t.Fatalf("Run.Error = %q, want empty — the gate-replay flip must not forge a failure message (gate finding Racbc5a)", got.Error)
+	}
+}
+
+// TestGateReplay_QueuedSkipsReplayUnderNarrowedClaim pins the queued
+// branch's gateReplayAllowed guard (the verdict on d0d316a09, first
+// "À confirmer"): a durable mission resume narrows its claim CAS to one
+// exact source status, and the flip would move the status out from
+// under that narrowed claim. The queued case therefore skips the replay
+// exactly like the failed_resumable one, and the mission's own claim
+// refuses instead — loudly, with the run doc untouched.
+//
+// Mutation: drop the gateReplayAllowed guard from the queued branch →
+// the flip lands (queued → paused_waiting_human) before the narrowed
+// claim refuses → the run doc no longer reads queued → red.
+func TestGateReplay_QueuedSkipsReplayUnderNarrowedClaim(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "gate_replay_queued_guard",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-gate-replay-queued-guard"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The gate-replay shape on a QUEUED run: answers recorded, pointer
+	// consumed, run failed_resumable, then the publisher's queued flip.
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "sandbox start", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusQueued, ""); err != nil {
+		t.Fatalf("flip to queued: %v", err)
+	}
+
+	// A durable mission resume expecting failed_resumable: the queued
+	// branch must SKIP the replay (no status flip), and the mission's
+	// own narrowed claim refuses — loudly.
+	eng2 := New(wf, s, newStubExecutor(), WithExpectedResumeStatus(store.RunStatusFailedResumable))
+	if err := eng2.Resume(ctx, runID, nil); err == nil {
+		t.Fatalf("Resume: want the narrowed claim to refuse the queued run, got success")
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun post-resume: %v", err)
+	}
+	if got.Status != store.RunStatusQueued {
+		t.Fatalf("run status = %s, want queued — the gate-replay flip must not fire under a narrowed mission claim", got.Status)
+	}
+}
+
+// TestGateReplay_RefusesAnswersOlderThanRewindEvent pins the
+// upgrade-window guard (the verdict on 9878937e1, first "À confirmer"):
+// a run rewound by a binary older than the LastRewindAt stamp carries
+// neither the timestamp nor a retired interaction, so the run_rewound
+// event in the append-only timeline is the only witness. A rewind AFTER
+// the answer must refuse the replay — the operator is re-asked instead
+// of silently continuing on the decision they rewound to reconsider.
+//
+// Mutation: remove the rewoundAfterAnswer scan from
+// answeredHumanGateReplay → the predicate replays the pre-rewind
+// answers and the run finishes → red.
+func TestGateReplay_RefusesAnswersOlderThanRewindEvent(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "gate_replay_rewind_event",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-gate-replay-rewind-event"
+
+	eng := New(wf, s, newStubExecutor())
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The pre-stamp shape: answers recorded BEFORE the rewind, and no
+	// Run.LastRewindAt (the stamp the older binary never wrote).
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC().Add(-1 * time.Second)
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "operator rewound", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	// The rewind's only witness on a pre-stamp run: the append-only
+	// run_rewound event, timestamped AFTER the answer.
+	if _, err := s.AppendEvent(ctx, runID, store.Event{
+		Type:      store.EventRunRewound,
+		RunID:     runID,
+		NodeID:    "gate",
+		Timestamp: time.Now().UTC(),
+		Data:      map[string]any{"from_node": "gate", "to_node": "gate"},
+	}); err != nil {
+		t.Fatalf("AppendEvent(run_rewound): %v", err)
+	}
+
+	// Resume: the predicate must refuse — the run re-pauses on the gate
+	// (fresh ask), it does NOT replay the pre-rewind answers.
+	eng2 := New(wf, s, newStubExecutor())
+	if err := eng2.Resume(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Resume: want ErrRunPaused (re-ask after a rewind event newer than the answer), got %v", err)
 	}
 }

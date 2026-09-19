@@ -40,7 +40,7 @@ func TestPerformMerge_ConflictPath(t *testing.T) {
 	}
 
 	// Build the repo with a real conflict between main and a storage
-	// branch shaped like "iterion/run/<friendly>".
+	// branch shaped like "iterion/run/<run id>".
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatalf("mkdir repo: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestPerformMerge_ConflictPath(t *testing.T) {
 	runGit("commit", "-qm", "base")
 	baseSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
 
-	// Storage branch (the equivalent of iterion/run/<friendly>).
+	// Storage branch (the equivalent of iterion/run/<run id>).
 	runGit("checkout", "-qb", "iterion/run/test-conflict")
 	writeRepo("file.txt", "alpha\nBRAVO-INCOMING\ncharlie\ndelta-incoming\n")
 	runGit("commit", "-qam", "feat")
