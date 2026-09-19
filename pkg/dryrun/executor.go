@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -138,9 +139,13 @@ func (x *Executor) hasProduced(node string) bool {
 }
 
 // recordLoopCrossing mirrors the engine's loop bookkeeping for one selected
-// loop edge: a re-entry through one of the loop's entries resets the
-// crossings (the engine drops the snapshots with the counter), and each
-// crossing rotates the previous snapshot's source behind the latest one.
+// loop edge: each crossing rotates the previous snapshot's source behind the
+// latest one. No reset here — the engine resets a loop's counter on a
+// NON-loop edge entering a body node from outside the body
+// (recordTrunkEdge), and this method only ever sees loop edges:
+// `ir.Loop.Entries` is by construction the set of the loop-bearing
+// back-edges' targets, so testing it here fired on every crossing and
+// pinned the crossings at one (PR #1491 review R651a94).
 func (x *Executor) recordLoopCrossing(name, from, to string) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -149,16 +154,31 @@ func (x *Executor) recordLoopCrossing(name, from, to string) {
 		x.loopPrevSrc = map[string]string{}
 		x.loopLastSrc = map[string]string{}
 	}
-	if x.loopCrossings[name] > 0 && x.wf != nil {
-		if loop := x.wf.Loops[name]; loop != nil && loop.Entries[to] {
+	x.loopCrossings[name]++
+	x.loopPrevSrc[name] = x.loopLastSrc[name]
+	x.loopLastSrc[name] = from
+}
+
+// recordTrunkEdge mirrors the engine's loop re-entry for one selected
+// non-loop edge: entering a loop's body from outside it, at one of the
+// loop's entries, resets the loop's crossings — the engine drops the
+// snapshots with the counter, so the previous_output story starts over.
+func (x *Executor) recordTrunkEdge(from, to string) {
+	if x.wf == nil {
+		return
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for name, loop := range x.wf.Loops {
+		if loop == nil || len(loop.Body) == 0 || loop.Body[from] || !loop.Body[to] {
+			continue
+		}
+		if x.loopCrossings[name] > 0 && loop.Entries[to] {
 			x.loopCrossings[name] = 0
 			x.loopPrevSrc[name] = ""
 			x.loopLastSrc[name] = ""
 		}
 	}
-	x.loopCrossings[name]++
-	x.loopPrevSrc[name] = x.loopLastSrc[name]
-	x.loopLastSrc[name] = from
 }
 
 // previousOutputSource names the node whose output the loop's
@@ -388,8 +408,28 @@ func (x *Executor) prompt(id, where, name string, input, vars map[string]any, td
 // unresolved reports a reference kept as written. A declared secret never
 // reaches it: the prompt resolver renders it as a placeholder
 // (declaredSecrets) and the command renderer as the guard's placeholder.
+// A reference the consult proves to rest on a value the dry run invented —
+// an item a fan-out drew from a shaped collection — is inconclusive, not a
+// defect: the render names the value and what would decide it, and the
+// verdict reads it the way it reads every undecided expression.
 func (x *Executor) unresolved(id, where, ref string) {
+	if why, ok := x.inventedRenderRef(ref); ok {
+		x.add(Finding{Node: id, Kind: KindInconclusive, Where: where, Detail: fmt.Sprintf("{{%s}} renders a shape: %s", ref, why)})
+		return
+	}
 	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, x.whyUnresolved(ref))})
+}
+
+// inventedRenderRef answers whether a rendered reference rests on a value
+// the dry run invented: the ref reads `namespace.path…`, and only the
+// namespaces the provenance walk knows answer. A nodeless render ref reads
+// the producer the ref itself names.
+func (x *Executor) inventedRenderRef(ref string) (string, bool) {
+	ns, rest, _ := strings.Cut(ref, ".")
+	if ns == "" || rest == "" {
+		return "", false
+	}
+	return x.invented("", expr.Ref{Namespace: ns, Path: strings.Split(rest, ".")}, nil)
 }
 
 // reporter is the renderer's listener for one place of a node: each

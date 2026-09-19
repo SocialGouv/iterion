@@ -1953,6 +1953,61 @@ func TestAPreviousOutputBeforeTheFirstCrossingIsADeath(t *testing.T) {
 	}
 }
 
+// The compiled twin — a bot whose loop DOES re-cross (the read is guarded
+// by if() so crossing 1 passes nil-safe): at crossing 2 the previous
+// snapshot exists and is the shaped json field, so the read reads
+// inconclusive, never a death. This is the pin on the COMPILED workflow —
+// the compiler fills Loop.Entries with the back-edges' own targets, so a
+// reset keyed on Entries on the crossing path would pin the crossings at
+// one and turn this inconclusive into a death (PR #1491 review R651a94).
+// The mutation: reintroduce that reset in recordLoopCrossing.
+const previousOutputSecondCrossingBot = `schema wout:
+  count: json
+
+agent worker:
+  model: "claude-opus-4-7"
+  output: wout
+
+schema total:
+  n: json
+
+compute tally:
+  output: total
+  expr:
+    n: "if(loop.again.previous_output, loop.again.previous_output.count + 1, 0)"
+
+workflow probe:
+  worktree: none
+  sandbox: none
+  entry: worker
+  worker -> tally as again(5)
+  tally -> worker
+  tally -> done when "loop.again.iteration >= 2"
+`
+
+func TestAPreviousOutputAtItsSecondCrossingIsInconclusive(t *testing.T) {
+	wf := compileBot(t, previousOutputSecondCrossingBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Passes {
+		if p.Status != "finished" {
+			t.Fatalf("a guarded previous_output read must not kill the pass: %+v", p)
+		}
+	}
+	undecided := r.Inconclusive()
+	if len(undecided) != 1 {
+		t.Fatalf("the second crossing's shape read is not said inconclusive: %+v", undecided)
+	}
+	if !strings.Contains(undecided[0].Detail, "loop.again.previous_output.count") {
+		t.Fatalf("the finding does not name the previous_output read: %s", undecided[0].Detail)
+	}
+	if r.Failing() {
+		t.Fatalf("a second-crossing shape read is not a defect: %s", r.Render())
+	}
+}
+
 // What an inconclusive expression computed is invented in turn, and so is
 // what a decided expression computed FROM a shape: a downstream expression
 // that fails on either is inconclusive too, never a death. The mutation:
@@ -2972,5 +3027,108 @@ func TestACollectionConsultReadsTheLaunchFloorNotTheNodeInput(t *testing.T) {
 	}
 	if !strings.Contains(r.Passes[0].Failure, "resolved to nil") {
 		t.Fatalf("the pass did not die of the nil over: %+v", r.Passes[0])
+	}
+}
+
+// A fan-out item drawn from a shaped collection renders `{{outputs.<router>
+// .item.<field>}}` as a shape: the render names the value and what would
+// decide it, as an inconclusive — never an unresolved reference, which
+// would fail --strict for a value the dry run itself invented (verdict 4,
+// the question). The mutation: answer nothing at the render site (every
+// kept-as-written render reads unresolved_ref again).
+const fanOutItemRenderBot = `schema plan_out:
+  items: json
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: plan_out
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.plan.items}}"
+
+schema total:
+  n: json
+
+compute weigh:
+  output: total
+  expr:
+    n: "sum(outputs.dispatch.item)"
+
+agent work:
+  model: "claude-opus-4-7"
+  system: work_sys
+
+prompt work_sys:
+  Plan the item: {{outputs.dispatch.item.plan}}
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: plan
+  plan -> dispatch
+  dispatch -> weigh
+  weigh -> work
+  work -> done
+`
+
+func TestAFanOutItemRenderIsInconclusive(t *testing.T) {
+	wf := compileBot(t, fanOutItemRenderBot)
+	r, err := Run(context.Background(), wf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Passes {
+		if p.Status != "finished" {
+			t.Fatalf("pass bias=%v died on the shaped item: %+v", p.Bias, p)
+		}
+	}
+	if r.Failing() {
+		t.Fatalf("a render over a shaped item is not a defect:\n%s", r.Render())
+	}
+	undecided := r.Inconclusive()
+	var render *Finding
+	for i := range undecided {
+		if undecided[i].Node == "work" && strings.Contains(undecided[i].Detail, "outputs.dispatch.item.plan") {
+			render = &undecided[i]
+		}
+	}
+	if render == nil {
+		t.Fatalf("the render's shape read is not said inconclusive:\n%s", r.Render())
+	}
+	if !strings.Contains(render.Detail, "an element of outputs.plan.items") {
+		t.Fatalf("the render finding does not carry the item's provenance: %s", render.Detail)
+	}
+	for _, f := range r.Findings {
+		if f.Kind == KindUnresolvedRef {
+			t.Fatalf("a shaped item's render still reads unresolved_ref: %+v", f)
+		}
+	}
+}
+
+// The ceiling predicate's truth table — one table for the trunk's
+// `pass.Ceiling` and the branch observer: a ceiling code reads a ceiling
+// whatever the decline; a coded death never reclassifies on the decline
+// alone; a code-less failure lets the decline decide, and only the run's
+// own guards (`runtime.CeilingReason`) count as ceilings (verdict 4, the
+// question on the `code == ""` fallback).
+func TestACeilingPredicateReadsOneTable(t *testing.T) {
+	cases := map[string]struct {
+		code     store.FailureCode
+		declined string
+		want     bool
+	}{
+		"no code, no decline":               {code: "", want: false},
+		"code-less, a guard decline":        {code: "", declined: "loop_budget_guard", want: true},
+		"code-less, a non-guard decline":    {code: "", declined: "no_route", want: false},
+		"the budget code":                   {code: store.FailureBudgetExceeded, declined: "", want: true},
+		"a death code with a guard decline": {code: store.FailureExpressionFailed, declined: "loop_budget_guard", want: false},
+		"a spent loop with a guard decline": {code: store.FailureLoopExhausted, declined: "loop_budget_guard", want: true},
+		"a spent loop, no decline":          {code: store.FailureLoopExhausted, declined: "", want: false},
+	}
+	for name, tc := range cases {
+		if got := ceilingOf(tc.code, tc.declined); got != tc.want {
+			t.Errorf("%s: ceilingOf(%q, %q) = %v, want %v", name, tc.code, tc.declined, got, tc.want)
+		}
 	}
 }

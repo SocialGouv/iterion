@@ -405,6 +405,11 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			pass.Edges = append(pass.Edges, Edge{From: from, To: to})
 			if name, _ := evt.Data["loop"].(string); name != "" {
 				x.recordLoopCrossing(name, from, to)
+			} else {
+				// A non-loop edge can re-enter a loop's body from outside
+				// it — the engine resets that loop's counter and drops its
+				// snapshots, and the crossings mirror that re-entry.
+				x.recordTrunkEdge(from, to)
 			}
 		case store.EventBranchStarted:
 			// A fan-out activates its branches without an edge_selected: the

@@ -92,7 +92,15 @@ func TestAPreviousOutputIsTheCrossingBeforeTheLatest(t *testing.T) {
 			{From: "worker_b", To: "tally", LoopName: "again"},
 		},
 		Loops: map[string]*ir.Loop{
-			"again": {Name: "again", MaxIterations: 2},
+			"again": {
+				Name:          "again",
+				MaxIterations: 2,
+				// Compiled shape: the body and the entries the compiler
+				// derives — the loop edges' targets ARE the entries, which
+				// is why no reset may live on the crossing path.
+				Body:    map[string]bool{"tally": true, "worker_a": true, "worker_b": true},
+				Entries: map[string]bool{"tally": true},
+			},
 		},
 	}
 	x := NewExecutor(wf, true, nil, nil)
