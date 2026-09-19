@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -21,9 +22,10 @@ const subscriberBufferSize = 256
 // watch_coordinator lifecycle (buffered chan → single worker → drop-on-full)
 // and runview.EventBroker's lossy semantics. Zero external dependencies.
 type InProcBus struct {
-	mu     sync.RWMutex
-	subs   []*inprocSub
-	logger *iterlog.Logger
+	mu           sync.RWMutex
+	subs         []*inprocSub
+	logger       *iterlog.Logger
+	cancelBudget time.Duration // 0 → DefaultSubscribeCancelBudget; test seam only.
 }
 
 type inprocSub struct {
@@ -41,6 +43,18 @@ type inprocSub struct {
 // NewInProcBus creates an empty in-process bus. logger may be nil.
 func NewInProcBus(logger *iterlog.Logger) *InProcBus {
 	return &InProcBus{logger: logger}
+}
+
+// subscribeCancelBudget bounds the wait for a per-subscriber worker to return
+// after cancel is called; a handler that ignores its context cannot hold
+// shutdown past this window. The value pairs with DefaultSubscribeCancelBudget
+// and pkg/server's background join budget (#1257) so the grace period's
+// arithmetic upstream stays one number.
+func (b *InProcBus) subscribeCancelBudget() time.Duration {
+	if b.cancelBudget > 0 {
+		return b.cancelBudget
+	}
+	return DefaultSubscribeCancelBudget
 }
 
 // Publish fans ev out to every subscriber whose filter matches. Non-blocking:
@@ -66,8 +80,9 @@ func (b *InProcBus) Publish(_ context.Context, ev trigger.Event) error {
 
 // Subscribe registers h under name, pre-filtered by filter, and starts its
 // worker goroutine. The returned cancel stops the worker and unregisters
-// the subscriber (idempotent).
-func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (func(), error) {
+// the subscriber (idempotent). See Bus.Subscribe for the ctx contract on
+// cancel.
+func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (func(context.Context), error) {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	s := &inprocSub{
 		name:   name,
@@ -86,14 +101,46 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 	go b.worker(s)
 
 	var once sync.Once
-	cancel := func() {
+	cancel := func(ctx context.Context) {
 		once.Do(func() {
 			// Cancel the handler context first so an in-flight handler
 			// (a launch blocked on store/LLM I/O) observes the teardown,
-			// then signal the worker to exit and wait for it.
+			// then signal the worker to exit and wait for it within the
+			// caller's ctx.Deadline (or the default budget when ctx has
+			// none) — a handler ignoring its ctx is named in a warning
+			// rather than waited out, so a defective subscriber cannot
+			// hold the process past the grace period.
+			//
+			// The wait is bounded by BOTH the caller's ctx and the
+			// default budget. Under a shutdown, the caller threads ONE
+			// joinCtx across all subscription cancels so N subscribers
+			// share the same deadline; standalone callers get the
+			// default. See #1477's medium finding.
 			s.cancel()
 			close(s.stop)
-			<-s.done
+			waitCtx, waitCancel := b.waitCtx(ctx)
+			defer waitCancel()
+			select {
+			case <-s.done:
+			case <-waitCtx.Done():
+			}
+			// Post-check: when the shared budget is already spent
+			// (subscribers 2..N after subscriber 1 ate it), waitCtx.Done
+			// wins the select even though the worker has no in-flight
+			// handler — s.done is closed by the worker's defer AFTER we
+			// closed s.stop, and that goroutine may not have scheduled
+			// yet in the same nanosecond. Give s.done one more short
+			// window: enough for the worker to run when there is nothing
+			// in flight, small enough not to compose meaningfully across
+			// N subscribers. Only warn if the worker really did not
+			// return. #1477 R6aac0e.
+			select {
+			case <-s.done:
+			case <-time.After(overrunPostCheckWindow):
+				if b.logger != nil {
+					b.logger.Warn("eventbus: subscriber %q handler did not return within cancel budget; its last write falls outside the grace period", s.name)
+				}
+			}
 			b.mu.Lock()
 			for i, ex := range b.subs {
 				if ex == s {
@@ -105,6 +152,22 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 		})
 	}
 	return cancel, nil
+}
+
+// waitCtx derives the ctx that bounds the in-flight wait on cancel. When
+// caller passes a ctx with a deadline (a shared joinCtx under shutdown),
+// use it verbatim so N subscriptions share ONE budget. Otherwise fall back
+// to a fresh WithTimeout on the default budget so a standalone cancel is
+// still bounded.
+func (b *InProcBus) waitCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.WithTimeout(context.Background(), b.subscribeCancelBudget())
+	}
+	if _, ok := ctx.Deadline(); ok {
+		// Caller threaded a joinCtx; honour its deadline exactly.
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, b.subscribeCancelBudget())
 }
 
 func (b *InProcBus) worker(s *inprocSub) {

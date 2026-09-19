@@ -50,6 +50,18 @@ func (s *Server) backgroundJoinBudget() time.Duration {
 // window this package has already paid for once), and a loop started past the
 // join is precisely the unwatched loop this function exists to prevent.
 func (s *Server) goUntilShutdown(name string, fn func(context.Context)) context.CancelFunc {
+	cancel, _ := s.tryGoUntilShutdown(name, fn)
+	return cancel
+}
+
+// tryGoUntilShutdown is goUntilShutdown with a second return value that says
+// whether the loop was actually started. Boot-time callers can ignore it (they
+// register before the shutdown ever runs); a per-request site that acquired a
+// shared resource — the forge→board projection semaphore is the first one —
+// needs it so it can release the slot when registration is refused, otherwise
+// the resource leaks for the remaining lifetime of the process. Same contract
+// as goUntilShutdown otherwise.
+func (s *Server) tryGoUntilShutdown(name string, fn func(context.Context)) (context.CancelFunc, bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
@@ -57,9 +69,10 @@ func (s *Server) goUntilShutdown(name string, fn func(context.Context)) context.
 	joined := s.bgJoined
 	if !joined {
 		// Compacting here bounds the registry by the number of LIVE loops
-		// rather than by how many have ever been started: every call site is
-		// boot-time today, but a per-request or per-project-switch loop would
-		// otherwise grow this slice for the life of the process.
+		// rather than by how many have ever been started: boot-time loops
+		// stay in the slice for the life of the process, but per-request
+		// loops (scheduleForgeBoardProjection, #1345) would otherwise grow
+		// it without bound.
 		live := s.bgWorkers[:0]
 		for _, w := range s.bgWorkers {
 			select {
@@ -77,7 +90,7 @@ func (s *Server) goUntilShutdown(name string, fn func(context.Context)) context.
 		if s.logger != nil {
 			s.logger.Warn("server: %s not started — the shutdown already joined its background loops, and one started now would run with nobody waiting for its last write", name)
 		}
-		return cancel
+		return cancel, false
 	}
 
 	// Released by fn's return as well as by the shutdown signal: a watcher
@@ -96,7 +109,7 @@ func (s *Server) goUntilShutdown(name string, fn func(context.Context)) context.
 		defer cancel()
 		fn(ctx)
 	})
-	return cancel
+	return cancel, true
 }
 
 // joinBackgroundWorkers waits for every registered loop — plus any extra whose

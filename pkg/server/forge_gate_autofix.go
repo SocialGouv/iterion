@@ -73,9 +73,9 @@ func (s *Server) startGateAutofix() {
 	}
 }
 
-func (s *Server) attachGateAutofix(bus eventbus.Bus) (func(), error) {
+func (s *Server) attachGateAutofix(bus eventbus.Bus) (func(context.Context), error) {
 	if s == nil || bus == nil {
-		return func() {}, nil
+		return func(context.Context) {}, nil
 	}
 	return bus.Subscribe(gateAutofixName, trigger.Matcher{
 		Sources: []trigger.Source{trigger.SourceRun},
