@@ -1234,12 +1234,21 @@ func TestReapOne_FilingCarriesWatchdogProvenance(t *testing.T) {
 }
 
 // slowCtxLeaser renews slowly but honours the caller's ctx — the shipped
-// mongo shape since RenewClaimCtx.
+// mongo shape since RenewClaimCtx. Signals `entered` (once) at the top
+// of RenewClaim, i.e. "a RenewClaim call has been received" — the very
+// next line is a select that either sleeps 5 s or observes ctx.Done, so
+// no branch returns fast enough to invalidate the "a renewal is now in
+// flight" reading a test does after `<-entered`.
 type slowCtxLeaser struct {
 	tracker.ClaimLeaser
+	entered   chan struct{}
+	enteredCk *sync.Once
 }
 
 func (l slowCtxLeaser) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	if l.entered != nil && l.enteredCk != nil {
+		l.enteredCk.Do(func() { close(l.entered) })
+	}
 	select {
 	case <-time.After(5 * time.Second):
 		return nil
@@ -1264,13 +1273,25 @@ func TestClaimSession_StopDoesNotWarnARenewalFailure(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	warn := func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) }
+	// Mechanism observed: `entered` closes when the loop's first
+	// RenewClaim beat commits to slowCtxLeaser's slow branch — i.e. an
+	// in-flight renewal is provably parked BEFORE we call Stop(). No
+	// wall-clock witness; the 5 s ceiling below only bounds a wedged
+	// scheduler. #1471.
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	s := &claimSession{
-		leaser: slowCtxLeaser{ClaimLeaser: adapter}, issueID: iss.ID, tok: tok,
+		leaser:  slowCtxLeaser{ClaimLeaser: adapter, entered: entered, enteredCk: &enteredOnce},
+		issueID: iss.ID, tok: tok,
 		warn: warn, stop: make(chan struct{}), done: make(chan struct{}),
 		interval: time.Millisecond,
 	}
 	go s.loop()
-	time.Sleep(20 * time.Millisecond) // a beat starts and blocks in the slow renew
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no renewal beat entered the slow leaser within 5 s — the priming premise is broken")
+	}
 	s.Stop()
 	if strings.Contains(buf.String(), "renewal") && strings.Contains(buf.String(), "failed") {
 		t.Fatalf("Stop() logged a renewal failure with no failure: %q", buf.String())
