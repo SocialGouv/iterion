@@ -58,8 +58,9 @@ vars:
   ## within its retention window (runtime/scratch_sweep.go), but a workspace
   ## used regularly keeps writing under scan_dir, so its own subdirs never
   ## age out on their own. Prune at scanner entry: entries older than TTL
-  ## days go, the current run's two directories always stay. 0 disables the
-  ## sweep. Matches records_ttl_days's default. The sweep prunes directories
+  ## days go, the current run's two directories always stay. The sweep
+  ## runs on every entry with a usable run id, above the deepsec preflight
+  ## (revi R58b272). 0 disables the sweep. Matches records_ttl_days's default. The sweep prunes directories
   ## only; the pre-0.1.4 shared-slot FILE (the path vars.deepsec_out names)
   ## is removed by the first deep-scan pass that gets past its preflight,
   ## whatever this value is.
@@ -3002,6 +3003,59 @@ err_envelope() {
   exit 0
 }
 
+# RUN_ID is referenced BARE, never as a braced default: the engine expands
+# every braced env reference in the command at launch, from ITS environment,
+# where no run id exists -- the braced form read empty on every production
+# pass and this guard refused them all while every harness test stayed green
+# (the harness substitutes plainly). The env prefix above is the value bash
+# actually sees.
+case "$RUN_ID" in
+  ""|*[!A-Za-z0-9._-]*)
+    err_envelope "run id missing or not usable as a path segment: refusing to share a log directory between runs, because the run ids this node pins its coverage on are read back out of it" ;;
+esac
+# The charset above admits . and .. — they are LEGAL filenames but not
+# usable as raw path SEGMENTS. Under the pre-prefix shape
+# (dirname/$RUN_ID/basename), "." collapsed to the shared slot at scan_dir
+# and ".." escaped one directory above; the deepsec-out- prefix (verdict 2,
+# Re56aa9) now makes them literal directory names (dirname/deepsec-out-./
+# basename, dirname/deepsec-out-../basename) with no path collapse. The
+# guard stays as defence-in-depth: a future refactor that drops the prefix
+# would reopen the old vulnerability without a source-visible sign, and a
+# RUN_ID that collides with the retention sweep excluded names is still
+# a bug worth catching. Rejected here rather than folded into the charset
+# above so the two failure modes carry distinct messages.
+case "$RUN_ID" in
+  .|..)
+    err_envelope "run id is a path-navigation segment (\"$RUN_ID\"): refusing to use it as the $RUN_ID in the per-pass export subdir. The deepsec-out- prefix keeps the current derivation safe, but a future refactor that dropped the prefix would recreate the shared slot at scan_dir or escape above it" ;;
+esac
+
+# ── retention ─────────────────────────────────────────────────────
+# Per-run keying leaves one deepsec-out-<run.id>/ and one
+# deepsec-logs-<run.id>/ at the top of $SCAN_DIR per pass; the engine
+# scratch sweep does not reclaim them because a workspace used regularly
+# keeps writing under scan_dir (see runtime/scratch_sweep.go: sweep is by
+# whole-workspace mtime). Prune older entries by mtime, POSITIVELY scoped
+# to the two shapes THIS node owns -- deepsec-out-* and deepsec-logs-*,
+# both prefixed for exactly this reason (Re56aa9). deepsec-workspace is
+# the shared data root, not per-run, and stays. Every other directory
+# under scan_dir stays whatever its mtime -- an operator setting or a
+# future node writing there is not enrolled in this sweep by default. 0
+# disables the sweep entirely.
+# Placement: BELOW the RUN_ID guards -- the predicates embed $RUN_ID and a
+# charset-safe segment cannot widen them -- and ABOVE the node / deepsec
+# preflight, so the sweep runs on EVERY entry with a usable run id,
+# including a pass whose deepsec later turns out to be absent: a workspace
+# whose deepsec becomes unavailable must still reclaim the shapes earlier
+# passes of this node left behind (revi R58b272).
+if [ "$SCAN_DIR_TTL_DAYS" -gt 0 ] 2>/dev/null; then
+  find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
+    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" \) \
+    ! -name "deepsec-out-$RUN_ID" \
+    ! -name "deepsec-logs-$RUN_ID" \
+    -mtime "+$SCAN_DIR_TTL_DAYS" \
+    -exec rm -rf {} + 2>/dev/null
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   err_envelope "node binary not found on PATH"
 fi
@@ -3076,31 +3130,6 @@ fi
 # banner at all. Keying the directory on the run id closes that by
 # construction; reading the ids sooner would only narrow the window.
 DSW="$SCAN_DIR/deepsec-workspace"
-# RUN_ID is referenced BARE, never as a braced default: the engine expands
-# every braced env reference in the command at launch, from ITS environment,
-# where no run id exists -- the braced form read empty on every production
-# pass and this guard refused them all while every harness test stayed green
-# (the harness substitutes plainly). The env prefix above is the value bash
-# actually sees.
-case "$RUN_ID" in
-  ""|*[!A-Za-z0-9._-]*)
-    err_envelope "run id missing or not usable as a path segment: refusing to share a log directory between runs, because the run ids this node pins its coverage on are read back out of it" ;;
-esac
-# The charset above admits . and .. — they are LEGAL filenames but not
-# usable as raw path SEGMENTS. Under the pre-prefix shape
-# (dirname/$RUN_ID/basename), "." collapsed to the shared slot at scan_dir
-# and ".." escaped one directory above; the deepsec-out- prefix (verdict 2,
-# Re56aa9) now makes them literal directory names (dirname/deepsec-out-./
-# basename, dirname/deepsec-out-../basename) with no path collapse. The
-# guard stays as defence-in-depth: a future refactor that drops the prefix
-# would reopen the old vulnerability without a source-visible sign, and a
-# RUN_ID that collides with the retention sweep excluded names is still
-# a bug worth catching. Rejected here rather than folded into the charset
-# above so the two failure modes carry distinct messages.
-case "$RUN_ID" in
-  .|..)
-    err_envelope "run id is a path-navigation segment (\"$RUN_ID\"): refusing to use it as the $RUN_ID in the per-pass export subdir. The deepsec-out- prefix keeps the current derivation safe, but a future refactor that dropped the prefix would recreate the shared slot at scan_dir or escape above it" ;;
-esac
 LOG_DIR="$SCAN_DIR/deepsec-logs-$RUN_ID"
 # OUT_JSON is derived per-pass -- keyed on the same $RUN_ID that already keys
 # LOG_DIR -- so two passes that BOTH run deepsec successfully never write to
@@ -3128,26 +3157,6 @@ OUT_JSON_BASE="$OUT_JSON"
 OUT_JSON="$(dirname "$OUT_JSON_BASE")/deepsec-out-$RUN_ID/$(basename "$OUT_JSON_BASE")"
 mkdir -p "$DSW" "$LOG_DIR" "$(dirname "$OUT_JSON")"
 
-# ── retention ─────────────────────────────────────────────────────
-# Per-run keying leaves one deepsec-out-<run.id>/ and one
-# deepsec-logs-<run.id>/ at the top of $SCAN_DIR per pass; the engine
-# scratch sweep does not reclaim them because a workspace used regularly
-# keeps writing under scan_dir (see runtime/scratch_sweep.go: sweep is by
-# whole-workspace mtime). Prune older entries by mtime, POSITIVELY scoped
-# to the two shapes THIS node owns -- deepsec-out-* and deepsec-logs-*,
-# both prefixed for exactly this reason (Re56aa9). deepsec-workspace is
-# the shared data root, not per-run, and stays. Every other directory
-# under scan_dir stays whatever its mtime -- an operator setting or a
-# future node writing there is not enrolled in this sweep by default. 0
-# disables the sweep entirely.
-if [ "$SCAN_DIR_TTL_DAYS" -gt 0 ] 2>/dev/null; then
-  find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
-    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" \) \
-    ! -name "deepsec-out-$RUN_ID" \
-    ! -name "deepsec-logs-$RUN_ID" \
-    -mtime "+$SCAN_DIR_TTL_DAYS" \
-    -exec rm -rf {} + 2>/dev/null
-fi
 # Which agent actually ran is not derivable from the envelope: deepsec is not in
 # backends_used and the engine meters none of it. env.log is the one log that
 # travels in errors[] unconditionally, so the answer leaves the pod with it.

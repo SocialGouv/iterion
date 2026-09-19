@@ -45,6 +45,10 @@ version: 0.1.4
 ## directories only). scan_health clamps a min_generic_scanners above the
 ## trio's size to 3 and says so (min_generic_requested / min_generic_clamped,
 ## a NOTE in the report) instead of hard-failing every run.
+## Follow-up (PR #1473, revi verdict 5): the retention sweep moved below
+## the RUN_ID guards and above the node/deepsec preflight, so a workspace
+## whose deepsec later becomes unavailable still reclaims the per-run dirs
+## earlier passes left (R58b272).
 ## 0.1.3 — prepare_branch no longer reads iterion's `.claude/` scaffold as the
 ## operator's work in flight, its stash leaves the scaffold in place and is recorded
 ## only once it is confirmed on top, and a finding's revert neither cleans nor checks

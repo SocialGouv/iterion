@@ -367,10 +367,11 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The scanner body has this order: node + deepsec + agent charset probes
-	// (each with its own err_envelope) → RUN_ID guard → OUT_JSON derivation +
-	// mkdir + prune. So the prune only runs when the deepsec binary is on
-	// PATH; the fixture stubs a no-op deepsec so the prune is reached.
+	// The scanner body has this order: RUN_ID guards → retention sweep →
+	// node + deepsec + agent probes (each with its own err_envelope) →
+	// OUT_JSON derivation + mkdir. The sweep runs on every entry with a
+	// usable run id (revi R58b272); the fixture stubs a working node and a
+	// no-op deepsec so the pass reaches its envelope.
 	ws := filepath.Join(dir, "ws")
 	stubs := filepath.Join(dir, "bin", runID)
 	if err := os.MkdirAll(ws, 0o755); err != nil {

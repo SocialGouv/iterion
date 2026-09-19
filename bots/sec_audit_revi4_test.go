@@ -353,6 +353,62 @@ func TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry(t *testing.T) {
 		}
 	})
 
+	t.Run("the sweep runs on every entry with a usable run id, before the preflight", func(t *testing.T) {
+		// revi R58b272: a workspace whose deepsec later becomes unavailable
+		// must still reclaim the per-run dirs earlier passes left. The stub
+		// node reports v21, so the pass REFUSES at the node-version probe --
+		// deterministically, on any host -- AFTER the sweep had its chance:
+		// the aged owned directory must be gone anyway.
+		dir := t.TempDir()
+		scanDir := filepath.Join(dir, "scan")
+		if err := os.MkdirAll(scanDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ws := filepath.Join(dir, "ws")
+		if err := os.MkdirAll(ws, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stubs := filepath.Join(dir, "bin", "run-GONE")
+		stubBin(t, stubs, "node", `echo v21.0.0`)
+		stubBin(t, stubs, "sleep", `exit 0`)
+		aged := filepath.Join(scanDir, "deepsec-out-run-OLD")
+		if err := os.MkdirAll(aged, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(aged, "sentinel"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stale := time.Now().Add(-40 * 24 * time.Hour)
+		if err := os.Chtimes(aged, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+		rendered := expandEngineBracedEnv(secToolCommand(t, "run_deepsec_scanner"))
+		for ref, val := range map[string]string{
+			"{{vars.scan_dir}}":              scanDir,
+			"{{vars.workspace_dir}}":         ws,
+			"{{vars.deepsec_out}}":           filepath.Join(scanDir, "deepsec.json"),
+			"{{vars.deepsec_concurrency}}":   "1",
+			"{{vars.deepsec_process_limit}}": "0",
+			"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
+			"{{vars.scan_dir_ttl_days}}":     "30",
+			"{{run.id}}":                     "run-GONE",
+			"{{vars.deepsec_agent}}":         "''",
+			"{{vars.deepsec_model}}":         "''",
+		} {
+			rendered = strings.ReplaceAll(rendered, ref, val)
+		}
+		if strings.Contains(rendered, "{{") {
+			t.Fatalf("unsubstituted ref left: %q", rendered[strings.Index(rendered, "{{"):])
+		}
+		raw := runShell(t, rendered, stubs)
+		if !strings.Contains(raw, "22") {
+			t.Fatalf("the pass did not refuse at the node-version probe as arranged: %q", raw)
+		}
+		if _, err := os.Stat(aged); !os.IsNotExist(err) {
+			t.Errorf("the aged owned dir %s survived a pass that refused at the preflight (%v) -- the sweep no longer runs on entries whose deepsec is unavailable (revi R58b272)", aged, err)
+		}
+	})
+
 	t.Run("a pass that refuses before its run id is established touches nothing", func(t *testing.T) {
 		plant(t)
 		cov, _, _ := runDeepsecNodeFull(t, dir, "", `exit 0`)
