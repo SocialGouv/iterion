@@ -93,7 +93,7 @@ func TestMirrorInjectedLibrarySkills_DirectoryFormAndHints(t *testing.T) {
 // on the host running the test.
 func TestMirrorPluginContributions_InjectedSuppressesLocalResolution(t *testing.T) {
 	workDir := t.TempDir()
-	if _, err := mirrorPluginContributions(workDir, &Contributions{}, nil); err != nil {
+	if _, _, err := mirrorPluginContributions(workDir, &Contributions{}, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".claude")); !os.IsNotExist(err) {
