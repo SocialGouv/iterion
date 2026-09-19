@@ -3230,10 +3230,13 @@ func (e *Engine) advancePastAnsweredHumanNodeOnResume(ctx context.Context, rs *r
 	}
 	// Freshness: only the interaction id THIS iteration's pauseAtHuman
 	// would create. An older iteration's answered interaction on the
-	// same node is not this pause's answer, even if RetiredAt is nil —
-	// RetireAsyncInteractions only retires async kinds, so a rewind
-	// past a loop iteration leaves the blocking-pause interaction
-	// on-disk unretired.
+	// same node is not this pause's answer. Rewind retires blocking-
+	// pause interactions on the invalidated nodes (pkg/store
+	// RetireInteractions with includeBlocking=true), so the RetiredAt
+	// check further down catches those; the exact-id match here is the
+	// belt to that suspender for a rewind that moved to a DIFFERENT
+	// iteration, and Run.LastRewindAt below is the third layer that
+	// survives a retire that failed to persist.
 	expectedID := e.interactionIDForPause(r.ID, restartNodeID, rs.loopCounters)
 	in, loadErr := e.store.LoadInteraction(ctx, r.ID, expectedID)
 	if loadErr != nil || in == nil {
