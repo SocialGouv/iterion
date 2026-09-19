@@ -183,3 +183,61 @@ func TestCallReportsToolErrorsInBand(t *testing.T) {
 		t.Fatalf("want one non-empty text block, got %+v", res.Content)
 	}
 }
+
+// TestUnknownArgumentIsAToolErrorWithAcceptedKeys pins the promise
+// that every tool's inputSchema advertises (additionalProperties:
+// false): a misspelt or misplaced argument is a tool error, not a
+// silent drop (issue #1335).
+//
+// The class is the whole server — every tool decoded through the
+// operator MCP's shared unmarshalArgs choke point. This table
+// iterates over Server.Tools() so the next tool cannot regress the
+// promise: a newly-added tool that fails to reject an unknown key
+// reddens on the first assertion.
+//
+// Board tools (local_board_*) route through a separate boardops
+// decoder and their schemas do not declare additionalProperties:
+// false, so they are excluded — a different contract.
+//
+// Mutation: revert unmarshalArgs to plain json.Unmarshal, and this
+// reddens on the isError check (silent drop → err=nil → no tool
+// error).
+func TestUnknownArgumentIsAToolErrorWithAcceptedKeys(t *testing.T) {
+	isolateHome(t)
+	s := newTestServer(t)
+	for _, tool := range s.Tools() {
+		if strings.HasPrefix(tool.Name, "local_board_") {
+			// boardops has its own decoder and its schemas do not
+			// declare additionalProperties: false.
+			continue
+		}
+		t.Run(tool.Name, func(t *testing.T) {
+			// The forbidden alternative in this test: a JSON object
+			// carrying an unknown key. Sent alone (no accepted keys)
+			// so the strict decoder MUST catch it at decode time,
+			// before any missing-required check or business logic
+			// can mask the drop.
+			raw := json.RawMessage(`{"__unknown_iterion_vras__": "sentinel"}`)
+			res, callErr := s.Call(context.Background(), tool.Name, raw)
+			if callErr != nil {
+				t.Fatalf("Call: %v", callErr)
+			}
+			if !res.IsError {
+				t.Fatalf("unknown key silently dropped by %s: %+v", tool.Name, res)
+			}
+			body := res.Content[0].Text
+			if !strings.Contains(body, "__unknown_iterion_vras__") {
+				t.Errorf("%s error must name the unknown key: %q", tool.Name, body)
+			}
+			if !strings.Contains(body, "additionalProperties") {
+				t.Errorf("%s error must cite the schema promise: %q", tool.Name, body)
+			}
+			// The accepted-keys hint is what makes the error
+			// self-correcting for an LLM caller: the ticket
+			// specifically asks for it.
+			if !strings.Contains(body, "accepted keys:") {
+				t.Errorf("%s error must list the accepted keys: %q", tool.Name, body)
+			}
+		})
+	}
+}
