@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -21,9 +22,10 @@ const subscriberBufferSize = 256
 // watch_coordinator lifecycle (buffered chan → single worker → drop-on-full)
 // and runview.EventBroker's lossy semantics. Zero external dependencies.
 type InProcBus struct {
-	mu     sync.RWMutex
-	subs   []*inprocSub
-	logger *iterlog.Logger
+	mu           sync.RWMutex
+	subs         []*inprocSub
+	logger       *iterlog.Logger
+	cancelBudget time.Duration // 0 → DefaultSubscribeCancelBudget; test seam only.
 }
 
 type inprocSub struct {
@@ -41,6 +43,18 @@ type inprocSub struct {
 // NewInProcBus creates an empty in-process bus. logger may be nil.
 func NewInProcBus(logger *iterlog.Logger) *InProcBus {
 	return &InProcBus{logger: logger}
+}
+
+// subscribeCancelBudget bounds the wait for a per-subscriber worker to return
+// after cancel is called; a handler that ignores its context cannot hold
+// shutdown past this window. The value pairs with DefaultSubscribeCancelBudget
+// and pkg/server's background join budget (#1257) so the grace period's
+// arithmetic upstream stays one number.
+func (b *InProcBus) subscribeCancelBudget() time.Duration {
+	if b.cancelBudget > 0 {
+		return b.cancelBudget
+	}
+	return DefaultSubscribeCancelBudget
 }
 
 // Publish fans ev out to every subscriber whose filter matches. Non-blocking:
@@ -90,10 +104,22 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 		once.Do(func() {
 			// Cancel the handler context first so an in-flight handler
 			// (a launch blocked on store/LLM I/O) observes the teardown,
-			// then signal the worker to exit and wait for it.
+			// then signal the worker to exit and wait for it within a
+			// bounded budget — a handler ignoring its ctx is named in a
+			// warning rather than waited out, so a defective subscriber
+			// cannot hold the process past the grace period.
 			s.cancel()
 			close(s.stop)
-			<-s.done
+			budget := b.subscribeCancelBudget()
+			timer := time.NewTimer(budget)
+			select {
+			case <-s.done:
+				timer.Stop()
+			case <-timer.C:
+				if b.logger != nil {
+					b.logger.Warn("eventbus: subscriber %q handler did not return within %s of cancel; its last write falls outside the grace period", s.name, budget)
+				}
+			}
 			b.mu.Lock()
 			for i, ex := range b.subs {
 				if ex == s {

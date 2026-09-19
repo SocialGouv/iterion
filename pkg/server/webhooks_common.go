@@ -920,21 +920,44 @@ const supersededRunReason = store.RunEndReasonSuperseded
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise
 // queue N identical projections against the 16-slot semaphore.
+//
+// The projection is registered through goUntilShutdown (#1345) so a rolling
+// deploy joins its in-flight store writes rather than cutting them mid-Mongo
+// transaction. Two edges are settled explicitly:
+//
+//   - Not `context.Background()`: the projection observes SIGTERM through the
+//     registered context. The 30s WithTimeout is the happy-path ceiling, not
+//     a floor a defective handler can hold shutdown by.
+//   - Not the request's ctx: the request response has already been sent and
+//     r.Context() cancels then, but we want to complete the write. The
+//     goUntilShutdown context is bounded by shutdown, not by the response.
+//
+// A burst of 16 projections in flight at SIGTERM stays under ONE join budget
+// because projectForgeWebhookToBoard respects ctx (Mongo driver returns on
+// ctx.Done); if a projection ignored ctx the join budget's warning would
+// name "server.forgeBoardProjection" and the periodic sweep would reconcile
+// the cards on the next tick.
 func (s *Server) scheduleForgeBoardProjection(repo string) {
 	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil {
 		return
 	}
 	select {
 	case forgeProjectionSem <- struct{}{}:
-		go func() {
+		if _, started := s.tryGoUntilShutdown("server.forgeBoardProjection", func(ctx context.Context) {
 			defer func() { <-forgeProjectionSem }()
-			// Fresh background context (not derived from the request ctx) so the
-			// goroutine neither is cancelled by the response nor keeps the
-			// request's scoped values alive for its 30s lifetime.
-			pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// 30s happy-path ceiling on top of the shutdown-aware ctx. On
+			// SIGTERM this cancels early with the outer ctx; on a slow
+			// Mongo it cancels after 30s.
+			pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			s.projectForgeWebhookToBoard(pctx, repo)
-		}()
+		}); !started {
+			// The shutdown already joined its background loops; the fn was
+			// not called, so the deferred slot release inside it never
+			// runs. Release it here so the concurrency cap does not leak
+			// on a process that is being kept alive by a hung Shutdown.
+			<-forgeProjectionSem
+		}
 	default:
 		// Concurrency cap reached — skip the fast path; the periodic
 		// forge→board sweep will reconcile this repo's cards.

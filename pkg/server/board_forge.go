@@ -949,6 +949,13 @@ func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
 		return
 	}
 	for _, ri := range ris {
+		// Short-circuit on shutdown so a webhook that matched N integrations
+		// does not run N Mongo trips each failing on ctx.Done during a
+		// SIGTERM — the join budget covers the projection collectively, but
+		// only the loop iteration checking ctx cuts the tail.
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		c, u, serr := s.syncOneIntegration(ctx, ri.TenantID, ri)
 		if serr != nil && s.logger != nil {
 			s.logger.Warn("board projection: %s/%s: %v", ri.TenantID, ri.RepoFullName, serr)

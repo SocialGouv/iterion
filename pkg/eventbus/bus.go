@@ -16,9 +16,19 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
+
+// DefaultSubscribeCancelBudget bounds how long the cancel returned by
+// Subscribe waits for an in-flight handler after it has signalled cancellation.
+// The value matches pkg/server's background join budget (#1257) so both halves
+// of a graceful shutdown — the goUntilShutdown loops and the bus subscribers —
+// draw from a single arithmetic on the chart's terminationGracePeriodSeconds:
+// a bus cancel that overran would spend budget the join arithmetic upstream
+// never provisioned, and vice versa.
+const DefaultSubscribeCancelBudget = 500 * time.Millisecond
 
 // Handler processes one event. It runs on a per-subscriber worker goroutine,
 // so it may do store I/O without stalling the publisher. A returned error is
@@ -34,6 +44,14 @@ type Bus interface {
 	// Subscribe delivers events matching filter to h. name identifies the
 	// subscriber (used as the durable consumer name by NATSBus; informational
 	// for InProcBus). An empty Matcher matches every event.
+	//
+	// The returned cancel signals the handler's context and waits for an
+	// in-flight delivery within DefaultSubscribeCancelBudget; a handler that
+	// ignores its context is named in a warning and left behind rather than
+	// waited out, so a defective subscriber cannot hold the process past the
+	// grace period. Cancel does NOT guarantee delivery of buffered events —
+	// the bus is a lossy fan-out and its producer's reconciliation path is
+	// the safety net. Idempotent.
 	Subscribe(name string, filter trigger.Matcher, h Handler) (cancel func(), err error)
 }
 

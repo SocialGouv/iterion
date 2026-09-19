@@ -286,9 +286,11 @@ func assistantWatchCanceled(ctx context.Context, err error) bool {
 	return ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// The bus unsubscribe waits for its callback to return. Keep that callback
-// free of store I/O: both events and HTTP requests only wake the lifecycle
-// worker, whose sweep derives tenant-scoped outcomes from durable state.
+// The bus unsubscribe waits, within a bounded budget, for its callback to
+// return (eventbus.DefaultSubscribeCancelBudget — #1343 made the property
+// hold on NATSBus too). Keep that callback free of store I/O: both events
+// and HTTP requests only wake the lifecycle worker, whose sweep derives
+// tenant-scoped outcomes from durable state.
 func (c *assistantWatchCoordinator) handleEvent(ctx context.Context, ev trigger.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err

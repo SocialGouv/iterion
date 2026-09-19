@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -72,10 +73,30 @@ type NATSBus struct {
 
 	mu   sync.Mutex
 	subs map[*natsSub]struct{}
+
+	cancelBudget time.Duration // 0 → DefaultSubscribeCancelBudget; test seam only.
 }
 
 type natsSub struct {
 	sub natsSubscription
+	// ctx is cancelled by the subscriber's cancel func; an in-flight handler
+	// observing it exits. The transport keeps invoking the callback on its own
+	// goroutine until Unsubscribe returns, so a per-subscription context is the
+	// only way to signal them.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// mu/closed/inFlight together implement the "safe WaitGroup" pattern:
+	// cancel sets closed=true under mu, then Wait; a callback dispatched
+	// AFTER cancel sees closed and returns without touching inFlight. Without
+	// this gate a transport dispatching callbacks in parallel (async nats.go
+	// subs, a queue-group fan-out worker, an async broker in tests) can race
+	// the cancel — cb starts, cancel calls Wait() (counter zero, returns),
+	// cb then calls Add(1) → "WaitGroup is reused before previous Wait has
+	// returned" panic. The adversarial round on this PR reproduced it 1/100
+	// on an async broker; see bus_conformance_test.go's asyncBroker row.
+	mu       sync.Mutex
+	closed   bool
+	inFlight sync.WaitGroup
 }
 
 // NATSOptions configures a NATSBus.
@@ -84,6 +105,17 @@ type NATSOptions struct {
 	SubjectPrefix string
 	// Logger receives dropped-event / decode-error warnings. May be nil.
 	Logger *iterlog.Logger
+}
+
+// subscribeCancelBudget bounds the wait for in-flight NATS callbacks to
+// return after cancel is called; a handler that ignores its context cannot
+// hold shutdown past this window. Paired with pkg/server's background join
+// budget (#1257) — see DefaultSubscribeCancelBudget.
+func (b *NATSBus) subscribeCancelBudget() time.Duration {
+	if b.cancelBudget > 0 {
+		return b.cancelBudget
+	}
+	return DefaultSubscribeCancelBudget
 }
 
 // NewNATSBus builds a NATSBus over an established NATS connection. The caller
@@ -149,12 +181,38 @@ func (b *NATSBus) Publish(_ context.Context, ev trigger.Event) error {
 // deliver each event to exactly one member across all replicas sharing the
 // name — so N server pods with the same evaluator subscription process each
 // event once, not N times. Events are decoded and passed through filter before
-// h, matching InProcBus. The returned cancel unsubscribes (idempotent).
+// h, matching InProcBus.
+//
+// The returned cancel first signals the handler through the per-subscription
+// context, then unsubscribes so the transport delivers no further messages,
+// and finally WAITS for any in-flight callback to return within
+// DefaultSubscribeCancelBudget — a handler ignoring its ctx is left behind
+// with a warning naming the subscriber, exactly as InProcBus does. Without
+// that wait a pod's SIGTERM would cut a callback mid-store-write (#1343).
+// Idempotent.
 func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (func(), error) {
 	if name == "" {
 		return nil, fmt.Errorf("eventbus: NATSBus.Subscribe: empty name (used as the queue group)")
 	}
+	subCtx, subCancel := context.WithCancel(context.Background())
+	ns := &natsSub{ctx: subCtx, cancel: subCancel}
 	cb := func(msg *nats.Msg) {
+		// Gate WaitGroup.Add under mu / closed so a callback dispatched by
+		// the transport AFTER cancel called Wait cannot race the WG's
+		// counter — see natsSub.mu comment. Once closed, we return without
+		// touching the store; the cancelled context alone is not enough
+		// because sync.WaitGroup.Add after a returned Wait panics under
+		// -race, and a "no I/O when closed" fast path here plus a Wait()
+		// that sees only Add()s made under mu is the pattern the standard
+		// library documents.
+		ns.mu.Lock()
+		if ns.closed {
+			ns.mu.Unlock()
+			return
+		}
+		ns.inFlight.Add(1)
+		ns.mu.Unlock()
+		defer ns.inFlight.Done()
 		var ev trigger.Event
 		if err := json.Unmarshal(msg.Data, &ev); err != nil {
 			if b.logger != nil {
@@ -165,19 +223,21 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 		if !filter.Match(ev) {
 			return
 		}
-		// A fresh context per delivery: the bus has no run-scoped ctx, and a
-		// handler doing store/LLM I/O manages its own deadline. Errors are
+		// The per-subscription context is the handler's cancel signal, so a
+		// handler doing store/LLM I/O observes shutdown teardown; a handler
+		// managing its own deadline layers WithTimeout on top. Errors are
 		// logged and swallowed (the reconciliation poll is the safety net),
 		// mirroring InProcBus.worker.
-		if err := deliver(context.Background(), h, ev); err != nil && b.logger != nil {
+		if err := deliver(ns.ctx, h, ev); err != nil && b.logger != nil {
 			b.logger.Warn("eventbus: subscriber %q handler error on %s/%s: %v", name, ev.Source, ev.Kind, err)
 		}
 	}
 	sub, err := b.nc.QueueSubscribe(b.prefix+".>", name, cb)
 	if err != nil {
+		subCancel()
 		return nil, fmt.Errorf("eventbus: NATSBus.Subscribe %q: %w", name, err)
 	}
-	ns := &natsSub{sub: sub}
+	ns.sub = sub
 	b.mu.Lock()
 	b.subs[ns] = struct{}{}
 	b.mu.Unlock()
@@ -185,8 +245,36 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 	var once sync.Once
 	cancel := func() {
 		once.Do(func() {
+			// Close the WaitGroup gate BEFORE Unsubscribe: past this point
+			// any newly-dispatched callback returns without Add-ing, so
+			// Wait() below observes only Adds that happened before the
+			// gate closed. The gate is what makes the WG safe under a
+			// transport that dispatches callbacks in parallel.
+			ns.mu.Lock()
+			ns.closed = true
+			ns.mu.Unlock()
+			// Signal the handler through its context BEFORE unsubscribing
+			// so an in-flight callback observes teardown; Unsubscribing
+			// first would let a running callback finish its store write
+			// with no signal at all.
+			ns.cancel()
 			if ns.sub != nil {
 				_ = ns.sub.Unsubscribe()
+			}
+			budget := b.subscribeCancelBudget()
+			waitDone := make(chan struct{})
+			go func() {
+				ns.inFlight.Wait()
+				close(waitDone)
+			}()
+			timer := time.NewTimer(budget)
+			select {
+			case <-waitDone:
+				timer.Stop()
+			case <-timer.C:
+				if b.logger != nil {
+					b.logger.Warn("eventbus: subscriber %q handler did not return within %s of cancel; its last write falls outside the grace period", name, budget)
+				}
 			}
 			b.mu.Lock()
 			delete(b.subs, ns)
