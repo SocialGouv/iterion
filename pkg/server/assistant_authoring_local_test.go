@@ -354,7 +354,25 @@ func TestAuthoringLocalInterruptedRecordsAreNotReplayed(t *testing.T) {
 func TestAuthoringLocalCrossProcessLock(t *testing.T) {
 	if path := os.Getenv("ITERION_AUTHORING_LOCK_CHILD"); path != "" {
 		fmt.Println("ready")
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// The two child budgets carry DIFFERENT properties:
+		// "blocked" — the acquire must NOT succeed within its bound. The
+		//   parent holds the flock throughout; budget exhaustion IS the
+		//   expected pass, so a tight budget cannot redden this branch and
+		//   widening it does not close any flake. Keep the historical
+		//   200 ms window.
+		// "acquired" — the lock is FREE and must be acquired. This is a
+		//   liveness property, not a latency one; a wall-clock ceiling
+		//   here is a race between "acquires" and "child startup finished
+		//   before 200 ms of clock elapsed", not a property of the code.
+		//   Under -race on the shared runner that race dequeued #1436 with
+		//   no reason written on the timeline. 30 s is the same order as
+		//   the outer test's implicit test-timeout and makes runner
+		//   slowdown irrelevant.
+		budget := 30 * time.Second
+		if os.Getenv("ITERION_AUTHORING_LOCK_EXPECT") == "blocked" {
+			budget = 200 * time.Millisecond
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 		locks, err := acquireAuthoringLocalLocks(ctx, []string{path})
 		if os.Getenv("ITERION_AUTHORING_LOCK_EXPECT") == "blocked" {
@@ -421,6 +439,11 @@ func TestAuthoringLocalPhysicalAliasesShareLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeAuthoringLocalLocks(locks)
+	// A NEGATIVE window: the parent holds the flock throughout, so budget
+	// exhaustion IS the expected pass and widening it does not close any
+	// flake — a mutation where aliases DO NOT share the physical lock
+	// makes the acquire succeed with err == nil regardless of window
+	// size. Keep the historical 50 ms.
 	for _, other := range []string{filepath.Join(alias, "nested", "file.bot"), filepath.Join(root, "nested", "file.bot")} {
 		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 		got, err := acquireAuthoringLocalLocks(ctx, []string{other})

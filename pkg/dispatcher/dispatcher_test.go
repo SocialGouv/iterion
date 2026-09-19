@@ -269,6 +269,11 @@ func TestSnapshotLockFreeWhileActorBlocked(t *testing.T) {
 
 	// While the actor is blocked, Snapshot() must return promptly with
 	// the last-published (seeded) state — not wait on the wedged actor.
+	// The property is a LIVENESS one (a lock-free read completes without
+	// touching the actor); 5 s is orders of magnitude above what a
+	// lock-free atomic load costs on any runner but bounds a regression
+	// that wedges Snapshot() on the actor. 500 ms flaked on shared
+	// runners even absent regression (#1393).
 	got := make(chan Snapshot, 1)
 	go func() { got <- c.Snapshot() }()
 	select {
@@ -276,7 +281,7 @@ func TestSnapshotLockFreeWhileActorBlocked(t *testing.T) {
 		if snap.Name != "test" {
 			t.Fatalf("Snapshot returned an empty/zero view while actor blocked: %+v", snap)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Snapshot() blocked on the wedged actor — read path is not decoupled")
 	}
 }
@@ -326,7 +331,13 @@ func TestActorResponsiveWhileDiscoveryInFlight(t *testing.T) {
 	newCfg.Name = "reloaded"
 	c.Reload(&newCfg)
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// The property is ORDERING: cmdReload lands while ListCandidates is
+	// still parked at the gate. On a healthy actor this completes in a
+	// handful of milliseconds; the deadline is a witness the actor is
+	// NOT wedged, not a latency bound. 500 ms flaked on shared runners
+	// under -race — a 5 s budget still catches a wedged actor (the gate
+	// is held throughout the poll) but survives runner slowdown (#1393).
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.Snapshot().Name == "reloaded" {
 			return // actor processed a command concurrently with in-flight discovery
@@ -392,7 +403,9 @@ func TestActorResponsiveWhileFinishHTTPInFlight(t *testing.T) {
 	newCfg.Name = "reloaded"
 	c.Reload(&newCfg)
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// See TestActorResponsiveWhileDiscoveryInFlight — same ORDERING
+	// witness, same reason for 5 s over 500 ms (#1393).
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.Snapshot().Name == "reloaded" {
 			return // actor processed a command concurrently with the in-flight finish HTTP
