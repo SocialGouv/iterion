@@ -368,3 +368,24 @@ func TestEffectiveProviders_InteractionModelIsARoute(t *testing.T) {
 		t.Fatalf("a human interaction spends nothing on interaction_model: got %+v, want [zai]", got)
 	}
 }
+
+// A `{{vars.…}}` provider hint is resolved by the executor with the run's
+// vars, which this walk does not have. It must keep deciding the route —
+// dropping it let the model's `provider/` prefix narrow the credential
+// wants to that provider alone, and a cloud run whose var named another
+// provider got no credential for it — and it must widen: unresolved,
+// recorded as unknown, NarrowSafe false, exactly as before the routing
+// fields learned to resolve templates.
+func TestEffectiveProviders_TemplatedHintFailsOpen(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "{{vars.p}}", "anthropic/claude-opus-5")}}
+	got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	if got.NarrowSafe {
+		t.Fatalf("a templated hint must widen, got %+v", got)
+	}
+	if slicesEqual(got.Providers, []string{"anthropic"}) {
+		t.Fatalf("the model's anthropic/ prefix must not decide in place of the templated hint: %+v", got)
+	}
+	if !slicesEqual(got.Unknown, []string{"{{vars.p}}"}) {
+		t.Fatalf("the templated hint must be recorded as unknown, got %+v", got)
+	}
+}

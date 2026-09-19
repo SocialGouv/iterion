@@ -30,7 +30,7 @@ concurrency:
 # it inside the merge queue buys a verdict nobody can act on — while holding a
 # runner slot the queue needs. The org shares 20 concurrent jobs across every
 # repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The seven advisory jobs below therefore run
+# decides how long a merge takes. The six advisory jobs below therefore run
 # on the pull request and on main, and skip in `merge_group`.
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
@@ -790,18 +790,14 @@ jobs:
     # `task check`, which NO workflow runs — so it never executed between a
     # pull request and main. Pure shell + grep, no toolchain, seconds.
     #
-    # Running is not yet BLOCKING: `main` is protected by a ruleset whose
-    # required checks are test, race, vendor-check, mongo-conformance,
-    # golangci and revi/review. Until `brand` is added to that list, a red run
-    # here shows an X the merge queue steps over. Say it rather than imply it —
-    # a guard believed to hold is worse than one known not to.
-    #
-    # Advisory, so it carries the merge_group skip like every other advisory
-    # job above. ⚠️ PROMOTING IT TO REQUIRED MEANS DELETING THAT SKIP IN THE
-    # SAME CHANGE: a job skipped by a job-level `if:` reports SUCCESS, so a
+    # REQUIRED, so it carries no merge_group skip — deliberately, and the two
+    # go together. A job skipped by a job-level `if:` reports SUCCESS, so a
     # required check that never ran would satisfy the gate on every queue
-    # entry. The header comment carries the full argument.
-    if: github.event_name != 'merge_group'
+    # entry; the skip and the ruleset entry are one decision, never two. The
+    # header comment carries the full argument.
+    #
+    # It is the cheapest thing in the queue to hold a slot for: shell, grep and
+    # sha256, no toolchain, no service, ~40 s.
     #
     # Deliberately NOT `task brand:check` (the asset-drift guard): that one
     # needs magick/pngquant/oxipng from devbox and is a different cost.

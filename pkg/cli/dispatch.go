@@ -191,7 +191,7 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 			_, _ = w.Write([]byte(`{"mode":"dispatch","auth_required":false,"limits":{"upload":{}},"native_tracker_enabled":true,"dispatcher_enabled":true}`))
 		})
 		if sub, err := fs.Sub(server.StaticFS, "static"); err == nil {
-			mux.Handle("/", server.SPAHandler(sub))
+			mux.Handle("/", server.SPAHandler(sub, ""))
 		} else {
 			logger.Warn("dispatcher: SPA assets not available: %v", err)
 		}

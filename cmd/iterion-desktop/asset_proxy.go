@@ -112,7 +112,7 @@ func newAssetProxyHandler(app *App) *assetProxyHandler {
 	}
 	return &assetProxyHandler{
 		app:    app,
-		spa:    iserver.SPAHandler(subFS),
+		spa:    iserver.SPAHandler(subFS, ""),
 		subFS:  subFS,
 		caches: make(map[string]*cachedProxy),
 	}
@@ -215,6 +215,27 @@ func (h *assetProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// scoped /x/<id>/api/... never falls into the legacy single-backend path.
 	if strings.HasPrefix(r.URL.Path, "/x/") {
 		h.serveScoped(w, r)
+		return
+	}
+
+	// The mascot, from the same embed the server serves it from. It is NOT in
+	// the SPA's StaticFS — studio/public carries no brand/ — so without this
+	// the request fell to the SPA fallback and answered index.html as
+	// text/html. index.html's og:image points here, and so does the studio's
+	// GitHub-App logo hand-off, which is the one that matters: an operator
+	// asked to download the avatar got an HTML page.
+	if strings.HasPrefix(r.URL.Path, "/brand/") {
+		// The server's own handler, not a copy. /brand/ is NOT in the SPA's
+		// StaticFS — studio/public carries no brand/ — so without this the
+		// request fell to the SPA fallback and answered index.html as
+		// text/html. index.html's og:image points here, and so does the
+		// studio's GitHub-App logo hand-off, which is the one that matters: an
+		// operator asked to download the avatar got an HTML page.
+		//
+		// Calling iserver.ServeBrandAsset rather than re-deriving the bytes is
+		// the point: a copy here had already drifted on the ETag, the 404's
+		// content type and the If-None-Match answer within one round.
+		iserver.ServeBrandAsset(w, r, strings.TrimPrefix(r.URL.Path, "/brand/"))
 		return
 	}
 

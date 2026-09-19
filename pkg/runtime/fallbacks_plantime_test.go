@@ -120,3 +120,26 @@ func TestWorkspaceSafety_ClawOnlyRouteStaysReadOnly(t *testing.T) {
 		t.Error("a claw→claw route must not make a read-only node mutating")
 	}
 }
+
+// TestContainsClawNode_TemplatedBackendKeepsTheMount: a `{{vars.…}}` backend
+// resolves at dispatch, with the run's vars this plan-time reading does not
+// have. It may be claw, so the mount stays — on the node (a nil resolver
+// reads the IR alone) and on a fallbacks route, which no resolver reads.
+func TestContainsClawNode_TemplatedBackendKeepsTheMount(t *testing.T) {
+	route := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{
+			BaseNode:  ir.BaseNode{ID: "a"},
+			LLMFields: ir.LLMFields{Backend: "claude_code"},
+			Fallbacks: []ir.Fallback{{Name: "alt", Backend: "{{vars.b}}", Model: "openai/gpt-5.5"}},
+		},
+	}}
+	if !containsClawNode(route, nil) {
+		t.Error("a templated route backend may be claw: the binary must be mounted")
+	}
+	primary := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "{{vars.b}}"}},
+	}}
+	if !containsClawNode(primary, nil) {
+		t.Error("a templated node backend may be claw: the binary must be mounted")
+	}
+}

@@ -76,6 +76,12 @@ func routeOnAnthropicWire(backend, overrideProvider, chain, mdl string) bool {
 	case "", "auto", delegate.BackendClaudeCode:
 		return true
 	}
+	// A `{{vars.…}}` backend resolves at dispatch, with the run's vars this
+	// pre-flight does not have: it may be claude_code or claw on anthropic,
+	// so the route stays reachable — the conservative side of this guard.
+	if strings.Contains(backend, "{{") {
+		return true
+	}
 	var hints []string
 	unresolved := false
 	switch {

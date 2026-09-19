@@ -1,0 +1,22 @@
+## Guard fixture — a tool's command and postcondition read inputs no incoming edge maps.
+dsl: 2
+
+prompt work:
+  Do the work.
+
+schema probe_out:
+  ok: bool
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+
+tool probe:
+  command: "test -n {{input.cmd_never}} && printf '{\"ok\": true}'"
+  postcondition: "test -n {{input.pc_never}}"
+  output: probe_out
+
+workflow tool_command:
+  entry: seed
+  seed -> probe
+  probe -> done

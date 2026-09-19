@@ -40,10 +40,10 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
 
-	// Resolve API client (expand env var references, including
-	// ${VAR:-default} forms — recipes use those for model fallbacks
-	// like "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}").
-	modelSpec := ir.ExpandEnvWithDefault(node.Model)
+	// Resolve API client: the model is a routing field — `{{vars.…}}` then
+	// `${VAR:-default}` (recipes use the latter for model fallbacks like
+	// "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}").
+	modelSpec := e.resolveRoutingField(node.Model)
 	client, err := e.registry.Resolve(modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
