@@ -399,13 +399,9 @@ func iterionBotLogins(cfg webhooks.Config, conn forge.Connection) []string {
 	// Operator-configured identities first: they are the only ones that can
 	// name a USER account, which on GitHub is the only thing that can be a
 	// requested reviewer. See Config.ReviewRequestLogins for why this is never
-	// derived from the connection.
-	var logins []string
-	for _, l := range cfg.ReviewRequestLogins {
-		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
-			logins = append(logins, l)
-		}
-	}
+	// derived from the connection — and NormalizedReviewRequestLogins for why
+	// the trimming is that method's and not this loop's.
+	logins := cfg.NormalizedReviewRequestLogins()
 	if conn.AppSlug != "" {
 		logins = append(logins, conn.AppSlug+"[bot]")
 	}

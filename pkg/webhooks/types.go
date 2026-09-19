@@ -632,6 +632,26 @@ func (c Config) OverlapPolicy() schedgate.Policy {
 	return schedgate.Policy{Overlap: c.Overlap}
 }
 
+// NormalizedReviewRequestLogins returns ReviewRequestLogins as forge logins:
+// trimmed, a pasted "@handle" reduced to the handle, empties dropped. Nil
+// when the lane is not armed.
+//
+// ONE definition, because it has two readers that must agree on the exact
+// same set — the same argument iterionBotLogins makes for being one set. The
+// anti-loop actor guard recognises these logins as iterion's own, and the
+// publish tail withdraws their pending review request; a normalization
+// applied on one side only would have the tail withdraw "@bot" (which GitHub
+// does not know) while the guard trusts "bot", or the reverse.
+func (c Config) NormalizedReviewRequestLogins() []string {
+	var out []string
+	for _, l := range c.ReviewRequestLogins {
+		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // RetryPolicy projects the webhook's retry fields. Not normalized — this
 // is one layer of a precedence chain, and defaults filled here would
 // masquerade as an explicit per-webhook choice.

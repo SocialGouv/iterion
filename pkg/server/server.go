@@ -537,6 +537,13 @@ type Server struct {
 	// client via forgeAdminFor.
 	forgeReviewerAssignerFor func(ctx context.Context, conn forge.Connection) forge.ReviewerAssigner
 
+	// forgeReviewRequestWithdrawerFor is a test seam overriding how the
+	// publish-review handler resolves a connection's review-request
+	// withdrawal capability — the closing half of the re-request gesture
+	// (nil result = capability absent). Nil field → real admin client via
+	// forgeAdminFor.
+	forgeReviewRequestWithdrawerFor func(ctx context.Context, conn forge.Connection) forge.ReviewRequestWithdrawer
+
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
 	// endpoint (and the studio's Marketplace view via
