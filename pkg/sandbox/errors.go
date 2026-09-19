@@ -47,3 +47,28 @@ var ErrPhaseTimeout = errors.New("sandbox: setup phase timeout")
 //     add a node; a cluster that stays full through every permitted
 //     delivery parks the run on the DLQ like any other repeated failure.
 var ErrCapacity = errors.New("sandbox: no capacity to place the sandbox")
+
+// ErrDriverUnavailable is the sentinel [Factory.DriverForSpec] returns
+// when an active sandbox mode cannot be honoured on this host: no
+// docker or podman on PATH for a local run, no usable cluster for the
+// runner, or a PreferredDriver whose constructor fails.
+//
+// It reports the HOST's capability, not the run's fate. What follows
+// from it is decided once, in runtime.resolveAndStartSandbox (#1425):
+// `sandbox: auto` degrades to an unsandboxed run with a visible
+// `sandbox_skipped` event, while an explicit `sandbox: { mode: inline,
+// image/build: … }` parks the run — an author-declared container IS
+// the workflow's isolation contract, so silently running unsandboxed
+// is not an option.
+//
+// Consumers, mirroring ErrPhaseTimeout / ErrCapacity's:
+//
+//   - the runtime setup classifier (pkg/runtime setupFailureStatus)
+//     persists the refused run with FailureCode
+//     SANDBOX_DRIVER_UNAVAILABLE, so the studio's failure row and the
+//     schedule record's last_run_error_code (#1426) read one typed
+//     reason instead of free text;
+//   - pkg/retrypolicy classifies that code Deterministic, so the
+//     runner acks the delivery instead of redelivering a run into the
+//     same absent runtime.
+var ErrDriverUnavailable = errors.New("sandbox: no container-runtime driver available")

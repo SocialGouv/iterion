@@ -103,7 +103,21 @@ func TestFactoryCachesDriver(t *testing.T) {
 	}
 }
 
-func TestDriverForSpecRefusesNoopOnActiveMode(t *testing.T) {
+// TestDriverForSpecReportsHostCapabilityNotRunPolicy pins where the
+// #1425 split does NOT live. The factory answers one question — can
+// this host honour an active mode? — and answers it the same for auto
+// and inline, with the typed [ErrDriverUnavailable] every reader keys
+// on. Degrade-vs-refuse is the runtime's call
+// (runtime.resolveAndStartSandbox), because only there is there a run
+// to degrade, an event stream to say so on, and a FailureCode to park
+// with. Splitting here too would give `iterion sandbox doctor
+// --strict` and the launch pre-flight — which read this same answer
+// and cannot degrade anything — a driver named "noop" to report as
+// available.
+//
+// Mutation: return the noop driver for ModeAuto (the mode split back
+// in the factory) → the auto sub-case reddens on err == nil.
+func TestDriverForSpecReportsHostCapabilityNotRunPolicy(t *testing.T) {
 	registry := map[string]DriverConstructor{
 		"docker": func() (Driver, error) {
 			return nil, &ErrUnavailable{Driver: "docker", Reason: "not installed"}
@@ -114,12 +128,15 @@ func TestDriverForSpecRefusesNoopOnActiveMode(t *testing.T) {
 		Host:             HostLocal,
 		AvailableDrivers: registry,
 	})
-	// Active mode + noop fallback must hard-error.
-	if _, err := f.DriverForSpec(&Spec{Mode: ModeAuto}); err == nil {
-		t.Error("DriverForSpec(ModeAuto) should error when only noop is available")
-	}
-	if _, err := f.DriverForSpec(&Spec{Mode: ModeInline, Image: "alpine"}); err == nil {
-		t.Error("DriverForSpec(ModeInline) should error when only noop is available")
+	// Both active modes get the same capability answer, typed.
+	for _, spec := range []*Spec{{Mode: ModeAuto}, {Mode: ModeInline, Image: "alpine"}} {
+		d, err := f.DriverForSpec(spec)
+		if err == nil {
+			t.Fatalf("DriverForSpec(%s) = %v, want a refusal: noop starts no container, so reporting it as the driver for an active mode is a false capability", spec.Mode, d)
+		}
+		if !errors.Is(err, ErrDriverUnavailable) {
+			t.Fatalf("DriverForSpec(%s) err = %v, want errors.Is(..., ErrDriverUnavailable) — the runtime keys the mode split on it, and #1426's schedule reads the code it produces", spec.Mode, err)
+		}
 	}
 	// Inactive modes degrade silently as before.
 	if _, err := f.DriverForSpec(&Spec{Mode: ModeNone}); err != nil {
@@ -142,7 +159,9 @@ func TestDriverForSpecHonoursPreferredNoop(t *testing.T) {
 		AvailableDrivers: registry,
 		PreferredDriver:  "noop",
 	})
-	// Operator explicitly selected noop → don't second-guess.
+	// A caller that pinned noop selected the passthrough on purpose —
+	// don't second-guess it. Nothing in the shipped CLI sets this today;
+	// it is the embedder/test seam.
 	d, err := f.DriverForSpec(&Spec{Mode: ModeAuto})
 	if err != nil {
 		t.Fatalf("DriverForSpec with PreferredDriver=noop should succeed, got %v", err)

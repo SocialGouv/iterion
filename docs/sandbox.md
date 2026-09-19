@@ -10,14 +10,44 @@ published default image). Opting out is explicit and discouraged —
 `sandbox: none` in the workflow (flagged by the C128 warning
 diagnostic), `--sandbox none`, or `ITERION_SANDBOX_DEFAULT=none` —
 because an unsandboxed run executes with the host's credentials and
-filesystem. The ambient default degrades gracefully instead of
-failing: outside a git repository it is silently not applicable, and
-on a host with no container runtime the run proceeds unsandboxed with
-a visible `sandbox_skipped` event. An EXPLICIT sandbox request (CLI
-flag or workflow block) never degrades — it errors. (The cloud runner
-currently pins `ITERION_SANDBOX_OVERRIDE=none` — the runner pod is the
-isolation boundary there until the k8s sandbox path carries worktree
-git access and interactive channels end-to-end.)
+filesystem. Two branches, two guarantees when the host cannot sandbox
+(#1425 — 107 scheduled ticks used to die here on the operator's own
+host):
+
+- **`sandbox: auto`** (the default reading of "isolate if you can") —
+  on a host with **no container runtime** the run proceeds
+  **unsandboxed** with a visible `sandbox_skipped` event on its own
+  stream. Whether the mode came from the workflow's own block,
+  `--sandbox=auto` or the built-in default, the answer is the same —
+  the MODE decides, not the tier that named it. One cost the event
+  states explicitly (`file_secrets_dropped: true`): an unsandboxed run
+  has nowhere to mount `as: file` secrets, so a workflow that declares
+  them will not find them. (The resolver degrades the same way when it
+  can resolve no repository root, or no image at all for a
+  `devcontainer.json` it cannot read — both need a library caller that
+  supplies neither, since `iterion run`, studio and the runner always
+  resolve a repo root and a default image.)
+- **`sandbox: { mode: inline, image/build: … }`** — an EXPLICIT
+  container the author wired. The refusal is a guarantee: the run
+  parks with `FailureCode = SANDBOX_DRIVER_UNAVAILABLE` (the typed
+  code persisted on the run as `failure_code`, repeated in its error
+  text, and copied onto the schedule record's `last_run_error_code`,
+  #1426), and `pkg/retrypolicy` classes it
+  Deterministic so a redelivery is acked rather than spun against the
+  same absent runtime. To run it anyway, ask for it: `--sandbox none`
+  (or `sandbox: none`) executes on the host, deliberately.
+
+Either verdict is readable where an operator looks: the event in
+`events.jsonl` and `iterion inspect --events`, and a line of its own in
+`iterion report` — "Sandbox skipped — the run is NOT isolated: …", or
+"Sandbox refused [SANDBOX_DRIVER_UNAVAILABLE]: …".
+
+(The cloud runner was long assumed to pin `ITERION_SANDBOX_OVERRIDE=none`
+— the runner pod as the isolation boundary — but the production
+deployment measured on 2026-08-05 does NOT: it carries
+`ITERION_SANDBOX_DEFAULT=auto` with an EMPTY override, so cloud runs do
+get the k8s sandbox. Anything needing a bind-mounted workspace there
+must declare `sandbox: none`.)
 
 ## Quick start
 
@@ -481,10 +511,13 @@ iterion sandbox doctor                 # report driver + capabilities
 2. CLI `--sandbox` flag
 3. Workflow-level `sandbox:` declaration (DSL)
 4. `ITERION_SANDBOX_DEFAULT` env var
-5. Built-in `auto` at product entry points (sandbox-by-default;
-   degrades gracefully outside a git repo or without a container
-   runtime). Engines embedded without an explicit default (tests,
-   library use) stay neutral: no sandbox.
+5. Built-in `auto` at product entry points (sandbox-by-default).
+   Engines embedded without an explicit default (tests, library use)
+   stay neutral: no sandbox.
+
+The tier decides only WHO asked, never what happens when the host
+cannot comply: any `auto` degrades gracefully, any explicit `inline`
+is refused (see the two branches at the top of this page).
 
 The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
@@ -905,7 +938,7 @@ print mode loads no extension and gets none of these bridges.
 | `docker`     | host has `docker` on PATH                  | Phase 1 ✅ |
 | `podman`     | host has `podman` on PATH (no `docker`)    | Phase 1 ✅ (shares the docker code path) |
 | `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 V1 ✅ + V2-5 NetworkPolicy |
-| `noop`       | always available; emits `sandbox_skipped` event when an active mode is requested but no real driver is usable | ✅ |
+| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`) | ✅ |
 
 `iterion sandbox doctor` reports which driver is selected on the
 current host and what capabilities it advertises.
@@ -932,7 +965,7 @@ Checks (each `pass` / `warn` / `fail`):
 
 | Check | What it verifies | Failure means |
 | ----- | ---------------- | ------------- |
-| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman, or `--sandbox-driver=noop` to bypass — **downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
+| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman — the doctor is deliberately strict: a `sandbox: auto` run would still execute, degraded to the host with a `sandbox_skipped` event, and an explicit `mode: inline` would park with `SANDBOX_DRIVER_UNAVAILABLE`. **Downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
 | **spec valid** | `Spec.Validate` (image XOR build, inline needs image, absolute `workspace_folder`, valid network mode/inherit, valid `host_state`) | fix the `sandbox:` block |
 | **docker daemon** | the daemon answers `version --format {{.Server.Version}}` | start Docker Desktop / `systemctl start docker` |
 | **spec safety** | no `source=` bind of `docker.sock`, `/proc`, `/sys`, or host credentials; no flag injection on image/user/workdir; no env-var name/value injection | remove/fix the offending bind, arg, or env var |

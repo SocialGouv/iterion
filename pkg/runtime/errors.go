@@ -46,6 +46,13 @@ const (
 	ErrCodeModelUnavailable      = store.FailureModelUnavailable
 	ErrCodeSchemaUnusable        = store.FailureSchemaUnusable
 	ErrCodeCapabilityUnsupported = store.FailureCapabilityUnsupported
+	// Raised when the workflow requested an EXPLICIT sandbox mode
+	// (`sandbox: { mode: inline, image/build: … }`) but no
+	// container-runtime driver on this host can honour it. Distinct
+	// from `sandbox: auto`, which degrades to unsandboxed with a
+	// `sandbox_skipped` event when no runtime is present — see
+	// resolveAndStartSandbox. #1425.
+	ErrCodeSandboxDriverUnavailable = store.FailureSandboxDriverUnavailable
 	// Raised before the first node when the attached bundle declares a
 	// `requires.iterion` this build is below (engine_requirement.go).
 	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine
