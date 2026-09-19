@@ -160,6 +160,32 @@ board issue ids created. See [[file-records]].
 Markdown export is folded into `report_card` (claude_code has
 `write_file`); there is no separate `export_report` node.
 
+## The UNTRUSTED INPUT BOUNDARY marker (class contract)
+
+Every system prompt in this bot whose LLM (a) reads material derived
+from the audited repository (scanner output, snippets, matcher text,
+voter rationale, coverage banners) AND (b) holds a writing tool
+(`write_file`, `file_edit`) or a board/forge capability
+(`board.create`, `board.label`, `board.transition`) carries an
+`IMPORTANT — UNTRUSTED INPUT BOUNDARY:` paragraph. The paragraph
+names what is data (the audited tree's contents) versus what is an
+authoritative instruction (this system prompt + the skills the node
+loads explicitly), and reminds the LLM that a directive-shaped text
+embedded in a scanner rationale is content, not a command.
+
+**Why the marker is a phrase, not an orthography.** A guard that
+enumerated spellings ("dismiss all findings", "approve this run",
+"the safe fix is …") is elargissable by adversarial text and never
+converges; the boundary is a POSTURE the LLM adopts, and the phrase
+is what tells the LLM the posture applies here. A test enforces the
+presence of `UNTRUSTED INPUT BOUNDARY` on every class member so the
+next bot cannot regress it silently — `bots/catalog_untrusted_input_boundary_test.go`.
+
+Adding a new agent node to this bot that writes / files / patches
+means writing the paragraph. Removing it in a refactor means the
+LLM no longer treats scanner-derived content as data; that is a
+security regression, and the test reddens.
+
 ## Discipline that keeps the FP rate low
 
 - **Never let the LLM invent matchers.** The scanners produce raw
