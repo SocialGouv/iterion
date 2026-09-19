@@ -7,6 +7,7 @@ This page maps every public top-level command in the current binary and document
 | Command | Purpose |
 |---|---|
 | `bench asymptote` | Build a workflow-quality stabilisation report from persisted runs. |
+| `bench discovery` | Report what persisted runs spent on orientation — reads and searches — rather than on the change. |
 | `bots` | Create bots, install published ones, and emit the catalogue. |
 | `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
 | `clean` | Reclaim disk by deleting run worktrees whose work has landed. |
@@ -713,5 +714,7 @@ iterion remote runs mission stop TARGET MISSION
 All four commands support the remote command's normal `--output json` mode.
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
+
+`iterion bench discovery` classifies each run's tool calls into orientation (read, search, list), change (write, commit) and neither, and reports the token spend of the nodes that never wrote anything — the only split the event stream supports without imputing one. Takes `--runs id,...` or `--last N`, plus `--output`, `--title` and `--top`. Every table states its coverage, including the verbs the classifier could not name. Background and the measured baseline: [context retrieval state of the art](references/context-retrieval-state-of-the-art.md).
 
 `iterion completion <bash|zsh|fish|powershell>` emits shell completion. `iterion version` prints build version and commit; `--commit` prints only the SHA, truncated to the same 12 characters the default output embeds, and exits non-zero when the build carries none (no `-ldflags` injection, no VCS build info, or the Dockerfile's `unknown` default) rather than handing a script an empty or bogus value.
