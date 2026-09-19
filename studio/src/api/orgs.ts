@@ -12,6 +12,10 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "./typed";
 // pending_deletion"; purge_after is set only in the pending state.
 export type OrgView = components["schemas"]["orgView"];
 
+// TeamSummary IS the spec's teamSummaryView (generated) — the slim team row the
+// super-admin org→teams drill-down lists.
+export type TeamSummary = components["schemas"]["teamSummaryView"];
+
 // Backwards-compatible: the full-shape usage view lives in api/usage.ts
 // (OrgUsage there). Keeping the slim alias here so existing call-sites
 // continue to type-check while widening to the new admin payload.
@@ -120,4 +124,14 @@ export function fmtQuotaGiB(bytes?: number): string {
 /** Convert a GiB number to bytes for the API. */
 export function gibToBytes(gib: number): number {
   return Math.round(gib * GiB);
+}
+
+// listAdminOrgTeams lists the teams inside one org (super-admin drill-down).
+// Mirrors GET /api/admin/orgs/{id}/teams (handleAdminOrgTeams). guard404 →
+// FeatureUnavailableError in local mode, like the other admin org reads.
+export async function listAdminOrgTeams(orgID: string): Promise<TeamSummary[]> {
+  const res = await guard404("admin", () =>
+    apiGet("/api/admin/orgs/{id}/teams", { params: { id: orgID } }),
+  );
+  return res.teams ?? [];
 }
