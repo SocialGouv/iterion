@@ -123,12 +123,26 @@ func TestTreeNoiseEnvAppendYieldsToEveryPriorClaim(t *testing.T) {
 	if got := e.treeNoiseEnvAppend(map[string]string{treenoise.TreeNoiseEnvVar: "':(exclude,top)node'"}); got != nil {
 		t.Fatalf("append over a node-set variable = %q, want nil (the node's value wins)", got)
 	}
+	// An explicitly EMPTY node value is not a claim (verdict 9): the
+	// canonical entry applies, the same rule every other branch follows —
+	// on a FRESH executor, so the run-set value from the earlier case
+	// cannot mask the claim.
+	if got := fresh.treeNoiseEnvAppend(map[string]string{treenoise.TreeNoiseEnvVar: ""}); got == nil || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
+		t.Fatalf("append over an EMPTY node value = %q, want the canonical entry (empty is not a claim)", got)
+	}
 	// The operator's own exported environment claims it (t.Setenv holds to
 	// the end of the test, so this case stays last) — on a FRESH executor,
 	// so the run-set value from the earlier case cannot mask the claim.
 	t.Setenv(treenoise.TreeNoiseEnvVar, "':(exclude,top)operator'")
 	if got := fresh.treeNoiseEnvAppend(nil); got != nil {
 		t.Fatalf("append over an operator-exported variable = %q, want nil (the operator's value wins)", got)
+	}
+	// An explicitly EMPTY export is not a claim (verdict 9): an empty
+	// exclusion list is the silent-gate failure C149 exists to name, so the
+	// canonical entry still applies.
+	t.Setenv(treenoise.TreeNoiseEnvVar, "")
+	if got := fresh.treeNoiseEnvAppend(nil); got == nil || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
+		t.Fatalf("append over an EMPTY export = %q, want the canonical entry (empty is not a claim)", got)
 	}
 	// An EMPTY export is not a claim (verdict 5): an empty exclusion list is
 	// the silent-gate failure C149 exists to name, so the canonical entry

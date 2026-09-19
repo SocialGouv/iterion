@@ -676,7 +676,7 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 // operator's own environment, in which case nothing is appended: an
 // explicit choice is never silently replaced (verdicts 2-3, #1464).
 func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
-	if _, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set {
+	if value, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set && value != "" {
 		return nil
 	}
 	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {

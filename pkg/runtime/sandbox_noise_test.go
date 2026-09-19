@@ -25,12 +25,24 @@ func TestSeedTreeNoiseEnvSetsThePathspecs(t *testing.T) {
 }
 
 // An operator or a workflow that set the variable themselves win: the seed
-// steps aside, like seedDefaultLocale does for LANG.
+// steps aside, like seedDefaultLocale does for LANG. An explicitly EMPTY
+// preset is not a claim (verdict 9) — the canonical entry applies, the same
+// rule the OS-env branch follows.
 func TestSeedTreeNoiseEnvStepsAsideForAnOperatorValue(t *testing.T) {
 	spec := &sandbox.Spec{Env: map[string]string{treenoise.TreeNoiseEnvVar: "':(exclude,top)vendor'"}}
 	seedTreeNoiseEnv(spec)
 	if got := spec.Env[treenoise.TreeNoiseEnvVar]; got != "':(exclude,top)vendor'" {
 		t.Fatalf("spec.Env[%q] = %q, want the operator's value kept", treenoise.TreeNoiseEnvVar, got)
+	}
+}
+
+// An explicitly EMPTY preset is not a claim either (verdict 9): the
+// canonical entry applies, the same rule every other branch follows.
+func TestSeedTreeNoiseEnvTreatsAnEmptyPresetAsNoClaim(t *testing.T) {
+	spec := &sandbox.Spec{Env: map[string]string{treenoise.TreeNoiseEnvVar: ""}}
+	seedTreeNoiseEnv(spec)
+	if got := spec.Env[treenoise.TreeNoiseEnvVar]; got != treenoise.EnvValue() {
+		t.Fatalf("spec.Env[%q] = %q, want the canonical entry (empty is not a claim)", treenoise.TreeNoiseEnvVar, got)
 	}
 }
 

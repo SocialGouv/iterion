@@ -842,7 +842,7 @@ func seedTreeNoiseEnv(spec *sandbox.Spec) {
 	if spec.Env == nil {
 		spec.Env = map[string]string{}
 	}
-	if _, set := spec.Env[treenoise.TreeNoiseEnvVar]; set {
+	if value, set := spec.Env[treenoise.TreeNoiseEnvVar]; set && value != "" {
 		return
 	}
 	// The operator's own exported environment is a claim too: one rule

@@ -942,8 +942,12 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			// The gate finalized COMMITS, but post-gate work may sit
 			// uncommitted in the worktree — removing it would destroy that
 			// work silently. Preserve instead; the operator recovers via the
-			// studio commit-and-finalize action.
-			if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
+			// studio commit-and-finalize action. The probe agrees with THAT
+			// gesture (mirror-only): a tracked-and-modified devbox.lock is
+			// dependency work the action would bank, so the worktree is
+			// preserved for it (verdict 9, R8e10f0).
+			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain")
+			if porcelainErr == nil && len(commitWorkPaths(porcelain)) != 0 {
 				if e.logger != nil {
 					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
 				}
