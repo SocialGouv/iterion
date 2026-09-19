@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.170.0](https://github.com/SocialGouv/iterion/compare/v3.169.0...v3.170.0) (2026-09-19)
+
+### Features
+
+* **bots:** docs-refresh and adr-cartograph read as dsl profile 2, and the ADR survey gets the inventory its prompt reads ([#1344](https://github.com/SocialGouv/iterion/issues/1344) wave 6) ([#1462](https://github.com/SocialGouv/iterion/issues/1462)) ([34bb532](https://github.com/SocialGouv/iterion/commit/34bb53299ce383be357a7840b56a89d551d828f3)), references [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1455](https://github.com/SocialGouv/iterion/issues/1455) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1457](https://github.com/SocialGouv/iterion/issues/1457) [#1459](https://github.com/SocialGouv/iterion/issues/1459)
+
+    <details><summary>why</summary>
+
+    The last two catalogue bundles on profile 1. `iterion dsl migrate --to 2 --floor 3.141.0` wrote the `dsl: 2` header and nothing else (no quoted literal holds a backslash in either file); the paragraph breaks the authors wrote inside 10 prompts — 72 in all: docs-refresh 33 across 4 prompts, adr-cartograph 39 across 6 — now reach the models as blank lines instead of being folded away by the profile-1 lexer. Both manifests carry the `requires: iterion: ">= 3.141.0"` floor and a changelog line…
+
+    </details>
+
 ## [3.169.0](https://github.com/SocialGouv/iterion/compare/v3.168.0...v3.169.0) (2026-09-19)
 
 ### Features
