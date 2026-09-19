@@ -221,7 +221,7 @@ export default function CredentialSpendPage() {
         <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
           {!loaded ? (
             <div className="p-3">
-              <TableSkeleton rows={5} cols={6} />
+              <TableSkeleton rows={5} cols={8} />
             </div>
           ) : !view || view.credentials.length === 0 ? (
             <EmptyState message="No spend recorded for this scope and month." />
@@ -235,10 +235,18 @@ export default function CredentialSpendPage() {
                 <Th align="right">Cost</Th>
                 <Th align="right">Runs</Th>
                 <Th>Tokens</Th>
+                <Th>Backends</Th>
               </THead>
               <TBody>
+                {/* The server groups a row by (fingerprint, provider, tenant,
+                    tier) and blanks repo_id when it merges repositories, so
+                    the key must carry provider and tier too: a fingerprint-
+                    scoped listing spans every tier and tenant it served, and
+                    two rows differing only in tier would otherwise collide. */}
                 {view.credentials.map((c) => (
-                  <Tr key={`${c.fingerprint}:${c.tenant_id ?? ""}:${c.repo_id ?? ""}`}>
+                  <Tr
+                    key={`${c.fingerprint}:${c.provider}:${c.tier}:${c.tenant_id ?? ""}:${c.repo_id ?? ""}`}
+                  >
                     <Td className="font-mono text-caption break-all">{c.fingerprint}</Td>
                     <Td className="text-fg-muted">{c.provider}</Td>
                     <Td className="text-fg-muted">{c.tier}</Td>
@@ -254,6 +262,12 @@ export default function CredentialSpendPage() {
                     <Td align="right">{formatUSD(c.cost_usd)}</Td>
                     <Td align="right">{c.runs}</Td>
                     <Td className="text-caption text-fg-muted">{formatTokens(c)}</Td>
+                    {/* The backends that drew on the credential this month —
+                        the reader's only way to tell WHY a row mixes a split
+                        and an aggregate, or a metered and an estimated call. */}
+                    <Td className="text-caption text-fg-muted">
+                      {c.backends?.length ? c.backends.join(", ") : "—"}
+                    </Td>
                   </Tr>
                 ))}
               </TBody>
