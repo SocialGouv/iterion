@@ -494,6 +494,67 @@ func TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry(t *testing.T) {
 		}
 	})
 
+	t.Run("an operator deepsec_out outside scan_dir survives the pass", func(t *testing.T) {
+		// revi R46d8a4: the one-shot slot removal is scoped to scan_dir.
+		// Pointed elsewhere, vars.deepsec_out names an operator's file (a
+		// reports dir, a hand-run export) that no build of this node wrote
+		// or read -- the pass must leave it byte-identical.
+		//
+		// Mutation: revert the case guard to an unconditional
+		// `rm -f -- "$OUT_JSON_BASE"` -> this subtest reddens on the byte
+		// comparison.
+		dir := t.TempDir()
+		scanDir := filepath.Join(dir, "scan")
+		if err := os.MkdirAll(scanDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ws := filepath.Join(dir, "ws")
+		if err := os.MkdirAll(ws, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		reports := filepath.Join(dir, "reports")
+		if err := os.MkdirAll(reports, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		external := filepath.Join(reports, "deepsec.json")
+		externalBody := []byte(`[{"id":"OPERATOR-FILE"}]`)
+		if err := os.WriteFile(external, externalBody, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stubs := filepath.Join(dir, "bin", "run-EXT")
+		stubBin(t, stubs, "node", `echo v22.0.0`)
+		stubBin(t, stubs, "deepsec", `exit 0`)
+		stubBin(t, stubs, "sleep", `exit 0`)
+		rendered := expandEngineBracedEnv(secToolCommand(t, "run_deepsec_scanner"))
+		for ref, val := range map[string]string{
+			"{{vars.scan_dir}}":              scanDir,
+			"{{vars.workspace_dir}}":         ws,
+			"{{vars.deepsec_out}}":           external,
+			"{{vars.deepsec_concurrency}}":   "1",
+			"{{vars.deepsec_process_limit}}": "0",
+			"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
+			"{{vars.scan_dir_ttl_days}}":     "0",
+			"{{run.id}}":                     "run-EXT",
+			"{{vars.deepsec_agent}}":         "''",
+			"{{vars.deepsec_model}}":         "''",
+		} {
+			rendered = strings.ReplaceAll(rendered, ref, val)
+		}
+		if strings.Contains(rendered, "{{") {
+			t.Fatalf("unsubstituted ref left: %q", rendered[strings.Index(rendered, "{{"):])
+		}
+		if runShell(t, rendered, stubs) == "" {
+			t.Fatal("scanner produced no envelope")
+		}
+		got, err := os.ReadFile(external)
+		if err != nil {
+			t.Fatalf("the operator file at %s was destroyed by the pass: %v -- the slot removal must stay scoped to scan_dir (revi R46d8a4)", external, err)
+		}
+		if !bytes.Equal(got, externalBody) {
+			t.Errorf("the operator file at %s was rewritten: %q", external, got)
+		}
+	})
+
 	t.Run("the retention sweep is live under the engine-faithful rendering", func(t *testing.T) {
 		// The sweep's -mtime bound travels through the same body. Rendered
 		// engine-faithfully (expandEngineBracedEnv) with a ttl of 30, an aged

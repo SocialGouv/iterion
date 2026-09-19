@@ -60,10 +60,14 @@ vars:
   ## age out on their own. Prune at scanner entry: entries older than TTL
   ## days go, the current run's two directories always stay. The sweep
   ## runs on every entry with a usable run id, above the deepsec preflight
-  ## (revi R58b272). 0 disables the sweep. Matches records_ttl_days's default. The sweep prunes directories
-  ## only; the pre-0.1.4 shared-slot FILE (the path vars.deepsec_out names)
-  ## is removed by the first deep-scan pass that gets past its preflight,
-  ## whatever this value is.
+  ## (revi R58b272). 0 disables the sweep. Matches records_ttl_days's
+  ## default. The sweep prunes directories only; the pre-0.1.4 shared-slot
+  ## FILE (the path vars.deepsec_out names) is removed by the first
+  ## deep-scan pass that gets past its preflight, whatever this value is --
+  ## when the slot lives under scan_dir, which is the topology the slot
+  ## concept describes. Pointed elsewhere, deepsec_out names an operator's
+  ## file no build of this node wrote or reads, and the pass leaves it
+  ## alone (revi R46d8a4).
   scan_dir_ttl_days:   int    = 30
   ## Overflow guard. gosec/semgrep can emit thousands of findings on a
   ## large repo; triage reads the scanner JSON and overflows the model
@@ -3188,8 +3192,15 @@ rm -f "$OUT_JSON"
 # this node no longer has, removed whatever SCAN_DIR_TTL_DAYS says. A
 # concurrent pass of an OLDER build would lose its export to this line and
 # report it missing -- a visible loss, never a facade; mixed builds on one
-# scratch are not a supported state.
-rm -f -- "$OUT_JSON_BASE" 2>/dev/null
+# scratch are not a supported state. The slot this node owns is the one
+# under $SCAN_DIR: pointed elsewhere, vars.deepsec_out names an operator
+# file (a reports dir, a hand-run export) that no build of this node wrote
+# or read -- it is not an orphan of this node, and the pass leaves it alone
+# (revi R46d8a4).
+_sd_norm="${SCAN_DIR%/}"
+case "$OUT_JSON_BASE" in
+  "$_sd_norm"/*) rm -f -- "$OUT_JSON_BASE" 2>/dev/null ;;
+esac
 
 ERRS=""
 # Zero unless the retry below resumed a run: the coverage reader keys
