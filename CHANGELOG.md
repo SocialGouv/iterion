@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.174.1](https://github.com/SocialGouv/iterion/compare/v3.174.0...v3.174.1) (2026-09-19)
+
+### Bug Fixes
+
+* four one-site defects — the zai hint suppresses every ambient Anthropic channel, the operator MCP refuses unknown arguments, a bot's shell finds the engine's own binary, and the dry-run report is ordered ([#1487](https://github.com/SocialGouv/iterion/issues/1487)) ([ee80560](https://github.com/SocialGouv/iterion/commit/ee805603d310e17c9ce3aed7d0c93ede0e9be41f)), references [#1390](https://github.com/SocialGouv/iterion/issues/1390) [#1505](https://github.com/SocialGouv/iterion/issues/1505) [#1335](https://github.com/SocialGouv/iterion/issues/1335) [#1384](https://github.com/SocialGouv/iterion/issues/1384) [#1434](https://github.com/SocialGouv/iterion/issues/1434) [#1505](https://github.com/SocialGouv/iterion/issues/1505)
+
+    <details><summary>why</summary>
+
+    anthropicCredEnvForCLI's providerHint=="zai" no-key branch used to clear ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN only, so on a host carrying an ambient ANTHROPIC_API_KEY the CLI silently routed the node to api.anthropic.com and 404'd on the GLM id, exactly the "silently falling back to a different provider" the code's own comment promised to prevent.
+
+    </details>
+
 ## [3.174.0](https://github.com/SocialGouv/iterion/compare/v3.173.0...v3.174.0) (2026-09-19)
 
 ### Features
