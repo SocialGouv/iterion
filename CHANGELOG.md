@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.168.0](https://github.com/SocialGouv/iterion/compare/v3.167.0...v3.168.0) (2026-09-19)
+
+### Features
+
+* **dsl:** the last loose workflows read as profile 2, and the routing fields resolve {{vars.…}} ([#1344](https://github.com/SocialGouv/iterion/issues/1344) tail) ([#1451](https://github.com/SocialGouv/iterion/issues/1451)) ([07d7837](https://github.com/SocialGouv/iterion/commit/07d7837ebd0fb1b2d85931b9741b03ae0ab969b3)), references [#1206](https://github.com/SocialGouv/iterion/issues/1206) [#1367](https://github.com/SocialGouv/iterion/issues/1367) [#1450](https://github.com/SocialGouv/iterion/issues/1450) [#1450](https://github.com/SocialGouv/iterion/issues/1450)
+
+    <details><summary>why</summary>
+
+    A census of every tracked .bot after wave 5 found two shipped workflows the waves never listed: pkg/cli/templates/dispatch_bots_default.bot, the `default` assignee `iterion dispatch` embeds in the binary (copied into templates/dispatch_bots/default/main.bot at build), and bots/smoke/board_smoke.bot, the hand-run board smoke; the local round then named the two runnable scripts under scripts/adhoc/. `iterion dsl migrate --to 2` on all four: the header and nothing else. Seven prompts keep the…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime:** the simulation sweep reads the repo's source, not the operator's run store ([4e8d925](https://github.com/SocialGouv/iterion/commit/4e8d925ed66c47f135ddb44026f4980387b4668e))
+
+    <details><summary>why</summary>
+
+    TestNoProductionPackagePassesWithSimulation walked the tree skipping four dot-directories by name. `.iterion/` was not among them — and `.iterion/worktrees/<run-id>/` holds whole COPIES of the source tree, so the sweep found pkg/dryrun/run.go and pkg/runtime/simulation.go once per kept run and reported them as production launchers. Measured on a working checkout: 12 offences, every one of them a copy of a file the sweep deliberately excludes at its real path.
+
+    </details>
+
 ## [3.167.0](https://github.com/SocialGouv/iterion/compare/v3.166.0...v3.167.0) (2026-09-18)
 
 ### Features
