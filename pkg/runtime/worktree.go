@@ -452,11 +452,20 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	res.FinalCommit = finalSHA
 
 	// 3. Decide the storage branch name.
+	//
+	// The label MUST be the run id — the stable key. The friendly run
+	// name is derived from `(file_path + run_id)` at creation and is
+	// meant for display, not for keying: any consumer that looks up a
+	// run's finalize branch by run id has the id in hand and the name
+	// only as a downstream lookup. Half the runs used to be labelled by
+	// name (straight run) and half by id (post-resume), so the same
+	// consumer's query resolved for one and missed the other (#1366).
+	// Both paths now agree on the id.
 	branchName := opts.branchName
 	if branchName == "" {
-		label := opts.runName
+		label := opts.runID
 		if label == "" {
-			label = opts.runID
+			label = opts.runName
 		}
 		branchName = "iterion/run/" + label
 	}

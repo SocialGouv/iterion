@@ -173,7 +173,7 @@ type Engine struct {
 	compiledFiles            map[string]string                    // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
 	executionContext         *store.ExecutionContext              // resolved launch/resume context contract, set via WithExecutionContext
 	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
-	filePath                 string                               // absolute .bot source path, set via WithFilePath
+	filePath                 string                               // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
 	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                               // in-source preset name selected at launch, set via WithPreset

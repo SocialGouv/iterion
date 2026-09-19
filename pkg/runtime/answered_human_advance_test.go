@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -335,4 +337,110 @@ func TestResumeFromFailure_CallerAnswersOverwriteStored(t *testing.T) {
 	if v, _ := back.Answers["decision"].(string); v != "approve" {
 		t.Fatalf("interaction.Answers[decision]=%v after corrected resume, want %q", back.Answers["decision"], "approve")
 	}
+	// The overwrite path must emit human_answers_recorded so the audit
+	// trail carries the correction (gate finding Q6 on PR #1490).
+	events := readEventTypes(t, s, runID)
+	var recorded int
+	for _, ev := range events {
+		if ev == store.EventHumanAnswersRecorded {
+			recorded++
+		}
+	}
+	if recorded < 1 {
+		t.Fatalf("expected at least one human_answers_recorded event on the corrected-answers path (got events: %v)", events)
+	}
+}
+
+// TestGateReplay_ClosesParkedWindow pins the class fix for gate
+// finding R62a836 on PR #1490: a failed-resume gate replay must close
+// the parked-window boundary AT THE HUMAN NODE so the files the
+// operator wrote while parked do NOT land in the next node's rewind
+// scope. The replay routes through resumeFromPause UNMODIFIED
+// (answeredHumanGateReplay is a predicate; there is no second
+// transition to drift), so this test wires a REAL workspace tracker —
+// the seam the CLI resume wires (`runview.WorkspaceTrackerFor`) — and
+// witnesses the pause path's OWN boundary write: the
+// `pre:gate:0` label exists on the tracker after the replay.
+//
+// Mutation: remove `e.markPreNodeBoundary(rs, humanNodeID)` from
+// resumeFromPause → the label is never written → Resolve misses →
+// red.
+func TestGateReplay_ClosesParkedWindow(t *testing.T) {
+	storeRoot := t.TempDir()
+	tracker := workspacetrack.NewNative(storeRoot)
+	wf := &ir.Workflow{
+		Name:  "answered_human_boundary",
+		Entry: "gate",
+		Nodes: map[string]ir.Node{
+			"gate": &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
+				Publish:           "approval",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "gate", To: "done"}},
+	}
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-answered-boundary"
+
+	eng := New(wf, s, newStubExecutor(), WithWorkDir(t.TempDir()), WithWorkspaceTracker(tracker))
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	ans := map[string]any{"decision": "approve"}
+	interaction, err := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	answeredAt := time.Now().UTC()
+	interaction.AnsweredAt = &answeredAt
+	interaction.Answers = ans
+	if err := s.WriteInteraction(ctx, interaction); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	cp := *r.Checkpoint
+	cp.InteractionID = ""
+	cp.InteractionQuestions = nil
+	if err := s.SaveCheckpoint(ctx, runID, &cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &cp, "sandbox start", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+
+	eng2 := New(wf, s, newStubExecutor(), WithWorkDir(t.TempDir()), WithWorkspaceTracker(tracker))
+	if err := eng2.Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("Resume (gate replay): %v", err)
+	}
+	// The discriminating witness: aliasWorkspacePre on a RESUMED run
+	// writes a RESUME-phase label for the node whose parked window is
+	// closing (engine_exec.go — "THIS is the boundary that closes the
+	// interval it was stopped in"). The launch never writes
+	// resume:* labels, so this label exists only if the replay's
+	// boundary ran.
+	if _, ok := tracker.Resolve(runID, workspacetrack.Label(workspacetrack.PhaseResume, "gate", 0)); !ok {
+		labels := tracker.Labels(runID)
+		t.Fatalf("gate replay did not close the parked-window boundary — resume:gate:0 missing on the tracker (gate finding R62a836); labels: %v", labels)
+	}
+}
+
+// readEventTypes reads every event on a run's stream and returns just
+// the types, for assertion helpers that care about presence/order.
+func readEventTypes(t *testing.T, s store.RunStore, runID string) []store.EventType {
+	t.Helper()
+	evs, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadEvents(%s): %v", runID, err)
+	}
+	types := make([]store.EventType, 0, len(evs))
+	for _, ev := range evs {
+		types = append(types, ev.Type)
+	}
+	return types
 }

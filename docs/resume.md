@@ -418,7 +418,7 @@ into the "persisted-and-replayed" column (✓). Fixed at #1435 and
 | `--sandbox-default-image` | ✓ `SandboxDefaultImage` | ✓ | Cloud runner reads `msg.SandboxImage`. |
 | `--sandbox-host-state` | ✓ `SandboxHostState` | ✓ | Cloud runner defaults come from `cfg.SandboxHostState`. |
 | `--merge-into` | ✓ `MergeInto` | ✓ CLI + studio + cloud runner | Empty means "current" for local resumes. Cloud runner reads it back at pickup (`pkg/runner/loop.go`'s engine options) so a `--merge-into none` launch stays `none` on redelivery — Philosophy #3 (cloud-native by construction). |
-| `--branch-name` | ✓ `BranchName` | ✓ CLI + studio + cloud runner | Fixes half of #1366 alongside `Run.Name`. Cloud runner replays it too. |
+| `--branch-name` | ✓ `BranchName` | ✓ CLI + studio + cloud runner | Fixes half of #1366: the default storage branch is keyed on the run ID — the stable key — so a consumer looking up the branch by id finds it whether the run was straight or post-resume. `--branch-name` still overrides; the cloud runner replays it too. |
 | `--merge-strategy` | ✓ `MergeStrategy` | ✓ CLI + studio + cloud runner | Was persisted before this PR; readback added here for all three surfaces. |
 | `--auto-merge` | ✓ `AutoMerge` | ✓ CLI + studio + cloud runner | Was persisted before this PR; readback added here for all three surfaces. |
 | `--var` | ✓ `Inputs` | ✓ | Replayed as run inputs. |
@@ -441,18 +441,35 @@ The chokepoint is `pkg/cli/resume.go` on the CLI side and
 `pkg/runview/service_launch.go` (`Resume` + `engineOptions`) on the
 studio/HTTP side, both reading the `Run` fields and layering explicit
 resume flags over them. `pkg/runtime/engine_options.go`'s
-`WithFilePath` absolutises its input at the chokepoint, so a caller
+`WithFilePath` stores the launcher's path VERBATIM on `Run.FilePath`;
+the sandbox bind-mount source is absolutised at its own chokepoint
+(`bundleResourceDir` in `pkg/runtime/sandbox_devbox.go`), so a caller
 that hands a relative `--file examples/foo.bot` no longer leaks the
-relative form into the sandbox bind-mount source (`bundleResourceDir`
-derives from `e.filePath`).
+relative form into the docker `--mount source=` argument while the
+run doc keeps the shape the launcher wrote (readers of `Run.FilePath`
+— the studio, the dispatcher, `pkg/server/run_delegation.go` — see
+the launcher's meaning).
 
 **Answers that survived a failed resume.** A resume that fails AFTER
 recording the operator's answers (the classic case: sandbox start
 refused a mount; recordHumanAnswers already ran) does not re-ask on
-the next resume: `resumeFromFailure` scans the interactions store for
-a non-retired answered blocking-pause interaction on the restart
-node, seeds its answers as the node's output and advances to the
-first outgoing edge. Fixes the third defect of #1435.
+the next resume. The dispatch (`Engine.Resume`) consults a PREDICATE,
+`answeredHumanGateReplay`: the checkpoint must anchor on a human node
+whose blocking-pause interaction exists at the exact
+`interactionIDForPause(runID, nodeID, loopCounters)` for the current
+iteration, is answered, non-retired, and NOT stale (`Run.LastRewindAt`
+at or after `AnsweredAt` means a rewind replaced the execution the
+answer belonged to — the operator is re-asked). When the predicate
+holds, the run's status flips back to `paused_waiting_human` and the
+resume routes through **`resumeFromPause` UNMODIFIED** — so
+`recordHumanAnswers` (+ its `human_answers_recorded` event), the
+artifact publication, the `markPreNodeBoundary` parked-window close
+and the edge selection are THE pause path's code, never a copy that
+can drift. A non-empty caller `--answer` map is what gets recorded
+through that same write, correcting a stale stored answer. Fixes the
+third defect of #1435 and the PR #1490 gate findings Rac891d (rewind
+epoch + interaction retire), R62a836 (single transition, no
+duplicated boundary) and R60aa7e (corrected answers recorded).
 
 When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.
