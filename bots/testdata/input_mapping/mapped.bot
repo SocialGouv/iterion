@@ -1,0 +1,40 @@
+## Guard fixture — every read is mapped: a prompt and a compute expression through the forward edge,
+## a loop-overlay field through the back-edge only (legitimately empty on the first pass).
+dsl: 2
+
+schema seed_out:
+  text: string
+
+schema verdict:
+  ok: bool
+  fail_log: string
+
+prompt work:
+  Do the work.
+
+prompt read_it:
+  The previous node said: {{input.text}}. Last failure, empty on the first pass: {{input.fail_log}}
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+  output: seed_out
+
+agent reader:
+  model: "anthropic/claude-sonnet-4-6"
+  user: read_it
+  output: verdict
+
+compute judge:
+  output: verdict
+  expr:
+    ok: "input.text != ''"
+    fail_log: "''"
+
+workflow mapped:
+  entry: seed
+  seed -> reader with { text: "{{outputs.seed.text}}" }
+  reader -> judge with { text: "{{outputs.seed.text}}" }
+  judge -> done when ok
+  judge -> reader when not ok as retry(2) with { fail_log: "{{outputs.judge.fail_log}}" }
+  judge -> done

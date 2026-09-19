@@ -30,7 +30,7 @@ concurrency:
 # it inside the merge queue buys a verdict nobody can act on — while holding a
 # runner slot the queue needs. The org shares 20 concurrent jobs across every
 # repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The seven advisory jobs below therefore run
+# decides how long a merge takes. The six advisory jobs below therefore run
 # on the pull request and on main, and skip in `merge_group`.
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
@@ -258,6 +258,27 @@ jobs:
         # builds. 900 s is past 2x that, so it stays as the hang bound rather
         # than being re-tightened onto the new figure.
         run: go test -mod=vendor -v -timeout 900s ./e2e/...
+
+      - name: Live e2e compile check
+        # Builds every -tags=live test in the repo and runs NONE of them
+        # (`-run '^$'`). No credentials, no model call, no network — pure
+        # compilation. The paid live layer would otherwise bit-rot green
+        # under any required check: a rename, a moved package, a
+        # signature change would only surface weeks later to whoever
+        # pays to run a live target, and would look like their change.
+        # Cheap half of #1423's guarantee — see #1432.
+        #
+        # ./... rather than ./e2e/...: `./e2e/...` misses live-tagged
+        # tests outside the e2e package (pkg/webhooks/gitlab/client_live_test.go
+        # today; any future sibling too — a live-tagged file added under
+        # pkg/, cmd/ or bots/ would otherwise be invisible to this
+        # check, defeating the purpose of the step). Measured locally on
+        # a warm cache: ./... = 11.4 s wall, ./e2e/... + ./pkg/webhooks/gitlab/...
+        # = 3.3 s wall — the 8 s premium buys coverage at the CLASS and
+        # avoids the periodic hunt for the next live-tagged package.
+        # Runs in-job to reuse the toolchain (Go, vendor) — the org
+        # caps concurrent runner slots at 20 across the fleet.
+        run: go test -mod=vendor -tags live -count=1 -run '^$' ./...
 
   race:
     # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no
@@ -790,18 +811,14 @@ jobs:
     # `task check`, which NO workflow runs — so it never executed between a
     # pull request and main. Pure shell + grep, no toolchain, seconds.
     #
-    # Running is not yet BLOCKING: `main` is protected by a ruleset whose
-    # required checks are test, race, vendor-check, mongo-conformance,
-    # golangci and revi/review. Until `brand` is added to that list, a red run
-    # here shows an X the merge queue steps over. Say it rather than imply it —
-    # a guard believed to hold is worse than one known not to.
-    #
-    # Advisory, so it carries the merge_group skip like every other advisory
-    # job above. ⚠️ PROMOTING IT TO REQUIRED MEANS DELETING THAT SKIP IN THE
-    # SAME CHANGE: a job skipped by a job-level `if:` reports SUCCESS, so a
+    # REQUIRED, so it carries no merge_group skip — deliberately, and the two
+    # go together. A job skipped by a job-level `if:` reports SUCCESS, so a
     # required check that never ran would satisfy the gate on every queue
-    # entry. The header comment carries the full argument.
-    if: github.event_name != 'merge_group'
+    # entry; the skip and the ruleset entry are one decision, never two. The
+    # header comment carries the full argument.
+    #
+    # It is the cheapest thing in the queue to hold a slot for: shell, grep and
+    # sha256, no toolchain, no service, ~40 s.
     #
     # Deliberately NOT `task brand:check` (the asset-drift guard): that one
     # needs magick/pngquant/oxipng from devbox and is a different cost.

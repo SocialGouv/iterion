@@ -547,3 +547,25 @@ func errorAs(err error, target **RuntimeError) bool {
 	}
 	return false
 }
+
+// A `{{vars.…}}` backend the admission check reads without a resolver (a
+// stub executor) may be claw with a CLI route or a CLI backend outright.
+// Read as text it matched neither the claw+CLI-route check nor the CLI
+// branch, and a node with a read-only tool list was admitted read-only —
+// eligible for parallel fan-out on one worktree while its chain could
+// fall through to an unrestricted CLI backend. Admission is pessimistic.
+func TestIsMutatingNode_TemplatedBackendIsPessimistic(t *testing.T) {
+	n := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "a"},
+		LLMFields: ir.LLMFields{Backend: "{{vars.b}}"},
+		Tools:     []string{"read_file"},
+		Fallbacks: []ir.Fallback{{Name: "cli", Backend: "claude_code"}},
+	}
+	if !isMutatingNodeWithBackend(n, "", nil) {
+		t.Error("a templated backend read without a resolver must be admitted as mutating")
+	}
+	// With the resolver wired the executor's own answer decides, as before.
+	if isMutatingNodeWithBackend(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, LLMFields: ir.LLMFields{Backend: "{{vars.b}}"}, Tools: []string{"read_file"}}, "", fixedBackendResolver("claw")) {
+		t.Error("a resolver that reads claw with no CLI route keeps the node read-only")
+	}
+}

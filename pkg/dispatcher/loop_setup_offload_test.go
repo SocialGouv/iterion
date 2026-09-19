@@ -97,7 +97,9 @@ func TestActorResponsiveWhileDispatchSetupInFlight(t *testing.T) {
 	newCfg.Name = "reloaded"
 	c.Reload(&newCfg)
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// See TestActorResponsiveWhileDiscoveryInFlight in dispatcher_test.go
+	// — same ORDERING witness, same reason for 5 s over 500 ms (#1393).
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.Snapshot().Name == "reloaded" {
 			return // actor processed a command concurrently with the in-flight setup

@@ -5,7 +5,7 @@ description: The iterion mental model — what a bot, a run, a bundle, a skill a
 
 # The iterion mental model
 
-Iterion is a workflow-orchestration engine with its own DSL. A runnable
+Iterion builds, runs and orchestrates agentic AI workflows, in its own DSL. A runnable
 workflow is a `.bot` file; a packaged one is a `.botz` bundle.
 
 ## The pipeline

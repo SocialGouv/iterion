@@ -14,6 +14,8 @@
 ##   - issue_id    : "{{issue.identifier}}"
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   issue_title: string
   issue_body: string = ""

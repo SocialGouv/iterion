@@ -3,6 +3,7 @@ package pluginsource
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
@@ -94,6 +95,27 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID string) ([]File, []Skip
 	if len(sources) == 0 {
 		return nil, nil, nil
 	}
+	// Stable ordering across Store implementations. MongoStore already sorts
+	// by created_at ASC in prod; MemoryStore iterates a map with random Go
+	// map order, and every custom stub is free to return any order. The
+	// launch-time dedup in cloudpublisher.resolveContributionsFor commits
+	// publicly to "later wins" — that guarantee is not enforceable at the
+	// Store interface level, so it is enforced HERE, on the resolver's own
+	// output. Tie-break by ID so two sources sharing a created_at (a race,
+	// or a fixture leaving it zero-valued) still resolve deterministically.
+	//
+	// Copy first: a caching Store may hand back its own slice from
+	// ListEnabledByTenant, and a sort in place would race with any
+	// concurrent launch that borrowed the same reference. The copy is
+	// cheap next to a git fetch and closes the contract question a caching
+	// Store implementation would raise.
+	sources = append([]PluginSource(nil), sources...)
+	sort.SliceStable(sources, func(i, j int) bool {
+		if !sources[i].CreatedAt.Equal(sources[j].CreatedAt) {
+			return sources[i].CreatedAt.Before(sources[j].CreatedAt)
+		}
+		return sources[i].ID < sources[j].ID
+	})
 	var out []File
 	var skipped []Skipped
 	for _, s := range sources {

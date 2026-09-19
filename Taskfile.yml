@@ -156,9 +156,9 @@ tasks:
       - go test -count=1 ./pkg/benchmark/quality/...
 
   test:live:compile:
-    desc: Compile the live e2e test binary without running anything (build-gate the -tags live suite for free).
+    desc: Compile every -tags=live test in the repo without running anything (build-gate the paid live suite for free). Uses ./... so any future live-tagged file outside ./e2e is covered automatically — a live-tagged test file elsewhere in pkg/ would otherwise bit-rot invisibly.
     cmds:
-      - go test -tags live -count=1 -run '^$' ./e2e/...
+      - go test -tags live -count=1 -run '^$' ./...
 
   test:live:
     desc: Run all live e2e tests (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)

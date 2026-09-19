@@ -207,20 +207,50 @@ func TestRunWithPhaseTimeout_OverrunButNilCalleeWarns(t *testing.T) {
 	}
 }
 
+// waitForWarnFn returns a phase body that blocks on OBSERVING the halfway
+// warning in the log, then returns nil. The property under test is an
+// ORDERING (the warning is emitted BEFORE fn returns and BEFORE the
+// phase deadline strikes), not a wall-clock ratio ("fn slept 200 ms so
+// the 100 ms warning surely fired") — the latter shape ejected PRs from
+// the merge queue whenever the shared runner starved the timer goroutine
+// (#1393). The test does NOT prove the warning fires at ~50 % of the
+// budget rather than synchronously; a mutation emitting the warn at t=0
+// would also pass. It proves REMOVING the warn (or emitting it AFTER fn
+// returns) reddens the assertion: the phase ctx expires while the body
+// spin-polls and fn returns the deadline error.
+func waitForWarnFn(out *lockedBuffer, needle string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		tick := time.NewTicker(time.Millisecond)
+		defer tick.Stop()
+		for {
+			if strings.Contains(out.String(), needle) {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-tick.C:
+			}
+		}
+	}
+}
+
 // The halfway-mark warning fires while the phase is still running, so a
 // slow-but-healthy copy is visible BEFORE the bound strikes.
 func TestRunWithPhaseTimeout_HalfwayMarkWarns(t *testing.T) {
 	prev := phaseTimeoutWarnRatio
-	phaseTimeoutWarnRatio = 0.25
+	// warnAfter = 5 % × 2 s = 100 ms. The ratio is not what the test
+	// asserts — see waitForWarnFn — it is chosen small enough that a
+	// starved scheduler on a shared runner still has 1.9 s of phase
+	// budget left for the spin-poll to observe the warning.
+	phaseTimeoutWarnRatio = 0.05
 	defer func() { phaseTimeoutWarnRatio = prev }()
 
 	logger, out := captureLogger()
-	err := RunWithPhaseTimeout(context.Background(), logger, "workspace copy", testPhaseEnv, 400*time.Millisecond, func(context.Context) error {
-		time.Sleep(200 * time.Millisecond) // past the 25% mark, under the deadline
-		return nil
-	})
+	err := RunWithPhaseTimeout(context.Background(), logger, "workspace copy", testPhaseEnv, 2*time.Second,
+		waitForWarnFn(out, "workspace copy phase still running"))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("halfway warning never fired within the phase budget: %v (a slow copy needs a signal BEFORE the deadline)", err)
 	}
 	if got := out.String(); !strings.Contains(got, "workspace copy phase still running") {
 		t.Fatalf("halfway warning did not fire: %q (a slow copy needs a signal BEFORE the deadline)", got)
@@ -232,16 +262,14 @@ func TestRunWithPhaseTimeout_HalfwayMarkWarns(t *testing.T) {
 // the wrong one.
 func TestRunWithPhaseTimeout_WarningNamesThePhasesOwnKnob(t *testing.T) {
 	prev := phaseTimeoutWarnRatio
-	phaseTimeoutWarnRatio = 0.25
+	phaseTimeoutWarnRatio = 0.05
 	defer func() { phaseTimeoutWarnRatio = prev }()
 
 	logger, out := captureLogger()
-	err := RunWithPhaseTimeout(context.Background(), logger, "post_create", PostCreateTimeoutEnv, 400*time.Millisecond, func(context.Context) error {
-		time.Sleep(200 * time.Millisecond)
-		return nil
-	})
+	err := RunWithPhaseTimeout(context.Background(), logger, "post_create", PostCreateTimeoutEnv, 2*time.Second,
+		waitForWarnFn(out, "post_create phase still running"))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("halfway warning never fired within the phase budget: %v", err)
 	}
 	got := out.String()
 	if !strings.Contains(got, PostCreateTimeoutEnv) {

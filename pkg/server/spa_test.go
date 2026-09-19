@@ -20,7 +20,7 @@ func TestSPAHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sub: %v", err)
 	}
-	h := SPAHandler(sub)
+	h := SPAHandler(sub, "")
 
 	cases := []struct {
 		name        string
@@ -80,7 +80,7 @@ func TestSPAHandlerAssetMissDoesNotServeShell(t *testing.T) {
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log('hi')")},
 	}
 	sub, _ := fs.Sub(fsys, ".")
-	h := SPAHandler(sub)
+	h := SPAHandler(sub, "")
 
 	req := httptest.NewRequest("GET", "/assets/app-OTHERBUILD.js", nil)
 	rec := httptest.NewRecorder()
@@ -121,7 +121,7 @@ func TestSPAHandlerAssetMissIsNotCacheable(t *testing.T) {
 	fsys := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>SHELL</html>")}}
 	sub, _ := fs.Sub(fsys, ".")
 	rec := httptest.NewRecorder()
-	SPAHandler(sub).ServeHTTP(rec, httptest.NewRequest("GET", "/assets/gone-XXXX.js", nil))
+	SPAHandler(sub, "").ServeHTTP(rec, httptest.NewRequest("GET", "/assets/gone-XXXX.js", nil))
 
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control: want no-store, got %q", got)
@@ -159,7 +159,7 @@ func TestSPAHandlerNoIndex(t *testing.T) {
 		"assets/app.js": &fstest.MapFile{Data: []byte("ok")},
 	}
 	sub, _ := fs.Sub(fsys, ".")
-	h := SPAHandler(sub)
+	h := SPAHandler(sub, "")
 	req := httptest.NewRequest("GET", "/runs/abc", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

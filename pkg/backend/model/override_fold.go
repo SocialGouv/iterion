@@ -297,6 +297,17 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 			unresolved = true
 			continue
 		}
+		// A `{{vars.…}}` reference is resolved by the executor with the
+		// run's vars, which this walk does not have. It still NAMES a step
+		// — the hint IS the route, so the model's `provider/` prefix must
+		// not decide in its place — but its value is unreadable here: it
+		// stays a hint AND marks the chain unresolved, which widens both
+		// callers (the wire stays reachable, the credential narrowing
+		// fails open). Dropping it instead let the prefix decide, and a
+		// cloud run leased no credential for the provider the var named.
+		if strings.Contains(hint, "{{") {
+			unresolved = true
+		}
 		hints = append(hints, hint)
 	}
 	if len(hints) == 0 {
@@ -309,7 +320,9 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 // `provider/model` string (env refs expanded), or "" when there is none.
 func providerFromModelPrefix(model string) string {
 	prov, _, cut := strings.Cut(strings.TrimSpace(ir.ExpandEnvWithDefault(model)), "/")
-	if !cut {
+	// A `{{vars.…}}` prefix resolves at dispatch, with the run's vars this
+	// walk does not have: no hint to read, the route defers.
+	if !cut || strings.Contains(prov, "{{") {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(prov))
