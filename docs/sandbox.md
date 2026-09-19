@@ -615,10 +615,14 @@ otherwise — unless the install left it unparseable, which is removed
 wherever it is, devbox refusing to run with such a file in place. The
 sandbox target's event is emitted when the spec is built, before the
 container's post-create prologue runs: the same decisions are taken there
-on every lock devbox writes (the prologue compares text, so it cannot tell
-an unparseable lock from a re-lock — that one it keeps, said as changed
-beyond metadata — and can only diverge from the host on a document no
-devbox version produces) — plus one of its own: a comparison the image's
+on every lock devbox writes (the prologue compares text: a lock left empty
+or not ending in a brace once blanks are removed is restored, or removed
+when the install created it; what still ends in a brace — a truncation
+stopping on an inner brace, a complete object followed by NUL padding —
+reads as a re-lock and is kept, said, and devbox refuses to run on it just
+as on any cut-short write, where the host, which parses, restores; the text
+comparison can otherwise only diverge from the host on a document no devbox
+version produces) — plus one of its own: a comparison the image's
 `tr`, `sed` or `cmp` could not complete leaves the lock as found after the
 install, said; a restore or removal that could not be carried out is said
 as such, never announced as done — and, like an install failure on that

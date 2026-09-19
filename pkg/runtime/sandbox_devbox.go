@@ -566,6 +566,21 @@ func devboxInstallSnippet(projects []devboxProject) string {
 			restoreFailed := say(fmt.Sprintf("could not restore %s from its pre-install copy; the worktree carries what the failed copy left there", lockPath))
 			restoreFailedRemoved := say(fmt.Sprintf("could not restore %s from its pre-install copy after devbox removed it; the worktree carries what the failed copy left there, if anything", lockPath))
 			removeFailed := say(fmt.Sprintf("could not remove %s, a file the repository does not track; the worktree carries it", lockPath))
+			// The prologue cannot parse JSON, but it can see the shape devbox
+			// never leaves behind on a completed write: every lock devbox
+			// writes is an object, so once blanks are removed it ends in a
+			// brace. Empty, or ending in anything else, is a write cut short
+			// — no resolution anything can reuse, and devbox refuses to run
+			// with it in place; the pin comes back (or a created one goes),
+			// as on the host. What still ends in a brace once blanks are
+			// removed — a truncation stopping on an inner brace, a complete
+			// object followed by NUL padding — is the class this misses: it
+			// reads as a re-lock and is kept, said, and devbox refuses to run
+			// on it too (measured), where the host, which parses, restores.
+			// `_bad` is 2 when tr could not answer, and a 2 decides nothing —
+			// a missing tool must never turn a real lock into "unparseable".
+			unparseableRestored := say(fmt.Sprintf("the post-install %s is unparseable (empty, or not ending in a brace once blanks are removed); restored to the repository's content — the install itself is reported on its own", lockPath))
+			createdUnparseableRemoved := say(fmt.Sprintf("devbox created %s and left it unparseable; removed — no later devbox run could have read it", lockPath))
 			// The comparison reads both documents with every blank removed
 			// (devbox's indentation is not the repository's pin) and the
 			// `"plugin_version":"…"` field dropped wherever it sits in its
@@ -582,9 +597,12 @@ func devboxInstallSnippet(projects []devboxProject) string {
 			fmt.Fprintf(&b, "  _lk=%s; _pre=\"${TMPDIR:-/tmp}/iterion-devbox-lock-pre-$$\"; rm -f %s; _had=0\n", lock, scratch)
 			fmt.Fprintf(&b, "  if [ -f \"$_lk\" ]; then if cp \"$_lk\" \"$_pre\"; then _had=1; else _had=2; echo %s >&2; fi; fi\n", unsaved)
 			fmt.Fprintf(&b, "  devbox install -c %s || echo %s >&2\n", dir, fail)
+			fmt.Fprintf(&b, "  _bad=0; if [ -f \"$_lk\" ]; then if _m=$(tr -d '[:space:]' < \"$_lk\"); then case \"$_m\" in \"\") _bad=1;; *\"}\") ;; *) _bad=1;; esac; else _bad=2; fi; fi\n")
 			fmt.Fprintf(&b, "  if [ \"$_had\" = 1 ]; then\n")
 			fmt.Fprintf(&b, "    if [ ! -e \"$_lk\" ]; then if cp \"$_pre\" \"$_lk\"; then echo %s >&2; else echo %s >&2; fi\n", removed, restoreFailedRemoved)
-			fmt.Fprintf(&b, "    elif ! cmp -s \"$_lk\" \"$_pre\"; then _eq=2; if tr -d '[:space:]' < \"$_lk\" > \"$_pre.a0\" && sed %s \"$_pre.a0\" > \"$_pre.a\" && tr -d '[:space:]' < \"$_pre\" > \"$_pre.b0\" && sed %s \"$_pre.b0\" > \"$_pre.b\"; then cmp -s \"$_pre.a\" \"$_pre.b\"; _eq=$?; fi\n", strip, strip)
+			fmt.Fprintf(&b, "    elif cmp -s \"$_lk\" \"$_pre\"; then :\n")
+			fmt.Fprintf(&b, "    elif [ \"$_bad\" = 1 ]; then if cp \"$_pre\" \"$_lk\"; then echo %s >&2; else echo %s >&2; fi\n", unparseableRestored, restoreFailed)
+			fmt.Fprintf(&b, "    else _eq=2; if tr -d '[:space:]' < \"$_lk\" > \"$_pre.a0\" && sed %s \"$_pre.a0\" > \"$_pre.a\" && tr -d '[:space:]' < \"$_pre\" > \"$_pre.b0\" && sed %s \"$_pre.b0\" > \"$_pre.b\"; then cmp -s \"$_pre.a\" \"$_pre.b\"; _eq=$?; fi\n", strip, strip)
 			fmt.Fprintf(&b, "      if [ \"$_eq\" = 0 ]; then if cp \"$_pre\" \"$_lk\"; then echo %s >&2; else echo %s >&2; fi; elif [ \"$_eq\" = 1 ]; then echo %s >&2; else echo %s >&2; fi\n", rewrote, restoreFailed, changed, unsure)
 			fmt.Fprintf(&b, "    fi\n")
 			// A created lock is removed only where git would list it: inside a
@@ -592,8 +610,10 @@ func devboxInstallSnippet(projects []devboxProject) string {
 			// An exit git cannot answer with — a bare repository, a broken
 			// checkout — keeps the lock, as the host's gitWouldShow does.
 			fmt.Fprintf(&b, "  elif [ \"$_had\" = 0 ] && [ -f \"$_lk\" ]; then\n")
-			fmt.Fprintf(&b, "    _ci=2; if command -v git >/dev/null 2>&1 && git -C %s rev-parse --is-inside-work-tree >/dev/null 2>&1; then git -C %s check-ignore -q %s >/dev/null 2>&1; _ci=$?; fi\n", dir, dir, shellquote.Quote(devboxLockName))
-			fmt.Fprintf(&b, "    if [ \"$_ci\" = 1 ]; then if rm -f \"$_lk\"; then echo %s >&2; else echo %s >&2; fi; else echo %s >&2; fi\n", createdRemoved, removeFailed, createdKept)
+			fmt.Fprintf(&b, "    if [ \"$_bad\" = 1 ]; then if rm -f \"$_lk\"; then echo %s >&2; else echo %s >&2; fi\n", createdUnparseableRemoved, removeFailed)
+			fmt.Fprintf(&b, "    else _ci=2; if command -v git >/dev/null 2>&1 && git -C %s rev-parse --is-inside-work-tree >/dev/null 2>&1; then git -C %s check-ignore -q %s >/dev/null 2>&1; _ci=$?; fi\n", dir, dir, shellquote.Quote(devboxLockName))
+			fmt.Fprintf(&b, "      if [ \"$_ci\" = 1 ]; then if rm -f \"$_lk\"; then echo %s >&2; else echo %s >&2; fi; else echo %s >&2; fi\n", createdRemoved, removeFailed, createdKept)
+			fmt.Fprintf(&b, "    fi\n")
 			fmt.Fprintf(&b, "  fi; rm -f %s\n", scratch)
 			continue
 		}

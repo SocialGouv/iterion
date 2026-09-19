@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -91,16 +92,15 @@ func TestEngineRun_HostDevbox_RepoLockRewrittenByInstallIsRestored(t *testing.T)
 }
 
 // initGitRepo makes dir a git repository (skipping the test when git is
-// absent) and, when ignore is non-empty, writes it as the .gitignore.
+// absent) and, when ignore is non-empty, writes it as the .gitignore. The
+// command goes through gittest so auto-maintenance is refused: a detached
+// `git maintenance run --auto` would race t.TempDir()'s removal.
 func initGitRepo(t *testing.T, dir, ignore string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on PATH")
 	}
-	out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput()
-	if err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
+	gittest.Run(t, dir, "init", "-q")
 	if ignore != "" {
 		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(ignore+"\n"), 0o644); err != nil {
 			t.Fatal(err)

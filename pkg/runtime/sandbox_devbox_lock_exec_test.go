@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestDevboxInstallSnippet_RepoLockBranchesExecuteUnderSh runs the generated
@@ -17,7 +19,10 @@ import (
 // replaced by a directory (left alone, said), created where git would show
 // it (removed), created where the repository ignores it, where no repository
 // reads the worktree or where git has no work tree to answer for (kept),
-// untouched (left alone), and the ones earlier cuts got wrong: the
+// left empty or unterminated (restored, said unparseable — what still ends
+// in a brace, a truncation stopping on an inner brace, the probe cannot
+// see: kept as a re-lock, said), untouched (left alone, an unparseable pin
+// included), and the ones earlier cuts got wrong: the
 // pre-install copy FAILS, which must leave the tracked lock in place
 // (whatever devbox wrote), never remove it as "created"; a comparison tool
 // the image lacks — each of `tr`, `sed`, `cmp` in turn — which must leave
@@ -46,6 +51,15 @@ func TestDevboxInstallSnippet_RepoLockBranchesExecuteUnderSh(t *testing.T) {
 	const unlocked = "{\"lockfile_version\":\"1\",\"packages\":{\"go@1.26\":{\"resolved\":\"github:NixOS/nixpkgs/abc#go\"}}}\n"
 	const addedFirst = "{\"lockfile_version\":\"1\",\"packages\":{\"go@1.26\":{\"plugin_version\":\"0.0.5\",\"resolved\":\"github:NixOS/nixpkgs/abc#go\"}}}\n"
 	const addedLast = "{\"lockfile_version\":\"1\",\"packages\":{\"go@1.26\":{\"resolved\":\"github:NixOS/nixpkgs/abc#go\",\"plugin_version\":\"0.0.5\"}}}\n"
+	// A write cut short: no closing brace once blanks are removed — and the
+	// one truncation the prologue's shape probe cannot see, ending exactly
+	// on an inner brace (read as a re-lock, kept, said; the host parses and
+	// restores).
+	const truncated = "{\"lockfile_version\":\"1\",\"packages\":{\"go@1.26\":{\"plugin_vers\n"
+	const truncatedOnBrace = "{\"lockfile_version\":\"1\",\"packages\":{\"go@1.26\":{}\n"
+	// The realistic cut of a multi-package lock: an entry closed, the next
+	// one open — a brace inside, none at the end.
+	const truncatedAfterEntry = "{\"lockfile_version\":\"1\",\"packages\":{\"go@1.26\":{\"plugin_version\":\"0.0.4\"},\"jq@1.8\":{\"plugin_vers\n"
 	// The shape devbox actually writes: indented, one field per line.
 	const prettyPinned = "{\n  \"lockfile_version\": \"1\",\n  \"packages\": {\n    \"go@1.26\": {\n      \"plugin_version\": \"0.0.4\",\n      \"resolved\": \"github:NixOS/nixpkgs/abc#go\"\n    }\n  }\n}\n"
 	const prettyDrifted = "{\n  \"lockfile_version\": \"1\",\n  \"packages\": {\n    \"go@1.26\": {\n      \"plugin_version\": \"0.0.5\",\n      \"resolved\": \"github:NixOS/nixpkgs/abc#go\"\n    }\n  }\n}\n"
@@ -77,6 +91,13 @@ func TestDevboxInstallSnippet_RepoLockBranchesExecuteUnderSh(t *testing.T) {
 		{name: "plugin metadata added as the entry's first key is restored", lockBefore: unlocked, devbox: write(addedFirst), wantLock: unlocked, wantStderr: "devbox rewrote"},
 		{name: "plugin metadata added as the entry's last key is restored", lockBefore: unlocked, devbox: write(addedLast), wantLock: unlocked, wantStderr: "devbox rewrote"},
 		{name: "removed is restored", lockBefore: pinned, devbox: "rm -f \"$LOCK\"", wantLock: pinned, wantStderr: "devbox removed"},
+		{name: "left unterminated is restored and said unparseable", lockBefore: pinned, devbox: write(truncated), wantLock: pinned, wantStderr: "unparseable"},
+		{name: "left empty is restored and said unparseable", lockBefore: pinned, devbox: ": > \"$LOCK\"", wantLock: pinned, wantStderr: "unparseable"},
+		{name: "left unterminated after a closed entry is restored and said unparseable", lockBefore: pinned, devbox: write(truncatedAfterEntry), wantLock: pinned, wantStderr: "unparseable"},
+		{name: "left unterminated on an inner brace reads as a re-lock and is kept", lockBefore: pinned, devbox: write(truncatedOnBrace), wantLock: truncatedOnBrace, wantStderr: "beyond plugin metadata"},
+		{name: "an untouched unparseable pin is left alone", lockBefore: truncated, devbox: "true", wantLock: truncated},
+		{name: "created and left unterminated is removed even where the repository ignores it", devbox: write(truncated), gitInit: true, ignore: devboxLockName, wantStderr: "unparseable"},
+		{name: "created and left unterminated with a broken tr is kept, not removed", devbox: write(truncated), gitInit: true, ignore: devboxLockName, failTool: "tr", wantLock: truncated, wantStderr: "kept"},
 		{name: "replaced by a directory is left alone and said", lockBefore: pinned, devbox: "rm -f \"$LOCK\"; mkdir \"$LOCK\"", wantDir: true, wantStderr: "could not compare"},
 		{name: "created where git would show it is removed", devbox: write(drifted), gitInit: true, wantStderr: "removed so the worktree stays clean"},
 		{name: "created where the repository ignores it is kept", devbox: write(drifted), gitInit: true, ignore: devboxLockName, wantLock: drifted, wantStderr: "kept"},
@@ -203,14 +224,12 @@ func TestDevboxInstallSnippet_RepoLockBranchesExecuteUnderSh(t *testing.T) {
 
 // initBareGitRepo makes dir a bare repository: `git rev-parse` answers there
 // (exit 0, "false"), but there is no work tree for `check-ignore` to answer
-// for — the exit git cannot answer with.
+// for — the exit git cannot answer with. Through gittest, like every git
+// command a test runs, so auto-maintenance is refused.
 func initBareGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on PATH")
 	}
-	out, err := exec.Command("git", "-C", dir, "init", "-q", "--bare").CombinedOutput()
-	if err != nil {
-		t.Fatalf("git init --bare: %v\n%s", err, out)
-	}
+	gittest.Run(t, dir, "init", "-q", "--bare")
 }
