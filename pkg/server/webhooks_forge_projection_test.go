@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // blockingRepoIntegrationStore parks ListSyncEnabledForRepo until release is
@@ -139,6 +141,57 @@ func TestScheduleForgeBoardProjectionShutdownWaitsForInFlight(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Shutdown never returned once the projection had")
+	}
+}
+
+// TestScheduleForgeBoardProjectionDefersToSweepOnMidShutdown is
+// #1477 follow-up question 2: a webhook that lands between
+// close(s.shutdown) and bgJoined registers a projection whose ctx is
+// cancelled by the time the fn runs, and the pre-fix path called
+// ListSyncEnabledForRepo on a dead ctx, logging a generic "context
+// canceled" line. The fix short-circuits with a typed deferred-to-sweep
+// warn instead, naming the repo so an operator reading the tail can
+// attribute the delivery.
+//
+// Mutation: revert the `if err := ctx.Err(); err != nil { ... return }`
+// guard → the projection's store call fires and no deferred-to-sweep
+// warn appears → red on the log-contents assertion.
+func TestScheduleForgeBoardProjectionDefersToSweepOnMidShutdown(t *testing.T) {
+	srv := newMissionTestServer(t)
+	var buf lockedBuffer
+	srv.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	srv.cfg.CloudBoardFor = func(string) native.BoardStore { return nil }
+	store := newBlockingRepoIntegrationStore()
+	srv.forgeIntegrations = store
+
+	// Fire close(s.shutdown) directly — the state Server.Shutdown produces
+	// AFTER draining and cancelling coordinators but BEFORE bgJoined
+	// flips. A late webhook's tryGoUntilShutdown registration still
+	// succeeds; the fn runs with a cancelled ctx.
+	close(srv.shutdown)
+
+	srv.scheduleForgeBoardProjection("owner/repo")
+
+	// The fn runs on the registered goroutine. Wait for the deferred-to-
+	// sweep warn to appear.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "deferred to the forge") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s := buf.String(); !strings.Contains(s, "deferred to the forge") {
+		t.Fatalf("expected deferred-to-sweep warn, got %q", s)
+	}
+	if !strings.Contains(buf.String(), "owner/repo") {
+		t.Errorf("expected the warn to name the repo, got %q", buf.String())
+	}
+	// The store MUST NOT have been called: the projection short-circuited.
+	select {
+	case <-store.entered:
+		t.Errorf("ListSyncEnabledForRepo was called despite the cancelled ctx — the short-circuit did not fire")
+	default:
 	}
 }
 

@@ -472,6 +472,54 @@ func TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub(t *testing.T) {
 	}
 }
 
+// TestBusSubscribeCancelClampsCallerDeadline is #1477 follow-up question 1:
+// a caller that hands cancel a ctx with a generous deadline (a 30 s
+// HTTP-request ctx, say) must not be able to make a runaway handler hold
+// the process for 30 s — the seam's guarantee is that cancel returns
+// within subscribeCancelBudget, no matter what deadline the caller
+// carries. Mutation: drop the clamp in waitCtx → cancel takes ~30 s → red
+// on the ceiling assertion below.
+func TestBusSubscribeCancelClampsCallerDeadline(t *testing.T) {
+	for _, c := range busCases {
+		if c.name == "nats" {
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			perSubBudget := 80 * time.Millisecond
+			bus, cleanup := c.make(t, nil, perSubBudget)
+			defer cleanup()
+
+			entered := make(chan struct{})
+			var enteredOnce sync.Once
+			release := make(chan struct{})
+			defer close(release)
+			cancel, err := bus.Subscribe("runaway", trigger.Matcher{}, func(_ context.Context, _ trigger.Event) error {
+				enteredOnce.Do(func() { close(entered) })
+				<-release
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			go func() { _ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard}) }()
+			<-entered
+
+			// Caller passes a very generous deadline — 30 seconds, the
+			// shape of an HTTP-request ctx. Cancel must return within the
+			// budget regardless (plus the small grace window post-check).
+			generousCtx, gc := context.WithTimeout(context.Background(), 30*time.Second)
+			defer gc()
+			started := time.Now()
+			cancel(generousCtx)
+			elapsed := time.Since(started)
+			ceiling := perSubBudget + overrunPostCheckWindow + 200*time.Millisecond
+			if elapsed > ceiling {
+				t.Errorf("%s: cancel with 30s deadline took %v; expected clamped to ≤ %v (budget %v + grace + slack)", c.name, elapsed, ceiling, perSubBudget)
+			}
+		})
+	}
+}
+
 // A silent no-op consumer of io.Writer to prove the logger construction path
 // in tests works without buf allocations (paranoia against the "logger nil
 // panics on Warn" defect this package's tests would otherwise not catch).

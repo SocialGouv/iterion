@@ -85,7 +85,7 @@
 | `pkg/cloud/metrics` | centralises the Prometheus metrics exposed by the cloud-mode iterion server and runner pods. | — | 1 · 7 |
 | `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | — | 1 · 6 |
 | `pkg/cloud/tracing` | wires the OpenTelemetry trace SDK so the spans emitted by pkg/runtime, pkg/runner, and pkg/server are actually exported. | — | 1 · 1 |
-| `pkg/cloudsched` | the cloud-mode recurring-bot scheduler: a per-org store of cron-scheduled bots and a multi-replica-safe ticker that fires each due schedule exactly… | `Store` | 4 · 40 |
+| `pkg/cloudsched` | the cloud-mode recurring-bot scheduler: a per-org store of cron-scheduled bots and a multi-replica-safe ticker that fires each due schedule exactly… | `Store` | 4 · 42 |
 | `pkg/config` | loads iterion runtime configuration from environment variables and an optional YAML file. | — | 4 · 38 |
 | `pkg/configshare` | the scoped, self-service config-file editor: a per-(bot × repo × config-file × category) grant, addressed by a dynamic URL and authenticated by… | `Store` | 8 · 43 |
 | `pkg/connection` | what authenticates a connector call: the binding between a tenant, a connector package, an instance of that vendor, and the credential to reach it. | `Catalog`, `Store` | 7 · 68 |
@@ -176,7 +176,7 @@
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` | 6 · 52 |
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 341 |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | — | 1 · 5 |
-| `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 230 · 166 |
+| `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 232 · 166 |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `TeamResolver` | 9 · 14 |
 | `pkg/server/projects` | manages the studio's per-user project registry. | — | 1 · 11 |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` | 5 · 32 |
