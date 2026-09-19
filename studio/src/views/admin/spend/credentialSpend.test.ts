@@ -5,6 +5,7 @@ import {
   formatTokens,
   formatUSD,
   isValidMonth,
+  sameQuery,
 } from "./credentialSpend";
 
 describe("isValidMonth", () => {
@@ -42,6 +43,25 @@ describe("buildQuery — fingerprint and repo are mutually exclusive", () => {
     expect(buildQuery({ tier: "team", month: "  ", fingerprint: "  ", repo: "  " })).toEqual({
       tier: "team",
     });
+  });
+});
+
+// Apply must be able to RETRY a failed fetch, and it can only tell that it is
+// a retry (rather than a new question) by comparing the built queries — an
+// unchanged one keys the same react-query entry, which re-runs on nothing.
+describe("sameQuery", () => {
+  const form = { tier: "org" as const, month: "2026-08", fingerprint: "", repo: "" };
+  it("is true for two builds of the same filter set", () => {
+    expect(sameQuery(buildQuery(form), buildQuery({ ...form }))).toBe(true);
+  });
+  it("is true across the whitespace buildQuery trims away", () => {
+    expect(sameQuery(buildQuery(form), buildQuery({ ...form, month: " 2026-08 " }))).toBe(true);
+  });
+  it("sees a changed month, tier, fingerprint or repo", () => {
+    expect(sameQuery(buildQuery(form), buildQuery({ ...form, month: "2026-07" }))).toBe(false);
+    expect(sameQuery(buildQuery(form), buildQuery({ ...form, tier: "team" }))).toBe(false);
+    expect(sameQuery(buildQuery(form), buildQuery({ ...form, fingerprint: "fp1" }))).toBe(false);
+    expect(sameQuery(buildQuery(form), buildQuery({ ...form, repo: "acme/app" }))).toBe(false);
   });
 });
 

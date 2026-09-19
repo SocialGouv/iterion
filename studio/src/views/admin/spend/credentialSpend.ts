@@ -37,6 +37,23 @@ export function buildQuery(form: {
   return q;
 }
 
+// sameQuery reports whether two built queries ask the SAME question, i.e.
+// whether they key the same react-query entry. Re-applying an unchanged filter
+// set must still be able to RETRY a failed fetch, and a query the cache
+// already holds in error re-runs on nothing of its own (retry: 1,
+// refetchOnWindowFocus off — see main.tsx).
+export function sameQuery(
+  a: AdminCredentialUsageQuery,
+  b: AdminCredentialUsageQuery,
+): boolean {
+  return (
+    a.tier === b.tier &&
+    a.month === b.month &&
+    a.fingerprint === b.fingerprint &&
+    a.repo === b.repo
+  );
+}
+
 // formatUSD renders a dollar amount to cents. A subscription's estimated cost
 // and a metered invoice are the SAME format but different nature — the caller
 // must label them, never sum them.

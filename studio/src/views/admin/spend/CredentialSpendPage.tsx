@@ -34,6 +34,7 @@ import {
   formatTokens,
   formatUSD,
   isValidMonth,
+  sameQuery,
   type SpendTier,
 } from "./credentialSpend";
 
@@ -111,7 +112,13 @@ export default function CredentialSpendPage() {
 
   const apply = () => {
     if (!monthValid) return;
-    setApplied(buildQuery({ tier, month, fingerprint, repo }));
+    const next = buildQuery({ tier, month, fingerprint, repo });
+    // An unchanged filter set keys the SAME query, which react-query will not
+    // re-run on its own — so after a failed fetch Apply, the one affordance the
+    // error state points at, would silently do nothing. Ask for the refetch.
+    const retrying = sameQuery(next, applied) && query.isError;
+    setApplied(next);
+    if (retrying) void query.refetch();
   };
 
   const scope = view?.scope;
@@ -219,11 +226,26 @@ export default function CredentialSpendPage() {
         )}
 
         <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
-          {!loaded ? (
+          {/* `loaded` is only "no longer pending": react-query reports a fetch
+              that ERRORED with nothing cached as loaded-with-no-data, and a
+              retry in flight over no data is still a load. Keep both on the
+              skeleton so neither can reach the empty state. */}
+          {!loaded || (query.isFetching && !view) ? (
             <div className="p-3">
               <TableSkeleton rows={5} cols={8} />
             </div>
-          ) : !view || view.credentials.length === 0 ? (
+          ) : !view ? (
+            // An absent view is NOT a zero-spend answer — saying so would be
+            // the very misread the scope echo exists to prevent (#1087).
+            <EmptyState
+              title="Spend unavailable"
+              message={
+                query.isError
+                  ? "The request failed — this is not a zero-spend answer. Retry with Apply."
+                  : "The server returned no usage answer for this scope — this is not a zero-spend answer. Retry with Apply."
+              }
+            />
+          ) : view.credentials.length === 0 ? (
             <EmptyState message="No spend recorded for this scope and month." />
           ) : (
             <Table caption="Per-credential spend">
