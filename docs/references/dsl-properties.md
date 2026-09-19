@@ -234,7 +234,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `images` | string list | Image paths sent with the prompt |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
 | `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
-| `interaction_model` | string | Model the llm interaction mode uses |
+| `interaction_model` | string | Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
@@ -281,7 +281,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `images` | string list | Image paths sent with the prompt |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
 | `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
-| `interaction_model` | string | Model the llm interaction mode uses |
+| `interaction_model` | string | Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
@@ -335,7 +335,7 @@ A node: `human <name>:` at the top level or inside a `group`.
 | `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
 | `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
-| `interaction_model` | string | Model the llm interaction mode uses |
+| `interaction_model` | string | Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `min_answers` | int | Answers required before the node resumes |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `review_url` | string | review: the PR/MR the gate reviews (a {{…}} reference is accepted) |

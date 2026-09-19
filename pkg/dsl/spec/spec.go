@@ -201,7 +201,7 @@ var (
 	pAutoMemory      = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
 	pInteraction     = enum("interaction", "How the node asks the operator (ADR-081)", "none", "human", "llm", "llm_or_human", "review", "async")
 	pInteractionP    = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
-	pInteractionM    = prop("interaction_model", String, "Model the llm interaction mode uses")
+	pInteractionM    = prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
 	pReasoning       = Property{Name: "reasoning_effort", Form: Enum, Values: []string{"low", "medium", "high", "xhigh", "max", "ultracode"},
 		Doc: "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},

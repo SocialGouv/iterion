@@ -293,14 +293,20 @@ func chainHints(raw string) (hints []string, unresolved bool) {
 		}
 		hint, _, _ := ir.SplitProviderStep(token)
 		hint = strings.ToLower(strings.TrimSpace(hint))
-		// A `{{vars.…}}` reference is resolved by the executor with the
-		// run's vars, which this walk does not have: it is a hint that
-		// defers, like "auto" — not a name. Recording its text as a hint
-		// made AnthropicWireReachable answer false for a run that rides
-		// the wire, and the usage-cap pre-flight stood down.
-		if hint == "" || hint == "auto" || strings.Contains(hint, "{{") {
+		if hint == "" || hint == "auto" {
 			unresolved = true
 			continue
+		}
+		// A `{{vars.…}}` reference is resolved by the executor with the
+		// run's vars, which this walk does not have. It still NAMES a step
+		// — the hint IS the route, so the model's `provider/` prefix must
+		// not decide in its place — but its value is unreadable here: it
+		// stays a hint AND marks the chain unresolved, which widens both
+		// callers (the wire stays reachable, the credential narrowing
+		// fails open). Dropping it instead let the prefix decide, and a
+		// cloud run leased no credential for the provider the var named.
+		if strings.Contains(hint, "{{") {
+			unresolved = true
 		}
 		hints = append(hints, hint)
 	}
