@@ -312,6 +312,55 @@
         ],
         "type": "object"
       },
+      "BotRoles": {
+        "properties": {
+          "brancher": {
+            "type": "string"
+          },
+          "implementer": {
+            "type": "string"
+          },
+          "revi_converse": {
+            "type": "string"
+          },
+          "reviewer": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "BotVars": {
+        "properties": {
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "vars",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "BoundLabelField": {
         "properties": {
           "field_id": {
@@ -2439,6 +2488,38 @@
         ],
         "type": "object"
       },
+      "PlatformCredentials": {
+        "properties": {
+          "enforce": {
+            "type": "boolean"
+          },
+          "orgs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "teams",
+          "orgs",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "ProjectSyncConflict": {
         "properties": {
           "at": {
@@ -3101,6 +3182,45 @@
         ],
         "type": "object"
       },
+      "Sandbox": {
+        "properties": {
+          "default_image": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "Settings": {
+        "properties": {
+          "five_hour_pct": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "week_pct": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "StatusMapping": {
         "properties": {
           "state": {
@@ -3529,6 +3649,24 @@
         ],
         "type": "object"
       },
+      "botRolesSettingsView": {
+        "properties": {
+          "effective": {
+            "$ref": "#/components/schemas/effectiveBotRoles"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "stored": {
+            "$ref": "#/components/schemas/BotRoles"
+          }
+        },
+        "required": [
+          "effective",
+          "origin"
+        ],
+        "type": "object"
+      },
       "botSourceForkReq": {
         "properties": {
           "from": {
@@ -3690,6 +3828,24 @@
         ],
         "type": "object"
       },
+      "botVarsSettingsView": {
+        "properties": {
+          "origin": {
+            "type": "string"
+          },
+          "propagation_bound_seconds": {
+            "type": "integer"
+          },
+          "stored": {
+            "$ref": "#/components/schemas/BotVars"
+          }
+        },
+        "required": [
+          "origin",
+          "propagation_bound_seconds"
+        ],
+        "type": "object"
+      },
       "createApiKeyReq": {
         "properties": {
           "bots": {
@@ -3752,6 +3908,135 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "credentialUsageListView": {
+        "properties": {
+          "credentials": {
+            "items": {
+              "$ref": "#/components/schemas/credentialUsageView"
+            },
+            "type": "array"
+          },
+          "estimated_usd": {
+            "type": "number"
+          },
+          "metered_usd": {
+            "type": "number"
+          },
+          "month": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/credentialUsageScope"
+          }
+        },
+        "required": [
+          "month",
+          "scope",
+          "credentials",
+          "metered_usd",
+          "estimated_usd"
+        ],
+        "type": "object"
+      },
+      "credentialUsageScope": {
+        "properties": {
+          "fingerprint": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "credentialUsageView": {
+        "properties": {
+          "aggregate_tokens": {
+            "type": "integer"
+          },
+          "backends": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "month": {
+            "type": "string"
+          },
+          "nature": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "repo_id": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "integer"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "month",
+          "fingerprint",
+          "provider",
+          "tier",
+          "nature",
+          "cost_usd",
+          "input_tokens",
+          "output_tokens",
+          "aggregate_tokens",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "effectiveBotRoles": {
+        "properties": {
+          "brancher": {
+            "type": "string"
+          },
+          "implementer": {
+            "type": "string"
+          },
+          "revi_converse": {
+            "type": "string"
+          },
+          "reviewer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reviewer",
+          "revi_converse",
+          "brancher",
+          "implementer"
         ],
         "type": "object"
       },
@@ -4493,6 +4778,24 @@
         ],
         "type": "object"
       },
+      "platformCredentialsSettingsView": {
+        "properties": {
+          "enforced": {
+            "type": "boolean"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "stored": {
+            "$ref": "#/components/schemas/PlatformCredentials"
+          }
+        },
+        "required": [
+          "enforced",
+          "origin"
+        ],
+        "type": "object"
+      },
       "previewBackendOption": {
         "properties": {
           "unavailable_reason": {
@@ -4653,6 +4956,24 @@
         ],
         "type": "object"
       },
+      "sandboxSettingsView": {
+        "properties": {
+          "effective_default_image": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "stored": {
+            "$ref": "#/components/schemas/Sandbox"
+          }
+        },
+        "required": [
+          "effective_default_image",
+          "origin"
+        ],
+        "type": "object"
+      },
       "setOrgStatusReq": {
         "properties": {
           "reason": {
@@ -4663,6 +4984,41 @@
           }
         },
         "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "teamSummaryView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "launch_rate_per_min": {
+            "type": "integer"
+          },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
           "status"
         ],
         "type": "object"
@@ -4708,6 +5064,64 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "usageCapsView": {
+        "properties": {
+          "effective": {
+            "properties": {
+              "five_hour_mode": {
+                "type": "string"
+              },
+              "five_hour_pct": {
+                "type": "number"
+              },
+              "week_mode": {
+                "type": "string"
+              },
+              "week_pct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "five_hour_pct",
+              "five_hour_mode",
+              "week_pct",
+              "week_mode"
+            ],
+            "type": "object"
+          },
+          "env": {
+            "properties": {
+              "five_hour_pct": {
+                "type": "number"
+              },
+              "week_pct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "five_hour_pct",
+              "week_pct"
+            ],
+            "type": "object"
+          },
+          "propagation_bound_seconds": {
+            "type": "integer"
+          },
+          "record": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "env",
+          "effective",
+          "source",
+          "propagation_bound_seconds"
+        ],
         "type": "object"
       },
       "usageReadingsClearedView": {
@@ -4944,8 +5358,15 @@
       "get": {
         "operationId": "getAdminCredentialsUsage",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/credentialUsageListView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/credentials/usage",
@@ -5437,8 +5858,26 @@
       "get": {
         "operationId": "getAdminOrgsByIdTeams",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "teams": {
+                      "items": {
+                        "$ref": "#/components/schemas/teamSummaryView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "teams"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/orgs/{id}/teams",
@@ -5485,8 +5924,15 @@
       "get": {
         "operationId": "getAdminSettingsBotRoles",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botRolesSettingsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/settings/bot-roles",
@@ -5497,8 +5943,15 @@
       "put": {
         "operationId": "putAdminSettingsBotRoles",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botRolesSettingsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PUT /api/admin/settings/bot-roles",
@@ -5511,8 +5964,15 @@
       "get": {
         "operationId": "getAdminSettingsBotVars",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botVarsSettingsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/settings/bot-vars",
@@ -5523,11 +5983,58 @@
       "put": {
         "operationId": "putAdminSettingsBotVars",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botVarsSettingsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PUT /api/admin/settings/bot-vars",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/settings/platform-credentials": {
+      "get": {
+        "operationId": "getAdminSettingsPlatformCredentials",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/platformCredentialsSettingsView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/settings/platform-credentials",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsPlatformCredentials",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/platformCredentialsSettingsView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/admin/settings/platform-credentials",
         "tags": [
           "admin"
         ]
@@ -5537,8 +6044,15 @@
       "get": {
         "operationId": "getAdminSettingsSandbox",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sandboxSettingsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/settings/sandbox",
@@ -5549,8 +6063,15 @@
       "put": {
         "operationId": "putAdminSettingsSandbox",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sandboxSettingsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PUT /api/admin/settings/sandbox",
@@ -5563,8 +6084,15 @@
       "get": {
         "operationId": "getAdminSettingsUsageCaps",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/usageCapsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/settings/usage-caps",
@@ -5575,8 +6103,15 @@
       "put": {
         "operationId": "putAdminSettingsUsageCaps",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/usageCapsView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PUT /api/admin/settings/usage-caps",

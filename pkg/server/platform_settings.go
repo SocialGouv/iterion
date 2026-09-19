@@ -97,10 +97,10 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 	if rec != nil && (rec.Enforce != nil || len(rec.Teams) > 0 || len(rec.Orgs) > 0) {
 		origin = "db"
 	}
-	s.writeJSONFor(w, r, map[string]any{
-		"stored":   rec,
-		"enforced": rec.Enforced(),
-		"origin":   origin,
+	s.writeJSONFor(w, r, platformCredentialsSettingsView{
+		Stored:   rec,
+		Enforced: rec.Enforced(),
+		Origin:   origin,
 	})
 }
 
@@ -173,10 +173,10 @@ func (s *Server) handleAdminGetBotRoles(w http.ResponseWriter, r *http.Request) 
 	if rec != nil && (rec.Reviewer != nil || rec.ReviConverse != nil || rec.Brancher != nil || rec.Implementer != nil) {
 		origin = "db"
 	}
-	s.writeJSONFor(w, r, map[string]any{
-		"stored":    rec,
-		"effective": s.roleBots(),
-		"origin":    origin,
+	s.writeJSONFor(w, r, botRolesSettingsView{
+		Stored:    rec,
+		Effective: s.roleBots(),
+		Origin:    origin,
 	})
 }
 
@@ -248,10 +248,10 @@ func (s *Server) handleAdminGetSandboxSettings(w http.ResponseWriter, r *http.Re
 	if rec != nil && rec.DefaultImage != nil {
 		origin = "db"
 	}
-	s.writeJSONFor(w, r, map[string]any{
-		"stored":                  rec,
-		"effective_default_image": s.effectiveSandboxImageSetting(r.Context()),
-		"origin":                  origin,
+	s.writeJSONFor(w, r, sandboxSettingsView{
+		Stored:                rec,
+		EffectiveDefaultImage: s.effectiveSandboxImageSetting(r.Context()),
+		Origin:                origin,
 	})
 }
 
@@ -318,12 +318,12 @@ func (s *Server) handleAdminGetBotVars(w http.ResponseWriter, r *http.Request) {
 	if rec != nil && len(rec.Vars) > 0 {
 		origin = "db"
 	}
-	s.writeJSONFor(w, r, map[string]any{
-		"stored": rec,
-		"origin": origin,
+	s.writeJSONFor(w, r, botVarsSettingsView{
+		Stored: rec,
+		Origin: origin,
 		// The bound every replica converges within after a write — the
 		// operator-facing answer to "when does my var take effect".
-		"propagation_bound_seconds": int(platformcfg.DefaultTTL.Seconds()),
+		PropagationBoundSeconds: int(platformcfg.DefaultTTL.Seconds()),
 	})
 }
 
@@ -411,4 +411,42 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 	s.botVars.Invalidate()
 	s.auditPlatform(r, "", "platform.settings.bot_vars.updated", "platform_settings", platformcfg.FamilyBotVars, changes)
 	s.handleAdminGetBotVars(w, r)
+}
+
+// ---- settings-family response views ----
+//
+// Named so the OpenAPI generator (openapi_schema.go) emits typed schemas the
+// studio client consumes; they replace the anonymous map[string]any these GET
+// handlers used to write. Every family answers the same shape: the stored
+// override record (null when none), the resolved effective value, and the
+// origin ("default" | "db").
+
+// botRolesSettingsView is GET /api/admin/settings/bot-roles.
+type botRolesSettingsView struct {
+	Stored    *platformcfg.BotRoles `json:"stored"`
+	Effective effectiveBotRoles     `json:"effective"`
+	Origin    string                `json:"origin"`
+}
+
+// sandboxSettingsView is GET /api/admin/settings/sandbox.
+type sandboxSettingsView struct {
+	Stored                *platformcfg.Sandbox `json:"stored"`
+	EffectiveDefaultImage string               `json:"effective_default_image"`
+	Origin                string               `json:"origin"`
+}
+
+// botVarsSettingsView is GET /api/admin/settings/bot-vars.
+type botVarsSettingsView struct {
+	Stored *platformcfg.BotVars `json:"stored"`
+	Origin string               `json:"origin"`
+	// PropagationBoundSeconds is the worst-case delay before every replica
+	// enforces a write (the resolver TTL).
+	PropagationBoundSeconds int `json:"propagation_bound_seconds"`
+}
+
+// platformCredentialsSettingsView is GET /api/admin/settings/platform-credentials.
+type platformCredentialsSettingsView struct {
+	Stored   *platformcfg.PlatformCredentials `json:"stored"`
+	Enforced bool                             `json:"enforced"`
+	Origin   string                           `json:"origin"`
 }
