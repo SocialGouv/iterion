@@ -57,6 +57,24 @@ func TestClassifyShellCommands(t *testing.T) {
 		{"a wrapper's numeric argument is not the verb", "timeout 30 ls -la", ClassDiscovery},
 		{"wrappers nest", "sudo env FOO=1 rm -rf /tmp/x", ClassMutation},
 		{"a wrapper's own subcommand is not the verb", "rtk proxy git log --oneline", ClassDiscovery},
+		// A chain is classified on EVERY segment, not on its head: these
+		// six shapes all read as orientation while they wrote, 229 times
+		// in the operator's own store.
+		{"a write after && is still a write", "grep -q TODO main.go && git add main.go", ClassMutation},
+		{"a write after || is still a write", "ls /tmp/x || mkdir -p /tmp/x", ClassMutation},
+		{"a write after ; is still a write", "cat f.txt; rm f.txt", ClassMutation},
+		{"a write after a pipe is still a write", "cat banner.txt | tee /etc/motd", ClassMutation},
+		{"a write after cd is still a write", "cd /repo && git checkout -- .", ClassMutation},
+		{"a quoted separator does not split a segment", `echo "a; rm -rf x"`, ClassOther},
+		// The discarded-output idiom, with and without the punctuation
+		// that made 219 reads in the store look like writes.
+		{"the bit bucket followed by a separator is not a write", "ls x 2>/dev/null; echo done", ClassDiscovery},
+		{"an unnamed segment outranks a named one", "ls && python3 script.py", ClassUnknown},
+		// A `>` inside a quoted pattern is not a redirection.
+		{"an arrow in a pattern is not a redirection", "grep -rn 'a -> b' pkg/", ClassDiscovery},
+		{"a comparison in an awk program is not a redirection", "awk '$3 > 5 {print}' /tmp/x", ClassDiscovery},
+		{"a heredoc body is data, not command text", "python3 - <<'EOF'\nif a > b: pass\nEOF", ClassUnknown},
+		{"a bundled in-place flag writes", "perl -pi -e 's/a/b/' f.go", ClassMutation},
 		{"trailing punctuation is not part of the verb", "ls; echo done", ClassDiscovery},
 		{"nor part of a subcommand", "git status; echo done", ClassDiscovery},
 	}

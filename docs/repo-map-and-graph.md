@@ -39,7 +39,7 @@ meantime.
 ## The graph
 
 ```bash
-iterion map build                              # 9 811 nodes, 29 199 edges, 0.7 s
+iterion map build                              # 9 830 nodes, 31 352 edges, 0.7 s
 iterion map find MemoryStore                   # where is it, and what kind of thing is it
 iterion map impact sym:pkg/knowledge.MemoryStore --depth 2
 iterion map neighbours bot:review-pr
@@ -83,7 +83,7 @@ tool who_holds_the_seam:
 
 workflow main:
   entry: who_holds_the_seam
-  who_holds_the_seam -> plan
+  who_holds_the_seam -> done
 ```
 
 The first `iterion map` call in a fresh checkout builds the graph
@@ -108,9 +108,18 @@ trusted past them.
   language-agnostic; the symbol layer is not. Unexported helpers are not
   nodes.
 - **Call and reference edges are resolved by NAME**, from each file's own
-  import table — short of what `go/types` would prove. An unexported
-  local with an exported name can produce one edge too many. The cost is
-  a slightly noisy ranking, not a wrong answer about a path.
+  import table and the package's own declared symbols — short of what
+  `go/types` would prove. A local variable shadowing an import alias, or
+  an unexported local with an exported name, can still produce an edge
+  that is not there. An adversarial pass found 1 714 such edges in an
+  earlier version (a selector's field name was matched against the own
+  package) and one of them made `map path` report a two-hop route between
+  two symbols that never touch; that class is closed, but the resolver
+  remains a heuristic and **a wrong edge can still yield a wrong path**.
+  Treat a path as a lead to verify, not as a proof.
+- **Methods are not nodes.** Only top-level exported declarations are, so
+  `map impact` on a method name reports that the id does not exist —
+  which it now says, rather than answering "nothing reaches it".
 - **Doc links only connect pages that exist.** A broken link produces no
   edge; counting them is [#1233](https://github.com/SocialGouv/iterion/issues/1233)'s
   job, and inventing nodes for missing files would corrupt every "is

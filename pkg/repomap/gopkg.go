@@ -125,23 +125,37 @@ func parsePackageDir(abs, rel string, entries []os.DirEntry) (pkgRow, bool, erro
 
 // collectExports counts a file's exported declarations and records the
 // names of its exported interface types.
+// collectExports counts EVERY exported declaration — functions, methods,
+// types, constants and variables. Counting only functions and types made
+// the number wrong on 174 of 238 packages (4 418 against a true 10 035,
+// `pkg/dsl/parser` reading 22 for 220), and no const, var or method could
+// ever move the rendered bytes, so the freshness gate could not see the
+// error either.
 func collectExports(file *ast.File, row *pkgRow, seen map[string]bool) {
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			if d.Name.IsExported() && d.Recv == nil {
-				row.Exported++
+			if d.Name.IsExported() {
+				row.Exported++ // methods included: they are part of the surface
 			}
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok || !ts.Name.IsExported() {
-					continue
-				}
-				row.Exported++
-				if _, isIface := ts.Type.(*ast.InterfaceType); isIface && !seen[ts.Name.Name] {
-					seen[ts.Name.Name] = true
-					row.Interfaces = append(row.Interfaces, ts.Name.Name)
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					if !s.Name.IsExported() {
+						continue
+					}
+					row.Exported++
+					if _, isIface := s.Type.(*ast.InterfaceType); isIface && !seen[s.Name.Name] {
+						seen[s.Name.Name] = true
+						row.Interfaces = append(row.Interfaces, s.Name.Name)
+					}
+				case *ast.ValueSpec:
+					for _, id := range s.Names {
+						if id.IsExported() {
+							row.Exported++
+						}
+					}
 				}
 			}
 		}

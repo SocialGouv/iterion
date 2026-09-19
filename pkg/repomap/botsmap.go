@@ -1,13 +1,16 @@
 package repomap
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
 
@@ -51,7 +54,13 @@ func (b botBundles) Extract(root string) (string, error) {
 	var bots []botRow
 	var skills []skillRow
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || skipDir[e.Name()] {
+			continue
+		}
+		// A bundle is a directory with a manifest. Without this test the
+		// map called `bots/testdata/` — a fixture tree — a shipped bot,
+		// and published "38 bundles" where the catalog has 36.
+		if _, err := os.Stat(filepath.Join(botsDir, e.Name(), "manifest.yaml")); err != nil {
 			continue
 		}
 		row, botSkills, err := readBundle(botsDir, e.Name())
@@ -93,7 +102,16 @@ func readBundle(botsDir, name string) (botRow, []skillRow, error) {
 	dir := filepath.Join(botsDir, name)
 	row := botRow{Name: name}
 
-	if m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml")); err == nil && m != nil {
+	// A manifest the loader REFUSES — invalid YAML, an unknown schema
+	// version, an attachment that escapes the bundle — is an error, not
+	// an empty row. Swallowing it let `task map:gen` overwrite the map
+	// with a blank bundle and turn the gate green: the gate's own
+	// remediation instruction became the laundering path.
+	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
+	if err != nil {
+		return row, nil, fmt.Errorf("bots/%s/manifest.yaml: %w", name, err)
+	}
+	if m != nil {
 		row.Display = m.DisplayName
 		row.Icon = m.Icon
 		row.Version = m.Version
@@ -108,15 +126,24 @@ func readBundle(botsDir, name string) (botRow, []skillRow, error) {
 		return row, nil, fmt.Errorf("read bots/%s: %w", name, err)
 	}
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".bot") {
+		// workflowfile owns the accepted extension (CLAUDE.md names it
+		// the single source of truth); a second spelling here would
+		// drift the day a second extension lands.
+		if !e.IsDir() && workflowfile.IsWorkflowFile(e.Name()) {
 			row.Workflows++
 		}
 	}
 
 	skillsDir := filepath.Join(dir, "skills")
 	skillEntries, err := os.ReadDir(skillsDir)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return row, nil, nil // a bundle without skills is ordinary
+	}
+	if err != nil {
+		// Anything else — a file where a directory belongs, a permission
+		// refusal — is a hole in the map, and a map that hides its holes
+		// lies by their size.
+		return row, nil, fmt.Errorf("bots/%s/skills: %w", name, err)
 	}
 	var skills []skillRow
 	for _, e := range skillEntries {

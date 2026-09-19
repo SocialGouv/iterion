@@ -69,11 +69,16 @@ var mapGenCmd = &cobra.Command{
 	},
 }
 
+// Each command owns its own limit: one shared variable meant cobra
+// applied the LAST registered default to all of them, so `map impact`
+// silently capped at 20 while its own --help promised 50.
 var graphOpts struct {
-	root  string
-	depth int
-	limit int
-	seeds string
+	root        string
+	depth       int
+	findLimit   int
+	impactLimit int
+	rankLimit   int
+	seeds       string
 }
 
 func graphRoot() string {
@@ -81,6 +86,19 @@ func graphRoot() string {
 		return graphOpts.root
 	}
 	return "."
+}
+
+// requireNode refuses an id the graph does not carry. Without it every
+// query answers with the negative form of a real answer — "nothing
+// reaches X", "no directed path" — which reads as a finding rather than
+// as a typo, on the exact question ("what breaks if I change this?")
+// where believing it is destructive.
+func requireNode(g *repograph.Graph, id string) error {
+	if _, ok := g.Nodes[id]; ok {
+		return nil
+	}
+	return fmt.Errorf("%q is not a node in this graph — run `iterion map find %s` to get one",
+		id, repograph.LabelOf(id))
 }
 
 var mapBuildCmd = &cobra.Command{
@@ -142,7 +160,7 @@ var mapFindCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		hits := g.Find(args[0], graphOpts.limit)
+		hits := g.Find(args[0], graphOpts.findLimit)
 		if p.Format == cli.OutputJSON {
 			p.JSON(hits)
 			return nil
@@ -205,6 +223,11 @@ var mapPathCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		for _, id := range args {
+			if err := requireNode(g, id); err != nil {
+				return err
+			}
+		}
 		hops := g.Path(args[0], args[1])
 		if p.Format == cli.OutputJSON {
 			p.JSON(hops)
@@ -231,9 +254,13 @@ var mapImpactCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := requireNode(g, args[0]); err != nil {
+			return err
+		}
 		nodes := g.Impacted(args[0], graphOpts.depth)
-		if graphOpts.limit > 0 && len(nodes) > graphOpts.limit {
-			nodes = nodes[:graphOpts.limit]
+		total := len(nodes)
+		if graphOpts.impactLimit > 0 && total > graphOpts.impactLimit {
+			nodes = nodes[:graphOpts.impactLimit]
 		}
 		if p.Format == cli.OutputJSON {
 			p.JSON(nodes)
@@ -245,6 +272,9 @@ var mapImpactCmd = &cobra.Command{
 		}
 		for _, n := range nodes {
 			p.Line("%s  %s", n.ID, locationOf(n))
+		}
+		if total > len(nodes) {
+			p.Line("… and %d more (raise --limit)", total-len(nodes))
 		}
 		return nil
 	},
@@ -269,8 +299,13 @@ repository by structural centrality.`,
 				seeds = append(seeds, s)
 			}
 		}
-		limit := graphOpts.limit
-		if limit == 0 {
+		for _, s := range seeds {
+			if err := requireNode(g, s); err != nil {
+				return err
+			}
+		}
+		limit := graphOpts.rankLimit
+		if limit <= 0 {
 			limit = 20
 		}
 		ranked := g.Rank(seeds, limit)
@@ -305,11 +340,11 @@ func init() {
 	for _, c := range []*cobra.Command{mapBuildCmd, mapFindCmd, mapNeighboursCmd, mapPathCmd, mapImpactCmd, mapRankCmd} {
 		c.Flags().StringVar(&graphOpts.root, "root", "", "Repository root (default: the working directory)")
 	}
-	mapFindCmd.Flags().IntVar(&graphOpts.limit, "limit", 20, "Maximum rows")
+	mapFindCmd.Flags().IntVar(&graphOpts.findLimit, "limit", 20, "Maximum rows")
 	mapImpactCmd.Flags().IntVar(&graphOpts.depth, "depth", 2, "How many edges back to walk")
-	mapImpactCmd.Flags().IntVar(&graphOpts.limit, "limit", 50, "Maximum rows")
+	mapImpactCmd.Flags().IntVar(&graphOpts.impactLimit, "limit", 50, "Maximum rows")
 	mapRankCmd.Flags().StringVar(&graphOpts.seeds, "seeds", "", "Comma-separated node ids the ranking restarts on")
-	mapRankCmd.Flags().IntVar(&graphOpts.limit, "limit", 20, "Maximum rows")
+	mapRankCmd.Flags().IntVar(&graphOpts.rankLimit, "limit", 20, "Maximum rows")
 
 	mapCmd.AddCommand(mapGenCmd, mapBuildCmd, mapFindCmd, mapNeighboursCmd, mapPathCmd, mapImpactCmd, mapRankCmd)
 	rootCmd.AddCommand(mapCmd)

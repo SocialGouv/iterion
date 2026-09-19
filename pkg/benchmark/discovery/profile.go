@@ -78,15 +78,26 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 	prof := &RunProfile{RunID: runID, WorkflowName: run.WorkflowName, Status: string(run.Status)}
 
 	type pending struct {
-		tool  string
-		input []byte
+		tool       string
+		input      []byte
+		inputBytes int
 	}
 	var (
-		open      = map[string]pending{} // tool_use_id → what tool_started saw
+		open = map[string]pending{} // tool_use_id → what tool_started saw
+		// Tool NODES (`shell:<id>`, `script:<lang>:<id>`) carry no
+		// tool_use_id, and the engine emits TWO completions for each of
+		// them — same duration, one with input_size 0 and one with the
+		// real size. Measured on the operator's store: 542 starts against
+		// 1 068 completions, a ratio of 1.97, while every other tool sits
+		// at 0.98. Without a budget per (node, tool) each of those calls
+		// was counted twice, inflating the call count, the unknown share
+		// and 39 minutes of the published tool wall time.
+		nodeOpen  = map[string][]pending{}
 		perNode   = map[string]*NodeProfile{}
 		iters     = map[string]map[int]bool{} // node → loop iterations observed
 		nodeOrder []string
 	)
+	nodeKey := func(nodeID, tool string) string { return nodeID + "\x00" + tool }
 
 	node := func(id string) *NodeProfile {
 		n, ok := perNode[id]
@@ -115,17 +126,21 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 			iters[evt.NodeID][intField(evt.Data, "iteration")] = true
 
 		case store.EventToolStarted:
-			id, _ := evt.Data["tool_use_id"].(string)
-			if id == "" {
-				continue // a tool node: its completion event carries everything
-			}
 			tool, _ := evt.Data["tool"].(string)
-			open[id] = pending{tool: tool, input: rawInput(evt.Data)}
+			p := pending{tool: tool, input: rawInput(evt.Data), inputBytes: intField(evt.Data, "input_size")}
+			if id, _ := evt.Data["tool_use_id"].(string); id != "" {
+				open[id] = p
+				continue
+			}
+			key := nodeKey(evt.NodeID, tool)
+			nodeOpen[key] = append(nodeOpen[key], p)
 
 		case store.EventToolCalled, store.EventToolError:
 			n := node(evt.NodeID)
 			tool, _ := evt.Data["tool"].(string)
 			input := rawInput(evt.Data)
+			inputBytes := intField(evt.Data, "input_size")
+
 			if id, _ := evt.Data["tool_use_id"].(string); id != "" {
 				if p, ok := open[id]; ok {
 					if tool == "" {
@@ -134,14 +149,38 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 					if len(input) == 0 {
 						input = p.input
 					}
+					if p.inputBytes > inputBytes {
+						inputBytes = p.inputBytes
+					}
 					delete(open, id)
 				}
+			} else {
+				// One completion per start. A second completion for the
+				// same (node, tool) has no start left to consume and is
+				// the engine's duplicate, not a second call.
+				key := nodeKey(evt.NodeID, tool)
+				queue := nodeOpen[key]
+				if len(queue) == 0 {
+					continue
+				}
+				p := queue[0]
+				nodeOpen[key] = queue[1:]
+				if len(input) == 0 {
+					input = p.input
+				}
+				// The start carries the real input size; one of the two
+				// completions reports 0, and taking the larger keeps the
+				// bytes-pulled-in line true whichever arrives first.
+				if p.inputBytes > inputBytes {
+					inputBytes = p.inputBytes
+				}
 			}
+
 			call := ToolCall{
 				Tool:        tool,
 				Class:       Classify(tool, input),
 				Verb:        ShellVerb(input),
-				InputBytes:  intField(evt.Data, "input_size"),
+				InputBytes:  inputBytes,
 				OutputBytes: outputBytes(evt.Data),
 				DurationMs:  int64(intField(evt.Data, "duration_ms")),
 				Failed:      evt.Type == store.EventToolError,
@@ -150,6 +189,9 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 		}
 	}
 	prof.StartedNotFinished = len(open)
+	for _, queue := range nodeOpen {
+		prof.StartedNotFinished += len(queue)
+	}
 
 	turns := store.AsTurnStore(s)
 	for _, id := range nodeOrder {

@@ -193,27 +193,67 @@ func Classify(toolName string, rawInput []byte) Class {
 	return ClassUnknown
 }
 
-// classifyCommand resolves a full command line. Two command-level rules
-// run BEFORE the verb table, because each of them makes a command write
+// classifyCommand resolves a full command line.
+//
+// A command line is a CHAIN, not a verb: `grep -q TODO f && git add f`
+// reads as a search if only its head is looked at, and 229 such lines in
+// the operator's store were counted as orientation while they committed.
+// So the line is split into segments and EVERY segment is classified.
+//
+// Precedence between the segments' verdicts is mutation > unknown >
+// discovery > other. Unknown outranks discovery on purpose: a chain with
+// one segment nobody can name is a chain nobody can name, and the report
+// publishes that share rather than absorbing it.
+func classifyCommand(cmd string) Class {
+	if cmd == "" {
+		return ClassUnknown
+	}
+	// A heredoc body is DATA, not command text. Scanning it finds `>` in
+	// a python comparison and calls the whole call a file write.
+	if i := strings.Index(cmd, "<<"); i >= 0 {
+		cmd = cmd[:i]
+	}
+	best := ClassOther
+	sawSegment := false
+	for _, seg := range splitSegments(cmd) {
+		if strings.TrimSpace(seg) == "" {
+			continue
+		}
+		sawSegment = true
+		switch c := classifySegment(seg); c {
+		case ClassMutation:
+			return ClassMutation
+		case ClassUnknown:
+			best = ClassUnknown
+		case ClassDiscovery:
+			if best != ClassUnknown {
+				best = ClassDiscovery
+			}
+		}
+	}
+	if !sawSegment {
+		return ClassUnknown
+	}
+	return best
+}
+
+// classifySegment resolves ONE command of a chain. Two command-level
+// rules run before the verb table, because each makes a command write
 // whatever its verb is:
 //
 //  1. a redirection into a file (`> out`, `>> out`) is a write;
 //  2. a stream editor handed -i rewrites its input.
 //
-// These are rules, not spellings: they hold for any verb, including ones
-// nobody listed.
-func classifyCommand(cmd string) Class {
-	if cmd == "" {
-		return ClassUnknown
-	}
-	if writesViaRedirect(cmd) {
+// These are rules, not spellings: they hold for any verb, listed or not.
+func classifySegment(seg string) Class {
+	if writesViaRedirect(seg) {
 		return ClassMutation
 	}
-	verb := verbOf(cmd)
+	verb := verbOf(seg)
 	if verb == "" {
 		return ClassUnknown
 	}
-	if head, _, _ := strings.Cut(verb, " "); streamEditors[head] && hasInPlaceFlag(cmd) {
+	if head, _, _ := strings.Cut(verb, " "); streamEditors[head] && hasInPlaceFlag(seg) {
 		return ClassMutation
 	}
 	if c, ok := shellVerbClass[verb]; ok {
@@ -223,6 +263,76 @@ func classifyCommand(cmd string) Class {
 	// than inheriting the multiplexer's class: `git log` and `git push`
 	// are not the same measurement.
 	return ClassUnknown
+}
+
+// splitSegments cuts a command line on the operators that separate
+// commands — `;`, `&&`, `||`, `|`, newline — while respecting quotes, so
+// `echo "a; rm -rf x"` stays one segment and does not read as a delete.
+//
+// Known limit, disclosed rather than papered over: a command substitution
+// (`$(…)`) is left inside its segment, so a mutation hidden there is only
+// seen if it is also the segment's verb.
+func splitSegments(cmd string) []string {
+	var segments []string
+	var cur strings.Builder
+	var quote byte
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(cmd) {
+				cur.WriteByte(c)
+				i++
+				cur.WriteByte(cmd[i])
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			cur.WriteByte(c)
+		case c == '\'' || c == '"':
+			quote = c
+			cur.WriteByte(c)
+		case c == ';' || c == '\n' || c == '|':
+			segments = append(segments, cur.String())
+			cur.Reset()
+			if c == '|' && i+1 < len(cmd) && cmd[i+1] == '|' {
+				i++
+			}
+		case c == '&' && i+1 < len(cmd) && cmd[i+1] == '&':
+			// Only `&&` separates commands. A lone `&` is a descriptor
+			// dup (`2>&1`) or a background marker, and cutting there
+			// turned `go test ./... 2>&1` into a segment called "1".
+			segments = append(segments, cur.String())
+			cur.Reset()
+			i++
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	return append(segments, cur.String())
+}
+
+// unquoted returns the segment with every quoted span blanked out, so a
+// scanner looking for shell operators cannot read one out of a pattern:
+// `grep -rn 'a -> b'` and `awk '$3 > 5 {print}'` carry no redirection.
+func unquoted(seg string) string {
+	out := []byte(seg)
+	var quote byte
+	for i := 0; i < len(out); i++ {
+		c := out[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+			out[i] = ' '
+		case c == '\'' || c == '"':
+			quote = c
+			out[i] = ' '
+		}
+	}
+	return string(out)
 }
 
 // normaliseTool folds a backend's spelling into the table's key space:
@@ -400,12 +510,20 @@ func isIdentifierRune(r rune) bool {
 // `2>&1` (a descriptor dup) and `>/dev/null` (the bit bucket) are not
 // writes anyone measures; everything else that follows `>` or `>>` is a
 // path the command creates or truncates.
-func writesViaRedirect(cmd string) bool {
+func writesViaRedirect(seg string) bool {
+	cmd := unquoted(seg)
 	for i := 0; i < len(cmd); i++ {
 		if cmd[i] != '>' {
 			continue
 		}
+		// `->`, `>=`, `<…>`: an operator or a template, not a redirection.
+		if i > 0 && (cmd[i-1] == '-' || cmd[i-1] == '=' || cmd[i-1] == '<') {
+			continue
+		}
 		rest := strings.TrimLeft(cmd[i+1:], ">")
+		if strings.HasPrefix(rest, "=") {
+			continue // `>=`
+		}
 		rest = strings.TrimLeft(rest, " \t")
 		if strings.HasPrefix(rest, "&") {
 			continue // a descriptor dup: `>&1`, `2>&1`
@@ -414,7 +532,10 @@ func writesViaRedirect(cmd string) bool {
 		if len(fields) == 0 {
 			continue // a trailing `>` with nothing after it
 		}
-		if target := strings.Trim(fields[0], `"'`); target != "/dev/null" {
+		// cleanWord, not a quote strip: `2>/dev/null; echo x` yields the
+		// target `/dev/null;`, which compared unequal to /dev/null and
+		// turned 219 reads in the operator's store into writes.
+		if target := cleanWord(fields[0]); target != "/dev/null" {
 			return true
 		}
 	}
@@ -423,12 +544,27 @@ func writesViaRedirect(cmd string) bool {
 
 // hasInPlaceFlag reports whether a stream editor was handed -i, in any of
 // its spellings (`-i`, `-i.bak`, `-i”`, or inside a bundle like `-ne -i`).
-func hasInPlaceFlag(cmd string) bool {
-	for _, f := range strings.Fields(cmd) {
-		if f == "-i" || strings.HasPrefix(f, "-i.") || strings.HasPrefix(f, "-i'") ||
-			strings.HasPrefix(f, `-i"`) || f == "--in-place" {
+func hasInPlaceFlag(seg string) bool {
+	for _, f := range strings.Fields(unquoted(seg)) {
+		if f == "--in-place" || strings.HasPrefix(f, "--in-place=") {
 			return true
+		}
+		if len(f) < 2 || f[0] != '-' || f[1] == '-' {
+			continue
+		}
+		// A short-option bundle: -i, -i.bak, -pi, -ne. The text after the
+		// i is a backup extension, not another flag, so the scan stops at
+		// the first non-letter.
+		for j := 1; j < len(f); j++ {
+			if f[j] == 'i' {
+				return true
+			}
+			if !isLetter(f[j]) {
+				break
+			}
 		}
 	}
 	return false
 }
+
+func isLetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }

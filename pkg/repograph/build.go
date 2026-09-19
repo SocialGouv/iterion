@@ -29,38 +29,70 @@ var skipDir = map[string]bool{
 // Build walks the tree once and returns the finalised graph.
 func Build(root string) (*Graph, error) {
 	g := NewGraph()
-	modulePath, err := readModulePath(root)
+	modulePath, replaces, err := readModule(root)
 	if err != nil {
 		return nil, err
 	}
-	if err := buildGo(g, root, modulePath); err != nil {
+	if err := buildGo(g, root, modulePath, replaces); err != nil {
 		return nil, err
 	}
-	if err := buildDocs(g, root); err != nil {
+	pages, err := buildDocs(g, root)
+	if err != nil {
 		return nil, err
 	}
 	if err := buildBots(g, root); err != nil {
 		return nil, err
 	}
+	// Links resolve LAST, once bots and skills are nodes too: a page that
+	// links a skill crosses the docs↔bots boundary this graph exists to
+	// model, and resolving links before those nodes existed dropped 25 of
+	// them.
+	linkDocs(g, root, pages)
 	g.BuiltAt = time.Now().UTC().Format(time.RFC3339)
 	g.Finalise()
 	return g, nil
 }
 
-// readModulePath returns the module path from go.mod. Without it an
-// import cannot be told from a third-party one, so a missing go.mod is
-// an error rather than a degraded build.
-func readModulePath(root string) (string, error) {
+// readModule returns the module path from go.mod, plus the import paths
+// a `replace` directive points at a directory INSIDE this tree.
+//
+// Without the replace map a vendored-by-path module is invisible: this
+// repository holds `third_party/codex-agent-sdk-go`, imported as
+// `github.com/ethpandaops/codex-agent-sdk-go` through a replace. It has
+// 282 indexed symbols and 956 use sites, and a prefix test alone linked
+// none of them — the graph answered "nobody depends on this" about every
+// one.
+func readModule(root string) (modulePath string, replaces map[string]string, err error) {
 	body, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
-		return "", fmt.Errorf("repograph: read go.mod: %w", err)
+		return "", nil, fmt.Errorf("repograph: read go.mod: %w", err)
 	}
-	for _, line := range strings.Split(string(body), "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return strings.TrimSpace(rest), nil
+	replaces = map[string]string{}
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(raw)
+		if rest, ok := strings.CutPrefix(line, "module "); ok && modulePath == "" {
+			modulePath = strings.TrimSpace(rest)
+			continue
 		}
+		// Both spellings: a bare `replace a => ./b` and a line inside a
+		// `replace ( … )` block.
+		line = strings.TrimSpace(strings.TrimPrefix(line, "replace "))
+		from, to, found := strings.Cut(line, "=>")
+		if !found {
+			continue
+		}
+		// The left side may carry a version: `example.com/x v1.2.3`.
+		fromPath := strings.Fields(strings.TrimSpace(from))
+		target := strings.TrimSpace(to)
+		if len(fromPath) == 0 || !strings.HasPrefix(target, ".") {
+			continue // a replacement by another module, not by a directory
+		}
+		replaces[fromPath[0]] = path.Clean(filepath.ToSlash(target))
 	}
-	return "", fmt.Errorf("repograph: go.mod carries no module line")
+	if modulePath == "" {
+		return "", nil, fmt.Errorf("repograph: go.mod carries no module line")
+	}
+	return modulePath, replaces, nil
 }
 
 // buildGo adds packages, files, symbols, imports and calls.
@@ -71,9 +103,10 @@ func readModulePath(root string) (string, error) {
 // declares it. That is short of what go/types would prove and well
 // beyond what a text search can tell — and it needs no dependency
 // outside the standard library.
-func buildGo(g *Graph, root, modulePath string) error {
+func buildGo(g *Graph, root, modulePath string, replaces map[string]string) error {
 	type pkgInfo struct {
 		dir     string
+		name    string // the PACKAGE clause, which is what an import binds
 		symbols map[string]bool
 	}
 	packages := map[string]*pkgInfo{}
@@ -115,7 +148,7 @@ func buildGo(g *Graph, root, modulePath string) error {
 		}
 		p, ok := packages[dir]
 		if !ok {
-			p = &pkgInfo{dir: dir, symbols: map[string]bool{}}
+			p = &pkgInfo{dir: dir, name: f.Name.Name, symbols: map[string]bool{}}
 			packages[dir] = p
 			g.AddNode(Node{ID: packageID(dir), Kind: KindPackage, Label: dir, Path: dir})
 		}
@@ -150,12 +183,17 @@ func buildGo(g *Graph, root, modulePath string) error {
 		aliases := map[string]string{} // local name → repo-relative dir
 		for _, imp := range u.file.Imports {
 			target := strings.Trim(imp.Path.Value, `"`)
-			dir, inModule := moduleDir(modulePath, target)
-			if !inModule {
+			dir, inTree := moduleDir(modulePath, replaces, target)
+			if !inTree {
 				continue
 			}
 			g.AddEdge(packageID(u.pkg), packageID(dir), RelImports)
+			// The binding is the PACKAGE clause, not the directory name:
+			// `third_party/codex-agent-sdk-go` declares `package codexsdk`.
 			name := path.Base(dir)
+			if p, ok := packages[dir]; ok && p.name != "" {
+				name = p.name
+			}
 			if imp.Name != nil {
 				name = imp.Name.Name
 			}
@@ -274,6 +312,12 @@ func inspectFor(g *Graph, root ast.Node, pkgDir, owner string, aliases map[strin
 	// marking it here means the Fun is classified as a call when its own
 	// visit comes round, and as a reference otherwise.
 	callFuns := map[ast.Node]bool{}
+	// A selector's field name must never be matched against the OWN
+	// package's symbols: `os.Open` in a package that declares `Open`
+	// produced an edge to its own `Open`, and `map path` then reported a
+	// two-hop route between two symbols that never touch. 1 714 such
+	// sites existed in this tree.
+	selectorNames := map[ast.Node]bool{}
 	emit := func(dir, name string, rel Rel) {
 		if declared(dir, name) {
 			g.AddEdge(owner, symbolID(dir, name), rel)
@@ -284,6 +328,7 @@ func inspectFor(g *Graph, root ast.Node, pkgDir, owner string, aliases map[strin
 		case *ast.CallExpr:
 			callFuns[node.Fun] = true
 		case *ast.SelectorExpr:
+			selectorNames[node.Sel] = true
 			ident, ok := node.X.(*ast.Ident)
 			if !ok {
 				return true
@@ -298,7 +343,7 @@ func inspectFor(g *Graph, root ast.Node, pkgDir, owner string, aliases map[strin
 			// exported name would be mis-attributed; Go style makes that
 			// rare, and the cost is one extra edge in a ranking rather
 			// than a wrong answer about a path.
-			if node.IsExported() {
+			if node.IsExported() && !selectorNames[node] {
 				emit(pkgDir, node.Name, relFor(callFuns[node]))
 			}
 		}
@@ -314,16 +359,24 @@ func relFor(isCall bool) Rel {
 }
 
 // moduleDir maps an import path to its repo-relative directory, and
-// reports whether it belongs to this module at all.
-func moduleDir(modulePath, importPath string) (string, bool) {
+// reports whether it resolves inside this tree at all — either under the
+// module path, or through a `replace` onto a local directory.
+func moduleDir(modulePath string, replaces map[string]string, importPath string) (string, bool) {
 	if importPath == modulePath {
 		return ".", true
 	}
-	rest, ok := strings.CutPrefix(importPath, modulePath+"/")
-	if !ok {
-		return "", false
+	if rest, ok := strings.CutPrefix(importPath, modulePath+"/"); ok {
+		return rest, true
 	}
-	return rest, true
+	for from, dir := range replaces {
+		if importPath == from {
+			return dir, true
+		}
+		if rest, ok := strings.CutPrefix(importPath, from+"/"); ok {
+			return path.Join(dir, rest), true
+		}
+	}
+	return "", false
 }
 
 // mdLink matches an inline markdown link's target.
@@ -333,13 +386,12 @@ var mdLink = regexp.MustCompile(`\]\(([^)\s]+)`)
 // between two pages in the tree. A link to a heading, a URL or a missing
 // file produces no edge — this graph records what exists, and #1233 owns
 // what does not.
-func buildDocs(g *Graph, root string) error {
+func buildDocs(g *Graph, root string) ([]docPage, error) {
 	docsRoot := filepath.Join(root, "docs")
 	if _, err := os.Stat(docsRoot); err != nil {
-		return nil
+		return nil, nil
 	}
-	type page struct{ rel, body string }
-	var pages []page
+	var pages []docPage
 
 	err := filepath.WalkDir(docsRoot, func(abs string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -367,16 +419,36 @@ func buildDocs(g *Graph, root string) error {
 			ID: docID(rel), Kind: KindDoc, Label: path.Base(rel), Path: rel,
 			Doc: firstHeading(string(body)),
 		})
-		pages = append(pages, page{rel, string(body)})
+		pages = append(pages, docPage{rel, string(body)})
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return pages, nil
+}
 
-	known := map[string]bool{}
-	for _, p := range pages {
-		known[p.rel] = true
+// docPage is one markdown page and its body, held until the link pass.
+type docPage struct{ rel, body string }
+
+// linkDocs resolves every relative markdown link to the node that owns
+// the target path, whatever kind that node is — another page, a bundle's
+// skill, a README outside docs/. A target that exists on disk but has no
+// node yet becomes one: a link whose destination is real is an edge, and
+// dropping it made `map path` answer "no path" about a route written in
+// the page itself.
+//
+// A target that does not exist produces no edge, deliberately: broken
+// links are #1233's subject, and inventing nodes for them would corrupt
+// every "is there a path" answer.
+func linkDocs(g *Graph, root string, pages []docPage) {
+	byPath := map[string]string{}
+	for id, n := range g.Nodes {
+		if n.Path != "" {
+			if _, taken := byPath[n.Path]; !taken {
+				byPath[n.Path] = id
+			}
+		}
 	}
 	for _, p := range pages {
 		for _, m := range mdLink.FindAllStringSubmatch(p.body, -1) {
@@ -390,12 +462,21 @@ func buildDocs(g *Graph, root string) error {
 				continue
 			}
 			resolved := path.Clean(path.Join(path.Dir(p.rel), target))
-			if known[resolved] {
-				g.AddEdge(docID(p.rel), docID(resolved), RelLinks)
+			if strings.HasPrefix(resolved, "..") {
+				continue // outside the tree
 			}
+			id, known := byPath[resolved]
+			if !known {
+				if _, err := os.Stat(filepath.Join(root, resolved)); err != nil {
+					continue // the link is broken; that is another ticket's subject
+				}
+				id = docID(resolved)
+				g.AddNode(Node{ID: id, Kind: KindDoc, Label: path.Base(resolved), Path: resolved})
+				byPath[resolved] = id
+			}
+			g.AddEdge(docID(p.rel), id, RelLinks)
 		}
 	}
-	return nil
 }
 
 // buildBots adds one node per bundle, one per skill, and one per node of
@@ -409,7 +490,12 @@ func buildBots(g *Graph, root string) error {
 		return nil // a tree without bots is not an error
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		// The SAME filter the fingerprint applies. Without it the builder
+		// read `bots/testdata/` while the cache key did not watch it, so
+		// an edit there left the graph asserting flows between workflow
+		// nodes that no longer existed — with the CLI printing "Cache is
+		// current".
+		if !e.IsDir() || skipDir[e.Name()] {
 			continue
 		}
 		bot := e.Name()

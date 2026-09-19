@@ -26,43 +26,93 @@ func TestGeneratedMapsAreFresh(t *testing.T) {
 	}
 }
 
-// A gate that cannot redden is not a gate. Rendering a map over a tree
-// whose sources changed must produce different bytes than the committed
-// artifact — otherwise the test above would pass over any drift.
+// A gate that cannot redden is not a gate — and it has to redden for
+// EVERY corpus it claims to cover. An earlier version of this test
+// symlinked docs/ and bots/ into the scratch root; filepath.WalkDir
+// Lstats its root, so a symlinked root is "not a directory" and the walk
+// ended immediately. Both those extractors rendered zero rows and the
+// test passed anyway: it proved one of three.
 func TestTheFreshnessGateBites(t *testing.T) {
-	generated, err := repomap.Generate(repoRoot)
+	root := syntheticTree(t)
+	before, err := repomap.Generate(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(generated) == 0 {
-		t.Fatal("no map generated at all")
+	if len(before) != 3 {
+		t.Fatalf("generated %d maps, want 3", len(before))
+	}
+	for path, body := range before {
+		if !strings.Contains(body, "|") {
+			t.Fatalf("%s rendered no table row — the extractor read nothing:\n%s", path, body)
+		}
 	}
 
-	// Copy the repo's shape into a scratch root, then remove a package
-	// from it. The map of the scratch tree must differ from the map of
-	// the real one — if it does not, the extractor is not reading the
-	// tree it claims to describe.
-	scratch := t.TempDir()
-	mustLink(t, repoRoot, scratch, "docs")
-	mustLink(t, repoRoot, scratch, "bots")
-	mustCopyGoTree(t, repoRoot, scratch)
+	// One removal per corpus, each of which must move its own artifact.
+	for _, tc := range []struct {
+		name   string
+		remove string
+		stem   string
+		gone   string
+	}{
+		{"a Go package", "pkg/beta", "packages", "`pkg/beta`"},
+		{"a docs page", "docs/adr/001-a-decision.md", "docs", "001-a-decision"},
+		{"a bot skill", "bots/demo/skills/one.md", "bots", "demo-skill"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := syntheticTree(t)
+			if err := os.RemoveAll(filepath.Join(scratch, tc.remove)); err != nil {
+				t.Fatal(err)
+			}
+			after, err := repomap.Generate(scratch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stem repomap.Extractor
+			for _, e := range repomap.Extractors() {
+				if e.Stem() == tc.stem {
+					stem = e
+				}
+			}
+			path := repomap.Path(stem)
+			if before[path] == after[path] {
+				t.Fatalf("removing %s left %s byte-identical — that extractor is not reading the tree",
+					tc.remove, path)
+			}
+			if strings.Contains(after[path], tc.gone) {
+				t.Fatalf("%s still lists %q after it was removed", path, tc.gone)
+			}
+		})
+	}
+}
 
-	if err := os.RemoveAll(filepath.Join(scratch, "pkg", "repomap")); err != nil {
+// syntheticTree writes a miniature repository exercising all three
+// corpora: two Go packages, two docs pages (one an ADR), one bundle with
+// a manifest, a workflow and a skill.
+func syntheticTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		abs := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.test/demo\n\ngo 1.26\n")
+	write("pkg/alpha/alpha.go", "// Package alpha does the first thing.\npackage alpha\n\n// Doer is a seam.\ntype Doer interface{ Do() }\n")
+	write("pkg/beta/beta.go", "// Package beta does the second thing.\npackage beta\n\n// Run runs.\nfunc Run() {}\n")
+	write("docs/guide.md", "# A guide\n\nIt explains the thing.\n")
+	write("docs/adr/001-a-decision.md", "# ADR-001: A decision\n\n- **Status**: Accepted\n\nBecause of the reason.\n")
+	write("bots/demo/manifest.yaml", "name: demo\ndisplay_name: Demo\nicon: \"🤖\"\nversion: 1.0.0\ndescription: A demo bundle.\n")
+	write("bots/demo/main.bot", "workflow main:\n  entry: done\n")
+	write("bots/demo/skills/one.md", "---\nname: demo-skill\ndescription: The demo skill.\n---\n\nBody.\n")
+	if err := os.MkdirAll(filepath.Join(root, repomap.OutputDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mutated, err := repomap.Generate(scratch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := generated[repomap.Path(repomap.Extractors()[0])]
-	after := mutated[repomap.Path(repomap.Extractors()[0])]
-	if before == after {
-		t.Fatal("removing a package left the package map byte-identical — " +
-			"the extractor is not reading the tree")
-	}
-	if strings.Contains(after, "`pkg/repomap`") {
-		t.Fatal("the package map still lists a package that is no longer there")
-	}
+	return root
 }
 
 // An artifact path must stay inside the committed commons directory:
@@ -75,55 +125,6 @@ func TestArtifactPathsStayUnderTheCommonsDirectory(t *testing.T) {
 		}
 		if !strings.HasSuffix(p, ".md") {
 			t.Errorf("%s renders to %q, which is not markdown", e.Stem(), p)
-		}
-	}
-}
-
-// mustLink symlinks a subtree into the scratch root, so the test reads
-// the real docs and bots without copying megabytes.
-func mustLink(t *testing.T, root, scratch, name string) {
-	t.Helper()
-	abs, err := filepath.Abs(filepath.Join(root, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(abs, filepath.Join(scratch, name)); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// mustCopyGoTree copies the Go sources the package map describes. Only
-// the directory shape and the .go files matter, so the copy stays small.
-func mustCopyGoTree(t *testing.T, root, scratch string) {
-	t.Helper()
-	for _, top := range []string{"pkg", "cmd", "internal"} {
-		src := filepath.Join(root, top)
-		if _, err := os.Stat(src); err != nil {
-			continue
-		}
-		err := filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			dst := filepath.Join(scratch, rel)
-			if d.IsDir() {
-				return os.MkdirAll(dst, 0o755)
-			}
-			if !strings.HasSuffix(d.Name(), ".go") {
-				return nil
-			}
-			body, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(dst, body, 0o644)
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
 	}
 }

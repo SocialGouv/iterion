@@ -33,6 +33,20 @@ type Corpus struct {
 	PureDiscoveryTokens int `json:"pure_discovery_tokens"`
 	MutatingTokens      int `json:"mutating_tokens"`
 	NodesWithoutTokens  int `json:"nodes_without_tokens"`
+	// The token columns and the node columns have DIFFERENT populations:
+	// most pure-orientation nodes are `tool` nodes, which spend nothing.
+	// Dividing a token total by a node count that includes them reads
+	// nine times too low, in the direction that would kill the feature
+	// this measurement exists to arbitrate — so both counts are carried.
+	PureDiscoveryNodesWithTokens int `json:"pure_discovery_nodes_with_tokens"`
+	MutatingNodesWithTokens      int `json:"mutating_nodes_with_tokens"`
+	// IdleTokens is spend recorded on a node that called no tool at all.
+	// It belongs to neither side of the boundary and is stated rather
+	// than dropped.
+	IdleTokens int `json:"idle_tokens"`
+	// StartedNotFinished counts calls that opened and never completed,
+	// across the corpus. Excluded from every other count.
+	StartedNotFinished int `json:"started_not_finished"`
 
 	InputBytes  int   `json:"input_bytes"`
 	OutputBytes int   `json:"output_bytes"`
@@ -58,6 +72,7 @@ func Aggregate(profiles []*RunProfile) Corpus {
 			continue
 		}
 		c.Runs++
+		c.StartedNotFinished += p.StartedNotFinished
 		if len(p.Nodes) > 0 {
 			hadCalls := false
 			for _, n := range p.Nodes {
@@ -94,14 +109,19 @@ func Aggregate(profiles []*RunProfile) Corpus {
 				c.MutatingNodes++
 				if n.TokensKnown {
 					c.MutatingTokens += n.Tokens
+					c.MutatingNodesWithTokens++
 				}
 			case n.Calls > 0:
 				c.PureDiscoveryNodes++
 				if n.TokensKnown {
 					c.PureDiscoveryTokens += n.Tokens
+					c.PureDiscoveryNodesWithTokens++
 				}
 			default:
 				c.IdleNodes++
+				if n.TokensKnown {
+					c.IdleTokens += n.Tokens
+				}
 			}
 			if !n.TokensKnown {
 				c.NodesWithoutTokens++
@@ -143,7 +163,7 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 		title = "Discovery cost"
 	}
 	topN := opts.TopN
-	if topN == 0 {
+	if topN <= 0 {
 		topN = 15
 	}
 	var b strings.Builder
@@ -165,6 +185,7 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 	fmt.Fprintf(&b, "| Tool calls classified | %d of %d (%.0f%%) |\n",
 		c.Calls-c.ByClass[ClassUnknown], c.Calls, 100*c.ClassifiedShare())
 	fmt.Fprintf(&b, "| Nodes with no recorded token spend | %d of %d |\n", c.NodesWithoutTokens, c.Nodes)
+	fmt.Fprintf(&b, "| Calls that opened and never completed | %d (excluded from every count below) |\n", c.StartedNotFinished)
 	b.WriteString("\n")
 	b.WriteString("The intra-node split between orientation and work is **not** " +
 		"reported by either backend path: usage is recorded once per node, at node " +
@@ -182,10 +203,20 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 
 	b.WriteString("## Tokens, where they can be attributed\n\n")
 	att := c.AttributableTokens()
-	b.WriteString("| Node kind | Nodes | Tokens |\n|---|---:|---:|\n")
-	fmt.Fprintf(&b, "| never mutated (pure orientation) | %d | %d |\n", c.PureDiscoveryNodes, c.PureDiscoveryTokens)
-	fmt.Fprintf(&b, "| mutated at least once (not split) | %d | %d |\n", c.MutatingNodes, c.MutatingTokens)
-	fmt.Fprintf(&b, "| **attributable total** | | **%d** |\n\n", att)
+	b.WriteString("| Node kind | Nodes | of which carry a spend | Tokens |\n|---|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "| never mutated (pure orientation) | %d | %d | %d |\n",
+		c.PureDiscoveryNodes, c.PureDiscoveryNodesWithTokens, c.PureDiscoveryTokens)
+	fmt.Fprintf(&b, "| mutated at least once (not split) | %d | %d | %d |\n",
+		c.MutatingNodes, c.MutatingNodesWithTokens, c.MutatingTokens)
+	fmt.Fprintf(&b, "| **attributable total** | | | **%d** |\n\n", att)
+	b.WriteString("The middle column is the one to divide by: most pure-orientation " +
+		"nodes are `tool` nodes, which call a command and spend no tokens at all. " +
+		"Dividing by the first column reads nine times too low.\n\n")
+	if c.IdleTokens > 0 {
+		fmt.Fprintf(&b, "A further %d tokens sit on %d node(s) that called no tool — "+
+			"neither orientation nor change, and excluded from the total above.\n\n",
+			c.IdleTokens, c.IdleNodes)
+	}
 	if att > 0 {
 		fmt.Fprintf(&b, "**%.1f%% of the attributable tokens were spent by nodes that never wrote a byte.**\n\n",
 			100*float64(c.PureDiscoveryTokens)/float64(att))

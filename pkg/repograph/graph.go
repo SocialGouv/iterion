@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // Kind is what a node stands for.
@@ -108,9 +109,13 @@ func (g *Graph) AddNode(n Node) {
 		if n.Doc == "" {
 			n.Doc = existing.Doc
 		}
-		if n.Path == "" {
-			n.Path = existing.Path
-			n.Line = existing.Line
+		// FIRST site wins, symmetrically with Doc. Build tags are not
+		// evaluated here, so a symbol declared in both `x_unix.go` and
+		// `x_windows.go` would otherwise point at whichever file sorts
+		// last — sending a reader to the no-op stub for the host it is
+		// not running on.
+		if existing.Path != "" {
+			n.Path, n.Line = existing.Path, existing.Line
 		}
 	}
 	g.Nodes[n.ID] = n
@@ -227,4 +232,17 @@ func skillID(bot, file string) string {
 }
 func dslNodeID(bot, workflow, node string) string {
 	return "node:" + bot + "/" + workflow + "#" + node
+}
+
+// LabelOf extracts the searchable name out of a node id, so an error
+// about an unknown id can hand back a query that would have worked.
+func LabelOf(id string) string {
+	_, rest, found := strings.Cut(id, ":")
+	if !found {
+		rest = id
+	}
+	if i := strings.LastIndexAny(rest, ".#/"); i >= 0 && i+1 < len(rest) {
+		return rest[i+1:]
+	}
+	return rest
 }

@@ -1,7 +1,9 @@
 package operatormcp
 
 import (
+	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +101,68 @@ func TestLocalMapPathIsDirected(t *testing.T) {
 	if !strings.Contains(backward, "no directed path") {
 		t.Fatalf("a path was found against the direction of the import:\n%s", backward)
 	}
+}
+
+// A tool annotated ReadOnly must create NOTHING on disk — not in the
+// store, not in the working directory. The two tests that guard this in
+// operatormcp_test.go each cover a slice of it: one stats only StoreDir
+// and names two tools, the other returns at `remote_api`. So a tool that
+// wrote 5.9 MB of graph cache into WorkDir passed both.
+//
+// This walks the WHOLE tool set and the WHOLE working directory, so the
+// next ReadOnly tool that writes is caught by the class rather than by
+// whoever happens to review it.
+func TestNoReadOnlyToolWritesAnything(t *testing.T) {
+	dir := t.TempDir()
+	mapFixture(t, dir)
+	s := &Server{StoreDir: filepath.Join(dir, "absent-store"), WorkDir: dir, ReadOnly: true, Only: FamilyLocal}
+
+	// One plausible payload per argument shape; a tool that refuses the
+	// arguments still must not have written anything by then.
+	payloads := []string{
+		`{}`,
+		`{"query":"Store"}`,
+		`{"id":"pkg:pkg/seam"}`,
+		`{"from":"pkg:pkg/user","to":"pkg:pkg/seam"}`,
+	}
+	before := snapshot(t, dir)
+	for _, tool := range s.Tools() {
+		if !tool.ReadOnly {
+			continue
+		}
+		for _, args := range payloads {
+			if _, err := s.Call(context.Background(), tool.Name, json.RawMessage(args)); err != nil {
+				t.Fatalf("Call(%s, %s): %v", tool.Name, args, err)
+			}
+		}
+	}
+	for path := range snapshot(t, dir) {
+		if !before[path] {
+			t.Errorf("a ReadOnly tool created %s in read-only mode", path)
+		}
+	}
+}
+
+// snapshot lists every path under root, so a test can assert that a set
+// of calls added none.
+func snapshot(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	seen := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		seen[rel] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seen
 }
 
 // An argument nobody declared must be refused rather than ignored: the

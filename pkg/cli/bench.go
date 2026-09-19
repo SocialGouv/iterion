@@ -149,15 +149,20 @@ func RunBenchDiscovery(opts BenchDiscoveryOptions, p *Printer) error {
 	ctx := context.Background()
 
 	ids := opts.Runs
+	var unreadable []string
 	if len(ids) == 0 {
-		ids, err = recentRunIDs(ctx, s, opts.Last)
+		var skipped []string
+		ids, skipped, err = recentRunIDs(ctx, s, opts.Last)
 		if err != nil {
 			return err
 		}
+		// A run the selector could not load never reaches the parse loop,
+		// so it would vanish from the corpus without a word. It is folded
+		// in here instead.
+		unreadable = append(unreadable, skipped...)
 	}
 
 	profiles := make([]*discovery.RunProfile, 0, len(ids))
-	var unreadable []string
 	for _, id := range ids {
 		prof, err := discovery.ParseRun(ctx, s, id)
 		if err != nil {
@@ -206,13 +211,14 @@ func RunBenchDiscovery(opts BenchDiscoveryOptions, p *Printer) error {
 	return nil
 }
 
-// recentRunIDs returns the n most recently CREATED runs. The order comes
-// from each run's own created_at, never from the order ListRuns happens
-// to return: a directory listing is not a chronology.
-func recentRunIDs(ctx context.Context, s store.RunStore, n int) ([]string, error) {
+// recentRunIDs returns the n most recently CREATED runs, plus the ids it
+// could not read. The order comes from each run's own created_at, never
+// from the order ListRuns happens to return: a directory listing is not
+// a chronology.
+func recentRunIDs(ctx context.Context, s store.RunStore, n int) (ids, skipped []string, err error) {
 	all, err := s.ListRuns(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list runs: %w", err)
+		return nil, nil, fmt.Errorf("list runs: %w", err)
 	}
 	type dated struct {
 		id string
@@ -222,7 +228,8 @@ func recentRunIDs(ctx context.Context, s store.RunStore, n int) ([]string, error
 	for _, id := range all {
 		run, err := s.LoadRun(ctx, id)
 		if err != nil {
-			continue // counted as unreadable by the caller's own pass
+			skipped = append(skipped, id)
+			continue
 		}
 		rows = append(rows, dated{id, run.CreatedAt})
 	}
@@ -239,7 +246,7 @@ func recentRunIDs(ctx context.Context, s store.RunStore, n int) ([]string, error
 	for _, r := range rows {
 		out = append(out, r.id)
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 // SplitRunIDs parses a comma-separated CLI flag value into a slice of run IDs,

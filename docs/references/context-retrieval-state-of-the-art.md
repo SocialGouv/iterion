@@ -27,22 +27,22 @@ devbox run -- ./iterion bench discovery --last 200 --output -
 |---|---|
 | Runs read / with a tool call | 200 / 186 |
 | Nodes / never called a tool | 772 / 331 |
-| Tool calls, classified | 5 956 of 6 925 (**86 %**) |
-| discovery · mutation · other · unknown | **3 653** · 1 237 · 1 066 · 969 |
-| Calls before a node's first write | 1 828, of which **966** were reads or searches |
+| Tool calls, classified | 5 600 of 6 604 (**85 %**) |
+| discovery · mutation · other · unknown | **4 121** · 1 219 · 260 · 1 004 |
+| Calls before a node's first write | 1 956, of which **1 355** were reads or searches |
 | Tool output pulled into contexts | **15.2 MiB** |
-| Tool wall time | **1 h 19 min** |
-| Tokens spent by nodes that never wrote a byte | **1 441 704 of 8 523 614 attributable — 16.9 %** |
+| Tool wall time | **40 min 44 s** |
+| Tokens spent by nodes that never wrote a byte | **2 151 453 of 8 523 614 attributable — 25.2 %**, carried by 54 of the 361 such nodes (the rest are `tool` nodes, which spend none) |
 
 And the size of what all that is searching:
 
 | Corpus | Size |
 |---|---|
-| Go files (excluding `vendor/`) | 3 779 |
+| Go files (excluding `vendor/`) | 3 798 |
 | Markdown tracked by git | 941 files, 10.6 MB (≈ 2.6 M tokens) |
 | of which `docs/*.md` | 311 files, 5.2 MB, including 109 ADRs |
 | of which bot skills | 186 files, 1.6 MB |
-| `.bot` workflows | 155 |
+| `.bot` workflows | 165 tracked (`git ls-files '*.bot'`), 78 outside `testdata/` |
 | Agent instruction tree | `CLAUDE.md` 15.5 KB **injected every turn** + `docs/agents/` 180 KB on demand |
 
 **One number bounds the rest: 639 of 772 nodes carry no recorded token
@@ -77,14 +77,18 @@ proposed below has to beat *that* baseline, not a naive one.
 
 A replication measured MCP retrieval at **4.1× more tokens than grep on a
 33-file repo, and 86 % cheaper on a 249-file one** — same model, same
-tasks, opposite sign. Claude Code's deliberate no-index posture is a
+tasks, opposite sign. Weigh it as what it is: a weekend blog replication
+on two author-written repositories, 32 runs, one open model. It is the
+pivot for "this repository sits past the crossover", so that conclusion
+is a hypothesis this project measures for itself rather than a result it
+inherits. Claude Code's deliberate no-index posture is a
 cost-curve position, not a dogma: it also buys freshness (no index lag),
 no second attack surface, and no embedding of proprietary code.
 
-At 3 779 Go files and 941 markdown files, this repository sits well past
-the crossover. That is an argument for measuring, not for assuming: the
-`bench discovery` numbers above exist so the claim can be checked rather
-than repeated.
+At 3 798 Go files and 941 markdown files, this repository is far past the
+scale of either side of that replication. That is an argument for
+measuring, not for assuming: the `bench discovery` numbers above exist so
+the claim can be checked here rather than imported.
 
 ### 3. A code graph pays *procedural* scaffolds most — and a `.bot` is one
 
@@ -106,9 +110,11 @@ has.
 
 ### 4. What costs money is LLM extraction — and this repository has no API key
 
-Microsoft measured GraphRAG indexing at ≈ **1 000×** a vector index
-($1 544 versus $1.45 per million tokens); LazyGraphRAG, LightRAG and
-KET-RAG all exist to defer or avoid that extraction pass.
+Microsoft's LazyGraphRAG work puts GraphRAG indexing at ≈ **1 000×** a
+vector index; the $1 544-versus-$1.45-per-million-tokens pair is a
+third-party derivation from the same AP-News benchmark at 2024 pricing,
+not a Microsoft figure. LazyGraphRAG, LightRAG and KET-RAG all exist to
+defer or avoid that extraction pass.
 
 iterion's own runs go through OAuth subscription backends, not API keys —
 the constraint is written into this repo's `.graphifyignore`, which
@@ -181,11 +187,21 @@ over a few hundred thousand edges is not the hard part.
   DAG as `flows` edges, and `iterion diagram` renders the same fact
   independently, which is how that half is checked.
 
-The graph exists: `iterion map build`, 9 811 nodes and 29 199 edges over
-this tree in 0.7 s, no database and no dependency outside the standard
-library. Its import edges were checked against `go list -deps` and its
-workflow edges against `iterion diagram` — a graph verified only against
-itself proves nothing.
+The graph exists: `iterion map build`, 9 830 nodes and 31 352 edges over
+this tree in 0.7 s, byte-identical over two cold builds, no database and
+no dependency outside the standard library. Its import edges were checked
+against `go list -deps` and its workflow edges against `iterion diagram` —
+a graph verified only against itself proves nothing.
+
+**And it is a heuristic, which an adversarial pass proved rather than
+assumed.** Name-based resolution was documented here as costing "one
+extra edge in a ranking rather than a wrong answer about a path"; that
+sentence was false. A selector's field name was being matched against the
+own package's symbols — 1 714 such edges — and `map path` reported a
+two-hop route between two symbols that never touch. The class is closed
+and the claim is now the weaker true one:
+[repo-map-and-graph.md](../repo-map-and-graph.md#what-this-is-not) says a
+path is a lead to verify, not a proof.
 
 ## What is refused, and what would reopen it
 

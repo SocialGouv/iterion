@@ -125,6 +125,47 @@ func TestClassComesFromTheStartedInput(t *testing.T) {
 	}
 }
 
+// iterion's own tool nodes carry no tool_use_id, and the engine emits
+// TWO completions for each — same duration, one with input_size 0 and
+// one with the real size. Counting both inflated the call count, the
+// unknown share and the published tool wall time.
+func TestAToolNodeIsOneCallNotTwo(t *testing.T) {
+	s := tmpStore(t)
+	runID := newRun(t, s)
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventNodeStarted, NodeID: "inventory",
+		Data: map[string]any{"kind": "tool", "iteration": 0},
+	})
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventToolStarted, NodeID: "inventory",
+		Data: map[string]any{"tool": "shell:inventory", "input_size": 1534},
+	})
+	for _, size := range []int{0, 1534} { // the engine's duplicate pair
+		appendEvent(t, s, runID, store.Event{
+			Type: store.EventToolCalled, NodeID: "inventory",
+			Data: map[string]any{"tool": "shell:inventory", "duration_ms": 45, "input_size": size},
+		})
+	}
+
+	prof, err := ParseRun(context.Background(), s, runID)
+	if err != nil {
+		t.Fatalf("ParseRun: %v", err)
+	}
+	n := prof.Nodes[0]
+	if n.Calls != 1 {
+		t.Fatalf("calls = %d, want 1 — the engine's duplicate completion was counted", n.Calls)
+	}
+	if n.DurationMs != 45 {
+		t.Fatalf("duration = %d ms, want 45 — charged twice", n.DurationMs)
+	}
+	if n.InputBytes != 1534 {
+		t.Fatalf("input bytes = %d, want 1534 — the zero-sized copy won", n.InputBytes)
+	}
+	if prof.StartedNotFinished != 0 {
+		t.Fatalf("started-not-finished = %d, want 0", prof.StartedNotFinished)
+	}
+}
+
 // A call that opened and never completed is counted apart, not folded
 // into the totals: a killed run must not inflate the activity it did.
 func TestUnfinishedCallsAreCountedApart(t *testing.T) {
