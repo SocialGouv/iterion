@@ -103,6 +103,40 @@ func (s *MongoStore) MarkLaunchError(ctx context.Context, id, lastError string, 
 	return nil
 }
 
+// MarkRunOutcome stamps the last run's terminal outcome on the schedule —
+// same targeted-field discipline as MarkLaunchError, because the writer
+// (an eventbus subscriber) holds no copy of the row.
+func (s *MongoStore) MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	set := bson.M{
+		"last_run_id":     runID,
+		"last_run_status": status,
+		"last_run_at":     at.UTC(),
+	}
+	unset := bson.M{}
+	if errMsg != "" {
+		set["last_run_error"] = errMsg
+	} else {
+		unset["last_run_error"] = ""
+	}
+	if errCode != "" {
+		set["last_run_error_code"] = errCode
+	} else {
+		unset["last_run_error_code"] = ""
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.kit.Coll().UpdateOne(ctx, bson.M{"_id": id}, update)
+	if err != nil {
+		return fmt.Errorf("cloudsched: mark run outcome: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Update applies a partial mutation. Reads the current row, mutates it via
 // applySchedulePatch, and writes back via ReplaceOne — the atomicity that
 // matters here is exactly-once fire (ClaimTick's CAS), not multi-writer

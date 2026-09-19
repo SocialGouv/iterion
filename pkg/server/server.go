@@ -502,10 +502,13 @@ type Server struct {
 	gateAutofixCancel func(context.Context)
 	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
 	outcomeRouterCancel func(context.Context)
+	// scheduleOutcomeCancel unsubscribes the schedule-outcome back-writer
+	// (#1426) at shutdown. Nil unless BOTH ScheduledBots and the eventbus
+	// were wired at boot.
+	scheduleOutcomeCancel func(context.Context)
 	// forgeProjSem bounds concurrent forge→board projection goroutines,
 	// held on the Server (not a package var) so tests spawning independent
-	// Server instances get independent semaphore state — see the
-	// forgeProjectionSem method (#1477 follow-up Q4).
+	// Server instances get independent semaphore state (#1477 follow-up Q4).
 	forgeProjSem chan struct{}
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review

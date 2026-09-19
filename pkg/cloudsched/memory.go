@@ -81,6 +81,19 @@ func (s *MemoryStore) MarkLaunchError(_ context.Context, id, lastError string, a
 	return err
 }
 
+func (s *MemoryStore) MarkRunOutcome(_ context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	_, err := s.kit.Mutate(id, func(sb *ScheduledBot) bool {
+		sb.LastRunID = runID
+		sb.LastRunStatus = status
+		sb.LastRunError = errMsg
+		sb.LastRunErrorCode = errCode
+		t := at.UTC()
+		sb.LastRunAt = &t
+		return true
+	})
+	return err
+}
+
 func (s *MemoryStore) Update(_ context.Context, id string, patch SchedulePatch) (ScheduledBot, error) {
 	var out ScheduledBot
 	if _, err := s.kit.Mutate(id, func(sb *ScheduledBot) bool {
