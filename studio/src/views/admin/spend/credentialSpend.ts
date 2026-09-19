@@ -44,15 +44,25 @@ export function formatUSD(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-// formatTokens shows the measured input/output split when present, else the
-// unsplittable aggregate a CLI delegate reports (#992).
+// formatTokens renders the three counters the API carries apart, per the
+// server's own contract (pkg/credusage/credusage.go): input/output are
+// DIRECTIONAL and carry a split that was actually observed, aggregate_tokens
+// carries the unsplittable total a CLI delegate reports (#992), and "a total
+// is the sum of the three".
+//
+// A row is the merge of every repo/backend of one credential-month, so a
+// credential served by BOTH a split-reporting backend and a CLI delegate
+// carries a split AND an aggregate: show them together rather than picking a
+// side and being wrong in silence. Zero everywhere means "not observed", never
+// "none spent", so it says so instead of rendering a false "0 in / 0 out".
 export function formatTokens(row: {
   input_tokens: number;
   output_tokens: number;
   aggregate_tokens: number;
 }): string {
-  if (row.aggregate_tokens > 0 && row.input_tokens === 0 && row.output_tokens === 0) {
-    return `${row.aggregate_tokens.toLocaleString()} (aggregate)`;
-  }
-  return `${row.input_tokens.toLocaleString()} in / ${row.output_tokens.toLocaleString()} out`;
+  const split = `${row.input_tokens.toLocaleString()} in / ${row.output_tokens.toLocaleString()} out`;
+  const aggregate = `${row.aggregate_tokens.toLocaleString()} (aggregate)`;
+  const hasSplit = row.input_tokens > 0 || row.output_tokens > 0;
+  if (row.aggregate_tokens > 0) return hasSplit ? `${split} + ${aggregate}` : aggregate;
+  return hasSplit ? split : "not reported";
 }

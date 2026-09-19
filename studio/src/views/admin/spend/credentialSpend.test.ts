@@ -63,4 +63,23 @@ describe("formatTokens", () => {
       "5,000 (aggregate)",
     );
   });
+  // A row merges every repo/backend of one credential-month, so a credential
+  // served by both a split-reporting backend and a CLI delegate carries all
+  // three counters — dropping the aggregate would under-report the total.
+  it("shows the aggregate ALONGSIDE the split when a row carries both", () => {
+    expect(formatTokens({ input_tokens: 1000, output_tokens: 250, aggregate_tokens: 5000 })).toBe(
+      "1,000 in / 250 out + 5,000 (aggregate)",
+    );
+  });
+  it("keeps a one-sided split rather than calling it an aggregate", () => {
+    expect(formatTokens({ input_tokens: 1000, output_tokens: 0, aggregate_tokens: 0 })).toBe(
+      "1,000 in / 0 out",
+    );
+  });
+  // Zero everywhere is "not observed", never "none spent" (credusage.go).
+  it("says nothing was reported rather than claiming a zero", () => {
+    expect(formatTokens({ input_tokens: 0, output_tokens: 0, aggregate_tokens: 0 })).toBe(
+      "not reported",
+    );
+  });
 });
