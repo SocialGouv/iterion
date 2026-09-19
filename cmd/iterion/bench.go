@@ -79,6 +79,51 @@ Examples:
 	},
 }
 
+var benchDiscoveryOpts struct {
+	storeDir string
+	runs     string
+	last     int
+	output   string
+	title    string
+	topN     int
+}
+
+var benchDiscoveryCmd = &cobra.Command{
+	Use:   "discovery",
+	Short: "Measure what runs spent on orientation rather than on the change",
+	Long: `Discovery profiles persisted runs by what their tool calls were
+doing: reading, searching and listing (orientation) versus writing
+(the change). It answers "what does finding your way around this
+repository cost?" — the question an index, a repo map or a code graph
+has to beat before it earns its keep.
+
+What it can attribute, and what it cannot: token usage is recorded once
+per node, at node end, by both backend paths — so the split INSIDE a
+node is not reported anywhere and is never imputed here. Tokens are
+attributed only to nodes that never mutated anything, where the whole
+spend is orientation by construction. Every table states its coverage.
+
+Examples:
+  # The corpus this store already holds.
+  iterion bench discovery --last 200 --output docs/references/discovery-baseline.md
+
+  # Two runs of the same bot, before and after a change.
+  iterion bench discovery --runs r1,r2 --output -
+
+  # Machine-readable, for a diff between two measurements.
+  iterion --json bench discovery --last 50`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cli.RunBenchDiscovery(cli.BenchDiscoveryOptions{
+			StoreDir: benchDiscoveryOpts.storeDir,
+			Runs:     cli.SplitRunIDs(benchDiscoveryOpts.runs),
+			Last:     benchDiscoveryOpts.last,
+			Output:   benchDiscoveryOpts.output,
+			Title:    benchDiscoveryOpts.title,
+			TopN:     benchDiscoveryOpts.topN,
+		}, newPrinter())
+	},
+}
+
 func init() {
 	f := benchAsymptoteCmd.Flags()
 	f.StringVar(&benchAsymptoteOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
@@ -95,6 +140,15 @@ func init() {
 	f.BoolVar(&benchAsymptoteOpts.includePerRun, "include-per-run", false, "Append a per-run iteration list at the end")
 	mustMarkRequired(benchAsymptoteCmd, "judge-node")
 
+	d := benchDiscoveryCmd.Flags()
+	d.StringVar(&benchDiscoveryOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
+	d.StringVar(&benchDiscoveryOpts.runs, "runs", "", "Comma-separated run IDs to profile (exclusive with --last)")
+	d.IntVar(&benchDiscoveryOpts.last, "last", 0, "Profile the N most recently created runs in the store instead of naming them")
+	d.StringVar(&benchDiscoveryOpts.output, "output", "", "Markdown output file (- or empty for stdout)")
+	d.StringVar(&benchDiscoveryOpts.title, "title", "", "Report title (default: Discovery cost)")
+	d.IntVar(&benchDiscoveryOpts.topN, "top", 0, "Rows in the per-node and per-verb tables (default: 15)")
+
 	benchCmd.AddCommand(benchAsymptoteCmd)
+	benchCmd.AddCommand(benchDiscoveryCmd)
 	rootCmd.AddCommand(benchCmd)
 }

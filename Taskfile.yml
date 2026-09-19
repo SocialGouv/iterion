@@ -520,6 +520,17 @@ tasks:
       - task: brand:positioning
       - task: brand:og:check
       - task: dsl:check
+      - task: map:check
+
+  map:gen:
+    desc: Regenerate the committed repository maps (packages, docs + ADR, bots + skills)
+    cmds:
+      - go run -mod=vendor ./cmd/iterion map gen
+
+  map:check:
+    desc: Fail if a committed repository map is stale, or if the freshness gate cannot redden
+    cmds:
+      - go test -count=1 -run 'TestGeneratedMapsAreFresh|TestTheFreshnessGateBites' ./pkg/repomap/
 
   dsl:gen:
     desc: Regenerate DSL docs, skills and Monaco vocabulary from the parser and property registry
