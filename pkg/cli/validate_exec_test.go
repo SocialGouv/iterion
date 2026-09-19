@@ -283,9 +283,12 @@ func TestRunValidate_LaunchValuesReachTheDryRun(t *testing.T) {
 	}
 	path := func(res ValidateResult) []string { return res.Exec.Passes[0].Nodes }
 	// Without a value: refused at the gate on both passes, `work` never walked.
+	// Pass.Nodes is a set the emitter sorts (#1434), so "the last node"
+	// is a lexicographic accident under a fan-out — read membership +
+	// the pass's own Deliberate flag instead.
 	res := run(ValidateOptions{Exec: true})
 	for _, p := range res.Exec.Passes {
-		if last := p.Nodes[len(p.Nodes)-1]; last != "unset" || !p.Deliberate {
+		if !contains(p.Nodes, "unset") || !p.Deliberate {
 			t.Fatalf("without a value the gate did not refuse: %+v", p)
 		}
 	}
