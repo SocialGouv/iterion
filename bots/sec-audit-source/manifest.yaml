@@ -1,7 +1,16 @@
 name: sec-audit-source
 display_name: Seki
 icon: 🛡️
-version: 0.1.3
+version: 0.1.4
+## 0.1.4 — a pass no longer publishes a neighbour's deepsec export as its own
+## (deepsec_out becomes a per-run subdirectory keyed on {{run.id}}, #1322); the
+## deep scan no longer counts toward the min_generic hard-fail floor so two
+## dead always-on scanners still stop the run once deepsec is present (#1333);
+## and a fully-analysed workspace whose persistent backlog is exhausted renders
+## a plain note ("this pass added nothing; the findings below come from earlier
+## passes over this workspace") rather than two coverage warnings at once
+## (#1328). All three fix the same shape — a pass reporting on facts that do
+## not belong to it — but each ships as its own commit and its own test.
 ## 0.1.3 — prepare_branch no longer reads iterion's `.claude/` scaffold as the
 ## operator's work in flight, its stash leaves the scaffold in place and is recorded
 ## only once it is confirmed on top, and a finding's revert neither cleans nor checks

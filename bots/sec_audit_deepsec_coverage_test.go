@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -1446,22 +1447,37 @@ func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
 // line exists to close and the build would not notice.
 //
 // This is that floor. A pass that DOES run, whose export writes nothing and
-// fails, must not let the file already sitting in the shared slot stand in for
-// its own output: FCNT would count a foreign export's findings, the
-// export-unusable guard would not fire, and the pass would ship findings it
-// never produced under a coverage that reads complete.
+// fails, must leave nothing behind at its own per-pass slot — otherwise FCNT
+// would count a stale export's findings on a resumed invocation of the same
+// run id, the export-unusable guard would not fire, and the pass would ship
+// findings it never produced under a coverage that reads complete.
+//
+// #1322 keyed the export on the run id — a per-pass subdirectory rather than
+// one shared name — so a neighbour's file at the workspace-scratch base is now
+// structurally unreachable to this pass. The second half of that invariant is
+// asserted here too: the neighbour file sits UNTOUCHED after the pass runs.
+// Together the two properties close the class: this pass cannot read, write,
+// or destroy any file that belongs to another pass.
 func TestDeepsecAFailedExportDoesNotInheritTheSlot(t *testing.T) {
 	dir := t.TempDir()
 	scanDir := filepath.Join(dir, "scan")
 	if err := os.MkdirAll(scanDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(scanDir, "deepsec.json")
-	if err := os.WriteFile(out, []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`), 0o644); err != nil {
+	// The scanner uses vars.deepsec_out as a BASE template and derives its
+	// per-pass path as <dirname>/<run.id>/<basename>. The neighbour file lives
+	// at the base — a workspace-scratch file no current pass now writes to.
+	neighbourAtBase := filepath.Join(scanDir, "deepsec.json")
+	neighbourBody := []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`)
+	if err := os.WriteFile(neighbourAtBase, neighbourBody, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// This pass's own per-run slot, which is what the export-unusable guard
+	// must leave empty.
+	const runID = "run-under-test"
+	runSlot := filepath.Join(scanDir, runID, "deepsec.json")
 
-	cov, _, _ := runDeepsecNodeFull(t, dir, "run-under-test", `
+	cov, _, _ := runDeepsecNodeFull(t, dir, runID, `
 NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
 mkdir -p data/p/runs
 case "$1" in
@@ -1478,10 +1494,23 @@ case "$1" in
   *) exit 0 ;;
 esac`)
 
-	if _, err := os.Stat(out); !os.IsNotExist(err) {
-		body, _ := os.ReadFile(out)
-		t.Errorf("the export step wrote nothing and failed, yet a file still sits at the shared slot (%q). "+
-			"triage reads it, scan_health counts it present, and the findings of an EARLIER pass ship as this one's", body)
+	if _, err := os.Stat(runSlot); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(runSlot)
+		t.Errorf("the export step wrote nothing and failed, yet a file still sits at this pass own slot %s (%q). "+
+			"triage reads it, scan_health counts it present, and any file from a resumed invocation of this "+
+			"run would ship as this pass output", runSlot, body)
+	}
+
+	// The neighbour at the base must be UNTOUCHED. Before #1322 the entry rm
+	// would have deleted it, or a full run would have overwritten it — either
+	// way a foreign pass export was destroyed by a pass that had nothing to do
+	// with it.
+	got, err := os.ReadFile(neighbourAtBase)
+	if err != nil {
+		t.Fatalf("a pass that ran deepsec destroyed a foreign export at the scratch base %s: %v", neighbourAtBase, err)
+	}
+	if !bytes.Equal(got, neighbourBody) {
+		t.Errorf("a pass rewrote a foreign export at the scratch base %s: %q", neighbourAtBase, got)
 	}
 
 	steps, _ := cov["steps_failed"].([]any)
@@ -1493,7 +1522,7 @@ esac`)
 	}
 	if !sawUnusable {
 		t.Errorf("a failed export that produced nothing is not reported as unusable: steps_failed = %v — "+
-			"a stale file decided the count and the report carries no banner", cov["steps_failed"])
+			"the guard did not fire and the report carries no banner", cov["steps_failed"])
 	}
 }
 
