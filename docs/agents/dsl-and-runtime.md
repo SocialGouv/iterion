@@ -191,7 +191,7 @@ worktree at `<store-dir>/worktrees/<run-id>` and runs all nodes inside it
 
 1. Reads the worktree's HEAD. If unchanged, no-op (the run made no commits).
 2. **Always** creates a persistent branch on that HEAD (default
-   `iterion/run/<friendly-name>`, overridable via `--branch-name`). This
+   `iterion/run/<run id>`, overridable via `--branch-name`). This
    is the GC guard — without it the commits would only be reachable via
    reflog and eligible for `git gc` after ~30 days.
 3. **Best-effort** merges the run's commits into the user's
@@ -218,7 +218,7 @@ Override flags (CLI + studio Launch modal + HTTP API):
   the studio defaults to false and defers the merge to a UI action,
   leaving `merge_status: pending`)
 - `--branch-name <name>` — override the storage branch (default
-  `iterion/run/<friendly-name>`); on collision a numeric suffix is added
+  `iterion/run/<run id>`); on collision a numeric suffix is added
 
 On error, the worktree is preserved at `<store-dir>/worktrees/<run-id>`
 for inspection and finalization is skipped — the operator decides what

@@ -722,7 +722,7 @@ const (
 	//   - reason: short string identifying the failure mode
 	//     ("invalid_name", "git_branch_failed")
 	//   - branch: attempted branch name (the requested one or the
-	//     `iterion/run/<friendly>` default — empty when the attempted
+	//     `iterion/run/<runID>` default — empty when the attempted
 	//     name itself was the rejected input)
 	EventWorktreeBranchFailed EventType = "worktree_branch_failed"
 )
