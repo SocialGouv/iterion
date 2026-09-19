@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.175.1](https://github.com/SocialGouv/iterion/compare/v3.175.0...v3.175.1) (2026-09-19)
+
+### Bug Fixes
+
+* **dsl:** a with: mapping refuses what the runtime cannot resolve — {{input.*}} on a subbot or emit, secrets and attachments, and a literal that cannot be its target's type ([#1497](https://github.com/SocialGouv/iterion/issues/1497)) ([543f876](https://github.com/SocialGouv/iterion/commit/543f876d9abf2de85e882ac89479e79a6e68499d)), references [#1308](https://github.com/SocialGouv/iterion/issues/1308) [#1310](https://github.com/SocialGouv/iterion/issues/1310) [#1420](https://github.com/SocialGouv/iterion/issues/1420) [#1505](https://github.com/SocialGouv/iterion/issues/1505)
+
+    <details><summary>why</summary>
+
+    A data mapping — an edge `-> dst with { ... }`, a subbot / emit node's own `with:`, or a `fail message:` — is resolved through `pkg/runtime.engine.resolveMapping`, whose `resolveRef` has no arm for the `secrets` / `attachments` namespaces and reads `input.*` against the parent's run inputs for subbot / emit where the kind has no `input:` surface. A compute node's `expr:` runs through `pkg/dsl/expr`, whose `evalNamespaces` (snapshot.go) excludes `secrets` and `attachments` deliberately — so a…
+
+    </details>
+
 ## [3.175.0](https://github.com/SocialGouv/iterion/compare/v3.174.1...v3.175.0) (2026-09-19)
 
 ### Features
