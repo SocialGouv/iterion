@@ -23,6 +23,7 @@ func resetClaudeCredEnv(t *testing.T) {
 		"ANTHROPIC_BASE_URL",
 		"ZAI_API_KEY",
 		"CLAUDE_CONFIG_DIR",
+		"CLAUDE_CODE_OAUTH_TOKEN",
 	} {
 		t.Setenv(k, "")
 	}
@@ -212,6 +213,152 @@ func TestAnthropicCredEnv_HintZAIFallsToEnvKey(t *testing.T) {
 	got := anthropicCredEnvForCLI(context.Background(), "zai", false)
 	if got["ANTHROPIC_AUTH_TOKEN"] != "env-zai-test" {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want env-zai-test", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
+// TestAnthropicCredEnv_HintZAINoKeySuppressesAmbientAnthropic pins the
+// forbidden fallback of issue #1390: an unsatisfiable `provider: zai`
+// hint (no z.ai key resolvable, from ctx or process env) must clear
+// EVERY Anthropic-flavoured credential the CLI would otherwise
+// inherit — the two z.ai vars, ANTHROPIC_API_KEY (the pod's shared
+// key), CLAUDE_CODE_OAUTH_TOKEN (the runner's forfait env channel),
+// AND CLAUDE_CONFIG_DIR (the forfait FILE channel: the CLI reads
+// $CLAUDE_CONFIG_DIR/.credentials.json when no env token is set) —
+// so the node fails with "no credential" instead of silently routing
+// to Anthropic-direct and 404'ing on the GLM id.
+//
+// Mutation: drop any one entry (e.g. remove "CLAUDE_CONFIG_DIR": ""
+// from the returned map), and this reddens on the assertion that
+// it must be present-and-empty (mergeCmdEnv's suppression signal).
+//
+// The test exercises BOTH the host path (sandboxed=false) and the
+// sandbox path (sandboxed=true), because the sandbox_secret_files
+// path bakes CLAUDE_CONFIG_DIR into the container's spec.Env — a
+// `provider: zai` node without a z.ai key that inherits the
+// container-baked value would silently authenticate as the forfait
+// tenant on Anthropic-direct.
+func TestAnthropicCredEnv_HintZAINoKeySuppressesAmbientAnthropic(t *testing.T) {
+	for _, sandboxed := range []bool{false, true} {
+		name := "host"
+		if sandboxed {
+			name = "sandboxed"
+		}
+		t.Run(name, func(t *testing.T) {
+			resetClaudeCredEnv(t)
+			// The forbidden alternatives in this test: EVERY
+			// Anthropic-flavoured credential a parent or container-baked
+			// env could carry that a naive fallback would let win —
+			// including the alt-provider switches (Bedrock, Vertex,
+			// Foundry) that claw-code-go detectProvider reads BEFORE
+			// ANTHROPIC_API_KEY.
+			t.Setenv("ANTHROPIC_API_KEY", "sk-ambient-anthropic")
+			t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oat-ambient-forfait")
+			t.Setenv("CLAUDE_CONFIG_DIR", "/iterion/claude-forfait")
+			t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+			t.Setenv("CLAUDE_CODE_USE_VERTEX", "1")
+			t.Setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+			got := anthropicCredEnvForCLI(context.Background(), "zai", sandboxed)
+			// Every secret / token / switch is cleared to "": the
+			// signal mergeCmdEnv reads as "actively suppress".
+			for _, k := range []string{
+				"ANTHROPIC_BASE_URL",
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_API_KEY",
+				"CLAUDE_CODE_OAUTH_TOKEN",
+				"CLAUDE_CODE_USE_BEDROCK",
+				"CLAUDE_CODE_USE_VERTEX",
+				"CLAUDE_CODE_USE_FOUNDRY",
+			} {
+				v, present := got[k]
+				if !present || v != "" {
+					t.Errorf("%s must be present-and-empty (suppression signal): present=%v val=%q", k, present, v)
+				}
+			}
+			// CLAUDE_CONFIG_DIR is the exception: an empty value is
+			// treated as absent by mergeCmdEnv, and the CLI then
+			// defaults to $HOME/.claude — on a dev laptop with
+			// `claude login`, that resolves a valid forfait and
+			// re-opens the leak. The fix points at a poisoned
+			// absolute path so the CLI's read fails deterministically.
+			cfg, present := got["CLAUDE_CONFIG_DIR"]
+			if !present {
+				t.Errorf("CLAUDE_CONFIG_DIR must be present (set to a poisoned path, not cleared)")
+			}
+			if cfg == "" {
+				t.Errorf("CLAUDE_CONFIG_DIR must NOT be empty — an empty value degrades to $HOME/.claude and re-opens the forfait leak on a dev laptop")
+			}
+			if !strings.HasPrefix(cfg, "/") {
+				t.Errorf("CLAUDE_CONFIG_DIR must be an absolute path, got %q", cfg)
+			}
+			// The poisoned path must not exist on any sane host, so
+			// the CLI's `.credentials.json` read at that dir fails.
+			if _, err := os.Stat(cfg); err == nil {
+				t.Errorf("CLAUDE_CONFIG_DIR poisoned path %q ACTUALLY EXISTS on this host — pick another sentinel", cfg)
+			}
+			// The suppression marker travels with the map — every
+			// iterion-internal reader of CLAUDE_CONFIG_DIR keys on
+			// it to skip treating the poisoned dir as an OAuth
+			// forfait (R0a39d6).
+			if got[ForfaitSuppressedEnvKey] != "1" {
+				t.Errorf("%s must be %q on a suppressed forfait, got %q", ForfaitSuppressedEnvKey, "1", got[ForfaitSuppressedEnvKey])
+			}
+		})
+	}
+}
+
+// TestProviderFingerprint_SuppressedForfaitDoesNotReadAsOAuth pins the
+// reader-side half of R0a39d6: the poisoned CLAUDE_CONFIG_DIR sentinel
+// is NOT rendered as `anthropic-oauth` — a label that would persist
+// into node output, cross-provider fork guards and usagecap Readings.
+// The suppression marker on the env map switches the label to
+// `anthropic-suppressed` so the sentinel never disguises itself as a
+// real forfait.
+//
+// Mutation: drop the `isForfaitSuppressed(env)` guard from
+// providerFingerprint's CLAUDE_CONFIG_DIR branch → the fingerprint
+// reads `anthropic-oauth` on a poisoned dir → red.
+func TestProviderFingerprint_SuppressedForfaitDoesNotReadAsOAuth(t *testing.T) {
+	env := map[string]string{
+		"CLAUDE_CONFIG_DIR":     suppressedForfaitDir,
+		ForfaitSuppressedEnvKey: "1",
+	}
+	got := providerFingerprint(env)
+	if got == "anthropic-oauth" {
+		t.Fatalf("suppressed forfait must NOT render as anthropic-oauth (would persist into node output / fork guard); got %q", got)
+	}
+	if got != "anthropic-suppressed" {
+		t.Errorf("suppressed forfait fingerprint = %q, want anthropic-suppressed", got)
+	}
+	// Sibling assertion: an UNSUPPRESSED CLAUDE_CONFIG_DIR keeps its
+	// OAuth label. If we accidentally break the normal path this
+	// reddens too.
+	normal := providerFingerprint(map[string]string{"CLAUDE_CONFIG_DIR": "/home/dev/.claude"})
+	if normal != "anthropic-oauth" {
+		t.Errorf("a normal CLAUDE_CONFIG_DIR must still read as anthropic-oauth, got %q", normal)
+	}
+}
+
+// TestSessionFilesRoot_SuppressedForfaitDoesNotWriteUnderSentinel pins
+// the other reader of R0a39d6: SessionFilesRoot must not return the
+// poisoned dir as a session root. Falls through to the ambient
+// CLAUDE_CONFIG_DIR / home default instead. Without this the runner
+// would try to write session transcripts under `/nonexistent/…`.
+//
+// Mutation: drop the `isForfaitSuppressed(env)` guard →
+// SessionFilesRoot returns the sentinel path → red.
+func TestSessionFilesRoot_SuppressedForfaitDoesNotWriteUnderSentinel(t *testing.T) {
+	resetClaudeCredEnv(t)
+	// Arrange the ctx so anthropicCredEnvForCLI resolves the
+	// suppression map for a `provider: zai` node with no z.ai key.
+	ambientHome := t.TempDir()
+	t.Setenv("HOME", ambientHome)
+	task := Task{ProviderHint: "zai"}
+	got := SessionFilesRoot(context.Background(), task, BackendClaudeCode)
+	if strings.Contains(got, "nonexistent") || strings.HasPrefix(got, suppressedForfaitDir) {
+		t.Fatalf("SessionFilesRoot returned the suppression sentinel: %q — writing transcripts here fails on any sane host", got)
+	}
+	if got == "" {
+		t.Errorf("SessionFilesRoot returned empty — the home fallback did not fire")
 	}
 }
 
