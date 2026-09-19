@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,15 +90,69 @@ func TestEngineRun_HostDevbox_RepoLockRewrittenByInstallIsRestored(t *testing.T)
 	}
 }
 
-// TestEngineRun_HostDevbox_RepoLockCreatedByInstallIsRemoved: a repository
-// that tracks no lock must not gain an untracked one from the run's setup.
-func TestEngineRun_HostDevbox_RepoLockCreatedByInstallIsRemoved(t *testing.T) {
-	stubHostDevboxInstall(t, func(projectDir string) {
+// initGitRepo makes dir a git repository (skipping the test when git is
+// absent) and, when ignore is non-empty, writes it as the .gitignore.
+func initGitRepo(t *testing.T, dir, ignore string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on PATH")
+	}
+	out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if ignore != "" {
+		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(ignore+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func createsLock(t *testing.T) func(string) {
+	return func(projectDir string) {
 		if err := os.WriteFile(filepath.Join(projectDir, devboxLockName), []byte(`{"lockfile_version":"1"}`), 0o644); err != nil {
 			t.Fatalf("create lock: %v", err)
 		}
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockRelockedByInstallIsKept: a lock the
+// install changed BEYOND plugin metadata — the repository's lock was behind
+// its devbox.json — is kept, so a later devbox run reuses the resolution the
+// run's PATH was built from instead of resolving anew; the note says so.
+func TestEngineRun_HostDevbox_RepoLockRelockedByInstallIsKept(t *testing.T) {
+	const behind = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_version":"0.0.4"}}}`
+	const relocked = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_version":"0.0.4"},"jq@1.8":{"plugin_version":"0.0.4","resolved":"github:NixOS/nixpkgs/abc#jq"}}}`
+	stubHostDevboxInstall(t, func(projectDir string) {
+		if err := os.WriteFile(filepath.Join(projectDir, devboxLockName), []byte(relocked), 0o644); err != nil {
+			t.Fatalf("relock: %v", err)
+		}
 	})
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26", "jq@1.8")
+	lock := filepath.Join(workDir, devboxLockName)
+	if err := os.WriteFile(lock, []byte(behind), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-relocked")
+
+	got, err := os.ReadFile(lock)
+	if err != nil || string(got) != relocked {
+		t.Fatalf("devbox.lock after the run = %q (err=%v), want the re-locked content kept", got, err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "beyond plugin metadata") || !strings.Contains(kept[0], "kept") {
+		t.Fatalf("event lock_kept = %v, want one note saying the lock changed beyond plugin metadata and was kept", kept)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockCreatedByInstallIsRemoved: a repository
+// that tracks no lock — and does not ignore one — must not gain an untracked
+// one from the run's setup.
+func TestEngineRun_HostDevbox_RepoLockCreatedByInstallIsRemoved(t *testing.T) {
+	stubHostDevboxInstall(t, createsLock(t))
 	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	initGitRepo(t, workDir, "")
 	lock := filepath.Join(workDir, devboxLockName)
 
 	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-created")
@@ -108,6 +163,44 @@ func TestEngineRun_HostDevbox_RepoLockCreatedByInstallIsRemoved(t *testing.T) {
 	kept := stringsFromAny(data["lock_kept"])
 	if len(kept) != 1 || !strings.Contains(kept[0], "created "+lock) || !strings.Contains(kept[0], "removed") {
 		t.Fatalf("event lock_kept = %v, want one note naming the created lock and its removal", kept)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockCreatedInIgnoringRepoIsKept: a lock the
+// install created in a repository that ignores it costs the gates nothing —
+// it stays, and spares every later devbox invocation a resolution.
+func TestEngineRun_HostDevbox_RepoLockCreatedInIgnoringRepoIsKept(t *testing.T) {
+	stubHostDevboxInstall(t, createsLock(t))
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	initGitRepo(t, workDir, devboxLockName)
+	lock := filepath.Join(workDir, devboxLockName)
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-created-ignored")
+
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatalf("devbox.lock removed although the repository ignores it: %v", err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "kept") || !strings.Contains(kept[0], "ignores") {
+		t.Fatalf("event lock_kept = %v, want one note saying the created lock was kept because the repository ignores it", kept)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockCreatedOutsideGitIsKept: no repository,
+// no gate — a created lock stays.
+func TestEngineRun_HostDevbox_RepoLockCreatedOutsideGitIsKept(t *testing.T) {
+	stubHostDevboxInstall(t, createsLock(t))
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	lock := filepath.Join(workDir, devboxLockName)
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-created-nogit")
+
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatalf("devbox.lock removed outside any git repository: %v", err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "kept") || !strings.Contains(kept[0], "no git repository") {
+		t.Fatalf("event lock_kept = %v, want one note saying the created lock was kept for lack of a repository", kept)
 	}
 }
 
@@ -209,8 +302,8 @@ func TestEngineRun_HostDevbox_RepoLockUnreadableIsNotTakenForAbsent(t *testing.T
 }
 
 // TestDevboxInstallSnippet_RepoLockIsKept: the sandbox twin of the host
-// path. The in-place workspace install snapshots the lock under /tmp,
-// restores it when `devbox install` changed it, removes one the install
+// path. The in-place workspace install snapshots the lock under $TMPDIR
+// (default /tmp), restores it when `devbox install` changed it, removes one the install
 // created; the staged bot install (a per-run copy) gets none of this.
 func TestDevboxInstallSnippet_RepoLockIsKept(t *testing.T) {
 	snippet := devboxInstallSnippet([]devboxProject{
@@ -230,10 +323,15 @@ func TestDevboxInstallSnippet_RepoLockIsKept(t *testing.T) {
 			t.Errorf("snippet lacks %q:\n%s", want, snippet)
 		}
 	}
-	if strings.Contains(snippet, "_lk="+botDevboxDir) || strings.Count(snippet, "cmp -s") != 1 {
+	if strings.Contains(snippet, "_lk="+botDevboxDir) || strings.Count(snippet, "_lk=") != 1 {
 		t.Errorf("the lock-keeping applies to the in-place repo install only, not to the staged bot copy:\n%s", snippet)
 	}
+	for _, want := range []string{"plugin_version", "check-ignore", "beyond plugin metadata"} {
+		if !strings.Contains(snippet, want) {
+			t.Errorf("snippet lacks %q — the restore must be selective (metadata only) and the removal conditioned on git visibility:\n%s", want, snippet)
+		}
+	}
 	if strings.Contains(snippet, "/workspace/devbox.lock.iterion") {
-		t.Errorf("the pre-install copy must live under /tmp, never beside the lock in the worktree:\n%s", snippet)
+		t.Errorf("the pre-install copy must live under $TMPDIR (default /tmp), never beside the lock in the worktree:\n%s", snippet)
 	}
 }

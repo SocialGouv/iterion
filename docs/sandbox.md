@@ -603,13 +603,21 @@ otherwise read as an agent bug.
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
 `errors` on the host target when something failed, and `lock_kept` on the
-host target when the repo's `devbox.lock` had to be put back after the
+host target when the repo's `devbox.lock` needed a decision after the
 install — devbox rewrites its plugin metadata on a host whose registry is
 newer than the pin, and the run's gates would read the tracked file as the
-pass's own change, #1459. The sandbox target's event is emitted when the
-spec is built, before the container's post-create prologue runs: the same
-restore happens there and, like an install failure on that target, is
-reported on the container's stderr, not on the event) so you can audit
+pass's own change, #1459: a plugin-metadata drift is put back, and so is a
+lock the install removed; a lock the install changed beyond that — the
+repository's lock was behind its `devbox.json` — is kept and said; a lock
+the install created is removed only where git would show it, kept and said
+otherwise. The sandbox target's event is emitted when the spec is built,
+before the container's post-create prologue runs: the same decisions are
+taken there on every lock devbox writes (the prologue compares text, and can
+only diverge from the host on a document no devbox version produces) — plus
+one of its own: a comparison the image's `tr`, `sed` or `cmp` could not
+complete leaves the lock as found after the install, said — and, like an
+install failure on that target, are reported on the container's stderr, not
+on the event) so you can audit
 what was picked up — and see when a declared toolchain could **not**
 be provisioned. A source that EXISTS and was deliberately declined is
 named on the same event, with its own reason:

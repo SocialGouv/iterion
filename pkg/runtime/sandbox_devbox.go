@@ -536,30 +536,57 @@ func devboxInstallSnippet(projects []devboxProject) string {
 		}
 		if pr.stageFrom == "" {
 			// In-place install of the workspace: the repository's devbox.lock
-			// stays what the run found it. `devbox install` rewrites the lock's
-			// plugin metadata when the image's registry is newer than the pin,
-			// and the run's own gates (scope, clean tree) would read the tracked
-			// file as the pass's change (#1459). The pre-install copy lives
-			// under /tmp, never beside the lock. A lock devbox CREATES in a
-			// repository that tracks none is removed for the same reason.
-			lock := shellquote.Quote(pr.dir + "/" + devboxLockName)
-			rewrote := shellquote.Quote(fmt.Sprintf(
-				"iterion: devbox rewrote %s/%s (plugin metadata drift in this image); restored to the repository's content so the worktree stays what the run found it",
-				pr.dir, devboxLockName))
-			created := shellquote.Quote(fmt.Sprintf(
-				"iterion: devbox created %s/%s, a file the repository does not track; removed so the worktree stays clean",
-				pr.dir, devboxLockName))
-			// `_had` carries the snapshot's outcome explicitly: 0 = no lock
-			// before, 1 = snapshot taken, 2 = the copy FAILED. A failed copy
-			// must never read as "the repository tracks no lock" — that
-			// branch removes the file.
-			unsaved := shellquote.Quote(fmt.Sprintf(
-				"iterion: could not copy %s/%s to /tmp before devbox install; whatever devbox writes to it stays in the worktree",
-				pr.dir, devboxLockName))
-			fmt.Fprintf(&b, "  _lk=%s; _pre=\"/tmp/iterion-devbox-lock-pre-$$\"; rm -f \"$_pre\"; _had=0\n", lock)
+			// stays what the run found it when what devbox wrote is plugin
+			// metadata drift (`plugin_version`, rewritten when the image's
+			// registry is newer than the pin) — the run's own gates (scope,
+			// clean tree) would read the tracked file as the pass's change
+			// (#1459). A lock changed beyond that (the repository's lock was
+			// behind its devbox.json) is kept: it is the resolution the run's
+			// PATH was built from. A lock devbox CREATED is removed only where
+			// git would show it — an untracked file in a repository that does
+			// not ignore it. The pre-install copy lives under $TMPDIR (default
+			// /tmp), never beside the lock; `_had` carries the copy's outcome explicitly (0 = no
+			// lock before, 1 = copied, 2 = the copy FAILED) so a failed copy
+			// never reads as "the repository tracks no lock".
+			lockPath := pr.dir + "/" + devboxLockName
+			lock := shellquote.Quote(lockPath)
+			say := func(msg string) string { return shellquote.Quote("iterion: " + msg) }
+			unsaved := say(fmt.Sprintf("could not copy %s aside before devbox install; whatever devbox writes to it stays in the worktree", lockPath))
+			removed := say(fmt.Sprintf("devbox removed %s; restored to the repository's content", lockPath))
+			rewrote := say(fmt.Sprintf("devbox rewrote %s (plugin metadata drift in this image); restored to the repository's content so the worktree stays what the run found it", lockPath))
+			changed := say(fmt.Sprintf("devbox changed %s beyond plugin metadata (the repository's lock was behind its devbox.json); kept — the worktree carries the resolution the run's PATH was built from", lockPath))
+			unsure := say(fmt.Sprintf("could not compare %s with its pre-install copy (tr, sed or cmp failed in this image); left as found after the install — a plugin metadata drift, if devbox wrote one, stays in the worktree", lockPath))
+			createdRemoved := say(fmt.Sprintf("devbox created %s, a file the repository does not track; removed so the worktree stays clean", lockPath))
+			createdKept := say(fmt.Sprintf("devbox created %s; kept — the repository ignores it or no git repository reads the worktree, so no gate sees it", lockPath))
+			// The comparison reads both documents with every blank removed
+			// (devbox's indentation is not the repository's pin) and the
+			// `"plugin_version":"…"` field dropped wherever it sits in its
+			// entry, one comma with it — first, last or only key: the host's
+			// verdict on every lock devbox writes (a text comparison can only
+			// diverge on a document no devbox version produces — the field
+			// outside `packages`, keys reordered, a blank inside a value).
+			// Every step's exit status is read: a tool the image lacks, or a
+			// write cut short, must never leave two empty files that compare
+			// equal and put the pin back over a genuine re-lock — the lock is
+			// then left as found and said.
+			strip := "-e 's/\"plugin_version\":\"[^\"]*\",//g' -e 's/,\"plugin_version\":\"[^\"]*\"//g' -e 's/\"plugin_version\":\"[^\"]*\"//g'"
+			scratch := "\"$_pre\" \"$_pre.a\" \"$_pre.a0\" \"$_pre.b\" \"$_pre.b0\""
+			fmt.Fprintf(&b, "  _lk=%s; _pre=\"${TMPDIR:-/tmp}/iterion-devbox-lock-pre-$$\"; rm -f %s; _had=0\n", lock, scratch)
 			fmt.Fprintf(&b, "  if [ -f \"$_lk\" ]; then if cp \"$_lk\" \"$_pre\"; then _had=1; else _had=2; echo %s >&2; fi; fi\n", unsaved)
 			fmt.Fprintf(&b, "  devbox install -c %s || echo %s >&2\n", dir, fail)
-			fmt.Fprintf(&b, "  if [ \"$_had\" = 1 ]; then if ! cmp -s \"$_lk\" \"$_pre\"; then cp \"$_pre\" \"$_lk\"; echo %s >&2; fi; elif [ \"$_had\" = 0 ] && [ -f \"$_lk\" ]; then rm -f \"$_lk\"; echo %s >&2; fi; rm -f \"$_pre\"\n", rewrote, created)
+			fmt.Fprintf(&b, "  if [ \"$_had\" = 1 ]; then\n")
+			fmt.Fprintf(&b, "    if [ ! -e \"$_lk\" ]; then cp \"$_pre\" \"$_lk\"; echo %s >&2\n", removed)
+			fmt.Fprintf(&b, "    elif ! cmp -s \"$_lk\" \"$_pre\"; then _eq=2; if tr -d '[:space:]' < \"$_lk\" > \"$_pre.a0\" && sed %s \"$_pre.a0\" > \"$_pre.a\" && tr -d '[:space:]' < \"$_pre\" > \"$_pre.b0\" && sed %s \"$_pre.b0\" > \"$_pre.b\"; then cmp -s \"$_pre.a\" \"$_pre.b\"; _eq=$?; fi\n", strip, strip)
+			fmt.Fprintf(&b, "      if [ \"$_eq\" = 0 ]; then cp \"$_pre\" \"$_lk\"; echo %s >&2; elif [ \"$_eq\" = 1 ]; then echo %s >&2; else echo %s >&2; fi\n", rewrote, changed, unsure)
+			fmt.Fprintf(&b, "    fi\n")
+			// A created lock is removed only where git would list it: inside a
+			// work tree, with `check-ignore` answering "not ignored" (exit 1).
+			// An exit git cannot answer with — a bare repository, a broken
+			// checkout — keeps the lock, as the host's gitWouldShow does.
+			fmt.Fprintf(&b, "  elif [ \"$_had\" = 0 ] && [ -f \"$_lk\" ]; then\n")
+			fmt.Fprintf(&b, "    _ci=2; if command -v git >/dev/null 2>&1 && git -C %s rev-parse --is-inside-work-tree >/dev/null 2>&1; then git -C %s check-ignore -q %s >/dev/null 2>&1; _ci=$?; fi\n", dir, dir, shellquote.Quote(devboxLockName))
+			fmt.Fprintf(&b, "    if [ \"$_ci\" = 1 ]; then rm -f \"$_lk\"; echo %s >&2; else echo %s >&2; fi\n", createdRemoved, createdKept)
+			fmt.Fprintf(&b, "  fi; rm -f %s\n", scratch)
 			continue
 		}
 		// Staged copy out of the read-only bundle mount. The lock is
