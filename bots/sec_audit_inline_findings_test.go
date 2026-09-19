@@ -173,8 +173,8 @@ func TestInlineFindings_OffByDefault(t *testing.T) {
 	if got.InlineTruncated {
 		t.Fatal("nothing was carried, so nothing was truncated")
 	}
-	if got.TotalKept != 20 {
-		t.Fatalf("the capping itself must be unchanged: want 20 kept, got %d", got.TotalKept)
+	if got.TotalKept != 25 {
+		t.Fatalf("the capping itself must be unchanged: want 25 kept (semgrep 12 + trivy 8 + the 5-finding array export, which moves the same totals as every dict export since R58b272), got %d", got.TotalKept)
 	}
 }
 

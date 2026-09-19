@@ -3,6 +3,7 @@ package bots
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,17 @@ import (
 //
 // capHarvest is the slice of the cap_findings envelope these tests read.
 type capHarvest struct {
+	TotalRaw    int  `json:"total_raw"`
+	TotalKept   int  `json:"total_kept"`
+	TotalCapped int  `json:"total_capped"`
+	Truncated   bool `json:"truncated"`
+	PerScanner  []struct {
+		File   string `json:"file"`
+		Array  string `json:"array"`
+		Raw    int    `json:"raw"`
+		Kept   int    `json:"kept"`
+		Capped int    `json:"capped"`
+	} `json:"per_scanner"`
 	Inline []struct {
 		File     string           `json:"file"`
 		Findings []map[string]any `json:"findings"`
@@ -156,6 +168,190 @@ func TestCapFindingsNeverHarvestsTheLegacySharedSlot(t *testing.T) {
 				t.Errorf("cap_findings touched the orphan file: %v", err)
 			}
 		})
+	}
+}
+
+// revi verdict 5 on #1473 (R58b272) -- the deep-scan export is ARRAY-shaped,
+// so it bypassed the capping path that records raw/kept/capped for the
+// dict-shaped scanner exports: a 500-finding deep export was announced as
+// "50 findings harvested", the totals ignored it, `truncated` stayed false
+// and no coverage banner fired -- a silent thinning on the only transport
+// (inline) non-sandboxed backends read. The array branch now keeps the same
+// accounts the dict branch keeps, and the harvest note names both counts
+// when the cap dropped findings.
+//
+// Mutation: revert the array branch to appending the post-cap list alone ->
+// every assertion below reddens; keep the accounting but announce the
+// post-cap count only -> the wording assertion reddens alone.
+func TestDeepsecHarvestNamesThePreCapCountWhenTheCapDrops(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	scanDir := filepath.Join(t.TempDir(), "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(scanDir, "semgrep.json"), map[string]any{"results": []map[string]any{
+		{"check_id": "s1", "severity": "high"},
+	}})
+	const total = 120
+	ds := make([]map[string]any, 0, total)
+	for i := 0; i < total; i++ {
+		sev := "high"
+		if i < 60 {
+			sev = "critical"
+		}
+		ds = append(ds, map[string]any{"id": fmt.Sprintf("D-%03d", i), "severity": sev})
+	}
+	producerPath := filepath.Join(scanDir, "deepsec-out-run-CURRENT", "deepsec.json")
+	if err := os.MkdirAll(filepath.Dir(producerPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, producerPath, ds)
+	enc, err := json.Marshal(map[string]string{"deepsec": producerPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runCapFindingsBody(t, scanDir, "DEEPSEC_PATHS="+string(enc), "DEEPSEC_OUT="+filepath.Join(scanDir, "deepsec.json"))
+
+	if want := "published: " + producerPath + " (50 of 120 findings harvested; the per-file cap dropped 70 -- narrow scope or raise findings_cap_per_file and re-run)"; got.DeepsecHarvest != want {
+		t.Errorf("deepsec_harvest = %q, want %q -- the note must name BOTH counts when the cap dropped findings (R58b272)", got.DeepsecHarvest, want)
+	}
+	if got.TotalRaw != 121 || got.TotalKept != 51 || got.TotalCapped != 70 {
+		t.Errorf("totals = raw %d / kept %d / capped %d, want 121 / 51 / 70 -- the array export's 120 raw findings must move the same accounts a dict export moves", got.TotalRaw, got.TotalKept, got.TotalCapped)
+	}
+	if !got.Truncated {
+		t.Error("truncated = false although the cap dropped 70 deep findings -- no coverage banner would fire on a thinned run")
+	}
+	dsIdx := -1
+	for i := range got.PerScanner {
+		if got.PerScanner[i].File == "deepsec.json" {
+			dsIdx = i
+		}
+	}
+	if dsIdx < 0 {
+		t.Fatalf("per_scanner carries no deepsec.json entry: %+v", got.PerScanner)
+	}
+	if e := got.PerScanner[dsIdx]; e.Array != "" || e.Raw != 120 || e.Kept != 50 || e.Capped != 70 {
+		t.Errorf("per_scanner deepsec entry = %+v, want array \"\" raw 120 kept 50 capped 70", e)
+	}
+	if got.InlineTotal != 51 {
+		t.Errorf("inline_total = %d, want 51 (the 50 kept deep findings + semgrep's 1)", got.InlineTotal)
+	}
+	// The envelope says the export was thinned, so the file on disk must say
+	// the same: on the DEFAULT transport (triage_inline_max_bytes = 0) triage
+	// opens this exact file, and a full body under a thinned envelope is the
+	// same lie in mirror image (R58b272). The deep bank read its own copy
+	// earlier in the graph (bank_deepsec_findings -> scan_join), so capping
+	// in place cannot starve it.
+	onDisk, err := os.ReadFile(producerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remaining []map[string]any
+	if err := json.Unmarshal(onDisk, &remaining); err != nil {
+		t.Fatalf("the rewritten export is not a bare JSON array: %v (%q)", err, onDisk)
+	}
+	if len(remaining) != 50 {
+		t.Errorf("the export still carries %d findings on disk after a capped pass -- a triage that opens json_paths on the default transport reads the thinning the envelope announces", len(remaining))
+	}
+	keptIDs := map[string]bool{}
+	for _, f := range remaining {
+		id, _ := f["id"].(string)
+		keptIDs[id] = true
+	}
+	for i := 0; i < 50; i++ {
+		if !keptIDs[fmt.Sprintf("D-%03d", i)] {
+			t.Errorf("severity order lost in the rewritten export: D-%03d missing from disk", i)
+			break
+		}
+	}
+}
+
+// An override that points json_paths.deepsec at a top-level file the glob
+// already yields must not count that file twice: the realpath dedupe before
+// the append processes the producer's path at most once.
+//
+// Mutation: replace the dedupe with a plain append -> the file enters _files
+// twice and this test reddens on total_raw 6 != 3 and on the duplicate
+// per_scanner entry.
+func TestCapFindingsCountsAProducerPathTheGlobAlreadyYieldedExactlyOnce(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	scanDir := filepath.Join(t.TempDir(), "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flat := filepath.Join(scanDir, "deepsec-export.json")
+	writeJSON(t, flat, []map[string]any{
+		{"id": "X-1", "severity": "high"},
+		{"id": "X-2", "severity": "high"},
+		{"id": "X-3", "severity": "high"},
+	})
+	// A custom slot name, so the shared-slot exclusion cannot be what hides
+	// the flat file from the glob: the dedupe alone must hold.
+	enc, err := json.Marshal(map[string]string{"deepsec": flat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runCapFindingsBody(t, scanDir, "DEEPSEC_PATHS="+string(enc), "DEEPSEC_OUT="+filepath.Join(scanDir, "slot.json"))
+
+	if got.TotalRaw != 3 {
+		t.Errorf("total_raw = %d, want 3 -- the producer's path was processed more than once", got.TotalRaw)
+	}
+	entries := 0
+	for i := range got.PerScanner {
+		if got.PerScanner[i].File == "deepsec-export.json" {
+			entries++
+		}
+	}
+	if entries != 1 {
+		t.Errorf("per_scanner carries %d entries for %s, want exactly 1", entries, flat)
+	}
+}
+
+// The dict branch always rewrites its file trimmed; the array branch rewrites
+// ONLY when the cap thinned the export. An uncapped export must stay
+// byte-identical: rewriting it would apply trim (bulky fields dropped,
+// strings cut at MAXSTR) to a body the envelope reports as complete -- a
+// disk copy silently poorer than what the envelope announces.
+//
+// Mutation: drop the capped > 0 guard (always rewrite) -> the 400-char
+// message is cut to MAXSTR and this test reddens on the byte comparison.
+func TestCapFindingsLeavesAnUncappedArrayExportByteIdentical(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	scanDir := filepath.Join(t.TempDir(), "scan")
+	producerDir := filepath.Join(scanDir, "deepsec-out-run-CURRENT")
+	if err := os.MkdirAll(producerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	producerPath := filepath.Join(producerDir, "deepsec.json")
+	writeJSON(t, producerPath, []map[string]any{
+		{"id": "U-1", "severity": "critical", "message": strings.Repeat("m", 400)},
+		{"id": "U-2", "severity": "high", "message": strings.Repeat("m", 400)},
+	})
+	before, err := os.ReadFile(producerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := json.Marshal(map[string]string{"deepsec": producerPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runCapFindingsBody(t, scanDir, "DEEPSEC_PATHS="+string(enc), "DEEPSEC_OUT="+filepath.Join(scanDir, "deepsec.json"))
+
+	if got.Truncated {
+		t.Fatal("truncated = true although nothing was capped -- the envelope would announce a thinning that did not happen")
+	}
+	after, err := os.ReadFile(producerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("an uncapped array export was rewritten (trim applied to a complete body): %d bytes -> %d bytes -- the file must stay byte-identical when capped == 0", len(before), len(after))
 	}
 }
 

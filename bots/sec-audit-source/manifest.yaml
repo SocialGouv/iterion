@@ -49,6 +49,11 @@ version: 0.1.4
 ## the RUN_ID guards and above the node/deepsec preflight, so a workspace
 ## whose deepsec later becomes unavailable still reclaims the per-run dirs
 ## earlier passes left (R58b272).
+## An array-shaped deep-scan export thinned by findings_cap_per_file now
+## moves the same accounts a dict-shaped export moves (total_raw / kept /
+## capped, per_scanner, truncated), and deepsec_harvest names both counts
+## when the cap dropped findings (R58b272) -- a capped deep scan is never
+## reported as complete.
 ## 0.1.3 — prepare_branch no longer reads iterion's `.claude/` scaffold as the
 ## operator's work in flight, its stash leaves the scaffold in place and is recorded
 ## only once it is confirmed on top, and a finding's revert neither cleans nor checks

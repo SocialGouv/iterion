@@ -4197,11 +4197,16 @@ total_raw = total_kept = total_capped = 0
 # (revi R6ee3b1). Sorting by basename keeps the deep scan INTERLEAVED with
 # the other scanners -- the letter d sorts between custom.json and
 # gitleaks.json -- so the budget cuts across a mixed harvest rather than a
-# partition. Basenames are unique in this list by construction: the glob
-# is flat, and the one name it may not yield is the deep scan's.
+# partition. An override that points json_paths.deepsec at a top-level
+# file the glob already yielded is deduped below by realpath, so the
+# producer's path is processed at most once.
 # (No backticks in this comment: they would close the DSL command block.)
 _files = [p for p in glob.glob(os.path.join(scan_dir, '*.json')) if not _ds_slot_name or os.path.basename(p) != _ds_slot_name]
-if _ds_path:
+# The producer's path joins the harvest once, even if an override made it a
+# top-level file the glob already yielded (realpath compare: same file, one
+# entry) -- processing it twice would double-count its findings in every
+# account the envelope carries.
+if _ds_path and os.path.realpath(_ds_path) not in {os.path.realpath(p) for p in _files}:
     _files.append(_ds_path)
 _files.sort(key=lambda p: os.path.basename(p))
 for jf in _files:
@@ -4212,16 +4217,37 @@ for jf in _files:
         continue
     if isinstance(data, list):
         # An ARRAY-shaped export -- deepsec writes one (JSON.stringify of a
-        # findings array) -- carries no findings KEY to rewrite, so it never
-        # enters the capping path below and reaches triage whole through
-        # json_paths. That is fine while triage can open the file. It is not
-        # fine for the inline transport: skipping a document by its SHAPE
-        # would drop the deepest scanner from the payload with no signal at
-        # all. Harvest it for the envelope; leave the file itself untouched.
+        # findings array) -- carries no findings KEY, so the dict branch
+        # below never sees it. Skipping a document by its SHAPE would drop
+        # the deepest scanner from the payload with no signal at all, so it
+        # is harvested here under the same contract as the dict branch: the
+        # cap can thin it, and when it does the file is REWRITTEN in place,
+        # bare-array shape preserved -- both transports (the inline envelope
+        # and a triage opening the json_paths file directly, which is the
+        # default when the inline budget is 0) must see, and report, the
+        # SAME body. Envelope and disk disagreeing in either direction --
+        # completeness reported over vanished findings, or a thinning
+        # announced over a full file -- is the defect class this node exists
+        # to make impossible (revi R58b272).
         if not data:
             continue
-        ranked = sorted(data, key=sev_rank, reverse=True)[:cap]
-        harvest.append({'file': os.path.basename(jf), 'array': '', 'findings': [trim(x) for x in ranked]})
+        raw = len(data)
+        kept = [trim(x) for x in sorted(data, key=sev_rank, reverse=True)[:cap]]
+        capped = raw - len(kept)
+        total_raw += raw
+        total_kept += len(kept)
+        total_capped += capped
+        per_scanner.append({'file': os.path.basename(jf), 'array': '', 'raw': raw, 'kept': len(kept), 'capped': capped})
+        harvest.append({'file': os.path.basename(jf), 'array': '', 'findings': kept})
+        if capped > 0:
+            # The deep bank read its own copy earlier in the graph
+            # (bank_deepsec_findings -> scan_join), so capping in place
+            # cannot starve it.
+            try:
+                with open(jf, 'w', encoding='utf-8') as fh:
+                    json.dump(kept, fh)
+            except OSError:
+                pass
         continue
     if not isinstance(data, dict):
         continue
@@ -4251,11 +4277,18 @@ for jf in _files:
 
 if _ds_path:
     _ds_n = 0
+    _ds_raw = 0
     for g in harvest:
         if g['file'] == os.path.basename(_ds_path):
             _ds_n = len(g['findings'])
+    for p in per_scanner:
+        if p['file'] == os.path.basename(_ds_path):
+            _ds_raw = p['raw']
     if _ds_n:
-        deepsec_harvest = 'published: ' + _ds_path + ' (' + str(_ds_n) + ' findings harvested)'
+        if _ds_raw > _ds_n:
+            deepsec_harvest = 'published: ' + _ds_path + ' (' + str(_ds_n) + ' of ' + str(_ds_raw) + ' findings harvested; the per-file cap dropped ' + str(_ds_raw - _ds_n) + ' -- narrow scope or raise findings_cap_per_file and re-run)'
+        else:
+            deepsec_harvest = 'published: ' + _ds_path + ' (' + str(_ds_n) + ' findings harvested)'
     else:
         deepsec_harvest = 'published: ' + _ds_path + ' (nothing harvested: the export was empty or unreadable)'
 
