@@ -105,10 +105,17 @@ func TestMirrorPluginContributions_SelfCollisionNamesThePluginOnce(t *testing.T)
 	}
 }
 
-// Same collision, but a workspace copy differs from both contributions and
-// wins. "The later mirror replaces the earlier" is then FALSE — neither
-// plugin's bytes land — and a warning that names the wrong winner is worse
-// than no warning, because it is what the operator will act on.
+// Same collision, but the workspace has ITS OWN copies of both discovery
+// shapes and wins — neither plugin's bytes land — and a warning that names
+// the wrong winner is worse than no warning, because it is what the operator
+// will act on.
+//
+// The workspace override must supply BOTH shapes to defeat the mirror in
+// full, per the "each form is independent" contract mirrorFileSkill states
+// on itself (bundle.go). A workspace with only the flat alias still lets the
+// directory form land, because the two forms are two distinct destinations —
+// which is documented and mirrored across all three tiers (bundle, plugin,
+// library).
 func TestMirrorPluginContributions_CollisionWarningTellsTheTruthWhenTheWorkspaceWins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ITERION_HOME", home)
@@ -117,10 +124,13 @@ func TestMirrorPluginContributions_CollisionWarningTellsTheTruthWhenTheWorkspace
 
 	workDir := t.TempDir()
 	dest := filepath.Join(workDir, ".claude", "skills")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dest, "graphify"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dest, "graphify.md"), []byte("WORKSPACE BODY\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dest, "graphify.md"), []byte("WORKSPACE FLAT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "graphify", "SKILL.md"), []byte("WORKSPACE DIR\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,14 +141,21 @@ func TestMirrorPluginContributions_CollisionWarningTellsTheTruthWhenTheWorkspace
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
 	if len(owned) != 0 {
-		t.Errorf("owned = %v, want none: the workspace copy won", owned)
+		t.Errorf("owned = %v, want none: the workspace copies won", owned)
 	}
-	got, err := os.ReadFile(filepath.Join(dest, "graphify.md"))
+	gotFlat, err := os.ReadFile(filepath.Join(dest, "graphify.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "WORKSPACE BODY\n" {
-		t.Fatalf("workspace copy was overwritten: %q", got)
+	if string(gotFlat) != "WORKSPACE FLAT\n" {
+		t.Fatalf("workspace flat alias was overwritten: %q", gotFlat)
+	}
+	gotDir, err := os.ReadFile(filepath.Join(dest, "graphify", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotDir) != "WORKSPACE DIR\n" {
+		t.Fatalf("workspace directory form was overwritten: %q", gotDir)
 	}
 	logs := buf.String()
 	if !strings.Contains(logs, "is contributed by both") {
@@ -203,19 +220,211 @@ func TestMirrorPluginContributions_DirectoryFormSkillKeepsItsName(t *testing.T) 
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
-	want := filepath.Join(workDir, ".claude", "skills", "adversarial-review-loop.md")
-	if len(owned) != 1 || owned[0] != want {
-		t.Fatalf("owned = %v, want [%s]", owned, want)
+	// The DIRECTORY form is the one claude_code's Skill tool discovers (Agent
+	// Skills spec — bundle.go doc + ADR-079), and the one a backend is
+	// handed. The flat alias must also land so a prompt Reading the skill by
+	// path resolves.
+	wantOwned := filepath.Join(workDir, ".claude", "skills", "adversarial-review-loop", "SKILL.md")
+	if len(owned) != 1 || owned[0] != wantOwned {
+		t.Fatalf("owned = %v, want [%s]", owned, wantOwned)
 	}
-	got, err := os.ReadFile(want)
+	got, err := os.ReadFile(wantOwned)
 	if err != nil {
-		t.Fatalf("the skill did not reach the workspace under its own name: %v", err)
+		t.Fatalf("the skill's directory form did not reach the workspace: %v", err)
 	}
 	if string(got) != body {
-		t.Errorf("mirrored content = %q, want the pack's own body", got)
+		t.Errorf("directory-form content = %q, want the pack's own body", got)
 	}
-	// The name the pack would have collapsed to must NOT be what landed.
+	flat := filepath.Join(workDir, ".claude", "skills", "adversarial-review-loop.md")
+	gotFlat, err := os.ReadFile(flat)
+	if err != nil {
+		t.Fatalf("the flat alias did not reach the workspace under its own name: %v", err)
+	}
+	if string(gotFlat) != body {
+		t.Errorf("flat alias content = %q, want the pack's own body", gotFlat)
+	}
+	// The name the pack would have collapsed to must NOT be what landed at
+	// the skills-dir root — that was the pre-#1372 collapse (the skill is
+	// named after the file, not its pack).
 	if _, err := os.Stat(filepath.Join(workDir, ".claude", "skills", "SKILL.md")); err == nil {
-		t.Error("mirrored as SKILL.md — the skill is named after the file, not its pack")
+		t.Error("mirrored as SKILL.md at the skills-dir root — the skill is named after the file, not its pack")
+	}
+}
+
+// #1373: a plugin skill must land as BOTH the directory form <name>/SKILL.md
+// (the only shape claude_code's Skill tool discovers, per the Agent Skills
+// spec — bundle.go doc + ADR-079) and the flat alias <name>.md that prompt
+// Reads by path resolve. Before this change, the plugin mirror wrote only
+// the flat form, which claude_code did NOT discover — so every plugin-
+// contributed skill was invisible to it, and reachable only by claw or by a
+// prompt that Read the path explicitly. That would have been a silent
+// backend-parity gap, exactly what CLAUDE.md's backend-parity addendum names.
+//
+// Mutation: replace mirrorFileSkill with a bare reconcileSkillFile at the
+// flat destination (the pre-#1373 shape) and the directory-form assertion
+// goes red, along with the owned path.
+func TestMirrorPluginContributions_SkillLandsInBothForms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	installPack(t, home, "the-pack", "skills/graphify.md", "content\n")
+
+	workDir := t.TempDir()
+	owned, err := mirrorPluginContributions(workDir, nil, nil)
+	if err != nil {
+		t.Fatalf("mirrorPluginContributions: %v", err)
+	}
+	dest := filepath.Join(workDir, ".claude", "skills")
+	dirForm := filepath.Join(dest, "graphify", "SKILL.md")
+	flat := filepath.Join(dest, "graphify.md")
+
+	// The directory form MUST be on disk — this is what claude_code
+	// discovers, and iterion's backend-parity contract requires it.
+	if _, err := os.Stat(dirForm); err != nil {
+		t.Fatalf("the directory form is missing at %s (claude_code Skill tool would not discover this skill): %v", dirForm, err)
+	}
+	if _, err := os.Stat(flat); err != nil {
+		t.Fatalf("the flat alias is missing at %s (path-based prompt Reads would fail): %v", flat, err)
+	}
+
+	// owned reports the directory form — the discoverable one a backend is
+	// handed. The flat file is a convenience for explicit-path reads and is
+	// not owned (backends discover the directory form).
+	if len(owned) != 1 || owned[0] != dirForm {
+		t.Fatalf("owned = %v, want [%s]", owned, dirForm)
+	}
+
+	// The marker layout mirrors mirrorBundleSkills: <stem>.SKILL.md.sha256
+	// keys the directory form; <stem>.md.sha256 keys the flat alias.
+	markerDir := filepath.Join(dest, ".iterion-managed")
+	for _, m := range []string{"graphify.SKILL.md.sha256", "graphify.md.sha256"} {
+		if _, err := os.Stat(filepath.Join(markerDir, m)); err != nil {
+			t.Errorf("marker %s is missing (%v) — a next run cannot tell iterion's own file from a workspace edit", m, err)
+		}
+	}
+}
+
+// The cloud-path twin of #1373: a plugin skill arriving on the wire from the
+// publisher (queue.Contributions) must also land in BOTH forms. Before this
+// change, mirrorInjectedPluginFiles wrote only the flat form — so a cloud
+// runner-pod run would have had a plugin skill claude_code did not discover,
+// while a local run got the same skill in both shapes. The two paths were
+// asymmetric on the same defect.
+//
+// Mutation: skip the mirrorFileSkill branch (route through the flat
+// reconcileSkillFile) and both the directory-form file and the owned path go
+// red.
+func TestMirrorInjectedPluginFiles_SkillLandsInBothForms(t *testing.T) {
+	workDir := t.TempDir()
+	owned, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "deploy.md", Content: []byte("playbook\n")},
+	}, nil)
+	if err != nil {
+		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
+	}
+	dest := filepath.Join(workDir, ".claude", "skills")
+	dirForm := filepath.Join(dest, "deploy", "SKILL.md")
+	flat := filepath.Join(dest, "deploy.md")
+	if _, err := os.Stat(dirForm); err != nil {
+		t.Fatalf("cloud path did not write the directory form: %v", err)
+	}
+	if _, err := os.Stat(flat); err != nil {
+		t.Fatalf("cloud path did not write the flat alias: %v", err)
+	}
+	if len(owned) != 1 || owned[0] != dirForm {
+		t.Fatalf("owned = %v, want [%s]", owned, dirForm)
+	}
+}
+
+// Commands and agents keep the FLAT shape. claude_code discovers
+// .claude/commands/<name>.md and .claude/agents/<name>.md directly; there is
+// no directory-form contract for those kinds, and shipping one would be dead
+// files.
+//
+// Mutation: route commands and agents through mirrorFileSkill too and the
+// directory-form Stat below goes red on files that must not exist.
+func TestMirrorInjectedPluginFiles_CommandsAndAgentsAreFlat(t *testing.T) {
+	workDir := t.TempDir()
+	_, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "commands", Name: "deploy.md", Content: []byte("a command")},
+		{Kind: "agents", Name: "scout.md", Content: []byte("an agent")},
+	}, nil)
+	if err != nil {
+		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "commands", "deploy.md")); err != nil {
+		t.Fatalf("command should be flat: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "agents", "scout.md")); err != nil {
+		t.Fatalf("agent should be flat: %v", err)
+	}
+	// The directory form must NOT exist for a non-skill kind — a
+	// commands/deploy/SKILL.md is a discovered SKILL, not a slash command.
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "commands", "deploy", "SKILL.md")); err == nil {
+		t.Error("command was mirrored in the skill directory form")
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "agents", "scout", "SKILL.md")); err == nil {
+		t.Error("agent was mirrored in the skill directory form")
+	}
+}
+
+// The cloud-injected mirror shares the same collision guard as the local
+// path — a same-(kind,name) duplicate in the queue payload is reported once
+// and warned about, so a publisher regression that stops deduping cannot
+// silently substitute two teams' skills on the runner. This is the defence
+// in depth #1374 asked for; the primary line of defence is the publisher
+// dedup (see cloudpublisher tests).
+//
+// Mutation: remove the contribClaimTracker calls in mirrorInjectedPluginFiles
+// and either the duplicate log OR the len(owned)==1 assertion goes red.
+func TestMirrorInjectedPluginFiles_DuplicatePayloadIsLoudAndReportedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	workDir := t.TempDir()
+	owned, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "deploy.md", Content: []byte("A version\n")},
+		{Kind: "skills", Name: "deploy.md", Content: []byte("B version\n")},
+	}, logger)
+	if err != nil {
+		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
+	}
+	dirForm := filepath.Join(workDir, ".claude", "skills", "deploy", "SKILL.md")
+	if len(owned) != 1 || owned[0] != dirForm {
+		t.Fatalf("owned = %v, want the one destination reported once", owned)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "duplicate skills contribution") || !strings.Contains(logs, "deploy.md") {
+		t.Errorf("duplicate not warned about; logs = %q", logs)
+	}
+	// The winner is the LATER entry in the payload — that mirrors the write
+	// order of the publisher and a redelivery replays it the same way.
+	got, _ := os.ReadFile(dirForm)
+	if string(got) != "B version\n" {
+		t.Errorf("dirForm content = %q, want the later entry's", got)
+	}
+}
+
+// The injected mirror's duplicate WARN fires EVEN on byte-identical entries.
+// A duplicate reaching this path is by definition a publisher-dedup
+// regression (see resolveContributionsFor step-0/step-1), so silence would
+// hide exactly the case the WARN was added to catch: identical bytes were
+// what F1 of the round-1 adversarial review found — the publisher missed a
+// dedup and the runtime WARN swallowed the miss because the second write
+// returned skillOutcomeUpToDate.
+//
+// Mutation: reintroduce `outcome != skillOutcomeUpToDate` on the duplicate
+// branch of mirrorInjectedPluginFiles and this test goes red.
+func TestMirrorInjectedPluginFiles_DuplicateIdenticalBytesStillWarn(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	workDir := t.TempDir()
+	if _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "deploy.md", Content: []byte("same body\n")},
+		{Kind: "skills", Name: "deploy.md", Content: []byte("same body\n")},
+	}, logger); err != nil {
+		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "duplicate skills contribution") || !strings.Contains(logs, "deploy.md") {
+		t.Errorf("identical-byte duplicate went unwarned; logs = %q", logs)
 	}
 }

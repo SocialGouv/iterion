@@ -9,6 +9,58 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
+// contribClaimTracker de-dups plugin contributions within a single mirror
+// pass, shared by the LOCAL (mirrorPluginContributions) and CLOUD-INJECTED
+// (mirrorInjectedPluginFiles) paths so their behaviour cannot drift. A copied
+// guard is where two mirrors first learn to disagree — the injected path
+// once carried neither the collision warning nor the `owned` de-dup that the
+// local path did, and #1374 named that exact class.
+//
+// It tracks two things across a single mirror invocation:
+//
+//   - claim(kindDir, name, who): who already wrote to <destDir>/<name> this
+//     pass. `who` is human-readable (a plugin name locally; empty upstream-of-me
+//     in the injected path where identity has been erased on the wire). Returns
+//     (previous claimant, this-is-a-duplicate).
+//
+//   - report(destPath): whether destPath has already been appended to the
+//     owned list. Two files that resolve to one destination must be reported
+//     once, or a backend hands the same path to an agent twice and its dedup
+//     then decides what gets loaded.
+type contribClaimTracker struct {
+	claimed  map[string]string
+	reported map[string]bool
+}
+
+func newContribClaimTracker() *contribClaimTracker {
+	return &contribClaimTracker{
+		claimed:  map[string]string{},
+		reported: map[string]bool{},
+	}
+}
+
+// claim records who wrote (kindDir, name) and returns the previous claimant
+// (empty if none, or if the prior write was unattributed) alongside whether
+// this call is a duplicate. Keyed on kindDir+"/"+name so a skill "deploy.md"
+// and a command "deploy.md" — legitimately distinct destinations — never
+// collide.
+func (t *contribClaimTracker) claim(kindDir, name, who string) (prev string, dup bool) {
+	key := kindDir + "/" + name
+	prev, dup = t.claimed[key]
+	t.claimed[key] = who
+	return prev, dup
+}
+
+// report appends destPath to the owned list only the FIRST time it is
+// mentioned in this pass. Returns true when the caller should append.
+func (t *contribClaimTracker) report(destPath string) bool {
+	if t.reported[destPath] {
+		return false
+	}
+	t.reported[destPath] = true
+	return true
+}
+
 // mirrorPluginContributions mirrors the markdown contributions (skills,
 // commands, agents) of every enabled plugin into the workspace's
 // <workDir>/.claude/<skills|commands|agents>/ directories, applying the same
@@ -31,6 +83,12 @@ import (
 // what it may hand an agent cannot recover that from the workspace, which is a
 // checkout of an untrusted repository. Commands and agents are excluded; they
 // are not skills.
+//
+// Skill files write in the DIRECTORY form <name>/SKILL.md (with a flat alias
+// <name>.md for prompt-driven Reads), matching mirrorBundleSkills — the flat
+// form alone is NOT discovered as a skill by claude_code's Skill tool (only
+// the directory form is, per the Agent Skills spec; claw discovers both). See
+// mirrorFileSkill for the two-form contract.
 func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterlog.Logger) ([]string, error) {
 	if workDir == "" {
 		return nil, nil
@@ -62,26 +120,16 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 		}
 	}()
 
+	// One tracker across all kinds — its key is kindDir+"/"+name, so a
+	// skill and a command sharing a base name (different destinations)
+	// never collide. Sharing it with mirrorInjectedPluginFiles is the
+	// point: whichever way the files arrived, the same guard runs.
+	tracker := newContribClaimTracker()
+
 	for _, kind := range plugin.MirrorKinds {
 		destDir := filepath.Join(workDir, ".claude", kind.Dir)
 		markerDir := filepath.Join(destDir, bundleMirrorMarkerDir)
 		dirsReady := false
-		// Which plugin already claimed each mirrored name in THIS pass, and
-		// which destinations were already reported. Two plugins contributing
-		// one name land on one destination at the same tier, where
-		// reconcileSkillFile's precedence guard does not apply: it overwrites
-		// without a word, and the winner is the order Enabled() returns
-		// (alphabetical by plugin name). The overwrite stays — refusing it
-		// would break a workspace that relies on the incumbent — but it stops
-		// being silent, and the destination is reported once.
-		//
-		// The cloud twin (mirrorInjectedPluginFiles) carries neither yet, and
-		// is NOT covered by cloudpublisher's dedup: replaceContribution runs
-		// only over locally installed plugins, while team-scoped git-hosted
-		// sources are appended unconditionally — so two teams' packs claiming
-		// one name still substitute silently there.
-		claimed := map[string]string{}
-		reported := map[string]bool{}
 
 		for _, p := range enabled {
 			files, ferr := p.MirrorFiles(kind)
@@ -111,9 +159,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				if werr := os.WriteFile(tmpPath, f.Content, 0o644); werr != nil {
 					return nil, werr
 				}
-				destPath := filepath.Join(destDir, f.Name)
-				markerPath := filepath.Join(markerDir, f.Name+".sha256")
-				outcome, rerr := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
+				outcome, destPath, rerr := mirrorPluginContribFile(destDir, markerDir, tmpPath, f.Name, kind, logger)
 				if rerr != nil {
 					return nil, fmt.Errorf("runtime/plugin: mirror %s %q from %q: %w", kind.Name, f.Name, p.Name(), rerr)
 				}
@@ -127,7 +173,8 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				// this line says only what it knows for certain. Silent when
 				// the bytes are identical: nothing was lost, so there is
 				// nothing to rename.
-				if prev, dup := claimed[f.Name]; dup && logger != nil && outcome != skillOutcomeUpToDate {
+				prev, dup := tracker.claim(kind.Dir, f.Name, p.Name())
+				if dup && logger != nil && outcome != skillOutcomeUpToDate {
 					if prev == p.Name() {
 						logger.Warn("runtime/plugin: plugin %q contributes two %ss that mirror to the same name %q — one destination, so one of them is lost; rename one",
 							p.Name(), kind.Name, f.Name)
@@ -136,13 +183,45 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 							kind.Name, f.Name, prev, p.Name(), destPath)
 					}
 				}
-				claimed[f.Name] = p.Name()
-				if kind.Name == "skill" && outcome != skillOutcomeShadowed && !reported[destPath] {
+				if kind.Name == "skill" && outcome != skillOutcomeShadowed && tracker.report(destPath) {
 					owned = append(owned, destPath)
-					reported[destPath] = true
 				}
 			}
 		}
 	}
 	return owned, nil
+}
+
+// mirrorPluginContribFile places one contribution file on disk under the
+// shared collision policy and returns the outcome plus the destination path
+// that names the write (what the caller reports on the owned list, when the
+// kind is a skill).
+//
+// Skills go through mirrorFileSkill so a flat "<stem>.md" source lands as
+// BOTH the directory form <stem>/SKILL.md — the only shape claude_code's
+// Skill tool discovers (Agent Skills spec) — and the flat alias <stem>.md
+// that prompt Reads by path resolve. Commands and agents keep the flat shape,
+// which is what claude_code discovers for THOSE kinds and what their contract
+// has always been. The returned destPath is the directory-form file for a
+// skill (the discoverable one that a backend must be handed) and the flat
+// file for a command or agent.
+func mirrorPluginContribFile(destDir, markerDir, tmpPath, name string, kind plugin.MirrorKind, logger *iterlog.Logger) (skillReconcileOutcome, string, error) {
+	if kind.Name == "skill" {
+		_, destPath, _, err := skillDestDirForm(destDir, markerDir, name)
+		if err != nil {
+			return skillOutcomeShadowed, "", err
+		}
+		outcome, err := mirrorFileSkill(destDir, markerDir, tmpPath, name, skillTierPlugin, logger)
+		if err != nil {
+			return outcome, "", err
+		}
+		return outcome, destPath, nil
+	}
+	destPath := filepath.Join(destDir, name)
+	markerPath := filepath.Join(markerDir, name+".sha256")
+	outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
+	if err != nil {
+		return outcome, destPath, err
+	}
+	return outcome, destPath, nil
 }

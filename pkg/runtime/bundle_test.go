@@ -403,11 +403,23 @@ func TestMirrorPluginContributionsReportsOwnedSkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(owned) != 1 || filepath.Base(owned[0]) != "graphify.md" {
-		t.Fatalf("owned = %v, want just the skill — commands and agents are not skills", owned)
+	// The owned path is the DIRECTORY form <stem>/SKILL.md — the only shape
+	// claude_code's Skill tool discovers (bundle.go doc + ADR-079). A backend
+	// being handed the flat alias here would be handing claude_code a path it
+	// does not recognise as a skill.
+	wantOwned := filepath.Join(workDir, ".claude", "skills", "graphify", "SKILL.md")
+	if len(owned) != 1 || owned[0] != wantOwned {
+		t.Fatalf("owned = %v, want [%s] — commands and agents are not skills, and the skill must be reported in the directory form", owned, wantOwned)
 	}
 	if _, err := os.Stat(owned[0]); err != nil {
 		t.Errorf("reported %q but it is not on disk: %v", owned[0], err)
+	}
+	// The flat alias must also land — prompt Reads by path resolve against
+	// <stem>.md ("READ .claude/skills/graphify.md FIRST", the pattern most
+	// catalog bots use). It is NOT owned (backends discover the directory
+	// form; the flat file is a convenience for explicit-path reads).
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "skills", "graphify.md")); err != nil {
+		t.Errorf("the flat alias .claude/skills/graphify.md is missing — prompt Reads by path would fail: %v", err)
 	}
 }
 
