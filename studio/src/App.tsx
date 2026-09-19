@@ -40,6 +40,7 @@ const BotRolesPage = lazy(() => import("@/views/admin/settings/BotRolesPage"));
 const SandboxPage = lazy(() => import("@/views/admin/settings/SandboxPage"));
 const BotVarsPage = lazy(() => import("@/views/admin/settings/BotVarsPage"));
 const PlatformCredentialsSettingsPage = lazy(() => import("@/views/admin/settings/PlatformCredentialsPage"));
+const CredentialSpendPage = lazy(() => import("@/views/admin/spend/CredentialSpendPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -640,6 +641,7 @@ function AuthedApp() {
             <Route path="/admin/bots" component={PlatformBotsPage} />
           <Route path="/admin/audit" component={AuditAdminPage} />
           <Route path="/admin/dlq" component={DLQAdminPage} />
+          <Route path="/admin/spend" component={CredentialSpendPage} />
           {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">
