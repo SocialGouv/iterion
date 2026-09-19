@@ -146,6 +146,155 @@ func TestEngineRun_HostDevbox_RepoLockRelockedByInstallIsKept(t *testing.T) {
 	}
 }
 
+// TestEngineRun_HostDevbox_RepoLockLeftUnparseableIsRestored: an install
+// that crashed or was cut short mid-write leaves no resolution anything can
+// reuse — the pinned content comes back, and the note says the file was
+// unparseable, not that it drifted.
+func TestEngineRun_HostDevbox_RepoLockLeftUnparseableIsRestored(t *testing.T) {
+	const pinned = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_version":"0.0.4"}}}`
+	const truncated = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_vers`
+	stubHostDevboxInstall(t, func(projectDir string) {
+		if err := os.WriteFile(filepath.Join(projectDir, devboxLockName), []byte(truncated), 0o644); err != nil {
+			t.Fatalf("truncate lock: %v", err)
+		}
+	})
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	lock := filepath.Join(workDir, devboxLockName)
+	if err := os.WriteFile(lock, []byte(pinned), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-unparseable")
+
+	got, err := os.ReadFile(lock)
+	if err != nil || string(got) != pinned {
+		t.Fatalf("devbox.lock after the run = %q (err=%v), want the repository's pinned content back", got, err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "unparseable") || !strings.Contains(kept[0], "restored") {
+		t.Fatalf("event lock_kept = %v, want one note saying the lock was left unparseable and restored", kept)
+	}
+	if errs := stringsFromAny(data["errors"]); len(errs) != 0 {
+		t.Fatalf("event errors = %v, want none: the restore is not a failure", errs)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockUnparseablePinRelockedIsKept: when the
+// repository's own lock does not parse and the install wrote a valid one,
+// that is a real re-lock — kept, and the note names the pin's state rather
+// than a devbox.json it fell behind.
+func TestEngineRun_HostDevbox_RepoLockUnparseablePinRelockedIsKept(t *testing.T) {
+	const broken = `{"lockfile_version":"1","packages":{`
+	const relocked = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_version":"0.0.4","resolved":"github:NixOS/nixpkgs/abc#go"}}}`
+	stubHostDevboxInstall(t, func(projectDir string) {
+		if err := os.WriteFile(filepath.Join(projectDir, devboxLockName), []byte(relocked), 0o644); err != nil {
+			t.Fatalf("relock: %v", err)
+		}
+	})
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	lock := filepath.Join(workDir, devboxLockName)
+	if err := os.WriteFile(lock, []byte(broken), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-broken-pin")
+
+	got, err := os.ReadFile(lock)
+	if err != nil || string(got) != relocked {
+		t.Fatalf("devbox.lock after the run = %q (err=%v), want the install's valid lock kept", got, err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "did not parse") || !strings.Contains(kept[0], "kept") {
+		t.Fatalf("event lock_kept = %v, want one note saying the repository's lock did not parse and the install's was kept", kept)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockLeftNullIsRestored: `null` is valid
+// JSON and no devbox.lock at all — the parse check is "a JSON object", not
+// "valid JSON", so a scalar left in place of the lock brings the pin back
+// like a truncated write does.
+func TestEngineRun_HostDevbox_RepoLockLeftNullIsRestored(t *testing.T) {
+	const pinned = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_version":"0.0.4"}}}`
+	stubHostDevboxInstall(t, func(projectDir string) {
+		if err := os.WriteFile(filepath.Join(projectDir, devboxLockName), []byte("null\n"), 0o644); err != nil {
+			t.Fatalf("null lock: %v", err)
+		}
+	})
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	lock := filepath.Join(workDir, devboxLockName)
+	if err := os.WriteFile(lock, []byte(pinned), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-null")
+
+	got, err := os.ReadFile(lock)
+	if err != nil || string(got) != pinned {
+		t.Fatalf("devbox.lock after the run = %q (err=%v), want the repository's pinned content back", got, err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "unparseable") || !strings.Contains(kept[0], "restored") {
+		t.Fatalf("event lock_kept = %v, want one note saying the lock was left unparseable and restored", kept)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockCreatedUnparseableIsRemoved: a lock the
+// install created AND left unparseable is removed even where the repository
+// ignores it — devbox refuses to run with such a file in place, so keeping
+// it would break every later devbox invocation instead of sparing one.
+func TestEngineRun_HostDevbox_RepoLockCreatedUnparseableIsRemoved(t *testing.T) {
+	stubHostDevboxInstall(t, func(projectDir string) {
+		if err := os.WriteFile(filepath.Join(projectDir, devboxLockName), []byte(`{"lockfile_version":"1","pack`), 0o644); err != nil {
+			t.Fatalf("create truncated lock: %v", err)
+		}
+	})
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	initGitRepo(t, workDir, devboxLockName)
+	lock := filepath.Join(workDir, devboxLockName)
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-created-unparseable")
+
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatalf("devbox.lock exists after the run (stat err=%v), want it removed: devbox could not have read it", err)
+	}
+	kept := stringsFromAny(data["lock_kept"])
+	if len(kept) != 1 || !strings.Contains(kept[0], "unparseable") || !strings.Contains(kept[0], "removed") {
+		t.Fatalf("event lock_kept = %v, want one note saying the created lock was unparseable and removed", kept)
+	}
+}
+
+// TestEngineRun_HostDevbox_RepoLockRestoreFailureIsReported: when the pin
+// cannot be written back — here the install left a directory where the lock
+// was — the failure lands in the event's errors, worded for what the worktree
+// holds, and nothing claims a restore.
+func TestEngineRun_HostDevbox_RepoLockRestoreFailureIsReported(t *testing.T) {
+	const pinned = `{"lockfile_version":"1","packages":{"go@1.26":{"plugin_version":"0.0.4"}}}`
+	stubHostDevboxInstall(t, func(projectDir string) {
+		lock := filepath.Join(projectDir, devboxLockName)
+		if err := os.Remove(lock); err != nil {
+			t.Fatalf("remove lock: %v", err)
+		}
+		if err := os.Mkdir(lock, 0o755); err != nil {
+			t.Fatalf("directory in the lock's place: %v", err)
+		}
+	})
+	workDir := writeDevboxConfig(t, t.TempDir(), "go@1.26")
+	lock := filepath.Join(workDir, devboxLockName)
+	if err := os.WriteFile(lock, []byte(pinned), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	data := runHostDevboxEngine(t, workDir, "run-devbox-lock-restore-failed")
+
+	if kept := stringsFromAny(data["lock_kept"]); len(kept) != 0 {
+		t.Fatalf("event lock_kept = %v, want none: nothing was restored", kept)
+	}
+	errs := stringsFromAny(data["errors"])
+	if len(errs) != 1 || !strings.Contains(errs[0], "keep the repo "+devboxLockName) || !strings.Contains(errs[0], "whatever the failed write left there") {
+		t.Fatalf("event errors = %v, want one entry saying the lock could not be kept and what the worktree holds", errs)
+	}
+}
+
 // TestEngineRun_HostDevbox_RepoLockCreatedByInstallIsRemoved: a repository
 // that tracks no lock — and does not ignore one — must not gain an untracked
 // one from the run's setup.

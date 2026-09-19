@@ -306,7 +306,7 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 		}
 		if keepLock {
 			if note, err := keepRepoDevboxLock(pr.dir, lockBefore, hadLock); err != nil {
-				errs = append(errs, fmt.Sprintf("keep the repo %s: %v — the worktree carries devbox's rewrite of it", devboxLockName, err))
+				errs = append(errs, fmt.Sprintf("keep the repo %s: %v — the worktree carries whatever the failed write left there", devboxLockName, err))
 				if e.logger != nil {
 					e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
 				}
@@ -371,8 +371,11 @@ func stageHostDevboxConfig(srcDir, dstDir string) error {
 // git would show it — an untracked file in a repository that does not
 // ignore it; an ignored lock, or one outside any repository, costs the gates
 // nothing and spares every later devbox invocation a resolution. A lock the
-// install left untouched yields no note and no write; one it removed comes
-// back. The note says what was done.
+// install left untouched yields no note and no write; one it removed, or
+// left unparseable (an install cut short mid-write is no resolution anything
+// can reuse), comes back; one it created AND left unparseable is removed
+// wherever it is — devbox would refuse to run with it. The note says what
+// was done.
 func keepRepoDevboxLock(dir string, before []byte, hadLock bool) (string, error) {
 	path := filepath.Join(dir, devboxLockName)
 	after, err := os.ReadFile(path)
@@ -385,9 +388,21 @@ func keepRepoDevboxLock(dir string, before []byte, hadLock bool) (string, error)
 			return "", werr
 		}
 		return fmt.Sprintf("devbox install removed %s; restored to the repository's pinned content so the worktree stays what the run found it", path), nil
+	case hadLock && !lockParses(after):
+		// Left unparseable — an install that crashed or was cut short
+		// mid-write: no resolution anything can reuse. The pinned content
+		// comes back; the install's own failure is reported on its own.
+		if werr := os.WriteFile(path, before, 0o644); werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("devbox install left %s unparseable (%d bytes); restored to the repository's pinned content — the install itself is reported on its own", path, len(after)), nil
 	case hadLock && !lockDiffersOnlyInPluginMetadata(before, after):
-		// A real re-lock: kept, said.
-		return fmt.Sprintf("devbox install changed %s beyond plugin metadata (the repository's lock was behind its devbox.json); kept — the worktree carries the resolution the run's PATH was built from", path), nil
+		// A real re-lock: kept, said — and said why the pin lost.
+		reason := "the repository's lock was behind its devbox.json"
+		if !lockParses(before) {
+			reason = "the repository's lock did not parse"
+		}
+		return fmt.Sprintf("devbox install changed %s beyond plugin metadata (%s); kept — the worktree carries the resolution the run's PATH was built from", path, reason), nil
 	case hadLock:
 		// Rewritten metadata: restore the pinned content.
 		if werr := os.WriteFile(path, before, 0o644); werr != nil {
@@ -395,7 +410,18 @@ func keepRepoDevboxLock(dir string, before []byte, hadLock bool) (string, error)
 		}
 		return fmt.Sprintf("devbox install rewrote %s (%d → %d bytes: plugin metadata drift on this host); restored to the repository's pinned content so the worktree stays what the run found it", path, len(before), len(after)), nil
 	case err == nil:
-		// Created in a repository that tracks none: removed only where git would show it.
+		// Created in a repository that tracks none. One the install left
+		// unparseable goes first: devbox refuses to run with it in place
+		// (measured: `unexpected end of JSON input`), so keeping it would
+		// break every later devbox invocation in the worktree rather than
+		// spare one a resolution.
+		if !lockParses(after) {
+			if rerr := os.Remove(path); rerr != nil {
+				return "", rerr
+			}
+			return fmt.Sprintf("devbox install created %s and left it unparseable; removed — no later devbox run could have read it", path), nil
+		}
+		// Removed only where git would show it.
 		visible, known := gitWouldShow(dir, devboxLockName)
 		if !known {
 			return fmt.Sprintf("devbox install created %s; kept — no git repository reads the worktree, so no gate sees it and a later devbox run reuses it", path), nil
@@ -410,6 +436,14 @@ func keepRepoDevboxLock(dir string, before []byte, hadLock bool) (string, error)
 	default:
 		return "", nil
 	}
+}
+
+// lockParses reports whether b is a devbox.lock document devbox can read
+// again: a JSON object. A write cut short, an empty file or a bare scalar
+// is not one — `json.Valid` alone would accept `null` or `[]`.
+func lockParses(b []byte) bool {
+	var doc map[string]any
+	return json.Unmarshal(b, &doc) == nil && doc != nil
 }
 
 // lockDiffersOnlyInPluginMetadata reports whether two devbox.lock documents

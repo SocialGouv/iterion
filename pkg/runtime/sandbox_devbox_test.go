@@ -447,8 +447,9 @@ func TestDevboxInstallSnippet_BestEffortAndPOSIX(t *testing.T) {
 	// devbox-absent branch, plus the seven devbox.lock notices of the
 	// in-place repo install (snapshot failed; removed → restored;
 	// rewritten → restored; changed beyond metadata → kept; comparison
-	// failed → kept; created → removed; created → kept).
-	if n := strings.Count(snippet, ">&2"); n != 10 {
+	// failed → kept; created → removed; created → kept) and the three sites
+	// where a restore or removal could not be carried out say so.
+	if n := strings.Count(snippet, ">&2"); n != 13 {
 		t.Errorf("every failure path must report to stderr; got %d redirects in:\n%s", n, snippet)
 	}
 	if !strings.Contains(snippet, "command -v devbox") {

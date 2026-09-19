@@ -607,18 +607,23 @@ host target when the repo's `devbox.lock` needed a decision after the
 install — devbox rewrites its plugin metadata on a host whose registry is
 newer than the pin, and the run's gates would read the tracked file as the
 pass's own change, #1459: a plugin-metadata drift is put back, and so is a
-lock the install removed; a lock the install changed beyond that — the
-repository's lock was behind its `devbox.json` — is kept and said; a lock
+lock the install removed or left unparseable (an install cut short
+mid-write); a lock the install changed beyond that — the repository's lock
+was behind its `devbox.json`, or did not parse — is kept and said; a lock
 the install created is removed only where git would show it, kept and said
-otherwise. The sandbox target's event is emitted when the spec is built,
-before the container's post-create prologue runs: the same decisions are
-taken there on every lock devbox writes (the prologue compares text, and can
-only diverge from the host on a document no devbox version produces) — plus
-one of its own: a comparison the image's `tr`, `sed` or `cmp` could not
-complete leaves the lock as found after the install, said — and, like an
-install failure on that target, are reported on the container's stderr, not
-on the event) so you can audit
-what was picked up — and see when a declared toolchain could **not**
+otherwise — unless the install left it unparseable, which is removed
+wherever it is, devbox refusing to run with such a file in place. The
+sandbox target's event is emitted when the spec is built, before the
+container's post-create prologue runs: the same decisions are taken there
+on every lock devbox writes (the prologue compares text, so it cannot tell
+an unparseable lock from a re-lock — that one it keeps, said as changed
+beyond metadata — and can only diverge from the host on a document no
+devbox version produces) — plus one of its own: a comparison the image's
+`tr`, `sed` or `cmp` could not complete leaves the lock as found after the
+install, said; a restore or removal that could not be carried out is said
+as such, never announced as done — and, like an install failure on that
+target, are reported on the container's stderr, not on the event) so you
+can audit what was picked up — and see when a declared toolchain could **not**
 be provisioned. A source that EXISTS and was deliberately declined is
 named on the same event, with its own reason:
 `skipped_sources` / `skipped_configs` / `skipped_reasons` (parallel
