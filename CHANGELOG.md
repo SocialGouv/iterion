@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.173.0](https://github.com/SocialGouv/iterion/compare/v3.172.3...v3.173.0) (2026-09-19)
+
+### Features
+
+* **webhooks:** l'App retire la demande de review après publication, pour rendre le geste répétable ([#1382](https://github.com/SocialGouv/iterion/issues/1382)) ([ed8cbbe](https://github.com/SocialGouv/iterion/commit/ed8cbbec4c7d7fef61dba1b8cff6e82cbd55a332))
+
+    <details><summary>why</summary>
+
+    GitHub lifts a review request only when the REQUESTED account submits the review. On a github_app connection the review is posted by <app_slug>[bot], and an App cannot be a reviewer at all — so the request armed through webhooks.Config.ReviewRequestLogins survives the review answering it: the "review requested" pastille stays pending forever and re-adding the reviewer is not a repeatable gesture.
+
+    </details>
+
 ## [3.172.3](https://github.com/SocialGouv/iterion/compare/v3.172.2...v3.172.3) (2026-09-19)
 
 ### Bug Fixes
