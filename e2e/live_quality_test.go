@@ -55,21 +55,27 @@ const maxWorkProductChars = 20000
 // design: panel unavailability (no judge credential) is logged, not fatal.
 func assessQuality(t *testing.T, res liveResult, qi qualityInput) {
 	t.Helper()
+
+	ctx := context.Background()
+
+	// Price side: aggregate cost/tokens/duration/iterations from the run.
+	// Computed BEFORE the panel-off check so the last-green ledger (#1422)
+	// records the run's cost even when the judge panel is disabled — the
+	// ledger row is written by runBotLive's t.Cleanup, not by the panel.
+	rm, err := benchmark.CollectMetrics(ctx, res.store, res.runID, qi.name, "")
+	if err != nil {
+		t.Logf("[quality] CollectMetrics failed (%v) — using zero metrics", err)
+		rm = &benchmark.RunMetrics{}
+	}
+	if res.ledger != nil {
+		res.ledger.SetCost(rm.TotalCostUSD)
+	}
 	if strings.EqualFold(os.Getenv("ITERION_LIVE_QUALITY"), "off") {
 		t.Logf("[quality] ITERION_LIVE_QUALITY=off — skipping panel for %s", qi.name)
 		return
 	}
 	if qi.primaryFamily == "" {
 		qi.primaryFamily = "anthropic"
-	}
-
-	ctx := context.Background()
-
-	// Price side: aggregate cost/tokens/duration/iterations from the run.
-	rm, err := benchmark.CollectMetrics(ctx, res.store, res.runID, qi.name, "")
-	if err != nil {
-		t.Logf("[quality] CollectMetrics failed (%v) — using zero metrics", err)
-		rm = &benchmark.RunMetrics{}
 	}
 	metrics := quality.Metrics{
 		CostUSD:    rm.TotalCostUSD,

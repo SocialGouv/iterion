@@ -1,0 +1,305 @@
+{
+  "schema": 1,
+  "rows": [
+    {
+      "target": "test:live",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:adr-cartograph",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:adr-rechallenge",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:bmady",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:branch-improve-loop",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:dep-update-guard",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:devbox-setup",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:docs-refresh",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:evolve",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:feature-gap-fill",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:revi-converse",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:review-pr",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:rgaa-audit",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:sec-audit-deps",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:sec-audit-source",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:test-coverage",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bot:whats-next",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bots",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bots-real",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:bots:new",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:claw",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:claw-builtin-tools",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:claw-long-context",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:claw-mcp",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:claw-read-image",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:claw-reasoning",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:compile",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:coverage",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:backend-autodetect",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:board-caps",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:budget",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:budget-resume",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:cursors",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:fork",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:permission",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:permission-ask",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:router-llm",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:rtk",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:sandbox-net",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:schedule",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:skills",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:supervisor",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:ultracode",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:verified-action",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:worktree",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feats:all",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feature-dev",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feature-dev-real",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:full",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:kanban",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:quality:unit",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:review",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:secured-renovacy",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:secured-renovacy-protestware",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:secured-renovacy-real",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:session-inherit",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:status",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:vision-attachments",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:whole-improve-loop",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:whole-improve-loop-real",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    }
+  ]
+}

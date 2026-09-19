@@ -42,6 +42,30 @@ Credentials: `claude` CLI (Claude Code OAuth) and/or `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`. Docker is required for sandboxed bots (sec-audit-*,
 secured-renovacy). Each test `t.Skip`s when its prerequisites are missing.
 
+## The last-green ledger — "do they still pass?" without spending
+
+Every live run writes one row to the committed ledger
+(`e2e/testdata/live/ledger.json`) — **pass or fail, panel or no panel** —
+keyed by the `task test:live:*` target the operator invoked. The writer is
+the harness itself (`pkg/liveledger.Track`, hooked from `runBotLive`'s
+entry and from the tests that bypass it), registered at `t.Cleanup`, so a
+failure is recorded as a failure and the run's cost travels with the row.
+The judge panel's snapshot store is a different, quality-only record and
+does not replace the ledger.
+
+```bash
+# free: no credential, no network — prints every test:live:* target
+# with its last verdict (or an explicit `never`) sorted by staleness
+devbox run -- task test:live:status
+```
+
+`never` is written, never elided: a blank row reads as "fine" to every
+future reader, which is the one thing it never means. A target the
+Taskfile gains later is seeded `never` on the next `test:live:status`
+run; the class guard (`TestEveryLiveTestRecordsToTheLedger` in
+`pkg/liveledger`) fails a new live test that reaches no recording hook.
+See #1422.
+
 ## Quality layer — how it works
 
 - **Evidence** = the *real artifact*, never the bot's self-report: the git

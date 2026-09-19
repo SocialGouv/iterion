@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -156,6 +157,7 @@ func Multiply(a, b int) int {
 //
 // Expected duration: 30-90 min, $10-30.
 func TestLive_VibeReviewAlternating_Real(t *testing.T) {
+	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
