@@ -1,7 +1,7 @@
 {
   "name": "iterion-dsl",
   "version": "0.1.0",
-  "description": "Write correct .bot workflow files for the Iterion orchestration engine, and run the adversarial review loop that ships them",
+  "description": "Write correct .bot workflow files for iterion, which builds, runs and orchestrates agentic AI workflows, and run the adversarial review loop that ships them",
   "author": "SocialGouv",
   "license": "MIT",
   "repository": "https://github.com/SocialGouv/iterion",

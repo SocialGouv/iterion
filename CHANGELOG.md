@@ -3,6 +3,64 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.170.0](https://github.com/SocialGouv/iterion/compare/v3.169.0...v3.170.0) (2026-09-19)
+
+### Features
+
+* **bots:** docs-refresh and adr-cartograph read as dsl profile 2, and the ADR survey gets the inventory its prompt reads ([#1344](https://github.com/SocialGouv/iterion/issues/1344) wave 6) ([#1462](https://github.com/SocialGouv/iterion/issues/1462)) ([34bb532](https://github.com/SocialGouv/iterion/commit/34bb53299ce383be357a7840b56a89d551d828f3)), references [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1455](https://github.com/SocialGouv/iterion/issues/1455) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1457](https://github.com/SocialGouv/iterion/issues/1457) [#1459](https://github.com/SocialGouv/iterion/issues/1459)
+
+    <details><summary>why</summary>
+
+    The last two catalogue bundles on profile 1. `iterion dsl migrate --to 2 --floor 3.141.0` wrote the `dsl: 2` header and nothing else (no quoted literal holds a backslash in either file); the paragraph breaks the authors wrote inside 10 prompts — 72 in all: docs-refresh 33 across 4 prompts, adr-cartograph 39 across 6 — now reach the models as blank lines instead of being folded away by the profile-1 lexer. Both manifests carry the `requires: iterion: ">= 3.141.0"` floor and a changelog line…
+
+    </details>
+
+## [3.169.0](https://github.com/SocialGouv/iterion/compare/v3.168.0...v3.169.0) (2026-09-19)
+
+### Features
+
+* **studio:** admin API client layer for platform settings, credential spend & usage-readings ([#1441](https://github.com/SocialGouv/iterion/issues/1441)) ([#1454](https://github.com/SocialGouv/iterion/issues/1454)) ([fc80e91](https://github.com/SocialGouv/iterion/commit/fc80e91b951aec85f134d5956f3f2fb4233faa47))
+
+    <details><summary>why</summary>
+
+    The cloud super-admin console exposes six pages, but several requireSuperAdmin endpoints exist and are tested with no client to reach them. This adds the API/client layer the remaining admin screens (T2–T5) depend on, schema-first so the wrappers carry the generated OpenAPI types rather than hand-rolled shapes.
+
+    </details>
+
+## [3.168.0](https://github.com/SocialGouv/iterion/compare/v3.167.0...v3.168.0) (2026-09-19)
+
+### Features
+
+* **dsl:** the last loose workflows read as profile 2, and the routing fields resolve {{vars.…}} ([#1344](https://github.com/SocialGouv/iterion/issues/1344) tail) ([#1451](https://github.com/SocialGouv/iterion/issues/1451)) ([07d7837](https://github.com/SocialGouv/iterion/commit/07d7837ebd0fb1b2d85931b9741b03ae0ab969b3)), references [#1206](https://github.com/SocialGouv/iterion/issues/1206) [#1367](https://github.com/SocialGouv/iterion/issues/1367) [#1450](https://github.com/SocialGouv/iterion/issues/1450) [#1450](https://github.com/SocialGouv/iterion/issues/1450)
+
+    <details><summary>why</summary>
+
+    A census of every tracked .bot after wave 5 found two shipped workflows the waves never listed: pkg/cli/templates/dispatch_bots_default.bot, the `default` assignee `iterion dispatch` embeds in the binary (copied into templates/dispatch_bots/default/main.bot at build), and bots/smoke/board_smoke.bot, the hand-run board smoke; the local round then named the two runnable scripts under scripts/adhoc/. `iterion dsl migrate --to 2` on all four: the header and nothing else. Seven prompts keep the…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime:** the simulation sweep reads the repo's source, not the operator's run store ([4e8d925](https://github.com/SocialGouv/iterion/commit/4e8d925ed66c47f135ddb44026f4980387b4668e))
+
+    <details><summary>why</summary>
+
+    TestNoProductionPackagePassesWithSimulation walked the tree skipping four dot-directories by name. `.iterion/` was not among them — and `.iterion/worktrees/<run-id>/` holds whole COPIES of the source tree, so the sweep found pkg/dryrun/run.go and pkg/runtime/simulation.go once per kept run and reported them as production launchers. Measured on a working checkout: 12 offences, every one of them a copy of a file the sweep deliberately excludes at its real path.
+
+    </details>
+
+## [3.167.0](https://github.com/SocialGouv/iterion/compare/v3.166.0...v3.167.0) (2026-09-18)
+
+### Features
+
+* **brand:** the brand gate blocks, the short form is guarded, and a shared link gets its card ([#1440](https://github.com/SocialGouv/iterion/issues/1440)) ([aadec80](https://github.com/SocialGouv/iterion/commit/aadec80a53bca16acd275b7cd0b2677f437d0292)), references [#1437](https://github.com/SocialGouv/iterion/issues/1437) [#1437](https://github.com/SocialGouv/iterion/issues/1437)
+
+    <details><summary>why</summary>
+
+    Four decisions, each arbitrated rather than assumed.
+
+    </details>
+
 ## [3.166.0](https://github.com/SocialGouv/iterion/compare/v3.165.0...v3.166.0) (2026-09-18)
 
 ### Features

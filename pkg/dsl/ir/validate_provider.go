@@ -60,8 +60,10 @@ func (c *compiler) validateProviders(w *Workflow) {
 		}
 		// Env-ref forms resolve at run time; we can't validate the
 		// literal text, and splitting a ${VAR:-a,b} default on commas
-		// would misfire.
-		if strings.Contains(provider, "${") {
+		// would misfire. A `{{vars.…}}` reference resolves at dispatch
+		// too (validateRoutingFieldRefs holds it to vars.*): its text is
+		// not a hint, and saying it "will be ignored" would be false.
+		if strings.Contains(provider, "${") || strings.Contains(provider, "{{") {
 			return
 		}
 		tokens := splitProviderChain(provider)

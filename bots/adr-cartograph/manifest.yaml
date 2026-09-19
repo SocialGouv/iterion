@@ -1,7 +1,17 @@
 name: adr-cartograph
 display_name: Adry
 icon: 🗺️
-version: 2.0.1
+version: 2.0.2
+## 2.0.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
+## breaks the authors wrote inside six prompts (survey_code_system 7,
+## survey_code_user 5, campaign_system 14, campaign_user 9, verify_system 2,
+## verify_user 2 — 39 in all) now reach the models as blank lines instead of
+## being folded away by the profile-1 lexer. And the survey gets the inventory
+## it was written to read: `scan_adrs -> survey_code` carried no `with`, so
+## `{{input.adrs}}` and `{{input.recently_changed_code_files}}` in
+## survey_code_user rendered EMPTY on every run — the surveyor never saw the
+## existing ADRs it is told not to re-author. The edge now maps both fields
+## from scan_adrs's output (found by `validate --exec --strict`).
 ## 2.0.1 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
 ## the scope check does the same, and the commit instruction excludes it (#1364).
@@ -66,3 +76,9 @@ invocations:
 launch:
   primary: [scope_notes]
   hidden: [bundle_self_path]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"
