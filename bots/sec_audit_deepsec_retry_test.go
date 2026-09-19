@@ -10,21 +10,33 @@ import (
 )
 
 // The deep scanner drives its own LLM calls, outside iterion's network retry,
-// so the node retries the pass once itself. That retry used to open a FRESH
-// deepsec run: every batch the first attempt had already investigated was
-// paid for again, under the same bound that had just expired — and when the
-// first attempt died on a provider quota, the retry spent the remaining
-// wall-clock proving the wall was still there.
+// so the node retries the pass once itself. That retry USED to try to resume
+// the failed run with --run-id, but the id deepsec prints is written AFTER
+// completeRun flips the meta to phase=done (packages/processor/src/index.ts:
+// 833 completeRun, then commands/process.ts:188 prints, then :222 exits 1),
+// so a resume finds phase=done and short-circuits with errorBatchCount=0
+// -- no batch touched. #1323 removed the resume branch entirely; the retry
+// is now always a fresh invocation of `deepsec process`, which reprocesses
+// records in status pending|error only.
 //
-// deepsec answers both: `--run-id` resumes a run, and it names a quota stop
-// itself ("Stopped: <source> exhausted"). These tests run the REAL retry
-// block from the shipped .bot against a stub CLI that records its argv,
-// because the property is which invocations the node actually makes.
+// deepsec still names a quota stop itself ("Stopped: <source> exhausted"),
+// so the quota-wall short-circuit stays: retrying one buys a second full
+// pass that cannot succeed.
+//
+// These tests run the REAL retry block from the shipped .bot against a stub
+// CLI that records its argv (WHICH invocations the node makes) AND its
+// effect (WHAT the second invocation actually does when it runs). The
+// property is not just "the retry runs" but "the retry re-investigates
+// what was left behind", which the argv alone never asserted.
 
 // deepsecRetryBlock returns the shipped text from the _dsproc definition
 // through the end of the retry decision, verbatim. Reading it out of the .bot
 // rather than restating it here is the point: a test that carries its own
 // copy of the logic certifies the copy.
+//
+// #1323 removed the --run-id resume branch, so _dsproc is now called with no
+// argument on both first attempt and retry. The end marker matches the fresh
+// invocation shape.
 func deepsecRetryBlock(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile("sec-audit-source/main.bot")
@@ -36,10 +48,10 @@ func deepsecRetryBlock(t *testing.T) string {
 		if start < 0 {
 			continue
 		}
-		const endMarker = "_dsproc \"$_RID\" >>\"$LOG_DIR/process.log\" 2>&1 || ERRS=\"$ERRS process\""
+		const endMarker = "_dsproc >>\"$LOG_DIR/process.log\" 2>&1 || ERRS=\"$ERRS process\""
 		end := strings.Index(blk, endMarker)
 		if end < 0 {
-			t.Fatal("the deepsec command body defines _dsproc but never calls it with a resumed run id: the retry would restart the pass from scratch")
+			t.Fatal("the deepsec command body defines _dsproc but the fresh-retry invocation `_dsproc >>...` is missing: either #1323's resume-branch removal regressed to a --run-id call, or the retry has been reshaped in a way this helper no longer recognises")
 		}
 		rest := blk[end+len(endMarker):]
 		closing := strings.Index(rest, "fi")
@@ -166,10 +178,15 @@ func TestDeepsecRetry_CleanPassRunsOnce(t *testing.T) {
 	}
 }
 
-// The case the change exists for: one batch errored, deepsec exited 1, and the
-// run id it printed BEFORE exiting is handed back so the retry resumes instead
-// of re-investigating every finished batch.
-func TestDeepsecRetry_ResumesTheRunItAlreadyStarted(t *testing.T) {
+// The case the change exists for: one batch errored, deepsec exited 1. The
+// retry MUST invoke `deepsec process` a second time (fresh, no --run-id),
+// which reprocesses records in status pending|error only. Argv shape is
+// what the old test asserted; here we also assert the EFFECT: the second
+// invocation runs, its argv is fresh (no --run-id), and it is a distinct
+// invocation from the first. #1323 dropped the --run-id resume branch (a
+// dead capability: a --run-id resume of a phase=done run short-circuits
+// with errorBatchCount=0 without investigating one batch).
+func TestDeepsecRetry_ReprocessesInAFreshInvocation(t *testing.T) {
 	stdout := "\\033[32mProcessing complete.\\033[0m Run: \\033[1mrun_abc123\\033[0m\\n" +
 		"  Analyses: 120\\n  Findings: 87\\n" +
 		"\\033[31m3 batch(es) errored — exiting 1 (agent failure, not a clean review).\\033[0m\\n"
@@ -177,8 +194,14 @@ func TestDeepsecRetry_ResumesTheRunItAlreadyStarted(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("a transient failure must be retried exactly once, got %d invocation(s): %v", len(calls), calls)
 	}
-	if !strings.Contains(calls[1], "--run-id run_abc123") {
-		t.Fatalf("the retry must RESUME run_abc123, or every finished batch is investigated and paid for twice; got: %s", calls[1])
+	if strings.Contains(calls[1], "--run-id") {
+		t.Fatalf("the retry must be a FRESH invocation (deepsec process reprocesses pending|error records itself); a --run-id resume of the failed run would short-circuit at phase=done with 0 batches touched (packages/processor/src/index.ts:291). Got: %s", calls[1])
+	}
+	// The two invocations must have the SAME shape (--concurrency N,
+	// PROC_ARGS, AGENT_ARGS) minus the absent --run-id -- the retry is a
+	// straight repeat, not a different call.
+	if calls[0] != calls[1] {
+		t.Errorf("the two invocations diverge: %q vs %q -- the retry is meant to repeat the same fresh call", calls[0], calls[1])
 	}
 }
 
@@ -197,14 +220,17 @@ func TestDeepsecRetry_DoesNotRetryAQuotaWall(t *testing.T) {
 	}
 }
 
-// When the id is unreadable the node says so and starts fresh, rather than
-// passing an empty --run-id that deepsec would reject.
-func TestDeepsecRetry_StartsFreshWhenNoRunIdWasPrinted(t *testing.T) {
+// A failure with no readable run id in the first attempt log used to be the
+// "start fresh" branch of the retry, distinct from the "resume the id we
+// read" branch. #1323 collapsed both branches into one: the retry is always
+// fresh. This test kept, in the "the retry does not pass a bogus --run-id"
+// role -- the ONLY invariant that survived the branch collapse.
+func TestDeepsecRetry_NeverPassesRunId(t *testing.T) {
 	calls, _ := runRetryBlock(t, "deepsec: command failed before it started\\n", 1)
 	if len(calls) != 2 {
 		t.Fatalf("a failure with no readable run id is still retried once, got %d: %v", len(calls), calls)
 	}
 	if strings.Contains(calls[1], "--run-id") {
-		t.Fatalf("with no id to resume the retry must start fresh, not pass an empty one: %s", calls[1])
+		t.Fatalf("the retry passed --run-id, which the resume-branch removal (#1323) rules out: %s", calls[1])
 	}
 }
