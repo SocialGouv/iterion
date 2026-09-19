@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.172.3](https://github.com/SocialGouv/iterion/compare/v3.172.2...v3.172.3) (2026-09-19)
+
+### Bug Fixes
+
+* **runtime:** the repo devbox install at run start leaves the tracked devbox.lock what the run found it ([#1459](https://github.com/SocialGouv/iterion/issues/1459)) ([#1465](https://github.com/SocialGouv/iterion/issues/1465)) ([ce459ec](https://github.com/SocialGouv/iterion/commit/ce459ec2c5008c66f3953e9b16c9a4f079ef812e)), references [#1344](https://github.com/SocialGouv/iterion/issues/1344) [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1464](https://github.com/SocialGouv/iterion/issues/1464) [#1451](https://github.com/SocialGouv/iterion/issues/1451) [#1450](https://github.com/SocialGouv/iterion/issues/1450) [#1344](https://github.com/SocialGouv/iterion/issues/1344) [#828](https://github.com/SocialGouv/iterion/issues/828)
+
+    <details><summary>why</summary>
+
+    `provisionHostDevbox` installs the TARGET REPO's devbox project in place, in the run's worktree. On a host whose devbox plugin registry is newer than the repository's pin, `devbox install` rewrites the tracked lock — one line, `nodejs_24@latest` `plugin_version` 0.0.4 → 0.0.5 on this machine — so the worktree differs on a tracked file before the first node runs, and every gate that reads the tree as the pass's own work (a campaign's scope gate, a clean-tree precheck, a whole-tree commit)…
+
+    </details>
+
 ## [3.172.2](https://github.com/SocialGouv/iterion/compare/v3.172.1...v3.172.2) (2026-09-19)
 
 ### Bug Fixes
