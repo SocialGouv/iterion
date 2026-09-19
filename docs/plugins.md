@@ -20,9 +20,9 @@ A manifest's `contributes:` block lists one or more typed extension points:
 |---------------|-----------------------------------------------------------|------------|
 | `rewriters`   | command-output compressors (the rtk generalization)       | the rewrite chain on all three shell surfaces (claude_code Bash hook, claw bash builtin, tool nodes) |
 | `mcp_servers` | MCP servers (e.g. a knowledge-graph explorer)             | the workflow MCP catalog — ambient, workflow-wide, like a project `.mcp.json` entry |
-| `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start |
-| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/` (claude_code discovers via `--setting-sources project`) |
-| `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/` (claude_code discovers via `--setting-sources project`) |
+| `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start, in BOTH the directory form `<name>/SKILL.md` (what claude_code's Skill tool discovers — Agent Skills spec) and the flat alias `<name>.md` (what prompt Reads by path resolve) |
+| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/<name>.md` (claude_code discovers via `--setting-sources project`) |
+| `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/<name>.md` (claude_code discovers via `--setting-sources project`) |
 | `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`) |
 | `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
 
@@ -110,6 +110,16 @@ their `.sha256` markers). A stale copy is inert for `claude_code`, which
 discovers only the `<name>/SKILL.md` directory form — but `claw` resolves a flat
 `<name>.md` too, and will keep offering it under its old name. In a persistent
 workspace, delete it by hand; a run in a fresh checkout never sees one.
+
+**Same-name collisions across enabled plugins are loud.** Two plugins
+contributing one file name land on one destination — the mirror keeps
+whoever wrote last (refusing the overwrite would break a workspace that
+relies on the incumbent), and the overwrite is logged with both plugin
+names so an operator can rename one. Two enabled **team-scoped git-hosted
+sources** shipping the same file are dedup'd at the publisher (later source
+wins, on the same rationale) and the shadowing is logged against the run.
+A **locally installed** plugin sharing a name with a team source shadows it
+deterministically — the local install is the explicit act.
 
 ### Org-private plugins from a git repo (ADR-080)
 

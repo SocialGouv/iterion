@@ -259,6 +259,27 @@ jobs:
         # than being re-tightened onto the new figure.
         run: go test -mod=vendor -v -timeout 900s ./e2e/...
 
+      - name: Live e2e compile check
+        # Builds every -tags=live test in the repo and runs NONE of them
+        # (`-run '^$'`). No credentials, no model call, no network — pure
+        # compilation. The paid live layer would otherwise bit-rot green
+        # under any required check: a rename, a moved package, a
+        # signature change would only surface weeks later to whoever
+        # pays to run a live target, and would look like their change.
+        # Cheap half of #1423's guarantee — see #1432.
+        #
+        # ./... rather than ./e2e/...: `./e2e/...` misses live-tagged
+        # tests outside the e2e package (pkg/webhooks/gitlab/client_live_test.go
+        # today; any future sibling too — a live-tagged file added under
+        # pkg/, cmd/ or bots/ would otherwise be invisible to this
+        # check, defeating the purpose of the step). Measured locally on
+        # a warm cache: ./... = 11.4 s wall, ./e2e/... + ./pkg/webhooks/gitlab/...
+        # = 3.3 s wall — the 8 s premium buys coverage at the CLASS and
+        # avoids the periodic hunt for the next live-tagged package.
+        # Runs in-job to reuse the toolchain (Go, vendor) — the org
+        # caps concurrent runner slots at 20 across the fleet.
+        run: go test -mod=vendor -tags live -count=1 -run '^$' ./...
+
   race:
     # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no
     # -race, so it cannot surface the concurrency races that only the race

@@ -400,9 +400,12 @@ func piResolveModel(model, hint string) (provider, modelID string) {
 //
 // Every path emitted here is one pi resolves: `--skill` is stat'd and dispatched
 // to a directory scan or a single-file load (core/skills.ts), so both mirror
-// shapes work — a `<name>/` directory holding SKILL.md (library skills and
-// directory-form bundle skills) and a flat `<stem>.md` (plugin and flat bundle
-// skills).
+// shapes work — a `<name>/SKILL.md` file inside its own directory (what every
+// tier — bundle, plugin, library — writes as the discoverable form) and a
+// flat `<stem>.md` (the alias BUNDLE and PLUGIN tiers also write so a prompt
+// Reading the skill by path resolves; library skills land in the directory
+// form only, so an explicit-path Read against a library-referenced skill's
+// flat `.md` NOENTs — the discovery path via `--skill` still finds it).
 //
 // Historical note on the other direction: the gate was once
 // `len(task.SkillHints) > 0`, which carries only the DSL `skills:` field (the

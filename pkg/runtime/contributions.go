@@ -65,6 +65,20 @@ func (c *Contributions) IsEmpty() bool {
 // local path (reconcileSkillFile) so precedence stays identical whichever way
 // the files arrived. Content is staged through a temp file because
 // reconcileSkillFile compares on-disk sources.
+//
+// Skills go through mirrorFileSkill so the workspace ends up with BOTH shapes
+// — the directory form <name>/SKILL.md (the only one claude_code's Skill tool
+// discovers, per the Agent Skills spec) and the flat <name>.md that prompt
+// Reads by path resolve — matching mirrorPluginContributions and
+// mirrorBundleSkills. Commands and agents keep the flat shape; that is what
+// claude_code discovers for those kinds.
+//
+// It shares contribClaimTracker with the local path so its collision guard
+// cannot drift. The injected wire arrives after the publisher's step-0 /
+// step-1 dedup (see cloudpublisher.resolveContributionsFor), so a duplicate
+// (kind, name) reaching here is a defence-in-depth signal that the payload
+// was built without dedup — the winner is publisher-order (queue.Contributions
+// order), we WARN with the destination, and it is reported once.
 func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger *iterlog.Logger) ([]string, error) {
 	if workDir == "" || len(files) == 0 {
 		return nil, nil
@@ -77,6 +91,7 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 
 	var owned []string
 	ready := map[string]bool{}
+	tracker := newContribClaimTracker()
 	for _, f := range files {
 		if f.Kind == "" || f.Name == "" {
 			continue
@@ -95,15 +110,35 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		if err := os.WriteFile(tmpPath, f.Content, 0o644); err != nil {
 			return nil, err
 		}
-		destPath := filepath.Join(destDir, f.Name)
-		markerPath := filepath.Join(markerDir, f.Name+".sha256")
-		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
+		outcome, destPath, err := mirrorInjectedContribFile(destDir, markerDir, tmpPath, f.Kind, f.Name, logger)
 		if err != nil {
-			return nil, fmt.Errorf("runtime/contrib: mirror %s %q: %w", f.Kind, f.Name, err)
+			// Malformed entries (e.g. a name a third-party manifest crafted
+			// without an .md suffix — collectSkillFiles is EqualFold, so
+			// "Deploy.MD" reaches here and skillDestDirForm refuses it)
+			// must not discard every OTHER team-source's contribution
+			// behind a single error. Name the offender in the log, keep
+			// mirroring the rest.
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping %s %q: %v", f.Kind, f.Name, err)
+			}
+			continue
+		}
+		// A duplicate reaching this path IS by definition a publisher
+		// regression — the wording of the WARN itself asserts as much — so
+		// it fires even on identical bytes (skillOutcomeUpToDate). Silence
+		// there would hide exactly the case the WARN is meant to catch: two
+		// entries the publisher failed to dedup, whose content happens to
+		// match. The local mirror's collision warning gates on
+		// !UpToDate because two DIFFERENT plugins shipping identical bytes
+		// is legit; the injected wire has already been deduped upstream, so
+		// it does not.
+		if _, dup := tracker.claim(f.Kind, f.Name, ""); dup && logger != nil {
+			logger.Warn("runtime/contrib: duplicate %s contribution %q in the queue payload — one destination at %s; the publisher's step-0/step-1 dedup should have removed this",
+				f.Kind, f.Name, destPath)
 		}
 		// Skills only — commands and agents are mirrored for claude_code's
 		// discovery, and are not skills a backend may pass as one.
-		if f.Kind == "skills" && outcome != skillOutcomeShadowed {
+		if f.Kind == "skills" && outcome != skillOutcomeShadowed && tracker.report(destPath) {
 			owned = append(owned, destPath)
 		}
 	}
@@ -111,6 +146,33 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		logger.Info("contributions: %d injected plugin file(s) mirrored into %s", len(files), filepath.Join(workDir, ".claude"))
 	}
 	return owned, nil
+}
+
+// mirrorInjectedContribFile is the injected twin of mirrorPluginContribFile.
+// Separate because the wire carries f.Kind as the .claude/ leaf directory
+// name ("skills") while the local path uses the plugin.MirrorKind singular
+// ("skill"). Skills route through mirrorFileSkill (both discovery shapes) so
+// the wire arrival cannot leave a plugin skill invisible to claude_code;
+// commands and agents keep their flat form.
+func mirrorInjectedContribFile(destDir, markerDir, tmpPath, kindDir, name string, logger *iterlog.Logger) (skillReconcileOutcome, string, error) {
+	if kindDir == "skills" {
+		_, destPath, _, err := skillDestDirForm(destDir, markerDir, name)
+		if err != nil {
+			return skillOutcomeShadowed, "", err
+		}
+		outcome, err := mirrorFileSkill(destDir, markerDir, tmpPath, name, skillTierPlugin, logger)
+		if err != nil {
+			return outcome, "", err
+		}
+		return outcome, destPath, nil
+	}
+	destPath := filepath.Join(destDir, name)
+	markerPath := filepath.Join(markerDir, name+".sha256")
+	outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
+	if err != nil {
+		return outcome, destPath, err
+	}
+	return outcome, destPath, nil
 }
 
 // mirrorInjectedLibrarySkills mirrors pre-resolved library skills as
@@ -147,13 +209,21 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		}
 		skillDir := filepath.Join(dest, s.Name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return nil, nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", skillDir, err)
+			// One skill's mkdir failing must not discard every OTHER
+			// injected library skill on this launch. Warn, skip.
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping library skill %q: mkdir %s: %v", s.Name, skillDir, err)
+			}
+			continue
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping library skill %q: %v", s.Name, err)
+			}
+			continue
 		}
 		// The FILE, not skillDir — see mirrorLibrarySkills for why.
 		if outcome != skillOutcomeShadowed {

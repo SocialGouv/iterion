@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -730,35 +731,84 @@ workflow spin:
   slow -> check as spin(300)
 `
 
-// slowChecker is a shell checker that sleeps: the one way a dry run spends
-// wall time, since nothing else in it waits.
-type slowChecker struct{ d time.Duration }
+// gatedShellChecker signals `started` on its first Check invocation and
+// then blocks on ctx.Done() — a synchronization primitive the test uses
+// to observe the child is running and then cut its ctx, without racing a
+// clock. Once ctx is cancelled, subsequent Checks return immediately
+// (the engine's next inter-node rctx.Err() check aborts the run).
+type gatedShellChecker struct {
+	ctx     context.Context
+	started chan struct{}
+	once    sync.Once
+}
 
-func (s slowChecker) Check(string, string) error {
-	time.Sleep(s.d)
+func (g *gatedShellChecker) Check(string, string) error {
+	g.once.Do(func() { close(g.started) })
+	<-g.ctx.Done()
 	return nil
 }
 
 // A simulated child runs within what is left of the parent's pass — the
-// caller's deadline reaches it through the node that hands it work — never
-// on a fresh budget of its own.
+// caller's ctx reaches it through the node that hands it work — never on
+// a budget of its own. The property is CAUSALITY: cutting the parent's
+// ctx cuts the child's.
+//
+// The test proves that deterministically. A gated shell checker signals
+// the test on its first invocation and then blocks on the parent's ctx;
+// only AFTER observing that signal (the child IS running) the test
+// cancels the parent's ctx, so the child's own rctx (derived from it)
+// fires next. TimedOut is the semantic "the ctx-derived limit fired,
+// not the natural end" — see Pass.TimedOut. No wall-clock in the
+// assertion; the outer 30 s guards are witnesses of test-runner health,
+// not properties of the code. #1393.
 func TestAChildRunsWithinWhatIsLeftOfThePass(t *testing.T) {
 	parent := compileBot(t, parentBot)
 	opts := withChild(t, slowKid)
 	opts.Timeout = time.Hour
-	opts.Shell = slowChecker{20 * time.Millisecond}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	start := time.Now()
-	r, err := Run(ctx, parent, opts)
-	if err != nil {
-		t.Fatal(err)
+	started := make(chan struct{})
+	opts.Shell = &gatedShellChecker{ctx: ctx, started: started}
+
+	type result struct {
+		r   *Report
+		err error
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Fatalf("the dry run took %s: the child ran on a budget of its own", elapsed)
+	done := make(chan result, 1)
+	go func() {
+		r, err := Run(ctx, parent, opts)
+		done <- result{r, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("child's shell checker never entered — the child did not start")
 	}
-	if len(r.Children) == 0 || r.Children[0].Status == "finished" || !strings.Contains(r.Children[0].Failure, "deadline") {
-		t.Fatalf("the child was not cut by the parent's deadline: %+v", r.Children)
+
+	// Now cancel. The parent's rctx is derived from ctx, and the child's
+	// rctx is derived from the parent's ctx, so cancellation propagates
+	// down to the child; the engine's between-node rctx.Err() check
+	// aborts the child.
+	cancel()
+
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return within 30 s of parent-ctx cancellation")
+	}
+	_ = got.err // Run may surface ctx.Err — that is fine; the child pass carries the shape.
+	if len(got.r.Children) == 0 {
+		t.Fatalf("the child was not created before the parent's ctx was cut: %+v", got.r)
+	}
+	child := got.r.Children[0]
+	if child.Status == "finished" {
+		t.Fatalf("the child finished on its own budget instead of inheriting the parent's cancellation: %+v", child)
+	}
+	if !child.TimedOut {
+		t.Fatalf("the child was not cut by the parent's terminating condition: %+v (Failure=%q, TimedOut=%v)", child, child.Failure, child.TimedOut)
 	}
 }
 
