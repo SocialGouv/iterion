@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.171.0](https://github.com/SocialGouv/iterion/compare/v3.170.0...v3.171.0) (2026-09-19)
+
+### Features
+
+* **studio:** org → teams drill-down in the admin org drawer ([#1446](https://github.com/SocialGouv/iterion/issues/1446)) ([#1468](https://github.com/SocialGouv/iterion/issues/1468)) ([e690be8](https://github.com/SocialGouv/iterion/commit/e690be89fc666a003a1345d6360ffcf468a74976)), references [#1441](https://github.com/SocialGouv/iterion/issues/1441) [#1441](https://github.com/SocialGouv/iterion/issues/1441)
+
+    <details><summary>why</summary>
+
+    The cloud super-admin console exposes six pages, but several requireSuperAdmin endpoints exist and are tested with no client to reach them. This adds the API/client layer the remaining admin screens (T2–T5) depend on, schema-first so the wrappers carry the generated OpenAPI types rather than hand-rolled shapes.
+
+    </details>
+* **studio:** platform usage-caps admin screen ([#1442](https://github.com/SocialGouv/iterion/issues/1442)) ([#1460](https://github.com/SocialGouv/iterion/issues/1460)) ([4f591d1](https://github.com/SocialGouv/iterion/commit/4f591d1a409995fda216ead7ff018cdd1bf12263)), references [#1441](https://github.com/SocialGouv/iterion/issues/1441) [#1441](https://github.com/SocialGouv/iterion/issues/1441) [#1441](https://github.com/SocialGouv/iterion/issues/1441)
+
+    <details><summary>why</summary>
+
+    The cloud super-admin console exposes six pages, but several requireSuperAdmin endpoints exist and are tested with no client to reach them. This adds the API/client layer the remaining admin screens (T2–T5) depend on, schema-first so the wrappers carry the generated OpenAPI types rather than hand-rolled shapes.
+
+    </details>
+
 ## [3.170.0](https://github.com/SocialGouv/iterion/compare/v3.169.0...v3.170.0) (2026-09-19)
 
 ### Features
